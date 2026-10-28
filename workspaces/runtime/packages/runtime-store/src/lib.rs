@@ -91,11 +91,12 @@ use sqlite_actor::{ActorResponseDisposition, SqliteActor};
 
 pub use path::{NATIVE_LAYR_DIRECTORY, resolve_state_dir};
 pub use records::{
-    AgentId, AgentRecord, AgentRepository, AgentStatus, AnnotationRecord, ChatMessage,
-    ChatMessageId, CheckpointRecord, ComplaintRecord, EventMetadataRecord, ExecutionRunRecord,
-    GraphAgentRecord, JsonRecord, MessageRepository, MonitorRecord, PlanRecord, QueueEvent,
-    QueueEventId, QueueEventRepository, RecordKeyMode, RecordOrder, RecordPredicate,
-    RecordQueryShape, RequestRecord, RuleRecord, Table, TaskId, TaskRecord, TaskRepository,
+    ActiveExecutionView, AgentId, AgentRecord, AgentRepository, AgentStatus, AnnotationRecord,
+    ChatMessage, ChatMessageId, CheckpointRecord, ComplaintRecord, EventMetadataRecord,
+    ExecutionRunRecord, GraphAgentRecord, InterruptOutcome, JsonRecord, MessageRepository,
+    MonitorRecord, PlanRecord, QueueEvent, QueueEventId, QueueEventRepository, RecordKeyMode,
+    RecordOrder, RecordPredicate, RecordQueryShape, RequestRecord, RuleRecord, StartAttemptAction,
+    StartAttemptView, StartInterruptView, Table, TaskId, TaskRecord, TaskRepository,
     TerminalRecord, ToolResultRecord, TranscriptAssetId, TranscriptAssetRecord, TranscriptItemId,
     TranscriptItemRecord, UnknownAgentStatus, UsageResumeRecord, WorkItemRecord, WorkStatus,
     WorkspaceOperationRecord, decode_agent_value,

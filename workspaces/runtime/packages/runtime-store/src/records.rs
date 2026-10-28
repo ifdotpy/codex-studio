@@ -238,7 +238,149 @@ pub struct AgentRecord {
     pub extra: BTreeMap<String, Value>,
 }
 
+/// Typed projection of the scheduler-owned fields in a start attempt.
+/// Other owners retain their fields in the original object.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartAttemptView {
+    pub id: Option<String>,
+    pub epoch: Option<i64>,
+    pub account_key: Option<String>,
+    pub thread_id: Option<String>,
+    pub turn_id: Option<String>,
+    pub observed_turn_id: Option<String>,
+    pub events: Option<Vec<String>>,
+    pub submitted: Option<bool>,
+    pub active_at_reservation: Option<bool>,
+    pub created: Option<f64>,
+    #[serde(default, deserialize_with = "start_attempt_action")]
+    pub action: Option<StartAttemptAction>,
+    pub execution_outcome: Option<studio_runtime_schema::persistence::ExecutionStatus>,
+    pub request_ticket: Option<String>,
+    pub connection_id: Option<String>,
+    pub connection_generation: Option<u64>,
+    pub native_operation_id: Option<String>,
+    pub root_request_id: Option<String>,
+    pub interrupt: Option<StartInterruptView>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StartAttemptAction {
+    Compact,
+    Review,
+    Capacity,
+}
+
+fn start_attempt_action<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<StartAttemptAction>, D::Error> {
+    StartAttemptAction::deserialize(deserializer).map(Some)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InterruptOutcome {
+    Unknown,
+    Unsent,
+    Accepted,
+    Rejected,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartInterruptView {
+    pub request_ticket: Option<String>,
+    pub thread_id: Option<String>,
+    pub turn_id: Option<String>,
+    pub generation: Option<u64>,
+    pub outcome: Option<InterruptOutcome>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActiveExecutionView {
+    pub run_id: Option<String>,
+    pub attempt_id: Option<String>,
+}
+
+macro_rules! start_attempt_setters {
+    ($($name:ident: $ty:ty = $field:literal;)+) => {
+        $(pub fn $name(&mut self, value: $ty) -> StoreResult<()> {
+            self.set_start_attempt_field($field, &value)
+        })+
+    };
+}
+
 impl AgentRecord {
+    pub fn active_execution(&self) -> Result<Option<ActiveExecutionView>, serde_json::Error> {
+        self.extra
+            .get("activeExecution")
+            .filter(|value| !value.is_null())
+            .map(ActiveExecutionView::deserialize)
+            .transpose()
+    }
+
+    fn set_active_execution_field<T: Serialize>(
+        &mut self,
+        field: &str,
+        value: &T,
+    ) -> StoreResult<()> {
+        let pointer = self
+            .extra
+            .entry("activeExecution".into())
+            .or_insert_with(|| serde_json::Map::new().into());
+        if pointer.is_null() {
+            *pointer = serde_json::Map::new().into();
+        }
+        let pointer = pointer
+            .as_object_mut()
+            .ok_or(crate::StoreError::RecordContract(
+                "invalid active execution",
+            ))?;
+        pointer.insert(field.into(), serde_json::to_value(value)?);
+        Ok(())
+    }
+    pub fn set_active_execution_run_id(&mut self, value: &str) -> StoreResult<()> {
+        self.set_active_execution_field("runId", &value)
+    }
+    pub fn set_active_execution_attempt_id(&mut self, value: Option<&str>) -> StoreResult<()> {
+        self.set_active_execution_field("attemptId", &value)
+    }
+
+    pub fn start_attempt(&self) -> Result<Option<StartAttemptView>, serde_json::Error> {
+        self.extra
+            .get("startAttempt")
+            .filter(|value| !value.is_null())
+            .map(StartAttemptView::deserialize)
+            .transpose()
+    }
+
+    fn set_start_attempt_field<T: Serialize>(&mut self, field: &str, value: &T) -> StoreResult<()> {
+        let attempt = self
+            .extra
+            .get_mut("startAttempt")
+            .and_then(|value| value.as_object_mut())
+            .ok_or(crate::StoreError::RecordContract("missing start attempt"))?;
+        attempt.insert(field.into(), serde_json::to_value(value)?);
+        Ok(())
+    }
+
+    start_attempt_setters! {
+        set_start_attempt_submitted: bool = "submitted";
+        set_start_attempt_account_key: &str = "accountKey";
+        set_start_attempt_thread_id: Option<&str> = "threadId";
+        set_start_attempt_connection_id: Option<&str> = "connectionId";
+        set_start_attempt_native_operation_id: &str = "nativeOperationId";
+        set_start_attempt_not_submitted_reason: &str = "notSubmittedReason";
+        set_start_attempt_retired_events: &[String] = "retiredEvents";
+        set_start_attempt_turn_id: Option<&str> = "turnId";
+        set_start_attempt_observed_turn_id: Option<&str> = "observedTurnId";
+        set_start_attempt_execution_outcome: studio_runtime_schema::persistence::ExecutionStatus = "executionOutcome";
+        set_start_attempt_request_ticket: &str = "requestTicket";
+        set_start_attempt_connection_generation: u64 = "connectionGeneration";
+    }
+
     pub fn from_value(value: Value) -> Result<Self, serde_json::Error> {
         serde_json::from_value(value)
     }
@@ -1368,6 +1510,88 @@ mod tests {
 
     fn agent(value: Value) -> AgentRecord {
         AgentRecord::from_value(value).expect("agent record has a string id")
+    }
+
+    #[test]
+    fn start_attempt_view_and_field_writes_preserve_existing_payloads() {
+        // Shapes from the execution migration and the scheduler's claim writer.
+        for attempt in [
+            json!({"id":"attempt-0"}),
+            json!({"id":"attempt","epoch":1,"events":["event"],"submitted":false,
+                "activeAtReservation":false,"accountKey":"default","created":1.0,
+                "nativeRequest":{"params":{"vendorExtension":[1,2]}}}),
+        ] {
+            let mut record = agent(
+                json!({"id":"agent","rootId":"agent","epoch":1,"status":"idle","startAttempt":attempt}),
+            );
+            let before = record.extra.get("startAttempt").cloned().expect("attempt");
+            let view = record.start_attempt().expect("view").expect("attempt");
+            assert!(view.id.is_some());
+            assert_eq!(record.extra.get("startAttempt"), Some(&before));
+            record
+                .set_start_attempt_submitted(false)
+                .expect("field write");
+            let mut expected = before;
+            expected["submitted"] = json!(false);
+            assert_eq!(record.extra.get("startAttempt"), Some(&expected));
+        }
+    }
+
+    #[test]
+    fn start_attempt_action_view_rejects_unnormalized_values() {
+        for action in [
+            json!(null),
+            json!(false),
+            json!(0),
+            json!(""),
+            json!([]),
+            json!({}),
+        ] {
+            let record = agent(
+                json!({"id":"agent","rootId":"agent","epoch":1,"status":"idle","startAttempt":{"action":action}}),
+            );
+            assert!(record.start_attempt().is_err());
+        }
+        for action in [
+            json!(true),
+            json!(1),
+            json!("other"),
+            json!([1]),
+            json!({"x":1}),
+        ] {
+            let record = agent(
+                json!({"id":"agent","rootId":"agent","epoch":1,"status":"idle","startAttempt":{"action":action}}),
+            );
+            assert!(record.start_attempt().is_err());
+        }
+    }
+
+    #[test]
+    fn active_execution_view_and_field_writes_preserve_migration_record() {
+        let mut record = agent(
+            json!({"id":"agent","rootId":"agent","epoch":1,"status":"idle",
+            "activeExecution":{"runId":"run","attemptId":null,"futureField":{"keep":true}}}),
+        );
+        let view = record
+            .active_execution()
+            .expect("pointer")
+            .expect("present");
+        assert_eq!(view.run_id.as_deref(), Some("run"));
+        assert_eq!(view.attempt_id, None);
+        record
+            .set_active_execution_attempt_id(Some("attempt-0"))
+            .expect("set attempt");
+        assert_eq!(
+            record.extra["activeExecution"],
+            json!({"runId":"run","attemptId":"attempt-0","futureField":{"keep":true}})
+        );
+        record
+            .set_active_execution_attempt_id(None)
+            .expect("restore null");
+        assert_eq!(
+            record.extra["activeExecution"],
+            json!({"runId":"run","attemptId":null,"futureField":{"keep":true}})
+        );
     }
 
     #[test]
