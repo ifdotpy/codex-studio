@@ -5707,6 +5707,7 @@ dependencies = [
  "studio-runtime-process",
  "studio-runtime-providers",
  "studio-runtime-schema",
+ "studio-runtime-services",
  "studio-runtime-store",
  "subtle",
  "sysinfo",
