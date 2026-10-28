@@ -270,6 +270,7 @@ pub enum StartAttemptAction {
     Compact,
     Review,
     Capacity,
+    Safety,
 }
 
 fn start_attempt_action<'de, D: serde::Deserializer<'de>>(
@@ -1539,6 +1540,19 @@ mod tests {
 
     #[test]
     fn start_attempt_action_view_rejects_unnormalized_values() {
+        for action in ["compact", "review", "capacity", "safety"] {
+            let record = agent(
+                json!({"id":"agent","rootId":"agent","epoch":1,"status":"idle","startAttempt":{"action":action}}),
+            );
+            assert!(
+                record
+                    .start_attempt()
+                    .expect("valid view")
+                    .expect("attempt")
+                    .action
+                    .is_some()
+            );
+        }
         for action in [
             json!(null),
             json!(false),
