@@ -93,7 +93,7 @@ fn move_row(tx: &Transaction<'_>, row: &contract::SourceReceipt, cutover_ms: i64
         if !failure.at.is_finite() {
             return Err(invalid());
         }
-        tx.execute("INSERT INTO runtime_account_state(account,next_generation,journal_ack,recovery_required,streams,start_failure) VALUES(?1,0,0,0,'{}',?2) ON CONFLICT(account) DO UPDATE SET start_failure=excluded.start_failure",params![account,row.result])?;
+        tx.execute("INSERT INTO runtime_account_state(account,next_generation,journal_ack,recovery_required,streams,start_failure) VALUES(?1,0,0,0,'null',?2) ON CONFLICT(account) DO UPDATE SET start_failure=excluded.start_failure",params![account,row.result])?;
     } else if let Some(project) = row.id.strip_prefix("project-destructive-removal:") {
         if row.signature != "project-destructive-removal" || project.is_empty() {
             return Err(invalid());
@@ -264,6 +264,15 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<Value>(&failure).expect("failure"),
             json!({"reason":"failed","at":1.5})
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT streams FROM runtime_account_state WHERE account='a'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .expect("absent stream"),
+            "null"
         );
         let agent: String = db
             .query_row(

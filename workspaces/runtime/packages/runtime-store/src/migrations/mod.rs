@@ -12,10 +12,24 @@ mod m2026_10_26_terminal_errors;
 pub(crate) mod m2026_10_27_cost_index;
 mod m2026_10_27_retired_sqlite;
 mod m2026_10_27_scheduler_indexes;
+mod m2026_10_28_receipts_account_worker;
+mod m2026_10_28_receipts_actions;
 mod m2026_10_28_receipts_checks;
+mod m2026_10_28_receipts_context_repair;
 mod m2026_10_28_receipts_drop_old_tables;
+mod m2026_10_28_receipts_execution;
 mod m2026_10_28_receipts_incidents;
+mod m2026_10_28_receipts_owner_state;
+mod m2026_10_28_receipts_provider_callbacks;
+mod m2026_10_28_receipts_provider_delivery;
+mod m2026_10_28_receipts_remote;
+mod m2026_10_28_receipts_requests;
 mod m2026_10_28_receipts_schema;
+mod m2026_10_28_receipts_title;
+mod m2026_10_28_receipts_tools;
+mod m2026_10_28_receipts_vm_provider;
+mod m2026_10_28_receipts_voice;
+mod m2026_10_28_receipts_work;
 
 #[cfg(any(test, feature = "test-support"))]
 pub use m2026_10_20_agents::migrate_2026_10_20;
@@ -277,7 +291,6 @@ static CATALOG: &[&dyn Migration] = &[
         apply: |c| {
             crate::feature_schema::prepare(c.transaction)?;
             m2026_10_26_canvas::feature_columns(c.transaction)?;
-            crate::StartupRecoveryRepository::prepare_indexes(c.transaction)?;
             crate::MonitorsRepository::prepare_indexes(c.transaction)?;
             crate::AgentIndexedReads::prepare_index(c.transaction)
         },
@@ -377,6 +390,62 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| m2026_10_28_receipts_schema::apply(c.transaction),
+    },
+    &ReceiptMigration {
+        family: &m2026_10_28_receipts_execution::ExecutionMigration,
+        sources: m2026_10_28_receipts_execution::SOURCES,
+    },
+    &ReceiptMigration {
+        family: &m2026_10_28_receipts_actions::ActionsMigration,
+        sources: m2026_10_28_receipts_actions::SOURCES,
+    },
+    &ReceiptMigration {
+        family: &m2026_10_28_receipts_context_repair::ContextRepairMigration,
+        sources: m2026_10_28_receipts_context_repair::SOURCES,
+    },
+    &ReceiptMigration {
+        family: &m2026_10_28_receipts_voice::VoiceMigration,
+        sources: m2026_10_28_receipts_voice::SOURCES,
+    },
+    &ReceiptMigration {
+        family: &m2026_10_28_receipts_work::Family,
+        sources: m2026_10_28_receipts_work::SOURCES,
+    },
+    &ReceiptMigration {
+        family: &m2026_10_28_receipts_title::Family,
+        sources: m2026_10_28_receipts_title::SOURCES,
+    },
+    &ReceiptMigration {
+        family: &m2026_10_28_receipts_owner_state::Family,
+        sources: m2026_10_28_receipts_owner_state::SOURCES,
+    },
+    &ReceiptMigration {
+        family: &m2026_10_28_receipts_requests::Family,
+        sources: m2026_10_28_receipts_requests::SOURCES,
+    },
+    &ReceiptMigration {
+        family: &m2026_10_28_receipts_tools::Family,
+        sources: m2026_10_28_receipts_tools::SOURCES,
+    },
+    &ReceiptMigration {
+        family: &m2026_10_28_receipts_remote::Family,
+        sources: m2026_10_28_receipts_remote::SOURCES,
+    },
+    &ReceiptMigration {
+        family: &m2026_10_28_receipts_provider_delivery::Family,
+        sources: m2026_10_28_receipts_provider_delivery::SOURCES,
+    },
+    &ReceiptMigration {
+        family: &m2026_10_28_receipts_provider_callbacks::Family,
+        sources: m2026_10_28_receipts_provider_callbacks::SOURCES,
+    },
+    &ReceiptMigration {
+        family: &m2026_10_28_receipts_vm_provider::Family,
+        sources: m2026_10_28_receipts_vm_provider::SOURCES,
+    },
+    &ReceiptMigration {
+        family: &m2026_10_28_receipts_account_worker::Family,
+        sources: m2026_10_28_receipts_account_worker::SOURCES,
     },
     &ReceiptMigration {
         family: &m2026_10_28_receipts_incidents::Family,
@@ -834,7 +903,7 @@ pub(crate) fn prepare_canvas_fixture(transaction: &Transaction<'_>) -> StoreResu
             source: SourceDatabase::Independent,
         }))?;
     }
-    Ok(())
+    crate::schema::prepare_receipt_owners(transaction)
 }
 
 #[cfg(test)]
@@ -902,7 +971,7 @@ mod tests {
         crate::sqlite_durability::configure_writer(&db).expect("WAL");
         let tx = db.transaction().expect("fixture transaction");
         receipt_migration_contract::prepare_schema(&tx).expect("targets");
-        tx.execute_batch("CREATE TABLE runtime_orchestration_settings(id TEXT PRIMARY KEY,record TEXT NOT NULL); CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT,result TEXT)").expect("source");
+        tx.execute_batch("CREATE TABLE IF NOT EXISTS runtime_orchestration_settings(id TEXT PRIMARY KEY,record TEXT NOT NULL); CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT,result TEXT)").expect("source");
         for index in 1..=count {
             tx.execute(
                 "INSERT INTO runtime_operation_receipts VALUES(?1,'known',?2)",

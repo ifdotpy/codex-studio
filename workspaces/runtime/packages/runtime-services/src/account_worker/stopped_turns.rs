@@ -90,6 +90,7 @@ pub(super) async fn end_account(
             break;
         }
         let (interrupt, response) = request(
+            &store,
             session,
             scope,
             &turn,
@@ -103,6 +104,7 @@ pub(super) async fn end_account(
             && let Some(method) = turn.terminals
         {
             let (cleaned, _) = request(
+                &store,
                 session,
                 scope,
                 &turn,
@@ -166,6 +168,7 @@ impl Outcome {
 /// ledger replay a lost reply instead of sending the request again. Returns
 /// the provider's interrupt receipt with the outcome, or null.
 async fn request(
+    store: &RuntimeStore,
     session: &RetainedSessionPort,
     scope: &ConnectionScope,
     turn: &StoppedTurn,
@@ -173,8 +176,85 @@ async fn request(
     method: Method,
     params: Value,
 ) -> (Outcome, Value) {
+    let actor = turn.clone();
+    let request_scope = scope.clone();
+    let request_operation = operation.clone();
+    let request_params = params.clone();
+    let reserved = store
+        .transaction_with(move |tx| {
+            let mut agent = AgentRepository::get(tx, &AgentId::from(actor.agent.as_str()))?
+                .ok_or(super::WorkerError::CallbackUnknown)?;
+            if ended_turn(&agent, request_scope.generation)
+                .is_none_or(|current| current.owner != actor.owner)
+            {
+                return Err(super::WorkerError::CallbackUnknown);
+            }
+            let attempt_id = match &actor.owner {
+                Owner::Disconnect { .. } => agent
+                    .extra
+                    .get("disconnectRecovery")
+                    .and_then(|r| r.pointer("/startAttempt/id")),
+                Owner::Stop { .. } => agent.extra.get("startAttempt").and_then(|a| a.get("id")),
+            }
+            .and_then(Value::as_str)
+            .ok_or(super::WorkerError::CallbackUnknown)?
+            .to_owned();
+            let (root, source) = super::store::execution_admission(tx, &attempt_id)?;
+            let field = if request_operation == actor.interrupt_operation() {
+                "admission"
+            } else {
+                "terminalsAdmission"
+            };
+            let pointer = match &actor.owner {
+                Owner::Disconnect { .. } => &mut agent
+                    .extra
+                    .get_mut("disconnectRecovery")
+                    .ok_or(super::WorkerError::CallbackUnknown)?["stopInterrupt"],
+                Owner::Stop { .. } => &mut agent
+                    .extra
+                    .get_mut("startAttempt")
+                    .ok_or(super::WorkerError::CallbackUnknown)?["interrupt"],
+            };
+            let admitted = if let Some(saved) = pointer.get(field) {
+                serde_json::from_value(saved.clone())
+                    .map_err(studio_runtime_store::StoreError::from)?
+            } else {
+                let admitted = super::retained::reserve_provider_call(
+                    tx,
+                    &source,
+                    super::retained::ProviderCallIntent {
+                        root_request_id: root.clone(),
+                        admitted_request: None,
+                        scope: request_scope,
+                        operation: request_operation,
+                        actor: Some(RequestActor {
+                            agent: actor.agent,
+                            epoch: actor.epoch,
+                        }),
+                        transfer: None,
+                        deleted_actor_session: None,
+                        method,
+                        params: request_params,
+                    },
+                )?;
+                if pointer.is_null() {
+                    *pointer = json!({});
+                }
+                pointer[field] = serde_json::to_value(&admitted)
+                    .map_err(studio_runtime_store::StoreError::from)?;
+                admitted
+            };
+            AgentRepository::put(tx, &agent)?;
+            Ok((root, admitted))
+        })
+        .await;
+    let Ok((root_request_id, admitted_request)) = reserved else {
+        return (Outcome::Unknown, Value::Null);
+    };
     let receipt = session
         .request(SessionRequest {
+            root_request_id,
+            admitted_request: Some(admitted_request),
             scope: scope.clone(),
             expected_scope: Some(scope.clone()),
             operation,
@@ -199,7 +279,8 @@ async fn request(
             RequestResult::Unknown => (Outcome::Unknown, Value::Null),
         },
         Err(super::retained::PortError::Unknown) => (Outcome::Unknown, Value::Null),
-        Err(_) => (Outcome::NotSent, Value::Null),
+        Err(super::retained::PortError::NotSent) => (Outcome::NotSent, Value::Null),
+        Err(_) => (Outcome::Unknown, Value::Null),
     }
 }
 
@@ -277,8 +358,8 @@ fn unsettled_stop(agent: &AgentRecord, generation: u64) -> Option<StoppedTurn> {
         .filter(|turn| !turn.is_empty())?;
     let epoch = agent.epoch.checked_sub(1)?;
     let receipt = extra.get("disconnectRecovery").unwrap_or(&Value::Null);
-    let ended_by_receipt =
-        receipt["turnId"].as_str() == Some(turn) && receipt["stopInterrupt"].is_object();
+    let ended_by_receipt = receipt["turnId"].as_str() == Some(turn)
+        && receipt["stopInterrupt"].get("outcome").is_some();
     if ended_by_receipt
         || !matches!(interrupt["outcome"].as_str(), Some("unknown" | "unsent"))
         || interrupt["generation"].as_u64() != Some(generation)
@@ -350,7 +431,14 @@ fn record(
     let Some(mut agent) = AgentRepository::get(tx, &AgentId::from(turn.agent.as_str()))? else {
         return Ok(false);
     };
-    if ended_turn(&agent, generation).is_none_or(|current| current.owner != turn.owner) {
+    if agent
+        .extra
+        .get("accountKey")
+        .and_then(Value::as_str)
+        .unwrap_or("default")
+        != account
+        || !owner_matches(&agent, turn, generation)
+    {
         return Ok(false);
     }
     if let Owner::Stop { ticket, .. } = &turn.owner {
@@ -369,11 +457,106 @@ fn record(
     let Some(receipt) = agent.extra.get_mut("disconnectRecovery") else {
         return Ok(false);
     };
-    receipt["stopInterrupt"] = json!({
-        "operation":turn.interrupt_operation(),
-        "generation":generation,
-        "outcome":outcome,
-    });
+    if receipt["stopInterrupt"].is_null() {
+        receipt["stopInterrupt"] = json!({});
+    }
+    receipt["stopInterrupt"]["operation"] = json!(turn.interrupt_operation());
+    receipt["stopInterrupt"]["generation"] = json!(generation);
+    receipt["stopInterrupt"]["outcome"] = json!(outcome);
     AgentRepository::put(tx, &agent)?;
     Ok(true)
+}
+
+fn owner_matches(agent: &AgentRecord, turn: &StoppedTurn, generation: u64) -> bool {
+    if turn.epoch.checked_add(1) != Some(agent.epoch) {
+        return false;
+    }
+    let value = match turn.owner {
+        Owner::Disconnect { .. } => agent.extra.get("disconnectRecovery"),
+        Owner::Stop { .. } => agent.extra.get("startAttempt"),
+    }
+    .unwrap_or(&Value::Null);
+    match &turn.owner {
+        Owner::Disconnect { signature } => {
+            value["epoch"].as_i64() == Some(turn.epoch)
+                && value["threadId"] == turn.thread
+                && value["turnId"] == turn.turn
+                && value["startAttempt"]["connectionGeneration"].as_u64() == Some(generation)
+                && *signature
+                    == studio_runtime_store::sha256_hex(
+                        json!([agent.id.0, turn.epoch, generation, turn.thread, turn.turn])
+                            .to_string()
+                            .as_bytes(),
+                    )
+        }
+        Owner::Stop { ticket, .. } => {
+            value["epoch"].as_i64() == Some(turn.epoch)
+                && value["connectionGeneration"].as_u64() == Some(generation)
+                && value["interrupt"]["requestTicket"] == *ticket
+                && value["interrupt"]["threadId"] == turn.thread
+                && value["interrupt"]["turnId"] == turn.turn
+        }
+    }
+}
+
+/// Persist a stopped turn's exact late completion before its transport row retires.
+pub(in crate::account_worker) fn settle_stopped_turn(
+    tx: &studio_runtime_store::Transaction<'_>,
+    call: &super::retained::ProviderCallIntent,
+    result: &RequestResult,
+) -> studio_runtime_store::StoreResult<bool> {
+    if call.method != Method::TurnInterrupt {
+        return Ok(true);
+    }
+    let Some(actor) = &call.actor else {
+        return Ok(true);
+    };
+    let Some(agent) = AgentRepository::get(tx, &AgentId::from(actor.agent.as_str()))? else {
+        return Ok(true);
+    };
+    let (Some(thread), Some(turn)) = (
+        call.params["threadId"].as_str(),
+        call.params["turnId"].as_str(),
+    ) else {
+        return Ok(false);
+    };
+    let owner = if let Some(signature) = call.operation.strip_prefix(INTERRUPT_OPERATION_PREFIX) {
+        Owner::Disconnect {
+            signature: signature.to_owned(),
+        }
+    } else if agent
+        .extra
+        .get("startAttempt")
+        .is_some_and(|attempt| attempt["interrupt"]["requestTicket"] == call.operation)
+    {
+        Owner::Stop {
+            ticket: call.operation.clone(),
+            terminals: crate::lifecycle_effects::stop_terminals_operation(&call.operation)
+                .unwrap_or_default(),
+        }
+    } else {
+        return Ok(true);
+    };
+    let turn = StoppedTurn {
+        agent: actor.agent.clone(),
+        epoch: actor.epoch,
+        thread: thread.to_owned(),
+        turn: turn.to_owned(),
+        terminals: None,
+        owner,
+    };
+    let (outcome, response) = match result {
+        RequestResult::Reply(reply) => (Outcome::Accepted, reply),
+        RequestResult::Rejected(error) => (Outcome::Rejected, &error["data"]["interruptReceipt"]),
+        RequestResult::Unknown => return Ok(false),
+        RequestResult::NotSent => return Ok(true),
+    };
+    record(
+        tx,
+        &turn,
+        &call.scope.account,
+        call.scope.generation,
+        outcome.as_str(),
+        response,
+    )
 }

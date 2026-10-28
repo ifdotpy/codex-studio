@@ -3,6 +3,7 @@
 //! whole history tables. Malformed JSON is never selected, which matches the
 //! recovery passes that skip rows they cannot decode.
 use rusqlite::Connection;
+use studio_runtime_schema::persistence::{ToolRequestKind, ToolRequestStatus};
 
 use crate::{OwnedRuntimeIndexDefinition, StoreError, StoreResult};
 
@@ -11,14 +12,17 @@ pub const ACTIVE_MONITOR_STATUSES: [&str; 3] = ["running", "starting", "approval
 /// Request statuses that a restart must settle (`answering`) or reconsider (`pending`).
 pub const UNSETTLED_REQUEST_STATUSES: [&str; 2] = ["answering", "pending"];
 /// Tool request stages whose dispatcher a restart has lost.
-pub const UNSETTLED_TOOL_REQUEST_STAGES: [&str; 2] = ["queued", "running"];
+pub const UNSETTLED_TOOL_REQUEST_STAGES: [&str; 2] = [
+    ToolRequestStatus::Queued.as_str(),
+    ToolRequestStatus::Running.as_str(),
+];
 
 /// Agent statuses that mean a turn may still run under the agent.
 pub const ACTIVE_AGENT_STATUSES: [&str; 3] = ["running", "starting", "approval"];
 
 const MONITOR_INDEX: &str = "runtime_monitor_startup_active";
 const REQUEST_INDEX: &str = "runtime_request_startup_unsettled";
-const TOOL_REQUEST_INDEX: &str = "runtime_tool_request_startup_unsettled";
+const TOOL_REQUEST_INDEX: &str = "runtime_tool_request_startup_unsettled_v2";
 const CLEANUP_INTENT_INDEX: &str = "runtime_agent_cleanup_intent_v2";
 const DELETED_UNSETTLED_INDEX: &str = "runtime_agent_deleted_unsettled_v2";
 
@@ -120,6 +124,14 @@ const TOOL_REQUESTS: Selection = Selection {
 
 impl Selection {
     fn predicate(&self) -> String {
+        if self.table == "runtime_tool_requests" {
+            return format!(
+                "kind='{}' AND status IN ('{}','{}')",
+                ToolRequestKind::ManagedTool.as_str(),
+                ToolRequestStatus::Queued.as_str(),
+                ToolRequestStatus::Running.as_str()
+            );
+        }
         let values = self
             .values
             .iter()
@@ -184,7 +196,7 @@ pub(crate) fn unsettled_tool_request_predicate() -> String {
 fn tool_request_counts_sql() -> String {
     format!(
         "SELECT a.account_key, COUNT(*) \
-         FROM (SELECT json_extract(record,'$.agent') AS agent FROM {} WHERE {}) u \
+         FROM (SELECT agent FROM {} WHERE {}) u \
          JOIN runtime_agents a ON a.id=u.agent GROUP BY 1",
         TOOL_REQUESTS.table,
         TOOL_REQUESTS.predicate()
@@ -210,6 +222,7 @@ impl StartupRecoveryRepository {
 
     #[doc(hidden)]
     pub fn prepare_indexes(connection: &Connection) -> StoreResult<()> {
+        connection.execute_batch("DROP INDEX IF EXISTS runtime_tool_request_startup_unsettled")?;
         for selection in [MONITORS, REQUESTS, TOOL_REQUESTS] {
             if crate::schema::table_exists(connection, selection.table)? {
                 connection.execute_batch(&selection.definition().create_sql)?;
@@ -293,6 +306,16 @@ mod tests {
                  CREATE TABLE runtime_tool_requests(id TEXT PRIMARY KEY,record TEXT NOT NULL);",
             )
             .expect("tables");
+        for (table, name, definition) in crate::schema::receipt_owner_columns()
+            .into_iter()
+            .filter(|(table, _, _)| *table == "runtime_tool_requests")
+        {
+            connection
+                .execute_batch(&format!(
+                    "ALTER TABLE {table} ADD COLUMN {name} {definition}"
+                ))
+                .expect("canonical tool query columns");
+        }
         StartupRecoveryRepository::prepare_indexes(&connection).expect("indexes");
         connection
     }
@@ -305,16 +328,16 @@ mod tests {
             .expect("agents table");
         connection
             .execute_batch(
-                "INSERT INTO runtime_agents VALUES
+                "INSERT INTO runtime_agents(id,record) VALUES
                    ('a1','{\"provider\":\"codex\",\"accountKey\":\"acc1\"}'),('a2','{\"provider\":\"codex\",\"accountKey\":\"acc2\"}'),
                    ('a3','{\"provider\":\"codex\"}');
                  INSERT INTO runtime_tool_requests VALUES
-                   ('r1','{\"agent\":\"a1\",\"stage\":\"queued\"}'),
-                   ('r2','{\"agent\":\"a1\",\"stage\":\"running\"}'),
-                   ('r3','{\"agent\":\"a1\",\"stage\":\"completed\"}'),
-                   ('r4','{\"agent\":\"a2\",\"stage\":\"running\"}'),
-                   ('r5','{\"agent\":\"a3\",\"stage\":\"queued\"}'),
-                   ('r6','{\"agent\":\"gone\",\"stage\":\"queued\"}');",
+                   ('r1','{\"agent\":\"a1\",\"kind\":\"managed_tool\",\"stage\":\"queued\"}'),
+                   ('r2','{\"agent\":\"a1\",\"kind\":\"managed_tool\",\"stage\":\"running\"}'),
+                   ('r3','{\"agent\":\"a1\",\"kind\":\"managed_tool\",\"stage\":\"completed\"}'),
+                   ('r4','{\"agent\":\"a2\",\"kind\":\"managed_tool\",\"stage\":\"running\"}'),
+                   ('r5','{\"agent\":\"a3\",\"kind\":\"managed_tool\",\"stage\":\"queued\"}'),
+                   ('r6','{\"agent\":\"gone\",\"kind\":\"managed_tool\",\"stage\":\"queued\"}');",
             )
             .expect("corpus");
         connection
@@ -408,10 +431,10 @@ mod tests {
             (
                 TOOL_REQUESTS,
                 [
-                    ("a", r#"{"stage":"queued"}"#),
-                    ("b", r#"{"stage":"running"}"#),
-                    ("c", r#"{"stage":"completed"}"#),
-                    ("d", r#"{"status":"queued"}"#),
+                    ("a", r#"{"kind":"managed_tool","stage":"queued"}"#),
+                    ("b", r#"{"kind":"managed_tool","stage":"running"}"#),
+                    ("c", r#"{"kind":"managed_tool","stage":"completed"}"#),
+                    ("d", r#"{"kind":"provider_callback","status":"queued"}"#),
                     ("e", "{"),
                     ("f", r#"["queued"]"#),
                 ]
@@ -494,7 +517,10 @@ mod tests {
             ("g-live", r#"{"provider":"codex","status":"running"}"#),
         ] {
             connection
-                .execute("INSERT INTO runtime_agents VALUES(?1,?2)", [id, record])
+                .execute(
+                    "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
+                    [id, record],
+                )
                 .expect("row");
         }
         let ids =

@@ -10,7 +10,6 @@ pub(crate) fn check(connection: &Connection) -> StoreResult<Vec<StateCheckTable>
         ("runtime_access_clients", "record"),
         ("runtime_access_discovered", "record"),
         ("runtime_access_invites", "record"),
-        ("runtime_access_receipts", "record"),
         (
             "runtime_server_inbox",
             "json_object('id',id,'signature',signature,'state',state,'result',result,'created_at',created_at,'completed_at',completed_at)",

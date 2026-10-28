@@ -292,7 +292,6 @@ fn move_effect(tx: &Transaction<'_>, row: &contract::SourceReceipt, cutover_ms: 
     if row.signature != TITLE_EFFECT_SIGNATURE
         || row.id != effect_id(&effect.request_id)
         || effect.agent_id.is_empty()
-        || effect.old_provider.is_some()
     {
         return Err(invalid());
     }
@@ -306,10 +305,11 @@ fn move_effect(tx: &Transaction<'_>, row: &contract::SourceReceipt, cutover_ms: 
     job.fingerprint = effect.fingerprint;
     job.epoch = effect.epoch;
     job.title = effect.title;
-    let tagged = row
-        .json::<Value>(TABLE)?
-        .get("titleFingerprintProvider20261026")
-        .is_some();
+    let tagged = effect.old_provider.is_some()
+        || row
+            .json::<Value>(TABLE)?
+            .get("titleFingerprintProvider20261026")
+            .is_some();
     if reply.status != TitleStatus::Pending {
         if !matches!(
             job.status,
@@ -436,6 +436,94 @@ mod tests {
         for source in SOURCES {
             while batch(db, source).expect("batch").status != MigrationStatus::Complete {}
         }
+    }
+    #[test]
+    fn receipts_title_nonnull_provider_tag_preserves_held_states_and_discards_cosmetic_jobs() {
+        for status in [
+            TitleStatus::Pending,
+            TitleStatus::Unknown,
+            TitleStatus::NotSent,
+            TitleStatus::Scheduled,
+            TitleStatus::Written,
+        ] {
+            let mut db = fixture();
+            db.execute(
+                "INSERT INTO runtime_agents VALUES('a',?1)",
+                [json!({"id":"a","name":"Keep","epoch":3}).to_string()],
+            )
+            .expect("agent");
+            put(
+                &db,
+                "r",
+                &signature("a"),
+                json!({"id":"a","request_id":"r","status":"pending"}),
+            );
+            put(
+                &db,
+                &effect("r"),
+                TITLE_EFFECT_SIGNATURE,
+                json!({"request_id":"r","agent_id":"a","state":status,"fingerprint":"historical","epoch":3,"title":"Generated","titleFingerprintProvider20261026":"codex"}),
+            );
+            migrate(&mut db);
+            let agent: String = db
+                .query_row("SELECT record FROM runtime_agents WHERE id='a'", [], |r| {
+                    r.get(0)
+                })
+                .expect("agent");
+            let agent: Value = serde_json::from_str(&agent).expect("agent");
+            assert_eq!(agent["name"], "Keep");
+            let job = &agent["titleJob"];
+            assert!(job.get("titleFingerprintProvider20261026").is_none());
+            if matches!(status, TitleStatus::Pending | TitleStatus::Unknown) {
+                assert_eq!(job["status"], json!(status));
+                let (state,payload):(String,String)=db.query_row("SELECT status,payload FROM runtime_outbox WHERE request_id='r' AND next_at IS NULL",[],|r|Ok((r.get(0)?,r.get(1)?))).expect("held obligation");
+                assert_eq!(state, "unknown");
+                let payload: Value = serde_json::from_str(&payload).expect("job");
+                assert_eq!(payload["fingerprint"], "historical");
+                assert!(payload.get("titleFingerprintProvider20261026").is_none());
+            } else {
+                assert_eq!(job["status"], "discarded");
+                let (signature, created, result): (String, i64, String) = db
+                    .query_row(
+                        "SELECT signature,created,result FROM request_results WHERE id='r'",
+                        [],
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                    )
+                    .expect("failed reply");
+                assert_eq!(signature, super::rename_signature("a"));
+                assert_eq!(created, 1000);
+                assert_eq!(
+                    serde_json::from_str::<Value>(&result).expect("reply")["reply"]["status"],
+                    "failed"
+                );
+                assert_eq!(
+                    db.query_row("SELECT count(*) FROM runtime_outbox", [], |r| r
+                        .get::<_, i64>(0))
+                        .expect("settled"),
+                    0
+                );
+            }
+        }
+    }
+    #[test]
+    fn receipts_title_completed_reply_keeps_raw_identity_signature_and_optional_nulls() {
+        let mut db = fixture();
+        let reply = json!({"id":"a","request_id":"raw-public","status":"failed","name":null,"error":"Exact original failure"});
+        put(&db, "raw-public", &signature("a"), reply.clone());
+        migrate(&mut db);
+        let (saved_signature, created, result): (String, i64, String) = db
+            .query_row(
+                "SELECT signature,created,result FROM request_results WHERE id='raw-public'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("result");
+        assert_eq!(saved_signature, signature("a"));
+        assert_eq!(created, 1000);
+        assert_eq!(
+            serde_json::from_str::<Value>(&result).expect("envelope")["reply"],
+            reply
+        );
     }
     #[test]
     fn receipts_title_byte_budget_includes_correlated_public_reply() {

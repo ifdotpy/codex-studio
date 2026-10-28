@@ -631,7 +631,7 @@ pub async fn next_archive_retry_at(
         .read_async("runtime-services/work_write", move |connection| {
             let accepted: Option<f64> = connection
                 .query_row(
-                    "SELECT archive_next_at FROM runtime_work WHERE archive_status IN ('pending','retryable','unknown') AND archive_next_at>?1 ORDER BY archive_next_at,id LIMIT 1",
+                    "SELECT archive_next_at FROM runtime_work WHERE archive_status IN ('pending','retryable','unknown') AND json_type(record,'$.archiveIntent.nextAttemptAt') IN ('integer','real') AND CAST(archive_next_at AS REAL)>?1 ORDER BY archive_next_at,id LIMIT 1",
                     [now],
                     |row| row.get(0),
                 )
@@ -1770,7 +1770,7 @@ pub fn settle_accepted_archive(
     task: &str,
     request_root: &str,
     reply: &WorkItemRecord,
-) -> Result<(), WorkWriteError> {
+) -> Result<WorkItemRecord, WorkWriteError> {
     let mut work = WorkItemsRepository::work_record(tx, task)?
         .ok_or(Error::InvalidRequest("Unknown work item"))?
         .into_value();
@@ -1808,7 +1808,7 @@ pub fn settle_accepted_archive(
         Outbox::put(tx, &row).map_err(outbox_error)?;
         Outbox::delete_settled(tx, &id, token.signature()).map_err(outbox_error)?;
     }
-    Ok(())
+    Ok(original)
 }
 
 pub fn write(
@@ -3195,7 +3195,7 @@ fn refuse_result(
             json!({"task":work["id"],"owner":owner.id.0,"version":work["version"],"refusal":refusal}).to_string(),
             event_write::unix_time()?)?;
     }
-    let mut record = work.clone();
+    let mut record = single_view(tx, &WorkItemRecord::checked(current)?)?;
     record["submissionRefusal"] = refusal;
     studio_runtime_store::entity_publication::mark_stale(
         "work",
@@ -3784,25 +3784,14 @@ mod actor_tests {
     };
 
     fn database() -> Connection {
-        let connection = Connection::open_in_memory().expect("memory SQLite opens");
-        connection.execute_batch(
-            &studio_runtime_store::agent_columns::fixture_sql("CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL);
-             CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
-             CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,text TEXT,status TEXT,created REAL,epoch INTEGER,turn_id TEXT,error TEXT);
-             CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY,record TEXT NOT NULL);
-             CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL);
-             CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,agent TEXT,account TEXT,epoch INTEGER,thread TEXT,turn TEXT,created REAL,record TEXT);"),
-        ).expect("work tables create");
-        connection
-            .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
-            .expect("volatile agent table creates");
+        let connection = studio_runtime_store::test_canvas();
         for agent in [
             json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":1,"status":"running","autoWake":true,"inFlight":true,"agentMode":"multi","concurrency":8}),
             json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"lead","epoch":2,"status":"running","autoWake":true,"inFlight":true,"agentMode":"multi","concurrency":8}),
         ] {
             connection
                 .execute(
-                    "INSERT INTO runtime_agents VALUES (?1,?2)",
+                    "INSERT INTO runtime_agents(id,record) VALUES (?1,?2)",
                     rusqlite::params![agent["id"].as_str().expect("id"), agent.to_string()],
                 )
                 .expect("agent row inserts");
@@ -3832,6 +3821,72 @@ mod actor_tests {
             super::current_submission_refusal(&connection, &current).expect("new version")["failedSubmits"],
             0
         );
+    }
+
+    #[test]
+    fn receipt_domain_archive_final_reply_uses_frozen_public_snapshot() {
+        let mut db = database();
+        let root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let tx = db.transaction().expect("transaction");
+        let lead = AgentRepository::get(&tx, &AgentId::from("lead"))
+            .expect("lead")
+            .expect("owner");
+        let token = match crate::event_write::begin_request::<studio_runtime_store::WorkItemRecord>(
+            &tx,
+            crate::event_write::RequestKey::new("work", &["lead"], &root),
+            "accept",
+            (crate::event_write::unix_time().expect("clock") * 1000.0) as i64,
+        )
+        .expect("admit")
+        {
+            crate::event_write::CallerAdmission::Fresh(token) => token,
+            crate::event_write::CallerAdmission::Replay(_) => panic!("fresh request"),
+        };
+        let mut current = work("accepted", Some("worker"), "accepted", json!([]));
+        current["title"] = json!("Original title");
+        let mut initial = current.clone();
+        initial["archivePending"] = json!(true);
+        current["archiveIntent"] = json!({"status":"unknown","taskId":"accepted","intentId":"accepted:result","actor":"lead","actorEpoch":1,"target":"worker","attempts":1,"created":1.0,"nextAttemptAt":60.0,"publicAdmission":token,"publicRequestId":root,"publicResponse":initial});
+        current["title"] = json!("Current title");
+        current["archive"] = json!({"status":"archived"});
+        insert_work(&tx, &current);
+        super::reserve_work_request(&tx, &lead, &root, "accepted", &token, true).expect("reserve");
+        let mut reply = current.clone();
+        reply["archivePending"] = json!(false);
+        let settled = super::settle_accepted_archive(
+            &tx,
+            "accepted",
+            &root,
+            &studio_runtime_store::WorkItemRecord::checked(reply).expect("reply"),
+        )
+        .expect("settle");
+        assert_eq!(settled.value()["title"], "Original title");
+        assert_eq!(settled.value()["archive"]["status"], "archived");
+        assert_eq!(settled.value()["archivePending"], false);
+        let saved = crate::event_write::replay_request::<studio_runtime_store::WorkItemRecord>(
+            &tx,
+            token.id(),
+            "accept",
+            (crate::event_write::unix_time().expect("clock") * 1000.0) as i64,
+        )
+        .expect("replay")
+        .expect("saved");
+        assert_eq!(saved.reply.value(), settled.value());
+        assert!(
+            super::pending_work_request(&tx, &lead, &root, "accept")
+                .expect("obligation")
+                .is_none()
+        );
+        let owner = WorkItemsRepository::work_record(&tx, "accepted")
+            .expect("owner")
+            .expect("task");
+        assert_eq!(owner.value()["title"], "Current title");
+        assert!(
+            owner.value()["archiveIntent"]
+                .get("publicAdmission")
+                .is_none()
+        );
+        tx.commit().expect("atomic result+retirement");
     }
 
     #[test]
@@ -3906,7 +3961,7 @@ mod actor_tests {
         insert_work(&connection, &pending);
         connection
             .execute(
-                "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,?2,?3)",
+                "UPDATE runtime_work SET record=json_set(record,'$.archiveIntent',json(?3)) WHERE id=json_extract(?3,'$.taskId')",
                 rusqlite::params![
                     "work-archive:archive-due:result-1",
                     "accepted-archive-v1",
@@ -3950,18 +4005,18 @@ mod actor_tests {
             .transaction(|tx| {
                 for (id, due) in [("later", 88.0), ("earlier", 42.0)] {
                     tx.execute(
-                        "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,'accepted-archive-v1',?2)",
+                        "INSERT INTO runtime_work(id,record) VALUES (?1,json_object('id',?1,'status','accepted','rootId','lead','owner','worker','title',?1,'dependencies',json('[]'),'archiveIntent',json(?2)))",
                     rusqlite::params![id, json!({"status":"retryable","nextAttemptAt":due + 100.0}).to_string()],
                     )?;
                 }
                 for (id, result) in [
                     ("text", json!({"status":"pending","nextAttemptAt":"101"})),
                     ("missing", json!({"status":"pending"})),
-                    ("finished", json!({"status":"done","nextAttemptAt":101})),
+                    ("finished", json!({"status":"complete","nextAttemptAt":101})),
                     ("past", json!({"status":"unknown","nextAttemptAt":100})),
                 ] {
                     tx.execute(
-                        "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,'accepted-archive-v1',?2)",
+                        "INSERT INTO runtime_work(id,record) VALUES (?1,json_object('id',?1,'status','accepted','rootId','lead','owner','worker','title',?1,'dependencies',json('[]'),'archiveIntent',json(?2)))",
                         rusqlite::params![id, result.to_string()],
                     )?;
                 }
@@ -3982,7 +4037,7 @@ mod actor_tests {
             Some(100.0)
         );
         store.transaction(|tx| {
-            tx.execute("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES('large','accepted-archive-v1',?1)",
+            tx.execute("INSERT INTO runtime_work(id,record) VALUES('large',json_object('id','large','status','accepted','rootId','lead','title','large','dependencies',json('[]'),'archiveIntent',json(?1)))",
                 [r#"{"status":"pending","nextAttemptAt":9007199254740993}"#])?;
             Ok(())
         }).await.expect("large integer receipt");
@@ -4054,7 +4109,7 @@ mod actor_tests {
                     rusqlite::params!["accepted-task", work.to_string()],
                 )?;
                 tx.execute(
-                    "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,?2,?3)",
+                    "UPDATE runtime_work SET record=json_set(record,'$.archiveIntent',json(?3)) WHERE id=json_extract(?3,'$.taskId')",
                     rusqlite::params![
                         "work-archive:accepted-task:result-1",
                         "accepted-archive-v1",
@@ -4079,7 +4134,7 @@ mod actor_tests {
         let connection = store.test_reader().expect("read tick result");
         let encoded_receipt: String = connection
             .query_row(
-                "SELECT result FROM runtime_operation_receipts WHERE id=?1",
+                "SELECT json_extract(record,'$.archiveIntent') FROM runtime_work WHERE id='accepted-task' AND ?1 IS NOT NULL",
                 ["work-archive:accepted-task:result-1"],
                 |row| row.get(0),
             )
@@ -4133,7 +4188,7 @@ mod actor_tests {
                     rusqlite::params!["accepted-task", work.to_string()],
                 )?;
                 tx.execute(
-                    "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,?2,?3)",
+                    "UPDATE runtime_work SET record=json_set(record,'$.archiveIntent',json(?3)) WHERE id=json_extract(?3,'$.taskId')",
                     rusqlite::params![
                         "work-archive:accepted-task:result-1",
                         "accepted-archive-v1",
@@ -4158,7 +4213,7 @@ mod actor_tests {
         let connection = store.test_reader().expect("read tick result");
         let encoded_receipt: String = connection
             .query_row(
-                "SELECT result FROM runtime_operation_receipts WHERE id=?1",
+                "SELECT json_extract(record,'$.archiveIntent') FROM runtime_work WHERE id='accepted-task' AND ?1 IS NOT NULL",
                 ["work-archive:accepted-task:result-1"],
                 |row| row.get(0),
             )
@@ -4530,6 +4585,7 @@ mod actor_tests {
 
     #[test]
     fn vm_evidence_is_rejected_when_assignment_changes_before_commit() {
+        let public_root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
         let mut connection = database();
         for id in ["worker", "replacement-worker"] {
             let record = json!({"provider":studio_runtime_schema::ProviderKind::Codex,
@@ -4546,7 +4602,7 @@ mod actor_tests {
             if id == "replacement-worker" {
                 connection
                     .execute(
-                        "INSERT INTO runtime_agents VALUES (?1,?2)",
+                        "INSERT INTO runtime_agents(id,record) VALUES (?1,?2)",
                         rusqlite::params![id, record.to_string()],
                     )
                     .expect("replacement worker inserts");
@@ -4563,14 +4619,14 @@ mod actor_tests {
         let request_id = "layr-evidence:worker:state-1";
         let intent = json!({
             "status":"completed","requestId":request_id,"taskId":"vm-owner-race",
-            "owner":"worker","revision":"state-1","version":2,
+            "owner":"worker","revision":"state-1","version":2,"created":1.0,
             "evidence":{"layrProjectId":"project","layrLine":"worker","layrStateId":"state-1"}
         });
         connection
             .execute(
-                "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,?2,?3)",
+                "UPDATE runtime_work SET record=json_set(record,'$.vmSubmit',json(?3)) WHERE id=json_extract(?3,'$.taskId')",
                 rusqlite::params![
-                    super::vm_intent_id("submission", "vm-owner-race"),
+                    "vm-owner-race",
                     "work-write-vm-intent-v1",
                     intent.to_string()
                 ],
@@ -4581,7 +4637,7 @@ mod actor_tests {
         let result = super::write(
             &tx,
             "lead",
-            Some("vm-owner-race-submit"),
+            Some(public_root.as_str()),
             "request-signature",
             WorkWrite::Submit(super::SubmitWork {
                 prepared_gate_workspace: None,
@@ -5013,6 +5069,7 @@ mod actor_tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn nonempty_file_submission_rechecks_cwd_and_replays_without_filesystem_work() {
+        let request_root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
         let state = tempfile::tempdir().expect("state directory");
         let project = tempfile::tempdir().expect("project directory");
         let changed = tempfile::tempdir().expect("changed project directory");
@@ -5061,7 +5118,7 @@ mod actor_tests {
                 super::write(
                     tx,
                     "lead",
-                    Some("file-submit"),
+                    Some(request_root.as_str()),
                     "signature",
                     WorkWrite::Submit(stale),
                 )
@@ -5082,7 +5139,7 @@ mod actor_tests {
                 super::write(
                     tx,
                     "lead",
-                    Some("file-submit"),
+                    Some(request_root.as_str()),
                     "signature",
                     WorkWrite::Submit(first),
                 )
@@ -5096,7 +5153,7 @@ mod actor_tests {
                 super::write(
                     tx,
                     "lead",
-                    Some("file-submit"),
+                    Some(request_root.as_str()),
                     "signature",
                     WorkWrite::Submit(input),
                 )

@@ -519,6 +519,19 @@ The runtime still requires native account email and subscription proof before it
 
 ## Add or move a test
 
+Receipt cutover witnesses run through the catalog in
+[`runtime-store/src/migrations`](../workspaces/runtime/packages/runtime-store/src/migrations/mod.rs).
+Each family has its own migration file and checkpoint; the runner commits
+replacement evidence, source deletion, and cursor advancement together, then
+checkpoints WAL before continuing. The shared
+[batch contract](../workspaces/runtime/packages/runtime-store/src/receipt_migration_contract.rs)
+owns the row and byte limits. Unknown source identities stop startup before any
+recovery or provider hook. The final catalog entry verifies every retired source
+is empty before dropping tables; reopen checks reject a resurrected table.
+Use `cargo test -j 4 -p studio-runtime-store --lib receipt_cutover_` for the
+commit-boundary crash matrix, and the `receipts_cutover` integration module for
+the actual startup and second-open boundary. The fast profile includes both.
+
 Keep Rust tests in the owning crate. Register integration modules in its
 `tests/integration.rs` entry point. Add each short-tier witness as its own clause
 in the `fast` profile's scoped union in [nextest.toml](../.config/nextest.toml),

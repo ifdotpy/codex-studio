@@ -41,6 +41,11 @@ pub fn work_statuses(records: &[WorkItemRecord]) -> BTreeMap<String, WorkStatus>
 
 pub fn work_item_view(item: &WorkItemRecord, statuses: &BTreeMap<String, WorkStatus>) -> Value {
     let mut view = item.value().clone();
+    if let Some(fields) = view.as_object_mut() {
+        for private in ["archiveIntent", "vmSubmit", "vmAccept", "resultFailures"] {
+            fields.remove(private);
+        }
+    }
     let blocked = item.blocked_by(statuses);
     let status = if !blocked.is_empty()
         && matches!(item.status(), WorkStatus::Ready | WorkStatus::Running)
@@ -148,6 +153,18 @@ mod tests {
     use super::{plan_view, prepare_queue, queue_items, work_list};
     use serde_json::json;
     use studio_runtime_store::StoredQueueEvent;
+
+    #[test]
+    fn work_public_projection_excludes_private_effect_authority() {
+        let record=studio_runtime_store::WorkItemRecord::checked(json!({"id":"work","rootId":"root","status":"accepted","dependencies":[],"title":"Title","archiveIntent":{"publicAdmission":{"id":"private"}},"vmSubmit":{"publicAdmission":{"id":"private"}},"vmAccept":{"publicAdmission":{"id":"private"}},"resultFailures":{"errors":[]}})).expect("owner");
+        let view = super::work_item_view(&record, &std::collections::BTreeMap::new());
+        assert_eq!(view["title"], "Title");
+        assert!(!view.to_string().contains("private"));
+        assert!(view.get("archiveIntent").is_none());
+        assert!(view.get("vmSubmit").is_none());
+        assert!(view.get("vmAccept").is_none());
+        assert!(view.get("resultFailures").is_none());
+    }
 
     #[test]
     fn dependency_projection_keeps_record_fields_and_projects_blocking() {

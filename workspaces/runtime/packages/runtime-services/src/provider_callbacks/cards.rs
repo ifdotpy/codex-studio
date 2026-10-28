@@ -3,6 +3,7 @@ use rusqlite::Transaction;
 use serde_json::{Value, json};
 use studio_runtime_providers::ProviderKind;
 use studio_runtime_providers::{RequestId, ResponseBody};
+use studio_runtime_schema::persistence::RequestCardStatus;
 use studio_runtime_schema::question_answers::{
     QuestionApproval, QuestionCardAnswer, QuestionDecision,
 };
@@ -17,6 +18,11 @@ pub const NATIVE_REQUEST_METHODS: [&str; 5] = [
     "item/tool/requestUserInput",
     "mcpServer/elicitation/request",
 ];
+
+pub(super) fn status(card: &Value) -> Result<RequestCardStatus, CallbackError> {
+    serde_json::from_value(card["status"].clone())
+        .map_err(|_| CallbackError::Stored("runtime_requests/status".into()))
+}
 
 pub fn interactive(method: &str) -> bool {
     NATIVE_REQUEST_METHODS.contains(&method)
@@ -68,7 +74,9 @@ pub async fn admit_native(
                         save(tx, &card)?;
                         NativeAdmission::Card(id)
                     }
-                    _ => NativeAdmission::Settled,
+                    CallbackDecision::Answer(_)
+                    | CallbackDecision::Settled(_)
+                    | CallbackDecision::Unsupported => NativeAdmission::Settled,
                 });
             }
             let snapshot = storage::snapshot(tx, &context)?;
@@ -106,13 +114,22 @@ pub fn expire_ended_generations(
     let rows = {
         let mut statement = tx.prepare_cached(
             "SELECT id,record FROM runtime_requests WHERE json_valid(record) \
-             AND json_extract(record,'$.status') IN ('pending','answering') \
+             AND json_extract(record,'$.status') IN (?6,?7) \
              AND json_extract(record,'$.method') IN (?1,?2,?3,?4,?5)",
         )?;
         statement
-            .query_map(NATIVE_REQUEST_METHODS, |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })?
+            .query_map(
+                rusqlite::params![
+                    NATIVE_REQUEST_METHODS[0],
+                    NATIVE_REQUEST_METHODS[1],
+                    NATIVE_REQUEST_METHODS[2],
+                    NATIVE_REQUEST_METHODS[3],
+                    NATIVE_REQUEST_METHODS[4],
+                    RequestCardStatus::Pending,
+                    RequestCardStatus::Answering
+                ],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )?
             .collect::<Result<Vec<_>, _>>()?
     };
     let mut count = 0;
@@ -154,10 +171,15 @@ pub fn expire_ended_generations(
 
 /// A pending card expires; an answer whose delivery started becomes uncertain.
 fn expire_card(tx: &Transaction<'_>, card: &mut Value) -> Result<bool, CallbackError> {
-    let next = match card["status"].as_str() {
-        Some("pending") => "expired",
-        Some("answering") => "uncertain",
-        _ => return Ok(false),
+    let next = match status(card)? {
+        RequestCardStatus::Pending => RequestCardStatus::Expired,
+        RequestCardStatus::Answering => RequestCardStatus::Uncertain,
+        RequestCardStatus::Answered
+        | RequestCardStatus::Uncertain
+        | RequestCardStatus::Blocked
+        | RequestCardStatus::Resolved
+        | RequestCardStatus::Expired
+        | RequestCardStatus::Deleted => return Ok(false),
     };
     card["status"] = json!(next);
     storage::hold_card(tx, card["id"].as_str().ok_or(CallbackError::Stale)?)?;
@@ -224,7 +246,7 @@ pub(super) fn save(tx: &Transaction<'_>, card: &Value) -> Result<(), CallbackErr
     if let Some(actor) = actor {
         crate::tool_requests::reconcile_effect(tx, "requests", card, &actor)?;
     }
-    let deleted = card["status"] != "pending";
+    let deleted = status(card)? != RequestCardStatus::Pending;
     let value = if deleted {
         json!({})
     } else {
@@ -246,12 +268,12 @@ pub(super) fn admit(
         return Ok(decision);
     }
     let mut owner = storage::admit_owner(tx, &identity, &input.signature())?;
-    let pending:i64=tx.query_row("SELECT count(*) FROM runtime_requests WHERE json_extract(record,'$.accountKey')=?1 AND json_extract(record,'$.status') IN ('pending','answering')",[&context.account],|row|row.get(0))?;
+    let pending:i64=tx.query_row("SELECT count(*) FROM runtime_requests WHERE json_extract(record,'$.accountKey')=?1 AND json_extract(record,'$.status') IN (?2,?3)",rusqlite::params![context.account,RequestCardStatus::Pending,RequestCardStatus::Answering],|row|row.get(0))?;
     if pending >= MAX_PENDING as i64 {
         return Err(CallbackError::Invalid("Too many pending provider requests"));
     }
     let id = owner.id.clone();
-    let mut card = json!({"id":id,"rpcId":input.id,"method":input.method,"params":input.params,"agent":context.agent,"accountKey":context.account,"connectionId":context.connection,"epoch":context.epoch,"supervisor":{"generation":context.generation},"status":"pending","createdAt":now});
+    let mut card = json!({"id":id,"rpcId":input.id,"method":input.method,"params":input.params,"agent":context.agent,"accountKey":context.account,"connectionId":context.connection,"epoch":context.epoch,"supervisor":{"generation":context.generation},"status":RequestCardStatus::Pending,"createdAt":now});
     if let Some(item_id) = input.params["itemId"].as_str() {
         let key = format!("{}:{item_id}", context.agent);
         if let Some(item) = records::get(tx, "runtime_items", &key)?
@@ -383,7 +405,6 @@ fn answer_in(
     if card["agent"] != context.agent
         || card["epoch"].as_u64() != Some(context.epoch)
         || card["accountKey"] != context.account
-        || card["connectionId"] != context.connection
         || card
             .pointer("/supervisor/generation")
             .and_then(Value::as_u64)
@@ -411,12 +432,12 @@ fn answer_in(
         if previous != &signature {
             return Err(CallbackError::Conflict);
         }
-        if card["status"] != "answered" {
+        if status(&card)? != RequestCardStatus::Answered {
             return Err(CallbackError::Unknown);
         }
         return storage::saved_reply(tx, &identity, &input)?.ok_or(CallbackError::Unknown);
     }
-    if card["status"] != "pending" {
+    if status(&card)? != RequestCardStatus::Pending {
         return Err(CallbackError::Invalid("Request is no longer pending"));
     }
     let unanswered = card.clone();
@@ -427,7 +448,7 @@ fn answer_in(
     card["decision"] = data.get("decision").cloned().unwrap_or(json!("answer"));
     card["deferred"] = json!(false);
     card["answerHistory"] = history;
-    card["status"] = json!("answering");
+    card["status"] = json!(RequestCardStatus::Answering);
     let reply = Reply::new(identity, ResponseBody::Result(result))?;
     storage::save_reply(tx, &input, &reply)?;
     let mut outbox = storage::response(tx, &reply.identity)?.ok_or(CallbackError::Unknown)?;
@@ -484,16 +505,15 @@ pub async fn resolve(
         for mut card in records::all(tx, "runtime_requests")? {
             if card["agent"] == context.agent
                 && card["accountKey"] == context.account
-                && card["connectionId"] == context.connection
                 && card["epoch"].as_u64() == Some(context.epoch)
                 && card
                     .pointer("/supervisor/generation")
                     .and_then(Value::as_u64)
                     == Some(context.generation)
                 && card["rpcId"] == rpc_value
-                && matches!(card["status"].as_str(), Some("pending" | "answering" | "uncertain" | "blocked"))
+                && matches!(status(&card)?, RequestCardStatus::Pending | RequestCardStatus::Answering | RequestCardStatus::Uncertain | RequestCardStatus::Blocked)
             {
-                card["status"] = json!("resolved");
+                card["status"] = json!(RequestCardStatus::Resolved);
                 card["resolvedAt"] = json!(now);
                 // Retire prepared/submitted replies before any delayed worker can
                 // submit or settle them; provider resolution is not approval.
@@ -501,7 +521,7 @@ pub async fn resolve(
                 count += 1;
             }
         }
-        let pending: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM runtime_requests WHERE json_extract(record,'$.agent')=?1 AND json_extract(record,'$.status')='pending')", [&context.agent], |r| r.get(0))?;
+        let pending: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM runtime_requests WHERE json_extract(record,'$.agent')=?1 AND json_extract(record,'$.status')=?2)", rusqlite::params![context.agent,RequestCardStatus::Pending], |r| r.get(0))?;
         if !pending {
             let mut actor = records::get(tx, "runtime_agents", &context.agent)?.ok_or(CallbackError::Stale)?;
             if actor["epoch"].as_u64() == Some(context.epoch) && actor["status"] == "approval" && studio_runtime_store::truthy(actor.get("inFlight")) && actor["autoWake"] == true {
@@ -523,16 +543,14 @@ fn matching_rpc_cards(
         "SELECT record FROM runtime_requests \
          WHERE json_extract(record,'$.agent')=?1 \
            AND json_extract(record,'$.accountKey')=?2 \
-           AND json_extract(record,'$.connectionId')=?3 \
-           AND json_extract(record,'$.epoch')=?4 \
-           AND json_extract(record,'$.supervisor.generation')=?5 \
-           AND json_extract(record,'$.rpcId')=json_extract(?6,'$')",
+           AND json_extract(record,'$.epoch')=?3 \
+           AND json_extract(record,'$.supervisor.generation')=?4 \
+           AND json_extract(record,'$.rpcId')=json_extract(?5,'$')",
     )?;
     let rows = statement.query_map(
         rusqlite::params![
             context.agent,
             context.account,
-            context.connection,
             i64::try_from(context.epoch).map_err(|_| CallbackError::Stale)?,
             i64::try_from(context.generation).map_err(|_| CallbackError::Stale)?,
             rpc_id,
@@ -579,7 +597,13 @@ fn card_context(tx: &Transaction<'_>, card: &Value) -> Result<CallbackContext, C
         } else {
             card["accountKey"].as_str().unwrap_or("default").into()
         },
-        connection: required(&card["connectionId"])?,
+        connection: actor
+            .pointer("/startAttempt/connectionId")
+            .and_then(Value::as_str)
+            .filter(|connection| !connection.is_empty())
+            .map(str::to_owned)
+            .map(Ok)
+            .unwrap_or_else(|| required(&card["connectionId"]))?,
         generation: card
             .pointer("/supervisor/generation")
             .and_then(Value::as_u64)
@@ -622,7 +646,7 @@ pub async fn pending_native_delete_context(
             let card = records::get(tx, "runtime_requests", &id)?
                 .ok_or(CallbackError::Invalid("Unknown question"))?;
             let method = card["method"].as_str().unwrap_or_default();
-            if card["status"] == "pending" && method != "agent/asyncQuestion" {
+            if status(&card)? == RequestCardStatus::Pending && method != "agent/asyncQuestion" {
                 provider_context(tx, &card).map(Some)
             } else {
                 Ok(None)
@@ -660,7 +684,7 @@ fn prepare_answer_in(
         if signature != &answer_signature(data) {
             return Err(CallbackError::Conflict);
         }
-        if card["status"] == "answered" {
+        if status(&card)? == RequestCardStatus::Answered {
             return Ok(None);
         }
         return Err(CallbackError::Unknown);
@@ -735,7 +759,7 @@ pub async fn prepare_delete(
                 return Ok(None);
             }
             let method = card["method"].as_str().unwrap_or_default();
-            if card["status"] == "pending" && method != "agent/asyncQuestion" {
+            if status(&card)? == RequestCardStatus::Pending && method != "agent/asyncQuestion" {
                 // A native answer is only possible for a card tied to a live
                 // provider request. Missing callback identity is a named refusal,
                 // checked before prepare_answer_in writes durable intent.

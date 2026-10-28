@@ -24,6 +24,7 @@ pub struct CallbackOwner {
     pub tool_request: Option<String>,
     pub journal_cursor: Option<u64>,
     pub admission: Option<AdmittedRequest>,
+    pub credential_refresh_admission: Option<AdmittedRequest>,
     pub reply_identity: Option<ReplyIdentity>,
     pub frame_fingerprint: Option<String>,
 }
@@ -132,6 +133,7 @@ pub(super) fn admit_owner(
             tool_request: None,
             journal_cursor: None,
             admission: Some(admission),
+            credential_refresh_admission: None,
             reply_identity: None,
             frame_fingerprint: None,
         },
@@ -247,9 +249,12 @@ pub(super) fn saved_reply(
         return Ok(None);
     };
     check_origin(&owner, identity, &input.signature())?;
-    let Some(saved) = response(tx, identity)? else {
+    let Some(mut saved) = response(tx, identity)? else {
         return Err(CallbackError::Unknown);
     };
+    if saved.status == OutboxStatus::Pending {
+        rebind_prepared(tx, &mut saved, &identity.context)?;
+    }
     if saved.signature != input.signature() || saved.payload.identity.key() != identity.key() {
         return Err(CallbackError::Conflict);
     }
@@ -310,7 +315,8 @@ pub async fn submission_ready(store: &RuntimeStore, reply: &Reply) -> Result<boo
                 if let Some(id) = saved.payload.card {
                     let card =
                         records::get(tx, "runtime_requests", &id)?.ok_or(CallbackError::Stale)?;
-                    if card["status"] != "answering"
+                    if super::cards::status(&card)?
+                        != studio_runtime_schema::persistence::RequestCardStatus::Answering
                         || studio_runtime_store::truthy(card.get("deletedAt"))
                     {
                         return Ok(false);
@@ -348,9 +354,21 @@ fn delivery_in(
     if owner.status == ToolRequestStatus::Completed {
         return Ok(false);
     }
-    let mut saved = response(tx, identity)?.ok_or(CallbackError::Unknown)?;
+    let Some(mut saved) = response(tx, identity)? else {
+        if matches!(outcome, DeliveryOutcome::NotSent) && owner.status == ToolRequestStatus::Queued
+        {
+            return Ok(false);
+        }
+        return Err(CallbackError::Unknown);
+    };
     if saved.payload.identity != *identity {
+        if matches!(outcome, DeliveryOutcome::NotSent) && saved.status == OutboxStatus::Pending {
+            return Ok(false);
+        }
         return Err(CallbackError::Stale);
+    }
+    if matches!(outcome, DeliveryOutcome::Unknown) && saved.status == OutboxStatus::Unknown {
+        return Ok(false);
     }
     if saved.status == OutboxStatus::Committed {
         return Ok(false);
@@ -408,10 +426,13 @@ fn delivery_in(
     if let Some(card_id) = &saved.payload.card {
         let mut card =
             records::get(tx, "runtime_requests", card_id)?.ok_or(CallbackError::Stale)?;
-        card["status"] = json!(match saved.status {
-            OutboxStatus::Committed => "answered",
-            OutboxStatus::Unknown => "uncertain",
-            _ => "answering",
+        use studio_runtime_schema::persistence::RequestCardStatus;
+        card["status"] = json!(if saved.status == OutboxStatus::Committed {
+            RequestCardStatus::Answered
+        } else if saved.status == OutboxStatus::Unknown {
+            RequestCardStatus::Uncertain
+        } else {
+            RequestCardStatus::Answering
         });
         if saved.status == OutboxStatus::Unknown {
             card["answerError"] = json!(
@@ -420,7 +441,7 @@ fn delivery_in(
         }
         if saved.status == OutboxStatus::Committed {
             if let Some(at) = saved.payload.delete_requested_at {
-                card["status"] = json!("deleted");
+                card["status"] = json!(RequestCardStatus::Deleted);
                 card["deletedAt"] = json!(at);
                 card["deletedBy"] = json!("user");
                 card["deferred"] = json!(false);
@@ -490,10 +511,16 @@ pub fn retire_checkpointed(
     generation: u64,
 ) -> Result<usize, CallbackError> {
     let generation = i64::try_from(generation).map_err(|_| CallbackError::Stale)?;
-    let checkpoint: Option<i64> = tx.query_row("SELECT journal_ack FROM runtime_account_state WHERE account=?1 AND connection_generation=?2", params![stream, generation], |row| row.get(0)).optional()?;
-    let Some(checkpoint) = checkpoint else {
-        return Ok(0);
-    };
+    let checkpoint = crate::account_worker::store::checkpoint(
+        tx,
+        stream,
+        u64::try_from(generation).map_err(|_| CallbackError::Stale)?,
+    )
+    .map_err(|error| match error {
+        crate::account_worker::WorkerError::Store(error) => CallbackError::Store(error),
+        _ => CallbackError::Unknown,
+    })?;
+    let checkpoint = i64::try_from(checkpoint).map_err(|_| CallbackError::Stale)?;
     let mut statement = tx.prepare_cached("SELECT id FROM runtime_outbox WHERE stream_id=?1 AND generation=?2 AND kind=?3 AND status=?4 AND CAST(json_extract(payload,'$.journal_cursor') AS INTEGER)<=?5 LIMIT 128")?;
     let ids = statement
         .query_map(
@@ -517,7 +544,6 @@ pub fn retire_checkpointed(
     }
     Ok(ids.len())
 }
-use rusqlite::OptionalExtension;
 
 pub(super) fn saved_decision(
     tx: &Transaction<'_>,
@@ -537,12 +563,19 @@ pub(super) fn saved_decision(
                 .unwrap_or_else(|| identity.clone()),
         )));
     }
+    if owner.status == ToolRequestStatus::Queued
+        && owner.payload.card.is_none()
+        && owner.payload.reply_identity.is_none()
+    {
+        return Ok(None);
+    }
     if let Some(card) = owner.payload.card.as_ref()
         && response(tx, identity)?.is_none()
     {
-        return match owner.status {
-            ToolRequestStatus::Queued => Ok(Some(CallbackDecision::Pending(card.clone()))),
-            _ => Err(CallbackError::Unknown),
+        return if owner.status == ToolRequestStatus::Queued {
+            Ok(Some(CallbackDecision::Pending(card.clone())))
+        } else {
+            Err(CallbackError::Unknown)
         };
     }
     saved_reply(tx, identity, input).map(|reply| reply.map(CallbackDecision::Answer))
@@ -563,14 +596,18 @@ pub async fn prepared_replies(
                 OutboxStatus::Pending,
                 MAX_PENDING as u32,
             )?;
-            Ok(rows
-                .into_iter()
-                .filter(|row| row.payload.identity.key_context_matches(&context))
-                .map(|row| Reply {
+            let mut replies = Vec::new();
+            for mut row in rows {
+                if !row.payload.identity.key_context_matches(&context) {
+                    continue;
+                }
+                rebind_prepared(tx, &mut row, &context)?;
+                replies.push(Reply {
                     identity: row.payload.identity,
                     body: row.payload.body.into(),
-                })
-                .collect())
+                });
+            }
+            Ok(replies)
         })
         .await
 }
@@ -595,7 +632,29 @@ pub fn begin_frame(
         &encode_line(frame)
             .map_err(|_| CallbackError::Invalid("Invalid callback response frame"))?,
     );
-    let mut row: Response = Outbox::get(tx, key)?.ok_or(CallbackError::Unknown)?;
+    let Some(mut row): Option<Response> = Outbox::get(tx, key)? else {
+        let owner: Option<Owner> = tool_requests::get_callback(tx, key)?;
+        let Some(owner) = owner else {
+            return Err(CallbackError::Unknown);
+        };
+        let Some(identity) = owner.payload.reply_identity else {
+            return Err(CallbackError::Unknown);
+        };
+        if identity.operation_id() != operation
+            || identity.context.stream_id != stream
+            || identity.context.generation != generation
+        {
+            return Err(CallbackError::Stale);
+        }
+        if owner.payload.frame_fingerprint.as_deref() != Some(&fingerprint) {
+            return Err(CallbackError::Conflict);
+        }
+        return Ok(if owner.status == ToolRequestStatus::Completed {
+            FrameAdmission::Written
+        } else {
+            FrameAdmission::Unknown
+        });
+    };
     if row.payload.identity.operation_id() != operation
         || row.stream_id.as_deref() != Some(stream)
         || row.generation != i64::try_from(generation).ok()
@@ -643,6 +702,23 @@ pub fn record_frame_outcome(
 }
 
 pub(super) fn hold_card(tx: &Transaction<'_>, card: &str) -> Result<(), CallbackError> {
+    let mut owners = tx.prepare_cached("SELECT record FROM runtime_tool_requests WHERE kind=?1 AND status IN (?2,?3) AND json_extract(record,'$.payload.card')=?4")?;
+    let owners = owners
+        .query_map(
+            params![
+                studio_runtime_schema::persistence::ToolRequestKind::ProviderCallback,
+                ToolRequestStatus::Queued,
+                ToolRequestStatus::Running,
+                card
+            ],
+            |row| row.get::<_, String>(0),
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    for raw in owners {
+        let mut owner: Owner = serde_json::from_str(&raw)?;
+        owner.status = ToolRequestStatus::Unknown;
+        put_owner(tx, &owner)?;
+    }
     let mut statement = tx.prepare_cached("SELECT id FROM runtime_outbox WHERE kind=?1 AND json_extract(payload,'$.card')=?2 AND status IN (?3,?4)")?;
     let ids = statement
         .query_map(
@@ -689,6 +765,7 @@ pub(super) fn resolve_owner(
                 tool_request: None,
                 journal_cursor: None,
                 admission: None,
+                credential_refresh_admission: None,
                 reply_identity: None,
                 frame_fingerprint: None,
             },
@@ -758,7 +835,7 @@ mod tests {
     fn database() -> Connection {
         let db = Connection::open_in_memory().expect("database");
         studio_runtime_store::receipt_schema::create(&db).expect("receipt schema");
-        db.execute_batch("CREATE TABLE runtime_tool_requests(id TEXT PRIMARY KEY,record TEXT NOT NULL,kind TEXT GENERATED ALWAYS AS (json_extract(record,'$.kind')) VIRTUAL,origin_key TEXT GENERATED ALWAYS AS (json_extract(record,'$.originKey')) VIRTUAL); CREATE UNIQUE INDEX callback_origin ON runtime_tool_requests(origin_key) WHERE origin_key IS NOT NULL; CREATE TABLE runtime_orchestration_settings(id TEXT PRIMARY KEY,record TEXT NOT NULL);") .expect("owner schema");
+        db.execute_batch("CREATE TABLE runtime_tool_requests(id TEXT PRIMARY KEY,record TEXT NOT NULL,kind TEXT GENERATED ALWAYS AS (json_extract(record,'$.kind')) VIRTUAL,origin_key TEXT GENERATED ALWAYS AS (json_extract(record,'$.originKey')) VIRTUAL,status TEXT GENERATED ALWAYS AS (coalesce(json_extract(record,'$.status'),json_extract(record,'$.stage'))) VIRTUAL,agent TEXT GENERATED ALWAYS AS (coalesce(json_extract(record,'$.agent'),json_extract(record,'$.payload.identity.context.agent'))) VIRTUAL); CREATE INDEX runtime_tool_request_current_status ON runtime_tool_requests(status,agent,id); CREATE UNIQUE INDEX callback_origin ON runtime_tool_requests(origin_key) WHERE origin_key IS NOT NULL; CREATE TABLE runtime_orchestration_settings(id TEXT PRIMARY KEY,record TEXT NOT NULL);") .expect("owner schema");
         db
     }
     fn input() -> (ReplyIdentity, Input) {
@@ -784,6 +861,12 @@ mod tests {
         let mut db = database();
         let tx = db.transaction().expect("transaction");
         let (identity, input) = input();
+        admit_owner(&tx, &identity, &input.signature()).expect("origin before effects");
+        assert!(
+            saved_decision(&tx, &identity, &input)
+                .expect("first admission")
+                .is_none()
+        );
         let reply = Reply::new(
             identity.clone(),
             ResponseBody::Result(json!({"original":true})),
@@ -824,6 +907,105 @@ mod tests {
             Err(CallbackError::Conflict)
         ));
     }
+    #[test]
+    fn callback_pending_count_uses_status_index_and_excludes_completed_tasks() {
+        #[derive(Serialize)]
+        struct AcceptedAccount<'a> {
+            account: &'a str,
+        }
+        #[derive(Serialize)]
+        struct Obligation<'a> {
+            accepted: AcceptedAccount<'a>,
+        }
+        let mut db = database();
+        let tx = db.transaction().expect("transaction");
+        for (id, status) in [
+            ("pending", ToolRequestStatus::Queued),
+            ("completed", ToolRequestStatus::Completed),
+        ] {
+            tool_requests::put_callback(
+                &tx,
+                &CallbackTask {
+                    id: id.into(),
+                    origin_key: id.into(),
+                    status,
+                    updated: 1,
+                    payload: Obligation {
+                        accepted: AcceptedAccount { account: "account" },
+                    },
+                },
+            )
+            .expect("callback obligation");
+        }
+        assert_eq!(
+            pending_callback_count(&tx, "account").expect("pending count"),
+            1
+        );
+        let detail:String=tx.query_row("EXPLAIN QUERY PLAN SELECT count(*) FROM runtime_tool_requests WHERE kind=?1 AND status IN (?2,?3,?4) AND json_extract(record,'$.payload.accepted.account')=?5",params![studio_runtime_schema::persistence::ToolRequestKind::ProviderCallback,ToolRequestStatus::Queued,ToolRequestStatus::Running,ToolRequestStatus::Unknown,"account"],|row|row.get(3)).expect("query plan");
+        assert!(
+            detail.contains("runtime_tool_request_current_status"),
+            "{detail}"
+        );
+    }
+
+    #[test]
+    fn callback_credential_refresh_reuses_final_pointer_after_response_loss() {
+        let mut db = database();
+        let tx = db.transaction().expect("transaction");
+        let (identity, input) = input();
+        let owner = admit_owner(&tx, &identity, &input.signature()).expect("callback owner");
+        let source = owner.payload.admission.expect("source token");
+        let intent = crate::account_worker::retained::ProviderCallIntent {
+            root_request_id: owner.id.clone(),
+            admitted_request: None,
+            scope: crate::recovery_history::ConnectionScope {
+                account: "account".into(),
+                connection: "host-attachment".into(),
+                generation: 9,
+            },
+            operation: format!("vm-codex-token-refresh:account:{}", owner.id),
+            actor: None,
+            transfer: None,
+            deleted_actor_session: None,
+            method: studio_runtime_providers::Method::AccountRead,
+            params: json!({"refreshToken":true}),
+        };
+        let final_effect = reserve_credential_refresh(&tx, &owner.id, &source, intent.clone())
+            .expect("reserve once");
+        assert_ne!(final_effect, source);
+        assert_eq!(
+            callback_admission(&tx, &owner.id).expect("source unchanged"),
+            Some(source.clone())
+        );
+        assert_eq!(
+            credential_refresh_admission(&tx, &owner.id).expect("final pointer"),
+            Some(final_effect.clone())
+        );
+        tx.execute("DELETE FROM runtime_outbox", [])
+            .expect("completed transport reply retired");
+        assert_eq!(
+            reserve_credential_refresh(&tx, &owner.id, &source, intent.clone())
+                .expect("retry saved pointer"),
+            final_effect
+        );
+        let count: i64 = tx
+            .query_row("SELECT count(*) FROM runtime_outbox", [], |row| row.get(0))
+            .expect("no new effect");
+        assert_eq!(count, 0);
+        let replacement =
+            source.derive_result("provider-call", &["replacement"], final_effect.signature());
+        assert!(matches!(
+            set_credential_refresh_admission(&tx, &owner.id, &source, &replacement),
+            Err(CallbackError::Conflict)
+        ));
+        let mut changed = intent;
+        changed.params = json!({"refreshToken":false});
+        assert!(matches!(
+            reserve_credential_refresh(&tx, &owner.id, &source, changed),
+            Err(CallbackError::Conflict)
+        ));
+    }
+
     #[test]
     fn retained_frame_uses_callback_outbox_and_only_exact_late_proof_settles_unknown() {
         let mut db = database();
@@ -872,7 +1054,6 @@ pub(crate) fn seed_card_owner(
     identity: &ReplyIdentity,
     card: &Value,
 ) -> Result<(), CallbackError> {
-    tx.execute_batch("ALTER TABLE runtime_tool_requests ADD COLUMN kind TEXT GENERATED ALWAYS AS (json_extract(record,'$.kind')) VIRTUAL; ALTER TABLE runtime_tool_requests ADD COLUMN origin_key TEXT GENERATED ALWAYS AS (json_extract(record,'$.originKey')) VIRTUAL;")?;
     let input = Input {
         id: identity.rpc_id.clone(),
         method: card["method"].as_str().ok_or(CallbackError::Stale)?.into(),
@@ -882,4 +1063,162 @@ pub(crate) fn seed_card_owner(
     owner.payload.card = card["id"].as_str().map(str::to_owned);
     owner.payload.journal_cursor = Some(1);
     put_owner(tx, &owner)
+}
+
+/// Settle the canonical response from an accepted-callback handoff owner.
+pub fn settle_response(
+    tx: &Transaction<'_>,
+    key: &str,
+    outcome: DeliveryOutcome,
+) -> Result<(), CallbackError> {
+    let row: Response = Outbox::get(tx, key)?.ok_or(CallbackError::Unknown)?;
+    delivery_in(tx, &row.payload.identity, outcome)?;
+    Ok(())
+}
+
+/// Accepted logical callbacks still owed by this account, counted once even
+/// after their response enters the delivery outbox.
+pub fn pending_callback_count(
+    db: &Connection,
+    account: &str,
+) -> studio_runtime_store::StoreResult<usize> {
+    let count:i64 = db.query_row("SELECT count(*) FROM runtime_tool_requests WHERE kind=?1 AND status IN (?2,?3,?4) AND json_extract(record,'$.payload.accepted.account')=?5",
+        params![studio_runtime_schema::persistence::ToolRequestKind::ProviderCallback,ToolRequestStatus::Queued,ToolRequestStatus::Running,ToolRequestStatus::Unknown,account],|row|row.get(0))?;
+    usize::try_from(count).map_err(|_| {
+        studio_runtime_store::StoreError::RecordContract("callback pending count exceeds usize")
+    })
+}
+
+/// Allocate a provider callback's Studio root exactly once, before any effect.
+pub fn admit_callback_request(
+    tx: &Transaction<'_>,
+    context: &CallbackContext,
+    frame: &Frame,
+) -> Result<String, CallbackError> {
+    let input = Input::from_frame(frame)?
+        .ok_or(CallbackError::Invalid("Expected callback request frame"))?;
+    input.check_context(context)?;
+    Ok(admit_owner(
+        tx,
+        &ReplyIdentity::new(context, &input.id),
+        &input.signature(),
+    )?
+    .id)
+}
+fn rebind_prepared(
+    tx: &Transaction<'_>,
+    row: &mut Response,
+    context: &CallbackContext,
+) -> Result<(), CallbackError> {
+    if row.payload.identity.context.connection == context.connection {
+        return Ok(());
+    }
+    if !row.payload.identity.key_context_matches(context) {
+        return Err(CallbackError::Stale);
+    }
+    if !context.agent.is_empty() {
+        snapshot(tx, context)?.active()?;
+    }
+    row.payload
+        .identity
+        .context
+        .connection
+        .clone_from(&context.connection);
+    let mut owner = owner(tx, &row.payload.identity)?.ok_or(CallbackError::Unknown)?;
+    owner.payload.reply_identity = Some(row.payload.identity.clone());
+    put_owner(tx, &owner)?;
+    put_response(tx, row)
+}
+
+/// Trusted callback task lookup; never creates admission on a missing owner.
+pub fn callback_admission(
+    db: &Connection,
+    root: &str,
+) -> Result<Option<AdmittedRequest>, CallbackError> {
+    Ok(owner_by_root(db, root)?.and_then(|task| task.payload.admission))
+}
+
+fn owner_by_root(db: &Connection, root: &str) -> Result<Option<Owner>, CallbackError> {
+    use rusqlite::OptionalExtension;
+    let raw: Option<String> = db
+        .query_row(
+            "SELECT record FROM runtime_tool_requests WHERE id=?1 AND kind=?2",
+            params![
+                root,
+                studio_runtime_schema::persistence::ToolRequestKind::ProviderCallback
+            ],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let task: Option<Owner> = raw.map(|raw| serde_json::from_str(&raw)).transpose()?;
+    Ok(task)
+}
+
+/// The exact final provider effect pointer, separate from the callback reply token.
+pub fn credential_refresh_admission(
+    db: &Connection,
+    root: &str,
+) -> Result<Option<AdmittedRequest>, CallbackError> {
+    Ok(owner_by_root(db, root)?.and_then(|owner| owner.payload.credential_refresh_admission))
+}
+
+/// Caller reserves the provider obligation in this same transaction. The pointer
+/// can only be written once; a retry cannot replace its admitted effect.
+pub fn set_credential_refresh_admission(
+    tx: &Transaction<'_>,
+    root: &str,
+    source: &AdmittedRequest,
+    final_effect: &AdmittedRequest,
+) -> Result<(), CallbackError> {
+    let mut owner = owner_by_root(tx, root)?.ok_or(CallbackError::Unknown)?;
+    if owner.payload.admission.as_ref() != Some(source) {
+        return Err(CallbackError::Conflict);
+    }
+    if let Some(previous) = &owner.payload.credential_refresh_admission {
+        return if previous == final_effect {
+            Ok(())
+        } else {
+            Err(CallbackError::Conflict)
+        };
+    }
+    if owner.status != ToolRequestStatus::Queued {
+        return Err(CallbackError::Unknown);
+    }
+    owner.payload.credential_refresh_admission = Some(final_effect.clone());
+    put_owner(tx, &owner)
+}
+
+/// First dispatch reserves and points at the effect atomically. Retries return
+/// the persisted final pointer and never call the reservation API again.
+pub fn reserve_credential_refresh(
+    tx: &Transaction<'_>,
+    root: &str,
+    source: &AdmittedRequest,
+    intent: crate::account_worker::retained::ProviderCallIntent,
+) -> Result<AdmittedRequest, CallbackError> {
+    let owner = owner_by_root(tx, root)?.ok_or(CallbackError::Unknown)?;
+    if owner.payload.admission.as_ref() != Some(source)
+        || intent.root_request_id != root
+        || intent.scope.account != owner.payload.identity.context.account
+    {
+        return Err(CallbackError::Conflict);
+    }
+    if let Some(final_effect) = owner.payload.credential_refresh_admission {
+        if final_effect.signature()
+            != intent.fingerprint(&intent.scope.account, intent.method.as_str())
+        {
+            return Err(CallbackError::Conflict);
+        }
+        return Ok(final_effect);
+    }
+    if owner.status != ToolRequestStatus::Queued {
+        return Err(CallbackError::Unknown);
+    }
+    let final_effect = crate::account_worker::retained::reserve_provider_call(tx, source, intent)
+        .map_err(|error| match error {
+        crate::account_worker::WorkerError::Store(error) => CallbackError::Store(error),
+        _ => CallbackError::Unknown,
+    })?;
+    set_credential_refresh_admission(tx, root, source, &final_effect)?;
+    Ok(final_effect)
 }

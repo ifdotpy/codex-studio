@@ -3,6 +3,7 @@ mod cross_runtime;
 mod fresh_state;
 mod local_server_id;
 mod migration_startup;
+mod receipts_cutover;
 mod schema_compat;
 mod sql_callback_guard;
 mod stored_text_analytics;

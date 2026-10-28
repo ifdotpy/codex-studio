@@ -1,5 +1,88 @@
+use studio_runtime_schema::provider_call_contract as contract;
+pub(in crate::account_worker) type TransportRequest = contract::TransportRequest<Method>;
+pub(in crate::account_worker) type RetainedCall =
+    contract::RetainedCall<Method, AdmittedRequest, ConnectionScope>;
+type RetainedReply = contract::RetainedReply<Method, AdmittedRequest, ConnectionScope>;
+type ThreadProvenance = contract::ThreadProvenance<ConnectionScope>;
 use super::*;
+use contract::{CommittedAck, RetainedOutcome};
 use rusqlite::OptionalExtension;
+use studio_runtime_schema::persistence::{OutboxKind, OutboxStatus, OwnerKind};
+use studio_runtime_store::{
+    outbox::{Outbox, OutboxRow},
+    request_results::{Admission, AdmittedRequest, RequestResults, ResultEnvelope},
+};
+
+/// The exact prepared transport request. Method stays in the provider enum owner.
+
+impl From<&RecoveredRequest> for TransportRequest {
+    fn from(request: &RecoveredRequest) -> Self {
+        Self::from_request(request)
+    }
+}
+pub(in crate::account_worker) trait TransportRequestExt {
+    fn from_request(request: &RecoveredRequest) -> Self;
+    fn recovered(&self) -> RecoveredRequest;
+}
+impl TransportRequestExt for TransportRequest {
+    fn from_request(request: &RecoveredRequest) -> Self {
+        Self {
+            id: request.ticket.id.clone(),
+            generation: request.ticket.generation,
+            method: request.ticket.method,
+            operation: request.operation_id.0.clone(),
+            thread: request.thread_id.clone(),
+            lightweight: request.lightweight,
+            deadline: request.deadline_ms,
+            unknown: request.unknown,
+            remote_id: request.remote_id,
+        }
+    }
+    fn recovered(&self) -> RecoveredRequest {
+        RecoveredRequest {
+            ticket: RequestTicket {
+                id: self.id.clone(),
+                generation: self.generation,
+                method: self.method,
+            },
+            operation_id: OperationId(self.operation.clone()),
+            thread_id: self.thread.clone(),
+            lightweight: self.lightweight,
+            deadline_ms: self.deadline,
+            unknown: true,
+            remote_id: self.remote_id,
+        }
+    }
+}
+
+type RetainedRow = OutboxRow<store::ProviderCall>;
+fn outbox_error(error: studio_runtime_store::outbox::OutboxError) -> WorkerError {
+    match error {
+        studio_runtime_store::outbox::OutboxError::Sql(error) => WorkerError::Store(error.into()),
+        studio_runtime_store::outbox::OutboxError::Json(error) => WorkerError::Store(error.into()),
+        studio_runtime_store::outbox::OutboxError::Conflict(id) => {
+            WorkerError::PreparationRefused(format!("retained-session/identity-changed: {id}"))
+        }
+    }
+}
+fn result_error(error: studio_runtime_store::request_results::RequestResultError) -> WorkerError {
+    WorkerError::PreparationRefused(error.to_string())
+}
+fn row(tx: &rusqlite::Connection, key: &str) -> Result<Option<RetainedRow>, WorkerError> {
+    Outbox::get(tx, key).map_err(outbox_error)
+}
+fn retained(row: &RetainedRow) -> Result<&RetainedCall, WorkerError> {
+    match &row.payload {
+        store::ProviderCall::Retained(call) => Ok(call),
+        store::ProviderCall::Account(_) => Err(WorkerError::Capacity),
+    }
+}
+fn put(tx: &rusqlite::Transaction<'_>, row: &RetainedRow) -> Result<(), WorkerError> {
+    Outbox::put(tx, row).map_err(outbox_error)
+}
+fn now_ms() -> i64 {
+    chrono::Utc::now().timestamp_millis()
+}
 
 /// SQL for the account that owns a monitor's provider command. A rule monitor
 /// stores `accountKey`; a submitted command stores `operation.accountKey`. A tool
@@ -40,7 +123,7 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
                 && call.params.get("threadId").and_then(Value::as_str)
                     == Some(transfer.thread_id.as_str())
                 && crate::account_transfer::valid_source_preflight_params(
-                    &call.method,
+                    call.method.as_str(),
                     &transfer.thread_id,
                     &call.params,
                 )
@@ -49,18 +132,22 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
                     transfer.transfer_id, transfer.member
                 ))
                 && matches!(
-                    call.method.as_str(),
-                    "thread/queue/list" | "thread/backgroundTerminals/list" | "thread/unsubscribe"
+                    call.method,
+                    Method::ThreadQueueList
+                        | Method::ThreadBackgroundTerminalsList
+                        | Method::ThreadUnsubscribe
                 ));
         }
-        return Ok(Method::from_wire(&call.method).is_some_and(|method| {
-            super::valid_actorless_request_shape(method, &call.params, &call.operation)
-        }));
+        return Ok(super::valid_actorless_request_shape(
+            call.method,
+            &call.params,
+            &call.operation,
+        ));
     };
     let Some(agent_record) = AgentRepository::get(tx, &AgentId::from(actor.agent.as_str()))? else {
         return Ok(false);
     };
-    if call.method == "thread/unsubscribe" {
+    if call.method == Method::ThreadUnsubscribe {
         return crate::agent_management_recovery::authorize_release(
             tx,
             actor,
@@ -79,7 +166,7 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
         && !studio_runtime_store::truthy(agent_record.extra.get("deletedAt"))
         && agent_record.extra.get("deleted") != Some(&json!(true));
     let actor_identity = common_identity && agent_record.epoch == actor.epoch;
-    if call.method == "claude/shellPolicy" {
+    if call.method == Method::ClaudeShellPolicy {
         let settings = studio_runtime_store::OrchestrationSettingsRepository::shell_policy(tx)?;
         if call.params["settings"] != serde_json::to_value(settings).map_err(StoreError::from)?
             || call.params["eligible"].as_bool().is_none()
@@ -89,13 +176,13 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
             return Ok(false);
         }
     }
-    if call.method == "claude/shellPolicy"
+    if call.method == Method::ClaudeShellPolicy
         && call.params["eligible"] == true
         && !crate::shell_policy::eligible(tx, &agent_record.value())?
     {
         return Ok(false);
     }
-    if call.method == "command/exec/terminate"
+    if call.method == Method::CommandExecTerminate
         && let Some(process) = call.params["processId"].as_str()
         && let Some(monitor) = studio_runtime_store::MonitorsRepository::get(tx, process)?
         && !crate::shell_policy::monitor_cleanup_allowed(
@@ -108,7 +195,7 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
         return Ok(false);
     }
     let deleted_voice_stop = authorize_deleted_voice_stop(tx, call, actor, &agent_record.extra)?;
-    let repair_fork = if call.method == "thread/fork" {
+    let repair_fork = if call.method == Method::ThreadFork {
         let repair = agent_record
             .extra
             .get("contextRepair")
@@ -162,16 +249,16 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
     // turn and its commands running; it grants nothing else to a deleted actor.
     let stopped_turn_cleanup = agent_account == call.scope.account
         && matches!(
-            call.method.as_str(),
-            "turn/interrupt" | "thread/backgroundTerminals/clean"
+            call.method,
+            Method::TurnInterrupt | Method::ThreadBackgroundTerminalsClean
         )
         && actor.epoch.checked_add(1) == Some(agent_record.epoch)
         && agent_record.extra.get("autoWake") == Some(&json!(false));
     let thread_matches = call.params["threadId"].as_str().is_some_and(|thread| {
         agent_record.extra.get("threadId").and_then(Value::as_str) == Some(thread)
     });
-    let thread_start = call.method == "thread/start" && call.params.get("threadId").is_none();
-    let ephemeral_turn = if call.method == "turn/start" {
+    let thread_start = call.method == Method::ThreadStart && call.params.get("threadId").is_none();
+    let ephemeral_turn = if call.method == Method::TurnStart {
         match call.params["threadId"].as_str() {
             Some(thread) => thread_started_for_actor(tx, call, thread)?,
             None => false,
@@ -181,7 +268,7 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
     };
     let config_operation = call.operation.strip_prefix("monitor-config:");
     let config_monitor_id = config_operation.and_then(|rest| rest.split(':').next());
-    let config_read = call.method == "config/read"
+    let config_read = call.method == Method::ConfigRead
         && config_operation.is_some_and(|rest| rest.split(':').count() == 2)
         && config_monitor_id.is_some_and(|id| !id.is_empty())
         && call.params.get("includeLayers") == Some(&json!(false))
@@ -205,8 +292,11 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
             false
         };
     let monitor_method = matches!(
-        call.method.as_str(),
-        "command/exec" | "command/exec/write" | "command/exec/resize" | "command/exec/terminate"
+        call.method,
+        Method::CommandExec
+            | Method::CommandExecWrite
+            | Method::CommandExecResize
+            | Method::CommandExecTerminate
     );
     let process_id = call.params.get("processId").and_then(Value::as_str);
     let (monitor_id, liveness_generation) = match call.operation.strip_prefix("liveness:") {
@@ -246,8 +336,8 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
                 agent.as_deref() == Some(actor.agent.as_str())
                     && epoch == Some(actor.epoch)
                     && account.as_deref().unwrap_or("default") == call.scope.account
-                    && match call.method.as_str() {
-                        "command/exec" => {
+                    && match call.method {
+                        Method::CommandExec => {
                             let regular = call.operation == format!("monitor:{monitor_id}")
                                 && process_id == Some(monitor_id)
                                 && matches!(status.as_deref(), Some("starting" | "running"));
@@ -259,14 +349,14 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
                             (regular || liveness)
                                 && call.params.get("cwd").and_then(Value::as_str) == cwd.as_deref()
                         }
-                        "command/exec/write" | "command/exec/resize" => {
+                        Method::CommandExecWrite | Method::CommandExecResize => {
                             call.operation
                                 .starts_with(&format!("monitor-input:{monitor_id}:"))
                                 && call.operation.len()
                                     > format!("monitor-input:{monitor_id}:").len()
                                 && status.as_deref() == Some("running")
                         }
-                        "command/exec/terminate" => {
+                        Method::CommandExecTerminate => {
                             call.operation == format!("monitor-cancel:{monitor_id}")
                                 && status.as_deref() == Some("running")
                         }
@@ -302,8 +392,8 @@ fn authorize_retained_monitor_control(
     current: &studio_runtime_store::AgentRecord,
 ) -> Result<bool, WorkerError> {
     if !matches!(
-        call.method.as_str(),
-        "command/exec/terminate" | "command/exec/write" | "command/exec/resize"
+        call.method,
+        Method::CommandExecTerminate | Method::CommandExecWrite | Method::CommandExecResize
     ) {
         return Ok(false);
     }
@@ -337,7 +427,7 @@ fn authorize_retained_monitor_control(
     if original.account != call.scope.account || original.generation != call.scope.generation {
         return Ok(false);
     }
-    if call.method == "command/exec/terminate" {
+    if call.method == Method::CommandExecTerminate {
         return Ok(record["cancelRequested"] == true
             && call.operation == format!("monitor-cancel:{id}")
             && call.params == json!({"processId":id}));
@@ -356,7 +446,7 @@ fn authorize_retained_monitor_control(
         && !ticket.is_empty()
         && attempt["status"] == "submitted"
         && exact_operation
-        && attempt["method"] == call.method
+        && attempt["method"] == call.method.as_str()
         && attempt["params"] == call.params
         && call.operation == format!("monitor-input:{id}:{ticket}"))
 }
@@ -373,7 +463,7 @@ fn authorize_recovered_monitor_cancel(
         || current.extra.get("autoWake") != Some(&json!(true))
         || studio_runtime_store::truthy(current.extra.get("deletedAt"))
         || current.extra.get("deleted") == Some(&json!(true));
-    if call.method != "command/exec/terminate" || !inactive {
+    if call.method != Method::CommandExecTerminate || !inactive {
         return Ok(false);
     }
     #[derive(serde::Deserialize)]
@@ -430,7 +520,7 @@ fn authorize_deleted_voice_stop(
     let deleted = studio_runtime_store::truthy(agent_extra.get("deletedAt"))
         || agent_extra.get("deleted") == Some(&json!(true));
     if session_id.is_empty()
-        || call.method != "thread/realtime/stop"
+        || call.method != Method::ThreadRealtimeStop
         || call.operation != format!("voice:delete-stop:{session_id}")
         || call
             .params
@@ -446,38 +536,16 @@ fn authorize_deleted_voice_stop(
     {
         return Ok(false);
     }
-    let receipt_id = format!("agent-delete-voice:{}:{}", actor.agent, actor.epoch);
-    let raw: Option<String> = tx
-        .query_row(
-            "SELECT result FROM runtime_operation_receipts WHERE id=?1",
-            [&receipt_id],
-            |row| row.get(0),
-        )
-        .optional()?;
-    let Some(raw) = raw else {
-        return Ok(false);
-    };
-    let Ok(receipt) = serde_json::from_str::<Value>(&raw) else {
-        return Ok(false);
-    };
-    if receipt.get("agent").and_then(Value::as_str) != Some(actor.agent.as_str())
-        || receipt.get("epoch").and_then(Value::as_i64) != Some(actor.epoch)
-    {
-        return Ok(false);
-    }
-    let Some(sessions) = receipt.get("voiceEndSessions").and_then(Value::as_array) else {
-        return Ok(false);
-    };
+    let sessions = crate::voice::provider::deleted_voice_sessions(tx, &actor.agent, actor.epoch)
+        .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
     Ok(sessions.iter().any(|session| {
-        session.get("sessionId").and_then(Value::as_str) == Some(session_id)
-            && session.get("agentId").and_then(Value::as_str) == Some(actor.agent.as_str())
-            && session.get("epoch").and_then(Value::as_i64) == Some(actor.epoch)
-            && session.get("accountKey").and_then(Value::as_str)
-                == Some(call.scope.account.as_str())
-            && session.get("threadId").and_then(Value::as_str) == Some(thread_id)
-            && session.get("connectionId").and_then(Value::as_str)
-                == Some(call.scope.connection.as_str())
-            && session.get("generation").and_then(Value::as_u64) == Some(call.scope.generation)
+        session.session_id == session_id
+            && session.agent_id == actor.agent
+            && session.epoch == actor.epoch
+            && session.account_key == call.scope.account
+            && session.thread_id == thread_id
+            && session.connection_id == call.scope.connection
+            && session.generation == call.scope.generation
     }))
 }
 
@@ -486,26 +554,26 @@ fn thread_started_for_actor(
     call: &Call,
     thread: &str,
 ) -> Result<bool, WorkerError> {
-    let Some(actor) = call.actor.as_ref() else {
+    let Some(actor) = &call.actor else {
         return Ok(false);
     };
-    let prefix = format!("account-worker:retained:{}:", call.scope.account);
-    let exists: i64 = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM runtime_operation_receipts submitted JOIN runtime_operation_receipts result ON result.id=substr(submitted.id,1,length(submitted.id)-10)||':result' WHERE submitted.id>=?1 AND submitted.id<?2 AND substr(submitted.id,-10)=':submitted' AND json_extract(submitted.result,'$.call.method')='thread/start' AND json_extract(submitted.result,'$.call.actor.agent')=?3 AND json_extract(submitted.result,'$.call.actor.epoch')=?4 AND json_extract(submitted.result,'$.call.scope.generation')=?5 AND json_extract(result.result,'$.result.Reply.thread.id')=?6 AND json_extract(result.result,'$.result.Reply.thread.id') IS NOT NULL)",
-        rusqlite::params![
-            prefix,
-            format!("{prefix}~"),
-            actor.agent,
-            actor.epoch,
-            i64::try_from(call.scope.generation).map_err(|_| WorkerError::Capacity)?,
-            thread,
-        ],
-        |row| row.get(0),
-    )?;
-    Ok(exists != 0)
+    let Some(agent) = AgentRepository::get(tx, &AgentId::from(actor.agent.as_str()))? else {
+        return Ok(false);
+    };
+    let Some(provenance) = agent
+        .extra
+        .get("threadProvenance")
+        .and_then(|map| map.get(thread))
+    else {
+        return Ok(false);
+    };
+    let provenance: ThreadProvenance =
+        serde_json::from_value(provenance.clone()).map_err(StoreError::from)?;
+    Ok(provenance.actor == *actor
+        && provenance.scope.account == call.scope.account
+        && provenance.scope.generation == call.scope.generation)
 }
-/// Apply the same authorization as durable requests without a receipt write.
-/// Recheck after provider preparation, as `submitted` does for durable calls.
+
 pub(super) async fn authorize_volatile_read(
     s: &RuntimeStore,
     call: &Call,
@@ -520,7 +588,6 @@ pub(super) async fn authorize_volatile_read(
     })
     .await
 }
-
 pub(super) async fn replay(
     s: &RuntimeStore,
     call: &Call,
@@ -531,9 +598,6 @@ pub(super) async fn replay(
     })
     .await
 }
-
-/// Resolve a replay from a reader snapshot: it only reads receipts, so it never
-/// takes the writer lane. Kept synchronous so actor callbacks never await.
 pub(super) fn replay_in_transaction(
     tx: &rusqlite::Transaction<'_>,
     call: &Call,
@@ -543,212 +607,624 @@ pub(super) fn replay_in_transaction(
     }
     replay_recorded(tx, call)
 }
+pub(super) enum Replay {
+    Ready,
+    Return(SessionReceipt),
+    Retry(RequestTicket),
+}
+fn same_replay_identity(prior: &Call, current: &Call) -> bool {
+    prior.signature() == current.signature()
+        && result_id(prior)
+            .ok()
+            .is_some_and(|id| result_id(current).as_ref() == Ok(&id))
+}
+fn result_id(call: &Call) -> Result<String, PortError> {
+    match &call.admitted_request {
+        Some(token) if token.signature() == call.signature() => Ok(token.id().to_owned()),
+        Some(_) => Err(PortError::Identity),
+        None => Ok(call.identity()?.id().to_owned()),
+    }
+}
 
-/// Resolve a replay from `call`'s own receipts without the live authorization.
-/// Only for reading the answer of a request that was authorized and submitted
-/// earlier: it never queues a provider write.
+fn saved_reply(
+    tx: &rusqlite::Connection,
+    id: &str,
+    signature: &str,
+) -> Result<Option<RetainedReply>, WorkerError> {
+    RequestResults::replay(tx, id, signature, now_ms())
+        .map_err(result_error)?
+        .map(|saved| {
+            serde_json::from_str::<ResultEnvelope<RetainedReply>>(&saved.result)
+                .map(|envelope| envelope.reply)
+                .map_err(|error| WorkerError::Store(error.into()))
+        })
+        .transpose()
+}
 pub(super) fn replay_recorded(
     tx: &rusqlite::Transaction<'_>,
     call: &Call,
 ) -> Result<Result<Replay, PortError>, WorkerError> {
-    let Some(prior) = store::receipt(tx, &call.key(), "submitted")? else {
-        return Ok(Ok(Replay::Miss));
+    if let Some(row) = row(tx, &call.key())? {
+        let prior = retained(&row)?;
+        if !same_replay_identity(&prior.call, call) {
+            return Ok(Err(PortError::Identity));
+        }
+        return Ok(Ok(replay_pending(prior)));
+    }
+    let id = match result_id(call) {
+        Ok(id) => id,
+        Err(error) => return Ok(Err(error)),
     };
-    let prior_call: Call =
-        serde_json::from_value(prior["call"].clone()).map_err(|_| WorkerError::Capacity)?;
-    if !same_replay_identity(&prior_call, call) {
+    let saved = match RequestResults::replay(tx, &id, &call.signature(), now_ms()) {
+        Ok(saved) => saved,
+        Err(studio_runtime_store::request_results::RequestResultError::Conflict { .. }) => {
+            return Ok(Err(PortError::Identity));
+        }
+        Err(studio_runtime_store::request_results::RequestResultError::Identity(
+            studio_runtime_schema::persistence::RequestIdentityError::Expired { .. },
+        )) => return Ok(Err(PortError::Expired)),
+        Err(studio_runtime_store::request_results::RequestResultError::Identity(_)) => {
+            return Ok(Err(PortError::Invalid));
+        }
+        Err(error) => return Err(result_error(error)),
+    };
+    let Some(saved) = saved else {
+        if call.admitted_request.is_some() {
+            return Ok(Err(PortError::Unknown));
+        }
+        let identity = match call.identity() {
+            Ok(identity) => identity,
+            Err(error) => return Ok(Err(error)),
+        };
+        if let Err(error) = identity.validate(
+            now_ms(),
+            RequestResults::expired_before_ms(tx).map_err(result_error)?,
+        ) {
+            return Ok(Err(match error {
+                studio_runtime_schema::persistence::RequestIdentityError::Expired { .. } => {
+                    PortError::Expired
+                }
+                studio_runtime_schema::persistence::RequestIdentityError::InvalidUuidV7
+                | studio_runtime_schema::persistence::RequestIdentityError::FutureTimestamp {
+                    ..
+                } => PortError::Invalid,
+            }));
+        }
+        return Ok(Ok(Replay::Ready));
+    };
+    let saved: ResultEnvelope<RetainedReply> =
+        serde_json::from_str(&saved.result).map_err(StoreError::from)?;
+    if saved.reply.call.signature() != call.signature() {
         return Ok(Err(PortError::Identity));
     }
-    replay_submitted(tx, &prior_call, &prior)
-}
-
-pub(super) fn replay_submitted(
-    tx: &rusqlite::Transaction<'_>,
-    prior_call: &Call,
-    prior: &Value,
-) -> Result<Result<Replay, PortError>, WorkerError> {
-    let request = store::decode(&prior["request"])?;
-    let saved = store::receipt(tx, &prior_call.key(), "result")?;
-    let result = if let Some(saved) = saved {
-        // The result receipt is committed before its journal event advances
-        // the checkpoint. Only expose it after that event is known committed
-        // in the generation that recorded the result. Looking up the prior
-        // generation is important: reconnecting must not hide a settled
-        // result merely because the new generation has a different cursor.
-        let checkpoint = crate::account_worker::store::checkpoint(
-            tx,
-            &prior_call.scope.account,
-            prior_call.scope.generation,
-        )?;
-        if saved["cursor"]
-            .as_u64()
-            .is_some_and(|cursor| cursor <= checkpoint)
-        {
-            serde_json::from_value(saved["result"].clone()).map_err(|_| WorkerError::Capacity)?
-        } else {
-            RequestResult::Unknown
-        }
-    } else {
-        RequestResult::Unknown
-    };
-    if result == RequestResult::NotSent {
-        return Ok(Ok(Replay::Retry(request.ticket)));
-    }
-    // A committed operation may be inspected after the provider reconnects.
-    // Return its original ticket and scope; this path only reads receipts and
-    // never queues another provider write.
-    let mut receipt = prior_call.receipt(request.ticket, result);
+    let mut receipt = saved
+        .reply
+        .call
+        .receipt(saved.reply.request.recovered().ticket, saved.reply.result);
     receipt.replayed = true;
     Ok(Ok(Replay::Return(receipt)))
 }
-
-pub(super) enum Replay {
-    Miss,
-    Return(SessionReceipt),
-    Retry(studio_runtime_providers::RequestTicket),
+fn replay_pending(prior: &RetainedCall) -> Replay {
+    let Some(request) = &prior.request else {
+        return Replay::Ready;
+    };
+    if prior
+        .outcome
+        .as_ref()
+        .is_some_and(|outcome| outcome.result == RequestResult::NotSent && outcome.cursor == 0)
+    {
+        return Replay::Retry(request.recovered().ticket);
+    }
+    let mut receipt = prior
+        .call
+        .receipt(request.recovered().ticket, RequestResult::Unknown);
+    receipt.replayed = true;
+    Replay::Return(receipt)
 }
 
-fn same_replay_identity(prior: &Call, current: &Call) -> bool {
-    if prior.scope.account != current.scope.account {
-        return false;
+pub(super) fn reserve(
+    tx: &rusqlite::Transaction<'_>,
+    call: Call,
+    admitted: AdmittedRequest,
+) -> Result<(), WorkerError> {
+    if let Some(row) = row(tx, &call.key())? {
+        if !same_replay_identity(&retained(&row)?.call, &call) {
+            return Err(WorkerError::PreparationRefused(
+                "retained-session/identity-changed".into(),
+            ));
+        }
+        return Ok(());
     }
-    let mut prior = prior.clone();
-    prior.scope.connection = current.scope.connection.clone();
-    prior.scope.generation = current.scope.generation;
-    prior == *current
+    if RequestResults::replay(tx, admitted.id(), &call.signature(), now_ms())
+        .map_err(result_error)?
+        .is_some()
+    {
+        return Ok(());
+    }
+    let actor_id = match &call.actor {
+        Some(actor) if vm_actor(tx, &actor.agent)? => Some(actor.agent.as_str()),
+        _ => None,
+    };
+    let stream = actor_id.map_or_else(
+        || call.scope.account.clone(),
+        |actor| super::super::vm_journal_scope(&call.scope.account, actor),
+    );
+    let row = OutboxRow {
+        id: call.key(),
+        kind: OutboxKind::ProviderCall,
+        owner_kind: if call.actor.is_some() {
+            OwnerKind::Agent
+        } else {
+            OwnerKind::Account
+        },
+        owner_id: call
+            .actor
+            .as_ref()
+            .map_or_else(|| call.scope.account.clone(), |actor| actor.agent.clone()),
+        request_id: Some(admitted.id().into()),
+        signature: call.signature(),
+        status: OutboxStatus::Pending,
+        account: Some(call.scope.account.clone()),
+        stream_id: Some(stream),
+        generation: Some(i64::try_from(call.scope.generation).map_err(|_| WorkerError::Capacity)?),
+        ordinal: None,
+        next_at: None,
+        created: admitted.created(),
+        payload: store::ProviderCall::Retained(RetainedCall {
+            call,
+            request: None,
+            admitted,
+            written: false,
+            outcome: None,
+        }),
+    };
+    put(tx, &row)
+}
+
+pub(super) fn discard_unsent(
+    tx: &rusqlite::Transaction<'_>,
+    admitted: &AdmittedRequest,
+) -> Result<(), WorkerError> {
+    let rows =
+        Outbox::for_request::<store::ProviderCall>(tx, admitted.id()).map_err(outbox_error)?;
+    for row in rows {
+        let payload = retained(&row)?;
+        if row.signature != admitted.signature()
+            || row.status != OutboxStatus::Pending
+            || (payload.request.is_some()
+                && !payload.outcome.as_ref().is_some_and(|outcome| {
+                    outcome.result == RequestResult::NotSent && outcome.cursor == 0
+                }))
+        {
+            return Err(WorkerError::PreparationRefused(
+                "retained-session/unknown".into(),
+            ));
+        }
+        Outbox::delete_settled(tx, &row.id, &row.signature).map_err(outbox_error)?;
+    }
+    Ok(())
 }
 
 pub(super) async fn submitted(
     s: &RuntimeStore,
     call: &Call,
     request: &RecoveredRequest,
-    retry_ticket: Option<&studio_runtime_providers::RequestTicket>,
+    retry_ticket: Option<&RequestTicket>,
 ) -> Result<Result<(), PortError>, WorkerError> {
     let call = call.clone();
-    let request = request.clone();
+    let request = TransportRequest::from(request);
     let retry_ticket = retry_ticket.cloned();
     scheduler::lifecycle_transaction_with(s, move |tx| {
         if !authorize(tx, &call)? {
             return Ok(Err(PortError::Identity));
         }
-        if let Some(expected_ticket) = retry_ticket {
-            let Some(prior) = store::receipt(tx, &call.key(), "submitted")? else {
-                return Ok(Err(PortError::Identity));
-            };
-            let prior_call: Call =
-                serde_json::from_value(prior["call"].clone()).map_err(|_| WorkerError::Capacity)?;
-            if !same_replay_identity(&prior_call, &call) {
-                return Ok(Err(PortError::Identity));
-            }
-            let prior_request = store::decode(&prior["request"])?;
-            let checkpoint =
-                store::checkpoint(tx, &prior_call.scope.account, prior_call.scope.generation)?;
-            let proven_not_sent = store::receipt(tx, &call.key(), "result")?.is_some_and(|saved| {
-                saved["result"] == json!(RequestResult::NotSent)
-                    && saved["cursor"]
-                        .as_u64()
-                        .is_some_and(|cursor| cursor <= checkpoint)
-            });
-            if prior_request.ticket != expected_ticket
-                || request.ticket != expected_ticket
-                || !proven_not_sent
-            {
-                return Ok(Err(PortError::Identity));
-            }
-            store::delete_receipt(tx, &call.key(), "result")?;
-            store::replace(
-                tx,
-                &call.key(),
-                "submitted",
-                json!({"call":call,"request":store::record(&request)}),
-            )?;
+        let mut row = if let Some(row) = row(tx, &call.key())? {
+            row
         } else {
-            // The replay read and this admission are separate transactions. Two
-            // concurrent callers can both observe a miss, then race to persist
-            // the same operation key. Validate the winner's durable intent,
-            // then resolve a changed identity as a caller refusal and an exact
-            // identity as uncertain. Neither race may overwrite the intent or
-            // submit a second provider request.
-            if let Some(prior) = store::receipt(tx, &call.key(), "submitted")? {
-                let prior_call: Call = serde_json::from_value(prior["call"].clone())
-                    .map_err(|_| WorkerError::Capacity)?;
-                let prior_request = store::decode(&prior["request"])?;
-                let key = call.key();
-                if prior_call.key() != key
-                    || prior_request.ticket.id
-                        != studio_runtime_providers::RequestId::String(key.clone())
-                    || prior_request.ticket.generation != prior_call.scope.generation
-                    || prior_request.ticket.method.as_str() != prior_call.method
-                    || prior_request.operation_id.0 != key
-                {
-                    return Err(WorkerError::Capacity);
-                }
-                return Ok(Err(if same_replay_identity(&prior_call, &call) {
-                    PortError::Unknown
-                } else {
-                    PortError::Identity
-                }));
+            if call.admitted_request.is_some() {
+                return Ok(Err(PortError::Unknown));
             }
-            store::save(
-                tx,
-                &call.key(),
-                "submitted",
-                json!({"call":call,"request":store::record(&request)}),
-            )?;
+            let identity = match call.identity() {
+                Ok(identity) => identity,
+                Err(error) => return Ok(Err(error)),
+            };
+            let admitted = match RequestResults::admit(tx, &identity, &call.signature(), now_ms())
+                .map_err(result_error)?
+            {
+                Admission::Fresh(admitted) => admitted,
+                Admission::Replay(_) => return Ok(Err(PortError::Unknown)),
+            };
+            let mut reserved = call.clone();
+            reserved.admitted_request = Some(admitted.clone());
+            reserve(tx, reserved, admitted)?;
+            row(tx, &call.key())?.ok_or(WorkerError::Capacity)?
+        };
+        let mut prior = retained(&row)?.clone();
+        if !same_replay_identity(&prior.call, &call) {
+            return Ok(Err(PortError::Identity));
         }
+        if row.status != OutboxStatus::Pending {
+            return Ok(Err(PortError::Unknown));
+        }
+        if let Some(original) = &prior.request {
+            if retry_ticket.as_ref() != Some(&original.recovered().ticket)
+                || request.recovered().ticket != original.recovered().ticket
+                || !prior.outcome.as_ref().is_some_and(|outcome| {
+                    outcome.result == RequestResult::NotSent && outcome.cursor == 0
+                })
+            {
+                return Ok(Err(PortError::Unknown));
+            }
+        } else if retry_ticket.is_some() {
+            return Ok(Err(PortError::Unknown));
+        }
+        prior.request = Some(request);
+        prior.outcome = None;
+        prior.written = false;
+        row.payload = store::ProviderCall::Retained(prior);
+        row.status = OutboxStatus::Unknown;
+        row.next_at = None;
+        put(tx, &row)?;
         Ok(Ok(()))
     })
     .await
 }
+
+/// Called in the journal-prefix transaction before its cursor evidence retires.
+pub(in crate::account_worker) fn checkpoint_covered(
+    tx: &rusqlite::Transaction<'_>,
+    stream: &str,
+    generation: u64,
+    cursor: u64,
+) -> Result<(), WorkerError> {
+    let mut query=tx.prepare("SELECT id FROM runtime_outbox WHERE stream_id=?1 AND generation=?2 AND kind=?3 ORDER BY ordinal,id")?;
+    let ids = query
+        .query_map(
+            rusqlite::params![
+                stream,
+                i64::try_from(generation).map_err(|_| WorkerError::Capacity)?,
+                OutboxKind::ProviderCall
+            ],
+            |row| row.get::<_, String>(0),
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for id in ids {
+        let Some(row) = row(tx, &id)? else { continue };
+        let store::ProviderCall::Retained(payload) = &row.payload else {
+            continue;
+        };
+        if payload
+            .outcome
+            .as_ref()
+            .is_some_and(|outcome| outcome.cursor <= cursor)
+        {
+            settle(tx, &row, stream, generation, cursor)?;
+        }
+    }
+    Ok(())
+}
+fn settle(
+    tx: &rusqlite::Transaction<'_>,
+    row: &RetainedRow,
+    stream: &str,
+    generation: u64,
+    cursor: u64,
+) -> Result<(), WorkerError> {
+    let payload = retained(row)?;
+    let Some(outcome) = &payload.outcome else {
+        return Ok(());
+    };
+    if outcome.result == RequestResult::NotSent {
+        let mut row: RetainedRow = Outbox::get(tx, &row.id)
+            .map_err(outbox_error)?
+            .ok_or(WorkerError::Capacity)?;
+        let mut payload = payload.clone();
+        let call = payload.call.clone();
+        payload
+            .outcome
+            .as_mut()
+            .ok_or(WorkerError::Capacity)?
+            .cursor = 0;
+        row.status = OutboxStatus::Pending;
+        row.payload = store::ProviderCall::Retained(payload);
+        put(tx, &row)?;
+        return crate::voice::provider::settle_voice_stop(tx, &call, &RequestResult::NotSent)
+            .map_err(|error| WorkerError::PreparationRefused(error.to_string()));
+    }
+    if !matches!(
+        outcome.result,
+        RequestResult::Reply(_) | RequestResult::Rejected(_)
+    ) {
+        return Ok(());
+    }
+    if payload.call.method == Method::ThreadStart
+        && let RequestResult::Reply(reply) = &outcome.result
+        && let Some(thread) = reply["thread"]["id"].as_str()
+        && let Some(actor) = &payload.call.actor
+        && let Some(mut agent) = AgentRepository::get(tx, &AgentId::from(actor.agent.as_str()))?
+    {
+        let provenance = agent
+            .extra
+            .entry("threadProvenance".into())
+            .or_insert_with(|| json!({}));
+        let map = provenance.as_object_mut().ok_or(WorkerError::Capacity)?;
+        map.insert(
+            thread.into(),
+            serde_json::to_value(ThreadProvenance {
+                scope: payload.call.scope.clone(),
+                actor: actor.clone(),
+                operation: payload.call.operation.clone(),
+            })
+            .map_err(StoreError::from)?,
+        );
+        AgentRepository::put(tx, &agent)?;
+    }
+    let reply = RetainedReply {
+        call: payload.call.clone(),
+        request: payload.request.clone().ok_or(WorkerError::Capacity)?,
+        written: payload.written,
+        result: outcome.result.clone(),
+        ack: CommittedAck {
+            stream_id: stream.into(),
+            generation,
+            cursor,
+        },
+    };
+    RequestResults::settle(
+        tx,
+        &payload.admitted,
+        &ResultEnvelope {
+            actor: payload.call.actor.as_ref().map(|actor| actor.agent.clone()),
+            reply,
+            references: vec![],
+        },
+    )
+    .map_err(result_error)?;
+    crate::voice::provider::settle_voice_stop(tx, &payload.call, &outcome.result)
+        .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
+    Outbox::delete_settled(tx, &row.id, &row.signature).map_err(outbox_error)?;
+    Ok(())
+}
+
+pub(super) fn record_outcome(
+    tx: &rusqlite::Transaction<'_>,
+    key: &str,
+    written: Option<RecoveredRequest>,
+    value: Option<RequestResult>,
+    cursor: u64,
+) -> Result<Option<(RequestResult, u64)>, WorkerError> {
+    let Some(mut row) = row(tx, key)? else {
+        return Ok(None);
+    };
+    let mut payload = retained(&row)?.clone();
+    if let Some(written) = written {
+        payload.request = Some(TransportRequest::from(&written));
+        payload.written = true;
+    }
+    if let Some(value) = value {
+        if !payload.outcome.as_ref().is_some_and(|old| {
+            matches!(
+                old.result,
+                RequestResult::Reply(_) | RequestResult::Rejected(_)
+            )
+        }) {
+            if matches!(value, RequestResult::Reply(_) | RequestResult::Rejected(_)) {
+                payload.written = true;
+            }
+            payload.outcome = Some(RetainedOutcome {
+                result: value,
+                cursor,
+            });
+        }
+    }
+    let accepted = payload
+        .outcome
+        .as_ref()
+        .map(|outcome| (outcome.result.clone(), outcome.cursor));
+    row.status = if payload
+        .outcome
+        .as_ref()
+        .is_some_and(|outcome| outcome.result == RequestResult::NotSent && outcome.cursor == 0)
+    {
+        OutboxStatus::Pending
+    } else {
+        OutboxStatus::Unknown
+    };
+    row.payload = store::ProviderCall::Retained(payload);
+    put(tx, &row)?;
+    let stream = row.stream_id.as_deref().ok_or(WorkerError::Capacity)?;
+    let generation = u64::try_from(row.generation.ok_or(WorkerError::Capacity)?)
+        .map_err(|_| WorkerError::Capacity)?;
+    let checkpoint = store::checkpoint(tx, stream, generation)?;
+    if accepted
+        .as_ref()
+        .is_some_and(|(_, cursor)| *cursor <= checkpoint)
+    {
+        settle(tx, &row, stream, generation, checkpoint)?;
+    }
+    Ok(accepted)
+}
+
 pub(in crate::account_worker) async fn recover(
     s: &RuntimeStore,
     account: &str,
     generation: u64,
 ) -> Result<Vec<(PendingRequest, RecoveredRequest)>, WorkerError> {
     let account = account.to_owned();
-    s.transaction_with(move |tx| {
-        let prefix = format!("account-worker:retained:{account}:");
-        let checkpoint = store::checkpoint(tx, &account, generation)?;
-        let mut statement = tx.prepare("SELECT r.result FROM runtime_operation_receipts r WHERE r.id>=?1 AND r.id<?2 AND substr(r.id,-10)=':submitted' AND json_extract(r.result,'$.call.scope.generation')=?3 AND NOT EXISTS (SELECT 1 FROM runtime_operation_receipts done WHERE done.id=substr(r.id,1,length(r.id)-10)||':result' AND json_extract(done.result,'$.result') != 'Unknown' AND json_extract(done.result,'$.cursor') <=?4) ORDER BY r.id")?;
-        let rows = statement.query_map(rusqlite::params![prefix, format!("{prefix}~"), i64::try_from(generation).map_err(|_|WorkerError::Capacity)?, i64::try_from(checkpoint).map_err(|_|WorkerError::Capacity)?], |row|row.get::<_,String>(0))?;
-        let mut result = Vec::new();
-        for row in rows {
-            let value: Value = serde_json::from_str(&row?).map_err(|_|WorkerError::Capacity)?;
-            let call: Call = serde_json::from_value(value["call"].clone()).map_err(|_|WorkerError::Capacity)?;
-            let checkpoint = store::checkpoint(tx, &call.scope.account, generation)?;
-            if let Some(value) = store::receipt(tx, &call.key(), "result")?
-                && value["result"] != json!("Unknown")
-                && value["cursor"].as_u64().is_some_and(|c| c <= checkpoint) { continue; }
-            let mut request = store::decode(&store::receipt(tx, &call.key(), "written")?.unwrap_or(value["request"].clone()))?;
-            // Older retained calls marked every method lightweight. Recover
-            // ownership from the call itself, including Submitted-only intent.
-            request.lightweight = !studio_runtime_schema::provider_method_policy::is_recovered_thread_serialized(&call.method, &call.params);
-            // The answer comes back on the lane the request was sent on, as
-            // in `retained_request`: a host request keeps no actor lane.
-            let actor_id = match call.actor.as_ref() {
-                Some(actor) if vm_actor(tx, &actor.agent)? => Some(actor.agent.clone()),
-                _ => None,
-            };
-            result.push((PendingRequest {
-                call,
-                ticket: request.ticket.clone(),
-                actor_id,
-                reply: None,
-                result: None,
-                result_cursor: 0,
-                volatile: false,
-            }, request));
+    s.read_async("runtime-services/retained_recover", move |tx| {
+        let mut recovered = Vec::new();
+        for status in [OutboxStatus::Pending, OutboxStatus::Unknown] {
+            for row in Outbox::for_account::<store::ProviderCall>(
+                tx,
+                &account,
+                OutboxKind::ProviderCall,
+                status,
+                u32::MAX,
+            )
+            .map_err(outbox_error)?
+            {
+                let store::ProviderCall::Retained(payload) = row.payload else {
+                    continue;
+                };
+                if payload.call.scope.generation != generation {
+                    continue;
+                }
+                if payload.outcome.as_ref().is_some_and(|outcome| {
+                    outcome.result == RequestResult::NotSent && outcome.cursor == 0
+                }) {
+                    continue;
+                }
+                let Some(prepared) = payload.request.as_ref() else {
+                    continue;
+                };
+                let mut request = prepared.recovered();
+                request.lightweight =
+                    !studio_runtime_schema::provider_method_policy::is_recovered_thread_serialized(
+                        payload.call.method.as_str(),
+                        &payload.call.params,
+                    );
+                let actor_id = match &payload.call.actor {
+                    Some(actor) if vm_actor(tx, &actor.agent)? => Some(actor.agent.clone()),
+                    _ => None,
+                };
+                recovered.push((
+                    PendingRequest {
+                        call: payload.call,
+                        ticket: request.ticket.clone(),
+                        actor_id,
+                        reply: None,
+                        result: payload
+                            .outcome
+                            .as_ref()
+                            .map(|outcome| outcome.result.clone()),
+                        result_cursor: payload.outcome.as_ref().map_or(0, |outcome| outcome.cursor),
+                        volatile: false,
+                    },
+                    request,
+                ));
+            }
         }
-        Ok(result)
-    }).await
+        Ok(recovered)
+    })
+    .await
+}
+
+/// Read-only inspection for owners whose authorization outlives their provider wait.
+pub(in crate::account_worker) fn recorded_call(
+    tx: &rusqlite::Connection,
+    key: &str,
+) -> Result<Option<RetainedCall>, WorkerError> {
+    row(tx, key)?.map(|row| retained(&row).cloned()).transpose()
+}
+
+pub(super) enum RecordedCall {
+    Pending(RetainedCall),
+    Final(RetainedReply),
+}
+impl RecordedCall {
+    pub(super) fn call(&self) -> &Call {
+        match self {
+            Self::Pending(value) => &value.call,
+            Self::Final(value) => &value.call,
+        }
+    }
+    pub(super) fn request(&self) -> Option<&TransportRequest> {
+        match self {
+            Self::Pending(value) => value.request.as_ref(),
+            Self::Final(value) => Some(&value.request),
+        }
+    }
+    pub(super) fn written(&self) -> bool {
+        match self {
+            Self::Pending(value) => value.written,
+            Self::Final(value) => value.written,
+        }
+    }
+    pub(super) fn replay(&self) -> Replay {
+        match self {
+            Self::Pending(value) => replay_pending(value),
+            Self::Final(value) => {
+                let mut receipt = value
+                    .call
+                    .receipt(value.request.recovered().ticket, value.result.clone());
+                receipt.replayed = true;
+                Replay::Return(receipt)
+            }
+        }
+    }
+}
+pub(super) fn recorded_operation(
+    tx: &rusqlite::Connection,
+    key: &str,
+    result_id: Option<&str>,
+) -> Result<Option<RecordedCall>, WorkerError> {
+    if let Some(value) = recorded_call(tx, key)? {
+        return Ok(Some(RecordedCall::Pending(value)));
+    }
+    let Some(id) = result_id else { return Ok(None) };
+    // This inspection is authorized by the immutable monitor operation, not ingress.
+    let signature: Option<String> = tx
+        .query_row(
+            "SELECT signature FROM request_results WHERE id=?1",
+            [id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(signature) = signature else {
+        return Ok(None);
+    };
+    Ok(saved_reply(tx, id, &signature)?.map(RecordedCall::Final))
 }
 
 #[cfg(test)]
 mod replay_identity_tests {
     use super::*;
 
+    async fn database(path: &std::path::Path) -> RuntimeStore {
+        let store = RuntimeStore::open(Some(path)).await.expect("store");
+        store
+            .transaction(|tx| {
+                studio_runtime_store::receipt_schema::create(tx)?;
+                Ok(())
+            })
+            .await
+            .expect("target schema");
+        store
+    }
+    fn seed(
+        tx: &rusqlite::Transaction<'_>,
+        mut call: Call,
+        request: &RecoveredRequest,
+        written: bool,
+        outcome: Option<RetainedOutcome>,
+    ) -> Result<Call, WorkerError> {
+        let owner_id = RequestIdentity::new("retained-fixture", &[], &call.root_request_id, &[])
+            .expect("root");
+        let owner = match RequestResults::admit(tx, &owner_id, "fixture", now_ms())
+            .map_err(result_error)?
+        {
+            Admission::Fresh(owner) => owner,
+            Admission::Replay(_) => return Err(WorkerError::Capacity),
+        };
+        let admitted = super::super::reserve_provider_call(tx, &owner, call.clone())?;
+        call.admitted_request = Some(admitted.clone());
+        let mut row = row(tx, &call.key())?.ok_or(WorkerError::Capacity)?;
+        row.status = OutboxStatus::Unknown;
+        row.payload = store::ProviderCall::Retained(RetainedCall {
+            call: call.clone(),
+            request: Some(TransportRequest::from(request)),
+            admitted,
+            written,
+            outcome,
+        });
+        put(tx, &row)?;
+        Ok(call)
+    }
+
     fn call() -> Call {
         Call {
+            root_request_id: RequestIdentity::issue_root(),
+            admitted_request: None,
             scope: ConnectionScope {
                 account: "default".into(),
                 connection: "old-connection".into(),
@@ -761,7 +1237,7 @@ mod replay_identity_tests {
             }),
             transfer: None,
             deleted_actor_session: None,
-            method: "thread/read".into(),
+            method: Method::ThreadRead,
             params: json!({"threadId":"thread-1","includeTurns":false}),
         }
     }
@@ -769,10 +1245,10 @@ mod replay_identity_tests {
     #[tokio::test]
     async fn shell_policy_handoff_rechecks_activity_and_stored_settings() {
         let root = tempfile::tempdir().expect("root");
-        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        let store = database(root.path()).await;
         store.transaction(|tx| {
             let mut request = call();
-            request.method = "claude/shellPolicy".into();
+            request.method = Method::ClaudeShellPolicy;
             request.operation = "shell-policy:agent-1:tick".into();
             request.params = json!({"threadId":"thread-1","settings":studio_runtime_schema::shell_policy::Settings::default(),"eligible":true,"critical":true});
             let mut agent = studio_runtime_store::AgentRecord::from_value(json!({"provider":"codex","id":"agent-1","rootId":"agent-1","epoch":7,"threadId":"thread-1","status":"idle","autoWake":true}))?;
@@ -788,10 +1264,10 @@ mod replay_identity_tests {
     }
 
     #[tokio::test]
-    async fn legacy_lightweight_mutations_recover_all_owners_without_replay() {
+    async fn unknown_serialized_mutations_recover_all_owners_without_sending() {
         use studio_runtime_providers::{Action, Frame, ResponseBody, SessionState};
         let root = tempfile::tempdir().expect("root");
-        let database = RuntimeStore::open(Some(root.path())).await.expect("store");
+        let database = database(root.path()).await;
         database
             .transaction_with(|tx| {
                 for (index, (method, params)) in [
@@ -810,8 +1286,8 @@ mod replay_identity_tests {
                 {
                     let mut call = call();
                     call.actor = None;
-                    call.operation = format!("legacy:{index}");
-                    call.method = method.as_str().into();
+                    call.operation = format!("unknown:{index}");
+                    call.method = method;
                     call.params = params;
                     let key = call.key();
                     let request = RecoveredRequest {
@@ -827,23 +1303,15 @@ mod replay_identity_tests {
                         unknown: true,
                         remote_id: None,
                     };
-                    store::save(
-                        tx,
-                        &key,
-                        "submitted",
-                        json!({"call":call,"request":store::record(&request)}),
-                    )?;
-                    if index == 1 {
-                        store::save(tx, &key, "written", store::record(&request))?;
-                    }
+                    seed(tx, call, &request, index == 1, None)?;
                 }
                 Ok::<_, WorkerError>(())
             })
             .await
-            .expect("persist legacy submitted and written receipts");
+            .expect("persist typed unknown calls");
         let restored = recover(&database, "default", 4)
             .await
-            .expect("recover legacy records");
+            .expect("recover unknown calls");
         assert_eq!(restored.len(), 6);
         assert_eq!(
             restored
@@ -900,7 +1368,7 @@ mod replay_identity_tests {
             .expect("fresh work");
         assert!(
             actions.is_empty(),
-            "legacy lightweight flags must not bypass restored ownership"
+            "stored lightweight flags must not bypass restored ownership"
         );
         for (index, (_, request)) in restored.into_iter().rev().enumerate() {
             let actions = session
@@ -927,7 +1395,7 @@ mod replay_identity_tests {
                 assert_eq!(writes.len(), 1);
                 assert_eq!(
                     writes[0].id, fresh.id,
-                    "only fresh work writes; legacy identities never replay"
+                    "only fresh work writes; unknown identities never replay"
                 );
             }
         }
@@ -936,7 +1404,7 @@ mod replay_identity_tests {
     #[tokio::test]
     async fn stopped_and_deleted_prior_epoch_may_only_end_its_turn_work() {
         let root = tempfile::tempdir().expect("root");
-        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        let store = database(root.path()).await;
         store
             .transaction(|tx| {
                 for record in [
@@ -972,7 +1440,7 @@ mod replay_identity_tests {
                             agent: agent.into(),
                             epoch: 7,
                         });
-                        exact.method = (*method).into();
+                        exact.method = Method::from_wire(method).expect("method");
                         exact.params = params.clone();
                         assert!(authorize(tx, &exact)?, "{agent} ends {method}");
                         let mut invalid = exact.clone();
@@ -997,7 +1465,7 @@ mod replay_identity_tests {
                     agent: "deleted".into(),
                     epoch: 8,
                 });
-                deleted_current.method = "turn/interrupt".into();
+                deleted_current.method = Method::TurnInterrupt;
                 deleted_current.params = json!({"threadId":"thread-1","turnId":"turn-1"});
                 assert!(!authorize(tx, &deleted_current)?);
                 for (method, params) in &work {
@@ -1006,7 +1474,7 @@ mod replay_identity_tests {
                         agent: "woken".into(),
                         epoch: 7,
                     });
-                    woken.method = (*method).into();
+                    woken.method = Method::from_wire(method).expect("method");
                     woken.params = params.clone();
                     assert!(
                         !authorize(tx, &woken)?,
@@ -1022,7 +1490,7 @@ mod replay_identity_tests {
     #[tokio::test]
     async fn monitor_completion_recovered_cancel_authority_is_exact_and_cannot_resume() {
         let root = tempfile::tempdir().expect("root");
-        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        let store = database(root.path()).await;
         store.transaction(|tx| {
             AgentRepository::put(tx, &studio_runtime_store::AgentRecord::from_value(json!({"id":"agent-1","rootId":"agent-1","epoch":9,"deletedAt":1,"status":"interrupted","autoWake":false,"provider":studio_runtime_schema::ProviderKind::Codex}))?)?;
             studio_runtime_store::Table::new(tx).put(&studio_runtime_store::MonitorRecord::from_value(json!({"id":"watch","agent":"agent-1","epoch":7,"status":"running","cancelRequested":true,"reattachedConnectionId":"new-connection","operation":{"agent":"agent-1","epoch":7,"accountKey":"default","connectionId":"old"}}))?)?;
@@ -1033,7 +1501,7 @@ mod replay_identity_tests {
                 let mut exact = call();
                 exact.scope.connection = "new-connection".into();
                 exact.operation = "monitor-cancel:watch".into();
-                exact.method = "command/exec/terminate".into();
+                exact.method = Method::CommandExecTerminate;
                 exact.params = json!({"processId":"watch"});
                 assert!(authorize(tx, &exact)?);
                 for method in [
@@ -1043,7 +1511,7 @@ mod replay_identity_tests {
                     "thread/read",
                 ] {
                     let mut invalid = exact.clone();
-                    invalid.method = method.into();
+                    invalid.method = Method::from_wire(method).expect("method");
                     assert!(
                         !authorize(tx, &invalid)?,
                         "deleted actor must not resume {method}"
@@ -1105,7 +1573,7 @@ mod replay_identity_tests {
         changed.deleted_actor_session = Some("voice-session-1".into());
         assert!(!same_replay_identity(&prior, &changed));
         let mut changed = prior.clone();
-        changed.method = "thread/turns/list".into();
+        changed.method = Method::ThreadTurnsList;
         assert!(!same_replay_identity(&prior, &changed));
         let mut changed = prior;
         changed.params["threadId"] = json!("thread-2");
@@ -1116,13 +1584,14 @@ mod replay_identity_tests {
     async fn transferred_monitor_controls_require_the_original_retained_generation() {
         thread_local! { static SUBMITTED_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
         let root = tempfile::tempdir().expect("root");
-        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        let store = database(root.path()).await;
         let cwd = root.path().to_owned();
         store.transaction_with(move |tx| {
             AgentRepository::put(tx,&studio_runtime_store::AgentRecord::from_value(json!({"provider":"codex","id":"agent-1","rootId":"agent-1","epoch":7,"accountKey":"target","status":"queued","autoWake":true})).expect("actor"))?;
-            let original = Call {operation:"monitor:watch".into(),method:"command/exec".into(),params:json!({"processId":"watch","command":["true"],"cwd":cwd}),..call()};
+            let original = Call {operation:"monitor:watch".into(),method:Method::CommandExec,params:json!({"processId":"watch","command":["true"],"cwd":cwd}),..call()};
             let key=original.key();
-            store::save(tx,&key,"submitted",json!({"call":original,"request":{"id":key,"generation":4,"method":"command/exec","operation":key,"thread":null,"lightweight":true,"deadline":60000,"remoteId":null}}))?;
+            let request=RecoveredRequest{ticket:RequestTicket{id:RequestId::String(key.clone()),generation:4,method:Method::CommandExec},operation_id:OperationId(key),thread_id:None,lightweight:true,deadline_ms:60000,unknown:true,remote_id:None};
+            seed(tx,original,&request,false,None)?;
             studio_runtime_store::Table::new(tx).put(&studio_runtime_store::MonitorRecord::from_value(json!({"id":"watch","agent":"agent-1","epoch":7,"status":"running","interactive":true,"cancelRequested":true,"reattachedConnectionId":"reconnected-source","operation":{"agent":"agent-1","epoch":7,"accountKey":"default","connectionId":"old-connection"}})).expect("monitor"))?;
             Ok::<_,WorkerError>(())
         }).await.expect("original command and transferred owner");
@@ -1130,17 +1599,18 @@ mod replay_identity_tests {
             let mut exact = call();
             exact.scope.connection="reconnected-source".into();
             exact.operation="monitor-cancel:watch".into();
-            exact.method="command/exec/terminate".into();
+            exact.method=Method::CommandExecTerminate;
             exact.params=json!({"processId":"watch"});
             assert!(!authorize(tx,&exact)?,"a submitted-only intent does not prove a running native process");
             let original_key=Call::operation_key("default","monitor:watch");
-            let submitted=store::receipt(tx,&original_key,"submitted")?.expect("original submission");
-            store::save(tx,&original_key,"written",submitted["request"].clone())?;
+            let mut saved=row(tx,&original_key)?.expect("original submission");
+            let store::ProviderCall::Retained(payload)=&mut saved.payload else {return Err(WorkerError::Capacity)};
+            payload.written=true;put(tx,&saved)?;
             SUBMITTED_READS.with(|count| count.set(0));
             tx.trace_v2(rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT, Some(|event| {
                 if let rusqlite::trace::TraceEvent::Stmt(statement, _) = event
-                    && statement.sql().starts_with("SELECT signature,result FROM runtime_operation_receipts")
-                    && statement.expanded_sql().is_some_and(|sql| sql.contains(":submitted'"))
+                    && statement.sql().starts_with("SELECT id,kind,owner_kind")
+                    && statement.expanded_sql().is_some_and(|sql| sql.contains("retained:default:"))
                 {
                     SUBMITTED_READS.with(|count| count.set(count.get() + 1));
                 }
@@ -1158,7 +1628,7 @@ mod replay_identity_tests {
                     "epoch"=>invalid.actor.as_mut().expect("request actor").epoch+=1,
                     "process"=>invalid.params=json!({"processId":"other"}),
                     "operation"=>invalid.operation="monitor-cancel:other".into(),
-                    "method"=>invalid.method="command/exec".into(),
+                    "method"=>invalid.method=Method::CommandExec,
                     "shape"=>invalid.params=json!({"processId":"watch","command":["true"]}),
                     _=>unreachable!(),
                 }
@@ -1177,10 +1647,10 @@ mod replay_identity_tests {
     async fn concurrent_submissions_with_different_call_identity_are_refused_without_replacing_intent()
      {
         let state = tempfile::tempdir().expect("retained receipt test state directory");
-        let store = RuntimeStore::open(Some(state.path()))
-            .await
-            .expect("open retained receipt test store");
+        let store = database(state.path()).await;
         let first = Call {
+            root_request_id: RequestIdentity::issue_root(),
+            admitted_request: None,
             scope: ConnectionScope {
                 account: "default".into(),
                 connection: "connection-1".into(),
@@ -1190,7 +1660,7 @@ mod replay_identity_tests {
             actor: None,
             transfer: None,
             deleted_actor_session: None,
-            method: "thread/read".into(),
+            method: Method::ThreadRead,
             params: json!({"threadId":"source-thread","includeTurns":false}),
         };
         let conflicting = Call {
@@ -1221,14 +1691,14 @@ mod replay_identity_tests {
                 .await
                 .expect("read first replay state")
                 .expect("first replay should miss"),
-            Replay::Miss
+            Replay::Ready
         ));
         assert!(matches!(
             replay(&store, &conflicting)
                 .await
                 .expect("read conflicting replay state")
                 .expect("conflicting replay should miss before admission"),
-            Replay::Miss
+            Replay::Ready
         ));
         assert_eq!(
             submitted(&store, &first, &recovered(&first), None)
@@ -1269,14 +1739,14 @@ mod replay_identity_tests {
                 .await
                 .expect("read exact operation replay state")
                 .expect("first exact operation replay should miss"),
-            Replay::Miss
+            Replay::Ready
         ));
         assert!(matches!(
             replay(&store, &exact_retry)
                 .await
                 .expect("read exact retry replay state")
                 .expect("concurrent exact retry should miss before admission"),
-            Replay::Miss
+            Replay::Ready
         ));
         assert_eq!(
             submitted(&store, &exact, &recovered(&exact), None)

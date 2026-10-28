@@ -1309,6 +1309,39 @@ mod account_order_tests {
     use super::*;
 
     #[tokio::test]
+    async fn explicit_registration_reveals_the_retained_project_owner() {
+        let folder = tempfile::tempdir().expect("project folder");
+        let path = studio_runtime_store::path_identity::resolve(folder.path())
+            .expect("resolved folder")
+            .to_string_lossy()
+            .into_owned();
+        let state = tempfile::tempdir().expect("state");
+        let store = Arc::new(RuntimeStore::open(Some(state.path())).await.expect("store"));
+        let seeded = path.clone();
+        store.transaction(move |tx| ProjectsRepository::put_project(tx,&json!({"id":seeded,"path":seeded,"name":"Retained","sidebarHidden":true,"locationsRevision":9}))).await.expect("hidden owner");
+        assert!(
+            list(&store).await.expect("sidebar")["items"]
+                .as_array()
+                .expect("items")
+                .is_empty()
+        );
+        let project = write(
+            Arc::clone(&store),
+            json!({"action":"register","path":path}),
+            "default".to_owned(),
+            Vec::new(),
+        )
+        .await
+        .expect("register");
+        assert_eq!(project["sidebarHidden"], false);
+        assert_eq!(project["locationsRevision"], 9);
+        assert_eq!(
+            list(&store).await.expect("sidebar")["items"],
+            json!([project])
+        );
+    }
+
+    #[tokio::test]
     async fn project_account_order_saves_replays_and_clears_with_revisions() {
         let folder = tempfile::tempdir().expect("project folder");
         let path = studio_runtime_store::path_identity::resolve(folder.path())

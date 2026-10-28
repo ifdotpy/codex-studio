@@ -105,6 +105,13 @@ impl ReceiptFamilyMigration for Family {
         Ok(next)
     }
     fn finish(&self, tx: &Transaction<'_>) -> Result<()> {
+        crate::schema::prepare_receipt_owners(tx).map_err(|error| {
+            crate::receipt_migration_contract::unclassifiable(
+                "receipt-owner-schema",
+                "columns",
+                &error.to_string(),
+            )
+        })?;
         for (table, checks) in [
             (
                 "runtime_events",

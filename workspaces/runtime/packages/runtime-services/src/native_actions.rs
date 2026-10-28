@@ -191,7 +191,7 @@ fn admit(
 }
 
 fn saved_reply(
-    tx: &Transaction<'_>,
+    tx: &rusqlite::Connection,
     namespace: &str,
     root: &str,
 ) -> Result<Option<(String, Value)>> {
@@ -766,6 +766,23 @@ pub async fn execute_provider_prepared(
     preparation: &impl Preparation,
 ) -> Result<Value> {
     let replay_request = request.clone();
+    let final_reply = store
+        .read_async("runtime-services/native_actions", move |tx| {
+            if let Some((signature, reply)) =
+                saved_reply(tx, "native-action", &replay_request.request_id)?
+            {
+                if signature != replay_request.signature()? {
+                    return Err(NativeError::Conflict);
+                }
+                return Ok(Some(reply));
+            }
+            Ok(None)
+        })
+        .await?;
+    if let Some(reply) = final_reply {
+        return Ok(reply);
+    }
+    let replay_request = request.clone();
     let existing = store
         .read_async("runtime-services/native_actions", move |tx| {
             replay(tx, &replay_request)
@@ -898,6 +915,12 @@ pub async fn execute_provider_prepared(
 /// Return a previously settled action receipt before an HTTP caller applies
 /// readiness preflights that may no longer hold after the original action.
 pub fn replay_if_settled(tx: &Transaction<'_>, request: &Request) -> Result<Option<Value>> {
+    if let Some((signature, reply)) = saved_reply(tx, "native-action", &request.request_id)? {
+        if signature != request.signature()? {
+            return Err(NativeError::Conflict);
+        }
+        return Ok(Some(reply));
+    }
     let existing = replay(tx, request)?;
     Ok(existing
         .as_ref()
@@ -1561,6 +1584,68 @@ pub trait CommandAdmission {
         instruction: &str,
     ) -> Result<Value>;
 }
+pub enum CommandAction<'a> {
+    Input(&'a str),
+    Cancel,
+}
+
+/// Opaque original public response, independent of current command readiness.
+pub struct CommandReply {
+    pub response_json: String,
+}
+
+/// The task's current owner authorizes disclosure before any result is read.
+pub fn replay_command(
+    connection: &rusqlite::Connection,
+    agent_id: &str,
+    task_id: &str,
+    root: &str,
+    action: CommandAction<'_>,
+) -> Result<Option<CommandReply>> {
+    use studio_runtime_store::{AgentId, TaskId, TaskRepository};
+    let task =
+        TaskRepository::get(connection, &TaskId::from(task_id))?.ok_or(NativeError::Changed)?;
+    if task.value()["agent"] != agent_id
+        || task.value()["kind"] != "command"
+        || AgentRepository::get(connection, &AgentId::from(agent_id))?.is_none()
+    {
+        return Err(NativeError::Changed);
+    }
+    let signature = match action {
+        CommandAction::Input(text) => json!({"task":task_id,"action":"input","text":text}),
+        CommandAction::Cancel => json!({"task":task_id,"action":"cancel"}),
+    }
+    .to_string();
+    if let Some((saved_signature, reply)) = saved_reply(connection, "native-command", root)? {
+        if signature != saved_signature {
+            return Err(NativeError::Conflict);
+        }
+        let reply = match action {
+            CommandAction::Input(_) => reply,
+            CommandAction::Cancel => {
+                let request: NativeRequest = decode(reply["request"].clone(), "command.result")?;
+                if request.ticket.agent != agent_id || request.ticket.operation != task_id {
+                    return Err(NativeError::Changed);
+                }
+                reply["result"].clone()
+            }
+        };
+        return Ok(Some(CommandReply {
+            response_json: reply.to_string(),
+        }));
+    }
+    if let Some(saved) = Outbox::get::<CommandCancelIntent>(connection, &command_outbox_id(root))? {
+        if saved.signature != signature
+            || saved.owner_id != task_id
+            || saved.payload.request.ticket.agent != agent_id
+        {
+            return Err(NativeError::Conflict);
+        }
+        return Err(NativeError::Unknown);
+    }
+    Ok(None)
+}
+
 pub fn command_input(
     tx: &Transaction<'_>,
     key: &str,
