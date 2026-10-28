@@ -613,7 +613,7 @@ impl RetainedMonitorPort {
         }
         Box::pin(async move {
             let (root_request_id, admitted_request) =
-                if matches!(method, Method::ConfigRead | Method::OperationStatus) {
+                if studio_runtime_services::account_worker::retained::ProviderReadMethod::from_request(method, &params).is_some() {
                     (String::new(), None)
                 } else {
                     let id = params["processId"]
@@ -1950,7 +1950,11 @@ async fn provider_request(
     let expected_operation = identity.clone();
     let expected_scope = scope.clone();
     let (root_request_id, admitted_request) =
-        if matches!(method, Method::ConfigRead | Method::OperationStatus) {
+        if studio_runtime_services::account_worker::retained::ProviderReadMethod::from_request(
+            method, &params,
+        )
+        .is_some()
+        {
             (String::new(), None)
         } else {
             studio_runtime_services::monitor_runtime::provider_request_identity(
