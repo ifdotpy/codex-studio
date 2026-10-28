@@ -296,11 +296,23 @@ async fn archive_http_unknown_preserves_admission_and_pending_reply() {
     assert_eq!(work["archiveIntent"]["status"], "unknown");
     assert!(work["archiveIntent"]["publicAdmission"].is_object());
     let (status, replay) = accept_bytes(&app, &id).await;
-    assert_ne!(
-        status,
-        200,
-        "uncertain operation must not replay a settled reply: {}",
-        String::from_utf8_lossy(&replay)
+    assert_eq!(status, 400, "{}", String::from_utf8_lossy(&replay));
+    assert_eq!(
+        serde_json::from_slice::<Value>(&replay).unwrap()["error"],
+        "The accepted archive outcome is pending"
+    );
+    let after = store
+        .test_read_transaction(|tx| {
+            Ok(
+                studio_runtime_store::WorkItemsRepository::work_record(tx, "archive-task")?
+                    .unwrap()
+                    .into_value(),
+            )
+        })
+        .unwrap();
+    assert_eq!(
+        after, work,
+        "retry must not dispatch or change the reservation"
     );
 }
 

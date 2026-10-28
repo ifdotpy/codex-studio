@@ -836,12 +836,12 @@ async fn finalize_accepted_archive(
                     work["archive"] = archive;
                 }
                 studio_runtime_store::WorkItemsRepository::update_work(tx, &work_id, &work)?;
-                let attempt_status = if retryable {
+                let attempt_status = if unknown {
+                    WorkEffectStatus::Unknown
+                } else if retryable {
                     WorkEffectStatus::Retryable
                 } else if work["archive"]["status"] == "archived" {
                     WorkEffectStatus::Complete
-                } else if unknown {
-                    WorkEffectStatus::Unknown
                 } else {
                     WorkEffectStatus::Terminal
                 };
