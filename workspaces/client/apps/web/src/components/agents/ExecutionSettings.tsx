@@ -273,11 +273,12 @@ function ExecutionSettingsController(props: ControllerProps) {
     setChangeStatus((current) =>
       current ? observeSettingsChange(current, props.agent) : null,
     );
-  }, [props.agent, changeStatus?.phase]);
+  }, [props.agent, changeStatus?.phase, changeStatus?.directConfirmed]);
   const loggedFailure = useRef<SettingsChange | null>(null);
   useEffect(() => {
     if (
       changeStatus?.phase === "failed" &&
+      !changeStatus.errorLogged &&
       loggedFailure.current !== changeStatus
     ) {
       loggedFailure.current = changeStatus;
@@ -483,14 +484,28 @@ function ExecutionSettingsController(props: ControllerProps) {
         setChangeStatus(change);
         setStatusOpen(true);
       }}
-      onSettingsFailure={(message, uncertain) =>
+      onSettingsFailure={(key, message, uncertain) =>
         setChangeStatus((current) =>
-          current
+          current &&
+          current.requestKey === key &&
+          projected.current.agent.id === current.agentId &&
+          accountOf(projected.current.agent) === current.accountKey
             ? {
                 ...current,
                 phase: uncertain ? "saving" : "failed",
                 error: message,
+                errorLogged: true,
               }
+            : current,
+        )
+      }
+      onSettingsConfirmed={(key) =>
+        setChangeStatus((current) =>
+          current &&
+          current.requestKey === key &&
+          projected.current.agent.id === current.agentId &&
+          accountOf(projected.current.agent) === current.accountKey
+            ? { ...current, directConfirmed: true }
             : current,
         )
       }
@@ -575,12 +590,14 @@ function ScopedExecutionSettings({
   setTransferOpen,
   onSettingsChange,
   onSettingsFailure,
+  onSettingsConfirmed,
 }: ControllerProps & {
   transferOpen: boolean;
   setTransferOpen: (value: boolean) => void;
   beginSettingsSave: (role: SetupRole) => (agent: Agent) => boolean;
   onSettingsChange: (change: SettingsChange) => void;
-  onSettingsFailure: (message: string, uncertain: boolean) => void;
+  onSettingsFailure: (key: string, message: string, uncertain: boolean) => void;
+  onSettingsConfirmed: (key: string) => void;
   teamDefaults: boolean;
   readOnlyReason?: string | undefined;
   inheritedUnavailable: boolean;
@@ -926,10 +943,12 @@ function ScopedExecutionSettings({
       teamDefaults ? "worker" : "orchestrator",
     );
     request = { ...request, expected_account_key: accountOf(agent) };
+    const statusKey = request.request_id || randomUUID();
     if (!teamDefaults && !onDraftChange) {
       onSettingsChange({
         agentId: agent.id,
         accountKey: accountOf(agent),
+        requestKey: statusKey,
         phase: "saving",
         before: {
           model: current.model,
@@ -1001,6 +1020,7 @@ function ScopedExecutionSettings({
           "The settings account changed. Check the current settings.",
         );
       confirmed = true;
+      if (!teamDefaults && !request.next_turn) onSettingsConfirmed(statusKey);
       if (request.next_turn) {
         clearReceipt();
         if (mounted.current) setUnconfirmed(null);
@@ -1026,14 +1046,16 @@ function ScopedExecutionSettings({
       }
       if (!teamDefaults && !confirmed) {
         const uncertain = !!request.next_turn && !rejected;
-        if (uncertain)
-          appendAppLog({
-            at: Date.now(),
-            level: "error",
-            title: "Execution settings save unconfirmed",
-            reason: errorText(failure),
-          });
-        onSettingsFailure(errorText(failure), uncertain);
+        appendAppLog({
+          at: Date.now(),
+          level: "error",
+          title: uncertain
+            ? "Execution settings save unconfirmed"
+            : "Execution settings change failed",
+          reason: errorText(failure),
+          detail: `Agent: ${agent.id}; account: ${accountOf(agent)}; request: ${statusKey}`,
+        });
+        onSettingsFailure(statusKey, errorText(failure), uncertain);
       }
       if (!mounted.current) return;
       setStatus(null);

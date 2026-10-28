@@ -44,3 +44,21 @@ test("an account change or replaced queued settings fails visibly", () => {
 test("old SSE state does not claim a result while saving", () => {
   expect(observeSettingsChange(change, agent).phase).toBe("saving");
 });
+
+test("an old matching SSE snapshot cannot confirm a new save", () => {
+  const second = {
+    ...change,
+    before: { ...change.before, fastMode: true },
+    requested: { ...change.before, fastMode: false },
+  };
+  expect(observeSettingsChange(second, agent).phase).toBe("saving");
+});
+
+test("a confirmed direct save can apply without a pending state", () => {
+  expect(
+    observeSettingsChange(
+      { ...change, directConfirmed: true },
+      { ...agent, ...change.requested },
+    ).phase,
+  ).toBe("applied");
+});

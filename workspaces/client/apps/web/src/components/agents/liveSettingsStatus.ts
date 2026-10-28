@@ -12,6 +12,9 @@ export type SettingsChange = {
   before: Values;
   requested: Values;
   error?: string;
+  requestKey?: string;
+  directConfirmed?: boolean;
+  errorLogged?: boolean;
 };
 const equal = (a: Values, b: Values) =>
   a.model === b.model && a.effort === b.effort && a.fastMode === b.fastMode;
@@ -62,7 +65,10 @@ export function observeSettingsChange(
       };
     return change;
   }
-  if (equal(values(agent), change.requested))
+  if (
+    (change.phase === "queued" || change.directConfirmed) &&
+    equal(values(agent), change.requested)
+  )
     return { ...change, phase: "applied" };
   if (change.phase === "queued")
     return {

@@ -822,6 +822,65 @@ test("a refused live settings change appears in App errors", async () => {
   logged.mockRestore();
 });
 
+test("an old rejection cannot fail a newer account's settings change", async () => {
+  const logged = vi.spyOn(appLog, "appendAppLog");
+  let rejectOld!: (error: Error) => void;
+  h.post.mockImplementationOnce(
+    () =>
+      new Promise<Agent>((_, reject) => {
+        rejectOld = reject;
+      }),
+  );
+  h.post.mockImplementationOnce(() => new Promise<Agent>(() => {}));
+  const first: Agent = {
+    ...initial,
+    status: AgentStatus.running,
+    nextTurnSettingsSupported: true,
+  };
+  const second: Agent = { ...first, accountKey: "other" };
+  render(first).picker.onModel("gpt-6-luna");
+  render(second).picker.onModel("gpt-6-luna");
+  rejectOld(new ApiError("Old account refused", 400));
+  await Promise.resolve();
+  expect(logged).toHaveBeenCalledWith(
+    expect.objectContaining({
+      reason: "Old account refused",
+      detail: expect.stringContaining("account: default"),
+    }),
+  );
+  const modal = render(second).statusModal;
+  expect(children(modal).map((node) => node.props.children)).not.toContain(
+    "Failed",
+  );
+  logged.mockRestore();
+});
+
+test("a rejected save is logged even after the controller unmounts", async () => {
+  let rejectSave!: (error: Error) => void;
+  const logged = vi.spyOn(appLog, "appendAppLog");
+  h.post.mockImplementationOnce(
+    () =>
+      new Promise<Agent>((_, reject) => {
+        rejectSave = reject;
+      }),
+  );
+  const agent: Agent = {
+    ...initial,
+    status: AgentStatus.running,
+    nextTurnSettingsSupported: true,
+  };
+  render(agent).picker.onModel("gpt-6-luna");
+  for (const cells of h.cells.values())
+    for (const cell of cells) cell.cleanup?.();
+  rejectSave(new ApiError("Save refused", 400));
+  await vi.waitFor(() =>
+    expect(logged).toHaveBeenCalledWith(
+      expect.objectContaining({ level: "error", reason: "Save refused" }),
+    ),
+  );
+  logged.mockRestore();
+});
+
 test("switching picker roles keeps acknowledged worker defaults in the summary", async () => {
   h.read.mockResolvedValue({
     data: [
