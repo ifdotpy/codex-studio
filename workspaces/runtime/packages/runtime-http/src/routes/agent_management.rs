@@ -891,7 +891,7 @@ mod native_review_preflight_tests {
             let connection = store.test_reader().expect("read store");
             connection
                 .query_row(
-                    "SELECT COUNT(*) FROM runtime_native_action_receipts",
+                    "SELECT COUNT(*) FROM runtime_outbox WHERE kind='native_action'",
                     [],
                     |row| row.get(0),
                 )
@@ -977,7 +977,7 @@ mod native_review_preflight_tests {
             .value();
         let after_receipts: i64 = connection
             .query_row(
-                "SELECT COUNT(*) FROM runtime_native_action_receipts",
+                "SELECT COUNT(*) FROM runtime_outbox WHERE kind='native_action'",
                 [],
                 |row| row.get(0),
             )

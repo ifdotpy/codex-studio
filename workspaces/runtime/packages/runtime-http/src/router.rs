@@ -1400,8 +1400,8 @@ mod tests {
                     ("operation", "signature", "{}"),
                 )?;
                 transaction.execute(
-                    "INSERT INTO runtime_native_action_receipts(id,signature,receipt,outcome) VALUES(?1,?2,?3,?4)",
-                    ("native", "signature", "{}", "accepted"),
+                    "INSERT INTO runtime_outbox(id,kind,owner_kind,owner_id,signature,status,payload,created) VALUES(?1,'native_action','agent','agent',?2,'pending',?3,1)",
+                    ("native", "signature", "{}"),
                 )?;
                 Ok(())
             })
