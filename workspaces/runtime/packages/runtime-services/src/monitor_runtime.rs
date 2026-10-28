@@ -1213,6 +1213,10 @@ pub async fn provider_request_identity(
     store.transaction_with(move |tx| {
         let (snapshot,_)=snapshot(tx,&id)?;
         if snapshot.operation().is_some_and(|saved| saved!=&operation) {return Err(MonitorError::Refused("Monitor provider operation changed"));}
+        if probe_generation.is_none() && method==Method::CommandExec {
+            let root=operation.evidence.root_request_id.ok_or(MonitorError::Refused("Monitor provider request identity is unavailable"))?;
+            return Ok((root,operation.evidence.provider_request));
+        }
         let mut record=snapshot.record().clone();
         let identity = if let Some(generation)=probe_generation {
             if record["stallProbeGeneration"].as_i64()!=Some(generation) {return Err(MonitorError::Refused("Monitor liveness generation changed"));}
@@ -1228,13 +1232,9 @@ pub async fn provider_request_identity(
             attempt.clone()
         } else if method==Method::CommandExecTerminate {
             json!({"rootRequestId":record["cancelRootRequestId"],"providerRequest":record["cancelProviderRequest"]})
-        } else if method==Method::CommandExec {
-            studio_runtime_store::projection_value(&operation)
         } else {return Err(MonitorError::Refused("Monitor provider method has no mutation owner"));};
         let root=identity["rootRequestId"].as_str().ok_or(MonitorError::Refused("Monitor provider request identity is unavailable"))?.to_owned();
-        let admitted = if method == Method::CommandExec && probe_generation.is_none() {
-            operation.evidence.provider_request
-        } else if identity.get("providerRequest").is_some_and(|value| !value.is_null()) {
+        let admitted = if identity.get("providerRequest").is_some_and(|value| !value.is_null()) {
             let path = if probe_generation.is_some() { "$.livenessProbe.providerRequest" } else if method == Method::CommandExecTerminate { "$.cancelProviderRequest" } else { "$.inputAttempt.providerRequest" };
             let raw: String = tx.query_row("SELECT record -> ?2 FROM runtime_monitors WHERE id=?1", rusqlite::params![id, path], |row| row.get(0)).map_err(studio_runtime_store::StoreError::from)?;
             Some(serde_json::from_str(&raw).map_err(studio_runtime_store::StoreError::from)?)

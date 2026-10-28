@@ -397,11 +397,17 @@ pub fn enqueue_exit_in_transaction(
         }
         value[..end].to_owned()
     });
-    let Some(record) = MonitorsRepository::get(tx, id)? else {
+    let Some((record, raw)) = Table::<MonitorRecord>::new(tx).get_with_raw(&id.to_owned())? else {
         return Err(MonitorError::Refused("Unknown command watch"));
     };
+    #[derive(serde::Deserialize)]
+    struct StoredOperation {
+        operation: Operation,
+    }
     let mut value = record.value().clone();
-    if value.get("operation") != Some(&studio_runtime_store::projection_value(operation)) {
+    if !serde_json::from_str::<StoredOperation>(&raw)
+        .is_ok_and(|stored| stored.operation == *operation)
+    {
         return Err(MonitorError::InvalidDeliveryIdentity(
             "monitor operation changed",
         ));

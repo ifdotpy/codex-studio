@@ -304,7 +304,6 @@ impl EventWriteRepository {
                     "lastCompletedTurn",
                     "lastCompletedTurnStatus",
                     "lastCompletedTurnError",
-                    "startOutcomeHold",
                     "lastAnswer",
                     "disconnectRecovery",
                     "restartRecovery",
@@ -321,6 +320,11 @@ impl EventWriteRepository {
                     } else {
                         value.remove(key);
                     }
+                }
+                if let Some(hold) = &agent.start_outcome_hold {
+                    value.insert("startOutcomeHold".to_owned(), crate::projection_value(hold));
+                } else {
+                    value.remove("startOutcomeHold");
                 }
             }
             value != &before
@@ -486,6 +490,7 @@ mod tests {
                     json!({"id":"a","provider":"codex","rootId":"a","name":"Agent","status":"running","epoch":2,
                 "inFlight":true,"turnId":"turn-1","lastAnswer":"",
                 "disconnectRecovery":{"epoch":2,"turnId":"turn-1"},
+                "startOutcomeHold":{"stage":"held","reason":"pending"},
                 "restartRecovery":{"stage":"held"}})
                     .to_string(),
                 ],
@@ -514,6 +519,10 @@ mod tests {
         assert_eq!(value["status"], "running");
         assert_eq!(value["inFlight"], true);
         assert_eq!(value["turnId"], "turn-1");
+        assert_eq!(
+            value["startOutcomeHold"],
+            json!({"stage":"held","reason":"pending"})
+        );
         assert_eq!(
             (
                 &value["lastAnswer"],
