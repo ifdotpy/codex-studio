@@ -370,8 +370,7 @@ async fn request(
                 if pointer.is_null() {
                     *pointer = json!({});
                 }
-                pointer[field] = serde_json::to_value(&admitted)
-                    .map_err(studio_runtime_store::StoreError::from)?;
+                pointer[field] = studio_runtime_store::projection_value(&admitted);
                 admitted
             };
             AgentRepository::put(tx, &agent)?;
