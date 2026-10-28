@@ -52,7 +52,7 @@ pub enum DispatchOutcome {
 
 /// Notification application proof stored in the owning journal gap until ACK.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub(crate) struct NotificationSettlement {
+pub struct NotificationSettlement {
     pub signature: String,
     pub outcome: DispatchOutcome,
 }
