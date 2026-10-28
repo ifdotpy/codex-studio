@@ -21,7 +21,7 @@ struct Seed {
     events: Vec<Event>,
     execution_runs: Vec<Value>,
     execution_effects: Vec<Value>,
-    execution_nodes: Vec<Value>,
+    execution_nodes: Vec<ExecutionNode>,
     transcript_items: Vec<Item>,
     monitors: Vec<MonitorRecord>,
     projects: Vec<Value>,
@@ -32,6 +32,13 @@ struct Seed {
     #[serde(rename = "analytics.sqlite3")]
     analytics: Vec<String>,
 }
+#[derive(serde::Serialize, Deserialize)]
+struct ExecutionNode {
+    status: studio_runtime_schema::persistence::ExecutionNodeStatus,
+    #[serde(flatten)]
+    fields: serde_json::Map<String, Value>,
+}
+
 #[derive(Deserialize)]
 struct Metadata {
     id: String,
@@ -183,9 +190,13 @@ pub(crate) async fn state() -> (tempfile::TempDir, RuntimeStore, Value) {
         .tool_requests
         .iter_mut()
         .chain(seed.execution_effects.iter_mut())
-        .chain(seed.execution_nodes.iter_mut())
     {
         replace_ids(record, &ids);
+    }
+    for node in &mut seed.execution_nodes {
+        for field in node.fields.values_mut() {
+            replace_ids(field, &ids);
+        }
     }
     for entity in &mut seed.sync_entities {
         if let Some(id) = ids.get(&entity.id) {
@@ -238,9 +249,7 @@ pub(crate) async fn state() -> (tempfile::TempDir, RuntimeStore, Value) {
             tx.execute("INSERT INTO runtime_execution_effects(id,run,kind,reference,record) VALUES(?1,?2,?3,?4,?5)",params![record["id"].as_str(),record["runId"].as_str(),record["kind"].as_str(),record["referenceId"].as_str(),record.to_string()])?;
         }
         for record in seed.execution_nodes {
-            // Nodes have no record schema or typed writer; the shared status enum owns validation.
-            let _: studio_runtime_schema::persistence::ExecutionNodeStatus = serde_json::from_value(record["status"].clone())?;
-            tx.execute("INSERT INTO runtime_execution_nodes(id,run,record) VALUES(?1,?2,?3)",params![record["id"].as_str(),record["runId"].as_str(),record.to_string()])?;
+            tx.execute("INSERT INTO runtime_execution_nodes(id,run,record) VALUES(?1,?2,?3)",params![record.fields["id"].as_str(),record.fields["runId"].as_str(),serde_json::to_string(&record)?])?;
         }
         for item in seed.transcript_items { assert_eq!(item.record.value()["id"],item.id); Table::new(tx).put_with_columns(&item.record,&[("agent",SqlValue::Text(item.agent)),("created",SqlValue::Real(item.created))])?; }
         for monitor in seed.monitors { Table::new(tx).put(&monitor)?; }
