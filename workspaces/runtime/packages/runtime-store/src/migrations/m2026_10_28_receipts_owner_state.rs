@@ -201,6 +201,28 @@ mod tests {
         Ok(next)
     }
     #[test]
+    fn receipts_owner_state_duplicate_source_refuses_and_preserves_bytes() {
+        let mut db = fixture();
+        let id = "liveness:session-start-failure:duplicate";
+        let original = r#"{"reason":"first","reason":"second","at":1.0}"#;
+        db.execute(
+            "INSERT INTO runtime_operation_receipts VALUES(?1,'liveness',?2)",
+            params![id, original],
+        )
+        .expect("source");
+        assert!(
+            matches!(batch(&mut db), Err(contract::ReceiptMigrationError::Unclassifiable{table,key,..}) if table==TABLE && key==id)
+        );
+        let saved: String = db
+            .query_row(
+                "SELECT result FROM runtime_operation_receipts WHERE id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .expect("source remains");
+        assert_eq!(saved, original);
+    }
+    #[test]
     fn receipts_owner_state_byte_budget_and_unknown_idle_are_preserved() {
         let mut db = fixture();
         for i in 0..2 {
