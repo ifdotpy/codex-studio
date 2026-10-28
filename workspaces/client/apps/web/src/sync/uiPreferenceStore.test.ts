@@ -76,7 +76,7 @@ describe("UI preference cache", () => {
       const first = readPreferenceFields("user");
       const writer = required(Object.values(first)[0]).writer;
       expect(writer).toMatch(
-        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+        /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
       );
       writePreferenceEdit("codex-studio-preferences-v1", before, {
         ...before,
