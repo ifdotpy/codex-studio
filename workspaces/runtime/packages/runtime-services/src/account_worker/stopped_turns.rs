@@ -176,15 +176,29 @@ async fn request(
     method: Method,
     params: Value,
 ) -> (Outcome, Value) {
+    let mut request = SessionRequest {
+        root_request_id: String::new(),
+        admitted_request: None,
+        scope: scope.clone(),
+        expected_scope: Some(scope.clone()),
+        operation,
+        actor: Some(RequestActor {
+            agent: turn.agent.clone(),
+            epoch: turn.epoch,
+        }),
+        transfer: None,
+        deleted_actor_session: None,
+        method,
+        params,
+        deadline: std::time::Instant::now() + REQUEST_TIMEOUT,
+    };
     let actor = turn.clone();
-    let request_scope = scope.clone();
-    let request_operation = operation.clone();
-    let request_params = params.clone();
+    let mut intent = super::retained::ProviderCallIntent::from(&request);
     let reserved = store
         .transaction_with(move |tx| {
             let mut agent = AgentRepository::get(tx, &AgentId::from(actor.agent.as_str()))?
                 .ok_or(super::WorkerError::CallbackUnknown)?;
-            if ended_turn(&agent, request_scope.generation)
+            if ended_turn(&agent, intent.scope.generation)
                 .is_none_or(|current| current.owner != actor.owner)
             {
                 return Err(super::WorkerError::CallbackUnknown);
@@ -200,7 +214,7 @@ async fn request(
             .ok_or(super::WorkerError::CallbackUnknown)?
             .to_owned();
             let (root, source) = super::store::execution_admission(tx, &attempt_id)?;
-            let field = if request_operation == actor.interrupt_operation() {
+            let field = if intent.operation == actor.interrupt_operation() {
                 "admission"
             } else {
                 "terminalsAdmission"
@@ -219,24 +233,8 @@ async fn request(
                 serde_json::from_value(saved.clone())
                     .map_err(studio_runtime_store::StoreError::from)?
             } else {
-                let admitted = super::retained::reserve_provider_call(
-                    tx,
-                    &source,
-                    super::retained::ProviderCallIntent {
-                        root_request_id: root.clone(),
-                        admitted_request: None,
-                        scope: request_scope,
-                        operation: request_operation,
-                        actor: Some(RequestActor {
-                            agent: actor.agent,
-                            epoch: actor.epoch,
-                        }),
-                        transfer: None,
-                        deleted_actor_session: None,
-                        method,
-                        params: request_params,
-                    },
-                )?;
+                intent.root_request_id = root.clone();
+                let admitted = super::retained::reserve_provider_call(tx, &source, intent)?;
                 if pointer.is_null() {
                     *pointer = json!({});
                 }
@@ -251,24 +249,9 @@ async fn request(
     let Ok((root_request_id, admitted_request)) = reserved else {
         return (Outcome::Unknown, Value::Null);
     };
-    let receipt = session
-        .request(SessionRequest {
-            root_request_id,
-            admitted_request: Some(admitted_request),
-            scope: scope.clone(),
-            expected_scope: Some(scope.clone()),
-            operation,
-            actor: Some(RequestActor {
-                agent: turn.agent.clone(),
-                epoch: turn.epoch,
-            }),
-            transfer: None,
-            deleted_actor_session: None,
-            method,
-            params,
-            deadline: std::time::Instant::now() + REQUEST_TIMEOUT,
-        })
-        .await;
+    request.root_request_id = root_request_id;
+    request.admitted_request = Some(admitted_request);
+    let receipt = session.request(request).await;
     match receipt {
         Ok(receipt) => match receipt.result {
             RequestResult::Reply(reply) => (Outcome::Accepted, reply),
@@ -278,7 +261,6 @@ async fn request(
             RequestResult::NotSent => (Outcome::NotSent, Value::Null),
             RequestResult::Unknown => (Outcome::Unknown, Value::Null),
         },
-        Err(super::retained::PortError::Unknown) => (Outcome::Unknown, Value::Null),
         Err(super::retained::PortError::NotSent) => (Outcome::NotSent, Value::Null),
         Err(_) => (Outcome::Unknown, Value::Null),
     }

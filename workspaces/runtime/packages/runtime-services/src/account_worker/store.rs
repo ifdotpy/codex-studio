@@ -344,7 +344,7 @@ pub fn get_notification(
         tx,
         &journal_operation(scope, identity.generation, identity.cursor),
     )
-    .map_err(outbox_store_error)?
+    .map_err(StoreError::from)?
     .and_then(|row| row.payload.notification))
 }
 
@@ -356,7 +356,7 @@ pub fn put_notification(
     let scope = notification_scope(identity)?;
     let id = journal_operation(scope, identity.generation, identity.cursor);
     let mut row =
-        if let Some(row) = Outbox::get::<JournalSettlement>(tx, &id).map_err(outbox_store_error)? {
+        if let Some(row) = Outbox::get::<JournalSettlement>(tx, &id).map_err(StoreError::from)? {
             row
         } else {
             let (account, actor) = scope
@@ -397,18 +397,7 @@ pub fn put_notification(
         ));
     }
     row.payload.notification = Some(notification);
-    Outbox::put(tx, &row).map_err(outbox_store_error)
-}
-
-fn outbox_store_error(error: studio_runtime_store::outbox::OutboxError) -> StoreError {
-    match error {
-        studio_runtime_store::outbox::OutboxError::Sql(error) => error.into(),
-        studio_runtime_store::outbox::OutboxError::Json(error) => error.into(),
-        studio_runtime_store::outbox::OutboxError::Conflict(id) => StoreError::InvalidSyncObject {
-            scope: "runtime_outbox".into(),
-            id,
-        },
-    }
+    Outbox::put(tx, &row).map_err(StoreError::from)
 }
 
 pub(super) struct SubmissionEvidence {
@@ -2872,11 +2861,7 @@ fn delete_effect(tx: &studio_runtime_store::Transaction<'_>, key: &str) -> Resul
 }
 
 fn outbox_error(error: studio_runtime_store::outbox::OutboxError) -> WorkerError {
-    match error {
-        studio_runtime_store::outbox::OutboxError::Sql(error) => StoreError::from(error).into(),
-        studio_runtime_store::outbox::OutboxError::Json(error) => StoreError::from(error).into(),
-        studio_runtime_store::outbox::OutboxError::Conflict(id) => invalid(&id),
-    }
+    WorkerError::Store(error.into())
 }
 
 #[cfg(test)]
