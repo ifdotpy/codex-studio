@@ -169,7 +169,7 @@ fn db(case: &Value) -> Connection {
 }
 fn row(db: &Connection) -> Value {
     db.query_row(
-        "SELECT id,signature,json_extract(payload,'$.receipt'),json_extract(payload,'$.outcome') FROM runtime_outbox WHERE kind='native_action' AND owner_kind='agent' UNION ALL SELECT json_extract(result,'$.reply.receipt.requestId'),signature,json_extract(result,'$.reply.receipt'),json_extract(result,'$.reply.outcome') FROM request_results WHERE json_type(result,'$.reply.receipt') IS NOT NULL",
+        "SELECT json_extract(payload,'$.receipt.requestId'),signature,json_extract(payload,'$.receipt'),json_extract(payload,'$.outcome') FROM runtime_outbox WHERE kind='native_action' AND owner_kind='agent' UNION ALL SELECT json_extract(result,'$.reply.receipt.requestId'),signature,json_extract(result,'$.reply.receipt'),json_extract(result,'$.reply.outcome') FROM request_results WHERE json_type(result,'$.reply.receipt') IS NOT NULL",
         [],
         |r| {
             Ok((
@@ -743,10 +743,19 @@ fn review_reservation_rolls_back_and_replays_without_second_child() {
             |r| r.get(0),
         )
         .expect("child");
+    let child: Value = serde_json::from_str(&raw).expect("JSON");
+    let action_id = child["nativeReview"]["actionRequestId"]
+        .as_str()
+        .expect("persisted action identity");
     assert_eq!(
-        serde_json::from_str::<Value>(&raw).expect("JSON"),
-        case["child"]
+        uuid::Uuid::parse_str(action_id)
+            .expect("UUID")
+            .get_version_num(),
+        7
     );
+    let mut expected = case["child"].clone();
+    expected["nativeReview"]["actionRequestId"] = json!(action_id);
+    assert_eq!(child, expected);
 }
 
 #[test]
@@ -1116,7 +1125,9 @@ fn stored_native_action_errors_name_the_table_and_row() {
     let tx = db.unchecked_transaction().expect("begin");
     assert!(matches!(
         claim(&tx, "broken-receipt", &ticket()),
-        Err(NativeError::Sql(_))
+        Err(NativeError::Store(
+            studio_runtime_store::StoreError::Outbox(_)
+        ))
     ));
 }
 #[test]
@@ -1171,7 +1182,7 @@ fn definitely_unsent_action_releases_owner_and_keeps_receipt_retryable() {
     assert_eq!(
         settle(
             &tx,
-            "action-request",
+            &request_id("action-request"),
             &TransportReceipt {
                 ticket: ticket(),
                 delivery: Delivery::NotSent
@@ -1250,6 +1261,7 @@ fn python_review_child_claim_and_review_start_match() {
         // Rust starts the reviewer thread before the action receipt exists;
         // Python starts it in prepare() after its claim.
         child["threadId"] = case["submitted"]["threadId"].clone();
+        child["nativeReview"]["actionRequestId"] = json!(request_id("review-action"));
         let id = child["id"].as_str().expect("child id").to_owned();
         let mut db = db(&json!({"agent":case["claimed"].clone()}));
         db.execute("DELETE FROM runtime_agents", []).expect("reset");
@@ -1273,7 +1285,9 @@ fn python_review_child_claim_and_review_start_match() {
         reserve(&tx, &request, "attempt", 1234567.5, &Gate).expect("review claim");
         tx.commit().expect("commit");
         let claimed = stored_agent(&db, &id);
-        let python = &case["claimed"];
+        let mut python = case["claimed"].clone();
+        python["nativeReview"]["actionRequestId"] =
+            child["nativeReview"]["actionRequestId"].clone();
         for key in [
             "status",
             "inFlight",

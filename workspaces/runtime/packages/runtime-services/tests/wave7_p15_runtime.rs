@@ -1270,7 +1270,7 @@ async fn http_input_busy_sequence_records_a_refusal_and_preserves_prior_receipts
     assert_eq!(receipt["result"]["response"]["status"], "rejected");
     assert_eq!(
         record(&store, &id)["lastInputAttempt"]["id"],
-        "http:active-request",
+        format!("http:{}", input_request_id("active-request")),
         "busy request never reserves an inputAttempt"
     );
     assert!(
@@ -1343,15 +1343,20 @@ async fn http_input_receipts_survive_restart_and_refuse_uncertain_or_changed_con
             cols: None,
             close_stdin: false,
         };
+        let request_id = uuid::Uuid::now_v7().to_string();
         let result = runtime(&store, &port)
-            .input_http(id, &input_request_id("same-request"), &input, 2000.0)
+            .input_http(id, &request_id, &input, 2000.0)
             .await;
         assert_eq!(
             result.is_ok(),
             boundary == "acknowledged",
             "{boundary}: {result:?}"
         );
-        assert_eq!(port.submitted.lock().expect("native writes").len(), 1);
+        assert_eq!(
+            port.submitted.lock().expect("native writes").len(),
+            1,
+            "{boundary}: {result:?}"
+        );
         let saved = record(&store, id);
         if boundary == "settlement-rollback" {
             assert_eq!(
@@ -1369,9 +1374,7 @@ async fn http_input_receipts_survive_restart_and_refuse_uncertain_or_changed_con
         );
         let fresh_port = Arc::new(Port::default());
         let restarted = runtime(&store, &fresh_port);
-        let replay = restarted
-            .input_http(id, &input_request_id("same-request"), &input, 2001.0)
-            .await;
+        let replay = restarted.input_http(id, &request_id, &input, 2001.0).await;
         assert_eq!(
             replay.is_ok(),
             boundary == "acknowledged",
@@ -1389,7 +1392,7 @@ async fn http_input_receipts_survive_restart_and_refuse_uncertain_or_changed_con
         };
         assert!(
             restarted
-                .input_http(id, &input_request_id("same-request"), &changed, 2002.0)
+                .input_http(id, &request_id, &changed, 2002.0)
                 .await
                 .is_err()
         );
@@ -1402,19 +1405,14 @@ async fn http_input_receipts_survive_restart_and_refuse_uncertain_or_changed_con
         );
         if matches!(boundary, "acknowledged" | "rejected" | "not-sent") {
             restarted
-                .input_http(
-                    id,
-                    &input_request_id("new-intentional-request"),
-                    &input,
-                    2003.0,
-                )
+                .input_http(id, &uuid::Uuid::now_v7().to_string(), &input, 2003.0)
                 .await
                 .expect("fresh identity permits deliberate identical input");
             assert_eq!(fresh_port.submitted.lock().expect("fresh write").len(), 1);
         } else {
             assert!(
                 restarted
-                    .input_http(id, &input_request_id("different-request"), &input, 2003.0)
+                    .input_http(id, &uuid::Uuid::now_v7().to_string(), &input, 2003.0)
                     .await
                     .is_err()
             );
@@ -1433,14 +1431,14 @@ async fn http_input_receipts_survive_restart_and_refuse_uncertain_or_changed_con
                 &store,
                 id,
                 &operation,
-                "http:same-request",
+                &format!("http:{request_id}"),
                 studio_runtime_services::monitor_policy::InputOutcome::Acknowledged,
                 2004.0,
             )
             .await
             .expect("late exact native callback resolves the uncertainty");
             restarted
-                .input_http(id, &input_request_id("same-request"), &input, 2005.0)
+                .input_http(id, &request_id, &input, 2005.0)
                 .await
                 .expect("replay the late durable acknowledgement without native I/O");
             assert!(
