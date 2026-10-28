@@ -357,9 +357,13 @@ impl SchedulerRepository {
                 "submitted",
                 "activeAtReservation",
                 "executionOutcome",
+                "turnId",
+                "observedTurnId",
+                "nativeOperationId",
+                "action",
             ]
             .iter()
-            .any(|key| attempt.get(*key) != saved.get(*key))
+            .any(|key| attempt[*key] != saved[*key])
         {
             return Ok(false);
         }

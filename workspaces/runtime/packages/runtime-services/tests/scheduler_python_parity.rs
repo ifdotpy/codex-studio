@@ -96,6 +96,14 @@ async fn send_now_recovers_unsent_batch_after_result_gc() {
                     tx, &current, &target
                 )?
             );
+            let mut changed = current.clone();
+            changed.extra.get_mut("startAttempt").expect("attempt")["observedTurnId"] =
+                json!("other-turn");
+            assert!(
+                !studio_runtime_store::SchedulerRepository::proven_unsent_pending_batch(
+                    tx, &changed, &target
+                )?
+            );
             tx.execute("UPDATE request_results SET created=0", [])?;
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -152,13 +160,15 @@ async fn pending_selection_matches_python_and_claims_rust_event_write_events() {
         .await
         .expect("unsent restores pending");
     let event_agent = agent.clone();
+    let annotation_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    let written_id = annotation_id.clone();
     store
         .transaction(move |tx| {
             annotate(
                 tx,
                 AnnotationWrite {
                     agent_id: event_agent,
-                    id: Some("rust-written".into()),
+                    id: Some(written_id),
                     path: "README.md".into(),
                     line: 1,
                     text: "scheduler annotation".into(),
@@ -179,7 +189,7 @@ async fn pending_selection_matches_python_and_claims_rust_event_write_events() {
         .expect("input");
     assert_eq!(
         intent.events.last().map(|e| e.id.as_str()),
-        Some("annotation:rust-written")
+        Some(format!("annotation:{annotation_id}").as_str())
     );
     assert!(
         mark_submitted_for_provider(&store, &intent, "accepted-request", 1, "test-connection")
