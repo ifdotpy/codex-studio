@@ -294,17 +294,21 @@ impl Fixture {
     }
 
     async fn receipt(&self, actor: &str, call_id: &str) -> Value {
-        let index = agents()
-            .iter()
-            .position(|record| record["id"] == actor)
-            .unwrap();
-        let id = format!("thread-{index}:{call_id}");
+        let actor = actor.to_owned();
+        let call_id = call_id.to_owned();
         self.store
             .read_async("test", move |tx| {
-                studio_runtime_store::system_reads::get(tx, "runtime_tool_requests", &id)
+                let (id, raw, rpc): (String, String, String) = tx.query_row(
+                    "SELECT id,record,json_extract(record,'$.rpcId') FROM runtime_tool_requests WHERE kind='managed_tool' AND agent=?1 AND json_extract(record,'$.callId')=?2",
+                    rusqlite::params![actor, call_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )?;
+                let record = studio_runtime_store::system_reads::decode("runtime_tool_requests", &id, &raw)?;
+                assert_eq!(uuid::Uuid::parse_str(&id).unwrap().get_version_num(), 7);
+                assert_eq!(rpc, format!("rpc-{call_id}"));
+                Ok::<_, studio_runtime_store::StoreError>(record)
             })
             .await
-            .unwrap()
             .unwrap()
     }
 }
@@ -636,10 +640,22 @@ async fn an_interrupted_host_exec_receipt_names_its_operation() {
         "hostExecRequest": {"requestId": id, "params": {"agentId": LEAD, "action": "execute",
             "operationId": id}, "timeout": 3960.0},
     });
+    let owner_id = task_root.clone();
     store
         .transaction_with(
             move |tx| -> Result<(), crate::tool_requests::ToolRequestError> {
-                crate::tool_requests::admission::reserve(tx, receipt, "call-1", "thread-0:", None)?;
+                let mut record = crate::tool_requests::admission::reserve(
+                    tx,
+                    receipt,
+                    "call-1",
+                    "thread-0:",
+                    None,
+                )?;
+                assert!(crate::tool_requests::admission::claim(&mut record, 20.0)?);
+                tx.execute(
+                    "UPDATE runtime_tool_requests SET record=?1 WHERE id=?2",
+                    rusqlite::params![record.to_string(), owner_id],
+                )?;
                 Ok(())
             },
         )

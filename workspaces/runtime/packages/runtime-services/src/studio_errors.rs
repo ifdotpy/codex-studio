@@ -1210,7 +1210,16 @@ mod tests {
     #[test]
     fn monitor_evidence_keeps_identity_and_correlates_private_unclassified_proof() {
         let proof = "password=proof-canary";
-        let record = json!({"status":"lost","operation":{"agent":"worker","epoch":7,"accountKey":"account","connectionId":"connection","credentials":"operation-canary"},"reattachRecovery":{"accountKey":"account","epoch":7,"status":"not_reattachable","startedAt":123.0,"proof":proof}});
+        let mut record = json!({"status":"lost","operation":{"agent":"worker","epoch":7,"accountKey":"account","connectionId":"connection","credentials":"operation-canary"},"reattachRecovery":{"accountKey":"account","epoch":7,"status":"not_reattachable","startedAt":123.0,"proof":proof}});
+        assert!(
+            monitor_evidence(&record).is_err(),
+            "unknown operation fields are refused"
+        );
+        record
+            .get_mut("operation")
+            .and_then(Value::as_object_mut)
+            .unwrap()
+            .remove("credentials");
         let evidence = monitor_evidence(&record).expect("known source owners");
         let encoded = serde_json::to_value(evidence).expect("safe evidence");
         assert_eq!(encoded["operation"]["connectionId"], "connection");

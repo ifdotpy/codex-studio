@@ -234,15 +234,29 @@ async fn a_vm_reviewer_reads_layr_through_one_exact_guest_request() {
         *params,
         json!({"agentId": REVIEWER, "argv": ["layr", "--line", "main", "diff", "s1", "s2"]})
     );
-    // Python `dynamic` keys the tool request as `<thread>:<call>`.
-    let identity = "layr-read:35f1f22133704ced9123decbce90efded6d277fd58e50b9e2af4cc3a2974b275";
-    assert_eq!(request_id.as_deref(), Some(identity));
+    let owner = || {
+        let connection = fixture.store.test_reader().unwrap();
+        let (id, rpc): (String, String) = connection.query_row(
+            "SELECT id,json_extract(record,'$.rpcId') FROM runtime_tool_requests WHERE kind='managed_tool' AND agent=?1 AND json_extract(record,'$.callId')=?2",
+            rusqlite::params![REVIEWER, "read-1"],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        assert_eq!(uuid::Uuid::parse_str(&id).unwrap().get_version_num(), 7);
+        assert_eq!(rpc, "rpc-read-1");
+        id
+    };
+    let root = owner();
+    assert_eq!(
+        request_id.as_deref(),
+        Some(identity(REVIEWER, &root).as_str())
+    );
     assert_eq!(*timeout, Duration::from_secs(330));
 
     // A retry of the same tool request returns the first answer; the
     // command does not run again.
     let retry = fixture.call(REVIEWER, "read-1", args).await;
     assert_eq!(retry, first);
+    assert_eq!(owner(), root);
     assert_eq!(fixture.calls().len(), 1);
 }
 
