@@ -69689,6 +69689,21 @@
       "get": {
         "description": "Server-sent events of the client core of this browser device.",
         "operationId": "client_events_api_client_events_get",
+        "parameters": [
+          {
+            "description": "The paired server whose client core runs the command, by server id. Without it, the core of this page's server runs it. The core of a paired server signs with the key that this device holds for it on this server.",
+            "in": "query",
+            "name": "server",
+            "required": false,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "title": "Server",
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -69737,6 +69752,10 @@
             "$ref": "#/components/responses/ApiError403",
             "description": "Forbidden"
           },
+          "404": {
+            "$ref": "#/components/responses/ApiError404",
+            "description": "Not Found"
+          },
           "500": {
             "$ref": "#/components/responses/ApiError500",
             "description": "Internal Server Error"
@@ -69760,6 +69779,21 @@
       "post": {
         "description": "Runs one command in the client core that this server hosts for the browser device of the HttpOnly device cookie. Commands that need the device of the person answer the error code unsupported_here.",
         "operationId": "client_request_api_client_request_post",
+        "parameters": [
+          {
+            "description": "The paired server whose client core runs the command, by server id. Without it, the core of this page's server runs it. The core of a paired server signs with the key that this device holds for it on this server.",
+            "in": "query",
+            "name": "server",
+            "required": false,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "title": "Server",
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -69832,6 +69866,10 @@
           "403": {
             "$ref": "#/components/responses/ApiError403",
             "description": "Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/ApiError404",
+            "description": "Not Found"
           },
           "408": {
             "$ref": "#/components/responses/ApiError408",

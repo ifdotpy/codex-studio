@@ -31423,7 +31423,12 @@ export interface operations {
   };
   client_events_api_client_events_get: {
     parameters: {
-      query?: never | undefined;
+      query?:
+        | {
+            /** @description The paired server whose client core runs the command, by server id. Without it, the core of this page's server runs it. The core of a paired server signs with the key that this device holds for it on this server. */
+            server?: string | undefined;
+          }
+        | undefined;
       header?: never | undefined;
       path?: never | undefined;
       cookie?: never | undefined;
@@ -31451,6 +31456,8 @@ export interface operations {
       400: components["responses"]["ApiError400"];
       /** @description Forbidden */
       403: components["responses"]["ApiError403"];
+      /** @description Not Found */
+      404: components["responses"]["ApiError404"];
       /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
       /** @description Not Implemented */
@@ -31461,7 +31468,12 @@ export interface operations {
   };
   client_request_api_client_request_post: {
     parameters: {
-      query?: never | undefined;
+      query?:
+        | {
+            /** @description The paired server whose client core runs the command, by server id. Without it, the core of this page's server runs it. The core of a paired server signs with the key that this device holds for it on this server. */
+            server?: string | undefined;
+          }
+        | undefined;
       header?: never | undefined;
       path?: never | undefined;
       cookie?: never | undefined;
@@ -31499,6 +31511,8 @@ export interface operations {
       400: components["responses"]["ApiError400"];
       /** @description Forbidden */
       403: components["responses"]["ApiError403"];
+      /** @description Not Found */
+      404: components["responses"]["ApiError404"];
       /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
       /** @description Payload Too Large */

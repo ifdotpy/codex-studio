@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -18,6 +18,8 @@ use serde_json::{Value, json};
 use studio_client_core::client::Client;
 use studio_client_core::native::{self, ConnectionConfig};
 use studio_client_core::protocol::{Request, Response as CoreResponse};
+use studio_client_core::server_keys::{FileVault, VaultSigner};
+use studio_client_core::server_transport::RemoteClient;
 use tokio::sync::broadcast;
 use tokio::time::Instant;
 
@@ -46,6 +48,8 @@ const CLIENT_CORE_CLOSE_CHECK_MILLISECONDS: u64 = 20;
 const CLIENT_STATE_RETENTION_SECONDS: u64 = 7_776_000;
 /// Folder below the server state directory that holds one core state folder per device.
 const CLIENT_STATE_FOLDER: &str = "web-clients";
+/// Folder below a device folder that holds one core state folder per paired server.
+const CLIENT_SERVER_FOLDER: &str = "servers";
 /// Error code of a command that needs the device of the person.
 const UNSUPPORTED_HERE: &str = "unsupported_here";
 const UNSUPPORTED_MESSAGE: &str =
@@ -199,7 +203,10 @@ impl DeviceCore {
 
 /// The open device cores of this server.
 pub(crate) struct ClientCores {
+    /// Key: the device, or `<device>/<server>` for the core of a paired server.
     open: tokio::sync::Mutex<HashMap<String, Arc<DeviceCore>>>,
+    /// Held while a command changes the server keys of a device.
+    keys: tokio::sync::Mutex<()>,
     directory: PathBuf,
     backend_origin: String,
     idle: Duration,
@@ -223,6 +230,7 @@ impl ClientCores {
         }
         Self {
             open: tokio::sync::Mutex::default(),
+            keys: tokio::sync::Mutex::default(),
             directory: PathBuf::from(state_dir).join(CLIENT_STATE_FOLDER),
             backend_origin: format!("http://127.0.0.1:{port}/"),
             idle,
@@ -254,15 +262,45 @@ impl ClientCores {
     async fn core(
         self: &Arc<Self>,
         device: &str,
+        server: Option<&str>,
     ) -> Result<(Arc<DeviceCore>, ActivityGuard), ApiError> {
-        if let Some(core) = self.open.lock().await.get(device) {
+        let key = match server {
+            Some(server) => format!("{device}/{server}"),
+            None => device.to_owned(),
+        };
+        if let Some(core) = self.open.lock().await.get(&key) {
             let active = ActivityGuard::new(&core.activity);
             return Ok((Arc::clone(core), active));
         }
-        // Only this device waits for its previous core; other devices keep working.
-        self.wait_for_previous_core(device).await?;
+        let state_directory = match server {
+            Some(server) => self
+                .directory
+                .join(device)
+                .join(CLIENT_SERVER_FOLDER)
+                .join(server),
+            None => self.directory.join(device),
+        };
+        // The core of a paired server signs with this device's key for that server.
+        let (backend_origin, signer) = match server {
+            Some(server) => {
+                let vault = Arc::new(FileVault::new(&self.directory.join(device)));
+                let signer = VaultSigner::new(vault, server)
+                    .map_err(|message| ApiError::new(StatusCode::NOT_FOUND, message))?;
+                let origin = format!(
+                    "{}/",
+                    studio_client_core::server_keys::Signer::origin(&signer)
+                );
+                (
+                    origin,
+                    Some(Arc::new(signer) as Arc<dyn studio_client_core::server_keys::Signer>),
+                )
+            }
+            None => (self.backend_origin.clone(), None),
+        };
+        // Only this core waits for its previous core; other cores keep working.
+        self.wait_for_previous_core(&key, &state_directory).await?;
         let mut open = self.open.lock().await;
-        if let Some(core) = open.get(device) {
+        if let Some(core) = open.get(&key) {
             let active = ActivityGuard::new(&core.activity);
             return Ok((Arc::clone(core), active));
         }
@@ -277,8 +315,9 @@ impl ClientCores {
         let events = sender.downgrade();
         let client = Client::open(
             ConnectionConfig {
-                state_directory: self.directory.join(device),
-                backend_origin: self.backend_origin.clone(),
+                state_directory,
+                backend_origin,
+                signer,
             },
             move |event| {
                 // No open stream means no reader; the page subscribes again after it reconnects.
@@ -301,33 +340,43 @@ impl ClientCores {
             views: tokio::sync::Mutex::default(),
         });
         let active = ActivityGuard::new(&core.activity);
-        open.insert(device.to_owned(), Arc::clone(&core));
-        self.close_when_idle(device.to_owned(), Arc::downgrade(&core));
+        open.insert(key.clone(), Arc::clone(&core));
+        self.close_when_idle(key, Arc::downgrade(&core));
         Ok((core, active))
     }
 
     /// A closed core releases its state lock when its thread stops. Opening a new
     /// core before that would leave the new core without its state.
-    async fn wait_for_previous_core(&self, device: &str) -> Result<(), ApiError> {
+    async fn wait_for_previous_core(
+        &self,
+        key: &str,
+        state_directory: &std::path::Path,
+    ) -> Result<(), ApiError> {
         let busy = || {
             ApiError::new(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "The browser session is still closing. Try again.",
             )
         };
+        let mut folder = tokio::fs::DirBuilder::new();
+        folder.recursive(true).mode(0o700);
+        folder
+            .create(state_directory)
+            .await
+            .map_err(|_| ApiError::internal())?;
         let lock = tokio::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
-            .open(self.directory.join(device).join(native::STATE_LOCK_FILE))
+            .open(state_directory.join(native::STATE_LOCK_FILE))
             .await
             .map_err(|_| ApiError::internal())?
             .into_std()
             .await;
         let deadline = Instant::now() + Duration::from_millis(CLIENT_CORE_CLOSE_WAIT_MILLISECONDS);
         loop {
-            if self.open.lock().await.contains_key(device) {
+            if self.open.lock().await.contains_key(key) {
                 return Ok(());
             }
             match lock.try_lock() {
@@ -353,8 +402,13 @@ impl ClientCores {
             .is_some_and(|current| Arc::ptr_eq(current, core))
         {
             open.remove(device);
-            touch(&self.directory, device).await;
+            touch(&self.directory, device_of_key(device)).await;
         }
+    }
+
+    /// Closes the core of a paired server, after its pairing is removed.
+    async fn close_server(&self, device: &str, server: &str) {
+        self.open.lock().await.remove(&format!("{device}/{server}"));
     }
 
     fn close_when_idle(self: &Arc<Self>, device: String, core: Weak<DeviceCore>) {
@@ -375,7 +429,7 @@ impl ClientCores {
                 let idle_for = current.idle_for();
                 if idle_for >= idle {
                     open.remove(&device);
-                    touch(&cores.directory, &device).await;
+                    touch(&cores.directory, device_of_key(&device)).await;
                     return;
                 }
                 wait = idle - idle_for;
@@ -387,6 +441,21 @@ impl ClientCores {
     async fn open_count(&self) -> usize {
         self.open.lock().await.len()
     }
+}
+
+/// The device of an open core key (`<device>` or `<device>/<server>`).
+fn device_of_key(key: &str) -> &str {
+    key.split_once('/').map_or(key, |(device, _)| device)
+}
+
+/// A paired server id in `?server=`. "local" is the server of this page.
+fn valid_server(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value != "local"
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
 }
 
 fn valid_device(value: &str) -> bool {
@@ -419,7 +488,7 @@ async fn delete_unused(directory: &std::path::Path, open: &HashMap<String, Arc<D
     let retention = Duration::from_secs(CLIENT_STATE_RETENTION_SECONDS);
     while let Ok(Some(entry)) = entries.next_entry().await {
         let name = entry.file_name().to_string_lossy().into_owned();
-        if !valid_device(&name) || open.contains_key(&name) {
+        if !valid_device(&name) || open.keys().any(|key| device_of_key(key) == name) {
             continue;
         }
         let path = entry.path();
@@ -479,19 +548,76 @@ fn with_cookie(mut response: Response, cookie: Option<HeaderValue>) -> Response 
     response
 }
 
+/// `?server=<id>` names the core of a paired server; no value is the server of this page.
+#[derive(serde::Deserialize, Default)]
+pub(crate) struct CoreTarget {
+    server: Option<String>,
+}
+
+impl CoreTarget {
+    fn server(&self) -> Result<Option<&str>, ApiError> {
+        match self.server.as_deref() {
+            None | Some("local") => Ok(None),
+            Some(server) if valid_server(server) => Ok(Some(server)),
+            Some(_) => Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "The server identity is invalid.",
+            )),
+        }
+    }
+}
+
+/// Pairing commands of the device core. The keys stay in the device folder on
+/// this server; replies carry only the server row, never a key.
+async fn server_keys(cores: &ClientCores, device: &str, request: Request) -> CoreResponse {
+    // An automatic pairing approval is not checked here: the page checked it
+    // against this server, and the invitation proves the pairing.
+    if !matches!(
+        request.method.as_str(),
+        "servers.pair" | "servers.pairAttempt" | "servers.forget"
+    ) {
+        return CoreResponse::failure(request.id, UNSUPPORTED_HERE, UNSUPPORTED_MESSAGE);
+    }
+    let _keys = cores.keys.lock().await;
+    let vault = Arc::new(FileVault::new(&cores.directory.join(device)));
+    let result = match RemoteClient::new(vault) {
+        Ok(client) => client.dispatch(&request.method, &request.params).await,
+        Err(error) => Err(error),
+    };
+    if result.is_ok()
+        && request.method == "servers.forget"
+        && let Some(server) = request.params["serverId"].as_str()
+    {
+        cores.close_server(device, server).await;
+    }
+    match result {
+        Ok(value) => CoreResponse::success(request.id, value),
+        Err(error) => CoreResponse::failure(request.id, "server_error", error),
+    }
+}
+
 async fn request(
     State(state): State<HttpState>,
+    Query(target): Query<CoreTarget>,
     headers: HeaderMap,
     ApiJson(request): ApiJson<Request>,
 ) -> Result<Response, ApiError> {
     let cores = &state.client_cores;
+    let server = target.server()?;
     let (device, cookie) = device(cores, &headers).await?;
     if native::device_only(&request) {
         let response = CoreResponse::failure(request.id, UNSUPPORTED_HERE, UNSUPPORTED_MESSAGE);
         return Ok(with_cookie(Json(response).into_response(), cookie));
     }
+    if request.method.starts_with("servers.") {
+        let response = match server {
+            None => server_keys(cores, &device, request).await,
+            Some(_) => CoreResponse::failure(request.id, UNSUPPORTED_HERE, UNSUPPORTED_MESSAGE),
+        };
+        return Ok(with_cookie(Json(response).into_response(), cookie));
+    }
     let id = request.id.clone();
-    let (core, active) = cores.core(&device).await?;
+    let (core, active) = cores.core(&device, server).await?;
     let response = match request.method.as_str() {
         "view.subscribe" => core.subscribe(request).await,
         "view.unsubscribe" => core.unsubscribe(request).await,
@@ -502,7 +628,11 @@ async fn request(
         Ok(response) => response,
         Err(error) => {
             // The core connection failed; its message says when an outcome is unknown.
-            cores.close(&device, &core).await;
+            let key = match server {
+                Some(server) => format!("{device}/{server}"),
+                None => device.clone(),
+            };
+            cores.close(&key, &core).await;
             CoreResponse::failure(id, "client_core", error)
         }
     };
@@ -528,10 +658,15 @@ impl Drop for Connection {
     }
 }
 
-async fn events(State(state): State<HttpState>, headers: HeaderMap) -> Result<Response, ApiError> {
+async fn events(
+    State(state): State<HttpState>,
+    Query(target): Query<CoreTarget>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
     let cores = &state.client_cores;
+    let server = target.server()?;
     let (device, cookie) = device(cores, &headers).await?;
-    let (core, active) = cores.core(&device).await?;
+    let (core, active) = cores.core(&device, server).await?;
     let receiver = core
         .events
         .upgrade()
@@ -1071,5 +1206,181 @@ mod tests {
         .await;
         assert_eq!(reply["result"], json!({"draft":"kept"}));
         assert_eq!(state.client_cores.open_count().await, 1);
+    }
+
+    async fn call_server(
+        app: &axum::Router,
+        cookie: &str,
+        server: &str,
+        method: &str,
+        params: Value,
+    ) -> (StatusCode, Value) {
+        let request = builder(
+            "POST",
+            &format!("/api/client/request?server={server}"),
+            Some(cookie),
+        )
+        .header("x-canvas-token", "token")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({"id": uuid::Uuid::new_v4().to_string(), "method": method, "params": params})
+                .to_string(),
+        ))
+        .expect("request builds");
+        let response = app.clone().oneshot(request).await.expect("response");
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        (status, serde_json::from_slice(&body).expect("JSON reply"))
+    }
+
+    /// Saves keys for paired servers `a` and `b` in the device folder, as a pairing does.
+    fn pair_fixture(root: &std::path::Path, device: &str) -> Value {
+        let mut servers = serde_json::Map::new();
+        for server in ["a", "b"] {
+            let invitation = json!({"protocol":1,"origin":format!("https://{server}.tailnet.ts.net"),"serverId":server,"inviteId":"invite","token":"test","publicKey":"fixture","tailscaleUser":"user"});
+            let mut credential =
+                studio_client_core::server_keys::new_pair(&invitation, server).expect("key");
+            credential.as_object_mut().expect("object").remove("body");
+            servers.insert(server.to_owned(), credential);
+        }
+        let state = json!({"drafts": {}, "servers": servers});
+        std::fs::write(
+            root.join(CLIENT_STATE_FOLDER)
+                .join(device)
+                .join(studio_client_core::server_keys::SERVER_KEYS_FILE),
+            state.to_string(),
+        )
+        .expect("key file");
+        state
+    }
+
+    #[tokio::test]
+    async fn each_paired_server_has_its_own_core_and_needs_this_devices_key() {
+        let (state, directory) = state(Duration::from_secs(CLIENT_CORE_IDLE_SECONDS));
+        let app = crate::router(state).expect("router");
+        let cookie = new_device(&app).await;
+        let other = new_device(&app).await;
+        let (status, _) = call_server(&app, &cookie, "a", "preferences.raw_all", Value::Null).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "no key: no core");
+        pair_fixture(directory.path(), device_of(&cookie));
+        let (status, reply) = call_server(
+            &app,
+            &cookie,
+            "a",
+            "preferences.raw_set",
+            json!({"key": "draft", "raw": "for a"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(reply["error"].is_null(), "{reply}");
+        let (_, a) = call_server(&app, &cookie, "a", "preferences.raw_all", Value::Null).await;
+        assert_eq!(a["result"], json!({"draft": "for a"}));
+        let (_, b) = call_server(&app, &cookie, "b", "preferences.raw_all", Value::Null).await;
+        assert_eq!(
+            b["result"],
+            json!({}),
+            "a request for a never reaches the core of b"
+        );
+        let (_, own) = call(
+            &app,
+            Some(&cookie),
+            "own",
+            "preferences.raw_all",
+            Value::Null,
+        )
+        .await;
+        assert_eq!(
+            own["result"],
+            json!({}),
+            "nor the core of this page's server"
+        );
+        assert!(
+            directory
+                .path()
+                .join(CLIENT_STATE_FOLDER)
+                .join(device_of(&cookie))
+                .join(CLIENT_SERVER_FOLDER)
+                .join("a")
+                .is_dir()
+        );
+        let (status, _) = call_server(&app, &other, "a", "preferences.raw_all", Value::Null).await;
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "another device never uses these keys"
+        );
+        let (status, _) =
+            call_server(&app, &cookie, "../a", "preferences.raw_all", Value::Null).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn server_keys_stay_on_the_server_and_forget_closes_the_core() {
+        let (state, directory) = state(Duration::from_secs(CLIENT_CORE_IDLE_SECONDS));
+        let app = crate::router(state.clone()).expect("router");
+        let cookie = new_device(&app).await;
+        let device = device_of(&cookie).to_owned();
+        pair_fixture(directory.path(), &device);
+        let (_, reply) = call_server(&app, &cookie, "a", "preferences.raw_all", Value::Null).await;
+        assert!(reply["error"].is_null(), "{reply}");
+        let mut replies = Vec::new();
+        for (method, params) in [
+            (
+                "servers.pairAttempt",
+                json!({"requestId":"r","serverId":"a","origin":"https://a.tailnet.ts.net"}),
+            ),
+            (
+                "servers.request",
+                json!({"serverId":"a","credentialId":"x","url":"https://a.tailnet.ts.net/api/sync/identity","method":"GET"}),
+            ),
+            ("servers.read", json!({"stream":"x"})),
+            ("servers.cancel", json!({"stream":"x"})),
+        ] {
+            let (_, reply) = call(&app, Some(&cookie), "keys", method, params).await;
+            replies.push((method, reply));
+        }
+        assert_eq!(replies[0].1["result"], json!(false));
+        for (method, reply) in &replies[1..] {
+            assert_eq!(reply["error"]["code"], UNSUPPORTED_HERE, "{method}");
+        }
+        let (_, sub) = call_server(
+            &app,
+            &cookie,
+            "a",
+            "servers.forget",
+            json!({"serverId":"b"}),
+        )
+        .await;
+        assert_eq!(
+            sub["error"]["code"], UNSUPPORTED_HERE,
+            "a server core can not change keys"
+        );
+        let (_, forget) = call(
+            &app,
+            Some(&cookie),
+            "forget",
+            "servers.forget",
+            json!({"serverId":"a"}),
+        )
+        .await;
+        assert!(forget["error"].is_null(), "{forget}");
+        replies.push(("servers.forget", forget));
+        for (method, reply) in &replies {
+            assert!(!reply.to_string().contains("PRIVATE KEY"), "{method}");
+        }
+        assert!(
+            !state
+                .client_cores
+                .open
+                .lock()
+                .await
+                .contains_key(&format!("{device}/a"))
+        );
+        let (status, _) = call_server(&app, &cookie, "a", "preferences.raw_all", Value::Null).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (_, b) = call_server(&app, &cookie, "b", "preferences.raw_all", Value::Null).await;
+        assert!(b["error"].is_null(), "{b}");
     }
 }
