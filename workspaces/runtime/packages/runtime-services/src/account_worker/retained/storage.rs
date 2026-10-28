@@ -640,7 +640,9 @@ fn call_error(error: RequestResultError) -> Result<PortError, WorkerError> {
         RequestResultError::Conflict { .. } => Ok(PortError::Identity),
         RequestResultError::Expired => Ok(PortError::Expired),
         RequestResultError::Identity(error) => Ok(identity_error(error)),
-        error => Err(result_error(error)),
+        error @ (RequestResultError::Sql(_) | RequestResultError::Json(_)) => {
+            Err(result_error(error))
+        }
     }
 }
 pub(super) enum Replay {
