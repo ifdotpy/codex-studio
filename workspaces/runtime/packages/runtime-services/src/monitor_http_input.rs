@@ -29,6 +29,7 @@ pub(crate) use studio_runtime_schema::persistence::MonitorInputStatus as Status;
 pub(crate) fn replay_status(status: Status) -> Result<(), MonitorError> {
     match status {
         Status::Acknowledged => Ok(()),
+        Status::Expired => Err(MonitorError::Expired),
         Status::Rejected => Err(MonitorError::Refused("Monitor input rejected")),
         Status::Pending | Status::Unknown => Err(MonitorError::InputOutcomeUnknown),
     }
@@ -164,6 +165,7 @@ pub(crate) fn read(connection: &Connection, query: &Value) -> Result<Value, Moni
     let (status, terminal) = match receipt.status {
         Status::Acknowledged => ("acknowledged", true),
         Status::Rejected => ("rejected", true),
+        Status::Expired => ("expired", true),
         Status::Pending => ("pending", false),
         Status::Unknown => ("unknown", false),
     };
@@ -244,7 +246,7 @@ fn put_receipt(
             ));
         }
     };
-    if matches!(status, Status::Acknowledged | Status::Rejected) {
+    if matches!(status, Status::Acknowledged | Status::Rejected | Status::Expired) {
         RequestResults::settle(
             tx,
             &admitted,
@@ -346,15 +348,16 @@ pub(crate) fn settle(
             "Monitor input receipt identity changed",
         ));
     }
-    if matches!(receipt.status, Status::Acknowledged | Status::Rejected) {
+    if matches!(receipt.status, Status::Acknowledged | Status::Rejected | Status::Expired) {
         return Ok(());
     }
     receipt.status = match outcome {
         InputOutcome::Acknowledged => Status::Acknowledged,
+        InputOutcome::Expired => Status::Expired,
         InputOutcome::Rejected(_) => Status::Rejected,
         InputOutcome::Unknown(_) => Status::Unknown,
     };
-    if matches!(receipt.status, Status::Acknowledged | Status::Rejected) {
+    if matches!(receipt.status, Status::Acknowledged | Status::Rejected | Status::Expired) {
         RequestResults::settle(
             tx,
             &saved.payload.admitted,

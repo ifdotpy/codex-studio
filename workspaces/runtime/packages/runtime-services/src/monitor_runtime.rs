@@ -328,6 +328,7 @@ pub(crate) fn startup_store_failure(error: &MonitorError) -> bool {
         | MonitorError::InvalidDeliveryIdentity(_)
         | MonitorError::InvalidOutputReceipt(_)
         | MonitorError::TaskFailed
+        | MonitorError::Expired
         | MonitorError::InputOutcomeUnknown
         | MonitorError::Refused(_)
         | MonitorError::Unavailable(_)
