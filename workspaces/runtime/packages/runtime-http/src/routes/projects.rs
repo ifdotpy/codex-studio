@@ -352,19 +352,19 @@ async fn delete_project(
         }
         Err(error) => error,
     };
-    let error = match error {
+    let (status, code) = match &error {
         Error::Request(studio_runtime_store::request_results::RequestResultError::Conflict {
             ..
-        }) => Error::RequestConflict,
-        Error::Request(error) => return Err(error.into()),
-        error => error,
-    };
-    let (status, code) = match &error {
-        Error::Request(_) => return Err(ApiError::internal()),
+        }) => (StatusCode::CONFLICT, Code::ProjectRequestConflict),
+        Error::Request(_) => {
+            let Error::Request(error) = error else {
+                return Err(ApiError::internal());
+            };
+            return Err(error.into());
+        }
         Error::NotFound => (StatusCode::NOT_FOUND, Code::ProjectNotFound),
         Error::Workspace => (StatusCode::CONFLICT, Code::ProjectWorkspaceConflict),
         Error::Sequence => (StatusCode::CONFLICT, Code::ProjectSequenceConflict),
-        Error::RequestConflict => (StatusCode::CONFLICT, Code::ProjectRequestConflict),
         Error::Remote => (StatusCode::CONFLICT, Code::ProjectRemoteScope),
         Error::Membership => (StatusCode::CONFLICT, Code::ProjectMembershipConflict),
         Error::Lifecycle(
@@ -767,6 +767,7 @@ async fn remote_project_write(
     {
         return Err(ApiError::internal());
     }
+    let mut location_admission = None;
     let (project_id, _operation_id, signature_data, mut payload, creation_signature) = if action
         == "register"
     {
@@ -803,6 +804,49 @@ async fn remote_project_write(
             .filter(|value| !value.is_empty())
             .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Select an existing project"))?;
         let operation = request_id.to_owned();
+        let path = if action == "add_location" {
+            Some(
+                body.get("path")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty() && value.len() <= 4096)
+                    .ok_or_else(|| {
+                        ApiError::new(StatusCode::BAD_REQUEST, "A location path is required")
+                    })?,
+            )
+        } else {
+            None
+        };
+        let signature_data = json!({"action":action,"project":project,"server":server,"path":path});
+        let signature = studio_runtime_store::sha256_hex(
+            studio_runtime_services::remote_transport::canonical_json(&signature_data)
+                .map_err(|_| ApiError::internal())?
+                .as_bytes(),
+        );
+        let early_store = store.clone();
+        let early_root = request_id.to_owned();
+        let early_project = project.to_owned();
+        let early_server = local_server.clone();
+        let early_raw = projects::cross_server_identity(&["project-location", "ui", request_id]);
+        let admission = early_store
+            .transaction_with_error(move |tx| {
+                admit_location(
+                    tx,
+                    LocationRequest {
+                        raw_key: &early_raw,
+                        root: &early_root,
+                        signature: &signature,
+                        server: &early_server,
+                        project: &early_project,
+                    },
+                    now * 1000,
+                )
+            })
+            .await?;
+        if let LocationAdmission::Replay(result) = admission {
+            return location_reply(result);
+        }
+        location_admission = Some(admission);
+
         let project_store = store.clone();
         let project_id_for_read = project.to_owned();
         let (record, admission) = project_store
@@ -831,25 +875,13 @@ async fn remote_project_write(
         let existing = locations
             .iter()
             .find(|row| row.get("serverId").and_then(Value::as_str) == Some(server));
-        let path = if action == "add_location" {
-            Some(
-                body.get("path")
-                    .and_then(Value::as_str)
-                    .filter(|value| !value.is_empty() && value.len() <= 4096)
-                    .ok_or_else(|| {
-                        ApiError::new(StatusCode::BAD_REQUEST, "A location path is required")
-                    })?,
-            )
-        } else {
-            None
-        };
         if action == "remove_location" && locations.len() <= 1 {
             return Err(ApiError::new(
                 StatusCode::BAD_REQUEST,
                 "Keep at least one project location",
             ));
         }
-        let signature_data = json!({"action":action,"project":project,"server":server,"path":path});
+
         let mut payload = json!({"project":project,"name":record.get("name"),"path":path,
             "request":signature_data,"signature":studio_runtime_store::sha256_hex(
                 studio_runtime_services::remote_transport::canonical_json(&signature_data)
@@ -883,33 +915,37 @@ async fn remote_project_write(
         })
         .transpose()
         .map_err(|_| ApiError::internal())?;
-    let admitted = admission_store
-        .transaction_with_error(move |tx| {
-            if let Some(signature) = &registration_signature
-                && let Some((_, project)) =
-                    studio_runtime_store::ProjectsRepository::get(tx, &scope_project)?
-                && project["registration"]["signature"]
-                    .as_str()
-                    .is_some_and(|saved| saved != signature)
-            {
-                return Err(ApiError::new(
-                    StatusCode::CONFLICT,
-                    "This request ID has different content",
-                ));
-            }
-            admit_location(
-                tx,
-                LocationRequest {
-                    raw_key: &raw_key,
-                    root: &root,
-                    signature: &request_signature,
-                    server: &scope_server,
-                    project: &scope_project,
-                },
-                now * 1000,
-            )
-        })
-        .await?;
+    let admitted = if let Some(admission) = location_admission {
+        admission
+    } else {
+        admission_store
+            .transaction_with_error(move |tx| {
+                if let Some(signature) = &registration_signature
+                    && let Some((_, project)) =
+                        studio_runtime_store::ProjectsRepository::get(tx, &scope_project)?
+                    && project["registration"]["signature"]
+                        .as_str()
+                        .is_some_and(|saved| saved != signature)
+                {
+                    return Err(ApiError::new(
+                        StatusCode::CONFLICT,
+                        "This request ID has different content",
+                    ));
+                }
+                admit_location(
+                    tx,
+                    LocationRequest {
+                        raw_key: &raw_key,
+                        root: &root,
+                        signature: &request_signature,
+                        server: &scope_server,
+                        project: &scope_project,
+                    },
+                    now * 1000,
+                )
+            })
+            .await?
+    };
     let (request, operation_id) = match admitted {
         LocationAdmission::Replay(result) => return location_reply(result),
         LocationAdmission::Pending(request, operation) => (request, operation),

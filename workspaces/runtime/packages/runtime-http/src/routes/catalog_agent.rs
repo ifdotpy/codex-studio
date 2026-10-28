@@ -271,12 +271,12 @@ async fn capabilities(
 async fn native_command(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<NativeCommandRequest>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::NativeCommandResponse>, ApiError> {
     let store = state.store.as_ref().ok_or_else(ApiError::internal)?;
     // Python codex_workspace.py:2183-2217 uses per-invocation semantics and
     // does not bind this action to a caller request ID. This ticket is
     // internal to this attempt, so a later HTTP invocation is a new action.
-    let request_id = uuid::Uuid::new_v4().to_string();
+    let request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
     let store = std::sync::Arc::clone(store);
     match body.action {
         NativeCommandAction::Input => {
@@ -350,8 +350,7 @@ async fn native_command(
                 .await
                 .map_err(|_| ApiError::internal())?;
             state.event_wake_handle().notify_one();
-            let result = posted;
-            Ok(Json(result))
+            super::generated_json::<crate::generated::NativeCommandResponse>(posted).map(Json)
         }
         NativeCommandAction::Cancel => native_command_cancel(state, body.id, request_id)
             .await
@@ -363,11 +362,12 @@ async fn native_command_cancel(
     state: HttpState,
     task_id: String,
     request_id: String,
-) -> Result<Value, ApiError> {
+) -> Result<crate::generated::NativeCommandResponse, ApiError> {
     // Match codex_workspace.py:2194-2210: verify the exact item/process pair
     // in the provider's terminal list before sending terminate.
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let (task, agent) = store
+    let replay_root = request_id.clone();
+    let (task, agent, replay) = store
         .read_async("runtime-http/routes/catalog_agent", move |connection| {
             let task = WorkspaceViewsRepository::task(connection, &task_id)
                 .map_err(ApiError::stored)?
@@ -379,9 +379,20 @@ async fn native_command_cancel(
             let agent = WorkspaceViewsRepository::agent(connection, agent_id)
                 .map_err(ApiError::stored)?
                 .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown managed agent"))?;
-            Ok::<_, ApiError>((task, agent.value()))
+            let replay = studio_runtime_services::native_actions::replay_command(
+                connection,
+                agent_id,
+                &task_id,
+                &replay_root,
+                studio_runtime_services::native_actions::CommandAction::Cancel,
+            )
+            .map_err(native_command_error)?;
+            Ok::<_, ApiError>((task, agent.value(), replay))
         })
         .await?;
+    if let Some(reply) = replay {
+        return serde_json::from_str(&reply.response_json).map_err(ApiError::json);
+    }
     let snapshot = studio_runtime_services::native_actions::CommandSnapshot::from_records(
         task.clone(),
         agent.clone(),
@@ -500,7 +511,7 @@ async fn native_command_cancel(
         .map_err(|_| ApiError::internal())?;
     let request = match claim {
         studio_runtime_services::native_actions::CommandCancelClaim::Replay(result) => {
-            return Ok(result);
+            return super::generated_json(result);
         }
         studio_runtime_services::native_actions::CommandCancelClaim::Send(request) => request,
     };
@@ -525,13 +536,14 @@ async fn native_command_cancel(
         delivery: studio_runtime_services::native_actions::Delivery::Written(result),
     };
     let store = state.store.ok_or_else(ApiError::internal)?;
-    store
+    let result = store
         .transaction_with(move |tx| {
             studio_runtime_services::native_actions::command_cancel_settle(tx, &receipt)
                 .map_err(native_command_error)
         })
         .await
-        .map_err(|_| ApiError::internal())
+        .map_err(|_| ApiError::internal())?;
+    super::generated_json(result)
 }
 
 pub(super) async fn provider_call(
@@ -675,10 +687,10 @@ fn native_command_error(error: studio_runtime_services::native_actions::NativeEr
             "The command action outcome is unknown",
         ),
         NativeError::Unavailable(dependency) => ApiError::dependency(dependency),
-        NativeError::InvalidStored { .. }
-        | NativeError::Store(_)
-        | NativeError::Json(_)
-        | NativeError::Sql(_) => ApiError::internal(),
+        NativeError::Store(error) => ApiError::stored(error),
+        NativeError::Json(error) => ApiError::json(error),
+        NativeError::Sql(error) => ApiError::stored(error.into()),
+        NativeError::InvalidStored { table, id, .. } => ApiError::invalid_stored(table, &id),
     }
 }
 

@@ -827,6 +827,9 @@ async fn finalize_accepted_archive(
                     ));
                 }
                 let current_intent = current.value().get("archiveIntent").cloned();
+                let archive = work["archive"].clone();
+                work = current.into_value();
+                work["archive"] = archive;
                 studio_runtime_store::WorkItemsRepository::update_work(tx, &work_id, &work)?;
                 let attempt_status = if retryable {
                     WorkEffectStatus::Retryable
@@ -934,7 +937,7 @@ async fn finalize_accepted_archive(
                         .and_then(|intent| intent.get("publicAdmission"))
                         .is_some_and(|token| !token.is_null())
                 {
-                    studio_runtime_services::work_write::settle_accepted_archive(
+                    response = studio_runtime_services::work_write::settle_accepted_archive(
                         tx,
                         &work_id,
                         &request_id,
@@ -944,7 +947,8 @@ async fn finalize_accepted_archive(
                         studio_runtime_store::StoreError::RecordContract(
                             "accepted archive response",
                         )
-                    })?;
+                    })?
+                    .into_value();
                 }
                 Ok((response, event_inserted))
             },

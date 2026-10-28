@@ -189,14 +189,9 @@ mod tests {
             (200, receipt.clone()),
             "stale revision replay returns original receipt"
         );
-        let mut changed_identity = reorder;
+        let mut changed_identity = reorder.clone();
         changed_identity["agent"] = Value::Null;
-        failure(
-            &app,
-            changed_identity,
-            "This request id has different content",
-        )
-        .await;
+        assert_eq!(call(&app, changed_identity).await.0, 409);
         let snapshot = queue_write::queue_snapshot(&reader, &agent).expect("reordered queue");
         assert_eq!(
             snapshot
@@ -209,14 +204,14 @@ mod tests {
         for revision in [Value::Null, json!("stale")] {
             failure(
                 &app,
-                json!({"action":"edit","id":"a","text":"changed","expected_revision":revision}),
+                json!({"action":"edit","id":"a","text":"changed","expected_revision":revision,"request_id":studio_runtime_schema::persistence::RequestIdentity::issue_root()}),
                 "This queue changed. Reload before editing or reordering",
             )
             .await;
         }
         failure(
             &app,
-            json!({"action":"edit","id":"a","text":"changed","expectedText":"different"}),
+            json!({"action":"edit","id":"a","text":"changed","expectedText":"different","request_id":studio_runtime_schema::persistence::RequestIdentity::issue_root()}),
             "This queued message changed",
         )
         .await;
@@ -230,7 +225,34 @@ mod tests {
             .expect("edited message");
         assert_eq!(text, "Edited", "message_id takes precedence");
         assert_eq!(
-            call(&app, json!({"action":"first","message_id":"","id":"a"}))
+            call(&app, reorder).await,
+            (200, receipt.clone()),
+            "an earlier root replays its original full response after another mutation"
+        );
+        let before_expired = queue_write::queue_snapshot(&reader, &agent)
+            .expect("queue before expiry refusal")
+            .revision;
+        let expired = call(
+            &app,
+            json!({"action":"cancel","id":"b","request_id":"f43c1885-f4fc-485b-bf99-8b4f31e7e7c4"}),
+        )
+        .await;
+        assert_eq!(expired.0, 410, "{expired:?}");
+        assert!(
+            expired.1["error"]
+                .as_str()
+                .expect("expiry error")
+                .contains("expired")
+        );
+        assert_eq!(
+            queue_write::queue_snapshot(&reader, &agent)
+                .expect("queue after expiry refusal")
+                .revision,
+            before_expired
+        );
+
+        assert_eq!(
+            call(&app, json!({"action":"first","message_id":"","id":"a","request_id":studio_runtime_schema::persistence::RequestIdentity::issue_root()}))
                 .await
                 .0,
             200,
@@ -251,7 +273,7 @@ mod tests {
             .0,
             200
         );
-        assert_eq!(call(&app, json!({"action":"cancel","id":"a"})).await.0, 200);
+        assert_eq!(call(&app, json!({"action":"cancel","id":"a","request_id":studio_runtime_schema::persistence::RequestIdentity::issue_root()})).await.0, 200);
         assert_eq!(
             call(&app, edit.clone()).await,
             edit_receipt,
@@ -259,12 +281,7 @@ mod tests {
         );
         let mut conflicting_edit = edit;
         conflicting_edit["text"] = json!("Different");
-        failure(
-            &app,
-            conflicting_edit,
-            "This request id has different content",
-        )
-        .await;
+        assert_eq!(call(&app, conflicting_edit).await.0, 409);
         for invalid in [
             json!({"action":"edit","id":"b"}),
             json!({"action":"cancel","id":"b","extra":true}),

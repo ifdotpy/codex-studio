@@ -636,10 +636,10 @@ fn native_error(error: NativeError) -> ApiError {
             ApiError::new(StatusCode::BAD_REQUEST, error.to_string())
         }
         NativeError::Unknown => ApiError::new(StatusCode::CONFLICT, error.to_string()),
-        NativeError::InvalidStored { .. }
-        | NativeError::Store(_)
-        | NativeError::Json(_)
-        | NativeError::Sql(_) => ApiError::internal(),
+        NativeError::Store(error) => ApiError::stored(error),
+        NativeError::Json(error) => ApiError::json(error),
+        NativeError::Sql(error) => ApiError::stored(error.into()),
+        NativeError::InvalidStored { table, id, .. } => ApiError::invalid_stored(table, &id),
     }
 }
 

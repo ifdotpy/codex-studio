@@ -348,15 +348,33 @@ async fn transferred_monitor_fixture(
     let monitor = case["before"].clone();
     let id = monitor["id"].as_str().unwrap().to_owned();
     let receipt_monitor = monitor.clone();
-    port.store.transaction(move|tx|{
-        tx.execute("DELETE FROM runtime_tasks",[])?;
-        let operation=format!("monitor:{}",receipt_monitor["id"].as_str().unwrap());
-        let key=format!("retained:default:{}",studio_runtime_store::sha256_hex(operation.as_bytes()));
-        let request=json!({"id":key,"generation":7,"method":"command/exec","operation":key,"thread":null,"lightweight":true,"deadline":60000,"remoteId":null});
-        let submitted=json!({"call":{"scope":{"account":"default","connection":"actual-uuid","generation":7},"operation":operation,"actor":{"agent":"owner","epoch":1},"transfer":null,"deleted_actor_session":null,"method":"command/exec","params":{"processId":receipt_monitor["id"],"cwd":receipt_monitor["cwd"],"command":["true"]}},"request":request});
-        for (phase,value) in [("submitted",submitted),("written",request)] {
-            tx.execute("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'fixture',?2)",(format!("account-worker:{key}:{phase}"),value.to_string()))?;
-        }
+    port.store.transaction(move |tx| {
+        use studio_runtime_schema::persistence::{RequestIdentity, OutboxKind, OutboxStatus, OwnerKind};
+        use studio_runtime_schema::provider_call_contract::{ProviderCallIntent, RetainedCall, TransportRequest, RequestActor};
+        use studio_runtime_store::request_results::Admission;
+        tx.execute("DELETE FROM runtime_tasks", [])?;
+        let operation = format!("monitor:{}", receipt_monitor["id"].as_str().unwrap());
+        let root = RequestIdentity::issue_root();
+        let call = ProviderCallIntent {
+            root_request_id: root.clone(), admitted_request: None,
+            scope: ConnectionScope { account:"default".into(), connection:"actual-uuid".into(), generation:7 },
+            operation: operation.clone(), actor: Some(RequestActor { agent:"owner".into(), epoch:1 }),
+            transfer: None, deleted_actor_session: None, method:studio_runtime_providers::Method::CommandExec,
+            params:json!({"processId":receipt_monitor["id"],"cwd":receipt_monitor["cwd"],"command":["true"]}),
+        };
+        let signature = call.fingerprint("default", call.method.as_str());
+        let admitted = match studio_runtime_services::event_write::admit_request(tx,"provider-call", &["default","owner","1"], &root, &[&operation], &signature, (studio_runtime_services::event_write::unix_time().unwrap()*1000.0) as i64)? {
+            Admission::Fresh(admitted) => admitted,
+            Admission::Replay(_) => panic!("fresh command"),
+        };
+        let key = studio_runtime_schema::provider_call_contract::transport_key("default", &operation);
+        let request = TransportRequest { id:studio_runtime_providers::RequestId::String(key.clone()), generation:7, method:call.method, operation:key.clone(), thread:None,lightweight:true,deadline:60000,unknown:false,remote_id:None };
+        let retained = RetainedCall { call, request:Some(request), admitted:admitted.clone(),written:true,outcome:None };
+        studio_runtime_store::outbox::Outbox::put(tx,&studio_runtime_store::outbox::OutboxRow {
+            id:key,kind:OutboxKind::ProviderCall,owner_kind:OwnerKind::Agent,owner_id:"owner".into(),request_id:Some(admitted.id().into()),signature,
+            status:OutboxStatus::Submitted,account:Some("default".into()),stream_id:Some("default".into()),generation:Some(7),ordinal:None,next_at:None,
+            payload:json!({"family":"retained","payload":retained}),created:admitted.created(),
+        })?;
         Ok(())
     }).await.unwrap();
     let runtime = Arc::new(MonitorRuntime::new(
@@ -443,9 +461,9 @@ async fn transferred_monitor_panel_refuses_unproven_or_changed_source_ownership(
         port.store.transaction(move|tx|{
             let key=format!("retained:default:{}",studio_runtime_store::sha256_hex(format!("monitor:{id}").as_bytes()));
             match case {
-                "missing_written"=>{tx.execute("DELETE FROM runtime_operation_receipts WHERE id=?1",[format!("account-worker:{key}:written")])?;},
-                "wrong_account"=>{tx.execute("UPDATE runtime_operation_receipts SET result=json_set(result,'$.call.scope.account','other') WHERE id=?1",[format!("account-worker:{key}:submitted")])?;},
-                "read_receipt"=>{tx.execute("UPDATE runtime_operation_receipts SET result=json_set(result,'$.call.method','thread/read') WHERE id=?1",[format!("account-worker:{key}:submitted")])?;},
+                "missing_written"=>{tx.execute("UPDATE runtime_outbox SET payload=json_set(payload,'$.payload.written',json('false')) WHERE id=?1",[&key])?;},
+                "wrong_account"=>{tx.execute("UPDATE runtime_outbox SET payload=json_set(payload,'$.payload.call.scope.account','other') WHERE id=?1",[&key])?;},
+                "read_receipt"=>{tx.execute("UPDATE runtime_outbox SET payload=json_set(payload,'$.payload.call.method','thread/read') WHERE id=?1",[&key])?;},
                 "wrong_epoch"=>{tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.epoch',2) WHERE id='owner'",[])?;},
                 "vm_owner"=>{tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.executionMode','vm') WHERE id='owner'",[])?;},
                 _=>{}
