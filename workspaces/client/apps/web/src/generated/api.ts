@@ -17069,61 +17069,53 @@ export interface components {
        */
       team_id?: null | string | undefined;
     };
-    /**
-     * PeerUpdateBuild
-     * @description The build stamp in Contents/Resources/studio-build.json (docs/peer-updates.md).
-     */
+    /** @description The build stamp in Contents/Resources/studio-build.json (docs/peer-updates.md). */
     PeerUpdateBuild: {
-      /** Branch */
       branch: string;
       /**
-       * Builtat
+       * Format: double
        * @description Packaging time on the build Mac, in seconds since the epoch.
        */
       builtAt: number;
-      /** Commit */
       commit: string;
       /**
-       * Committime
+       * Format: uint64
        * @description Commit time, in seconds since the epoch.
        */
       commitTime: number;
       /**
-       * Version
-       * @constant
+       * Format: uint8
+       * @description Format version of the stamp. Always 1.
        */
-      version: 1;
+      version: number;
     };
-    /** PeerUpdateEvent */
+    /** @description The last pull or install attempt of the update puller. */
     PeerUpdateEvent: {
       /**
-       * At
+       * Format: double
        * @description Time of the pull or install attempt, in seconds since the epoch.
        */
-      at: null | number;
+      at: number | null;
       build: components["schemas"]["PeerUpdateBuild"] | null;
-      /** Outcome */
-      outcome: null | string;
-      /** Reason */
-      reason: null | string;
-      /**
-       * Server
-       * @description The paired server that offered the build.
-       */
-      server: null | string;
+      outcome: string | null;
+      reason: string | null;
+      /** @description The paired server that offered the build. */
+      server: string | null;
     };
-    /** PeerUpdatePending */
+    /** @description The staged update that the desktop installer takes next. */
     PeerUpdatePending: {
       build: components["schemas"]["PeerUpdateBuild"];
-      /** Server */
       server: string;
     };
-    /** PeerUpdateStatus */
+    /** @description The update state from a paired server, as `/api/desktop` shows it (`peerUpdate`). */
     PeerUpdateStatus: {
       /** @description The build of the installed app; null for a source checkout. */
       build: components["schemas"]["PeerUpdateBuild"] | null;
-      /** Checkedat */
-      checkedAt: null | number;
+      /**
+       * Format: double
+       * @description Time of the last check, in seconds since the epoch.
+       */
+      checkedAt: number | null;
       lastInstall: components["schemas"]["PeerUpdateEvent"] | null;
       lastPull: components["schemas"]["PeerUpdateEvent"] | null;
       pending: components["schemas"]["PeerUpdatePending"] | null;

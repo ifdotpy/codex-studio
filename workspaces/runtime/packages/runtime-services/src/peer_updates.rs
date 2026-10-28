@@ -33,7 +33,7 @@ pub const ACTIONS: [&str; 4] = [
 pub const INSTALLED_APP: &str = "/Applications/Codex Studio.app";
 /// The build stamp that package.mjs writes, relative to the app bundle.
 /// Owner of the path consumed by desktop/desktop_updates.py.
-const BUILD_STAMP: &str = "Contents/Resources/studio-build.json";
+pub(crate) const BUILD_STAMP: &str = "Contents/Resources/studio-build.json";
 /// Raw archive bytes in one `update.chunk` answer. Unit: bytes.
 /// The offering service owns this chunk limit.
 pub const CHUNK_BYTES: usize = 512 * 1024;
@@ -45,9 +45,9 @@ pub const MAX_ARCHIVE_BYTES: u64 = 1024 * 1024 * 1024;
 /// the runtime server's shutdown grace.
 pub const EXPORT_WAIT: Duration = Duration::from_secs(5);
 /// Time for one ditto archive or install copy, in seconds; shared with the desktop installer.
-const DITTO_TIMEOUT: Duration = Duration::from_secs(1800);
+pub(crate) const DITTO_TIMEOUT: Duration = Duration::from_secs(1800);
 /// Time for one codesign run, in seconds; shared with the desktop installer.
-const CODESIGN_TIMEOUT: Duration = Duration::from_secs(300);
+pub(crate) const CODESIGN_TIMEOUT: Duration = Duration::from_secs(300);
 /// Age after which an update archive is removed although no puller released it.
 const EXPORT_AGE: Duration = Duration::from_secs(86_400);
 /// The folder of the archive files; Git bundles of the same channel use it too.
@@ -58,8 +58,8 @@ const PARTIAL_SUFFIX: &str = ".zip.partial";
 const METADATA_SUFFIX: &str = ".json";
 /// Characters of a tool error that a refusal keeps.
 const ERROR_TAIL_CHARS: usize = 300;
-const CODESIGN: &str = "/usr/bin/codesign";
-const DITTO: &str = "/usr/bin/ditto";
+pub(crate) const CODESIGN: &str = "/usr/bin/codesign";
+pub(crate) const DITTO: &str = "/usr/bin/ditto";
 
 // A base64 chunk and its receipt must stay below the signed response limit.
 const _: () = assert!(4 * CHUNK_BYTES.div_ceil(3) + 4096 < MAX_RESPONSE_BYTES);
@@ -397,7 +397,7 @@ impl ExportWork {
 }
 
 /// Run codesign or ditto with a deadline. The error keeps the end of its output.
-fn tool(program: &Path, args: &[&str], timeout: Duration) -> Result<(), String> {
+pub(crate) fn tool(program: &Path, args: &[&str], timeout: Duration) -> Result<String, String> {
     bounded_child::run(bounded_child::Request {
         program: program.as_os_str(),
         git_directory: None,
@@ -408,7 +408,13 @@ fn tool(program: &Path, args: &[&str], timeout: Duration) -> Result<(), String> 
         stderr_limit: 4096,
         timeout,
     })
-    .map(drop)
+    .map(|output| {
+        format!(
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout.bytes),
+            String::from_utf8_lossy(&output.stderr.bytes)
+        )
+    })
     .map_err(|error| {
         let text = match error {
             ChildError::Failed(message) | ChildError::Launch(message) => message,
@@ -589,7 +595,7 @@ fn export_id(build: &Value) -> String {
 }
 
 /// Python `valid_build`: the build stamp, or `None` for an incomplete stamp.
-fn valid_build(value: &Value) -> Option<Value> {
+pub(crate) fn valid_build(value: &Value) -> Option<Value> {
     let object = value.as_object()?;
     let built = object.get("builtAt").filter(|built| built.is_number())?;
     let commit = object.get("commit").and_then(Value::as_str)?;
@@ -620,13 +626,13 @@ fn valid_build(value: &Value) -> Option<Value> {
 }
 
 /// Python `read_build`.
-fn read_build(app: &Path) -> Option<Value> {
+pub(crate) fn read_build(app: &Path) -> Option<Value> {
     valid_build(&serde_json::from_slice(&std::fs::read(app.join(BUILD_STAMP)).ok()?).ok()?)
 }
 
 /// Python `installed_app`: the installed app that this process runs from, or
 /// `None` for a source build or another copy of the app.
-fn installed_app() -> Option<PathBuf> {
+pub fn installed_app() -> Option<PathBuf> {
     if !cfg!(target_os = "macos") {
         return None;
     }
@@ -1014,6 +1020,56 @@ mod tests {
             ["new.zip", "old.bundle"],
             "Git bundles are not update archives"
         );
+    }
+
+    #[tokio::test]
+    async fn release_keeps_an_export_until_the_last_puller_releases_it() {
+        let folder = tempfile::tempdir().unwrap();
+        let root = folder.path().join("state");
+        std::fs::create_dir(&root).unwrap();
+        let offer = Arc::new(fixture::offer(folder.path(), b"zip"));
+        let build = json!({"builtAt": 1792647971.037});
+        let mut exports = Vec::new();
+        for principal in ["peer-a", "peer-b"] {
+            let meta = Arc::clone(&offer)
+                .receive(
+                    root.clone(),
+                    principal.into(),
+                    "update.export".into(),
+                    build.clone(),
+                )
+                .await
+                .unwrap();
+            exports.push(meta["export"].clone());
+        }
+        assert_eq!(exports[0], exports[1]);
+        let export = exports[0].clone();
+        let archive = root
+            .join("server-exports")
+            .join(format!("{}.zip", export.as_str().unwrap()));
+        let release = |principal: &str| {
+            Arc::clone(&offer).receive(
+                root.clone(),
+                principal.into(),
+                "update.release".into(),
+                json!({"export": export}),
+            )
+        };
+
+        assert_eq!(release("peer-a").await.unwrap(), json!({"released": true}));
+        assert!(archive.exists(), "peer-b still reads the archive");
+        let chunk = call(
+            &offer,
+            &root,
+            "update.chunk",
+            json!({"export": export, "offset": 0}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(chunk["offset"], json!(0));
+
+        assert_eq!(release("peer-b").await.unwrap(), json!({"released": true}));
+        assert!(!archive.exists(), "the last release removes the archive");
     }
 
     #[test]

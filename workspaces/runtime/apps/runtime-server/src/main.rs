@@ -1099,6 +1099,12 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
             }
         })
     });
+    // The puller of updates from paired servers runs only in the installed app (docs/peer-updates.md).
+    let peer_update_task = studio_runtime_services::peer_update_pull::Puller::installed(
+        Arc::clone(&store),
+        monitor_shutdown.subscribe(),
+    )
+    .map(|puller| tokio::spawn(studio_runtime_services::peer_update_pull::run(puller)));
     // Projects of paired servers for this server's own clients (docs/peer-projects.md).
     let peer_projects_task = state.orchestration_driver_handle().map(|driver| {
         let wake = state.peer_projects_wake_handle();
@@ -1354,6 +1360,9 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         shutdown_join("analytics projection task", analytics_projection_task).await??;
         if let Some(task) = orchestration_task {
             shutdown_join("orchestration driver task", task).await??;
+        }
+        if let Some(task) = peer_update_task {
+            shutdown_join("peer update task", task).await??;
         }
         if let Some(task) = peer_projects_task {
             shutdown_join("peer projects task", task).await??;
