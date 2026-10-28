@@ -129,6 +129,8 @@ pub(crate) fn vanishes_after_reap_blocking(
         {
             return false;
         }
+        // Blocking callers (the synchronous PTY host) have no runtime to yield to.
+        #[allow(clippy::disallowed_methods)]
         std::thread::sleep(GROUP_POLL_INTERVAL);
     }
 }

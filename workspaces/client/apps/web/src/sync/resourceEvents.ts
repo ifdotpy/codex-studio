@@ -252,6 +252,12 @@ export type ResourceEventsOptions = {
   >;
   openEvents: typeof openServerEvents;
   storageName: typeof serverStorageName;
+  /** One page owns its stream: no owner election by Web Locks, no BroadcastChannel (the native core owns the connection). */
+  independent?: boolean;
+  /** Where large entity intervals wait for their last page; the default is IndexedDB. */
+  transferStorage?: () =>
+    | import("./entityTransfer").TransferStorage
+    | undefined;
 };
 export function createResourceEvents(options: ResourceEventsOptions) {
   const {
@@ -1107,7 +1113,9 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     if (!acceptedResources.has(key)) return;
     if (transferEpoch && frame.epoch !== transferEpoch) cancelEntityTransfers();
     transferEpoch = frame.epoch;
-    const assembler = (transferAssembler ??= new EntityTransferAssembler());
+    const assembler = (transferAssembler ??= new EntityTransferAssembler(
+      options.transferStorage?.(),
+    ));
     let subscription = transferSubscriptions.get(key);
     if (!subscription) {
       subscription = { cancelled: false };
@@ -2211,6 +2219,10 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     if (!coordinatorActive || owner || independent || ownerRequestPending)
       return;
     lastLeaderHeartbeatAt = Date.now();
+    if (options.independent) {
+      startIndependent();
+      return;
+    }
     const locks = navigator.locks;
     if (!channel || !locks || !workspaceId) {
       startIndependent();
@@ -2307,7 +2319,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       tabId ||= randomUUID();
       coordinatorReady = true;
       try {
-        if (typeof BroadcastChannel !== "undefined") {
+        if (!options.independent && typeof BroadcastChannel !== "undefined") {
           channel = new BroadcastChannel(
             serverStorageName(
               resourceCoordinationNames(location.origin, workspaceId).channel,
@@ -2326,7 +2338,8 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       }
       startPeerHeartbeat();
       announceSubscriptions();
-      if (!channel || !navigator.locks) startIndependent();
+      if (options.independent || !channel || !navigator.locks)
+        startIndependent();
       else startAsOwner();
     } catch (error) {
       if (generation === coordinatorGeneration) {
