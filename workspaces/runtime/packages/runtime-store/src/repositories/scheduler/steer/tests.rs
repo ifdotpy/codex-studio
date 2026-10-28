@@ -30,6 +30,38 @@ use rusqlite::Connection;
 const AGENT: &str = "agent";
 const TURN: &str = "turn-1";
 
+#[test]
+fn stored_steer_round_trips_and_incomplete_submission_is_held() {
+    let mut connection = database();
+    submit(&mut connection, "sample");
+    let raw: String = connection
+        .query_row(
+            "SELECT payload FROM runtime_outbox WHERE id=?1",
+            [receipt_id(AGENT, "sample")],
+            |row| row.get(0),
+        )
+        .expect("stored receipt");
+    let payload: SteerPayload = serde_json::from_str(&raw).expect("read stored receipt");
+    let encoded = serde_json::to_string(&payload).expect("write stored receipt");
+    assert_eq!(
+        serde_json::from_str::<Value>(&raw).unwrap(),
+        serde_json::from_str::<Value>(&encoded).unwrap()
+    );
+    let incomplete = raw.replace("\"generation\":7", "\"generation\":null");
+    assert_ne!(raw, incomplete);
+    assert!(serde_json::from_str::<SteerPayload>(&incomplete).is_err());
+    connection.execute(
+        "UPDATE runtime_outbox SET status='unknown',payload=json_set(payload,'$.stage','held','$.generation',NULL) WHERE id=?1",
+        [receipt_id(AGENT, "sample")],
+    ).expect("hold incomplete evidence");
+    settle(&mut connection, |tx| {
+        SchedulerRepository::abandon_steers(tx, "acct", 8)
+    });
+    terminal(&mut connection, &[]);
+    assert_eq!(statuses(&connection), SENT);
+    assert_eq!(open_receipts(&connection), 1);
+}
+
 fn database() -> Connection {
     let mut connection = Connection::open_in_memory().expect("memory database opens");
     crate::receipt_schema::create(&connection).expect("receipt schema");
@@ -249,7 +281,7 @@ fn explicitly_identified_codex_and_claude_turns_are_steered() {
 #[test]
 fn claim_refuses_every_ineligible_agent_state() {
     type Change = fn(&mut AgentRecord);
-    let cases: [(&str, Change); 6] = [
+    let cases: [(&str, Change); 8] = [
         ("queued", |a| a.status = AgentStatus::Queued),
         ("rejected-this-turn", |a| {
             a.extra.insert("steerRejectedTurnId".into(), json!(TURN));
@@ -259,6 +291,12 @@ fn claim_refuses_every_ineligible_agent_state() {
         }),
         ("unbound-turn", |a| {
             a.extra.get_mut("startAttempt").expect("attempt")["turnId"] = Value::Null;
+        }),
+        ("action", |a| {
+            a.extra.get_mut("startAttempt").expect("attempt")["action"] = json!("compact");
+        }),
+        ("invalid-action", |a| {
+            a.extra.get_mut("startAttempt").expect("attempt")["action"] = Value::Null;
         }),
         ("held", |a| {
             a.extra.insert("nativeFailureHold".into(), json!(true));

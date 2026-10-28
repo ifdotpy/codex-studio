@@ -415,9 +415,23 @@ fn steer(tx: &Transaction<'_>, row: &SourceReceipt, mut value: Value, cutover: i
         serde_json::to_value(admitted_owner_token(&row.id, &row.signature, cutover))
             .map_err(|_| invalid())?;
     value["rootRequestId"] = json!(RequestIdentity::issue_root());
+    let incomplete = stage != SteerStage::Reserved
+        && (value
+            .get("requestTicket")
+            .and_then(|v| v.as_str())
+            .is_none()
+            || value.get("generation").and_then(|v| v.as_u64()).is_none()
+            || value.get("submittedAt").and_then(|v| v.as_f64()).is_none());
+    if incomplete {
+        value
+            .as_object_mut()
+            .ok_or_else(invalid)?
+            .insert("stage".into(), "held".into());
+    }
     let status = match stage {
         SteerStage::Reserved => OutboxStatus::Pending,
-        SteerStage::Submitted => OutboxStatus::Submitted,
+        SteerStage::Submitted if !incomplete => OutboxStatus::Submitted,
+        SteerStage::Submitted => OutboxStatus::Unknown,
         SteerStage::Unconfirmed => OutboxStatus::Unknown,
     };
     import_outbox(
@@ -1748,6 +1762,41 @@ mod tests {
                 ),
                 Err(ReceiptMigrationError::Unclassifiable { .. })
             ));
+        }
+    }
+    #[test]
+    fn receipts_actions_steer_preserves_complete_and_holds_incomplete_submissions() {
+        for stage in ["submitted", "unconfirmed"] {
+            for missing in [
+                None,
+                Some("requestTicket"),
+                Some("generation"),
+                Some("submittedAt"),
+            ] {
+                let mut db = Connection::open_in_memory().expect("database");
+                fixture(&db);
+                let mut receipt = json!({"agent":"agent","accountKey":"account","threadId":"thread","turnId":"turn","epoch":1,"events":["event"],"created":1.0,"stage":stage,"requestTicket":"ticket","generation":7,"submittedAt":2.0});
+                if let Some(key) = missing {
+                    receipt.as_object_mut().unwrap().remove(key);
+                }
+                db.execute("INSERT INTO runtime_operation_receipts VALUES('claude-steer:agent:steer','claude-steer',?1)", [receipt.to_string()]).expect("legacy receipt");
+                batch(&mut db, SOURCES[0]).expect("migrate");
+                let row: OutboxRow<Value> = Outbox::get(&db, "claude-steer:agent:steer")
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    row.payload["stage"],
+                    if missing.is_some() { "held" } else { stage }
+                );
+                assert_eq!(
+                    row.status,
+                    if missing.is_some() || stage == "unconfirmed" {
+                        OutboxStatus::Unknown
+                    } else {
+                        OutboxStatus::Submitted
+                    }
+                );
+            }
         }
     }
     #[test]
