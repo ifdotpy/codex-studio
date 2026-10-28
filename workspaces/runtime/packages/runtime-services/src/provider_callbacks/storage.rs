@@ -1078,10 +1078,15 @@ pub fn settle_response(
 
 /// Accepted logical callbacks still owed by this account, counted once even
 /// after their response enters the delivery outbox.
-pub fn pending_callback_count(db: &Connection, account: &str) -> Result<usize, CallbackError> {
+pub fn pending_callback_count(
+    db: &Connection,
+    account: &str,
+) -> studio_runtime_store::StoreResult<usize> {
     let count:i64 = db.query_row("SELECT count(*) FROM runtime_tool_requests WHERE kind=?1 AND status IN (?2,?3,?4) AND json_extract(record,'$.payload.accepted.account')=?5",
         params![studio_runtime_schema::persistence::ToolRequestKind::ProviderCallback,ToolRequestStatus::Queued,ToolRequestStatus::Running,ToolRequestStatus::Unknown,account],|row|row.get(0))?;
-    usize::try_from(count).map_err(|_| CallbackError::Stored("callback pending count".into()))
+    usize::try_from(count).map_err(|_| {
+        studio_runtime_store::StoreError::RecordContract("callback pending count exceeds usize")
+    })
 }
 
 /// Allocate a provider callback's Studio root exactly once, before any effect.
