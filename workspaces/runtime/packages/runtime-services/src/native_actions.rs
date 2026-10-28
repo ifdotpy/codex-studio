@@ -1172,7 +1172,6 @@ pub async fn update_action_settings(
         let ticket_for_tx = ticket.clone();
         let operation_for_tx = operation.clone();
         let request_id_for_record = action_id.clone();
-        let request_agent_for_error = request.agent.clone();
         let scope_snapshot = scope.clone();
         let params_snapshot = params.clone();
         let should_send = store
