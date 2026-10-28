@@ -267,7 +267,7 @@ pub fn run(ctx: &Ctx, argv: &[String]) -> Result<i32> {
             Ok(0)
         }
         "version" | "--version" => {
-            outln!(ctx, "layr version {}", env!("CARGO_PKG_VERSION"));
+            outln!(ctx, "{}", version_line());
             Ok(0)
         }
         "status" => work::status(ctx, &rest),
@@ -343,9 +343,25 @@ pub fn run(ctx: &Ctx, argv: &[String]) -> Result<i32> {
     }
 }
 
+/// The text of `layr version`: the package version, then the build identity (LAYR_BUILD_ID from
+/// build.rs) and the build date (LAYR_BUILD_DATE from build.rs).
+pub fn version_line() -> String {
+    format!("layr version {} ({} {})", env!("CARGO_PKG_VERSION"), env!("LAYR_BUILD_ID"), env!("LAYR_BUILD_DATE"))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::glob;
+    use super::{glob, version_line};
+
+    #[test]
+    fn version_line_names_the_build() {
+        let shape = format!(
+            r"^layr version {} \((unknown|[0-9a-f]{{7,40}}(-dirty)?) (unknown|\d{{4}}-\d{{2}}-\d{{2}})\)$",
+            regex::escape(env!("CARGO_PKG_VERSION"))
+        );
+        let line = version_line();
+        assert!(regex::Regex::new(&shape).unwrap().is_match(&line), "{line}");
+    }
 
     #[test]
     fn glob_matches() {

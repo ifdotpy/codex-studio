@@ -43,6 +43,7 @@ pub fn save(ctx: &Ctx, args: &[String]) -> Result<i32> {
         .flag("--no-verify|-n")
         .flag("-v|--verbose")
         .flag("--no-edit")
+        .flag("--allow-conflict-markers")
         .value("--author")
         .flag("-s|--signoff")
         .flag("--running")
@@ -115,7 +116,8 @@ pub fn save(ctx: &Ctx, args: &[String]) -> Result<i32> {
             }
             None => {
                 if !a.has("-q") {
-                    outln!(ctx, "{} no changes", l.name);
+                    // The state that equals the working content, in the format of a new state.
+                    outln!(ctx, "{} {}", l.name, ids::display(&repo.save_base(&l)?));
                 }
             }
         }

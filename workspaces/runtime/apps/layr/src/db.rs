@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS records (id TEXT PRIMARY KEY, machine TEXT, seq INTEG
 CREATE INDEX IF NOT EXISTS records_time ON records(time);
 CREATE UNIQUE INDEX IF NOT EXISTS records_seq ON records(machine, seq);
 CREATE INDEX IF NOT EXISTS records_git_import ON records(json_extract(raw, '$.r.data.state')) WHERE op='import';
+CREATE INDEX IF NOT EXISTS records_git_export ON records(json_extract(raw, '$.r.data.state')) WHERE op='export';
 CREATE TABLE IF NOT EXISTS states (id TEXT PRIMARY KEY, display TEXT UNIQUE, kind TEXT, line TEXT, time INTEGER, rec TEXT, present INTEGER DEFAULT 1, deleted INTEGER DEFAULT 0, dropped INTEGER DEFAULT 0, machine TEXT);
 CREATE INDEX IF NOT EXISTS states_line ON states(line, kind, time);
 CREATE TABLE IF NOT EXISTS parents (state TEXT, parent TEXT, ord INTEGER, PRIMARY KEY(state, ord));
@@ -677,6 +678,24 @@ impl Db {
 
     pub fn git_commit_of(&self, state: &str) -> Result<Option<String>> {
         Ok(self.conn.query_row("SELECT gcommit FROM git_map WHERE state=?1 LIMIT 1", params![state], |r| r.get(0)).optional()?)
+    }
+
+    /// Every Git commit that `git_map` holds for a state, squash commits included.
+    pub fn git_commits_of(&self, state: &str) -> Result<Vec<String>> {
+        let mut st = self.conn.prepare("SELECT gcommit FROM git_map WHERE state=?1")?;
+        let rows = st.query_map(params![state], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// The squash commits (`push --squash`) named by the exports of a state. Records written
+    /// before the `squash` flag name their squash commit by a parent; the flag is absent there.
+    pub fn squash_commits_of(&self, state: &str) -> Result<Vec<String>> {
+        let mut st = self.conn.prepare(
+            "SELECT json_extract(raw, '$.r.data.commit') FROM records WHERE op='export' AND json_extract(raw, '$.r.data.state')=?1
+             AND (json_extract(raw, '$.r.data.squash')=1 OR json_type(raw, '$.r.data.parent')='text')",
+        )?;
+        let rows = st.query_map(params![state], |r| r.get::<_, Option<String>>(0))?.collect::<Result<Vec<_>, _>>()?;
+        Ok(rows.into_iter().flatten().collect())
     }
 
     pub fn has_git_history(&self) -> Result<bool> {

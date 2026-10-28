@@ -210,6 +210,8 @@ impl Repo<'_> {
         crate::storage::delete_tree(&replacement.path.join(".git"))?;
         let has_git = git.symlink_metadata().is_ok();
         if has_git {
+            // Moving a folder to another parent needs write permission on it.
+            crate::fsutil::git_writable(&working, true);
             std::fs::rename(&git, replacement.path.join(".git"))?;
         }
         let swap = rustix::fs::renameat_with(
@@ -222,9 +224,11 @@ impl Repo<'_> {
         if let Err(e) = swap {
             if has_git {
                 std::fs::rename(replacement.path.join(".git"), &git)?;
+                crate::fsutil::git_writable(&working, false);
             }
             return Err(e.into());
         }
+        crate::fsutil::git_writable(&working, false);
         Ok(true)
     }
 

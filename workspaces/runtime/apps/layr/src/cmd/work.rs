@@ -50,19 +50,31 @@ pub fn status(ctx: &Ctx, args: &[String]) -> Result<i32> {
     let a = parse(&spec, args)?;
     let h = here(ctx)?;
     #[cfg(target_os = "macos")]
-    let _lock = h.repo.p.lock()?;
+    let lock = h.repo.p.lock()?;
     let line = h.line()?.clone();
     #[cfg(target_os = "macos")]
     let line = h.repo.line(&line.id)?;
     let filtered = h.repo.filtered_view(ctx, &line)?;
     let specs = h.specs(&a.rest())?;
     #[cfg(target_os = "macos")]
-    let mut st = if filtered.is_some() { h.repo.snapshot_status(ctx, &line)? } else { h.repo.status_report(&line)? };
+    let mut st = {
+        let _t = crate::trace::span("status compare");
+        if filtered.is_some() { h.repo.snapshot_status(ctx, &line)? } else { h.repo.status_report(&line)? }
+    };
     #[cfg(not(target_os = "macos"))]
     let mut st = if filtered.is_some() { h.repo.snapshot_status(ctx, &line)? } else { h.repo.status(&line)?.0 };
+    // The lock keeps the index still while the working folder is compared. The rest only reads
+    // immutable states, so other commands must not wait for it.
+    #[cfg(target_os = "macos")]
+    drop(lock);
     // The files of quiet overlays are not shown (docs/cache-overlays.md, section 4.1).
-    st.drop_paths(&h.repo.quiet_paths(&line)?);
+    let quiet = {
+        let _t = crate::trace::span("status quiet paths");
+        h.repo.quiet_paths(&line)?
+    };
+    st.drop_paths(&quiet);
     let overlaps = if filtered.is_none() && (a.has("--json") || (!a.has("-s") && !a.has("--porcelain"))) {
+        let _t = crate::trace::span("status overlaps");
         h.repo.overlaps(ctx, &line)?.into_iter().filter(|o| matches(&specs, &o.path)).collect::<Vec<_>>()
     } else {
         Vec::new()
@@ -822,6 +834,7 @@ pub fn commit(ctx: &Ctx, args: &[String]) -> Result<i32> {
         .flag("-q|--quiet")
         .flag("-v|--verbose")
         .flag("--no-edit")
+        .flag("--allow-conflict-markers")
         .value("--author")
         .flag("-s|--signoff");
     let a = parse(&spec, args)?;
@@ -853,6 +866,7 @@ pub fn commit(ctx: &Ctx, args: &[String]) -> Result<i32> {
     h.repo.authorize_line(ctx, &line, op)?;
     let _lock = h.repo.p.lock()?;
     let line = h.repo.line(&line.id)?;
+    crate::gitbridge::check_git_head(&h.repo, &line)?;
     crate::repo::recover_cache_replacements(&h.repo.working(&line))?;
     if a.has("-a") && !stacked {
         let (st, scan, _it, _index) = h.repo.status(&line)?;
@@ -929,6 +943,29 @@ pub fn commit(ctx: &Ctx, args: &[String]) -> Result<i32> {
             p.rollback()?;
         }
         return nothing(&h, &line);
+    }
+    // A file with a full set of conflict markers is no result of a merge: refuse it unless asked.
+    if !a.has("--allow-conflict-markers") {
+        let mut marked = Vec::new();
+        for c in &staged {
+            if !c.new.as_ref().is_some_and(|m| m.is_file() && m.size <= fsutil::MAX_TEXT) {
+                continue;
+            }
+            if crate::repo::has_markers(&fsutil::read_file(&new_root, &c.path)?) {
+                marked.push(c.path.clone());
+            }
+        }
+        if !marked.is_empty() {
+            h.repo.discard_states(std::slice::from_ref(&state));
+            #[cfg(target_os = "macos")]
+            if let Some(p) = promotion.take() {
+                p.rollback()?;
+            }
+            return Err(exit(
+                1,
+                format!("error: conflict markers in {}: resolve them, or save with --allow-conflict-markers.", marked.join(", ")),
+            ));
+        }
     }
     if let Some((n, e)) = author {
         state.author.name = n;

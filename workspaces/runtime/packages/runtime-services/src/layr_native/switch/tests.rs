@@ -275,6 +275,16 @@ fn uncommitted_or_unpushed_worktrees_refuse_and_pushed_ones_pass() {
     assert!(dirty.to_string().contains("uncommitted files"));
 }
 
+/// Layr keeps the `.git` folder of a line read only. A switch into such a line must still work.
+fn assert_sealed(line: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = fs::metadata(line.join(".git"))
+        .expect(".git")
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o222, 0, "the line .git folder is sealed");
+}
+
 #[tokio::test]
 #[ignore = "requires the vendored Layr host binary and APFS or btrfs"]
 async fn real_host_switch_moves_a_lead_to_main_and_a_worker_branch_to_its_line() {
@@ -299,6 +309,7 @@ async fn real_host_switch_moves_a_lead_to_main_and_a_worker_branch_to_its_line()
         fs::read_to_string(main.join("code.txt")).expect("main"),
         "base\n"
     );
+    assert_sealed(&main);
     let worker = switch_chat(Arc::clone(&store), "wt-worker")
         .await
         .expect("worker switches");
@@ -307,6 +318,7 @@ async fn real_host_switch_moves_a_lead_to_main_and_a_worker_branch_to_its_line()
         fs::read_to_string(line.join("code.txt")).expect("line"),
         "worker branch\n"
     );
+    assert_sealed(&line);
     assert_eq!(
         switch_chat(Arc::clone(&store), "wt-worker")
             .await
