@@ -258,7 +258,8 @@ mutation receipt. Revocation takes precedence over discovery and saved receipts.
 
 ### Discovery and local management
 
-The backend runs discovery at start and every 300 seconds. Each pass reads
+A discovery pass runs only on an explicit `discover` action (the **Find servers now**
+button). The backend has no startup or periodic pass. Each pass reads
 `tailscale status --json`. It selects online, untagged peers with Self's UserID
 and a valid Tailscale DNS name. It probes their identity endpoint over HTTPS.
 For already-paired peers, discovery refreshes the displayed name through the

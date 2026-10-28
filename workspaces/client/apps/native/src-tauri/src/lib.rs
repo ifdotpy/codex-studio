@@ -301,6 +301,103 @@ mod tests {
         }
     }
 
+    /// Parity check: every core method the page sends by name reaches the core.
+    /// `client_request` handles `servers.*`, `profile.*` and `desktop.notify`
+    /// before the connected boundary; `native/frame.ts` turns `browser.*` into
+    /// shell commands.
+    #[test]
+    fn every_method_the_page_sends_is_accepted() {
+        fn accepted(method: &str) -> bool {
+            super::connected_method(method)
+                || super::connected_view_method(method)
+                || method.starts_with("servers.")
+                || method.starts_with("profile.")
+                || method.starts_with("browser.")
+                || method == "desktop.notify"
+        }
+        fn sources(folder: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(folder).expect("web source folder") {
+                let path = entry.expect("web source entry").path();
+                let name = path.to_string_lossy();
+                if path.is_dir() {
+                    sources(&path, files);
+                } else if (name.ends_with(".ts") || name.ends_with(".tsx"))
+                    && !name.contains(".test.")
+                {
+                    files.push(path);
+                }
+            }
+        }
+        let web = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/src");
+        let mut files = Vec::new();
+        sources(&web.join("native"), &mut files);
+        sources(&web.join("sync"), &mut files);
+        let mut missing = Vec::new();
+        for file in files {
+            let text = std::fs::read_to_string(&file).expect("web source");
+            // A method name is a string literal that opens a call: `name("ns.method"`.
+            for (start, _) in text.match_indices("(\"") {
+                let rest = &text[start + 2..];
+                let Some(end) = rest.find('"') else { continue };
+                let method = &rest[..end];
+                let call = text[..start].trim_end().chars().last();
+                let named = method.split_once('.').is_some_and(|(space, name)| {
+                    !space.is_empty()
+                        && space.chars().all(|c| c.is_ascii_lowercase())
+                        && !name.is_empty()
+                        && name
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+                });
+                if named
+                    && call.is_some_and(|c| c.is_alphanumeric() || c == '>')
+                    && !accepted(method)
+                {
+                    missing.push(format!("{} {method}", file.display()));
+                }
+            }
+            // Calls whose method name starts on the next line.
+            for (start, _) in text.match_indices("(\n") {
+                let line = text[start + 2..].trim_start();
+                if let Some(rest) = line.strip_prefix('"')
+                    && let Some(end) = rest.find('"')
+                {
+                    let method = &rest[..end];
+                    if method.contains('.')
+                        && method
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || c == '.')
+                        && method
+                            .chars()
+                            .next()
+                            .is_some_and(|c| c.is_ascii_lowercase())
+                        && !accepted(method)
+                    {
+                        missing.push(format!("{} {method}", file.display()));
+                    }
+                }
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "methods the shell refuses: {missing:#?}"
+        );
+    }
+
+    #[test]
+    fn the_native_projection_store_reaches_the_core() {
+        // web/src/sync/nativeProjections.ts sends these for the local server.
+        for method in [
+            "projection.getRows",
+            "projection.rangeRows",
+            "projection.putRows",
+            "projection.pruneRows",
+        ] {
+            assert!(super::connected_method(method), "{method}");
+        }
+        assert!(!super::connected_method("projection.unknown"));
+    }
+
     #[test]
     fn a_paired_server_core_serves_only_server_commands() {
         use studio_client_core::protocol::Request;
@@ -450,6 +547,59 @@ fn approved_peer(
         return Err("The server approval or its identity changed.".into());
     }
     Ok(peer.clone())
+}
+
+/// Commands of the independently verified service boundary, enabled while
+/// callers migrate. Network commands also require the configured backend identity.
+fn connected_method(method: &str) -> bool {
+    matches!(
+        method,
+        "system.info"
+            | "preferences.raw_all"
+            | "preferences.import"
+            | "preferences.raw_set"
+            | "preferences.raw_remove"
+            | "markdown.parse"
+            | "identity.get"
+            | "sync.open"
+            | "drafts.view"
+            | "drafts.import"
+            | "drafts.edit"
+            | "drafts.dismiss"
+            | "drafts.refresh"
+            | "desktop.openExternal"
+            | studio_client_core::desktop::SIGN_IN_OPEN_METHOD
+            | studio_client_core::desktop::SIGN_IN_PREPARE_METHOD
+            | studio_client_core::desktop::SIGN_IN_CANCEL_METHOD
+            | "desktop.pickDirectory"
+            | "desktop.pickAttachments"
+            | "desktop.fileAction"
+            | "desktop.revealPath"
+            | "desktop.showVaultKeys"
+            | "desktop.requestMicrophone"
+            | "desktop.prepareTranscription"
+            | "desktop.cancelTranscription"
+            | "media.captureStart"
+            | "media.captureStop"
+            | "voice.create"
+            | "voice.answer"
+            | "voice.mute"
+            | "voice.close"
+            | "speech.uploadBegin"
+            | "speech.uploadChunk"
+            | "speech.uploadCancel"
+            | "speech.transcribe"
+            | "speech.cancel"
+            | "desktop.saveBegin"
+            | "desktop.saveChunk"
+            | "desktop.saveFinish"
+            | "desktop.saveCancel"
+            | "api.request"
+            | "projection.getRows"
+            | "projection.rangeRows"
+            | "projection.putRows"
+            | "projection.pruneRows"
+    )
 }
 
 fn connected_view_method(method: &str) -> bool {
@@ -618,6 +768,7 @@ async fn client_request(
             error: None,
         });
     }
+<<<<<<< head
     // Enable only the independently verified service boundary while migrating
     // callers. Network commands also require the configured backend identity.
     if !matches!(
@@ -667,6 +818,57 @@ async fn client_request(
             | "api.request"
     ) && !connected_view_method(&request.method)
     {
+||||||| base
+    // Enable only the independently verified service boundary while migrating
+    // callers. Network commands also require the configured backend identity.
+    if !matches!(
+        request.method.as_str(),
+        "system.info"
+            | "preferences.raw_all"
+            | "preferences.import"
+            | "preferences.raw_set"
+            | "preferences.raw_remove"
+            | "markdown.parse"
+            | "identity.get"
+            | "sync.open"
+            | "drafts.view"
+            | "drafts.import"
+            | "drafts.edit"
+            | "drafts.dismiss"
+            | "drafts.refresh"
+            | "desktop.openExternal"
+            | studio_client_core::desktop::SIGN_IN_OPEN_METHOD
+            | studio_client_core::desktop::SIGN_IN_PREPARE_METHOD
+            | studio_client_core::desktop::SIGN_IN_CANCEL_METHOD
+            | "desktop.pickDirectory"
+            | "desktop.pickAttachments"
+            | "desktop.fileAction"
+            | "desktop.revealPath"
+            | "desktop.showVaultKeys"
+            | "desktop.requestMicrophone"
+            | "desktop.prepareTranscription"
+            | "desktop.cancelTranscription"
+            | "media.captureStart"
+            | "media.captureStop"
+            | "voice.create"
+            | "voice.answer"
+            | "voice.mute"
+            | "voice.close"
+            | "speech.uploadBegin"
+            | "speech.uploadChunk"
+            | "speech.uploadCancel"
+            | "speech.transcribe"
+            | "speech.cancel"
+            | "desktop.saveBegin"
+            | "desktop.saveChunk"
+            | "desktop.saveFinish"
+            | "desktop.saveCancel"
+            | "api.request"
+    ) && !connected_view_method(&request.method)
+    {
+=======
+    if !connected_method(&request.method) && !connected_view_method(&request.method) {
+>>>>>>> origin/main
         return Err("This client service is not connected yet.".into());
     }
     if request.method == "view.subscribe"
