@@ -211,7 +211,7 @@ async fn request(
             .and_then(Value::as_str)
             .ok_or(super::WorkerError::CallbackUnknown)?
             .to_owned();
-            let (root, source) = super::store::execution_admission(tx, &attempt_id)?;
+            let (execution_root, source) = super::store::execution_admission(tx, &attempt_id)?;
             let field = if intent.operation == actor.interrupt_operation() {
                 "admission"
             } else {
@@ -227,12 +227,44 @@ async fn request(
                     .get_mut("startAttempt")
                     .ok_or(super::WorkerError::CallbackUnknown)?["interrupt"],
             };
+            let root = match &actor.owner {
+                Owner::Disconnect { .. } => execution_root,
+                Owner::Stop { .. } => pointer
+                    .get("rootRequestId")
+                    .and_then(Value::as_str)
+                    .ok_or(super::WorkerError::CallbackUnknown)?
+                    .to_owned(),
+            };
             let admitted = if let Some(saved) = pointer.get(field) {
                 serde_json::from_value(saved.clone())
                     .map_err(studio_runtime_store::StoreError::from)?
             } else {
                 intent.root_request_id = root.clone();
-                let admitted = super::retained::reserve_provider_call(tx, &source, intent)?;
+                let key = studio_runtime_schema::provider_call_contract::transport_key(
+                    &intent.scope.account,
+                    &intent.operation,
+                );
+                let existing = studio_runtime_store::outbox::Outbox::get::<
+                    super::store::ProviderCall,
+                >(tx, &key)
+                .map_err(studio_runtime_store::StoreError::from)?;
+                let admitted = if let Some(row) = existing {
+                    match row.payload {
+                        super::store::ProviderCall::Retained(call)
+                            if call.call.root_request_id == root =>
+                        {
+                            call.admitted
+                        }
+                        super::store::ProviderCall::Retained(_) => {
+                            return Err(super::WorkerError::CallbackUnknown);
+                        }
+                        super::store::ProviderCall::Account(_) => {
+                            return Err(super::WorkerError::CallbackUnknown);
+                        }
+                    }
+                } else {
+                    super::retained::reserve_provider_call(tx, &source, intent)?
+                };
                 if pointer.is_null() {
                     *pointer = json!({});
                 }

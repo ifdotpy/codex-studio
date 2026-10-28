@@ -587,6 +587,70 @@ async fn stop_without_an_account_session_interrupts_a_retained_turn_once() {
 /// outcome stays unknown. The worker that reattaches must not send that
 /// interrupt again; it sends only the command cleanup that never left Studio.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn proven_unsent_interrupt_reuses_stop_identity_after_reattach() {
+    let state = State::new().await;
+    let mut first = Peer::supervised();
+    let mut first_worker = first.worker(state.bridge.clone()).await;
+    let start = state.start(&mut first, &first_worker).await;
+    first.accepted(&start).await;
+    let cursor = first.frame(json!({"method":"item/started","params":{"threadId":"fake-thread-0","turnId":"turn","item":{"id":"exec-1","type":"commandExecution","command":"test","status":"inProgress","processId":"42"}}})).await;
+    first.acknowledged(cursor).await;
+    worker_barrier(&first_worker).await;
+    let ports = Arc::new(ProductionLifecyclePorts::new(
+        Arc::clone(&state.bridge.store),
+        Arc::new(tokio::sync::Notify::new()),
+        Arc::new(tokio::sync::Notify::new()),
+        account_session(&state, first_worker.retained_session()),
+        None,
+    ));
+    let action = Action::Stop {
+        target: state.agent.clone(),
+        descendants: false,
+        reason: None,
+        sender: None,
+        sender_epoch: None,
+    };
+    let mut stop = tokio::spawn(async move { ports.execute(&action, 20.0).await });
+    let interrupt = tokio::select! { wire = first.next_write() => wire, result = &mut stop => panic!("stop did not dispatch: {result:?}") };
+    assert_eq!(interrupt.value["method"], "turn/interrupt");
+    let _ignored = interrupt.receipt.send(CommandReceipt::NotSent);
+    stop.await.unwrap().expect("stop commits");
+    assert_eq!(
+        state.record().await["startAttempt"]["interrupt"]["outcome"],
+        "unsent"
+    );
+    first_worker.shutdown().await.unwrap();
+    state
+        .bridge
+        .faults
+        .startup_recovery_done
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let mut peer = Peer::supervised();
+    peer.cursor = cursor;
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let retry = tokio::select! { wire = peer.next_write() => wire, () = worker_barrier(&worker) => panic!("known-unsent interrupt was stranded") };
+    assert_eq!(retry.value["method"], "turn/interrupt");
+    let _ignored = retry.receipt.send(CommandReceipt::Written {
+        remote_id: None,
+        duplicate: false,
+    });
+    peer.reply(&retry.value, json!({})).await;
+    let clean = peer.next_write().await;
+    let _ignored = clean.receipt.send(CommandReceipt::Written {
+        remote_id: None,
+        duplicate: false,
+    });
+    peer.reply(&clean.value, json!({})).await;
+    worker_barrier(&worker).await;
+    assert_eq!(
+        state.record().await["startAttempt"]["interrupt"]["outcome"],
+        "accepted"
+    );
+    assert!(peer.writes.try_recv().is_err());
+    worker.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stop_interrupt_with_a_lost_reply_is_not_sent_again_after_reattach() {
     let state = State::new().await;
     let mut first = Peer::supervised();
