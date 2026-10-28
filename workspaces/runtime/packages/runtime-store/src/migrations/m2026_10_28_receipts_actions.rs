@@ -1375,7 +1375,12 @@ impl ReceiptFamilyMigration for ActionsMigration {
                 }
                 let value: Value = row.json(source)?;
                 let updated = if source == "runtime_agents" {
-                    agent_owners(tx, &row, value, checkpoint.cutover_ms)?
+                    let updated = agent_owners(tx, &row, value.clone(), checkpoint.cutover_ms)?;
+                    if updated == value {
+                        next.cursor = row.rowid;
+                        continue;
+                    }
+                    updated
                 } else {
                     operation_owner(tx, source, &row, value, checkpoint.cutover_ms)?
                 };
@@ -1482,6 +1487,53 @@ mod tests {
         next.save(&tx, ActionsMigration.id(), source, 1000)?;
         tx.commit()?;
         Ok(next)
+    }
+    #[test]
+    fn receipts_actions_unchanged_agent_keeps_transcript_revision() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&db);
+        let schema = include_str!("../sync_schema.sql");
+        let agents = schema
+            .split_once("-- section: runtime_agents")
+            .expect("agents section")
+            .1
+            .split_once("-- section: runtime_items")
+            .expect("next section")
+            .0;
+        db.execute_batch(agents)
+            .expect("actual transcript triggers");
+        let unchanged = r#"{ "id": "unchanged", "epoch": 1 }"#;
+        db.execute(
+            "INSERT INTO runtime_agents VALUES('unchanged',?1)",
+            [unchanged],
+        )
+        .expect("unchanged agent");
+        db.execute(
+            "INSERT INTO runtime_agents VALUES('changed',?1)",
+            [r#"{"id":"changed","epoch":1,"startAttempt":{"action":null}}"#],
+        )
+        .expect("changed agent");
+        let next = batch(&mut db, "runtime_agents").expect("migrate agents");
+        assert_eq!(next.cursor, 2);
+        let revision = |id: &str| {
+            db.query_row(
+                "SELECT revision FROM runtime_transcript_revisions WHERE agent=?1",
+                [id],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("revision")
+        };
+        assert_eq!(revision("unchanged"), 1);
+        assert_eq!(revision("changed"), 2);
+        assert_eq!(
+            db.query_row(
+                "SELECT record FROM runtime_agents WHERE id='unchanged'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .expect("record"),
+            unchanged
+        );
     }
     #[test]
     fn receipts_actions_fixtures_exact_replies_and_unknown_survive_reopen() {
