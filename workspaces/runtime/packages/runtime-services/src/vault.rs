@@ -405,11 +405,6 @@ pub fn view(state_dir: &Path, project_id: &str) -> Result<Option<Value>, VaultEr
     Ok(Some(Value::Object(result)))
 }
 
-/// Record that the local Desk key store accepted the project's paper words.
-pub fn mark_unlocked(state_dir: &Path, project_id: &str) -> Result<(), VaultError> {
-    store_mac_state(state_dir, project_id, true, None)
-}
-
 /// Persist the Mac's current unlock and disk facts for one vault.
 pub fn store_mac_state(
     state_dir: &Path,

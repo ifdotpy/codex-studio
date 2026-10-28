@@ -16,7 +16,6 @@ use crate::router::HttpState;
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
-        get("/api/questions", OperationStatus::Implemented, questions),
         get("/api/complaint", OperationStatus::Implemented, complaint),
         get(
             "/api/checkpoints",
@@ -24,30 +23,6 @@ pub(crate) fn routes() -> RouteGroup {
             checkpoints,
         ),
     ])
-}
-
-pub(crate) async fn questions(
-    query: QueryParams,
-    State(state): State<HttpState>,
-) -> Result<Json<Value>, ApiError> {
-    let agent_id = query
-        .typed_value("agent")
-        .and_then(Value::as_str)
-        .map(str::to_owned);
-    let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    // Only the asking agent's family and its requests are read, through read admission.
-    let family = agent_id.clone().unwrap_or_default();
-    let (agents, records) = store
-        .read_async("runtime-http/routes/questions_reads", move |transaction| {
-            let agents = QuestionsReadsRepository::agent_family(transaction, &family)?;
-            let records = QuestionsReadsRepository::requests_of_agents(transaction, &agents)?;
-            Ok::<_, studio_runtime_store::StoreError>((agents, records))
-        })
-        .await
-        .map_err(map_store_error)?;
-    let value = questions_reads::question_history(agent_id.as_deref(), agents, records)
-        .map_err(questions_error)?;
-    Ok(Json(value))
 }
 
 pub(crate) async fn complaint(
@@ -165,9 +140,6 @@ fn map_store_error(error: studio_runtime_store::StoreError) -> ApiError {
 
 fn questions_error(error: QuestionsReadsError) -> ApiError {
     match error {
-        QuestionsReadsError::ConversationRequired => {
-            ApiError::new(StatusCode::BAD_REQUEST, "A conversation is required")
-        }
         QuestionsReadsError::UnknownAgent => {
             ApiError::new(StatusCode::BAD_REQUEST, "Unknown agent")
         }

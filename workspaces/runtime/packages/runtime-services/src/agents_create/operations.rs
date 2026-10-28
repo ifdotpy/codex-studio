@@ -89,8 +89,6 @@ pub struct Creation {
     pub worker_catalog: bool,
     pub project_binding: bool,
     pub intent: Value,
-    /// Source native thread attached atomically for provider-history imports.
-    pub imported_from: Option<String>,
 }
 
 pub struct Configuration {
@@ -579,9 +577,6 @@ mod agent_catalog_requirement_tests {
 async fn agent_creation_intent(request: &Creation) -> Result<Value, OperationError> {
     let mut intent = request.intent.clone();
     let object = intent.as_object_mut().ok_or(OperationError::Internal)?;
-    if let Some(imported_from) = &request.imported_from {
-        object.insert("imported_from".to_owned(), json!(imported_from));
-    }
     object.remove("id");
     intent["prompt"] = json!(python_strip(&request.prompt));
     intent["name"] = json!(python_strip(request.name.as_deref().unwrap_or("Lead")));
@@ -927,10 +922,6 @@ async fn create(
     );
     if !draft && role == "orchestrator" {
         record["maxAgentsExplicit"] = json!(request.max_agents.is_some());
-    }
-    if let Some(imported_from) = &request.imported_from {
-        record["importedFrom"] = json!(imported_from);
-        record["autoWake"] = json!(true);
     }
     if role == "orchestrator" {
         record["workerDefaults"] = worker_defaults.unwrap_or_else(|| {

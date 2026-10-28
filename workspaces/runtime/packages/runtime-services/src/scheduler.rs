@@ -683,43 +683,6 @@ fn terminal_outcome(
     Some((native.as_str(), status, error))
 }
 
-/// The durable result can replay true; only the first successful application authorizes transport.
-pub async fn authorize_submission(
-    store: &RuntimeStore,
-    intent: &TurnIntent,
-    request_id: &str,
-    generation: u64,
-    connection_id: &str,
-) -> Result<bool, SchedulerError> {
-    let Some(thread) = intent.thread_id.as_deref() else {
-        return Ok(false);
-    };
-    let agent_id = intent.agent_id.clone();
-    let epoch = intent.epoch;
-    let attempt_id = intent.attempt_id.clone();
-    let account_key = intent.account_key.clone();
-    let request_id = request_id.to_owned();
-    let connection_id = connection_id.to_owned();
-    let thread = thread.to_owned();
-    Ok(lifecycle_transaction(store, move |tx| {
-        let replay = ExecutionHistoryRepository::attempt(tx, &attempt_id)?
-            .is_some_and(|a| a["receipts"]["submission"].is_object());
-        let result = SchedulerRepository::mark_submitted_identity(
-            tx,
-            &agent_id,
-            epoch,
-            &attempt_id,
-            &request_id,
-            &account_key,
-            generation,
-            &connection_id,
-            &thread,
-        )?;
-        Ok(result && !replay)
-    })
-    .await?)
-}
-
 pub async fn mark_submitted_for_provider(
     store: &RuntimeStore,
     intent: &TurnIntent,

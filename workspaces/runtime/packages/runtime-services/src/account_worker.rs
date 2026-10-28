@@ -589,20 +589,6 @@ impl AccountHandle {
     ) -> Result<studio_runtime_process::EventCursor, SessionTaskError> {
         self.session_control.journal_barrier().await
     }
-    pub fn try_radio_interrupt(
-        &self,
-        agent_id: String,
-        thread_id: String,
-        turn_id: String,
-    ) -> Result<(), Box<mpsc::error::TrySendError<AccountCommand>>> {
-        self.commands
-            .try_send(AccountCommand::RadioInterrupt {
-                agent_id,
-                thread_id,
-                turn_id,
-            })
-            .map_err(Box::new)
-    }
     pub fn radio_interrupt_sender(&self) -> mpsc::Sender<AccountCommand> {
         self.commands.clone()
     }

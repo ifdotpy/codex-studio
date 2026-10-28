@@ -907,14 +907,6 @@ async fn create_agent(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<generated::CreateAgentRequest>,
 ) -> Result<Json<generated::AgentResponse>, ApiError> {
-    create_agent_with_import(State(state), ApiJson(body), None).await
-}
-
-async fn create_agent_with_import(
-    State(state): State<HttpState>,
-    ApiJson(body): ApiJson<generated::CreateAgentRequest>,
-    imported_from: Option<String>,
-) -> Result<Json<generated::AgentResponse>, ApiError> {
     if state.store.is_none() && state.account_driver.is_none() {
         if body.parent.as_ref().is_none_or(Option::is_none)
             && body.cwd.as_deref().is_none_or(str::is_empty)
@@ -944,7 +936,6 @@ async fn create_agent_with_import(
         max_agents: body.max_agents,
         profile: body.profile_id.flatten(),
         parent: body.parent.flatten(),
-        imported_from,
         ..Creation::default()
     };
     // Python resolves a durable existing-agent replay before profile/account
@@ -1275,18 +1266,6 @@ async fn wait_for_agent_catalog(
     Err(operation_error(OperationError::Unavailable(
         "provider-session/model-list",
     )))
-}
-
-/// Import uses the same creation admission, catalog validation and durable
-/// initial-event writer as POST /api/agents after it has built the transcript.
-pub(super) async fn create_imported_agent(
-    state: HttpState,
-    body: Value,
-    imported_from: String,
-) -> Result<Json<generated::AgentResponse>, ApiError> {
-    let body: generated::CreateAgentRequest =
-        serde_json::from_value(body).map_err(|_| ApiError::internal())?;
-    create_agent_with_import(State(state), ApiJson(body), Some(imported_from)).await
 }
 
 pub(super) async fn create_branch_draft(

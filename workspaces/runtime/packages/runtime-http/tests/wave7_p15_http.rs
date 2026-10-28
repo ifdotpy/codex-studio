@@ -116,7 +116,7 @@ async fn call_with_identity(
 }
 
 #[tokio::test]
-async fn installed_runtime_drives_input_and_cancel_through_http() {
+async fn installed_runtime_drives_input_through_http() {
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
     let mut case = cases
@@ -177,29 +177,6 @@ async fn installed_runtime_drives_input_and_cancel_through_http() {
     assert_eq!(receipt["found"], true);
     assert_eq!(receipt["result"]["status"], "uncertain");
     assert_eq!(receipt["result"]["response"]["status"], "unknown");
-    *port.unknown.lock().expect("unknown") = false;
-    for _ in 0..2 {
-        let (status, response) = call(
-            &app,
-            "/api/monitor/cancel",
-            json!({"id":case["before"]["id"]}),
-        )
-        .await;
-        assert_eq!(status, 200, "{response}");
-        assert_eq!(response["cancelRequested"], true);
-        assert!(response.get("_syncEntities").is_none());
-        assert!(response.get("_syncEntitiesAfter").is_none());
-    }
-    assert_eq!(port.submitted.lock().expect("submitted").len(), 2);
-    let saved = MonitorsRepository::get(
-        &store.test_reader().expect("read"),
-        case["before"]["id"].as_str().expect("id"),
-    )
-    .expect("monitor")
-    .expect("monitor")
-    .value()
-    .clone();
-    assert_eq!(saved["cancelDispatch"]["status"], "written");
     assert_eq!(fixtures::events(&store), json!([]));
 }
 

@@ -117,10 +117,6 @@ impl CheckpointsRepository {
         Ok(true)
     }
 
-    pub fn checkpoint_table_available(connection: &Connection) -> StoreResult<bool> {
-        table_exists(connection, "runtime_checkpoints")
-    }
-
     pub fn agent(connection: &Connection, id: &str) -> StoreResult<Option<StoredCheckpointObject>> {
         read_object(connection, "runtime_agents", id)
     }
