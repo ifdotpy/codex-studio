@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 pub use studio_runtime_schema::persistence::RemoteOutcome as LocationOutcome;
+use studio_runtime_schema::persistence::ServerDeliveryState as OutboxState;
 use studio_runtime_store::{
     ProjectLocationsRepository as Repository, ProjectsRepository, RuntimeStore,
 };
@@ -174,10 +175,9 @@ mod receipt_tests {
         .expect("replay")
         .expect("reply");
         assert_eq!(json!(result.reply), case["receipt"]);
-        apply_completed_in_transaction(
+        complete_snapshot_in_transaction(
             &tx,
-            &key,
-            "peer",
+            &raw,
             &case["receipt"],
             "local-fixture",
             now_ms as f64 / 1000.0,
@@ -214,12 +214,6 @@ struct Payload {
     request: Value,
 }
 #[derive(Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum OutboxState {
-    Queued,
-    Complete,
-}
-#[derive(Deserialize)]
 struct Outbox {
     id: String,
     server: String,
@@ -241,7 +235,8 @@ pub struct CompletionDecision {
 impl CompletionSnapshot {
     pub fn from_records(outbox: &Value, project: Option<&Value>) -> Result<Self, LocationError> {
         let outbox: Outbox = checked("relocation/LocationOutbox", "runtime_server_outbox", outbox)?;
-        if outbox.id != outbox.body.request_id
+        if outbox.id.is_empty()
+            || outbox.body.request_id.is_empty()
             || outbox.body.payload.request["project"] != outbox.body.payload.project
             || outbox.body.payload.request["server"] != outbox.server
             || outbox.body.payload.request["path"] != json!(outbox.body.payload.path)
@@ -270,7 +265,7 @@ impl CompletionSnapshot {
     ) -> Result<CompletionDecision, LocationError> {
         timestamp(now)?;
         checked::<Value>("relocation/RelocationReceipt", "location receipt", receipt)?;
-        if receipt["requestId"] != self.outbox.id {
+        if receipt["requestId"] != self.outbox.body.request_id {
             return Err(LocationError::Refused(
                 "The paired server returned a different request identity",
             ));
@@ -307,7 +302,7 @@ impl CompletionSnapshot {
             if location["serverId"] != self.outbox.server
                 || location["homeProjectId"] != envelope.payload.project
                 || location["path"] != json!(envelope.payload.path)
-                || location["requestId"] != self.outbox.id
+                || location["requestId"] != self.outbox.body.request_id
                 || canonical.is_none_or(|path| !canonical_absolute(path))
                 || location["projectId"] != location["canonicalPath"]
             {
@@ -376,26 +371,67 @@ pub fn complete_in_transaction(
     local_server: &str,
     now: f64,
 ) -> Result<Value, LocationError> {
-    let raw =
-        Repository::outbox(tx, key)?.ok_or(LocationError::Refused("Unknown location request"))?;
+    let raw = match Repository::outbox(tx, key)? {
+        Some(raw) => raw,
+        None => {
+            let raw = json!({"id":key,"server":server,"body":envelope,"state":OutboxState::Complete,"result":receipt});
+            let snapshot = CompletionSnapshot::from_records(&raw, None)?;
+            snapshot.decide(receipt, local_server, now)?;
+            return if replayed_location(tx, &raw, receipt, now)? {
+                Ok(receipt.clone())
+            } else {
+                Err(LocationError::Refused("Unknown location request"))
+            };
+        }
+    };
     if raw["server"] != server || raw["body"] != *envelope {
         return Err(LocationError::Refused(
             "The location transport ticket has different content",
         ));
     }
+    let reply = complete_snapshot_in_transaction(tx, &raw, receipt, local_server, now)?;
+    let result: LocationResult =
+        serde_json::from_value(receipt.clone()).map_err(studio_runtime_store::StoreError::from)?;
+    if result.outcome != LocationOutcome::Unknown {
+        Repository::delete_settled(tx, key)?;
+    }
+    Ok(reply)
+}
+
+/// The delivery owner calls this with its exact saved envelope and completion
+/// proof, then deletes its transport row in this same writer transaction.
+pub fn complete_snapshot_in_transaction(
+    tx: &Transaction<'_>,
+    raw: &Value,
+    receipt: &Value,
+    local_server: &str,
+    now: f64,
+) -> Result<Value, LocationError> {
     let project_id = raw
         .pointer("/body/payload/project")
         .and_then(Value::as_str)
         .ok_or_else(|| invalid("runtime_server_outbox", "/body/payload/project"))?;
     let project = ProjectsRepository::get(tx, project_id)?;
+    let snapshot = CompletionSnapshot::from_records(raw, project.as_ref().map(|(_, value)| value))?;
+    snapshot.decide(receipt, local_server, now)?;
+    if replayed_location(tx, raw, receipt, now)? {
+        return Ok(receipt.clone());
+    }
+    let mut pending = raw.clone();
+    pending["state"] = json!(OutboxState::Queued);
+    pending["result"] = Value::Null;
     let snapshot =
-        CompletionSnapshot::from_records(&raw, project.as_ref().map(|(_, value)| value))?;
+        CompletionSnapshot::from_records(&pending, project.as_ref().map(|(_, value)| value))?;
     let decision = snapshot.decide(receipt, local_server, now)?;
     if decision.apply {
-        if !replayed_location(tx, &raw, receipt, now)? {
-            settle_location(tx, project_id, key, &raw, receipt, decision.project)?;
-        }
-        Repository::complete(tx, key, receipt, now)?;
+        settle_location(
+            tx,
+            project_id,
+            &snapshot.outbox.body.request_id,
+            raw,
+            receipt,
+            decision.project,
+        )?;
     }
     Ok(decision.receipt)
 }
@@ -406,45 +442,6 @@ pub(crate) fn normalize_project(
     local_server: &str,
 ) -> Result<(), LocationError> {
     normalize(project, local_server)
-}
-
-/// Python `applied` after the paired driver already completed the outbox row
-/// with `receipt`: commit the home location and its receipts once.
-pub fn apply_completed_in_transaction(
-    tx: &Transaction<'_>,
-    key: &str,
-    server: &str,
-    receipt: &Value,
-    local_server: &str,
-    now: f64,
-) -> Result<(), LocationError> {
-    let mut raw =
-        Repository::outbox(tx, key)?.ok_or(LocationError::Refused("Unknown location request"))?;
-    if raw["server"] != server || raw["state"] != "complete" || raw["result"] != *receipt {
-        return Err(LocationError::Refused(
-            "The location transport ticket has different content",
-        ));
-    }
-    if replayed_location(tx, &raw, receipt, now)? {
-        return Ok(());
-    }
-    // Decide as Python does before the outbox completion in the same commit.
-    raw["state"] = json!("queued");
-    raw["result"] = Value::Null;
-    let project_id = raw
-        .pointer("/body/payload/project")
-        .and_then(Value::as_str)
-        .ok_or_else(|| invalid("runtime_server_outbox", "/body/payload/project"))?
-        .to_owned();
-    let project = ProjectsRepository::get(tx, &project_id)?;
-    let snapshot =
-        CompletionSnapshot::from_records(&raw, project.as_ref().map(|(_, value)| value))?;
-    let decision = snapshot.decide(receipt, local_server, now)?;
-    if !decision.apply {
-        return Ok(());
-    }
-    settle_location(tx, &project_id, key, &raw, receipt, decision.project)?;
-    Ok(())
 }
 
 fn request_error(

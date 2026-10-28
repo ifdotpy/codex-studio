@@ -1,8 +1,7 @@
 use super::*;
+use crate::event_write::{CallerAdmission, RequestKey, begin_request};
 use std::sync::Arc;
-use studio_runtime_store::request_results::{
-    Admission, AdmittedRequest, RequestResultError, ResultEnvelope,
-};
+use studio_runtime_store::request_results::RequestResultError;
 
 /// The existing project record is extensible, with a required owner identity.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -108,10 +107,10 @@ pub async fn peer_team_write(
     let (prepared, path) = super::prepare_path(store.clone(), path_value, false).await?;
     store.transaction_with(move |tx| {
         prepared.recheck(tx)?;
-        if let Some(result) = crate::event_write::replay_request::<ProjectReply>(tx, &key, &signature, (now_seconds()*1000.0) as i64).map_err(request_error)? { return Ok(json!(result.reply)); }
-        let admitted = match admit_operation(tx, "peer-team", &request_id, &signature)? {
-            Admission::Fresh(admitted) => admitted,
-            Admission::Replay(result) => return Ok(json!(saved_reply::<ProjectReply>(&result.result)?)),
+        let server = RuntimeStore::transaction_local_server_id(tx)?.ok_or(ProjectsError::Invalid("The local server ID is unavailable"))?;
+        let admitted = match begin_request::<ProjectReply>(tx,RequestKey::new("peer-team", &[&server,"owner-api"], &request_id).raw(&key).operation(&["write"]), &signature,(now_seconds()*1000.0) as i64).map_err(request_error)? {
+            CallerAdmission::Fresh(admitted) => admitted,
+            CallerAdmission::Replay(reply) => return Ok(json!(reply)),
         };
         let mut project = match load_project(tx, &path)? {
             Some(project) => project,
@@ -179,7 +178,7 @@ pub async fn peer_team_write(
         for id in previous_ids.difference(&live_ids) { SyncDocumentsRepository::put_entity(tx, "peerTeam", id, json!({}), true)?; }
         refresh_project_rooms(tx, &path, &prepared)?;
         let reply: ProjectReply = serde_json::from_value(project.clone()).map_err(StoreError::from)?;
-        settle_operation(tx, &admitted, &reply)?;
+        crate::event_write::settle_request(tx, &admitted, None, &reply).map_err(request_error)?;
         Ok(project)
     }).await
 }
@@ -195,39 +194,6 @@ pub(crate) fn request_error(error: RequestResultError) -> ProjectsError {
             ProjectsError::Conflict("This request ID has different content")
         }
     }
-}
-
-pub(crate) fn admit_operation(
-    tx: &studio_runtime_store::Transaction<'_>,
-    namespace: &str,
-    root: &str,
-    signature: &str,
-) -> Result<Admission, ProjectsError> {
-    let server = RuntimeStore::transaction_local_server_id(tx)?
-        .ok_or(ProjectsError::Invalid("The local server ID is unavailable"))?;
-    crate::event_write::admit_request(
-        tx,
-        namespace,
-        &[&server, "owner-api"],
-        root,
-        &["write"],
-        signature,
-        (now_seconds() * 1000.0) as i64,
-    )
-    .map_err(request_error)
-}
-
-pub(crate) fn saved_reply<R: serde::de::DeserializeOwned>(raw: &str) -> Result<R, ProjectsError> {
-    let result: ResultEnvelope<R> = serde_json::from_str(raw).map_err(StoreError::from)?;
-    Ok(result.reply)
-}
-
-pub(crate) fn settle_operation<R: serde::Serialize>(
-    tx: &studio_runtime_store::Transaction<'_>,
-    admitted: &AdmittedRequest,
-    reply: &R,
-) -> Result<(), ProjectsError> {
-    crate::event_write::settle_request(tx, admitted, None, reply).map_err(request_error)
 }
 
 pub(crate) fn project_agents(
@@ -390,21 +356,20 @@ pub(super) async fn reorder(store: &RuntimeStore, mut body: Value) -> Result<Val
     let migration = body.get("migration").and_then(Value::as_bool) == Some(true);
     store
         .transaction_with(move |tx| -> Result<Value, ProjectsError> {
-            if let Some(result) = crate::event_write::replay_request::<SidebarReply>(
+            let server = RuntimeStore::transaction_local_server_id(tx)?
+                .ok_or(ProjectsError::Invalid("The local server ID is unavailable"))?;
+            let admitted = match begin_request::<SidebarReply>(
                 tx,
-                &key,
+                RequestKey::new("sidebar-order", &[&server, "owner-api"], &request_id)
+                    .raw(&key)
+                    .operation(&["write"]),
                 &signature,
                 (now_seconds() * 1000.0) as i64,
             )
             .map_err(request_error)?
             {
-                return Ok(json!(result.reply));
-            }
-            let admitted = match admit_operation(tx, "sidebar-order", &request_id, &signature)? {
-                Admission::Fresh(admitted) => admitted,
-                Admission::Replay(result) => {
-                    return Ok(json!(saved_reply::<SidebarReply>(&result.result)?));
-                }
+                CallerAdmission::Fresh(admitted) => admitted,
+                CallerAdmission::Replay(reply) => return Ok(json!(reply)),
             };
             let current = ProjectsRepository::sidebar_order(tx)?;
             let revision = current.get("revision").and_then(Value::as_u64).ok_or(
@@ -432,7 +397,8 @@ pub(super) async fn reorder(store: &RuntimeStore, mut body: Value) -> Result<Val
                 groups: serde_json::from_value(groups).map_err(StoreError::from)?,
             };
             ProjectsRepository::put_sidebar_order(tx, &json!(result))?;
-            settle_operation(tx, &admitted, &result)?;
+            crate::event_write::settle_request(tx, &admitted, None, &result)
+                .map_err(request_error)?;
             Ok(json!(result))
         })
         .await

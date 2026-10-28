@@ -107,37 +107,19 @@ fn delete_in_transaction(
     .to_string();
     let receipt_id = format!("project-delete:{}", request.request_id);
     let now_ms = (now * 1000.0) as i64;
-    if let Some(result) =
-        crate::event_write::replay_request::<DeleteReply>(tx, &receipt_id, &signature, now_ms)?
-    {
-        return Ok((
-            serde_json::to_value(result.reply).map_err(StoreError::from)?,
-            false,
-        ));
-    }
     if workspace != request.expected_workspace_id {
         return Err(Error::Workspace);
     }
-    let admission = crate::event_write::admit_request(
-        tx,
-        "project-delete",
-        &[&server, &workspace, "owner-api"],
-        &request.request_id,
-        &[&request.id],
-        &signature,
-        now_ms,
-    )?;
-    let admitted = match admission {
-        studio_runtime_store::request_results::Admission::Replay(stored) => {
-            let result: studio_runtime_store::request_results::ResultEnvelope<DeleteReply> =
-                serde_json::from_str(&stored.result).map_err(StoreError::from)?;
-            return Ok((
-                serde_json::to_value(result.reply).map_err(StoreError::from)?,
-                false,
-            ));
-        }
-        studio_runtime_store::request_results::Admission::Fresh(admitted) => admitted,
-    };
+    let authority = [&server[..], &workspace[..], "owner-api"];
+    let key =
+        crate::event_write::RequestKey::new("project-delete", &authority, &request.request_id)
+            .raw(&receipt_id)
+            .operation(&["delete"]);
+    let admitted =
+        match crate::event_write::begin_request::<DeleteReply>(tx, key, &signature, now_ms)? {
+            crate::event_write::CallerAdmission::Replay(reply) => return Ok((json!(reply), false)),
+            crate::event_write::CallerAdmission::Fresh(admitted) => admitted,
+        };
     let (_, project) = ProjectsRepository::get(tx, &request.id)?.ok_or(Error::NotFound)?;
     if project.get("id").and_then(Value::as_str) != Some(request.id.as_str()) {
         return Err(Error::Membership);
