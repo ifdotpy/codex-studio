@@ -141,7 +141,10 @@ fn cancellation(
     let Ok(identity) = RequestIdentity::new(RULE_REQUEST_NAMESPACE, &[actor], root, &[]) else {
         return Ok(None);
     };
-    Outbox::get(connection, &cancellation_id(identity.id(), actor))
+    Ok(Outbox::get(
+        connection,
+        &cancellation_id(identity.id(), actor),
+    )?)
 }
 
 /// Filesystem work for rule actions. Implementations must be called only before

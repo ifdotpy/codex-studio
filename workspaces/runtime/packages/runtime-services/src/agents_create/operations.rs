@@ -1948,14 +1948,18 @@ pub async fn conversation(
                 move |db| {
                     load_agent_value(db, &id, &|schema, value| read_validate(schema, value))?
                         .ok_or(MutationError::UnknownAgent)?;
-                    Ok(replay_agent_mutation::<SettingsReply>(
+                    Ok(crate::event_write::saved_request::<SettingsReply>(
                         db,
-                        &id,
-                        &request_id,
-                        operation,
+                        crate::event_write::RequestKey::new(
+                            AGENT_MUTATION_NAMESPACE,
+                            &[&id],
+                            &request_id,
+                        )
+                        .operation(&[operation.operation()]),
                         &signature,
                         chrono::Utc::now().timestamp_millis(),
-                    )?)
+                    )
+                    .map_err(MutationError::from)?)
                 },
             )
             .await?;
