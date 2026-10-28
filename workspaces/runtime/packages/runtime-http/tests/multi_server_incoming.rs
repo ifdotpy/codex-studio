@@ -95,6 +95,41 @@ fn fresh_headers(request: &common::FixtureRequest, nonce: Option<&str>) -> Vec<(
     headers.into_iter().collect()
 }
 
+// Refresh an expired frozen request while retaining its signed fixture identity.
+fn refresh_request_id(case: &Value, request_id: &str) -> Value {
+    use studio_runtime_services::remote_transport::{
+        MultiServerSigningInput, multi_server_signing_bytes,
+    };
+    let mut case = case.clone();
+    let mut request: common::FixtureRequest =
+        serde_json::from_value(case.clone()).expect("fixture request");
+    let mut body: Value = serde_json::from_str(&request.raw).expect("fixture body");
+    body["requestId"] = serde_json::json!(request_id);
+    if body.get("action").is_some() {
+        body["operation"] = serde_json::json!([]);
+    }
+    request.raw = body.to_string();
+    let mut headers: std::collections::BTreeMap<_, _> = request.headers.into_iter().collect();
+    headers.insert("X-Studio-Request-Id".into(), request_id.into());
+    let bytes = multi_server_signing_bytes(MultiServerSigningInput {
+        method: &request.method,
+        target: &request.target,
+        server_id: &headers["X-Studio-Server"],
+        client_id: &headers["X-Studio-Client"],
+        timestamp: &headers["X-Studio-Timestamp"],
+        nonce: &headers["X-Studio-Nonce"],
+        request_id,
+        body: request.raw.as_bytes(),
+    });
+    headers.insert(
+        "X-Studio-Signature".into(),
+        common::signing_identity().sign(&bytes),
+    );
+    case["raw"] = request.raw.into();
+    case["headers"] = serde_json::to_value(headers.into_iter().collect::<Vec<_>>()).unwrap();
+    case
+}
+
 fn incoming(case: &Value) -> Request<Body> {
     incoming_with_nonce(case, None)
 }
@@ -600,6 +635,10 @@ async fn signed_requests_cross_the_http_boundary_and_missing_owner_is_no_write()
         .expect("valid auto-pair fixture")
         .clone();
     let (auto_root, auto_store) = common::store().await;
+    let auto_case = refresh_request_id(
+        &auto_case,
+        &studio_runtime_schema::persistence::RequestIdentity::issue_root(),
+    );
     let auto_lookup = common::CountingOwner::new(auto_case.clone());
     let auto_boundary = studio_runtime_services::multi_server_pairing::MultiServerBoundary::new(
         data["identity"].clone(),
@@ -738,7 +777,15 @@ async fn signed_requests_cross_the_http_boundary_and_missing_owner_is_no_write()
     );
     assert_eq!(lookup.calls.load(Ordering::SeqCst), calls);
     assert_eq!(common::rows(&store), before);
-    let response = app.clone().oneshot(incoming(case)).await.expect("response");
+    let pair_case = refresh_request_id(
+        case,
+        &studio_runtime_schema::persistence::RequestIdentity::issue_root(),
+    );
+    let response = app
+        .clone()
+        .oneshot(incoming(&pair_case))
+        .await
+        .expect("response");
     let status = response.status();
     let bytes = to_bytes(response.into_body(), 4096).await.expect("body");
     assert_eq!(
@@ -751,7 +798,7 @@ async fn signed_requests_cross_the_http_boundary_and_missing_owner_is_no_write()
     assert_eq!(value["clientId"], "new-client");
     assert_eq!(value["paired"], true);
     let before = common::rows(&store);
-    let replay = app.oneshot(incoming(case)).await.expect("response");
+    let replay = app.oneshot(incoming(&pair_case)).await.expect("response");
     assert_eq!(
         replay.status().as_u16(),
         case["replayRefusal"]["status"].as_u64().expect("status") as u16
@@ -802,7 +849,8 @@ async fn signed_remote_event_crosses_http_boundary_and_persists_once() {
         })
         .await
         .expect("link and owner rows");
-    let data = &common::fixture().data["eventRequest"];
+    let request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    let data = refresh_request_id(&common::fixture().data["eventRequest"], &request_id);
     let state = HttpState::new(
         "token".into(),
         "workspace".into(),
@@ -822,7 +870,7 @@ async fn signed_remote_event_crosses_http_boundary_and_persists_once() {
         let response = app
             .clone()
             .oneshot({
-                let mut request = incoming_with_nonce(data, Some(nonce));
+                let mut request = incoming_with_nonce(&data, Some(nonce));
                 for login in data["logins"].as_array().unwrap() {
                     request.headers_mut().append(
                         "tailscale-user-login",
@@ -841,7 +889,7 @@ async fn signed_remote_event_crosses_http_boundary_and_persists_once() {
         )
         .expect("receipt JSON");
         assert_eq!(replay["outcome"], "applied");
-        assert_eq!(replay["value"]["eventId"], "python-event-http");
+        assert_eq!(replay["value"]["eventId"], request_id);
         if let Some(first) = &receipt {
             assert_eq!(&replay, first);
         }
@@ -850,8 +898,8 @@ async fn signed_remote_event_crosses_http_boundary_and_persists_once() {
     let db = store.test_reader().expect("test store reader");
     let count: i64 = db
         .query_row(
-            "SELECT count(*) FROM runtime_events WHERE id='python-event-http' AND agent='event-parent' AND text='signed owner event'",
-            [],
+            "SELECT count(*) FROM runtime_events WHERE id=?1 AND agent='event-parent' AND text='signed owner event'",
+            [&request_id],
             |row| row.get(0),
         )
         .expect("applied event is durable");
@@ -968,9 +1016,11 @@ async fn lifecycle_ports_preserve_configured_accounts_for_inbound_project_add() 
         .as_secs() as i64;
     let project_path = receiver_root.path().join("new-remote-project");
     std::fs::create_dir_all(&project_path).expect("unregistered project directory");
+    let request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
     let raw = serde_json::to_vec(&serde_json::json!({
         "action":"add_location",
-        "requestId":"remote-project-add",
+        "requestId":request_id,
+        "operation":[],
         "payload":{
             "project":"remote-home-project",
             "path":project_path.to_string_lossy(),
@@ -983,7 +1033,7 @@ async fn lifecycle_ports_preserve_configured_accounts_for_inbound_project_add() 
         server_id: receiver_identity["serverId"].as_str().expect("receiver ID"),
         method: "POST",
         url: &url,
-        request_id: "remote-project-add",
+        request_id: &request_id,
         timestamp: now,
         nonce: "qrstuvwxyz0123456789abcdefghijkl",
         body: &raw,
