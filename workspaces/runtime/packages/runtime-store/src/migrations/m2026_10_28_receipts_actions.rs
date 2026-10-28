@@ -33,8 +33,31 @@ const ACTIONS: &str = "source.id GLOB 'native-command:*' OR source.id GLOB 'moni
 struct NativeActionIntent<'a> {
     idle: Option<IdleActionProvenance>,
     admitted: AdmittedRequest,
-    receipt: &'a Value,
+    receipt: &'a LegacyNativeReceipt,
     outcome: &'a Value,
+}
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyNativeReceipt {
+    agent_id: String,
+    account_key: String,
+    request_id: String,
+    action: String,
+    epoch: i64,
+    accepted_at: serde_json::Number,
+    thread_id: String,
+    attempt_id: String,
+    status: NativeActionAdmissionStatus,
+    #[serde(flatten)]
+    other: std::collections::BTreeMap<String, Value>,
+}
+#[derive(Serialize)]
+struct NativeActionReply<'a> {
+    receipt: &'a LegacyNativeReceipt,
+    outcome: &'a Value,
+    replayed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result: Option<&'a Value>,
 }
 #[derive(Serialize)]
 struct InputIntent<'a, T: Serialize> {
@@ -95,6 +118,36 @@ struct TerminalActionIntent<'a> {
     admitted: AdmittedRequest,
     reply: TerminalActionReply<'a>,
 }
+#[derive(Default)]
+enum LegacyTerminalDelivery {
+    #[default]
+    Missing,
+    Present(TerminalInputDelivery),
+}
+impl<'de> Deserialize<'de> for LegacyTerminalDelivery {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        TerminalInputDelivery::deserialize(deserializer).map(Self::Present)
+    }
+}
+#[derive(Deserialize)]
+struct LegacyTerminalReceipt {
+    #[serde(default)]
+    id: Value,
+    #[serde(default)]
+    status: Value,
+    #[serde(default)]
+    delivery: LegacyTerminalDelivery,
+}
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyFiredEventsOwner {
+    #[serde(default)]
+    fired_events: std::collections::BTreeSet<String>,
+    #[serde(flatten)]
+    other: std::collections::BTreeMap<String, Value>,
+}
 
 fn obligation<P: Serialize>(
     tx: &Transaction<'_>,
@@ -140,10 +193,33 @@ fn string<'a>(value: &'a Value, key: &str, table: &str, row: &SourceReceipt) -> 
         .filter(|v| !v.is_empty())
         .ok_or_else(|| unclassifiable(table, &row.id, &row.signature))
 }
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 struct IdleActionProvenance {
     episode_id: String,
-    before: Value,
+    before: LegacyIdleBefore,
+}
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyIdleBefore {
+    status: studio_runtime_schema::persistence::ExecutionNodeStatus,
+    #[serde(default)]
+    start_attempt: Value,
+    #[serde(default)]
+    turn_epoch: Value,
+}
+#[derive(Deserialize)]
+struct LegacyIdleResult {
+    before: LegacyIdleBefore,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyIdleAgent {
+    idle_compaction_episode: LegacyIdleEpisode,
+}
+#[derive(Deserialize)]
+struct LegacyIdleEpisode {
+    id: String,
+    before: LegacyIdleBefore,
 }
 fn idle_provenance(
     tx: &Transaction<'_>,
@@ -165,8 +241,8 @@ fn idle_provenance(
         if signature != "idle-compaction" {
             return Err(invalid());
         }
-        let value: Value = serde_json::from_str(&raw).map_err(|_| invalid())?;
-        value["before"].clone()
+        let value: LegacyIdleResult = serde_json::from_str(&raw).map_err(|_| invalid())?;
+        value.before
     } else {
         let raw: Option<String> = tx
             .query_row(
@@ -175,21 +251,16 @@ fn idle_provenance(
                 |r| r.get(0),
             )
             .optional()?;
-        let value: Value =
+        let value: LegacyIdleAgent =
             serde_json::from_str(&raw.ok_or_else(invalid)?).map_err(|_| invalid())?;
-        if value["idleCompactionEpisode"]["id"] != row.id {
+        if value.idle_compaction_episode.id != row.id {
             return Err(invalid());
         }
-        value["idleCompactionEpisode"]["before"].clone()
+        value.idle_compaction_episode.before
     };
-    if !before.is_object() {
-        return Err(invalid());
-    }
-    let _: studio_runtime_schema::persistence::ExecutionNodeStatus =
-        serde_json::from_value(before["status"].clone()).map_err(|_| invalid())?;
     Ok(Some(IdleActionProvenance {
         episode_id: row.id.clone(),
-        before: json!({"status":before["status"],"startAttempt":before["startAttempt"],"turnEpoch":before["turnEpoch"]}),
+        before,
     }))
 }
 
@@ -200,19 +271,18 @@ fn native(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()>
     if parts.len() != 2 {
         return Err(invalid());
     }
-    let saved = json!({"receipt":serde_json::from_str::<Value>(&parts[0]).map_err(|_|invalid())?,"outcome":serde_json::from_str::<Value>(&parts[1]).map_err(|_|invalid())?});
-    let receipt = &saved["receipt"];
-    let outcome = &saved["outcome"];
-    let agent = string(receipt, "agentId", table, row)?;
-    let account = string(receipt, "accountKey", table, row)?;
-    let _: NativeActionAdmissionStatus =
-        serde_json::from_value(receipt["status"].clone()).map_err(|_| invalid())?;
-    if receipt["requestId"] != row.id
-        || !matches!(receipt["action"].as_str(), Some("compact" | "review"))
-        || !receipt["epoch"].as_i64().is_some_and(|v| v >= 0)
-        || !receipt["acceptedAt"].as_f64().is_some_and(f64::is_finite)
-        || receipt["threadId"].as_str().is_none_or(str::is_empty)
-        || receipt["attemptId"].as_str().is_none_or(str::is_empty)
+    let receipt: LegacyNativeReceipt = serde_json::from_str(&parts[0]).map_err(|_| invalid())?;
+    let outcome: Value = serde_json::from_str(&parts[1]).map_err(|_| invalid())?;
+    let agent = receipt.agent_id.as_str();
+    let account = receipt.account_key.as_str();
+    if agent.is_empty()
+        || account.is_empty()
+        || receipt.request_id != row.id
+        || !matches!(receipt.action.as_str(), "compact" | "review")
+        || receipt.epoch < 0
+        || !receipt.accepted_at.as_f64().is_some_and(f64::is_finite)
+        || receipt.thread_id.is_empty()
+        || receipt.attempt_id.is_empty()
         || (!outcome["error"].is_null() && !outcome["error"].is_string())
     {
         return Err(invalid());
@@ -235,18 +305,20 @@ fn native(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()>
             NativeActionIntent {
                 idle: idle_provenance(tx, row, agent)?,
                 admitted: admitted_owner_token(&row.id, &row.signature, cutover),
-                receipt,
-                outcome,
+                receipt: &receipt,
+                outcome: &outcome,
             },
             (Some(account.into()), None),
         ),
         Some("failed" | "acknowledged") => {
-            let mut reply = json!({"receipt":receipt,"outcome":outcome,"replayed":false});
-            if outcome["status"] == "acknowledged"
-                && outcome.get("result").is_some_and(|v| !v.is_null())
-            {
-                reply["result"] = outcome["result"].clone();
-            }
+            let reply = NativeActionReply {
+                receipt: &receipt,
+                outcome: &outcome,
+                replayed: false,
+                result: (outcome["status"] == "acknowledged")
+                    .then(|| outcome.get("result").filter(|value| !value.is_null()))
+                    .flatten(),
+            };
             import_result(
                 tx,
                 &row.id,
@@ -264,25 +336,19 @@ fn native(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()>
 }
 fn terminal(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()> {
     let table = SOURCES[2];
-    let value: Value = row.json(table)?;
+    let value: LegacyTerminalReceipt = row.json(table)?;
     let invalid = || unclassifiable(table, &row.id, &row.signature);
-    let terminal = value["id"].as_str();
-    let uncertain = if let Some(delivery) = value.get("delivery") {
-        match serde_json::from_value::<TerminalInputDelivery>(delivery.clone())
-            .map_err(|_| invalid())?
+    let terminal = value.id.as_str();
+    let uncertain = match value.delivery {
+        LegacyTerminalDelivery::Present(TerminalInputDelivery::Uncertain) => true,
+        LegacyTerminalDelivery::Present(TerminalInputDelivery::Sent) => false,
+        LegacyTerminalDelivery::Missing
+            if terminal.is_some()
+                && matches!(value.status.as_str(), Some("running" | "exited" | "closed")) =>
         {
-            TerminalInputDelivery::Uncertain => true,
-            TerminalInputDelivery::Sent => false,
+            true
         }
-    } else if terminal.is_some()
-        && matches!(
-            value["status"].as_str(),
-            Some("running" | "exited" | "closed")
-        )
-    {
-        true
-    } else {
-        return Err(invalid());
+        LegacyTerminalDelivery::Missing => return Err(invalid()),
     };
     let reply = TerminalActionReply {
         response: &row.result,
@@ -430,39 +496,74 @@ fn monitor(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()
         ),
     }
 }
-fn steer(tx: &Transaction<'_>, row: &SourceReceipt, mut value: Value, cutover: i64) -> Result<()> {
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacySteer {
+    stage: SteerStage,
+    agent: String,
+    account_key: String,
+    thread_id: String,
+    created: serde_json::Number,
+    #[serde(flatten)]
+    other: std::collections::BTreeMap<String, Value>,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MigratedSteer {
+    stage: &'static str,
+    agent: String,
+    account_key: String,
+    thread_id: String,
+    created: serde_json::Number,
+    admission: AdmittedRequest,
+    root_request_id: String,
+    #[serde(flatten)]
+    other: std::collections::BTreeMap<String, Value>,
+}
+fn steer(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()> {
     let table = SOURCES[0];
     let invalid = || unclassifiable(table, &row.id, &row.signature);
     if row.signature != "claude-steer" {
         return Err(invalid());
     }
-    let stage: SteerStage =
-        serde_json::from_value(value["stage"].clone()).map_err(|_| invalid())?;
-    let agent = string(&value, "agent", table, row)?.to_owned();
-    let account = string(&value, "accountKey", table, row)?.to_owned();
-    let stream = string(&value, "threadId", table, row)?.to_owned();
-    let created = value["created"]
+    let mut value: LegacySteer = row.json(table)?;
+    let stage = value.stage;
+    if value.agent.is_empty() || value.account_key.is_empty() || value.thread_id.is_empty() {
+        return Err(invalid());
+    }
+    let created = value
+        .created
         .as_f64()
         .filter(|v| v.is_finite())
         .ok_or_else(invalid)?;
-    value["admission"] =
-        serde_json::to_value(admitted_owner_token(&row.id, &row.signature, cutover))
-            .map_err(|_| invalid())?;
-    value["rootRequestId"] = json!(RequestIdentity::issue_root());
     let incomplete = stage != SteerStage::Reserved
         && serde_json::from_str::<crate::repositories::scheduler::SubmittedSteer>(&row.result)
             .is_err();
-    if incomplete {
-        value
-            .as_object_mut()
-            .ok_or_else(invalid)?
-            .insert("stage".into(), "held".into());
-    }
     let status = match stage {
         SteerStage::Reserved => OutboxStatus::Pending,
         SteerStage::Submitted if !incomplete => OutboxStatus::Submitted,
         SteerStage::Submitted => OutboxStatus::Unknown,
         SteerStage::Unconfirmed => OutboxStatus::Unknown,
+    };
+    value.other.remove("admission");
+    value.other.remove("rootRequestId");
+    let payload = MigratedSteer {
+        stage: if incomplete {
+            "held"
+        } else {
+            match stage {
+                SteerStage::Reserved => "reserved",
+                SteerStage::Submitted => "submitted",
+                SteerStage::Unconfirmed => "unconfirmed",
+            }
+        },
+        admission: admitted_owner_token(&row.id, &row.signature, cutover),
+        root_request_id: RequestIdentity::issue_root(),
+        agent: value.agent,
+        account_key: value.account_key,
+        thread_id: value.thread_id,
+        created: value.created,
+        other: value.other,
     };
     import_outbox(
         tx,
@@ -470,16 +571,16 @@ fn steer(tx: &Transaction<'_>, row: &SourceReceipt, mut value: Value, cutover: i
             id: row.id.clone(),
             kind: OutboxKind::Steer,
             owner_kind: OwnerKind::Agent,
-            owner_id: agent,
+            owner_id: payload.agent.clone(),
             request_id: Some(row.id.clone()),
             signature: row.signature.clone(),
             status,
-            account: Some(account),
-            stream_id: Some(stream),
+            account: Some(payload.account_key.clone()),
+            stream_id: Some(payload.thread_id.clone()),
             generation: None,
             ordinal: None,
             next_at: None,
-            payload: value,
+            payload,
             created: (created * 1000.0) as i64,
         },
     )
@@ -508,20 +609,12 @@ fn fired(tx: &Transaction<'_>, row: &SourceReceipt, value: &Value) -> Result<()>
             |r| r.get(0),
         )
         .optional()?;
-    let mut agent: Value =
+    let mut agent: LegacyFiredEventsOwner =
         serde_json::from_str(&raw.ok_or_else(invalid)?).map_err(|_| invalid())?;
-    if !agent.is_object() {
-        return Err(invalid());
-    }
-    let mut names: std::collections::BTreeSet<String> = match agent.get("firedEvents") {
-        Some(v) => serde_json::from_value(v.clone()).map_err(|_| invalid())?,
-        None => Default::default(),
-    };
-    names.insert(name.into());
-    agent["firedEvents"] = json!(names);
+    agent.fired_events.insert(name.into());
     tx.execute(
         "UPDATE runtime_agents SET record=?1 WHERE id=?2",
-        params![agent.to_string(), root],
+        params![serde_json::to_string(&agent).map_err(|_| invalid())?, root],
     )?;
     Ok(())
 }
@@ -532,8 +625,47 @@ struct ManualReply<'a> {
 }
 #[derive(Serialize)]
 struct ManualManagement<'a> {
-    authorization: Value,
+    authorization: ManualAuthorization,
     reply: ManualReply<'a>,
+}
+#[derive(Deserialize)]
+struct LegacyManualAuthorization {
+    request_id: String,
+    signature: String,
+    lead: LegacyManualLead,
+    target: LegacyManualTarget,
+    #[serde(flatten)]
+    other: std::collections::BTreeMap<String, Value>,
+}
+#[derive(Deserialize, Serialize)]
+struct LegacyManualLead {
+    id: String,
+    epoch: i64,
+    #[serde(flatten)]
+    other: std::collections::BTreeMap<String, Value>,
+}
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyManualTarget {
+    id: String,
+    account_key: String,
+    #[serde(flatten)]
+    other: std::collections::BTreeMap<String, Value>,
+}
+#[derive(Serialize)]
+struct ManualAuthorization {
+    request_id: String,
+    signature: String,
+    lead: LegacyManualLead,
+    target: LegacyManualTarget,
+    root_request_id: String,
+    admission: AdmittedRequest,
+    #[serde(flatten)]
+    other: std::collections::BTreeMap<String, Value>,
+}
+#[derive(Deserialize)]
+struct LegacyManualStatus {
+    status: studio_runtime_schema::persistence::RecoveryReceiptStatus,
 }
 fn manual(tx: &Transaction<'_>, row: &SourceReceipt, value: &Value, cutover: i64) -> Result<()> {
     use studio_runtime_schema::persistence::{RecoveryReceiptStatus, ToolRequestOutcome};
@@ -557,8 +689,7 @@ fn manual(tx: &Transaction<'_>, row: &SourceReceipt, value: &Value, cutover: i64
         .next()
         .filter(|v| !v.is_empty())
         .ok_or_else(invalid)?;
-    let status: RecoveryReceiptStatus =
-        serde_json::from_value(value["status"].clone()).map_err(|_| invalid())?;
+    let status = row.json::<LegacyManualStatus>(table)?.status;
     let outcome = match status {
         RecoveryReceiptStatus::Unknown | RecoveryReceiptStatus::Unconfirmed => {
             ToolRequestOutcome::Unknown
@@ -599,12 +730,13 @@ fn manual(tx: &Transaction<'_>, row: &SourceReceipt, value: &Value, cutover: i64
         return Err(invalid());
     }
     let (target, raw) = &sources[0];
-    let mut authorization: Value = serde_json::from_str(raw).map_err(|_| invalid())?;
-    if authorization["request_id"] != row.id
-        || authorization["signature"] != row.signature
-        || authorization["lead"]["id"] != lead
-        || authorization["lead"]["epoch"] != epoch
-        || authorization["target"]["id"] != *target
+    let mut legacy: LegacyManualAuthorization = serde_json::from_str(raw).map_err(|_| invalid())?;
+    if legacy.request_id != row.id
+        || legacy.signature != row.signature
+        || legacy.lead.id != lead
+        || legacy.lead.epoch != epoch
+        || legacy.target.id != *target
+        || legacy.target.account_key.is_empty()
     {
         return Err(invalid());
     }
@@ -612,16 +744,19 @@ fn manual(tx: &Transaction<'_>, row: &SourceReceipt, value: &Value, cutover: i64
         .map_err(|_| invalid())?;
     let mut destination = row.clone();
     destination.id = identity.id().to_owned();
-    let account = string(&authorization["target"], "accountKey", table, row)?.to_owned();
-    authorization["request_id"] = json!(destination.id);
-    authorization["root_request_id"] = json!(public_id);
-    authorization["admission"] = serde_json::to_value(admitted_owner_token(
-        &destination.id,
-        &row.signature,
-        cutover,
-    ))
-    .map_err(|_| invalid())?;
-    tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.nativeRelease.authorization',json(?1)) WHERE id=?2",params![authorization.to_string(),target])?;
+    let account = legacy.target.account_key.clone();
+    legacy.other.remove("root_request_id");
+    legacy.other.remove("admission");
+    let authorization = ManualAuthorization {
+        request_id: destination.id.clone(),
+        signature: legacy.signature,
+        lead: legacy.lead,
+        target: legacy.target,
+        root_request_id: public_id.into(),
+        admission: admitted_owner_token(&destination.id, &row.signature, cutover),
+        other: legacy.other,
+    };
+    tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.nativeRelease.authorization',json(?1)) WHERE id=?2",params![serde_json::to_string(&authorization).map_err(|_| invalid())?,target])?;
     obligation(
         tx,
         &destination,
@@ -787,13 +922,65 @@ fn action_known(tx: &Transaction<'_>, id: &str) -> Result<bool> {
     }
     Ok(tx.query_row("SELECT EXISTS(SELECT 1 FROM request_results WHERE id=?1 UNION ALL SELECT 1 FROM runtime_outbox WHERE request_id=?1 AND kind='native_action')",[id],|r|r.get(0))?)
 }
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyAgentProbe<T> {
+    start_attempt: T,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyActionProbe {
+    action: crate::StartAttemptAction,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacySettingsProbe {
+    model_settings: LegacySettings,
+}
+#[derive(Deserialize)]
+struct LegacySettings {
+    status: studio_runtime_schema::persistence::NativeSettingsStatus,
+    scope: studio_runtime_schema::provider_call_contract::ConnectionScope,
+    method: studio_runtime_providers::Method,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyReleaseProbe {
+    native_release: LegacyRelease,
+}
+#[derive(Deserialize)]
+struct LegacyRelease {
+    phase: studio_runtime_schema::persistence::NativeReleasePhase,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyAuthorizationProbe {
+    native_release: LegacyAuthorizationRelease,
+}
+#[derive(Deserialize)]
+struct LegacyAuthorizationRelease {
+    authorization: LegacyAuthorization,
+}
+#[derive(Deserialize)]
+struct LegacyAuthorization {
+    admission: AdmittedRequest,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyReviewProbe {
+    native_review_thread: LegacyReview,
+}
+#[derive(Deserialize)]
+struct LegacyReview {
+    status: studio_runtime_schema::persistence::NativeReviewThreadStatus,
+}
 fn agent_owners(
     tx: &Transaction<'_>,
     row: &SourceReceipt,
     mut value: Value,
     cutover: i64,
 ) -> Result<Value> {
-    use studio_runtime_schema::persistence::{NativeReleasePhase, NativeSettingsStatus};
+    use studio_runtime_schema::persistence::NativeSettingsStatus;
     let table = "runtime_agents";
     let invalid = || unclassifiable(table, &row.id, &row.signature);
     if !value.is_object() {
@@ -821,7 +1008,10 @@ fn agent_owners(
         if !crate::truthy(Some(action)) {
             attempt.remove("action");
         } else {
-            crate::StartAttemptAction::deserialize(action).map_err(|_| invalid())?;
+            let _ = row
+                .json::<LegacyAgentProbe<LegacyActionProbe>>(table)?
+                .start_attempt
+                .action;
         }
     }
     if value["startAttempt"]["actionRequestId"].is_string()
@@ -842,12 +1032,15 @@ fn agent_owners(
     }
     if value["startAttempt"]["modelSettings"].is_object() {
         let mut settings = value["startAttempt"]["modelSettings"].clone();
-        let status: NativeSettingsStatus =
-            serde_json::from_value(settings["status"].clone()).map_err(|_| invalid())?;
+        let probe = row
+            .json::<LegacyAgentProbe<LegacySettingsProbe>>(table)?
+            .start_attempt
+            .model_settings;
+        let status = probe.status;
         let call = Call {
             root_request_id: String::new(),
             admitted_request: None,
-            scope: Deserialize::deserialize(&settings["scope"]).map_err(|_| invalid())?,
+            scope: probe.scope,
             operation: string(&settings, "operation", table, row)?.into(),
             actor: Some(
                 studio_runtime_schema::provider_call_contract::RequestActor {
@@ -857,7 +1050,7 @@ fn agent_owners(
             ),
             transfer: None,
             deleted_actor_session: None,
-            method: Deserialize::deserialize(&settings["method"]).map_err(|_| invalid())?,
+            method: probe.method,
             params: settings["params"].clone(),
         };
         let (token, root) = if retained(
@@ -902,8 +1095,7 @@ fn agent_owners(
     }
     if value["nativeRelease"].is_object() {
         let mut release = value["nativeRelease"].clone();
-        let _: NativeReleasePhase =
-            serde_json::from_value(release["phase"].clone()).map_err(|_| invalid())?;
+        let _ = row.json::<LegacyReleaseProbe>(table)?.native_release.phase;
         let operation = format!("{}:unsubscribe", string(&release, "id", table, row)?);
         let account = release["accountKey"].as_str().unwrap_or("default");
         release["admittedRequest"] = match retained(tx, table, row, account, &operation, cutover)? {
@@ -926,11 +1118,15 @@ fn agent_owners(
                     "record",
                     "$.nativeRelease.authorization.root_request_id"
                 )?);
-            if auth["admission"].is_null() {
+            let token = if auth["admission"].is_null() {
                 auth["admission"] = json!(admitted_owner_token(&request, &signature, cutover));
-            }
-            let token: AdmittedRequest =
-                serde_json::from_value(auth["admission"].clone()).map_err(|_| invalid())?;
+                admitted_owner_token(&request, &signature, cutover)
+            } else {
+                row.json::<LegacyAuthorizationProbe>(table)?
+                    .native_release
+                    .authorization
+                    .admission
+            };
             if token.id() != request || token.signature() != signature {
                 return Err(invalid());
             }
@@ -949,8 +1145,10 @@ fn agent_owners(
     }
     if value["nativeReviewThread"].is_object() {
         let mut thread = value["nativeReviewThread"].clone();
-        let _: studio_runtime_schema::persistence::NativeReviewThreadStatus =
-            serde_json::from_value(thread["status"].clone()).map_err(|_| invalid())?;
+        let _ = row
+            .json::<LegacyReviewProbe>(table)?
+            .native_review_thread
+            .status;
         let operation = string(&thread, "operation", table, row)?;
         let account = value["accountKey"].as_str().unwrap_or("default");
         let authority = retained(tx, table, row, account, operation, cutover)?;
@@ -1176,17 +1374,62 @@ fn monitor_owner(
     Ok(())
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacySafetyStatus {
+    stage: studio_runtime_schema::persistence::SafetyRetryStage,
+    dispatch: Option<studio_runtime_schema::persistence::SafetyRetryDispatch>,
+}
+#[derive(Deserialize)]
+struct LegacyResetStatus {
+    status: studio_runtime_schema::persistence::ResetCreditStatus,
+    certainty: Option<studio_runtime_schema::persistence::ResetCreditCertainty>,
+    outcome: Option<studio_runtime_schema::persistence::ResetCreditOutcome>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacySafetyScope {
+    scope: studio_runtime_schema::provider_call_contract::ConnectionScope,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyProcessAdmission {
+    admitted_request: Option<AdmittedRequest>,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MigratedSafety {
+    root_request_id: String,
+    admission: AdmittedRequest,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    admitted_request: Option<AdmittedRequest>,
+    #[serde(flatten)]
+    other: serde_json::Map<String, Value>,
+}
+#[derive(Serialize)]
+struct MigratedReset {
+    root_request_id: String,
+    admission: AdmittedRequest,
+    provider_request: Option<AdmittedRequest>,
+    #[serde(flatten)]
+    other: serde_json::Map<String, Value>,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MigratedProcess {
+    root_request_id: String,
+    admitted_request: AdmittedRequest,
+    #[serde(flatten)]
+    other: serde_json::Map<String, Value>,
+}
 fn operation_owner(
     tx: &Transaction<'_>,
     table: &str,
     row: &SourceReceipt,
     mut value: Value,
     cutover: i64,
-) -> Result<Value> {
-    use studio_runtime_schema::persistence::{
-        ResetCreditCertainty, ResetCreditOutcome, ResetCreditStatus, SafetyRetryDispatch,
-        SafetyRetryStage,
-    };
+) -> Result<String> {
+    use studio_runtime_schema::persistence::ResetCreditStatus;
     let invalid = || unclassifiable(table, &row.id, &row.signature);
     if !value.is_object() {
         return Err(invalid());
@@ -1197,14 +1440,10 @@ fn operation_owner(
                 value.as_object_mut().ok_or_else(invalid)?.remove(key);
             }
         }
-        let _: SafetyRetryStage =
-            serde_json::from_value(value["stage"].clone()).map_err(|_| invalid())?;
-        if !value["dispatch"].is_null() {
-            let _: SafetyRetryDispatch =
-                serde_json::from_value(value["dispatch"].clone()).map_err(|_| invalid())?;
-        }
-        value["rootRequestId"] = json!(RequestIdentity::issue_root());
-        value["admission"] = json!(admitted_owner_token(&row.id, "safety-retry", cutover));
+        let status: LegacySafetyStatus = row.json(table)?;
+        let _ = (status.stage, status.dispatch);
+        let mut root = RequestIdentity::issue_root();
+        let mut admitted = None;
         if let Some(method) = value["rpcMethod"]
             .as_str()
             .and_then(studio_runtime_providers::Method::from_wire)
@@ -1218,7 +1457,7 @@ fn operation_owner(
             let call = Call {
                 root_request_id: String::new(),
                 admitted_request: None,
-                scope: Deserialize::deserialize(&value["scope"]).map_err(|_| invalid())?,
+                scope: row.json::<LegacySafetyScope>(table)?.scope,
                 operation: string(&value, "operationId", table, row)?.into(),
                 actor: Some(
                     studio_runtime_schema::provider_call_contract::RequestActor {
@@ -1231,23 +1470,27 @@ fn operation_owner(
                 method,
                 params: value["requestParams"].clone(),
             };
-            let (token, root) = captured_token(tx, table, row, &call, cutover)?;
-            value["admittedRequest"] = json!(token);
-            value["rootRequestId"] = json!(root);
+            let (token, root_from_call) = captured_token(tx, table, row, &call, cutover)?;
+            admitted = Some(token);
+            root = root_from_call;
         }
+        let mut other = value.as_object().cloned().ok_or_else(invalid)?;
+        other.remove("rootRequestId");
+        other.remove("admission");
+        if admitted.is_some() {
+            other.remove("admittedRequest");
+        }
+        serde_json::to_string(&MigratedSafety {
+            root_request_id: root,
+            admission: admitted_owner_token(&row.id, "safety-retry", cutover),
+            admitted_request: admitted,
+            other,
+        })
+        .map_err(|_| invalid())
     } else if table == "runtime_limit_reset_attempts" {
-        let status: ResetCreditStatus =
-            serde_json::from_value(value["status"].clone()).map_err(|_| invalid())?;
-        if !value["certainty"].is_null() {
-            let _: ResetCreditCertainty =
-                serde_json::from_value(value["certainty"].clone()).map_err(|_| invalid())?;
-        }
-        if !value["outcome"].is_null() {
-            let _: ResetCreditOutcome =
-                serde_json::from_value(value["outcome"].clone()).map_err(|_| invalid())?;
-        }
-        value["root_request_id"] = json!(RequestIdentity::issue_root());
-        value["admission"] = json!(admitted_owner_token(&row.id, "limit-reset", cutover));
+        let status: LegacyResetStatus = row.json(table)?;
+        let _ = (status.certainty, status.outcome);
+        let mut root = RequestIdentity::issue_root();
         let operation = format!(
             "limit-reset:{}:{}",
             string(&value, "idempotency_key", table, row)?,
@@ -1266,15 +1509,25 @@ fn operation_owner(
             {
                 return Err(invalid());
             }
-            value["root_request_id"] = json!(call.root_request_id);
+            root = call.root_request_id;
             Some(token)
         } else {
             None
         };
-        if status == ResetCreditStatus::Uncertain && token.is_none() {
+        if status.status == ResetCreditStatus::Uncertain && token.is_none() {
             return Err(invalid());
         }
-        value["provider_request"] = json!(token);
+        let mut other = value.as_object().cloned().ok_or_else(invalid)?;
+        for key in ["root_request_id", "admission", "provider_request"] {
+            other.remove(key);
+        }
+        serde_json::to_string(&MigratedReset {
+            root_request_id: root,
+            admission: admitted_owner_token(&row.id, "limit-reset", cutover),
+            provider_request: token,
+            other,
+        })
+        .map_err(|_| invalid())
     } else {
         if !matches!(
             value["phase"].as_str(),
@@ -1282,27 +1535,31 @@ fn operation_owner(
         ) {
             return Err(invalid());
         }
-        let admitted: AdmittedRequest = match value
-            .get("admittedRequest")
-            .filter(|value| !value.is_null())
-        {
-            Some(value) => serde_json::from_value(value.clone()).map_err(|_| invalid())?,
-            None => admitted_owner_token(&row.id, &row.signature, cutover),
-        };
+        let admitted = row
+            .json::<LegacyProcessAdmission>(table)?
+            .admitted_request
+            .unwrap_or_else(|| admitted_owner_token(&row.id, &row.signature, cutover));
         if admitted.id().is_empty() || admitted.signature() != row.signature {
             return Err(invalid());
         }
-        value["admittedRequest"] = json!(admitted);
-        value["rootRequestId"] = json!(crate::receipt_migration_contract::hydrate_source_root(
+        let root = crate::receipt_migration_contract::hydrate_source_root(
             tx,
             table,
             &row.id,
             &row.signature,
             "record",
-            "$.rootRequestId"
-        )?);
+            "$.rootRequestId",
+        )?;
+        let mut other = value.as_object().cloned().ok_or_else(invalid)?;
+        other.remove("admittedRequest");
+        other.remove("rootRequestId");
+        serde_json::to_string(&MigratedProcess {
+            root_request_id: root,
+            admitted_request: admitted,
+            other,
+        })
+        .map_err(|_| invalid())
     }
-    Ok(value)
 }
 
 impl ReceiptFamilyMigration for ActionsMigration {
@@ -1392,13 +1649,13 @@ impl ReceiptFamilyMigration for ActionsMigration {
                         next.cursor = row.rowid;
                         continue;
                     }
-                    updated
+                    updated.to_string()
                 } else {
                     operation_owner(tx, source, &row, value, checkpoint.cutover_ms)?
                 };
                 tx.execute(
                     &format!("UPDATE {source} SET record=?1 WHERE rowid=?2"),
-                    params![updated.to_string(), row.rowid],
+                    params![updated, row.rowid],
                 )?;
                 next.cursor = row.rowid;
                 continue;
@@ -1417,7 +1674,7 @@ impl ReceiptFamilyMigration for ActionsMigration {
                     if row.id.starts_with("native-command:") {
                         command(tx, &row, &value, checkpoint.cutover_ms)?;
                     } else if row.id.starts_with("claude-steer:") {
-                        steer(tx, &row, value, checkpoint.cutover_ms)?;
+                        steer(tx, &row, checkpoint.cutover_ms)?;
                     } else if row.id.starts_with("park-event:") {
                         fired(tx, &row, &value)?;
                     } else if row.id.starts_with("manual-management:") {
@@ -2026,7 +2283,7 @@ mod tests {
         let mut db = Connection::open_in_memory().expect("database");
         fixture(&db);
         let tx = db.transaction().expect("transaction");
-        let row = SourceReceipt {
+        let mut row = SourceReceipt {
             rowid: 1,
             id: "agent".into(),
             signature: "owner".into(),
@@ -2041,23 +2298,15 @@ mod tests {
             json!([]),
             json!({}),
         ] {
-            let owner = agent_owners(
-                &tx,
-                &row,
-                json!({"id":"agent","epoch":1,"startAttempt":{"action":action}}),
-                1000,
-            )
-            .expect("legacy falsy");
+            let value = json!({"id":"agent","epoch":1,"startAttempt":{"action":action}});
+            row.result = value.to_string();
+            let owner = agent_owners(&tx, &row, value, 1000).expect("legacy falsy");
             assert!(owner["startAttempt"].get("action").is_none());
         }
         for action in ["compact", "review", "capacity", "safety"] {
-            let owner = agent_owners(
-                &tx,
-                &row,
-                json!({"id":"agent","epoch":1,"startAttempt":{"action":action}}),
-                1000,
-            )
-            .expect("known action");
+            let value = json!({"id":"agent","epoch":1,"startAttempt":{"action":action}});
+            row.result = value.to_string();
+            let owner = agent_owners(&tx, &row, value, 1000).expect("known action");
             assert_eq!(owner["startAttempt"]["action"], action);
         }
         for action in [
@@ -2067,13 +2316,10 @@ mod tests {
             json!([1]),
             json!({"x":1}),
         ] {
+            let value = json!({"id":"agent","epoch":1,"startAttempt":{"action":action}});
+            row.result = value.to_string();
             assert!(matches!(
-                agent_owners(
-                    &tx,
-                    &row,
-                    json!({"id":"agent","epoch":1,"startAttempt":{"action":action}}),
-                    1000
-                ),
+                agent_owners(&tx, &row, value, 1000),
                 Err(ReceiptMigrationError::Unclassifiable { .. })
             ));
         }

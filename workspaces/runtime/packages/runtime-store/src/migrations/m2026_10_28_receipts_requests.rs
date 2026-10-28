@@ -68,6 +68,24 @@ struct LegacyWorkRefusal {
     limit: u64,
     retry_allowed: bool,
 }
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyWorkReply {
+    submission_refusal: LegacyWorkRefusal,
+}
+#[derive(Deserialize)]
+struct LegacyToolAdmission {
+    admitted: AdmittedRequest,
+}
+#[derive(Deserialize)]
+struct LegacyDeliveryReply {
+    status: DeliveryStatus,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyRulesReply {
+    cancel_monitor_ids: Vec<String>,
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -119,9 +137,74 @@ enum WorkspaceKind {
     ClaudeRollback,
 }
 
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 struct PendingRequest {
     request: AdmittedRequest,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyProjectLocations {
+    location_intents: std::collections::BTreeMap<String, LegacyLocation>,
+}
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum LegacyLocation {
+    Request(PendingRequest),
+    Other(serde::de::IgnoredAny),
+}
+#[derive(Serialize)]
+#[serde(untagged)]
+enum MigratedLocation {
+    Request(PendingRequest),
+    Other(Value),
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MigratedProjectLocations {
+    location_intents: std::collections::BTreeMap<String, MigratedLocation>,
+    #[serde(flatten)]
+    other: serde_json::Map<String, Value>,
+}
+#[derive(Deserialize)]
+struct LegacyReplyDeliveries {
+    deliveries: std::collections::BTreeMap<String, String>,
+}
+#[derive(Serialize)]
+struct MigratedReplyDeliveries {
+    deliveries: std::collections::BTreeMap<String, RecipientDelivery>,
+    #[serde(flatten)]
+    other: serde_json::Map<String, Value>,
+}
+#[derive(Deserialize)]
+struct LegacyWorkspaceSubmitted {
+    call: LegacyWorkspaceCall,
+    request: studio_runtime_schema::provider_call_contract::TransportRequest<String>,
+}
+#[derive(Deserialize)]
+struct LegacyWorkspaceCall {
+    #[serde(default)]
+    root_request_id: String,
+    admitted_request: Option<AdmittedRequest>,
+    scope: studio_runtime_schema::provider_call_contract::ConnectionScope,
+    operation: String,
+    actor: Option<studio_runtime_schema::provider_call_contract::RequestActor>,
+    transfer: Option<studio_runtime_schema::provider_call_contract::TransferAuthorization>,
+    deleted_actor_session: Option<String>,
+    method: String,
+    params: Value,
+}
+#[derive(Serialize)]
+struct MigratedWorkspaceCall {
+    root_request_id: String,
+    admitted_request: AdmittedRequest,
+    #[serde(flatten)]
+    other: serde_json::Map<String, Value>,
+}
+#[derive(Serialize)]
+struct MigratedWorkspaceSubmitted {
+    call: MigratedWorkspaceCall,
+    #[serde(flatten)]
+    other: serde_json::Map<String, Value>,
 }
 
 #[derive(Serialize)]
@@ -205,8 +288,7 @@ impl ReceiptFamilyMigration for Family {
                 continue;
             }
             if reply.get("agentMode").is_some() && reply.get("applied").is_some() {
-                let mode = LegacyModeReply::deserialize(&reply)
-                    .map_err(|_| unclassifiable(source, &row.id, &row.signature))?;
+                let mode: LegacyModeReply = row.json(source)?;
                 if !mode.applied
                     || !matches!(mode.agent_mode.as_str(), "single" | "multi")
                     || (mode.concurrency == 0) != (mode.agent_mode == "single")
@@ -217,9 +299,9 @@ impl ReceiptFamilyMigration for Family {
                 discard_completed_reply(tx, &row, DELETED_MODE_REPORT, checkpoint.cutover_ms)?;
                 continue;
             }
-            if let Some(value) = reply.get("submissionRefusal") {
+            if reply.get("submissionRefusal").is_some() {
                 let invalid = || unclassifiable(source, &row.id, &row.signature);
-                let refusal = LegacyWorkRefusal::deserialize(value).map_err(|_| invalid())?;
+                let refusal = row.json::<LegacyWorkReply>(source)?.submission_refusal;
                 if !schema("PersistedWorkItemRecord", &reply)
                     || reply.get("rootId").and_then(Value::as_str).is_none()
                     || reply.get("title").and_then(Value::as_str).is_none()
@@ -330,20 +412,40 @@ impl ReceiptFamilyMigration for Family {
                 )?;
                 continue;
             }
-            if let Some(deliveries) = reply.get_mut("deliveries") {
-                *deliveries = delivery_map(source, &row, deliveries)?;
+            if reply.get("deliveries").is_some() {
+                let deliveries = row.json::<LegacyReplyDeliveries>(source)?.deliveries;
+                let mut other = reply
+                    .as_object()
+                    .cloned()
+                    .ok_or_else(|| unclassifiable(source, &row.id, &row.signature))?;
+                other.remove("deliveries");
+                import_result(
+                    tx,
+                    &row.id,
+                    &row.signature,
+                    &ResultEnvelope {
+                        actor,
+                        reply: MigratedReplyDeliveries {
+                            deliveries: delivery_map(source, &row, deliveries)?,
+                            other,
+                        },
+                        references: Vec::new(),
+                    },
+                    checkpoint.cutover_ms,
+                )?;
+            } else {
+                import_result(
+                    tx,
+                    &row.id,
+                    &row.signature,
+                    &ResultEnvelope {
+                        actor,
+                        reply,
+                        references: Vec::new(),
+                    },
+                    checkpoint.cutover_ms,
+                )?;
             }
-            import_result(
-                tx,
-                &row.id,
-                &row.signature,
-                &ResultEnvelope {
-                    actor,
-                    reply,
-                    references: Vec::new(),
-                },
-                checkpoint.cutover_ms,
-            )?;
             delete_source(tx, source, row.rowid)?;
         }
         Ok(next)
@@ -377,9 +479,10 @@ fn redundant_tool_result(tx: &Transaction<'_>, row: &SourceReceipt) -> Result<bo
         .optional()?;
     let Some(task) = task else { return Ok(false) };
     let invalid = || unclassifiable(SOURCE, &row.id, &row.signature);
+    let token = serde_json::from_str::<LegacyToolAdmission>(&task)
+        .map_err(|_| invalid())?
+        .admitted;
     let task: Value = serde_json::from_str(&task).map_err(|_| invalid())?;
-    let token: AdmittedRequest =
-        serde_json::from_value(task["admitted"].clone()).map_err(|_| invalid())?;
     let saved: Option<(String, String)> = tx
         .query_row(
             "SELECT signature,result FROM request_results WHERE id=?1",
@@ -593,9 +696,7 @@ fn move_workspace_operations(
     checkpoint: &MigrationCheckpoint,
 ) -> Result<MigrationCheckpoint> {
     use crate::receipt_migration_contract::BatchBudget;
-    use studio_runtime_schema::provider_call_contract::{
-        ProviderCallIntent, TransportRequest, transport_key,
-    };
+    use studio_runtime_schema::provider_call_contract::{ProviderCallIntent, transport_key};
     const TABLE: &str = "runtime_workspace_operations";
     let rows = read_source_batch(
         tx,
@@ -699,15 +800,19 @@ fn move_workspace_operations(
             [&submitted_id],
             |r| r.get(0),
         )?;
-        let mut submitted: Value = serde_json::from_str(&raw).map_err(|_| invalid())?;
-        let mut call = submitted["call"].clone();
-        let fields = call.as_object_mut().ok_or_else(invalid)?;
-        fields.entry("root_request_id").or_insert(json!(""));
-        fields.entry("admitted_request").or_insert(Value::Null);
-        let call: ProviderCallIntent<String, AdmittedRequest> =
-            serde_json::from_value(call).map_err(|_| invalid())?;
-        let request: TransportRequest<String> =
-            serde_json::from_value(submitted["request"].clone()).map_err(|_| invalid())?;
+        let legacy: LegacyWorkspaceSubmitted = serde_json::from_str(&raw).map_err(|_| invalid())?;
+        let call = ProviderCallIntent {
+            root_request_id: legacy.call.root_request_id,
+            admitted_request: legacy.call.admitted_request,
+            scope: legacy.call.scope,
+            operation: legacy.call.operation,
+            actor: legacy.call.actor,
+            transfer: legacy.call.transfer,
+            deleted_actor_session: legacy.call.deleted_actor_session,
+            method: legacy.call.method,
+            params: legacy.call.params,
+        };
+        let request = legacy.request;
         if call.scope.account != account
             || call.operation != operation
             || call
@@ -772,11 +877,28 @@ fn move_workspace_operations(
                 "$.call.root_request_id",
             )?,
         };
-        submitted["call"]["root_request_id"] = json!(root);
-        submitted["call"]["admitted_request"] = json!(admission);
+        let mut submitted: serde_json::Map<String, Value> =
+            serde_json::from_str(&raw).map_err(|_| invalid())?;
+        let mut fields = submitted
+            .remove("call")
+            .and_then(|value| value.as_object().cloned())
+            .ok_or_else(invalid)?;
+        fields.remove("root_request_id");
+        fields.remove("admitted_request");
+        let submitted = MigratedWorkspaceSubmitted {
+            call: MigratedWorkspaceCall {
+                root_request_id: root.clone(),
+                admitted_request: admission.clone(),
+                other: fields,
+            },
+            other: submitted,
+        };
         tx.execute(
             "UPDATE runtime_operation_receipts SET result=?1 WHERE id=?2",
-            params![submitted.to_string(), submitted_id],
+            params![
+                serde_json::to_string(&submitted).map_err(|_| invalid())?,
+                submitted_id
+            ],
         )?;
         tx.execute(
             "UPDATE runtime_workspace_operations SET record=json_set(record,'$.providerAdmission',json(?1),'$.rootRequestId',?2) WHERE rowid=?3",
@@ -810,21 +932,29 @@ fn move_messages(
         MigrationStatus::Running
     };
     for row in rows {
-        let deliveries: Value = row.json(source)?;
-        let deliveries = delivery_map(source, &row, &deliveries)?;
+        let deliveries = delivery_map(source, &row, row.json(source)?)?;
         tx.execute(
             &format!("UPDATE {source} SET deliveries=?1 WHERE rowid=?2"),
-            params![deliveries.to_string(), row.rowid],
+            params![
+                serde_json::to_string(&deliveries).map_err(|_| unclassifiable(
+                    source,
+                    &row.id,
+                    &row.signature
+                ))?,
+                row.rowid
+            ],
         )?;
         next.cursor = row.rowid;
     }
     Ok(next)
 }
 
-fn delivery_map(source: &str, row: &SourceReceipt, deliveries: &Value) -> Result<Value> {
+fn delivery_map(
+    source: &str,
+    row: &SourceReceipt,
+    old: std::collections::BTreeMap<String, String>,
+) -> Result<std::collections::BTreeMap<String, RecipientDelivery>> {
     let invalid = || unclassifiable(source, &row.id, &row.signature);
-    let old: std::collections::BTreeMap<String, String> =
-        serde_json::from_value(deliveries.clone()).map_err(|_| invalid())?;
     let typed = old
         .into_iter()
         .map(|(recipient, value)| {
@@ -850,7 +980,7 @@ fn delivery_map(source: &str, row: &SourceReceipt, deliveries: &Value) -> Result
             Ok((recipient, delivery))
         })
         .collect::<Result<std::collections::BTreeMap<_, _>>>()?;
-    serde_json::to_value(typed).map_err(|_| invalid())
+    Ok(typed)
 }
 
 fn domain_owned(row: &SourceReceipt) -> bool {
@@ -963,7 +1093,10 @@ fn exact_reply(row: &SourceReceipt, reply: &Value) -> bool {
             && schema("PersistedAnnotationRecord", reply))
         || (reply["title"].is_string() && reply["rootId"].is_string() && schema("WorkItem", reply))
         || (reply["id"] == row.id
-            && serde_json::from_value::<DeliveryStatus>(reply["status"].clone()).is_ok()
+            && serde_json::from_str::<LegacyDeliveryReply>(&row.result).is_ok_and(|reply| {
+                let _ = reply.status;
+                true
+            })
             && reply
                 .get("error")
                 .is_none_or(|e| e.is_null() || e.is_string()))
@@ -988,8 +1121,7 @@ fn migrate_rules(
     let invalid = || unclassifiable(SOURCE, &row.id, &row.signature);
     let tail = row.id.strip_prefix("managed-rules:").ok_or_else(invalid)?;
     let (actor, _request) = tail.split_once(':').ok_or_else(invalid)?;
-    let monitors: Vec<String> =
-        serde_json::from_value(reply["cancelMonitorIds"].clone()).map_err(|_| invalid())?;
+    let monitors = row.json::<LegacyRulesReply>(SOURCE)?.cancel_monitor_ids;
     if reply.get("value").is_none() || monitors.windows(2).any(|p| p[0] >= p[1]) {
         return Err(invalid());
     }
@@ -1154,9 +1286,8 @@ fn migrate_registration(
             |r| r.get(0),
         )
         .optional()?;
-    let mut owner: Value = raw
-        .and_then(|raw| serde_json::from_str(&raw).ok())
-        .ok_or_else(invalid)?;
+    let raw = raw.ok_or_else(invalid)?;
+    let mut owner: Value = serde_json::from_str(&raw).map_err(|_| invalid())?;
     if !owner["registration"].is_object() {
         return Err(invalid());
     }
@@ -1197,9 +1328,8 @@ fn migrate_location(
             |r| r.get(0),
         )
         .optional()?;
-    let mut owner: Value = raw
-        .and_then(|raw| serde_json::from_str(&raw).ok())
-        .ok_or_else(invalid)?;
+    let raw = raw.ok_or_else(invalid)?;
+    let mut owner: Value = serde_json::from_str(&raw).map_err(|_| invalid())?;
     if !owner.is_object() {
         return Err(invalid());
     }
@@ -1210,9 +1340,12 @@ fn migrate_location(
         .as_object_mut()
         .ok_or_else(invalid)?;
     let signature = location_signature(tx, row)?.unwrap_or_else(|| row.signature.clone());
-    let token = if let Some(existing) = intents.get(&row.id) {
-        let existing: AdmittedRequest =
-            serde_json::from_value(existing["request"].clone()).map_err(|_| invalid())?;
+    let token = if intents.contains_key(&row.id) {
+        let decoded: LegacyProjectLocations = serde_json::from_str(&raw).map_err(|_| invalid())?;
+        let Some(LegacyLocation::Request(existing)) = decoded.location_intents.get(&row.id) else {
+            return Err(invalid());
+        };
+        let existing = &existing.request;
         if existing.signature() != signature {
             return Err(unclassifiable(
                 "runtime_projects",
@@ -1224,10 +1357,26 @@ fn migrate_location(
     } else {
         admitted_owner_token(&row.id, &signature, cutover)
     };
-    intents.insert(row.id.clone(), json!({"request":token}));
+    let mut migrated = std::collections::BTreeMap::new();
+    for (id, value) in std::mem::take(intents) {
+        migrated.insert(id, MigratedLocation::Other(value));
+    }
+    migrated.insert(
+        row.id.clone(),
+        MigratedLocation::Request(PendingRequest { request: token }),
+    );
+    let mut other = owner.as_object().cloned().ok_or_else(invalid)?;
+    other.remove("locationIntents");
+    let owner = MigratedProjectLocations {
+        location_intents: migrated,
+        other,
+    };
     tx.execute(
         "UPDATE runtime_projects SET record=?1 WHERE id=?2",
-        params![owner.to_string(), project],
+        params![
+            serde_json::to_string(&owner).map_err(|_| invalid())?,
+            project
+        ],
     )?;
     Ok(())
 }
