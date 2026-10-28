@@ -416,12 +416,10 @@ fn steer(tx: &Transaction<'_>, row: &SourceReceipt, mut value: Value, cutover: i
             .map_err(|_| invalid())?;
     value["rootRequestId"] = json!(RequestIdentity::issue_root());
     let incomplete = stage != SteerStage::Reserved
-        && (value
-            .get("requestTicket")
-            .and_then(|v| v.as_str())
-            .is_none()
-            || value.get("generation").and_then(|v| v.as_u64()).is_none()
-            || value.get("submittedAt").and_then(|v| v.as_f64()).is_none());
+        && <crate::repositories::scheduler::SubmittedSteer as serde::Deserialize>::deserialize(
+            &value,
+        )
+        .is_err();
     if incomplete {
         value
             .as_object_mut()
@@ -1772,11 +1770,14 @@ mod tests {
                 Some("requestTicket"),
                 Some("generation"),
                 Some("submittedAt"),
+                Some("emptyTicket"),
             ] {
                 let mut db = Connection::open_in_memory().expect("database");
                 fixture(&db);
                 let mut receipt = json!({"agent":"agent","accountKey":"account","threadId":"thread","turnId":"turn","epoch":1,"events":["event"],"created":1.0,"stage":stage,"requestTicket":"ticket","generation":7,"submittedAt":2.0});
-                if let Some(key) = missing {
+                if missing == Some("emptyTicket") {
+                    receipt["requestTicket"] = json!("");
+                } else if let Some(key) = missing {
                     receipt.as_object_mut().unwrap().remove(key);
                 }
                 db.execute("INSERT INTO runtime_operation_receipts VALUES('claude-steer:agent:steer','claude-steer',?1)", [receipt.to_string()]).expect("legacy receipt");

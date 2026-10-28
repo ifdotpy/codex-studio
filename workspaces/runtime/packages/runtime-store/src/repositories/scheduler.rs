@@ -140,6 +140,7 @@ mod selection;
 mod steer;
 use lifecycle::*;
 use selection::*;
+pub(crate) use steer::SubmittedSteer;
 pub use steer::{AcknowledgedSteer, ClaimedSteer, STEER_UNCONFIRMED_ERROR};
 
 #[cfg(test)]

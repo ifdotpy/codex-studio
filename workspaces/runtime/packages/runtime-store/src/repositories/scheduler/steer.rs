@@ -58,8 +58,8 @@ enum SteerState {
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct SubmittedSteer {
-    request_ticket: String,
+pub(crate) struct SubmittedSteer {
+    request_ticket: SteerTicket,
     generation: u64,
     submitted_at: f64,
     #[serde(default)]
@@ -68,6 +68,27 @@ struct SubmittedSteer {
     response: Option<String>,
     #[serde(default)]
     interrupt_still_queued: bool,
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "String", into = "String")]
+struct SteerTicket(String);
+
+impl TryFrom<String> for SteerTicket {
+    type Error = &'static str;
+    fn try_from(ticket: String) -> Result<Self, Self::Error> {
+        if ticket.is_empty() {
+            Err("empty steer ticket")
+        } else {
+            Ok(Self(ticket))
+        }
+    }
+}
+
+impl From<SteerTicket> for String {
+    fn from(ticket: SteerTicket) -> Self {
+        ticket.0
+    }
 }
 
 impl SteerState {
@@ -555,7 +576,8 @@ impl SchedulerRepository {
         )?;
         require_membership(changed, receipt.events.len(), agent_id)?;
         receipt.stage = SteerState::Submitted(SubmittedSteer {
-            request_ticket: ticket.into(),
+            request_ticket: SteerTicket::try_from(ticket.to_owned())
+                .map_err(|_| invalid_receipt(&id))?,
             generation,
             submitted_at: timestamp(),
             prepared_submission: None,
