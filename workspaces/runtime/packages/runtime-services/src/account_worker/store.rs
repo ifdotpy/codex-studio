@@ -477,11 +477,6 @@ pub(super) fn has_pending_thread_start(
 }
 
 #[derive(serde::Deserialize)]
-struct AttemptCreated {
-    created: f64,
-}
-
-#[derive(serde::Deserialize)]
 struct ThreadHold {
     #[serde(rename = "operationId")]
     operation_id: String,
@@ -501,9 +496,10 @@ fn continued_thread_call(
     let attempt =
         studio_runtime_store::ExecutionHistoryRepository::attempt(tx, &context.intent.attempt_id)?
             .ok_or_else(|| invalid(&context.intent.agent_id))?;
-    let begun = serde_json::from_value::<AttemptCreated>(attempt)
-        .map_err(StoreError::from)?
-        .created;
+    let begun = attempt
+        .start
+        .created
+        .ok_or_else(|| invalid(&context.intent.agent_id))?;
     Ok(tx.query_row_cached(
         "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND epoch=?2 AND status='pending' AND kind IN (?3,?4) AND created>?5)",
         params![context.intent.agent_id, agent.epoch, studio_runtime_schema::persistence::EventKind::User, studio_runtime_schema::persistence::EventKind::Followup, begun], |row| row.get(0),
