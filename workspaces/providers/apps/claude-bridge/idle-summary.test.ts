@@ -53,13 +53,13 @@ test("preparation keeps the main history; return commits the fork exactly once",
   await prepareIdleSummary(f.s, "idle:one", f.expected, {}, f.deps);
   expect(f.s.nativeId).toBe("main");
   expect(f.s.idleSummary?.status).toBe("ready");
-  expect(f.writes[0].idleSummary?.status).toBe("preparing");
+  expect(f.writes[0]?.idleSummary?.status).toBe("preparing");
   const restarted = structuredClone(f.s);
   expect(await applyIdleSummary(restarted, {}, f.deps)).toMatchObject({
     requestId: "idle:one",
   });
   expect(restarted.nativeId).toBe("fork");
-  expect(restarted.historyBranches?.[0].nativeId).toBe("main");
+  expect(restarted.historyBranches?.[0]?.nativeId).toBe("main");
   expect(await applyIdleSummary(restarted, {}, f.deps)).toBe(null);
   expect(f.forks()).toBe(1);
 });
