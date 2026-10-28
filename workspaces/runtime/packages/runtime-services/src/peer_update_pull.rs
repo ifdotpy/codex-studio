@@ -305,10 +305,8 @@ impl Puller {
             return Err(Step::Failed(INVALID_RECEIPT.to_owned()));
         }
         match receipt["outcome"].as_str() {
-            Some("applied") => match &receipt["value"] {
-                value @ Value::Object(_) => Ok(value.clone()),
-                _ => Err(Step::Failed(INVALID_RECEIPT.to_owned())),
-            },
+            Some("applied") if receipt["value"].is_object() => Ok(receipt["value"].clone()),
+            Some("applied") => Err(Step::Failed(INVALID_RECEIPT.to_owned())),
             Some("not_applied") => Err(Step::Refused(
                 receipt["error"]
                     .as_str()
@@ -677,7 +675,13 @@ fn event(value: &Value, server_field: &str) -> Option<PeerUpdateEvent> {
 }
 
 fn build_struct(build: &Value) -> Option<PeerUpdateBuild> {
-    serde_json::from_value(build.clone()).ok()
+    Some(PeerUpdateBuild {
+        version: u8::try_from(build["version"].as_u64()?).ok()?,
+        built_at: build["builtAt"].as_f64()?,
+        commit: build["commit"].as_str()?.to_owned(),
+        commit_time: build["commitTime"].as_u64()?,
+        branch: build["branch"].as_str()?.to_owned(),
+    })
 }
 
 fn bounded(text: &str) -> String {
@@ -1308,7 +1312,7 @@ exit 0"#;
             .to_string(),
         )
         .unwrap();
-        let value = serde_json::to_value(status(root, Some(installed.as_path()))).unwrap();
+        let value = serde_json::from_str::<Value>(&serde_json::to_string(&status(root, Some(installed.as_path()))).unwrap()).unwrap();
         assert_eq!(
             value,
             json!({
@@ -1322,7 +1326,7 @@ exit 0"#;
             })
         );
         // Without any file, the status has no build, pass or update.
-        let empty = serde_json::to_value(status(&root.join("empty"), None)).unwrap();
+        let empty = serde_json::from_str::<Value>(&serde_json::to_string(&status(&root.join("empty"), None)).unwrap()).unwrap();
         assert_eq!(
             empty,
             json!({"build": null, "checkedAt": null, "lastPull": null,

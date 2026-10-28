@@ -673,8 +673,12 @@ test("hosted non-Rust checks consume prepared inputs and cannot compile Cargo", 
   assert.match(remaining, /needs: rust-build-tests/);
   assert.match(remaining, /name: prepared-check-inputs/);
   assert.doesNotMatch(remaining, /client-build-setup|cargo build|clippy/);
+  // The checkout path may contain any word, so match the command without it.
   assert.doesNotMatch(
-    recipePlan(process.cwd(), "test-fast-rest-non-rust").command,
+    recipePlan(process.cwd(), "test-fast-rest-non-rust").command.replaceAll(
+      process.cwd(),
+      "",
+    ),
     /'cargo'|clippy|build:wasm|build:bundle/,
   );
 });
