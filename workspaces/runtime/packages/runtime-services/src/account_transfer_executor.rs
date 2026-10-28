@@ -662,6 +662,7 @@ async fn session_reply(
                 .await
         })
         .map_err(|error| match error {
+            AccountSessionError::Expired => TransferError::Expired,
             AccountSessionError::Requires(name) => TransferError::Requires(name),
             AccountSessionError::Refused(_)
             | AccountSessionError::InvalidResponse(_)
@@ -1036,6 +1037,7 @@ impl TransferExecutor for AccountTransferExecutor {
                 if self.session.current_scope(source_account).is_none() {
                     self.session.ensure_session(source_account).await.map_err(
                         |error| match error {
+                            AccountSessionError::Expired => TransferError::Expired,
                             AccountSessionError::Requires(name) => TransferError::Requires(name),
                             AccountSessionError::Refused(_)
                             | AccountSessionError::InvalidResponse(_)
@@ -1431,6 +1433,7 @@ impl TransferTransport for AccountTransferExecutor {
             let session_receipt = self.session.provider_request(request).await;
             match session_receipt {
                 Ok(receipt) => Ok(TransferDispatch::Receipt(receipt)),
+                Err(AccountSessionError::Expired) => Err(TransferError::Expired),
                 Err(AccountSessionError::Requires(name)) => Err(TransferError::Requires(name)),
                 Err(AccountSessionError::Refused(reason)) => Err(TransferError::Refused(reason)),
                 Err(
