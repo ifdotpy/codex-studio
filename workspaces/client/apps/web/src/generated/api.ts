@@ -3896,6 +3896,13 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
+    /** AdmittedRequest */
+    AdmittedRequest: {
+      /** Format: int64 */
+      created: number;
+      id: string;
+      signature: string;
+    };
     /** AgentActivity */
     AgentActivity: {
       /**
