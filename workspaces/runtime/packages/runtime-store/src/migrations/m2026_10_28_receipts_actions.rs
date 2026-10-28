@@ -1732,6 +1732,10 @@ mod tests {
         MIGRATION_BATCH_BYTES, MIGRATION_BATCH_ROWS, prepare_schema,
     };
     use rusqlite::Connection;
+    #[derive(Deserialize)]
+    struct MonitorOperationView {
+        operation: crate::MonitorOperation,
+    }
     fn fixture(db: &Connection) {
         db.execute_batch("CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT,result TEXT); CREATE TABLE runtime_native_action_receipts(id TEXT PRIMARY KEY,signature TEXT,receipt TEXT,outcome TEXT); CREATE TABLE user_terminal_receipts(id TEXT PRIMARY KEY,signature TEXT,result TEXT); CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT);").expect("source");
     }
@@ -2459,11 +2463,12 @@ mod tests {
                 .expect("monitor");
             let record: Value = serde_json::from_str(&raw).expect("record");
             assert_eq!(record.get("untouched"), Some(&json!({"future":[1,2]})));
-            let decoded: crate::MonitorOperation =
-                serde_json::from_value(record.get("operation").expect("operation").clone())
-                    .expect("runtime operation");
+            let decoded = serde_json::from_str::<MonitorOperationView>(&raw)
+                .expect("runtime operation")
+                .operation;
             assert_eq!(
-                serde_json::to_value(decoded).expect("round trip"),
+                serde_json::from_str::<Value>(&serde_json::to_string(&decoded).expect("encode"))
+                    .expect("round trip"),
                 *record.get("operation").expect("operation")
             );
             let operation = record
@@ -2738,9 +2743,10 @@ mod tests {
         let before = snapshot(&db);
         for (id, signature, raw) in &before {
             let record: Value = serde_json::from_str(raw).expect("owner");
-            let admitted: AdmittedRequest =
-                serde_json::from_value(record["admittedRequest"].clone())
-                    .expect("strict admitted owner token");
+            let admitted = serde_json::from_str::<LegacyProcessAdmission>(raw)
+                .expect("owner")
+                .admitted_request
+                .expect("strict admitted owner token");
             assert_eq!(admitted.id(), id);
             assert_eq!(admitted.signature(), signature);
             assert_eq!(admitted.created(), 1000);

@@ -1432,6 +1432,16 @@ mod tests {
     use rusqlite::Connection;
     const CUTOVER: i64 = 1_000_000;
     const SIGNATURE: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct TestWorkspaceAdmission {
+        provider_admission: AdmittedRequest,
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct TestProjectLocations {
+        location_intents: std::collections::BTreeMap<String, PendingRequest>,
+    }
 
     #[test]
     fn duplicate_workspace_kind_is_preserved_and_does_not_abort_migration() {
@@ -2304,8 +2314,9 @@ mod tests {
                 })
                 .expect("owner");
             let owner: Value = serde_json::from_str(&raw).expect("owner JSON");
-            let token: AdmittedRequest =
-                serde_json::from_value(owner["providerAdmission"].clone()).expect("trusted token");
+            let token = serde_json::from_str::<TestWorkspaceAdmission>(&raw)
+                .expect("trusted token")
+                .provider_admission;
             assert_eq!(token.id(), format!("account-worker:{key}:result"));
             assert_eq!(token.created(), CUTOVER);
             assert_ne!(token.signature(), "submitted");
@@ -2734,10 +2745,12 @@ mod tests {
                     |r| r.get(0),
                 )
                 .expect("owner");
-            let owner: Value = serde_json::from_str(&owner).expect("owner JSON");
-            let token: AdmittedRequest =
-                serde_json::from_value(owner["locationIntents"]["pending"]["request"].clone())
-                    .expect("pending token");
+            let owner: TestProjectLocations = serde_json::from_str(&owner).expect("owner JSON");
+            let token = &owner
+                .location_intents
+                .get("pending")
+                .expect("pending token")
+                .request;
             assert_eq!(token.signature(), signature);
             assert_eq!(token.id(), "pending");
             tx.rollback().expect("read only");
@@ -2922,9 +2935,12 @@ mod tests {
         assert_eq!(owner["registration"]["signature"], SIGNATURE);
         assert_eq!(owner["registration"]["requestId"], "location");
         assert_eq!(owner["registration"]["status"], "unknown");
-        let token: AdmittedRequest =
-            serde_json::from_value(owner["locationIntents"]["location"]["request"].clone())
-                .expect("ProjectsRepository::location_request contract");
+        let locations: TestProjectLocations = serde_json::from_str(&raw).expect("owner JSON");
+        let token = &locations
+            .location_intents
+            .get("location")
+            .expect("ProjectsRepository::location_request contract")
+            .request;
         assert_eq!(token.id(), "location");
         assert_eq!(token.signature(), SIGNATURE);
         assert_eq!(
