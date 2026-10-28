@@ -107,6 +107,23 @@ pub fn vm_actor(connection: &rusqlite::Connection, agent: &str) -> Result<bool, 
 
 pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<bool, WorkerError> {
     let Some(actor) = call.actor.as_ref() else {
+        if call.transfer.is_none()
+            && call.deleted_actor_session.is_none()
+            && super::account_refresh_shape(
+                &call.scope,
+                &call.root_request_id,
+                &call.operation,
+                call.method,
+                &call.params,
+            )
+        {
+            let Some(token) = &call.admitted_request else {
+                return Ok(false);
+            };
+            let saved = recorded_operation(tx, &call.key(), Some(token.id()))?;
+            return Ok(saved.is_some_and(|record| same_replay_identity(record.call(), call)));
+        }
+
         if let Some(transfer) = call.transfer.as_ref() {
             let Some(operation) =
                 studio_runtime_store::AccountTransferRepository::get(tx, &transfer.transfer_id)?
@@ -602,6 +619,26 @@ pub(super) fn replay_in_transaction(
     tx: &rusqlite::Transaction<'_>,
     call: &Call,
 ) -> Result<Result<Replay, PortError>, WorkerError> {
+    if call.admitted_request.is_none() {
+        let identity = match call.identity() {
+            Ok(identity) => identity,
+            Err(error) => return Ok(Err(error)),
+        };
+        if let Err(error) = identity.validate(
+            now_ms(),
+            RequestResults::expired_before_ms(tx).map_err(result_error)?,
+        ) {
+            return Ok(Err(match error {
+                studio_runtime_schema::persistence::RequestIdentityError::Expired { .. } => {
+                    PortError::Expired
+                }
+                studio_runtime_schema::persistence::RequestIdentityError::InvalidUuidV7
+                | studio_runtime_schema::persistence::RequestIdentityError::FutureTimestamp {
+                    ..
+                } => PortError::Invalid,
+            }));
+        }
+    }
     if !authorize(tx, call)? {
         return Ok(Err(PortError::Identity));
     }
@@ -708,11 +745,7 @@ fn replay_pending(prior: &RetainedCall) -> Replay {
     let Some(request) = &prior.request else {
         return Replay::Ready;
     };
-    if prior
-        .outcome
-        .as_ref()
-        .is_some_and(|outcome| outcome.result == RequestResult::NotSent && outcome.cursor == 0)
-    {
+    if proven_not_sent(prior) {
         return Replay::Retry(request.recovered().ticket);
     }
     let mut receipt = prior
@@ -791,10 +824,7 @@ pub(super) fn discard_unsent(
         let payload = retained(&row)?;
         if row.signature != admitted.signature()
             || row.status != OutboxStatus::Pending
-            || (payload.request.is_some()
-                && !payload.outcome.as_ref().is_some_and(|outcome| {
-                    outcome.result == RequestResult::NotSent && outcome.cursor == 0
-                }))
+            || (payload.request.is_some() && !proven_not_sent(payload))
         {
             return Err(WorkerError::PreparationRefused(
                 "retained-session/unknown".into(),
@@ -849,9 +879,7 @@ pub(super) async fn submitted(
         if let Some(original) = &prior.request {
             if retry_ticket.as_ref() != Some(&original.recovered().ticket)
                 || request.recovered().ticket != original.recovered().ticket
-                || !prior.outcome.as_ref().is_some_and(|outcome| {
-                    outcome.result == RequestResult::NotSent && outcome.cursor == 0
-                })
+                || !proven_not_sent(&prior)
             {
                 return Ok(Err(PortError::Unknown));
             }
@@ -889,7 +917,9 @@ pub(in crate::account_worker) fn checkpoint_covered(
         )?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     for id in ids {
-        let Some(row) = row(tx, &id)? else { continue };
+        let Some(mut row) = row(tx, &id)? else {
+            continue;
+        };
         let store::ProviderCall::Retained(payload) = &row.payload else {
             continue;
         };
@@ -898,43 +928,66 @@ pub(in crate::account_worker) fn checkpoint_covered(
             .as_ref()
             .is_some_and(|outcome| outcome.cursor <= cursor)
         {
-            settle(tx, &row, stream, generation, cursor)?;
+            settle(tx, &mut row, stream, generation, cursor)?;
         }
     }
     Ok(())
 }
 fn settle(
     tx: &rusqlite::Transaction<'_>,
-    row: &RetainedRow,
+    row: &mut RetainedRow,
     stream: &str,
     generation: u64,
-    cursor: u64,
+    _checkpoint: u64,
 ) -> Result<(), WorkerError> {
-    let payload = retained(row)?;
-    let Some(outcome) = &payload.outcome else {
+    let store::ProviderCall::Retained(payload) = &mut row.payload else {
+        return Err(WorkerError::Capacity);
+    };
+    let Some(outcome) = &mut payload.outcome else {
         return Ok(());
     };
+    let proof = CommittedAck {
+        stream_id: stream.into(),
+        generation,
+        cursor: outcome.cursor,
+    };
+    if outcome
+        .committed_ack
+        .as_ref()
+        .is_some_and(|committed| committed != &proof)
+    {
+        return Err(WorkerError::Capacity);
+    }
+    let desired = if outcome.result == RequestResult::NotSent {
+        OutboxStatus::Pending
+    } else {
+        OutboxStatus::Unknown
+    };
+    let changed = outcome.committed_ack.is_none() || row.status != desired || row.next_at.is_some();
+    outcome.committed_ack = Some(proof);
+    row.status = desired;
+    row.next_at = None;
+    // Keep the raw reply and its exact committed slot even if an essential owner is malformed.
+    // The account's contiguous ACK can now advance independently of that owner.
+    if changed {
+        put(tx, row)?;
+    }
+    let payload = retained(row)?;
+    let outcome = payload.outcome.as_ref().ok_or(WorkerError::Capacity)?;
     if outcome.result == RequestResult::NotSent {
-        let mut row: RetainedRow = Outbox::get(tx, &row.id)
-            .map_err(outbox_error)?
-            .ok_or(WorkerError::Capacity)?;
-        let mut payload = payload.clone();
-        let call = payload.call.clone();
-        payload
-            .outcome
-            .as_mut()
-            .ok_or(WorkerError::Capacity)?
-            .cursor = 0;
-        row.status = OutboxStatus::Pending;
-        row.payload = store::ProviderCall::Retained(payload);
-        put(tx, &row)?;
-        return crate::voice::provider::settle_voice_stop(tx, &call, &RequestResult::NotSent)
+        return crate::voice::provider::settle_voice_stop(tx, &payload.call, &outcome.result)
             .map_err(|error| WorkerError::PreparationRefused(error.to_string()));
     }
     if !matches!(
         outcome.result,
         RequestResult::Reply(_) | RequestResult::Rejected(_)
     ) {
+        return Ok(());
+    }
+    if !crate::monitor_runtime::settle_provider_call(tx, &payload.call, &outcome.result)
+        .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?
+        || !super::super::stopped_turns::settle_stopped_turn(tx, &payload.call, &outcome.result)?
+    {
         return Ok(());
     }
     if payload.call.method == Method::ThreadStart
@@ -964,11 +1017,7 @@ fn settle(
         request: payload.request.clone().ok_or(WorkerError::Capacity)?,
         written: payload.written,
         result: outcome.result.clone(),
-        ack: CommittedAck {
-            stream_id: stream.into(),
-            generation,
-            cursor,
-        },
+        ack: outcome.committed_ack.clone().ok_or(WorkerError::Capacity)?,
     };
     RequestResults::settle(
         tx,
@@ -984,6 +1033,15 @@ fn settle(
         .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
     Outbox::delete_settled(tx, &row.id, &row.signature).map_err(outbox_error)?;
     Ok(())
+}
+
+fn proven_not_sent(payload: &RetainedCall) -> bool {
+    payload.outcome.as_ref().is_some_and(|outcome| {
+        outcome.result == RequestResult::NotSent
+            && outcome.committed_ack.as_ref().is_some_and(|ack| {
+                ack.cursor == outcome.cursor && ack.generation == payload.call.scope.generation
+            })
+    })
 }
 
 pub(super) fn record_outcome(
@@ -1014,6 +1072,7 @@ pub(super) fn record_outcome(
             payload.outcome = Some(RetainedOutcome {
                 result: value,
                 cursor,
+                committed_ack: None,
             });
         }
     }
@@ -1021,26 +1080,22 @@ pub(super) fn record_outcome(
         .outcome
         .as_ref()
         .map(|outcome| (outcome.result.clone(), outcome.cursor));
-    row.status = if payload
-        .outcome
-        .as_ref()
-        .is_some_and(|outcome| outcome.result == RequestResult::NotSent && outcome.cursor == 0)
-    {
+    row.status = if proven_not_sent(&payload) {
         OutboxStatus::Pending
     } else {
         OutboxStatus::Unknown
     };
     row.payload = store::ProviderCall::Retained(payload);
     put(tx, &row)?;
-    let stream = row.stream_id.as_deref().ok_or(WorkerError::Capacity)?;
+    let stream = row.stream_id.clone().ok_or(WorkerError::Capacity)?;
     let generation = u64::try_from(row.generation.ok_or(WorkerError::Capacity)?)
         .map_err(|_| WorkerError::Capacity)?;
-    let checkpoint = store::checkpoint(tx, stream, generation)?;
+    let checkpoint = store::checkpoint(tx, &stream, generation)?;
     if accepted
         .as_ref()
         .is_some_and(|(_, cursor)| *cursor <= checkpoint)
     {
-        settle(tx, &row, stream, generation, checkpoint)?;
+        settle(tx, &mut row, &stream, generation, checkpoint)?;
     }
     Ok(accepted)
 }
@@ -1069,9 +1124,7 @@ pub(in crate::account_worker) async fn recover(
                 if payload.call.scope.generation != generation {
                     continue;
                 }
-                if payload.outcome.as_ref().is_some_and(|outcome| {
-                    outcome.result == RequestResult::NotSent && outcome.cursor == 0
-                }) {
+                if proven_not_sent(&payload) {
                     continue;
                 }
                 let Some(prepared) = payload.request.as_ref() else {

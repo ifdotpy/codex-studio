@@ -8,7 +8,9 @@ use crate::notification_runtime_effects::{
 };
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
+use studio_runtime_schema::persistence::{OutboxKind, OutboxStatus, OwnerKind};
 use studio_runtime_store::RuntimeStore;
+use studio_runtime_store::outbox::{Outbox, OutboxRow};
 
 static NEXT_ROOT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
@@ -178,11 +180,31 @@ async fn test_store() -> (PathBuf, Arc<RuntimeStore>) {
     (root, Arc::new(store))
 }
 
-async fn stage(store: &RuntimeStore, sequence: u64, index: usize, value: Value) {
+pub(super) async fn stage(store: &RuntimeStore, sequence: u64, index: usize, value: Value) {
     store
         .transaction_with(move |tx| {
-            let operation = format!("notification-publication:default:{sequence}:{index}");
-            store::save(tx, &operation, "pending", value)
+            let id = store::publication_operation("default", sequence, index);
+            Outbox::put(
+                tx,
+                &OutboxRow {
+                    signature: studio_runtime_store::sha256_hex(id.as_bytes()),
+                    id,
+                    kind: OutboxKind::Publication,
+                    owner_kind: OwnerKind::Account,
+                    owner_id: "default".into(),
+                    request_id: None,
+                    status: OutboxStatus::Pending,
+                    account: Some("default".into()),
+                    stream_id: None,
+                    generation: None,
+                    ordinal: Some(sequence as i64),
+                    next_at: Some(0),
+                    payload: value,
+                    created: (now() * 1000.0) as i64,
+                },
+            )
+            .map_err(StoreError::from)?;
+            Ok::<_, WorkerError>(())
         })
         .await
         .expect("commit publication receipt");
@@ -197,8 +219,8 @@ fn pending_count(store: &RuntimeStore) -> i64 {
         .test_reader()
         .expect("read store")
         .query_row(
-            "SELECT count(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:notification-publication:%'",
-            [],
+            "SELECT count(*) FROM runtime_outbox WHERE account='default' AND kind=?1 AND status=?2",
+            (OutboxKind::Publication, OutboxStatus::Pending),
             |row| row.get(0),
         )
         .expect("count publication receipts")
@@ -426,10 +448,10 @@ async fn complete_analytics_usage_persists_beyond_the_publication_bound() {
         .expect("read durable usage")
         .query_row(
             "SELECT \
-             count(CASE WHEN json_extract(result,'$.effect.AnalyticsCaptured.delivery.cursor')=300 THEN 1 END), \
-             count(CASE WHEN json_extract(result,'$.analyticsOverflow')>0 THEN 1 END) \
-             FROM runtime_operation_receipts WHERE id LIKE 'account-worker:notification-publication:default:%'",
-            [],
+             count(CASE WHEN json_extract(payload,'$.effect.AnalyticsCaptured.delivery.cursor')=300 THEN 1 END), \
+             count(CASE WHEN json_extract(payload,'$.analyticsOverflow')>0 THEN 1 END) \
+             FROM runtime_outbox WHERE account='default' AND kind=?1 AND status=?2",
+            (OutboxKind::Publication, OutboxStatus::Pending),
             |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
         )
         .expect("count durable usage and shed captures");
@@ -583,8 +605,8 @@ async fn provider_notification_is_acknowledged_at_the_publication_bound() {
         .run(move |store| async move {
             let connection = store.test_reader()?;
             Ok(connection.query_row(
-                "SELECT count(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:notification-publication:default:%'",
-                [],
+                "SELECT count(*) FROM runtime_outbox WHERE account='default' AND kind=?1 AND status=?2",
+                (OutboxKind::Publication, OutboxStatus::Pending),
                 |row| row.get::<_, i64>(0),
             )?)
         })
@@ -595,24 +617,16 @@ async fn provider_notification_is_acknowledged_at_the_publication_bound() {
     assert!(pending <= store::MAX_PUBLICATION_RECEIPTS as i64 + 3);
     // The drain task delivers one bounded batch per pass and re-arms itself while
     // a full batch remains; later journal commits delete what it delivered.
-    let backlog_prefix = format!(
-        "account-worker:{}:%",
-        store::publication_operation("default", 10_000, 0)
-            .rsplit_once(':')
-            .expect("sequence prefix")
-            .0
-    );
     let pending = tokio::time::timeout(std::time::Duration::from_secs(60), async {
         let mut usage = 11;
         loop {
-            let prefix = backlog_prefix.clone();
             let pending = state
                 .bridge
                 .run(move |store| async move {
                     let connection = store.test_reader()?;
                     Ok(connection.query_row(
-                        "SELECT count(*) FROM runtime_operation_receipts WHERE id LIKE ?1",
-                        [prefix],
+                        "SELECT count(*) FROM runtime_outbox WHERE account='default' AND kind=?1 AND status=?2 AND ordinal=?3",
+                        (OutboxKind::Publication, OutboxStatus::Pending, 10_000_i64),
                         |row| row.get::<_, i64>(0),
                     )?)
                 })
@@ -686,8 +700,8 @@ async fn publication_bound_keeps_state_invalidation_and_token_rate_usage() {
         .test_reader()
         .expect("read coalesced effects")
         .query_row(
-            "SELECT result FROM runtime_operation_receipts WHERE id LIKE 'account-worker:notification-publication:default:%' AND json_extract(result,'$.tokenRateCoalesced')=1 ORDER BY rowid DESC LIMIT 1",
-            [],
+            "SELECT payload FROM runtime_outbox WHERE account='default' AND kind=?1 AND status=?2 AND json_extract(payload,'$.tokenRateCoalesced')=1 ORDER BY ordinal DESC,id DESC LIMIT 1",
+            (OutboxKind::Publication, OutboxStatus::Pending),
             |row| row.get(0),
         )
         .expect("saturated receipt retains token-rate effects");
@@ -715,8 +729,8 @@ async fn publication_bound_keeps_state_invalidation_and_token_rate_usage() {
         .test_reader()
         .expect("read publication marker")
         .query_row(
-            "SELECT count(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:notification-publication:default:%' AND json_extract(result,'$.stateInvalidation')=1",
-            [],
+            "SELECT count(*) FROM runtime_outbox WHERE account='default' AND kind=?1 AND status=?2 AND json_extract(payload,'$.stateInvalidation')=1",
+            (OutboxKind::Publication, OutboxStatus::Pending),
             |row| row.get(0),
         )
         .expect("count coalesced invalidation markers");
@@ -783,10 +797,10 @@ async fn saturated_publication_coalescing_has_a_hard_effect_bound_and_never_stop
         .test_reader()
         .expect("read saturated receipt")
         .query_row(
-            "SELECT COALESCE(max(json_array_length(result,'$.coalescedEffects')),0), \
-             COALESCE(sum(json_extract(result,'$.publicationOverflow')),0) \
-             FROM runtime_operation_receipts WHERE id LIKE 'account-worker:notification-publication:default:%'",
-            [],
+            "SELECT COALESCE(max(json_array_length(payload,'$.coalescedEffects')),0), \
+             COALESCE(sum(json_extract(payload,'$.publicationOverflow')),0) \
+             FROM runtime_outbox WHERE account='default' AND kind=?1 AND status=?2",
+            (OutboxKind::Publication, OutboxStatus::Pending),
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .expect("count coalesced payloads and overflow");

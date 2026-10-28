@@ -63,6 +63,9 @@ pub struct TransportRequest<M> {
 pub struct RetainedOutcome {
     pub result: RequestResult,
     pub cursor: u64,
+    /// Exact committed journal evidence, retained even when the domain owner is malformed.
+    #[serde(default)]
+    pub committed_ack: Option<CommittedAck>,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]

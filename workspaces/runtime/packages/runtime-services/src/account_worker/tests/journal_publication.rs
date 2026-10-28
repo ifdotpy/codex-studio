@@ -3,6 +3,7 @@ use super::journal_cost::{entry, journal, running_store};
 use super::*;
 use crate::scheduler::publication_work::{self, Calls};
 use std::collections::BTreeMap;
+use studio_runtime_schema::persistence::{OutboxKind, OutboxStatus};
 
 const AGENTS: [(&str, &str); 2] = [("agent", "thread"), ("second", "second-thread")];
 const FIRST_CURSOR: u64 = 1;
@@ -18,7 +19,12 @@ async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>) {
             second["id"] = json!("second");
             second["rootId"] = json!("second");
             second["threadId"] = json!("second-thread");
+            second["startAttempt"]["id"] = json!("second-attempt");
             second["startAttempt"]["threadId"] = json!("second-thread");
+            second
+                .as_object_mut()
+                .expect("fixture agent")
+                .remove("activeExecution");
             AgentRepository::put(tx, &AgentRecord::from_value(second)?)
         })
         .await
@@ -182,14 +188,29 @@ async fn journal_projection_failure_rolls_back_sources_and_receipts() {
                 let agent = AgentRepository::get(tx, &AgentId::from(id))?.expect("source agent");
                 assert_eq!(agent.value()["events"], 0);
             }
-            let receipt_count: i64 = tx.query_row(
-                "SELECT COUNT(*) FROM runtime_operation_receipts",
+            let obligation_count: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM runtime_outbox WHERE account='default'",
                 [],
                 |row| row.get(0),
             )?;
             assert_eq!(
-                receipt_count, 0,
-                "projection failure rolls back every receipt and stream record"
+                obligation_count, 0,
+                "projection failure rolls back every journal, publication and stream obligation"
+            );
+            assert!(
+                studio_runtime_store::account_state::streams(tx, "default")?.is_none(),
+                "projection failure rolls back current stream metadata"
+            );
+            assert_eq!(
+                store::checkpoint(tx, "default", 7)?,
+                0,
+                "projection failure cannot advance journal ACK"
+            );
+            assert_eq!(
+                tx.query_row("SELECT COUNT(*) FROM request_results", [], |row| row
+                    .get::<_, i64>(0))?,
+                0,
+                "projection failure cannot settle a callable result"
             );
             tx.execute_batch("DROP TRIGGER reject_agent_projection")?;
             Ok(())
@@ -211,7 +232,12 @@ async fn changed_agents_decode_once_through_final_publication() {
                 .value();
             unrelated["id"] = json!("unrelated");
             unrelated["threadId"] = json!("unrelated-thread");
+            unrelated["startAttempt"]["id"] = json!("unrelated-attempt");
             unrelated["startAttempt"]["threadId"] = json!("unrelated-thread");
+            unrelated
+                .as_object_mut()
+                .expect("fixture agent")
+                .remove("activeExecution");
             AgentRepository::put(tx, &AgentRecord::from_value(unrelated)?)
         })
         .await
@@ -381,10 +407,16 @@ async fn recovery_preserves_interleaved_journal(drain: bool) {
     .await;
     let before: Value = serde_json::to_value(&streams).expect("stream JSON");
     if drain {
-        store.transaction(|tx| {
-            tx.execute("DELETE FROM runtime_operation_receipts WHERE id LIKE 'account-worker:notification-publication:%'", [])?;
-            Ok(())
-        }).await.expect("receipt deletion after successful delivery");
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "DELETE FROM runtime_outbox WHERE account='default' AND kind=?1 AND status=?2",
+                    (OutboxKind::Publication, OutboxStatus::Pending),
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("receipt deletion after successful delivery");
     }
     let mut recovery = crate::recovery_store::RecoveryStore {
         store: Arc::clone(&store),
@@ -524,7 +556,7 @@ async fn stream_cache_revision_keeps_allocations_and_bounds_validation_work() {
 }
 
 #[tokio::test]
-async fn stream_cache_revision_handles_legacy_snapshots_and_rolled_back_handoffs() {
+async fn stream_cache_revision_handles_owner_snapshots_and_rolled_back_handoffs() {
     let (_directory, store) = running_store().await;
     journal(
         &store,
@@ -536,11 +568,10 @@ async fn stream_cache_revision_handles_legacy_snapshots_and_rolled_back_handoffs
         )],
     )
     .await;
-    // An installed older server stored the phase as the metadata signature.
-    let canonical = store.transaction_with(|tx| {
-        tx.execute("UPDATE runtime_operation_receipts SET signature='metadata' WHERE id='account-worker:streams:default:metadata'", [])?;
-        store::load_streams(tx, "default")
-    }).await.expect("legacy snapshot");
+    let canonical = store
+        .transaction_with(|tx| store::load_streams(tx, "default"))
+        .await
+        .expect("current owner snapshot");
     let staged = Arc::new(std::sync::Mutex::new(None));
     let capture = Arc::clone(&staged);
     let original = canonical.clone();

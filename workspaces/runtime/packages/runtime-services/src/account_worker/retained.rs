@@ -49,6 +49,11 @@ macro_rules! provider_reads {
             pub const ALL:&'static [Self]=&[$(Self::$method),+];
             pub fn method(self)->Method {match self {$(Self::$method=>Method::$method),+}}
             pub fn from_method(method:Method)->Option<Self> {Self::ALL.iter().copied().find(|read|read.method()==method)}
+            pub fn from_request(method:Method,params:&Value)->Option<Self> {
+                let read=Self::from_method(method)?;
+                if read==Self::AccountRead && params.get("refreshToken").is_some_and(|value|value!=&Value::Bool(false)){return None}
+                Some(read)
+            }
         }
     };
 }
@@ -95,7 +100,7 @@ provider_reads! {
 }
 impl SessionRequest {
     pub(super) fn is_volatile_read(&self) -> bool {
-        ProviderReadMethod::from_method(self.method).is_some()
+        ProviderReadMethod::from_request(self.method, &self.params).is_some()
     }
 }
 
@@ -310,6 +315,20 @@ impl RetainedSessionPort {
             .map_err(|_| PortError::Unknown)?
     }
 }
+fn account_refresh_shape(
+    scope: &ConnectionScope,
+    root: &str,
+    operation: &str,
+    method: Method,
+    params: &Value,
+) -> bool {
+    method == Method::AccountRead
+        && operation == format!("vm-codex-token-refresh:{}:{root}", scope.account)
+        && params.as_object().is_some_and(|params| {
+            params.len() == 1 && params.get("refreshToken") == Some(&Value::Bool(true))
+        })
+}
+
 pub(crate) fn validate(request: &SessionRequest) -> Result<(), PortError> {
     let turn_view = request.params.get("itemsView").and_then(Value::as_str);
     let turn_limit = request.params.get("limit").and_then(Value::as_u64);
@@ -326,7 +345,15 @@ pub(crate) fn validate(request: &SessionRequest) -> Result<(), PortError> {
     }
     let actorless_request = request.transfer.is_none()
         && request.actor.is_none()
-        && valid_actorless_request_shape(request.method, &request.params, &request.operation);
+        && (valid_actorless_request_shape(request.method, &request.params, &request.operation)
+            || (request.deleted_actor_session.is_none()
+                && account_refresh_shape(
+                    &request.scope,
+                    &request.root_request_id,
+                    &request.operation,
+                    request.method,
+                    &request.params,
+                )));
     let deleted_voice_stop = request
         .deleted_actor_session
         .as_ref()
@@ -1183,7 +1210,31 @@ fn monitor_call(
         .map(serde_json::from_value::<AdmittedRequest>)
         .transpose()
         .map_err(StoreError::from)?;
-    let result_id = admitted.as_ref().map(|token| token.id().to_owned());
+    let result_id = if let Some(token) = &admitted {
+        Some(token.id().to_owned())
+    } else if let Some(root) = operation
+        .evidence
+        .get("rootRequestId")
+        .and_then(Value::as_str)
+    {
+        Some(
+            RequestIdentity::new(
+                "provider-call",
+                &[
+                    &operation.account_key,
+                    &operation.agent,
+                    &operation.epoch.to_string(),
+                ],
+                root,
+                &[&identity],
+            )
+            .map_err(|_| WorkerError::Capacity)?
+            .id()
+            .to_owned(),
+        )
+    } else {
+        None
+    };
     let Some(value) = storage::recorded_operation(tx, &key, result_id.as_deref())? else {
         return Ok(None);
     };
@@ -1475,6 +1526,27 @@ mod validation_tests {
 
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn account_refresh_is_never_a_volatile_read() {
+        assert_eq!(
+            ProviderReadMethod::from_request(Method::AccountRead, &json!({})),
+            Some(ProviderReadMethod::AccountRead)
+        );
+        assert_eq!(
+            ProviderReadMethod::from_request(Method::AccountRead, &json!({"refreshToken":false})),
+            Some(ProviderReadMethod::AccountRead)
+        );
+        for value in [json!(true), Value::Null, json!("false"), json!(0)] {
+            assert_eq!(
+                ProviderReadMethod::from_request(
+                    Method::AccountRead,
+                    &json!({"refreshToken":value})
+                ),
+                None
+            );
+        }
+    }
 
     fn turns_request(items_view: &str, limit: u64, actor: bool) -> SessionRequest {
         SessionRequest {

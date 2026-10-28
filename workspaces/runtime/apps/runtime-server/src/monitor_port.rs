@@ -613,7 +613,7 @@ impl RetainedMonitorPort {
         }
         Box::pin(async move {
             let (root_request_id, admitted_request) =
-                if matches!(method, Method::ConfigRead | Method::OperationStatus) {
+                if studio_runtime_services::account_worker::retained::ProviderReadMethod::from_request(method, &params).is_some() {
                     (String::new(), None)
                 } else {
                     let id = params["processId"]
@@ -734,7 +734,10 @@ impl RetainedMonitorPort {
                 .map_err(|_| MonitorError::Refused("Monitor epoch is invalid"))?,
             account_key: account.to_owned(),
             connection_id: scope.connection.clone(),
-            evidence: BTreeMap::from([("rootRequestId".into(), json!(root_request_id))]),
+            evidence: BTreeMap::from([
+                ("rootRequestId".into(), json!(root_request_id)),
+                ("providerGeneration".into(), json!(scope.generation)),
+            ]),
         };
         let resources = self
             .preparation
@@ -989,6 +992,10 @@ impl RetainedMonitorPort {
             .as_str()
             .filter(|cwd| Path::new(cwd).is_absolute())
             .ok_or_else(|| "Rule working directory is unavailable".to_owned())?;
+        let scope = self
+            .session
+            .current_scope(check.account_key.as_deref().unwrap_or("default"))
+            .ok_or_else(|| "No live provider session".to_owned())?;
         let operation = Operation {
             agent: check.agent_id.clone(),
             epoch: i64::try_from(check.epoch).map_err(|_| "Rule epoch is invalid")?,
@@ -996,12 +1003,11 @@ impl RetainedMonitorPort {
                 .account_key
                 .clone()
                 .unwrap_or_else(|| "default".into()),
-            connection_id: self
-                .session
-                .current_scope(check.account_key.as_deref().unwrap_or("default"))
-                .ok_or_else(|| "No live provider session".to_owned())?
-                .connection,
-            evidence: BTreeMap::from([("rootRequestId".into(), json!(root_request_id))]),
+            connection_id: scope.connection,
+            evidence: BTreeMap::from([
+                ("rootRequestId".into(), json!(root_request_id)),
+                ("providerGeneration".into(), json!(scope.generation)),
+            ]),
         };
         let config = provider_request(
             MonitorRequestOwner {
@@ -1944,7 +1950,11 @@ async fn provider_request(
     let expected_operation = identity.clone();
     let expected_scope = scope.clone();
     let (root_request_id, admitted_request) =
-        if matches!(method, Method::ConfigRead | Method::OperationStatus) {
+        if studio_runtime_services::account_worker::retained::ProviderReadMethod::from_request(
+            method, &params,
+        )
+        .is_some()
+        {
             (String::new(), None)
         } else {
             studio_runtime_services::monitor_runtime::provider_request_identity(

@@ -758,7 +758,7 @@ async fn recovered_publications(state: &State) -> Vec<(String, String)> {
         .run(|store| async move {
             let db = store.test_reader()?;
             let mut statement = db.prepare(
-                "SELECT json_extract(result,'$.effect.Recovered.identity'), json_extract(result,'$.effect.Recovered.observation.method') FROM runtime_operation_receipts WHERE id LIKE 'account-worker:notification-publication:default:%:pending' AND json_extract(result,'$.effect.Recovered.identity') IS NOT NULL ORDER BY id",
+                "SELECT json_extract(payload,'$.effect.Recovered.identity'), json_extract(payload,'$.effect.Recovered.observation.method') FROM runtime_outbox WHERE account='default' AND kind='publication' AND json_extract(payload,'$.effect.Recovered.identity') IS NOT NULL ORDER BY id",
             )?;
             let rows = statement
                 .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
@@ -3403,33 +3403,25 @@ async fn deleted_voice_stop_requires_the_exact_committed_session() {
     let actor = state.agent.clone();
     let epoch = state.epoch;
     let scope = port.scope().clone();
-    let receipt_id = format!("agent-delete-voice:{actor}:{epoch}");
-    let session = json!({
-        "sessionId":"voice-session-7",
-        "agentId":actor,
-        "epoch":epoch,
-        "accountKey":scope.account,
-        "threadId":"fake-thread-0",
-        "connectionId":scope.connection,
-        "generation":scope.generation
-    });
-    let actor_for_store = actor.clone();
-    state.bridge.run(move |store| async move {
-        store.transaction_with(move |tx| {
-            tx.execute(
-                "UPDATE runtime_agents SET record=json_set(record,'$.deletedAt',1) WHERE id=?1",
-                [&actor_for_store],
-            )?;
-            tx.execute(
-                "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'voice-delete',?2)",
-                rusqlite::params![receipt_id, json!({"agent":actor_for_store,"epoch":epoch,"voiceEndSessions":[session]}).to_string()],
-            )?;
-            Ok::<(), studio_runtime_store::StoreError>(())
-        }).await?;
-        Ok(())
+    let root = retained_root("voice:delete-stop:voice-session-7");
+    let fixture_scope = scope.clone();
+    let fixture_actor = actor.clone();
+    let fixture_root = root.clone();
+    let token=state.bridge.store.transaction_with(move |tx| {
+        use studio_runtime_schema::persistence::{RequestIdentity,OutboxKind,OutboxStatus,OwnerKind};
+        use studio_runtime_store::{request_results::{RequestResults,Admission},outbox::{Outbox,OutboxRow}};
+        let identity=RequestIdentity::new("voice-delete-fixture",&[&fixture_actor],&fixture_root,&[]).unwrap();
+        let owner=match RequestResults::admit(tx,&identity,"voice-delete",chrono::Utc::now().timestamp_millis()).map_err(|error|WorkerError::PreparationRefused(error.to_string()))?{Admission::Fresh(owner)=>owner,Admission::Replay(_)=>return Err(WorkerError::Capacity)};
+        let intent=crate::account_worker::retained::ProviderCallIntent {root_request_id:fixture_root.clone(),admitted_request:None,scope:fixture_scope.clone(),operation:"voice:delete-stop:voice-session-7".into(),actor:Some(RequestActor{agent:fixture_actor.clone(),epoch}),transfer:None,deleted_actor_session:Some("voice-session-7".into()),method:Method::ThreadRealtimeStop,params:json!({"threadId":"fake-thread-0"})};
+        let token=crate::account_worker::retained::reserve_provider_call(tx,&owner,intent)?;
+        let session=json!({"sessionId":"voice-session-7","agentId":fixture_actor,"epoch":epoch,"accountKey":fixture_scope.account,"threadId":"fake-thread-0","connectionId":fixture_scope.connection,"generation":fixture_scope.generation,"admittedRequest":token});
+        Outbox::put(tx,&OutboxRow {id:"voice-delete-fixture".into(),kind:OutboxKind::VoiceDelete,owner_kind:OwnerKind::Agent,owner_id:fixture_actor.clone(),request_id:Some(owner.id().into()),signature:"voice-agent-delete-v1".into(),status:OutboxStatus::Pending,account:Some(fixture_scope.account.clone()),stream_id:None,generation:None,ordinal:None,next_at:Some(0),created:owner.created(),payload:json!({"agent":fixture_actor,"epoch":epoch,"rootRequestId":fixture_root,"admission":owner,"voiceEndSessions":[session],"voiceEndHeldUncertain":[],"voiceEndResults":{}})}).map_err(|error|WorkerError::PreparationRefused(error.to_string()))?;
+        tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.deletedAt',1) WHERE id=?1",[&fixture_actor])?;
+        Ok::<_,WorkerError>(token)
     }).await.unwrap();
-
     let mut call = request(&state, &port, "voice:delete-stop:voice-session-7");
+    call.root_request_id = root;
+    call.admitted_request = Some(token);
     call.method = Method::ThreadRealtimeStop;
     call.params = json!({"threadId":"fake-thread-0"});
     call.expected_scope = Some(scope.clone());
@@ -4432,4 +4424,131 @@ async fn retained_expired_root_refuses_before_any_provider_write() {
     assert_eq!(port.request(call).await.unwrap_err(), PortError::Expired);
     assert!(peer.writes.try_recv().is_err());
     worker.shutdown().await.unwrap();
+}
+
+#[derive(Clone, Copy)]
+enum MalformedMonitorWitness {
+    Reply,
+    Owner,
+}
+
+async fn malformed_monitor_keeps_proof_without_blocking_other_agent(case: MalformedMonitorWitness) {
+    use studio_runtime_schema::persistence::{OutboxKind, OutboxStatus};
+    use studio_runtime_schema::provider_call_contract::{CommittedAck, transport_key};
+    use studio_runtime_store::outbox::Outbox;
+    let state = State::new().await;
+    retained_schema(&state).await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let port = worker.retained_session();
+    let cwd = state.record().await["cwd"].as_str().unwrap().to_owned();
+    let operation = "monitor:held-proof";
+    let call = monitor_request(
+        &state,
+        &port,
+        operation.into(),
+        Method::CommandExec,
+        json!({"processId":"held-proof","command":["true"],"cwd":cwd}),
+    );
+    let actor = state.agent.clone();
+    let epoch = state.epoch;
+    let scope = port.scope().clone();
+    let root = call.root_request_id.clone();
+    state.bridge.store.transaction(move |tx| {
+        let mut other=AgentRepository::get(tx,&AgentId::from(actor.as_str()))?.unwrap().value();
+        other["id"]=json!("other-ack-agent");other["threadId"]=json!("other-ack-thread");
+        AgentRepository::put(tx,&studio_runtime_store::AgentRecord::from_value(other)?)?;
+        tx.execute("INSERT INTO runtime_monitors(id,record) VALUES('held-proof',?1)",[json!({"id":"held-proof","agent":actor,"epoch":epoch,"cwd":cwd,"command":"true","status":"running","operation":{"agent":actor,"epoch":epoch,"accountKey":scope.account,"connectionId":scope.connection,"providerGeneration":scope.generation,"rootRequestId":root}}).to_string()])?;
+        Ok(())
+    }).await.unwrap();
+    let sender = port.clone();
+    let first = call.clone();
+    let mut task = tokio::spawn(async move { sender.request(first).await });
+    let wire = monitor_write(&mut peer, &mut task, "command/exec").await;
+    if matches!(case, MalformedMonitorWitness::Owner) {
+        state.bridge.store.transaction(|tx| {tx.execute("UPDATE runtime_monitors SET record=json_set(record,'$.operation','malformed-owner') WHERE id='held-proof'",[])?;Ok(())}).await.unwrap();
+    }
+    let raw = match case {
+        MalformedMonitorWitness::Reply => json!({"malformed":"missing exit evidence"}),
+        MalformedMonitorWitness::Owner => json!({"exitCode":0}),
+    };
+    let held_cursor = peer.frame(json!({"id":wire["id"],"result":raw})).await;
+    peer.acknowledged(held_cursor).await;
+    task.await.unwrap().unwrap();
+    let mut other = durable_request(&state, &port, "other-agent-ack");
+    other.actor.as_mut().unwrap().agent = "other-ack-agent".into();
+    other.params["threadId"] = json!("other-ack-thread");
+    let sender = port.clone();
+    let second = tokio::spawn(async move { sender.request(other).await });
+    let wire = peer.write("thread/compact/start").await;
+    let next_cursor = peer
+        .frame(json!({"id":wire["id"],"result":{"accepted":true}}))
+        .await;
+    peer.acknowledged(next_cursor).await;
+    second.await.unwrap().unwrap();
+    worker_barrier(&worker).await;
+    let key = transport_key("default", operation);
+    let lookup = key.clone();
+    state
+        .bridge
+        .store
+        .transaction_with(move |tx| {
+            let row = Outbox::get::<crate::account_worker::store::ProviderCall>(tx, &lookup)
+                .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?
+                .unwrap();
+            assert_eq!(row.status, OutboxStatus::Unknown);
+            assert_eq!(row.next_at, None);
+            let crate::account_worker::store::ProviderCall::Retained(payload) = row.payload else {
+                panic!("retained owner")
+            };
+            let outcome = payload.outcome.unwrap();
+            assert_eq!(outcome.result, RequestResult::Reply(raw));
+            assert_eq!(
+                outcome.committed_ack,
+                Some(CommittedAck {
+                    stream_id: "default".into(),
+                    generation: 1,
+                    cursor: held_cursor
+                })
+            );
+            assert!(
+                store::checkpoint(tx, "default", 1)? >= next_cursor,
+                "another agent's prefix advances"
+            );
+            let pending = Outbox::pending::<crate::account_worker::store::ProviderCall>(
+                tx,
+                OutboxKind::ProviderCall,
+                i64::MAX,
+                u32::MAX,
+            )
+            .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
+            assert!(
+                pending.iter().all(|row| row.id != lookup),
+                "held proof is never a send selector"
+            );
+            Ok::<_, WorkerError>(())
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        port.request(call).await.unwrap().result,
+        RequestResult::Unknown
+    );
+    assert!(
+        peer.writes.try_recv().is_err(),
+        "held completion is never resent"
+    );
+    worker.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn retained_malformed_monitor_reply_does_not_block_another_agent_ack() {
+    malformed_monitor_keeps_proof_without_blocking_other_agent(MalformedMonitorWitness::Reply)
+        .await;
+}
+
+#[tokio::test]
+async fn retained_malformed_monitor_owner_keeps_unknown_proof_without_resending() {
+    malformed_monitor_keeps_proof_without_blocking_other_agent(MalformedMonitorWitness::Owner)
+        .await;
 }

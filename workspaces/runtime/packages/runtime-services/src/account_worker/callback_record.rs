@@ -449,7 +449,16 @@ pub(super) async fn written(
                 .map_err(callback_error)?;
             }
             match outcome {
-                WriteOutcome::Written => retire(tx, &operation),
+                WriteOutcome::Written => {
+                    retire(tx, &operation)?;
+                    callbacks::retire_checkpointed(
+                        tx,
+                        &task.payload.accepted.journal_scope,
+                        task.payload.accepted.generation,
+                    )
+                    .map_err(callback_error)?;
+                    Ok(())
+                }
                 WriteOutcome::NotSent
                     if !task.payload.recovery_attempted
                         && task.status != ToolRequestStatus::Unknown =>

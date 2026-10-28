@@ -3043,6 +3043,41 @@ fn set_checkpoint(
         )?,
     )
 }
+
+/// A proved attachment replaces only current stream provenance, never uncertain calls.
+pub(super) async fn attach_provider_stream(
+    store: &RuntimeStore,
+    account: &str,
+    actor: Option<&str>,
+    generation: u64,
+    connection: &str,
+) -> Result<(), WorkerError> {
+    let account = account.to_owned();
+    let actor = actor.map(str::to_owned);
+    let connection = connection.to_owned();
+    store.transaction_with(move|tx| {
+        if let Some(actor)=actor {
+            let mut agent=stored_agent(tx,&actor)?;
+            if account_key(&agent)!=account || agent.extra.get("executionMode").and_then(Value::as_str)!=Some("vm") {return Err(invalid(&actor));}
+            let state=agent.extra.entry("providerStream".into()).or_insert_with(||json!({}));
+            if let Some(previous)=state["generation"].as_u64() {
+                if previous>generation{return Err(invalid(&actor));}
+                if previous!=generation {super::retained::storage::checkpoint_covered(tx,&super::vm_journal_scope(&account,&actor),previous,state["ack"].as_u64().unwrap_or(0))?;state["ack"]=json!(0);}
+            }
+            if state.get("ack").is_none(){state["ack"]=json!(0);}
+            state["generation"]=json!(generation);state["connection"]=json!(connection);
+            AgentRepository::put(tx,&agent)?;
+        } else {
+            studio_runtime_store::account_state::ensure_account(tx,&account)?;
+            let (previous,ack):(Option<i64>,i64)=tx.query_row_cached("SELECT connection_generation,journal_ack FROM runtime_account_state WHERE account=?1",[&account],|row|Ok((row.get(0)?,row.get(1)?)))?;
+            let generation=i64::try_from(generation).map_err(|_|invalid(&account))?;
+            if previous.is_some_and(|old|old>generation){return Err(invalid(&account));}
+            if let Some(previous)=previous && previous!=generation {super::retained::storage::checkpoint_covered(tx,&account,previous as u64,ack as u64)?;}
+            tx.execute_cached("UPDATE runtime_account_state SET connection_generation=?2,connection_id=?3,journal_ack=CASE WHEN connection_generation=?2 THEN journal_ack ELSE 0 END,recovery_required=0 WHERE account=?1",params![account,generation,connection])?;
+        }
+        Ok(())
+    }).await
+}
 pub(super) fn journal_committed(
     tx: &studio_runtime_store::Transaction<'_>,
     journal_scope: &str,

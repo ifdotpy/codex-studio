@@ -53,6 +53,8 @@ use std::{
     sync::{Arc, atomic::AtomicUsize},
 };
 use studio_runtime_process::{EventCursor, ProviderLaunchSpec, provider_seam::*};
+use studio_runtime_schema::persistence::{OutboxKind, OutboxStatus, OwnerKind};
+use studio_runtime_store::outbox::Outbox;
 use studio_runtime_store::path_identity::CanonicalPath;
 use studio_runtime_store::{AgentRecord, EventWriteRepository};
 use tokio::sync::oneshot;
@@ -3256,7 +3258,17 @@ async fn acknowledged_journal_prefix_is_compacted() {
         let tx = reader.transaction().unwrap();
         assert_eq!(store::checkpoint(&tx, "default", 1).unwrap(), cursor);
     }
-    let rows = state.bridge.run(move |store| async move { Ok(store.test_reader()?.query_row("SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:journal:%'", [], |r|r.get::<_,i64>(0))?) }).await.unwrap();
+    let rows = state
+        .bridge
+        .run(move |store| async move {
+            Ok(store.test_reader()?.query_row(
+                "SELECT COUNT(*) FROM runtime_outbox WHERE account='default' AND kind=?1",
+                [OutboxKind::JournalEntry],
+                |r| r.get::<_, i64>(0),
+            )?)
+        })
+        .await
+        .unwrap();
     assert_eq!(rows, 0);
     worker.shutdown().await.unwrap();
 }
@@ -3363,12 +3375,14 @@ async fn committed_batch_replay_after_mid_batch_ack_loss_is_exactly_once() {
             .bridge
             .run(move |store| async move {
                 store.transaction_with(move |tx| {
-                    let metadata = store::receipt(tx, "streams:default", "metadata")?
-                        .unwrap_or_else(|| json!({"entries": [], "closed": []}));
+                    let saved = studio_runtime_store::account_state::streams(tx,"default")?
+                        .map(|raw|serde_json::from_str::<Value>(&raw)).transpose()?
+                        .unwrap_or_else(||json!({"metadata":{"entries":[],"closed":[]}}));
+                    let metadata = &saved["metadata"];
                     Ok(json!({
                         "entries": metadata["entries"],
                         "closed": metadata["closed"],
-                        "pending": store::receipt(tx, "streams:default", "pending")?,
+                        "pending": pending_stream_batch(tx)?,
                         "delta": metadata["post_commit"][0]["AnalyticsStream"]["observation"]["params"]["delta"],
                     }))
                 }).await
@@ -3481,6 +3495,33 @@ async fn callback_replay_waits_for_initialization_before_admission() {
     worker.shutdown().await.unwrap();
 }
 
+fn pending_stream_batch(
+    tx: &studio_runtime_store::Transaction<'_>,
+) -> Result<Option<Value>, WorkerError> {
+    let row = Outbox::get::<Value>(tx, "streams:default").map_err(StoreError::from)?;
+    Ok(row.map(|row| {
+        assert_eq!(row.kind, OutboxKind::StreamFlush);
+        assert_eq!(row.status, OutboxStatus::Pending);
+        assert_eq!(row.owner_kind, OwnerKind::Account);
+        assert_eq!(row.owner_id, "default");
+        assert_eq!(row.stream_id.as_deref(), Some("default"));
+        row.payload
+    }))
+}
+
+fn current_stream_base_count(tx: &studio_runtime_store::Connection) -> Result<usize, WorkerError> {
+    let Some(raw) = studio_runtime_store::account_state::streams(tx, "default")? else {
+        return Ok(0);
+    };
+    let saved: Value = serde_json::from_str(&raw).map_err(StoreError::from)?;
+    Ok(saved["metadata"]["entries"]
+        .as_array()
+        .expect("current stream entries")
+        .iter()
+        .filter(|entry| !entry["base"].is_null())
+        .count())
+}
+
 async fn scenario_durable_stream_batch_recovers_before_flush() {
     let state = State::new().await;
     let mut peer = Peer::new();
@@ -3493,9 +3534,7 @@ async fn scenario_durable_stream_batch_recovers_before_flush() {
         .bridge
         .run(move |store| async move {
             store
-                .transaction_with(move |tx| {
-                    Ok(store::receipt(tx, "streams:default", "pending")?.is_some())
-                })
+                .transaction_with(move |tx| Ok(pending_stream_batch(tx)?.is_some()))
                 .await
         })
         .await
@@ -3518,7 +3557,7 @@ async fn scenario_durable_stream_batch_recovers_before_flush() {
     peer.acknowledged(complete).await;
     let (text,pending,bases) = state.bridge.run(move |store| async move { store.transaction_with(move |tx| {
         let text:String = tx.query_row("SELECT json_extract(record,'$.text') FROM runtime_items WHERE json_extract(record,'$.id') LIKE '%:stream'", [], |row| row.get(0))?;
-        Ok((text,store::receipt(tx,"streams:default","pending")?.is_some(),tx.query_row("SELECT COUNT(*) FROM runtime_operation_receipts WHERE signature='stream-base'",[],|row| row.get::<_,i64>(0))?))
+        Ok((text,pending_stream_batch(tx)?.is_some(),current_stream_base_count(tx)?))
     }).await }).await.unwrap();
     assert_eq!(text, "durable delta");
     assert!(!pending);
@@ -3554,7 +3593,7 @@ async fn unrelated_store_failure_after_enqueue_keeps_write_unknown() {
     .expect("admitted command receipt remains withheld");
     state.bridge.run(move |store| async move {
         store.transaction_with(move |tx| {
-            tx.execute_batch("CREATE TRIGGER fail_journal BEFORE INSERT ON runtime_operation_receipts WHEN NEW.id LIKE 'account-worker:journal:%' BEGIN SELECT RAISE(ABORT,'unrelated journal failure'); END;")?;
+            tx.execute_batch(&format!("CREATE TRIGGER fail_journal BEFORE INSERT ON runtime_outbox WHEN NEW.kind='{}' BEGIN SELECT RAISE(ABORT,'unrelated journal failure'); END;",OutboxKind::JournalEntry.as_str()))?;
             Ok(())
         }).await
     }).await.unwrap();
@@ -3605,6 +3644,28 @@ async fn scenario_stream_base_survives_replaced_visible_item() {
     );
     let started = peer.frame(json!({"method":"item/started","params":{"threadId":"fake-thread-0","turnId":"turn","item":{"id":"base","type":"agentMessage","text":"replacement"}}})).await;
     peer.acknowledged(started).await;
+    let preserved = state
+        .bridge
+        .run(|store| async move {
+            let raw =
+                studio_runtime_store::account_state::streams(&store.test_reader()?, "default")?
+                    .expect("current stream owner");
+            let saved: Value = serde_json::from_str(&raw)?;
+            Ok(saved["metadata"]["entries"]
+                .as_array()
+                .expect("stream entries")
+                .iter()
+                .filter(|entry| entry["key"]["item"] == "base")
+                .map(|entry| entry["base"].clone())
+                .collect::<Vec<_>>())
+        })
+        .await
+        .expect("persisted stream base");
+    assert_eq!(
+        preserved,
+        vec![json!("a".repeat(64 * 1024))],
+        "the current stream owns the exact base before later deltas"
+    );
     let delta = peer.frame(json!({"method":"item/agentMessage/delta","params":{"threadId":"fake-thread-0","turnId":"turn","itemId":"base","delta":"tail"}})).await;
     peer.acknowledged(delta).await;
     let completed = peer.frame(json!({"method":"item/completed","params":{"threadId":"fake-thread-0","turnId":"turn","item":{"id":"base","type":"agentMessage","text":""}}})).await;
@@ -3620,11 +3681,7 @@ async fn scenario_stream_base_survives_replaced_visible_item() {
                     |r| r.get::<_, studio_runtime_store::stored_text::StoredText>(0),
                 )?
                 .into_string();
-            let bases: i64 = db.query_row(
-                "SELECT COUNT(*) FROM runtime_operation_receipts WHERE signature='stream-base'",
-                [],
-                |r| r.get(0),
-            )?;
+            let bases = current_stream_base_count(&db)?;
             Ok((text, bases))
         })
         .await
@@ -3858,7 +3915,7 @@ async fn bookkeeping_rows_stay_bounded_across_completed_turns() {
         let cursor=peer.frame(json!({"method":"turn/completed","params":{"threadId":"fake-thread-0","turn":{"id":format!("turn-{turn}"),"status":"completed"}}})).await;
         peer.acknowledged(cursor).await;
         worker_barrier(&worker).await;
-        let count=state.bridge.run(move |store| async move { Ok(store.test_reader()?.query_row("SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:%'",[],|r|r.get::<_,i64>(0))?) }).await.unwrap();
+        let count=state.bridge.run(move |store| async move { Ok(store.test_reader()?.query_row("SELECT (SELECT COUNT(*) FROM runtime_outbox WHERE account='default')+(SELECT COUNT(*) FROM runtime_account_state WHERE account='default')",[],|r|r.get::<_,i64>(0))?) }).await.unwrap();
         assert!(count <= 4, "turn {turn}: retained {count} worker rows");
         assert_eq!(state.event_status(&input).await, "delivered");
         assert_eq!(
@@ -3994,24 +4051,38 @@ async fn stream_base_and_metadata_rollback_together() {
     peer.acknowledged(delta).await;
     peer.phase("forcing stream transaction rollback");
     state.bridge.run(move |store| async move { store.transaction_with(move |tx| {
-        tx.execute_batch("CREATE TRIGGER fail_stream_metadata BEFORE UPDATE ON runtime_operation_receipts WHEN NEW.id='account-worker:streams:default:metadata' BEGIN SELECT RAISE(ABORT,'crash after base write before metadata'); END;")?;
+        tx.execute_batch("CREATE TRIGGER fail_stream_metadata BEFORE UPDATE OF streams ON runtime_account_state WHEN NEW.account='default' BEGIN SELECT RAISE(ABORT,'crash before stream owner commit'); END;")?;
         Ok(())
     }).await }).await.unwrap();
     let frame = json!({"method":"item/started","params":{"threadId":"fake-thread-0","turnId":"turn","item":{"id":"atomic","type":"agentMessage","text":"replacement"}}});
     peer.frame(frame.clone()).await;
     assert!(worker.completion().await.is_err());
-    state.bridge.run(move |store| async move { store.transaction_with(move |tx| {
-        // The delta batch was flushed before this transaction; its stored item
-        // holds the flushed text, so no base row exists. A failed item/started
-        // rolls back the base it preserves together with the snapshot and the
-        // stream metadata, leaving the flushed item intact.
-        assert_eq!(tx.query_row("SELECT COUNT(*) FROM runtime_operation_receipts WHERE signature='stream-base'",[],|row|row.get::<_,i64>(0))?,0);
-        let body=tx.query_row("SELECT body FROM runtime_item_fulltext WHERE id LIKE '%:atomic'",[],|row|row.get::<_,studio_runtime_store::stored_text::StoredText>(0))?.into_string();
-        assert_eq!(body,"x".repeat(store::STREAM_FLUSH_BYTES));
-        assert_eq!(store::receipt(tx,"cursor:default:1","ack")?,Some(json!(delta)));
-        tx.execute_batch("DROP TRIGGER fail_stream_metadata")?;
-        Ok(())
-    }).await }).await.unwrap();
+    state
+        .bridge
+        .run(move |store| async move {
+            store
+                .transaction_with(move |tx| {
+                    // The delta batch was flushed before this transaction; its stored item
+                    // holds the flushed text, so metadata has no preserved base. A failed item/started
+                    // rolls back the base it preserves together with the snapshot and the
+                    // stream metadata, leaving the flushed item intact.
+                    assert_eq!(current_stream_base_count(tx)?, 0);
+                    let body = tx
+                        .query_row(
+                            "SELECT body FROM runtime_item_fulltext WHERE id LIKE '%:atomic'",
+                            [],
+                            |row| row.get::<_, studio_runtime_store::stored_text::StoredText>(0),
+                        )?
+                        .into_string();
+                    assert_eq!(body, "x".repeat(store::STREAM_FLUSH_BYTES));
+                    assert_eq!(store::checkpoint(tx, "default", 1)?, delta);
+                    tx.execute_batch("DROP TRIGGER fail_stream_metadata")?;
+                    Ok(())
+                })
+                .await
+        })
+        .await
+        .unwrap();
     let mut peer = Peer::new();
     peer.trace.store(true, std::sync::atomic::Ordering::Relaxed);
     peer.phase("restarting worker after rollback");
