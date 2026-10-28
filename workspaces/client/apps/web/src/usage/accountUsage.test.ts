@@ -5,7 +5,6 @@ import {
   shouldReplaceLimitsSnapshot,
 } from "./accountUsage.ts";
 import type { AccountLimitsSnapshot } from "./accountUsage.ts";
-import { scopedStorage } from "../servers/storage";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   accountLimits,
@@ -15,6 +14,7 @@ import {
   configureLimitsCache,
   limitsSnapshotIsFresh,
 } from "./accountUsage";
+import { fakeUsageCore } from "./usageCore.fixture";
 const value = (
   accountKey: string,
   at = 10,
@@ -26,23 +26,13 @@ const value = (
     data: { accountId: accountKey, rateLimits: { primary: { usedPercent } } },
     error: null,
   }) satisfies components["schemas"]["AccountRateLimitsDto"];
+const puts = (core: ReturnType<typeof fakeUsageCore>) =>
+  core.methods.filter((method) => method === "usage.limits.put");
 let scope = 0;
 beforeEach(() => {
-  const records = new Map<string, string>();
-  vi.stubGlobal("localStorage", {
-    getItem: (key: string) => records.get(key) ?? null,
-    setItem: (key: string, text: string) => records.set(key, text),
-  });
   configureLimitsCache(`test-${++scope}`);
 });
 describe("account limits cache", () => {
-  it("restores values synchronously before a read starts", () => {
-    const name = `test-${scope}`;
-    cacheAccountLimits(value("a"));
-    configureLimitsCache("other");
-    configureLimitsCache(name);
-    expect(cachedAccountLimits("a", "a")).toEqual(value("a"));
-  });
   it("replaces a cached snapshot with newer data and rejects older data", () => {
     cacheAccountLimits(value("a"));
     cacheAccountLimits(value("a", 20, 75));
@@ -73,9 +63,6 @@ describe("account limits cache", () => {
     expect(limitsSnapshotIsFresh(cachedAccountLimits("a"), "a", "a", 20)).toBe(
       false,
     );
-    configureLimitsCache("other-test");
-    configureLimitsCache(`test-${scope}`);
-    expect(cachedAccountLimits("a")).toEqual(failed);
   });
   it("returns no value when nothing is known and honors a newer empty read", () => {
     expect(cachedAccountLimits("unknown")).toBeNull();
@@ -86,36 +73,62 @@ describe("account limits cache", () => {
   });
 });
 
-it("isolates overlapping server paths and account keys through delayed writes and reloads", () => {
-  const storage = (owner: string) =>
-    scopedStorage(() => localStorage, `server:${owner}:`);
-  const a = createAccountLimitsCache(storage("a"));
-  const b = createAccountLimitsCache(storage("b"));
+it("isolates overlapping server state directories and account keys through delayed writes and reloads", async () => {
+  const coreA = fakeUsageCore(),
+    coreB = fakeUsageCore();
+  const a = createAccountLimitsCache(() => coreA.request);
+  const b = createAccountLimitsCache(() => coreB.request);
   a.configureLimitsCache("/same/state");
   b.configureLimitsCache("/same/state");
   const changedA = vi.fn();
   const changedB = vi.fn();
   const stopA = a.subscribeLimitsCache(changedA);
   const stopB = b.subscribeLimitsCache(changedB);
-  const completeA = () => a.cacheAccountLimits(value("default", 30, 10));
   b.cacheAccountLimits(value("default", 40, 90));
-  completeA();
+  a.cacheAccountLimits(value("default", 30, 10));
+  await vi.waitFor(() => expect(puts(coreA)).toHaveLength(1));
+  await vi.waitFor(() => expect(puts(coreB)).toHaveLength(1));
   expect(a.cachedAccountLimits("default")).toEqual(value("default", 30, 10));
   expect(b.cachedAccountLimits("default")).toEqual(value("default", 40, 90));
   expect(changedA).toHaveBeenCalledTimes(1);
   expect(changedB).toHaveBeenCalledTimes(1);
-  const restoredA = createAccountLimitsCache(storage("a"));
-  const restoredB = createAccountLimitsCache(storage("b"));
+  const restoredA = createAccountLimitsCache(() => coreA.request);
+  const restoredB = createAccountLimitsCache(() => coreB.request);
   restoredA.configureLimitsCache("/same/state");
   restoredB.configureLimitsCache("/same/state");
-  expect(restoredA.cachedAccountLimits("default")).toEqual(
-    a.cachedAccountLimits("default"),
+  await vi.waitFor(() =>
+    expect(restoredA.cachedAccountLimits("default")).toEqual(
+      value("default", 30, 10),
+    ),
   );
-  expect(restoredB.cachedAccountLimits("default")).toEqual(
-    b.cachedAccountLimits("default"),
+  await vi.waitFor(() =>
+    expect(restoredB.cachedAccountLimits("default")).toEqual(
+      value("default", 40, 90),
+    ),
   );
   stopA();
   stopB();
+});
+
+it("loads saved limits without replacing a newer live snapshot", async () => {
+  const core = fakeUsageCore();
+  const first = createAccountLimitsCache(() => core.request);
+  first.configureLimitsCache("persisted");
+  first.cacheAccountLimits(value("saved", 10, 20));
+  first.cacheAccountLimits(value("live", 10, 30));
+  await vi.waitFor(() => expect(puts(core)).toHaveLength(2));
+  const restored = createAccountLimitsCache(() => core.request);
+  restored.configureLimitsCache("persisted");
+  restored.cacheAccountLimits(value("live", 50, 60));
+  await vi.waitFor(() =>
+    expect(restored.cachedAccountLimits("saved")).toEqual(
+      value("saved", 10, 20),
+    ),
+  );
+  expect(restored.cachedLimitsByAccount()).toEqual({
+    saved: value("saved", 10, 20),
+    live: value("live", 50, 60),
+  });
 });
 
 it("returns limits only for the selected account and matching native identity", () => {
@@ -165,37 +178,6 @@ it("returns limits only for the selected account and matching native identity", 
     accountLimits(generatedSnapshot, "a", "native-a"),
     generatedSnapshot,
   );
-});
-
-it("rejects malformed durable limits while retaining legacy data and vendor windows", () => {
-  const records = {
-    badIdentity: { accountKey: "badIdentity", data: { accountId: 42 } },
-    badWindow: {
-      accountKey: "badWindow",
-      data: { rateLimits: { primary: { usedPercent: "25" } } },
-    },
-    missingAccount: { data: {} },
-    scalar: "not an object",
-    legacy: { accountKey: "legacy" },
-    vendor: {
-      accountKey: "vendor",
-      data: {
-        rateLimits: {
-          planType: "plus",
-          primary: { usedPercent: 25, vendorWindow: { opaque: true } },
-        },
-      },
-    },
-  };
-  const cache = createAccountLimitsCache({
-    getItem: () => JSON.stringify(records),
-    setItem: () => {},
-  });
-  cache.configureLimitsCache("persisted");
-  expect(cache.cachedLimitsByAccount()).toEqual({
-    legacy: records.legacy,
-    vendor: records.vendor,
-  });
 });
 
 it("uses matching, error-free snapshot timestamps for limits freshness", () => {

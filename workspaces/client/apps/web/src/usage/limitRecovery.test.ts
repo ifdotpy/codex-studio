@@ -4,7 +4,8 @@ import { createAccountLimitsCache } from "./accountUsage";
 import type { JsonInputOf, Agent } from "../types";
 import type { components } from "../generated/api";
 import assert from "node:assert/strict";
-import { test } from "vitest";
+import { expect, test, vi } from "vitest";
+import { fakeUsageCore } from "./usageCore.fixture";
 import { limitRecovery, limitRecovered } from "./limitRecovery.ts";
 
 const now = 1_800_000_000;
@@ -67,23 +68,21 @@ test("recovery callers retain the generated eligibility contract", () => {
   assert.equal(typeof invalid, "function");
 });
 
-test("restored eligibility retains its identity and expires at use time", () => {
-  const records = new Map<string, string>();
-  const storage = {
-    getItem: (key: string) => records.get(key) ?? null,
-    setItem: (key: string, value: string) => {
-      records.set(key, value);
-    },
-  };
-  const cache = createAccountLimitsCache(storage);
+test("restored eligibility retains its identity and expires at use time", async () => {
+  const core = fakeUsageCore();
+  const cache = createAccountLimitsCache(() => core.request);
   cache.configureLimitsCache("server");
   const available = limits(
     {},
     { eligibility: decision({ allowed: true, canRun: true }) },
   );
   cache.cacheAccountLimits(available);
-  const restored = createAccountLimitsCache(storage);
+  await vi.waitFor(() => expect(core.methods).toContain("usage.limits.put"));
+  const restored = createAccountLimitsCache(() => core.request);
   restored.configureLimitsCache("server");
+  await vi.waitFor(() =>
+    expect(restored.cachedAccountLimits("work")).not.toBeNull(),
+  );
   const snapshot = restored.cachedAccountLimits("work");
   assert.deepEqual(snapshot, available);
   assert.equal(limitRecovered(agent, snapshot, now), true);

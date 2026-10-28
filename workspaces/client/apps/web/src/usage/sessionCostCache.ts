@@ -1,64 +1,36 @@
-import { serverLocalStorage as localStorage } from "../servers/storage";
 import type { components } from "../generated/api";
+import { nativeUsage, type UsagePersistence } from "./usageRequest";
+
 export type SessionCostValue = Partial<
   components["schemas"]["SessionCostResponse"]
 >;
 type Entry = { scope: string; value: SessionCostValue; storedAt: number };
 
-const prefix = "studio-session-cost:";
-const maxEntries = 16;
-const maxStoredBytes = 64 * 1024;
-
-// These records are written by this cache; valid() still checks legacy cache eligibility.
-function readSessionCostEntry(raw: string): Entry | null {
-  return JSON.parse(raw) as Entry | null;
-}
-
 export const sessionCostScope = (stateDir: string, rootId: string) =>
   JSON.stringify([stateDir, rootId]);
 
-function valid(value: Entry | null, scope: string): value is Entry {
-  return (
-    value?.scope === scope &&
-    Number.isFinite(value?.storedAt) &&
-    value?.value?.pricingState === "ready" &&
-    value?.value?.estimated === true &&
-    (value.value.totalUSD === null || Number.isFinite(value.value.totalUSD)) &&
-    Array.isArray(value.value.unknownModels) &&
-    value.value.breakdown !== null &&
-    typeof value.value.breakdown === "object"
-  );
-}
-
-export function createSessionCostCache(localStorage: Storage) {
+// Memory holds the estimates shown now. The native core keeps the bounded copy for restarts.
+export function createSessionCostCache(usage: UsagePersistence = nativeUsage) {
   const entries = new Map<string, Entry>();
-  function remember(entry: Entry) {
-    entries.delete(entry.scope);
-    entries.set(entry.scope, entry);
-    while (entries.size > maxEntries)
-      entries.delete(entries.keys().next().value!);
-    return entry;
-  }
+  let writes: Promise<unknown> = Promise.resolve();
+  const request = usage();
+  if (request)
+    request<Entry[]>("usage.sessionCosts.list", {}).then(
+      (saved) => {
+        for (const entry of saved)
+          if (!entries.has(entry.scope)) entries.set(entry.scope, entry);
+      },
+      () => {
+        /* This cache must not block the live estimate request. */
+      },
+    );
 
   function peekSessionCost(
     stateDir: string,
     rootId: string,
   ): SessionCostValue | null {
-    const scope = sessionCostScope(stateDir, rootId);
-    let entry = entries.get(scope);
-    if (!entry) {
-      try {
-        const saved = readSessionCostEntry(
-          localStorage.getItem(prefix + scope) || "null",
-        );
-        if (valid(saved, scope)) entry = remember(saved);
-        else if (saved !== null) localStorage.removeItem(prefix + scope);
-      } catch {
-        /* This cache must not block the live estimate request. */
-      }
-    }
+    const entry = entries.get(sessionCostScope(stateDir, rootId));
     if (!entry) return null;
-    remember(entry);
     const age = Math.max(0, (Date.now() - entry.storedAt) / 1000);
     return {
       ...entry.value,
@@ -88,45 +60,30 @@ export function createSessionCostCache(localStorage: Storage) {
       value: { ...value },
       storedAt: Date.now() - age * 1000,
     };
-    remember(entry);
-    try {
-      const key = prefix + scope;
-      const serialized = JSON.stringify(entry);
-      if (serialized.length * 2 > maxStoredBytes) {
-        localStorage.removeItem(key);
-        return entry.value;
-      }
-      const records: Array<{ key: string; bytes: number; at: number }> = [];
-      for (let index = 0; index < localStorage.length; index++) {
-        const candidate = localStorage.key(index);
-        if (!candidate?.startsWith(prefix) || candidate === key) continue;
-        const raw = localStorage.getItem(candidate) || "";
-        let at = 0;
-        try {
-          at = Number(readSessionCostEntry(raw)!.storedAt) || 0;
-        } catch {
-          /* Invalid cache records are evicted first. */
-        }
-        records.push({ key: candidate, bytes: raw.length * 2, at });
-      }
-      records.sort((a, b) => a.at - b.at);
-      let bytes =
-        serialized.length * 2 +
-        records.reduce((sum, item) => sum + item.bytes, 0);
-      while (records.length >= maxEntries || bytes > maxStoredBytes) {
-        const oldest = records.shift();
-        if (!oldest) break;
-        localStorage.removeItem(oldest.key);
-        bytes -= oldest.bytes;
-      }
-      localStorage.setItem(key, serialized);
-    } catch {
-      /* Storage can be full or unavailable. The memory cache remains usable. */
-    }
+    entries.set(scope, entry);
+    const write = usage();
+    if (write)
+      writes = writes
+        .then(() =>
+          write<{ evicted: string[] }>("usage.sessionCosts.put", {
+            scope,
+            storedAt: entry.storedAt,
+            value: entry.value,
+          }),
+        )
+        .then(
+          (result) => {
+            // The core evicts by its own bounds; keep the entry this call stored.
+            for (const evicted of result.evicted)
+              if (evicted !== scope) entries.delete(evicted);
+          },
+          () => {
+            /* Storage can be unavailable. The memory cache remains usable. */
+          },
+        );
     return entry.value;
   }
 
   return { peekSessionCost, storeSessionCost };
 }
-export const { peekSessionCost, storeSessionCost } =
-  createSessionCostCache(localStorage);
+export const { peekSessionCost, storeSessionCost } = createSessionCostCache();
