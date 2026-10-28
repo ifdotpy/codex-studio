@@ -22,11 +22,26 @@ async fn http_accepts_unrelated_operation_started_after_preparation() {
     let store = fixture.store.clone();
     let operation =
         tokio::spawn(async move { support::start_late_operation(store, ready, release).await });
-    let request = Request::builder().method("POST").uri("/api/messages")
-        .header("x-canvas-token", "token").header("host", "127.0.0.1:4620").header("content-type", "application/json")
-        .header(crate::schema::API_SCHEMA_HASH_HEADER, crate::schema::api_schema_hash())
-        .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from(([127, 0, 0, 1], 12345))))
-        .body(Body::from(serde_json::json!({"room":"late-operation-recipient", "id":"00000000-0000-4000-8000-000000000001", "text":"hello"}).to_string())).expect("request");
+    let request_id = uuid::Uuid::now_v7().to_string();
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/messages")
+        .header("x-canvas-token", "token")
+        .header("host", "127.0.0.1:4620")
+        .header("content-type", "application/json")
+        .header(
+            crate::schema::API_SCHEMA_HASH_HEADER,
+            crate::schema::api_schema_hash(),
+        )
+        .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+            [127, 0, 0, 1],
+            12345,
+        ))))
+        .body(Body::from(
+            serde_json::json!({"room":"late-operation-recipient", "id":request_id, "text":"hello"})
+                .to_string(),
+        ))
+        .expect("request");
     let response = app.oneshot(request).await.expect("HTTP response");
     operation.await.expect("operation writer joins");
     assert_eq!(response.status(), axum::http::StatusCode::OK);
@@ -60,6 +75,7 @@ async fn http_accepts_uploaded_asset_id_with_empty_message_text() {
     );
     let app = crate::router::router(state).expect("router");
     let asset_id = "00000000-0000-4000-8000-000000000003";
+    let request_id = uuid::Uuid::now_v7().to_string();
     let asset = studio_runtime_services::payload_store::upload(
         &fixture.store,
         "late-operation-recipient",
@@ -86,7 +102,7 @@ async fn http_accepts_uploaded_asset_id_with_empty_message_text() {
         .body(Body::from(
             serde_json::json!({
                 "room":"late-operation-recipient",
-                "id":"00000000-0000-4000-8000-000000000002",
+                "id":request_id,
                 "text":"",
                 "assets":[asset["id"].clone()]
             })
@@ -99,11 +115,11 @@ async fn http_accepts_uploaded_asset_id_with_empty_message_text() {
         serde_json::from_slice(&to_bytes(response.into_body(), 65536).await.expect("body"))
             .expect("receipt");
     assert_eq!(receipt["status"], "queued");
-    let raw = support::read(fixture.store.clone(), |connection| {
+    let raw = support::read(fixture.store.clone(), move |connection| {
         connection
             .query_row(
                 "SELECT record FROM runtime_event_meta WHERE id=?1",
-                ["00000000-0000-4000-8000-000000000002"],
+                [&request_id],
                 |row| row.get::<_, String>(0),
             )
             .expect("saved attachment metadata")
@@ -168,6 +184,7 @@ async fn http_queues_remote_anchor_message_as_paired_event_intent() {
     }
 
     let fixture = support::Fixture::new("remote-anchor-message").await;
+    let receiver = support::Fixture::new("remote-anchor-home").await;
     fixture
         .store
         .transaction(|tx| {
@@ -235,13 +252,10 @@ async fn http_queues_remote_anchor_message_as_paired_event_intent() {
             ))
             .expect("request")
     };
+    let request_id = uuid::Uuid::now_v7().to_string();
     let response = app
         .clone()
-        .oneshot(request(
-            "00000000-0000-4000-8000-000000000004",
-            "Continue on the paired server",
-            &[],
-        ))
+        .oneshot(request(&request_id, "Continue on the paired server", &[]))
         .await
         .expect("HTTP response");
     assert_eq!(response.status(), axum::http::StatusCode::OK);
@@ -254,11 +268,7 @@ async fn http_queues_remote_anchor_message_as_paired_event_intent() {
     assert_eq!(receipt["status"], "queued");
     let duplicate = app
         .clone()
-        .oneshot(request(
-            "00000000-0000-4000-8000-000000000004",
-            "Continue on the paired server",
-            &[],
-        ))
+        .oneshot(request(&request_id, "Continue on the paired server", &[]))
         .await
         .expect("duplicate HTTP response");
     assert_eq!(duplicate.status(), axum::http::StatusCode::OK);
@@ -283,10 +293,15 @@ async fn http_queues_remote_anchor_message_as_paired_event_intent() {
     assert_eq!(outbox_count, 1, "exact retry must not duplicate the intent");
     let receipts_request = Request::builder()
         .method("GET")
-        .uri("/api/messages/receipts?agent=late-operation-recipient&ids=%5B%2200000000-0000-4000-8000-000000000004%22%5D")
+        .uri(format!(
+            "/api/messages/receipts?agent=late-operation-recipient&ids=%5B%22{request_id}%22%5D"
+        ))
         .header("x-canvas-token", "token")
         .header("host", "127.0.0.1:4620")
-        .header(crate::schema::API_SCHEMA_HASH_HEADER, crate::schema::api_schema_hash())
+        .header(
+            crate::schema::API_SCHEMA_HASH_HEADER,
+            crate::schema::api_schema_hash(),
+        )
         .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from((
             [127, 0, 0, 1],
             12345,
@@ -324,7 +339,6 @@ async fn http_queues_remote_anchor_message_as_paired_event_intent() {
     assert_eq!(envelope["payload"]["link"], "remote-link");
     assert_eq!(envelope["payload"]["kind"], "user");
     assert_eq!(envelope["payload"]["text"], "Continue on the paired server");
-    let receiver = support::Fixture::new("remote-anchor-home").await;
     receiver
         .store
         .transaction(|tx| {
@@ -374,18 +388,26 @@ async fn http_queues_remote_anchor_message_as_paired_event_intent() {
         .as_str()
         .expect("request identity")
         .to_owned();
-    let event_id_for_reset = remote_event_id.clone();
-    receiver
-        .store
-        .transaction(move |tx| {
-            tx.execute(
-                "UPDATE runtime_server_inbox SET state='running',result=NULL WHERE id=?1",
-                [event_id_for_reset.as_str()],
-            )?;
-            Ok::<_, studio_runtime_store::StoreError>(())
-        })
-        .await
-        .expect("simulate response loss after committed input effect");
+    let inbox_key = studio_runtime_store::multi_server_delivery::remote_operation_key(
+        "server-inbox",
+        &["source-server"],
+        &remote_event_id,
+        &["input"],
+    );
+    let inbox_for_reset = inbox_key.clone();
+    receiver.store.transaction(move |tx| {
+        let (signature, created): (String, i64) = tx.query_row(
+            "SELECT signature,created FROM request_results WHERE id=?1", [&inbox_for_reset],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        tx.execute("DELETE FROM request_results WHERE id=?1", [&inbox_for_reset])?;
+        let admission = serde_json::json!({"id":inbox_for_reset,"signature":signature,"created":created});
+        tx.execute(
+            "INSERT INTO runtime_server_inbox(id,signature,state,result,created_at,principal,admission) VALUES(?1,?2,'running',NULL,100,'source-server',?3)",
+            rusqlite::params![inbox_for_reset, signature, admission.to_string()],
+        )?;
+        Ok::<_, studio_runtime_store::StoreError>(())
+    }).await.expect("simulate response loss after committed input effect");
     let recovered = driver
         .receive("source-server", &envelope, 102)
         .await
@@ -398,38 +420,33 @@ async fn http_queues_remote_anchor_message_as_paired_event_intent() {
     assert_eq!(recovered, delivered, "recovery returns the saved receipt");
     assert_eq!(first_receipt["id"], recovered_receipt["id"]);
     let read_event_id = remote_event_id.clone();
-    let (event_count, event_status, inbox_state, inbox_result) = support::read(
+    let (event_count, event_status, inbox_count, result) = support::read(
         receiver.store.clone(),
         move |connection| {
-            let (event_count, event_status): (i64, String) = connection
-                .query_row(
-            "SELECT COUNT(*),MAX(status) FROM runtime_events WHERE id=?1 AND agent=?2 AND kind='user'",
-            (read_event_id.as_str(), "late-operation-recipient"),
-            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
-        )
-                .expect("durable home user event");
-            let (inbox_state, inbox_result): (String, String) = connection
-                .query_row(
-                    "SELECT state,result FROM runtime_server_inbox WHERE id=?1",
-                    [read_event_id.as_str()],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .expect("recovered inbox receipt");
-            (event_count, event_status, inbox_state, inbox_result)
+            let (event_count, event_status): (i64, String) = connection.query_row(
+                "SELECT COUNT(*),MAX(status) FROM runtime_events WHERE id=?1 AND agent=?2 AND kind='user'",
+                (read_event_id.as_str(), "late-operation-recipient"),
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            ).expect("durable home user event");
+            let inbox_count: i64 = connection.query_row(
+                "SELECT count(*) FROM runtime_server_inbox WHERE id=?1", [&inbox_key], |row| row.get(0),
+            ).expect("settled inbox removed");
+            let result: String = connection.query_row(
+                "SELECT result FROM request_results WHERE id=?1", [&inbox_key], |row| row.get(0),
+            ).expect("recovered request result");
+            (event_count, event_status, inbox_count, result)
         },
-    )
-    .await;
+    ).await;
     assert_eq!(event_count, 1);
     assert_eq!(event_status, "pending");
-    assert_eq!(inbox_state, "complete");
-    let inbox_result: serde_json::Value =
-        serde_json::from_str(&inbox_result).expect("completed inbox result");
-    assert_eq!(inbox_result["requestId"], remote_event_id);
-    assert_eq!(inbox_result["outcome"], "applied");
-    assert_eq!(inbox_result["value"], first_receipt.clone());
+    assert_eq!(inbox_count, 0);
+    let result: serde_json::Value = serde_json::from_str(&result).expect("request result JSON");
+    assert_eq!(result["reply"]["response"]["requestId"], remote_event_id);
+    assert_eq!(result["reply"]["response"]["outcome"], "applied");
+    assert_eq!(result["reply"]["response"]["value"], first_receipt.clone());
 
     let mut uncertain_envelope = envelope.clone();
-    uncertain_envelope["requestId"] = serde_json::json!("00000000-0000-4000-8000-000000000008");
+    uncertain_envelope["requestId"] = serde_json::json!(uuid::Uuid::now_v7().to_string());
     let uncertain_driver = OrchestrationDriver::new(
         receiver_store.clone(),
         Arc::new(NoTransport),
@@ -469,7 +486,7 @@ async fn http_queues_remote_anchor_message_as_paired_event_intent() {
     let unicode_response = app
         .clone()
         .oneshot(request(
-            "00000000-0000-4000-8000-000000000007",
+            &uuid::Uuid::now_v7().to_string(),
             &unicode_text,
             &[],
         ))
@@ -524,7 +541,7 @@ async fn http_queues_remote_anchor_message_as_paired_event_intent() {
         409
     );
     let mut followup = envelope.clone();
-    followup["requestId"] = serde_json::json!("unsupported-anchor-followup");
+    followup["requestId"] = serde_json::json!(uuid::Uuid::now_v7().to_string());
     followup["payload"]["kind"] = serde_json::json!("followup");
     let refused_followup = driver
         .receive("source-server", &followup, 105)
@@ -562,22 +579,26 @@ async fn http_queues_remote_anchor_message_as_paired_event_intent() {
             .status(),
         403
     );
-    let event_id_for_epoch_reset = remote_event_id.clone();
-    receiver
-        .store
-        .transaction(move |tx| {
-            tx.execute(
-                "UPDATE runtime_server_links SET record=json_set(record,'$.parentEpoch',1) WHERE id='remote-link'",
-                [],
-            )?;
-            tx.execute(
-                "UPDATE runtime_server_inbox SET state='running',result=NULL WHERE id=?1",
-                [event_id_for_epoch_reset.as_str()],
-            )?;
-            Ok::<_, studio_runtime_store::StoreError>(())
-        })
-        .await
-        .expect("simulate link epoch change after effect and before inbox completion");
+    let inbox_key = studio_runtime_store::multi_server_delivery::remote_operation_key(
+        "server-inbox",
+        &["source-server"],
+        &remote_event_id,
+        &["input"],
+    );
+    receiver.store.transaction(move |tx| {
+        tx.execute("UPDATE runtime_server_links SET record=json_set(record,'$.parentEpoch',1) WHERE id='remote-link'", [])?;
+        let (signature, created): (String, i64) = tx.query_row(
+            "SELECT signature,created FROM request_results WHERE id=?1", [&inbox_key],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        tx.execute("DELETE FROM request_results WHERE id=?1", [&inbox_key])?;
+        let admission = serde_json::json!({"id":inbox_key,"signature":signature,"created":created});
+        tx.execute(
+            "INSERT INTO runtime_server_inbox(id,signature,state,result,created_at,principal,admission) VALUES(?1,?2,'running',NULL,100,'source-server',?3)",
+            rusqlite::params![inbox_key, signature, admission.to_string()],
+        )?;
+        Ok::<_, studio_runtime_store::StoreError>(())
+    }).await.expect("simulate link epoch change after effect and before inbox completion");
     let epoch_changed_retry = driver
         .receive("source-server", &envelope, 106)
         .await
@@ -609,7 +630,7 @@ async fn http_queues_remote_anchor_message_as_paired_event_intent() {
     let attachment = app
         .clone()
         .oneshot(request(
-            "00000000-0000-4000-8000-000000000006",
+            &uuid::Uuid::now_v7().to_string(),
             "Attachment must be refused",
             &[asset_id],
         ))
@@ -618,14 +639,10 @@ async fn http_queues_remote_anchor_message_as_paired_event_intent() {
     assert_eq!(attachment.status(), axum::http::StatusCode::BAD_REQUEST);
 
     let changed = app
-        .oneshot(request(
-            "00000000-0000-4000-8000-000000000004",
-            "Changed content must conflict",
-            &[],
-        ))
+        .oneshot(request(&request_id, "Changed content must conflict", &[]))
         .await
         .expect("changed-content HTTP response");
-    assert_eq!(changed.status(), axum::http::StatusCode::BAD_REQUEST);
+    assert_eq!(changed.status(), axum::http::StatusCode::CONFLICT);
     let outbox_count: i64 = support::read(fixture.store.clone(), |connection| {
         connection
             .query_row(
