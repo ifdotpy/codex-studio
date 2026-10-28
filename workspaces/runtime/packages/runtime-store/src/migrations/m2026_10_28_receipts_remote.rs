@@ -31,12 +31,17 @@ pub(super) const SOURCES: &[&str] = &[
 pub(super) struct Family;
 /// Protocol version in the supported pre-cutover envelope format. Immutable source contract.
 const SOURCE_FEDERATION_PROTOCOL_VERSION: u64 = 1;
+/// The sole authorized historical wire normalization; payload/root/fingerprint stay exact.
+const WIRE_OPERATION_REPORT: &str = "normalized-wire:server-outbox-operation";
 
 impl ReceiptFamilyMigration for Family {
     fn id(&self) -> &'static str {
         ID
     }
-    fn prepare(&self, tx: &Transaction<'_>, _cutover_ms: i64) -> Result<()> {
+    fn prepare(&self, tx: &Transaction<'_>, cutover_ms: i64) -> Result<()> {
+        let mut report = MigrationCheckpoint::begin(tx, ID, WIRE_OPERATION_REPORT, cutover_ms)?;
+        report.status = MigrationStatus::Complete;
+        report.save(tx, ID, WIRE_OPERATION_REPORT, cutover_ms)?;
         for table in [
             "runtime_server_inbox",
             "runtime_server_outbox",
@@ -448,6 +453,32 @@ fn server(
     cutover: i64,
 ) -> Result<()> {
     let state: ServerDeliveryState = decode(source, row, wrapper["state"].clone())?;
+    let mut destination = row.clone();
+    let mut wire_root = row.id.clone();
+    if source == "runtime_server_outbox" {
+        let invalid = || unclassifiable(source, &row.id, &row.signature);
+        let body: Value = wrapper["body"]
+            .as_str()
+            .and_then(|raw| serde_json::from_str(raw).ok())
+            .ok_or_else(invalid)?;
+        let peer = wrapper["server"].as_str().ok_or_else(invalid)?;
+        let root = body["requestId"].as_str().ok_or_else(invalid)?;
+        wire_root = root.to_owned();
+        let action = body["action"].as_str().ok_or_else(invalid)?;
+        let _: ServerOperationKind = decode(source, row, body["action"].clone())?;
+        let mut operation = vec![action];
+        if let Some(parts) = body.get("operation") {
+            for part in parts.as_array().ok_or_else(invalid)? {
+                operation.push(part.as_str().ok_or_else(invalid)?);
+            }
+        }
+        destination.id = crate::multi_server_delivery::remote_operation_key(
+            "server-outbox",
+            &[peer],
+            root,
+            &operation,
+        );
+    }
     if state == ServerDeliveryState::Complete {
         let response: Value = wrapper["result"]
             .as_str()
@@ -457,7 +488,7 @@ fn server(
         if outcome == RemoteOutcome::Unknown {
             return Err(unclassifiable(source, &row.id, &row.signature));
         }
-        if response["requestId"] != row.id {
+        if response["requestId"] != wire_root {
             return Err(unclassifiable(source, &row.id, &row.signature));
         }
         let actor = wrapper["actor"].as_str().map(str::to_owned).or_else(|| {
@@ -468,7 +499,7 @@ fn server(
         });
         let reply = json!({"principal":wrapper.get("principal"),"server":wrapper.get("server"),"actor":actor,"body":wrapper.get("body"),"response":response});
         let _: SavedRemoteReply = decode(source, row, reply.clone())?;
-        save(tx, source, row, reply, actor, cutover)?;
+        save(tx, source, &destination, reply, actor, cutover)?;
         delete_source(tx, source, row.rowid)?;
     } else {
         if source == "runtime_server_outbox" {
@@ -479,6 +510,7 @@ fn server(
             let object = body
                 .as_object_mut()
                 .ok_or_else(|| unclassifiable(source, &row.id, &row.signature))?;
+            let normalize_operation = !object.contains_key("operation");
             object.entry("operation").or_insert(json!([]));
             if !body["operation"]
                 .as_array()
@@ -506,11 +538,23 @@ fn server(
                 "UPDATE runtime_server_outbox SET body=?1 WHERE rowid=?2",
                 params![body.to_string(), row.rowid],
             )?;
+            if normalize_operation {
+                let mut report =
+                    MigrationCheckpoint::begin(tx, ID, WIRE_OPERATION_REPORT, cutover)?;
+                report.cursor += 1;
+                report.status = MigrationStatus::Complete;
+                report.save(tx, ID, WIRE_OPERATION_REPORT, cutover)?;
+            }
         }
         tx.execute(
             &format!("UPDATE {source} SET admission=?1 WHERE rowid=?2"),
             params![
-                json!(admitted_owner_token(&row.id, &row.signature, cutover)).to_string(),
+                json!(admitted_owner_token(
+                    &destination.id,
+                    &row.signature,
+                    cutover
+                ))
+                .to_string(),
                 row.rowid
             ],
         )?;
@@ -785,12 +829,66 @@ mod tests {
     }
 
     #[test]
+    fn receipts_remote_transport_namespace_cannot_collide_with_public_location_reply() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&mut db);
+        let public = json!({"requestId":"shared","outcome":"applied","projectId":"project","value":{"serverId":"peer","path":"/original"}});
+        let body=json!({"requestId":"shared","action":"add_location","operation":["location"],"payload":{"project":"project","request":{"action":"add_location","project":"project","server":"peer","path":"/original"}}}).to_string();
+        let response = json!({"requestId":"shared","outcome":"applied","value":{"path":"/original"},"error":null});
+        let signature = crate::sha256_hex(body.as_bytes());
+        let tx = db.transaction().expect("transaction");
+        import_result(
+            &tx,
+            "shared",
+            "public signature",
+            &ResultEnvelope {
+                actor: None,
+                reply: public.clone(),
+                references: vec![],
+            },
+            CUTOVER,
+        )
+        .expect("already migrated public C");
+        tx.commit().expect("commit");
+        db.execute("INSERT INTO runtime_server_outbox(id,fingerprint,state,result,body,server) VALUES('shared',?1,'complete',?2,?3,'peer')",params![signature,response.to_string(),body]).expect("completed transport same raw PK");
+        migrate(&mut db);
+        let key = crate::multi_server_delivery::remote_operation_key(
+            "server-outbox",
+            &["peer"],
+            "shared",
+            &["add_location", "location"],
+        );
+        let public_saved = crate::request_results::RequestResults::replay(
+            &db,
+            "shared",
+            "public signature",
+            CUTOVER + 1,
+        )
+        .expect("public signature")
+        .expect("public reply");
+        assert_eq!(
+            serde_json::from_str::<Value>(&public_saved.result).expect("envelope")["reply"],
+            public
+        );
+        let saved =
+            crate::request_results::RequestResults::replay(&db, &key, &signature, CUTOVER + 1)
+                .expect("transport signature")
+                .expect("transport reply");
+        let saved: ResultEnvelope<SavedRemoteReply> =
+            serde_json::from_str(&saved.result).expect("exact transport envelope");
+        assert_eq!(saved.reply.body.as_deref(), Some(body.as_str()));
+        assert_eq!(saved.reply.server.as_deref(), Some("peer"));
+        assert_eq!(saved.reply.response.request_id, "shared");
+        migrate(&mut db);
+    }
+
+    #[test]
     fn receipts_remote_completed_server_and_federation_results_are_not_sendable() {
         let mut db = Connection::open_in_memory().expect("database");
         fixture(&mut db);
         let response =
             json!({"requestId":"request","outcome":"applied","value":{"ok":true},"error":null});
-        db.execute("INSERT INTO runtime_server_outbox(id,fingerprint,state,result,body) VALUES('request','signature','complete',?1,'{\"actor\":\"agent\"}')",[response.to_string()]).expect("completed server");
+        db.execute("INSERT INTO runtime_server_outbox(id,fingerprint,state,result,body) VALUES('request','signature','complete',?1,'{\"requestId\":\"request\",\"action\":\"event\",\"actor\":\"agent\"}')",[response.to_string()]).expect("completed server");
         let inbox = json!({"hash":"hash","ack":"pending","created":1.0,"kind":"chat-message","room":"room","receipt":{"protocol":1,"messageId":"message","accepted":true,"room":"room","sequence":1}});
         db.execute(
             "INSERT INTO runtime_federation_inbox VALUES('peer','message',?1)",
@@ -806,8 +904,13 @@ mod tests {
         );
         let raw: String = db
             .query_row(
-                "SELECT result FROM request_results WHERE id='request'",
-                [],
+                "SELECT result FROM request_results WHERE id=?1",
+                [crate::multi_server_delivery::remote_operation_key(
+                    "server-outbox",
+                    &["server"],
+                    "request",
+                    &["event"],
+                )],
                 |r| r.get(0),
             )
             .expect("reply");
@@ -846,7 +949,15 @@ mod tests {
         assert_eq!(signature, expected);
         let token: crate::request_results::AdmittedRequest =
             serde_json::from_str(&raw).expect("admitted");
-        assert_eq!(token.id(), id);
+        assert_eq!(
+            token.id(),
+            crate::multi_server_delivery::remote_operation_key(
+                "server-outbox",
+                &["peer"],
+                "old-pending",
+                &["event"]
+            )
+        );
         assert_eq!(token.signature(), signature);
         let body: Value = serde_json::from_str(&body).expect("body");
         assert_eq!(body["operation"], json!([]));
@@ -863,7 +974,25 @@ mod tests {
                 .expect("no final result"),
             0
         );
+        let tx = db.transaction().expect("transaction");
+        assert_eq!(
+            MigrationCheckpoint::load(&tx, ID, "normalized-wire:server-outbox-operation")
+                .expect("report")
+                .expect("normalization count")
+                .cursor,
+            1
+        );
+        tx.rollback().expect("read only");
         migrate(&mut db);
+        let tx = db.transaction().expect("transaction");
+        assert_eq!(
+            MigrationCheckpoint::load(&tx, ID, "normalized-wire:server-outbox-operation")
+                .expect("report")
+                .expect("stable count")
+                .cursor,
+            1
+        );
+        tx.rollback().expect("read only");
     }
 
     #[test]

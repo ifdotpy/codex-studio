@@ -27,6 +27,12 @@ const SOURCE: &str = "runtime_operation_receipts";
 /// Persistent count of classified completed settings markers without a replay body.
 pub(super) const DELETED_SETTINGS_REPORT: &str = "deleted-completed-c:settings";
 pub(super) const DELETED_USER_MESSAGE_REPORT: &str = "deleted-completed-c:user-message";
+/// Closed W2e audit (89dabbd591): these synchronous owners saved only the reply,
+/// never the exact original body. Their old spaced hashes cannot be normalized.
+const CHANGED_SYNCHRONOUS_SIGNATURES: &[(&str, &str)] = &[
+    ("peer-team:", "deleted-completed-c:peer-team"),
+    ("sidebar-order:", "deleted-completed-c:sidebar-order"),
+];
 pub(super) struct Family;
 
 #[derive(Serialize)]
@@ -44,7 +50,12 @@ impl ReceiptFamilyMigration for Family {
     fn id(&self) -> &'static str {
         ID
     }
-    fn prepare(&self, _tx: &Transaction<'_>, _cutover_ms: i64) -> Result<()> {
+    fn prepare(&self, tx: &Transaction<'_>, cutover_ms: i64) -> Result<()> {
+        for (_, report) in CHANGED_SYNCHRONOUS_SIGNATURES {
+            let mut count = MigrationCheckpoint::begin(tx, ID, report, cutover_ms)?;
+            count.status = MigrationStatus::Complete;
+            count.save(tx, ID, report, cutover_ms)?;
+        }
         Ok(())
     }
 
@@ -127,6 +138,38 @@ impl ReceiptFamilyMigration for Family {
             if reply["requestId"] == row.id && reply["outcome"] == "unknown" {
                 migrate_location(tx, &row, &reply, checkpoint.cutover_ms)?;
                 delete_source(tx, source, row.rowid)?;
+                continue;
+            }
+            if let Some((prefix, report)) = CHANGED_SYNCHRONOUS_SIGNATURES
+                .iter()
+                .find(|(prefix, _)| row.id.starts_with(prefix))
+            {
+                if !exact_reply(&row, &reply) {
+                    return Err(unclassifiable(source, &row.id, &row.signature));
+                }
+                let root = row
+                    .id
+                    .strip_prefix(prefix)
+                    .expect("matched exact family prefix");
+                validate_completed_discard(source, root, checkpoint.cutover_ms).map_err(
+                    |error| match error {
+                        ReceiptMigrationError::FutureDatedCompletedRequest {
+                            table,
+                            issued_ms,
+                            cutover_ms,
+                            ..
+                        } => ReceiptMigrationError::FutureDatedCompletedRequest {
+                            table,
+                            key: row.id.clone(),
+                            issued_ms,
+                            cutover_ms,
+                        },
+                        other @ ReceiptMigrationError::Sql(_)
+                        | other @ ReceiptMigrationError::Unclassifiable { .. }
+                        | other @ ReceiptMigrationError::Incomplete { .. } => other,
+                    },
+                )?;
+                discard_completed_reply(tx, &row, report, checkpoint.cutover_ms)?;
                 continue;
             }
             if row.id.starts_with("managed-rules:") {
@@ -947,15 +990,71 @@ fn migrate_location(
     let intents = owner["locationIntents"]
         .as_object_mut()
         .ok_or_else(invalid)?;
-    intents.insert(
-        row.id.clone(),
-        json!({"request":admitted_owner_token(&row.id, &row.signature, cutover)}),
-    );
+    let signature = location_signature(tx, row)?.unwrap_or_else(|| row.signature.clone());
+    let token = if let Some(existing) = intents.get(&row.id) {
+        let existing: AdmittedRequest =
+            serde_json::from_value(existing["request"].clone()).map_err(|_| invalid())?;
+        if existing.signature() != signature {
+            return Err(unclassifiable(
+                "runtime_projects",
+                &project,
+                existing.signature(),
+            ));
+        }
+        admitted_owner_token(existing.id(), &signature, existing.created())
+    } else {
+        admitted_owner_token(&row.id, &signature, cutover)
+    };
+    intents.insert(row.id.clone(), json!({"request":token}));
     tx.execute(
         "UPDATE runtime_projects SET record=?1 WHERE id=?2",
         params![owner.to_string(), project],
     )?;
     Ok(())
+}
+
+/// Only immutable captured request bytes establish a new signature spelling.
+/// The signed transport body and its fingerprint remain their original authority.
+fn location_signature(tx: &Transaction<'_>, row: &SourceReceipt) -> Result<Option<String>> {
+    if !crate::receipt_migration_contract::source_exists(tx, "runtime_server_outbox")? {
+        return Ok(None);
+    }
+    let raw: Option<String> = tx
+        .query_row(
+            "SELECT body FROM runtime_server_outbox WHERE id=?1",
+            [&row.id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let invalid = || unclassifiable(SOURCE, &row.id, &row.signature);
+    let body: Value = serde_json::from_str(&raw).map_err(|_| invalid())?;
+    let request = &body["payload"]["request"];
+    if request.is_null() {
+        return Ok(None);
+    }
+    if body["requestId"] != row.id
+        || !matches!(
+            body["action"].as_str(),
+            Some("add_location" | "remove_location")
+        )
+        || request["action"] != body["action"]
+        || request["project"] != body["payload"]["project"]
+        || !request["project"].is_string()
+        || !request["server"].is_string()
+        || !request["path"].is_null() && !request["path"].is_string()
+    {
+        return Err(invalid());
+    }
+    let signature = crate::sha256_hex(
+        studio_runtime_schema::json_compat::python_json_compact(request).as_bytes(),
+    );
+    if row.signature != signature {
+        return Err(invalid());
+    }
+    Ok(Some(signature))
 }
 
 #[cfg(test)]
@@ -1534,11 +1633,6 @@ mod tests {
                 "park-request:root:exact",
                 json!({"event":"ready","count":1,"woken":["agent"]}),
             ),
-            ("sidebar-order:exact", json!({"revision":4,"groups":[]})),
-            (
-                "peer-team:exact",
-                json!({"id":"project","name":"Original","path":"/project"}),
-            ),
             (
                 "project-delete:exact",
                 json!({"id":"project","request_id":"exact","outcome":"deleted","deletedAgentIds":["agent"],"deletedRoomIds":["room"]}),
@@ -1597,9 +1691,9 @@ mod tests {
             assert_eq!(
                 signature,
                 if *id == "input-message" {
-                    user_signature.as_str()
+                    user_signature.clone()
                 } else {
-                    SIGNATURE
+                    SIGNATURE.to_owned()
                 }
             );
             assert_eq!(
@@ -1767,6 +1861,217 @@ mod tests {
             matches!(Family.move_batch(&tx,SOURCE,&checkpoint),Err(ReceiptMigrationError::Unclassifiable{table,key,signature:stored}) if table=="runtime_event_meta" && key=="message" && stored==signature)
         );
         tx.rollback().expect("source preserved");
+    }
+
+    #[test]
+    fn receipts_requests_location_signatures_use_captured_input_and_leave_wire_unchanged() {
+        for _ in 0..1 {
+            let mut db = Connection::open_in_memory().expect("database");
+            fixture(&mut db);
+            let input = json!({"action":"add_location","project":"project","server":"peer","path":"/original"});
+            let signature = crate::sha256_hex(crate::python_json_compact(&input).as_bytes());
+            let old_signature = signature.clone();
+            db.execute("INSERT INTO runtime_projects VALUES('project','{}')", [])
+                .expect("project");
+            for (id, outcome) in [("complete", "applied"), ("pending", "unknown")] {
+                let body = json!({"requestId":id,"action":"add_location","payload":{"project":"project","request":input,"signature":old_signature}}).to_string();
+                db.execute(
+                    "INSERT INTO runtime_server_outbox VALUES(?1,?2)",
+                    params![id, body],
+                )
+                .expect("captured wire input");
+                let reply = json!({"requestId":id,"projectId":"project","outcome":outcome,"value":{"serverId":"peer","path":"/original","gitOrigin":null}});
+                db.execute(
+                    "INSERT INTO runtime_operation_receipts VALUES(?1,?2,?3)",
+                    params![id, old_signature, reply.to_string()],
+                )
+                .expect("location source");
+            }
+            let before: Vec<(String, String)> = db
+                .prepare("SELECT id,body FROM runtime_server_outbox ORDER BY id")
+                .expect("query")
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .expect("rows")
+                .collect::<rusqlite::Result<_>>()
+                .expect("wire");
+            migrate(&mut db);
+            let tx = db.transaction().expect("transaction");
+            let saved = crate::request_results::RequestResults::replay(
+                &tx,
+                "complete",
+                &signature,
+                CUTOVER + 1,
+            )
+            .expect("normalized exact replay")
+            .expect("saved reply");
+            assert_eq!(
+                serde_json::from_str::<Value>(&saved.result).expect("envelope")["reply"]["value"]["gitOrigin"],
+                Value::Null
+            );
+            let owner: String = tx
+                .query_row(
+                    "SELECT record FROM runtime_projects WHERE id='project'",
+                    [],
+                    |r| r.get(0),
+                )
+                .expect("owner");
+            let owner: Value = serde_json::from_str(&owner).expect("owner JSON");
+            let token: AdmittedRequest =
+                serde_json::from_value(owner["locationIntents"]["pending"]["request"].clone())
+                    .expect("pending token");
+            assert_eq!(token.signature(), signature);
+            assert_eq!(token.id(), "pending");
+            tx.rollback().expect("read only");
+            let after: Vec<(String, String)> = db
+                .prepare("SELECT id,body FROM runtime_server_outbox ORDER BY id")
+                .expect("query")
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .expect("rows")
+                .collect::<rusqlite::Result<_>>()
+                .expect("wire");
+            assert_eq!(after, before, "original signed body stays byte identical");
+            migrate(&mut db);
+        }
+    }
+
+    #[test]
+    fn receipts_requests_pending_location_rejects_signature_and_token_mismatch() {
+        for bad_source in [true, false] {
+            let mut db = Connection::open_in_memory().expect("database");
+            fixture(&mut db);
+            let input = json!({"action":"add_location","project":"project","server":"peer","path":"/original"});
+            let signature = crate::sha256_hex(crate::python_json_compact(&input).as_bytes());
+            let source_signature = if bad_source {
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            } else {
+                &signature
+            };
+            let token = admitted_owner_token("location", "wrong owner signature", CUTOVER);
+            db.execute(
+                "INSERT INTO runtime_projects VALUES('project',?1)",
+                [json!({"locationIntents":{"location":{"request":token}}}).to_string()],
+            )
+            .expect("owner");
+            db.execute("INSERT INTO runtime_server_outbox VALUES('location',?1)",[json!({"requestId":"location","action":"add_location","payload":{"project":"project","request":input,"signature":signature}}).to_string()]).expect("captured request");
+            db.execute(
+                "INSERT INTO runtime_operation_receipts VALUES('location',?1,?2)",
+                params![
+                    source_signature,
+                    json!({"requestId":"location","projectId":"project","outcome":"unknown"})
+                        .to_string()
+                ],
+            )
+            .expect("pending C marker");
+            let tx = db.transaction().expect("transaction");
+            let checkpoint =
+                MigrationCheckpoint::begin(&tx, ID, SOURCE, CUTOVER).expect("checkpoint");
+            let error = Family
+                .move_batch(&tx, SOURCE, &checkpoint)
+                .expect_err("mismatch cannot gain new authority");
+            assert!(
+                matches!(error,ReceiptMigrationError::Unclassifiable{table,key,..}if (bad_source&&table==SOURCE&&key=="location")||(!bad_source&&table=="runtime_projects"&&key=="project"))
+            );
+            tx.rollback().expect("source preserved");
+            assert_eq!(
+                db.query_row("SELECT count(*) FROM runtime_operation_receipts", [], |r| r
+                    .get::<_, i64>(0))
+                    .expect("old marker"),
+                1
+            );
+            assert_eq!(
+                db.query_row("SELECT count(*) FROM request_results", [], |r| r
+                    .get::<_, i64>(0))
+                    .expect("no reply authority"),
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn receipts_requests_unchanged_ui_location_without_input_keeps_exact_signature() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&mut db);
+        insert(
+            &db,
+            "ui-old",
+            json!({"requestId":"ui-old","outcome":"applied","value":{"serverId":"peer","path":"/original"}}),
+        );
+        migrate(&mut db);
+        assert!(
+            crate::request_results::RequestResults::replay(&db, "ui-old", SIGNATURE, CUTOVER + 1)
+                .expect("unchanged UI signature")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn receipts_requests_changed_synchronous_families_expire_and_fence_prefixed_future_roots() {
+        for prefix in ["peer-team:", "sidebar-order:"] {
+            let mut db = Connection::open_in_memory().expect("database");
+            fixture(&mut db);
+            let root = "0000000f-4240-7000-8000-000000000000";
+            let id = format!("{prefix}{root}");
+            let reply = if prefix == "peer-team:" {
+                json!({"id":"project","name":"Original"})
+            } else {
+                json!({"revision":1,"groups":[]})
+            };
+            insert(&db, &id, reply.clone());
+            migrate(&mut db);
+            assert!(
+                crate::request_results::RequestResults::replay(
+                    &db,
+                    &id,
+                    "canonical new hash",
+                    CUTOVER + 1
+                )
+                .expect("no conflict")
+                .is_none()
+            );
+            let tx = db.transaction().expect("transaction");
+            let identity = studio_runtime_schema::persistence::RequestIdentity::new(
+                prefix.trim_end_matches(':'),
+                &[],
+                root,
+                &[],
+            )
+            .expect("old root");
+            assert!(matches!(
+                crate::request_results::RequestResults::admit(
+                    &tx,
+                    &identity,
+                    "canonical new hash",
+                    CUTOVER + 1
+                ),
+                Err(crate::request_results::RequestResultError::Identity(
+                    studio_runtime_schema::persistence::RequestIdentityError::Expired { .. }
+                ))
+            ));
+            assert_eq!(
+                MigrationCheckpoint::load(
+                    &tx,
+                    ID,
+                    &format!("deleted-completed-c:{}", prefix.trim_end_matches(':'))
+                )
+                .expect("report")
+                .expect("family count")
+                .cursor,
+                1
+            );
+            tx.rollback().expect("no effects");
+            migrate(&mut db);
+            let mut db = Connection::open_in_memory().expect("database");
+            fixture(&mut db);
+            let future = format!("{prefix}0000000f-4241-7000-8000-000000000000");
+            insert(&db, &future, reply);
+            let tx = db.transaction().expect("transaction");
+            let checkpoint =
+                MigrationCheckpoint::begin(&tx, ID, SOURCE, CUTOVER).expect("checkpoint");
+            assert!(
+                matches!(Family.move_batch(&tx,SOURCE,&checkpoint),Err(ReceiptMigrationError::FutureDatedCompletedRequest{table,key,issued_ms:1_000_001,..})if table==SOURCE&&key==future)
+            );
+            tx.rollback().expect("future source preserved");
+        }
     }
 
     #[test]

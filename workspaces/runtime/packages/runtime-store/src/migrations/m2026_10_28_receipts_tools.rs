@@ -8,7 +8,7 @@ use studio_runtime_schema::persistence::{
 use crate::receipt_migration_contract::{
     BatchBudget, MigrationCheckpoint, ReceiptFamilyMigration, ReceiptMigrationError,
     ReceiptProjection, Result, SourceReceipt, admitted_owner_token, delete_source, import_result,
-    read_source_batch, unclassifiable,
+    read_source_batch, unclassifiable, validate_completed_discard,
 };
 use crate::request_results::ResultEnvelope;
 
@@ -20,13 +20,23 @@ pub(super) const SOURCES: &[&str] = &[
     "runtime_tool_requests",
 ];
 pub(super) struct Family;
+// Closed W2e signature audit (89dabbd591). UI location signatures are unchanged.
+const LOCATION_REPORTS: &[&str] = &[
+    "deleted-completed-c:managed-project-location",
+    "normalized-signature:managed-project-location",
+];
 
 impl ReceiptFamilyMigration for Family {
     fn id(&self) -> &'static str {
         ID
     }
 
-    fn prepare(&self, _tx: &Transaction<'_>, _cutover_ms: i64) -> Result<()> {
+    fn prepare(&self, tx: &Transaction<'_>, cutover_ms: i64) -> Result<()> {
+        for report in LOCATION_REPORTS {
+            let mut count = MigrationCheckpoint::begin(tx, ID, report, cutover_ms)?;
+            count.status = MigrationStatus::Complete;
+            count.save(tx, ID, report, cutover_ms)?;
+        }
         Ok(())
     }
 
@@ -80,9 +90,19 @@ impl ReceiptFamilyMigration for Family {
                 .saturating_add(row.signature.len())
                 .saturating_add(row.result.len())
                 .saturating_add(blob_bytes);
-            if !budget.include(input) {
+            let secondary = if source == "runtime_tool_requests" {
+                location_input_metadata(tx, &row, &decoded)?
+            } else {
+                (0, 0)
+            };
+            if (budget.rows != 0
+                && budget.rows.saturating_add(1 + secondary.0)
+                    > crate::receipt_migration_contract::MIGRATION_BATCH_ROWS)
+                || !budget.include(input.saturating_add(secondary.1))
+            {
                 break;
             }
+            budget.rows += secondary.0;
             match source {
                 "runtime_tool_request_aliases" => {
                     let alias = decoded;
@@ -123,7 +143,13 @@ impl ReceiptFamilyMigration for Family {
                         }
                     } else {
                         classify(source, &row, &task)?;
-                        hydrate_location_arguments(tx, source, &row, &mut task)?;
+                        hydrate_location_arguments(
+                            tx,
+                            source,
+                            &row,
+                            &mut task,
+                            checkpoint.cutover_ms,
+                        )?;
                         let result = if let Some(reference) = task.pointer("/_payloadBlobs/result")
                         {
                             Some(load_blob(tx, source, &row, reference)?)
@@ -202,11 +228,9 @@ fn hydrate_location_arguments(
     source: &str,
     row: &SourceReceipt,
     task: &mut Value,
+    cutover: i64,
 ) -> Result<()> {
-    if task["tool"] != "orchestration_servers"
-        || task.get("arguments").is_some()
-        || !matches!(task["outcome"].as_str(), Some("pending" | "unknown"))
-    {
+    if task["tool"] != "orchestration_servers" {
         return Ok(());
     }
     let invalid = || unclassifiable(source, &row.id, &row.signature);
@@ -216,33 +240,241 @@ fn hydrate_location_arguments(
         format!("studio-cross-server:project-location:{actor}:{}", row.id).as_bytes(),
     )
     .to_string();
-    if !crate::receipt_migration_contract::source_exists(tx, "runtime_server_outbox")? {
-        return Ok(());
-    }
-    let raw: Option<String> = tx
-        .query_row(
-            "SELECT body FROM runtime_server_outbox WHERE id=?1",
-            [&id],
-            |r| r.get(0),
-        )
-        .optional()?;
-    let Some(raw) = raw else {
+    let raw: Option<String> =
+        if crate::receipt_migration_contract::source_exists(tx, "runtime_server_outbox")? {
+            tx.query_row(
+                "SELECT body FROM runtime_server_outbox WHERE id=?1",
+                [&id],
+                |r| r.get(0),
+            )
+            .optional()?
+        } else {
+            None
+        };
+    let body: Option<Value> = raw
+        .map(|raw| serde_json::from_str(&raw).map_err(|_| invalid()))
+        .transpose()?;
+    let args = body
+        .as_ref()
+        .and_then(|body| body.pointer("/payload/request"));
+    let pending = matches!(task["outcome"].as_str(), Some("pending" | "unknown"));
+    migrate_location_c(tx, &id, args, pending, cutover)?;
+    let Some(args) = args else {
         return Ok(());
     };
-    let body: Value = serde_json::from_str(&raw).map_err(|_| invalid())?;
-    let args = &body["payload"]["request"];
-    if !matches!(
-        args["action"].as_str(),
-        Some("add_location" | "remove_location")
-    ) || args["project"] != body["payload"]["project"]
+    let body = body.as_ref().ok_or_else(invalid)?;
+    if body["requestId"] != id
+        || body["action"] != args["action"]
+        || !matches!(
+            args["action"].as_str(),
+            Some("add_location" | "remove_location")
+        )
+        || args["project"] != body["payload"]["project"]
         || !args["project"].is_string()
         || !args["server"].is_string()
         || !args["path"].is_null() && !args["path"].is_string()
     {
         return Err(invalid());
     }
+    let original_signature =
+        crate::sha256_hex(studio_runtime_schema::json_compat::python_json(args).as_bytes());
+    if body["payload"]["signature"] != original_signature {
+        return Err(unclassifiable(
+            "runtime_server_outbox",
+            &id,
+            body["payload"]["signature"].as_str().unwrap_or(""),
+        ));
+    }
+    if task
+        .get("arguments")
+        .is_some_and(|original| original != args)
+    {
+        return Err(invalid());
+    }
     task["arguments"] = args.clone();
+    if !pending {
+        return Ok(());
+    }
+    let project = args["project"].as_str().ok_or_else(invalid)?;
+    let raw: Option<String> = tx
+        .query_row(
+            "SELECT record FROM runtime_projects WHERE id=?1",
+            [project],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let mut owner: Value = raw
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .filter(Value::is_object)
+        .ok_or_else(invalid)?;
+    if owner.get("locationIntents").is_none() {
+        owner["locationIntents"] = json!({});
+    }
+    let intents = owner["locationIntents"]
+        .as_object_mut()
+        .ok_or_else(invalid)?;
+    let signature =
+        crate::sha256_hex(studio_runtime_schema::json_compat::python_json_compact(args).as_bytes());
+    let token = admitted_owner_token(&row.id, &row.signature, cutover).derive_result(
+        "project-location",
+        &["location"],
+        &signature,
+    );
+    if let Some(saved) = intents.get(&id) {
+        let saved: crate::request_results::AdmittedRequest =
+            serde_json::from_value(saved["request"].clone()).map_err(|_| invalid())?;
+        if (saved.signature() != original_signature && saved.signature() != signature)
+            || (saved.id() != id && saved.id() != token.id())
+        {
+            return Err(unclassifiable(
+                "runtime_projects",
+                project,
+                saved.signature(),
+            ));
+        }
+    }
+    intents.insert(id, json!({"request":token}));
+    tx.execute(
+        "UPDATE runtime_projects SET record=?1 WHERE id=?2",
+        params![owner.to_string(), project],
+    )?;
     Ok(())
+}
+
+/// Include secondary source rows using lengths before materializing their payloads.
+fn location_input_metadata(
+    tx: &Transaction<'_>,
+    row: &SourceReceipt,
+    task: &Value,
+) -> Result<(usize, usize)> {
+    if task["tool"] != "orchestration_servers" {
+        return Ok((0, 0));
+    }
+    let actor = task["agent"]
+        .as_str()
+        .ok_or_else(|| unclassifiable("runtime_tool_requests", &row.id, &row.signature))?;
+    let id = uuid::Uuid::new_v5(
+        &uuid::Uuid::NAMESPACE_URL,
+        format!("studio-cross-server:project-location:{actor}:{}", row.id).as_bytes(),
+    )
+    .to_string();
+    let mut rows = 0;
+    let mut bytes = 0_usize;
+    for (table, expression) in [
+        (
+            "runtime_operation_receipts",
+            "length(CAST(id AS BLOB))+length(CAST(signature AS BLOB))+length(CAST(result AS BLOB))",
+        ),
+        (
+            "runtime_server_outbox",
+            "length(CAST(id AS BLOB))+length(CAST(body AS BLOB))",
+        ),
+    ] {
+        if crate::receipt_migration_contract::source_exists(tx, table)? {
+            let length: Option<i64> = tx
+                .query_row(
+                    &format!("SELECT {expression} FROM {table} WHERE id=?1"),
+                    [&id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(length) = length {
+                rows += 1;
+                bytes = bytes.saturating_add(usize::try_from(length).unwrap_or(usize::MAX));
+            }
+        }
+    }
+    Ok((rows, bytes))
+}
+
+/// Exact old task/actor UUIDv5 lineage proves the managed location family.
+/// It alone changed from spaced to compact JSON; UI and unidentified replies do not.
+fn migrate_location_c(
+    tx: &Transaction<'_>,
+    id: &str,
+    args: Option<&Value>,
+    pending: bool,
+    cutover: i64,
+) -> Result<()> {
+    const SOURCE: &str = "runtime_operation_receipts";
+    if !crate::receipt_migration_contract::source_exists(tx, SOURCE)? {
+        return Ok(());
+    }
+    let row: Option<SourceReceipt> = tx
+        .query_row(
+            "SELECT rowid,id,signature,result FROM runtime_operation_receipts WHERE id=?1",
+            [id],
+            |r| {
+                Ok(SourceReceipt {
+                    rowid: r.get(0)?,
+                    id: r.get(1)?,
+                    signature: r.get(2)?,
+                    result: r.get(3)?,
+                })
+            },
+        )
+        .optional()?;
+    let Some(row) = row else {
+        return Ok(());
+    };
+    let reply: Value = row.json(SOURCE)?;
+    if reply["requestId"] != id {
+        return Err(unclassifiable(SOURCE, id, &row.signature));
+    }
+    if let Some(args) = args {
+        let original =
+            crate::sha256_hex(studio_runtime_schema::json_compat::python_json(args).as_bytes());
+        if row.signature != original {
+            return Err(unclassifiable(SOURCE, id, &row.signature));
+        }
+    }
+    if reply["outcome"] == "unknown" {
+        // The same transaction persists its exact derived token on the pending
+        // project owner below. A bodyless unknown remains held with its old marker.
+        if args.is_some() && pending {
+            delete_source(tx, SOURCE, row.rowid)?;
+        }
+        return Ok(());
+    }
+    if !matches!(reply["outcome"].as_str(), Some("applied" | "not_applied")) {
+        return Err(unclassifiable(SOURCE, id, &row.signature));
+    }
+    let report = if let Some(args) = args {
+        if !args.is_object()
+            || !matches!(
+                args["action"].as_str(),
+                Some("add_location" | "remove_location")
+            )
+            || !args["project"].is_string()
+            || !args["server"].is_string()
+            || !args["path"].is_null() && !args["path"].is_string()
+        {
+            return Err(unclassifiable(SOURCE, id, &row.signature));
+        }
+        let signature = crate::sha256_hex(
+            studio_runtime_schema::json_compat::python_json_compact(args).as_bytes(),
+        );
+        import_result(
+            tx,
+            id,
+            &signature,
+            &ResultEnvelope {
+                actor: None,
+                reply,
+                references: vec![],
+            },
+            cutover,
+        )?;
+        LOCATION_REPORTS[1]
+    } else {
+        validate_completed_discard(SOURCE, id, cutover)?;
+        LOCATION_REPORTS[0]
+    };
+    let mut count = MigrationCheckpoint::begin(tx, ID, report, cutover)?;
+    count.cursor += 1;
+    count.status = MigrationStatus::Complete;
+    count.save(tx, ID, report, cutover)?;
+    delete_source(tx, SOURCE, row.rowid)
 }
 
 fn task(tx: &Transaction<'_>, source: &str, row: &SourceReceipt, id: &str) -> Result<Value> {
@@ -635,10 +867,171 @@ mod tests {
     }
 
     #[test]
+    fn receipts_tools_wrong_original_location_signature_aborts_without_new_authority() {
+        for outcome in ["applied", "unknown"] {
+            let mut db = Connection::open_in_memory().expect("database");
+            fixture(&mut db);
+            db.execute_batch("CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT,result TEXT);CREATE TABLE runtime_server_outbox(id TEXT PRIMARY KEY,body TEXT);CREATE TABLE runtime_projects(id TEXT PRIMARY KEY,record TEXT);INSERT INTO runtime_projects VALUES('project','{}')").expect("old owners");
+            let task = json!({"id":"task","agent":"agent","tool":"orchestration_servers","signature":"tool signature","stage":if outcome=="unknown"{"running"}else{"completed"},"outcome":outcome});
+            db.execute(
+                "INSERT INTO runtime_tool_requests VALUES('task',?1)",
+                [task.to_string()],
+            )
+            .expect("task");
+            let id = uuid::Uuid::new_v5(
+                &uuid::Uuid::NAMESPACE_URL,
+                b"studio-cross-server:project-location:agent:task",
+            )
+            .to_string();
+            let input = json!({"action":"add_location","project":"project","server":"peer","path":"/original"});
+            let signature = crate::sha256_hex(crate::python_json(&input).as_bytes());
+            db.execute("INSERT INTO runtime_server_outbox VALUES(?1,?2)",params![id,json!({"requestId":id,"action":"add_location","payload":{"project":"project","request":input,"signature":signature}}).to_string()]).expect("captured request");
+            db.execute(
+                "INSERT INTO runtime_operation_receipts VALUES(?1,'corrupt logical signature',?2)",
+                params![id, json!({"requestId":id,"outcome":outcome}).to_string()],
+            )
+            .expect("mismatched old C");
+            let tx = db.transaction().expect("transaction");
+            let checkpoint = MigrationCheckpoint::begin(&tx, ID, "runtime_tool_requests", CUTOVER)
+                .expect("checkpoint");
+            assert!(
+                matches!(Family.move_batch(&tx,"runtime_tool_requests",&checkpoint),Err(ReceiptMigrationError::Unclassifiable{table,key,signature})if table=="runtime_operation_receipts"&&key==id&&signature=="corrupt logical signature")
+            );
+            tx.rollback().expect("source preserved");
+            assert_eq!(
+                db.query_row("SELECT count(*) FROM runtime_operation_receipts", [], |r| r
+                    .get::<_, i64>(0))
+                    .expect("old C"),
+                1
+            );
+            assert_eq!(
+                db.query_row("SELECT count(*) FROM request_results", [], |r| r
+                    .get::<_, i64>(0))
+                    .expect("no new replay authority"),
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn receipts_tools_secondary_location_sources_share_row_and_byte_batch_limits() {
+        for (count, padding, first_batch) in [(167, 0, 166), (2, 9 * 1024 * 1024, 1)] {
+            let mut db = Connection::open_in_memory().expect("database");
+            fixture(&mut db);
+            db.execute_batch("CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT,result TEXT);CREATE TABLE runtime_server_outbox(id TEXT PRIMARY KEY,body TEXT)").expect("old secondary sources");
+            let input = json!({"action":"add_location","project":"project","server":"peer","path":"/original"});
+            for index in 0..count {
+                let task_id = format!("task-{index}");
+                let task = json!({"id":task_id,"agent":"agent","tool":"orchestration_servers","signature":"tool signature","stage":"completed","outcome":"applied"});
+                db.execute(
+                    "INSERT INTO runtime_tool_requests VALUES(?1,?2)",
+                    params![task_id, task.to_string()],
+                )
+                .expect("task");
+                let id = uuid::Uuid::new_v5(
+                    &uuid::Uuid::NAMESPACE_URL,
+                    format!("studio-cross-server:project-location:agent:{task_id}").as_bytes(),
+                )
+                .to_string();
+                db.execute("INSERT INTO runtime_server_outbox VALUES(?1,?2)",params![id,json!({"requestId":id,"action":"add_location","payload":{"project":"project","request":input,"signature":crate::sha256_hex(crate::python_json(&input).as_bytes())}}).to_string()]).expect("captured request");
+                db.execute("INSERT INTO runtime_operation_receipts VALUES(?1,?2,?3)",params![id,crate::sha256_hex(crate::python_json(&input).as_bytes()),json!({"requestId":id,"outcome":"applied","value":{"original":"x".repeat(padding)}}).to_string()]).expect("old C reply");
+            }
+            let next = batch(&mut db, "runtime_tool_requests", true);
+            assert_eq!(
+                next.cursor, first_batch,
+                "task plus secondary rows form one bounded batch"
+            );
+            assert_eq!(
+                db.query_row("SELECT count(*) FROM runtime_operation_receipts", [], |r| r
+                    .get::<_, i64>(0))
+                    .expect("remaining exact C rows"),
+                count - first_batch
+            );
+            migrate(&mut db);
+            assert_eq!(
+                db.query_row("SELECT count(*) FROM runtime_operation_receipts", [], |r| r
+                    .get::<_, i64>(0))
+                    .expect("all classified"),
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn receipts_tools_managed_location_c_uses_exact_task_lineage_and_counts_lossy_rows() {
+        for captured in [true, false] {
+            let mut db = Connection::open_in_memory().expect("database");
+            fixture(&mut db);
+            db.execute_batch("CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT,result TEXT);CREATE TABLE runtime_server_outbox(id TEXT PRIMARY KEY,body TEXT);CREATE TABLE runtime_projects(id TEXT PRIMARY KEY,record TEXT);INSERT INTO runtime_projects VALUES('project','{}')").expect("old owners");
+            let task = json!({"id":"task","agent":"agent","tool":"orchestration_servers","signature":"tool signature","stage":"completed","outcome":"applied"});
+            db.execute(
+                "INSERT INTO runtime_tool_requests VALUES('task',?1)",
+                [task.to_string()],
+            )
+            .expect("task");
+            let id = uuid::Uuid::new_v5(
+                &uuid::Uuid::NAMESPACE_URL,
+                b"studio-cross-server:project-location:agent:task",
+            )
+            .to_string();
+            let input = json!({"action":"add_location","project":"project","server":"peer","path":"/original"});
+            let old = crate::sha256_hex(crate::python_json(&input).as_bytes());
+            let canonical = crate::sha256_hex(crate::python_json_compact(&input).as_bytes());
+            let reply = json!({"requestId":id,"outcome":"applied","projectId":"project","value":{"serverId":"peer","gitOrigin":null}});
+            db.execute(
+                "INSERT INTO runtime_operation_receipts VALUES(?1,?2,?3)",
+                params![id, old, reply.to_string()],
+            )
+            .expect("old logical result");
+            if captured {
+                db.execute("INSERT INTO runtime_server_outbox VALUES(?1,?2)",params![id,json!({"requestId":id,"action":"add_location","payload":{"project":"project","request":input,"signature":old}}).to_string()]).expect("immutable request");
+            }
+            migrate(&mut db);
+            let saved =
+                crate::request_results::RequestResults::replay(&db, &id, &canonical, CUTOVER + 1)
+                    .expect("never conflicting marker");
+            assert_eq!(saved.is_some(), captured);
+            if let Some(saved) = saved {
+                assert_eq!(
+                    serde_json::from_str::<Value>(&saved.result).expect("envelope")["reply"],
+                    reply
+                );
+            }
+            assert_eq!(
+                db.query_row("SELECT count(*) FROM runtime_operation_receipts", [], |r| r
+                    .get::<_, i64>(0))
+                    .expect("classified old C"),
+                0
+            );
+            let tx = db.transaction().expect("transaction");
+            for (report, expected) in [
+                (
+                    "normalized-signature:managed-project-location",
+                    i64::from(captured),
+                ),
+                (
+                    "deleted-completed-c:managed-project-location",
+                    i64::from(!captured),
+                ),
+            ] {
+                assert_eq!(
+                    MigrationCheckpoint::load(&tx, ID, report)
+                        .expect("report")
+                        .expect("closed family count")
+                        .cursor,
+                    expected
+                );
+            }
+            tx.rollback().expect("no effects");
+            migrate(&mut db);
+        }
+    }
+
+    #[test]
     fn receipts_tools_pending_location_arguments_come_from_exact_outbox_identity() {
         let mut db = Connection::open_in_memory().expect("database");
         fixture(&mut db);
-        db.execute_batch("CREATE TABLE runtime_server_outbox(id TEXT PRIMARY KEY,body TEXT)")
+        db.execute_batch("CREATE TABLE runtime_server_outbox(id TEXT PRIMARY KEY,body TEXT);CREATE TABLE runtime_projects(id TEXT PRIMARY KEY,record TEXT);CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT,result TEXT);INSERT INTO runtime_projects VALUES('project','{}')")
             .expect("outboxes");
         let task = json!({"id":"old-task","agent":"agent","tool":"orchestration_servers","signature":"signature","stage":"running","outcome":"unknown"});
         db.execute(
@@ -652,12 +1045,21 @@ mod tests {
         )
         .to_string();
         let args = json!({"action":"add_location","project":"project","server":"server","path":"/project"});
-        let body = json!({"action":"add_location","payload":{"project":"project","request":args}});
+        let body = json!({"requestId":id,"action":"add_location","payload":{"project":"project","request":args,"signature":crate::sha256_hex(crate::python_json(&args).as_bytes())}});
         db.execute(
             "INSERT INTO runtime_server_outbox VALUES(?1,?2)",
             params![id, body.to_string()],
         )
         .expect("exact immutable outbox");
+        db.execute(
+            "INSERT INTO runtime_operation_receipts VALUES(?1,?2,?3)",
+            params![
+                id,
+                crate::sha256_hex(crate::python_json(&args).as_bytes()),
+                json!({"requestId":id,"projectId":"project","outcome":"unknown"}).to_string()
+            ],
+        )
+        .expect("old unknown marker");
         migrate(&mut db);
         let raw: String = db
             .query_row("SELECT record FROM runtime_tool_requests", [], |r| r.get(0))
@@ -666,5 +1068,36 @@ mod tests {
         assert_eq!(task["arguments"], args);
         assert_eq!(task["outcome"], "unknown");
         assert_eq!(task["admitted"]["id"], "old-task");
+        let raw: String = db
+            .query_row(
+                "SELECT record FROM runtime_projects WHERE id='project'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("project");
+        let project: Value = serde_json::from_str(&raw).expect("project JSON");
+        let parent: crate::request_results::AdmittedRequest =
+            serde_json::from_value(task["admitted"].clone()).expect("parent admission");
+        let signature = crate::sha256_hex(
+            studio_runtime_schema::json_compat::python_json_compact(&args).as_bytes(),
+        );
+        assert_eq!(
+            project["locationIntents"][&id]["request"],
+            json!(parent.derive_result("project-location", &["location"], &signature))
+        );
+        let preserved: String = db
+            .query_row(
+                "SELECT body FROM runtime_server_outbox WHERE id=?1",
+                [&id],
+                |r| r.get(0),
+            )
+            .expect("wire");
+        assert_eq!(preserved, body.to_string());
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM runtime_operation_receipts", [], |r| r
+                .get::<_, i64>(0))
+                .expect("pending authority moved atomically to project token"),
+            0
+        );
     }
 }
