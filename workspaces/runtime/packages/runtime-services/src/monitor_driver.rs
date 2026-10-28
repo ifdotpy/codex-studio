@@ -320,6 +320,7 @@ pub async fn cancel_checked(
                     source.as_ref(),
                 )
                 .map_err(|error| match error {
+                    crate::process_controls::Error::Expired => MonitorError::Expired,
                     crate::process_controls::Error::Store(error) => MonitorError::Store(error),
                     crate::process_controls::Error::Invalid(message) => {
                         MonitorError::Refused(message)

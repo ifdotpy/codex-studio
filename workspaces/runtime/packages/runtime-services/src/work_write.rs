@@ -1915,6 +1915,9 @@ pub fn write_as_agent(
     };
     let result = write_internal(tx, agent_id, Some(actor_id), request_id, signature, command)
         .map_err(|error| match error {
+            WorkWriteError::Expired => Error::RequestResult(
+                studio_runtime_store::request_results::RequestResultError::Expired,
+            ),
             WorkWriteError::Event(error) => error,
             WorkWriteError::Store(error) => Error::Store(error),
             WorkWriteError::NotImplemented(_) => Error::InvalidRequest("Invalid request"),

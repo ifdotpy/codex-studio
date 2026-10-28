@@ -15,7 +15,7 @@
 //! - The thread start is saved as `submitted` before the provider write. A
 //!   saved `submitted` or `unknown` start is never sent again.
 
-use crate::account_session_runtime::SessionOutcome as ReceiptOutcome;
+use crate::account_session_runtime::{AccountSessionError, SessionOutcome as ReceiptOutcome};
 use crate::{
     account_session_runtime::{
         AccountSessionPort, ConnectionScope, ProviderRequest, ProviderResponse,
