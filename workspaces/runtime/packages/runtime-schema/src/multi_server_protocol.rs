@@ -12,6 +12,15 @@ pub const PUBLIC_ORIGIN_ENVIRONMENT: &str = "CODEX_CANVAS_PUBLIC_ORIGIN";
 
 /// The signed transport mutation root is distinct from the deterministic message ID.
 pub(crate) fn refresh_openapi(openapi: &mut serde_json::Value) {
+    for name in ["FederationAck", "FederationAckResult"] {
+        let ack = &mut openapi["components"]["schemas"][name];
+        ack["properties"]["requestId"] = serde_json::json!({"type":"string","format":"uuid"});
+        if let Some(required) = ack["required"].as_array_mut()
+            && !required.iter().any(|field| field == "requestId")
+        {
+            required.push(serde_json::json!("requestId"));
+        }
+    }
     let schema = &mut openapi["components"]["schemas"]["SignedEnvelope"];
     schema["properties"]["requestId"] = serde_json::json!({"type":"string","format":"uuid","description":"UUIDv7 mutation root, issued once and retained across delivery retries."});
     if let Some(required) = schema["required"].as_array_mut()
