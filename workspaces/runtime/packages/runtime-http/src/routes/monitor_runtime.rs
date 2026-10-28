@@ -162,6 +162,7 @@ async fn input(
 
 fn error(error: MonitorError) -> ApiError {
     match error {
+        MonitorError::Store(error) => ApiError::stored(error),
         MonitorError::InputOutcomeUnknown => ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
             "Monitor input outcome unknown; do not repeat it",
@@ -185,7 +186,6 @@ fn error(error: MonitorError) -> ApiError {
         | MonitorError::ProviderRequest { .. }
         | MonitorError::ConfigurationRejected { .. }
         | MonitorError::ConfigurationReceipt { .. }
-        | MonitorError::Store(_)
         | MonitorError::Event(_)
         | MonitorError::Rules(_)
         | MonitorError::Io(_) => ApiError::internal(),

@@ -224,6 +224,9 @@ fn async_question_error(error: QuestionsWriteError) -> ApiError {
         E::Store(error) => ApiError::stored(error),
         E::Json(_) | E::Clock => ApiError::internal(),
         E::Coordination(error) => match error {
+            studio_runtime_services::coordination::CoordinationError::RequestResult(error) => {
+                error.into()
+            }
             studio_runtime_services::coordination::CoordinationError::RequiresDependency(name) => {
                 ApiError::dependency(name)
             }
@@ -292,6 +295,7 @@ fn monitor_approval_error(
 ) -> ApiError {
     use studio_runtime_services::monitor_policy::MonitorError as E;
     match error {
+        E::Store(error) => ApiError::stored(error),
         E::Unavailable(name) => ApiError::dependency(name),
         E::Event(
             studio_runtime_services::event_write::EventWriteError::RemoteEventsUnavailable,
@@ -306,7 +310,6 @@ fn monitor_approval_error(
         | E::ProviderRequest { .. }
         | E::ConfigurationRejected { .. }
         | E::ConfigurationReceipt { .. }
-        | E::Store(_)
         | E::Event(_)
         | E::Rules(_)
         | E::Io(_) => ApiError::internal(),
