@@ -196,6 +196,9 @@ test-guest-runner-processes:
     @node --test workspaces/runtime/apps/vm-guest/run-guest-suite-processes.test.mts
 
 [doc("Manual process check: run detached host_exec startup, replacement and guest broker scenarios.")]
+test-real-process-probe:
+    @STUDIO_REAL_PROCESS_TESTS=1 python3 -I -B workspaces/client/apps/desktop/startup-delivery-test.py StartupDeliveryTests.test_owned_launcher_probe_observes_its_real_kernel_companion_without_runtime_state
+
 test-live-handover:
     @cargo nextest run -j 4 -p studio-runtime-server --test integration --run-ignored only --test-threads 1 -E 'test(/^live_handover::/)'
 
