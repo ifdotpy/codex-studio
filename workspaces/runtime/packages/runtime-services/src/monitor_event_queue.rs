@@ -401,7 +401,7 @@ pub fn enqueue_exit_in_transaction(
         return Err(MonitorError::Refused("Unknown command watch"));
     };
     let mut value = record.value().clone();
-    if value.get("operation") != Some(&serde_json::to_value(&operation).unwrap_or(Value::Null)) {
+    if value.get("operation") != Some(&serde_json::to_value(operation).unwrap_or(Value::Null)) {
         return Err(MonitorError::InvalidDeliveryIdentity(
             "monitor operation changed",
         ));

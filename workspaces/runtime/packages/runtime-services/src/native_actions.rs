@@ -1501,7 +1501,9 @@ fn write_outcome(tx: &Transaction<'_>, id: &str, outcome: &Outcome) -> Result<()
                 replayed: false,
                 result: match outcome {
                     Outcome::Acknowledged { result } => result.clone(),
-                    _ => None,
+                    Outcome::Pending { .. } | Outcome::Unknown { .. } | Outcome::Failed { .. } => {
+                        None
+                    }
                 },
             };
             settle_request(tx, &row.payload.admitted, Some(&row.owner_id), &reply)?;
@@ -1753,7 +1755,7 @@ pub fn command_input(
 /// Only the retained owner may supply a matching list response. Persist its
 /// exact scope before terminate; the operation receipt never authorizes resend.
 pub enum CommandCancelClaim {
-    Send(NativeRequest),
+    Send(Box<NativeRequest>),
     Replay(Value),
 }
 
@@ -1849,7 +1851,7 @@ pub fn command_cancel_claim(
             },
         },
     )?;
-    Ok(CommandCancelClaim::Send(request))
+    Ok(CommandCancelClaim::Send(Box::new(request)))
 }
 pub fn command_cancel_settle(tx: &Transaction<'_>, receipt: &TransportReceipt) -> Result<Value> {
     let id = command_outbox_id(&receipt.ticket.request);

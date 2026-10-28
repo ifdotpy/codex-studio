@@ -845,7 +845,7 @@ impl<S: TerminalSession> TerminalDriver<S> {
             InputReservation::NotRunning => return Err(TerminalError::NotRunning),
             InputReservation::Conflict => return Err(TerminalError::ReceiptConflict),
             InputReservation::Replay(result) => {
-                return replay_action(&result.response, result.failure, &id);
+                return replay_action(&result.response, result.failure, id);
             }
             InputReservation::Reserved => {}
         }
@@ -2959,7 +2959,7 @@ mod tests {
         assert_eq!(
             requests[1],
             (
-                format!("terminal-input:{}", request_id("actions-input")).into(),
+                format!("terminal-input:{}", request_id("actions-input")),
                 "process/writeStdin".into(),
                 serde_json::json!({"processHandle":rust_id,"deltaBase64":"aGnwn5mC"}),
             )
@@ -3146,7 +3146,7 @@ mod tests {
             .lock()
             .expect("fake outcome lock")
             .push_back(TerminalOutcome {
-                operation_id: format!("terminal-input:{}", request_id("input-request")).into(),
+                operation_id: format!("terminal-input:{}", request_id("input-request")),
                 result: Ok(Value::Null),
             });
         driver.drain_notifications().await.expect("settle outcome");

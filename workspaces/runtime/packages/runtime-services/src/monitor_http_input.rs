@@ -45,7 +45,7 @@ impl From<studio_runtime_store::outbox::OutboxError> for MonitorError {
         use studio_runtime_store::outbox::OutboxError;
         match error {
             OutboxError::Conflict(_) => Self::Refused("Monitor input request content changed"),
-            error => Self::Store(error.into()),
+            error @ (OutboxError::Sql(_) | OutboxError::Json(_)) => Self::Store(error.into()),
         }
     }
 }
@@ -56,7 +56,10 @@ impl From<studio_runtime_store::request_results::RequestResultError> for Monitor
             RequestResultError::Conflict { .. } => {
                 Self::Refused("Monitor input request content changed")
             }
-            error => Self::Store(error.into()),
+            error @ (RequestResultError::Expired
+            | RequestResultError::Sql(_)
+            | RequestResultError::Json(_)
+            | RequestResultError::Identity(_)) => Self::Store(error.into()),
         }
     }
 }

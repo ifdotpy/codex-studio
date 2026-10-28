@@ -60,17 +60,12 @@ pub async fn recover_on_startup(
             // Use the scheduler's canonical exact-batch validator. The general
             // event pass below owns only the claims left after that operation.
             if let Err(error) = SchedulerRepository::recover_unsubmitted(tx) {
-                match error {
-                    studio_runtime_store::StoreError::InvalidSyncObject { scope, id }
-                        if scope == "runtime_agents" =>
-                    {
-                        eprintln!(
-                            "startup scheduler reservation skipped row id={id}: invalid batch"
-                        );
-                    }
-                    error => {
-                        return Err(MonitorError::Store(error));
-                    }
+                if let studio_runtime_store::StoreError::InvalidSyncObject { scope, id } = &error
+                    && scope == "runtime_agents"
+                {
+                    eprintln!("startup scheduler reservation skipped row id={id}: invalid batch");
+                } else {
+                    return Err(MonitorError::Store(error));
                 }
             }
             let requests = recover_requests(tx)?;
