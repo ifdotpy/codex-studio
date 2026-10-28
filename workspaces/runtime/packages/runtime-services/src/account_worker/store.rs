@@ -3339,10 +3339,6 @@ fn persist_publication_batch_in(
                 )?;
             }
             outbox.invalidation = Some(pending_invalidation.or(Some(id)));
-        } else {
-            // The only reachable case is a legacy database already beyond the
-            // named cap with no publication rows to annotate. Preserve the
-            // provider commit; the cap remains in force for all new receipts.
         }
     }
     outbox.pending = Some(pending + retained);
