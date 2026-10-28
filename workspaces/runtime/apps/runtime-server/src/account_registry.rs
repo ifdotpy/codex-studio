@@ -2238,20 +2238,17 @@ mod bounded_reconcile_tests {
                 .expect("retained row"),
             raw
         );
-        let held: i64 = connection
+        let held: studio_runtime_schema::persistence::HoldStatus = connection
             .query_row(
-                "SELECT count(*) FROM runtime_operation_receipts WHERE id=?1 AND signature=?2",
-                rusqlite::params![
-                    format!(
-                        "{}bad-mode",
-                        studio_runtime_store::INVALID_AGENT_HOLD_RECEIPT_PREFIX
-                    ),
-                    studio_runtime_store::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE
-                ],
+                "SELECT hold_status FROM runtime_agents WHERE id='bad-mode'",
+                [],
                 |row| row.get(0),
             )
             .expect("invalid-agent hold");
-        assert_eq!(held, 1);
+        assert_eq!(
+            held,
+            studio_runtime_schema::persistence::HoldStatus::Invalid
+        );
         assert_eq!(
             connection
                 .query_row(
