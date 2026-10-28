@@ -502,7 +502,7 @@ fn calls(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()> 
     )
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 struct StreamKey {
     #[serde(default)]
     agent_id: String,
@@ -513,29 +513,81 @@ struct StreamKey {
     item: String,
     method: String,
 }
-fn key_lane(tx: &Transaction<'_>, row: &SourceReceipt, key: &mut Value) -> Result<Option<String>> {
-    let mut typed: StreamKey = serde_json::from_value(key.clone()).map_err(|_| fail(row))?;
+fn key_lane(
+    tx: &Transaction<'_>,
+    row: &SourceReceipt,
+    key: &mut StreamKey,
+) -> Result<Option<String>> {
     let mut statement=tx.prepare("SELECT id,record FROM runtime_agents WHERE json_extract(record,'$.threadId')=?1 AND coalesce(json_extract(record,'$.accountKey'),'default')=?2")?;
     let candidates = statement
-        .query_map(params![typed.thread, typed.account], |r| {
+        .query_map(params![key.thread, key.account], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     let candidates = candidates
         .into_iter()
-        .filter(|(id, _)| typed.agent_id.is_empty() || *id == typed.agent_id)
+        .filter(|(id, _)| key.agent_id.is_empty() || *id == key.agent_id)
         .collect::<Vec<_>>();
     if candidates.len() != 1 {
         return Err(fail(row));
     }
     let (agent, raw) = candidates.into_iter().next().ok_or_else(|| fail(row))?;
-    let record: Value = serde_json::from_str(&raw).map_err(|_| fail(row))?;
-    typed.agent_id = agent.clone();
-    *key = serde_json::to_value(&typed).map_err(|_| fail(row))?;
-    Ok((record["executionMode"] == "vm").then_some(agent))
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct AgentMode {
+        execution_mode: Option<String>,
+    }
+    let record: AgentMode = serde_json::from_str(&raw).map_err(|_| fail(row))?;
+    key.agent_id.clone_from(&agent);
+    Ok((record.execution_mode.as_deref() == Some("vm")).then_some(agent))
 }
-fn blank_streams() -> Value {
-    json!({"entries":[],"closed":[],"analytics":[],"analytics_skipped":[],"post_commit":[],"publication_sequence":0,"analytics_overflow":0})
+#[derive(Serialize, Deserialize, PartialEq)]
+struct StreamEntry {
+    key: StreamKey,
+    // Other entry data is opaque and copied verbatim.
+    #[serde(flatten)]
+    rest: serde_json::Map<String, Value>,
+}
+#[derive(Serialize, Deserialize)]
+struct StreamMetadata {
+    #[serde(default)]
+    entries: Vec<StreamEntry>,
+    #[serde(default)]
+    closed: Vec<StreamKey>,
+    #[serde(default)]
+    analytics: Vec<StreamEntry>,
+    #[serde(default)]
+    analytics_skipped: Vec<StreamKey>,
+    #[serde(default = "empty_array")]
+    post_commit: Value,
+    #[serde(default = "zero")]
+    publication_sequence: Value,
+    #[serde(default = "zero")]
+    analytics_overflow: Value,
+}
+fn empty_array() -> Value {
+    Value::Array(Vec::new())
+}
+fn zero() -> Value {
+    Value::from(0)
+}
+impl Default for StreamMetadata {
+    fn default() -> Self {
+        Self {
+            entries: vec![],
+            closed: vec![],
+            analytics: vec![],
+            analytics_skipped: vec![],
+            post_commit: empty_array(),
+            publication_sequence: zero(),
+            analytics_overflow: zero(),
+        }
+    }
+}
+#[derive(Serialize, Deserialize)]
+struct StreamWrapper {
+    revision: String,
+    metadata: StreamMetadata,
 }
 fn streams(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()> {
     let (base, phase) = row.id.rsplit_once(':').ok_or_else(|| fail(row))?;
@@ -547,54 +599,56 @@ fn streams(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()
         return Err(fail(row));
     }
     let metadata = load(tx, &format!("{base}:metadata"))?;
-    let mut lanes = std::collections::BTreeMap::<Option<String>, Value>::new();
+    let mut lanes = std::collections::BTreeMap::<Option<String>, StreamMetadata>::new();
     if let Some(metadata) = &metadata {
-        let source: Value = metadata.json(TABLE)?;
-        let mut host = blank_streams();
-        for field in ["post_commit", "publication_sequence", "analytics_overflow"] {
-            if let Some(value) = source.get(field) {
-                host[field] = value.clone();
-            }
-        }
+        let source: StreamMetadata = metadata.json(TABLE)?;
+        let host = StreamMetadata {
+            post_commit: source.post_commit,
+            publication_sequence: source.publication_sequence,
+            analytics_overflow: source.analytics_overflow,
+            ..Default::default()
+        };
         lanes.insert(None, host);
-        for field in ["entries", "closed", "analytics", "analytics_skipped"] {
-            let values = source
-                .get(field)
-                .map(|v| v.as_array().ok_or_else(|| fail(row)))
-                .transpose()?;
-            for mut value in values.cloned().unwrap_or_default() {
-                let key = if matches!(field, "entries" | "analytics") {
-                    &mut value["key"]
-                } else {
-                    &mut value
-                };
-                if key["account"] != account {
-                    return Err(fail(row));
-                }
-                let lane = key_lane(tx, row, key)?;
-                let target = lanes.entry(lane).or_insert_with(blank_streams);
-                target[field]
-                    .as_array_mut()
-                    .ok_or_else(|| fail(row))?
-                    .push(value);
+        for mut entry in source.entries {
+            if entry.key.account != account {
+                return Err(fail(row));
             }
+            let lane = key_lane(tx, row, &mut entry.key)?;
+            lanes.entry(lane).or_default().entries.push(entry);
+        }
+        for mut entry in source.analytics {
+            if entry.key.account != account {
+                return Err(fail(row));
+            }
+            let lane = key_lane(tx, row, &mut entry.key)?;
+            lanes.entry(lane).or_default().analytics.push(entry);
+        }
+        for mut key in source.closed {
+            if key.account != account {
+                return Err(fail(row));
+            }
+            let lane = key_lane(tx, row, &mut key)?;
+            lanes.entry(lane).or_default().closed.push(key);
+        }
+        for mut key in source.analytics_skipped {
+            if key.account != account {
+                return Err(fail(row));
+            }
+            let lane = key_lane(tx, row, &mut key)?;
+            lanes.entry(lane).or_default().analytics_skipped.push(key);
         }
     } else if phase != "pending" {
         return Err(fail(row));
     }
     let pending = load(tx, &format!("{base}:pending"))?
-        .map(|r| r.json::<Vec<Value>>(TABLE))
+        .map(|r| r.json::<Vec<StreamEntry>>(TABLE))
         .transpose()?
         .unwrap_or_default();
-    let mut pending_lanes = std::collections::BTreeMap::<Option<String>, Vec<Value>>::new();
+    let mut pending_lanes = std::collections::BTreeMap::<Option<String>, Vec<StreamEntry>>::new();
     for mut value in pending {
-        let lane = key_lane(tx, row, &mut value["key"])?;
+        let lane = key_lane(tx, row, &mut value.key)?;
         if let Some(metadata) = lanes.get(&lane)
-            && !metadata["entries"]
-                .as_array()
-                .ok_or_else(|| fail(row))?
-                .iter()
-                .any(|entry| entry["key"] == value["key"])
+            && !metadata.entries.iter().any(|entry| entry.key == value.key)
         {
             return Err(fail(row));
         }
@@ -603,7 +657,11 @@ fn streams(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()
     if let Some(metadata) = metadata {
         ensure_account(tx, account, 0)?;
         for (lane, value) in lanes {
-            let wrapper = json!({"revision":metadata.signature,"metadata":value}).to_string();
+            let wrapper = serde_json::to_string(&StreamWrapper {
+                revision: metadata.signature.clone(),
+                metadata: value,
+            })
+            .map_err(|_| fail(row))?;
             if let Some(agent) = lane {
                 tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.providerStream.streams',json(?2)) WHERE id=?1",params![agent,wrapper])?;
             } else {
@@ -649,7 +707,7 @@ fn streams(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()
                 || account.to_owned(),
                 |agent| format!("{account}:vm:{agent}"),
             );
-            let target = Outbox::get::<Vec<Value>>(tx, &format!("streams:{stream}"))
+            let target = Outbox::get::<Vec<StreamEntry>>(tx, &format!("streams:{stream}"))
                 .map_err(|_| fail(row))?
                 .ok_or_else(|| fail(row))?;
             if target.payload != payload {
@@ -679,13 +737,9 @@ fn stream_base(tx: &Transaction<'_>, row: &SourceReceipt) -> Result<()> {
         let account: String = owner.get(0)?;
         let raw: String = owner.get(1)?;
         let agent: Option<String> = owner.get(2)?;
-        let mut streams: Value = serde_json::from_str(&raw).map_err(|_| fail(row))?;
-        let entries = streams["metadata"]["entries"]
-            .as_array_mut()
-            .ok_or_else(|| fail(row))?;
-        for entry in entries {
-            let mut key: StreamKey =
-                serde_json::from_value(entry["key"].clone()).map_err(|_| fail(row))?;
+        let streams: StreamWrapper = serde_json::from_str(&raw).map_err(|_| fail(row))?;
+        for (index, entry) in streams.metadata.entries.iter().enumerate() {
+            let mut key = entry.key.clone();
             let hash = crate::sha256_hex(
                 serde_json::to_string(&key)
                     .map_err(|_| fail(row))?
@@ -725,11 +779,17 @@ fn stream_base(tx: &Transaction<'_>, row: &SourceReceipt) -> Result<()> {
                 .iter()
                 .any(|hash| hash == source_hash)
             {
-                if destination.is_some() || entry["base"] != text_hash {
+                if destination.is_some()
+                    || entry.rest.get("base").and_then(Value::as_str) != Some(&text_hash)
+                {
                     return Err(fail(row));
                 }
-                entry["base"] = json!(text);
-                destination = Some((account.clone(), agent.clone(), streams.to_string()));
+                let updated: String = tx.query_row(
+                    "SELECT json_set(?1,?2,?3)",
+                    params![raw, format!("$.metadata.entries[{index}].base"), text],
+                    |result| result.get(0),
+                )?;
+                destination = Some((account.clone(), agent.clone(), updated));
                 break;
             }
         }
@@ -1165,8 +1225,11 @@ mod tests {
                 params![id, json!(text).to_string()],
             )
             .expect("base");
-            entries.push(json!({"key":key,"flushed":true,"base":crate::sha256_hex(text.as_bytes()),"pending":"","count":0,"characters":0,"params":null}));
-            pending.push(json!({"key":key,"pending":" tail","count":1,"params":{"delta":" tail"}}));
+            let key_value = json!({"agent_id":"","account":"default","generation":7,"thread":thread,"turn":"turn","item":"item","method":"item/agentMessage/delta"});
+            entries.push(json!({"key":key_value,"flushed":true,"base":crate::sha256_hex(text.as_bytes()),"pending":"","count":0,"characters":0,"params":null}));
+            pending.push(
+                json!({"key":key_value,"pending":" tail","count":1,"params":{"delta":" tail"}}),
+            );
         }
         let metadata = json!({"entries":entries,"closed":[],"analytics":[],"analytics_skipped":[],"post_commit":[],"publication_sequence":5,"analytics_overflow":2});
         tx.execute("INSERT INTO runtime_operation_receipts VALUES('account-worker:streams:default:metadata','revision',?1)",[metadata.to_string()]).expect("metadata");
