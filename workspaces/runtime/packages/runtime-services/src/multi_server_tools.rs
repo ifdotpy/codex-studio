@@ -237,6 +237,7 @@ struct OutputProbe {
     #[serde(default, deserialize_with = "present")]
     output_ref: bool,
     value: Option<Box<serde_json::value::RawValue>>,
+    result: Option<Box<serde_json::value::RawValue>>,
 }
 
 fn present<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
@@ -255,9 +256,14 @@ fn output_metadata(raw: &str) -> Option<OutputProbe> {
     if probe.output_expires_at.is_some() && (probe.handle || probe.output_ref) {
         return Some(probe);
     }
-    let nested = probe.value.as_ref()?;
-    let inner: OutputProbe = serde_json::from_str(nested.get()).ok()?;
-    (inner.output_expires_at.is_some() && (inner.handle || inner.output_ref)).then_some(inner)
+    [probe.value.as_ref(), probe.result.as_ref()]
+        .into_iter()
+        .flatten()
+        .find_map(|nested| {
+            let inner: OutputProbe = serde_json::from_str(nested.get()).ok()?;
+            (inner.output_expires_at.is_some() && (inner.handle || inner.output_ref))
+                .then_some(inner)
+        })
 }
 
 #[cfg(test)]
@@ -273,6 +279,12 @@ mod output_metadata_tests {
         .unwrap();
         assert_eq!(nested.output_expires_at, Some(34.0));
         assert!(nested.handle);
+        let result = super::output_metadata(
+            r#"{"value":{},"result":{"outputExpiresAt":56,"outputRef":"page"}}"#,
+        )
+        .unwrap();
+        assert_eq!(result.output_expires_at, Some(56.0));
+        assert!(result.output_ref);
         assert!(super::output_metadata(r#"{"outputExpiresAt":"bad","handle":"h"}"#).is_none());
         assert!(super::output_metadata(r#"{"outputExpiresAt":34}"#).is_none());
     }
