@@ -442,8 +442,10 @@ fn move_workspace_operations(
     let mut budget = BatchBudget::default();
     for row in rows {
         let invalid = || unclassifiable(TABLE, &row.id, &row.signature);
-        let mut view: WorkspaceKindView =
-            serde_json::from_str(&row.result).map_err(|_| invalid())?;
+        let Ok(mut view) = serde_json::from_str::<WorkspaceKindView>(&row.result) else {
+            next.cursor = row.rowid;
+            continue;
+        };
         let mut owner = serde_json::to_value(&view).map_err(|_| invalid())?;
         if !schema("PersistedWorkspaceOperationRecord", &owner) || owner["id"] != row.id {
             return Err(invalid());
@@ -1104,6 +1106,57 @@ mod tests {
     use rusqlite::Connection;
     const CUTOVER: i64 = 1_000_000;
     const SIGNATURE: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    #[test]
+    fn duplicate_workspace_kind_is_preserved_and_does_not_abort_migration() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&mut db);
+        db.execute_batch(
+            "CREATE TABLE runtime_workspace_operations(id TEXT PRIMARY KEY,record TEXT)",
+        )
+        .expect("source");
+        let raw = r#"{ "id":"duplicate", "kind":"claude_settings", "kind":"claude_rollback", "agent":"agent", "phase":"recovery_required", "requestId":"original", "controlAttempt":2 }"#;
+        db.execute(
+            "INSERT INTO runtime_workspace_operations VALUES('duplicate',?1)",
+            [raw],
+        )
+        .expect("owner");
+        let valid = json!({"id":"valid","kind":"claude_settings","agent":"agent","phase":"recovery_required","requestId":"original","controlAttempt":2});
+        db.execute(
+            "INSERT INTO runtime_workspace_operations VALUES('valid',?1)",
+            [valid.to_string()],
+        )
+        .expect("valid owner");
+        let tx = db.transaction().expect("transaction");
+        let checkpoint =
+            MigrationCheckpoint::begin(&tx, ID, "runtime_workspace_operations", CUTOVER)
+                .expect("checkpoint");
+        let next = Family
+            .move_batch(&tx, "runtime_workspace_operations", &checkpoint)
+            .expect("unrecognized row does not abort");
+        let saved: String = tx
+            .query_row(
+                "SELECT record FROM runtime_workspace_operations WHERE id='duplicate'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(saved, raw);
+        let saved: String = tx
+            .query_row(
+                "SELECT record FROM runtime_workspace_operations WHERE id='valid'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            serde_json::from_str::<Value>(&saved)
+                .unwrap()
+                .get("controlAttempt")
+                .is_none()
+        );
+        assert_eq!(next.cursor, 2);
+    }
 
     #[test]
     fn receipts_requests_claude_control_attempt_is_removed_without_changing_identity() {
