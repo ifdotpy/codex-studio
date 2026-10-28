@@ -631,9 +631,12 @@ impl RetainedMonitorPort {
                         &params,
                     )
                     .await
-                    .map_err(|error| match error {
-                        MonitorError::Expired => AccountSessionError::Expired,
-                        _ => AccountSessionError::Persistence,
+                    .map_err(|error| {
+                        if matches!(error, MonitorError::Expired) {
+                            AccountSessionError::Expired
+                        } else {
+                            AccountSessionError::Persistence
+                        }
                     })?
                 };
             self.session
