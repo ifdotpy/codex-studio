@@ -1542,6 +1542,7 @@ impl<'a> ProjectSync<'a> {
                 })
         };
         let mut lists: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+        let mut write_bytes = 0_u64;
         let paths = manifest
             .keys()
             .chain(current.keys())
@@ -1573,6 +1574,9 @@ impl<'a> ProjectSync<'a> {
                 if vm.is_none() {
                     "macDeletions"
                 } else {
+                    write_bytes += main
+                        .get(&rel)
+                        .map_or(0, |item| item["size"].as_u64().unwrap_or(0));
                     "macWrites"
                 }
             } else {
@@ -1610,6 +1614,7 @@ impl<'a> ProjectSync<'a> {
                 "paths": items.iter().take(PLAN_SAMPLE).collect::<Vec<_>>(),
             });
         }
+        plan["macWrites"]["bytes"] = json!(write_bytes);
         let mac_deletions = plan["deletionsToMain"]["count"].as_u64().unwrap_or(0) as usize;
         let main_deletions = plan["macDeletions"]["count"].as_u64().unwrap_or(0) as usize;
         plan["guards"] = json!({
