@@ -337,7 +337,7 @@ fn park_action(
             tx,
             event_write::RequestKey::new("park", &[root], request_id).raw(&request_key),
             &signature,
-            (now * 1000.0) as i64,
+            chrono::Utc::now().timestamp_millis(),
         )? {
             event_write::CallerAdmission::Replay(reply) => {
                 return Ok((serde_json::to_value(reply)?, signals));

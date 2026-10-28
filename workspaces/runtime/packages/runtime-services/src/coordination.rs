@@ -321,6 +321,20 @@ fn post_managed_message(
         "text": text,
         "assets": input.assets,
     }));
+    if let Some(event) = QueueEventRepository::get(transaction, &QueueEventId::from(input.id))? {
+        let metadata = QueueWriteRepository::metadata(transaction, input.id)?
+            .ok_or_else(|| invalid_stored("runtime_event_meta", input.id))?;
+        if event.agent.0 != input.room
+            || event.kind != "user"
+            || event.text != text
+            || metadata["assets"] != json!(input.assets)
+            || !matches_requested_delivery(&metadata, input.delivery)?
+        {
+            return Err(CoordinationError::Conflict(
+                "This message id has different content",
+            ));
+        }
+    }
     let now_ms = (crate::event_write::unix_time().map_err(event_write_error)? * 1000.0) as i64;
     let admitted = match crate::event_write::begin_request::<ManagedMessageReply>(
         transaction,
@@ -1225,7 +1239,7 @@ mod tests {
              CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,text TEXT,status TEXT,created REAL,epoch INTEGER,turn_id TEXT,error TEXT);
              CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY,record TEXT NOT NULL);
-             CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL);
+             CREATE TABLE runtime_orchestration_settings(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              CREATE TABLE graph_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              CREATE TABLE sync_entities(collection TEXT NOT NULL,id TEXT NOT NULL,seq INTEGER NOT NULL,hash TEXT NOT NULL,payload TEXT,deleted INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(collection,id));
@@ -1235,6 +1249,7 @@ mod tests {
         connection
             .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
             .expect("volatile agent table creates");
+        studio_runtime_store::receipt_schema::create(&connection).expect("request results schema");
         for (id, root) in [("lead", "lead"), ("worker", "lead"), ("other", "other")] {
             let record = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":root,"epoch":0,"status":"idle"}).to_string();
             connection
@@ -1804,14 +1819,14 @@ mod tests {
         )
         .expect("chat creates");
         transaction.commit().expect("chat commits");
-        let message_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        let message_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
         let post = |connection: &mut Connection, text: &str| {
             let transaction = connection.transaction().expect("transaction starts");
             let result = post_message(
                 &transaction,
                 PostMessage {
                     room: chat_id,
-                    id: message_id,
+                    id: &message_id,
                     text,
                 },
             );
@@ -1822,7 +1837,16 @@ mod tests {
         };
         let first = post(&mut connection, "Hello").expect("message writes");
         assert_eq!(first["status"], "queued");
-        assert_eq!(first["deliveries"]["worker"], "pending");
+        assert_eq!(first["deliveries"]["worker"]["status"], "pending");
+        connection
+            .execute(
+                "UPDATE messages SET deliveries=?1 WHERE id=?2",
+                [
+                    json!({"worker":{"status":"delivered","error":null}}).to_string(),
+                    message_id.clone(),
+                ],
+            )
+            .expect("later delivery update");
         let replay = post(&mut connection, "Hello").expect("exact replay returns receipt");
         assert_eq!(replay["deliveries"], first["deliveries"]);
         assert_eq!(
@@ -1831,7 +1855,10 @@ mod tests {
         );
         assert!(matches!(
             post(&mut connection, "Changed"),
-            Err(CoordinationError::Conflict(_))
+            Err(CoordinationError::Conflict(_)
+                | CoordinationError::RequestResult(
+                    studio_runtime_store::request_results::RequestResultError::Conflict { .. }
+                ))
         ));
         assert_eq!(count(&connection, "messages"), 1);
         assert_eq!(count(&connection, "sync_entities"), 3);

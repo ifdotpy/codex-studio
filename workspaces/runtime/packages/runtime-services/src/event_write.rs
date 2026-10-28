@@ -250,6 +250,7 @@ pub fn save_plan(
         now_ms,
     )? {
         CallerAdmission::Replay(reply) => {
+            EventWriteRepository::validate_plan(connection, &input.agent_id, reply.value())?;
             return Ok(WriteResult {
                 record: reply.into_value(),
                 event_inserted: false,
@@ -353,6 +354,7 @@ pub fn annotate(
         now_ms,
     )? {
         CallerAdmission::Replay(reply) => {
+            EventWriteRepository::validate_annotation(connection, &id, reply.value())?;
             return Ok(WriteResult {
                 record: reply.into_value(),
                 event_inserted: false,
@@ -812,6 +814,7 @@ mod tests {
     use serde_json::{Value, json};
     use std::collections::BTreeMap;
     use studio_runtime_schema::delivery::DeliveryMoment;
+    use studio_runtime_store::request_results::RequestResultError;
     use studio_runtime_store::{
         AgentId, AgentRecord, AgentRepository, AgentStatus, Connection, QueueWriteRepository,
         Transaction,
@@ -825,7 +828,7 @@ mod tests {
                  CREATE TABLE runtime_plans(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE runtime_annotations(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL);
-                 CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL);
+                 CREATE TABLE runtime_orchestration_settings(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE runtime_access_clients(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE runtime_server_links(id TEXT PRIMARY KEY,record TEXT NOT NULL);
@@ -841,6 +844,7 @@ mod tests {
         connection
             .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
             .expect("volatile agent table creates");
+        studio_runtime_store::receipt_schema::create(&connection).expect("request result schema");
         let agent = AgentRecord {
             id: AgentId::from("a"),
             root_id: AgentId::from("a"),
@@ -954,10 +958,24 @@ mod tests {
         .expect("invalid moment refused");
     }
 
+    fn fixture_request_id(label: &str) -> String {
+        static ISSUANCE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        let root = uuid::Uuid::parse_str(
+            ISSUANCE.get_or_init(studio_runtime_schema::persistence::RequestIdentity::issue_root),
+        )
+        .expect("v7");
+        let mut bytes =
+            uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, label.as_bytes()).into_bytes();
+        bytes[..6].copy_from_slice(&root.as_bytes()[..6]);
+        bytes[6] = (bytes[6] & 15) | 0x70;
+        bytes[8] = (bytes[8] & 63) | 0x80;
+        uuid::Uuid::from_bytes(bytes).to_string()
+    }
+
     fn plan_input(version: i64, text: &str, signature: &str) -> PlanWrite {
         PlanWrite {
             agent_id: "a".into(),
-            request_id: None,
+            request_id: Some(fixture_request_id(&format!("plan:{version}"))),
             expected_version: version,
             text: text.into(),
             signature: signature.into(),
@@ -983,7 +1001,8 @@ mod tests {
             with_transaction(&mut connection, |transaction| {
                 save_plan(transaction, plan_input(0, "different", "two"))
             }),
-            Err(EventWriteError::Conflict(_))
+            Err(EventWriteError::Conflict(_)
+                | EventWriteError::RequestResult(RequestResultError::Conflict { .. }))
         ));
         assert_eq!(counts(&connection), before_replay);
     }
@@ -1038,7 +1057,8 @@ mod tests {
             with_transaction(&mut connection, |transaction| {
                 save_plan(transaction, plan_input(2, "wrong version", "x"))
             }),
-            Err(EventWriteError::Conflict(_))
+            Err(EventWriteError::Conflict(_)
+                | EventWriteError::RequestResult(RequestResultError::Conflict { .. }))
         ));
         assert_eq!(counts(&connection), before);
     }
@@ -1048,7 +1068,7 @@ mod tests {
         let mut connection = database();
         let input = AnnotationWrite {
             agent_id: "a".into(),
-            id: Some("note-1".into()),
+            id: Some(fixture_request_id("note-1")),
             path: "file.rs".into(),
             line: 1,
             text: "comment".into(),
@@ -1074,7 +1094,8 @@ mod tests {
                     ..annotation("note-1")
                 }
             )),
-            Err(EventWriteError::Conflict(_))
+            Err(EventWriteError::Conflict(_)
+                | EventWriteError::RequestResult(RequestResultError::Conflict { .. }))
         ));
         assert_eq!(counts(&connection), before_replay);
         let conflict = AnnotationWrite {
@@ -1087,30 +1108,58 @@ mod tests {
                 transaction,
                 conflict
             )),
-            Err(EventWriteError::Conflict(_))
+            Err(EventWriteError::Conflict(_)
+                | EventWriteError::RequestResult(RequestResultError::Conflict { .. }))
         ));
         assert_eq!(counts(&connection), before_replay);
     }
 
     #[test]
-    fn python_annotation_receipt_with_unverifiable_signature_is_a_conflict() {
+    fn expired_annotation_never_creates_an_event() {
+        let mut connection = database();
+        let mut input = annotation("expired");
+        input.id = Some(uuid::Uuid::from_u128((1u128 << 80) | (7 << 76) | (2 << 62)).to_string());
+        let before = counts(&connection);
+        assert!(matches!(
+            with_transaction(&mut connection, |tx| annotate(tx, input)),
+            Err(EventWriteError::RequestResult(
+                RequestResultError::Identity(
+                    studio_runtime_schema::persistence::RequestIdentityError::Expired { .. }
+                )
+            ))
+        ));
+        assert_eq!(counts(&connection), before);
+    }
+
+    #[test]
+    fn imported_annotation_receipt_with_unverifiable_signature_is_a_conflict() {
         let mut connection = database();
         let saved = json!({
             "id":"note-1", "agent":"a", "rootId":"a", "path":"file.rs",
             "line":1, "text":"comment", "created":123.0
         });
-        let saved_json = serde_json::to_string(&saved).expect("saved annotation serializes");
         connection
             .execute(
-                "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3)",
-                ("note-1", "python-canonical-body-signature", saved_json),
+                "INSERT INTO request_results(id,signature,result,created) VALUES(?1,?2,?3,?4)",
+                (
+                    "note-1",
+                    "python-canonical-body-signature",
+                    json!({"actor":"a","reply":saved,"references":[]}).to_string(),
+                    chrono::Utc::now().timestamp_millis(),
+                ),
             )
             .expect("Python-style receipt inserts");
         let before = counts(&connection);
         let replay = with_transaction(&mut connection, |transaction| {
-            annotate(transaction, annotation("note-1"))
+            let mut input = annotation("note-1");
+            input.id = Some("note-1".into());
+            annotate(transaction, input)
         });
-        assert!(matches!(replay, Err(EventWriteError::Conflict(_))));
+        assert!(matches!(
+            replay,
+            Err(EventWriteError::Conflict(_)
+                | EventWriteError::RequestResult(RequestResultError::Conflict { .. }))
+        ));
         assert_eq!(counts(&connection), before);
     }
 
@@ -1168,12 +1217,25 @@ mod tests {
     #[test]
     fn invalid_typed_receipt_records_refuse_before_any_write() {
         let mut connection = database();
-        connection
-            .execute_batch(
-                "INSERT INTO runtime_operation_receipts VALUES('plan:a:1','s','{}');
-                 INSERT INTO runtime_operation_receipts VALUES('n','sig','{}');",
-            )
-            .expect("invalid receipts insert");
+        for (id, signature) in [
+            (
+                format!("plan-request:{}", fixture_request_id("plan:0")),
+                "s",
+            ),
+            (fixture_request_id("n"), "sig"),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO request_results VALUES(?1,?2,?3,?4)",
+                    rusqlite::params![
+                        id,
+                        signature,
+                        json!({"actor":null,"reply":{},"references":[]}).to_string(),
+                        chrono::Utc::now().timestamp_millis()
+                    ],
+                )
+                .expect("invalid imported reply");
+        }
         let before = counts(&connection);
         assert!(matches!(
             with_transaction(&mut connection, |tx| save_plan(tx, plan_input(0, "x", "s"))),
@@ -1286,7 +1348,7 @@ mod tests {
     fn annotation(id: &str) -> AnnotationWrite {
         AnnotationWrite {
             agent_id: "a".into(),
-            id: Some(id.into()),
+            id: Some(fixture_request_id(id)),
             path: "file.rs".into(),
             line: 1,
             text: "comment".into(),

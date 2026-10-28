@@ -544,7 +544,7 @@ fn send_as_actor(
         tx,
         event_write::RequestKey::new("agent_message", &[who], id),
         &signature,
-        (now * 1000.0) as i64,
+        chrono::Utc::now().timestamp_millis(),
     )? {
         event_write::CallerAdmission::Replay(reply) => {
             return serde_json::to_value(reply).map_err(Into::into);
@@ -685,7 +685,7 @@ fn send_to_user(
         tx,
         event_write::RequestKey::new("user_message", &[who], key),
         &signature,
-        (now * 1000.0) as i64,
+        chrono::Utc::now().timestamp_millis(),
     )? {
         event_write::CallerAdmission::Replay(reply) => {
             return serde_json::to_value(reply).map_err(Into::into);
@@ -750,6 +750,7 @@ fn map_federation_error(
     use crate::federation_messaging::FederationMessageError as FederationError;
     match error {
         FederationError::Store(error) => CallbackError::Store(error),
+        FederationError::RequestResult(error) => error.into(),
         FederationError::Unavailable(dependency) => CallbackError::Dependency(dependency),
         FederationError::Invalid(_)
         | FederationError::Forbidden(_)

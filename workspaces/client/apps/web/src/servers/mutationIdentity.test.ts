@@ -216,7 +216,6 @@ it.each([500, 503, 504, 410])(
       return Response.json(
         {
           error: "Not resolved",
-          ...(status === 410 ? { code: "receipt_expired" } : {}),
         },
         { status: requests.length === 1 ? status : 400 },
       );

@@ -48,7 +48,8 @@ export function serverMutationResponseIsUncertain(
   status: number,
   body: unknown,
 ) {
-  if (status >= 500 || status === 408 || status === 429) return true;
+  if (status >= 500 || status === 408 || status === 410 || status === 429)
+    return true;
   const code =
     body && typeof body === "object"
       ? String((body as Record<string, unknown>).code || "")
