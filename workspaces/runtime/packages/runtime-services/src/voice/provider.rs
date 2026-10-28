@@ -2855,13 +2855,12 @@ mod tests {
     #[test]
     fn completed_delete_stops_are_not_requeued_but_not_sent_stops_are() {
         let sessions = ["written", "unknown", "rejected", "not-sent", "pending"];
-        let delivered = serde_json::from_value::<HashMap<String, VoiceStopOutcome>>(json!({
-            "written": "written",
-            "unknown": "unknown",
-            "rejected": "rejected",
-            "not-sent": "not_sent",
-        }))
-        .expect("valid delivery result map");
+        let delivered = HashMap::from([
+            ("written".to_owned(), VoiceStopOutcome::Written),
+            ("unknown".to_owned(), VoiceStopOutcome::Unknown),
+            ("rejected".to_owned(), VoiceStopOutcome::Rejected),
+            ("not-sent".to_owned(), VoiceStopOutcome::NotSent),
+        ]);
 
         let pending: Vec<_> = sessions
             .iter()
