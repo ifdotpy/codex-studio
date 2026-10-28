@@ -226,6 +226,10 @@ impl ReceiptFamilyMigration for Family {
                 // Another independently registered owner must classify this row.
                 continue;
             }
+            if redundant_tool_result(tx, &row)? {
+                delete_source(tx, source, row.rowid)?;
+                continue;
+            }
             if direct_user_reply(&row, &reply) && !normalize_requested_delivery(tx, &row)? {
                 discard_completed_reply(
                     tx,
@@ -237,10 +241,6 @@ impl ReceiptFamilyMigration for Family {
             }
             if let Some(deliveries) = reply.get_mut("deliveries") {
                 *deliveries = delivery_map(source, &row, deliveries)?;
-            }
-            if redundant_tool_work(tx, &row, &reply)? {
-                delete_source(tx, source, row.rowid)?;
-                continue;
             }
             import_result(
                 tx,
@@ -273,10 +273,8 @@ impl ReceiptFamilyMigration for Family {
     }
 }
 
-fn redundant_tool_work(tx: &Transaction<'_>, row: &SourceReceipt, reply: &Value) -> Result<bool> {
-    if !schema("WorkItem", reply)
-        || !crate::receipt_migration_contract::source_exists(tx, "runtime_tool_requests")?
-    {
+fn redundant_tool_result(tx: &Transaction<'_>, row: &SourceReceipt) -> Result<bool> {
+    if !crate::receipt_migration_contract::source_exists(tx, "runtime_tool_requests")? {
         return Ok(false);
     }
     let task: Option<String> = tx
@@ -289,9 +287,6 @@ fn redundant_tool_work(tx: &Transaction<'_>, row: &SourceReceipt, reply: &Value)
     let Some(task) = task else { return Ok(false) };
     let invalid = || unclassifiable(SOURCE, &row.id, &row.signature);
     let task: Value = serde_json::from_str(&task).map_err(|_| invalid())?;
-    if task["kind"] != "managed_tool" || task["tool"] != "orchestration_task" {
-        return Ok(false);
-    }
     let token: AdmittedRequest =
         serde_json::from_value(task["admitted"].clone()).map_err(|_| invalid())?;
     let saved: Option<(String, String)> = tx
@@ -303,21 +298,17 @@ fn redundant_tool_work(tx: &Transaction<'_>, row: &SourceReceipt, reply: &Value)
         .optional()?;
     let (signature, result) = saved.ok_or_else(invalid)?;
     let outer: ResultEnvelope<Value> = serde_json::from_str(&result).map_err(|_| invalid())?;
-    let work_id = reply["id"].as_str().ok_or_else(invalid)?;
-    if task["id"] != row.id
+    if task["kind"] != "managed_tool"
+        || task["id"] != row.id
         || task["stage"] != "completed"
         || task["outcome"] != "applied"
         || token.id() != row.id
         || token.signature() != signature
         || task["signature"] != signature
+        || signature == row.signature
+        || task["agent"].as_str().is_none_or(str::is_empty)
         || outer.actor.as_deref() != task["agent"].as_str()
         || !schema("PersistedToolResult", &outer.reply)
-        || !crate::receipt_migration_contract::source_exists(tx, "runtime_work")?
-        || !tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM runtime_work WHERE id=?1)",
-            [work_id],
-            |r| r.get::<_, bool>(0),
-        )?
     {
         return Err(invalid());
     }
@@ -1313,7 +1304,94 @@ mod tests {
         json!({"id":"agent","rootId":"root","text":"original","version":1,"updated":1.0})
     }
     #[test]
-    fn receipts_requests_redundant_tool_work_requires_outer_and_work_owner() {
+    fn receipts_requests_redundant_message_requires_matching_tool_proof() {
+        for failure in [
+            "none",
+            "same_signature",
+            "missing_actor",
+            "owner",
+            "token",
+            "outer",
+            "actor",
+        ] {
+            let mut db = Connection::open_in_memory().expect("database");
+            fixture(&mut db);
+            db.execute_batch(
+                "CREATE TABLE runtime_tool_requests(id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+            )
+            .expect("owner");
+            let reply = json!({"id":"message","room":"room","deliveries":{}});
+            insert(&db, "tool-id", reply);
+            let outer_signature = if failure == "same_signature" {
+                SIGNATURE
+            } else {
+                "outer-signature"
+            };
+            let admitted = admitted_owner_token(
+                "tool-id",
+                if failure == "token" {
+                    "wrong"
+                } else {
+                    outer_signature
+                },
+                CUTOVER,
+            );
+            let task = json!({"id":"tool-id","agent":if failure == "missing_actor" { None } else { Some("agent") },"tool":"orchestration_message","kind":"managed_tool","stage":if failure == "owner" { "running" } else { "completed" },"outcome":"applied","signature":outer_signature,"admitted":admitted});
+            db.execute(
+                "INSERT INTO runtime_tool_requests VALUES('tool-id',?1)",
+                [task.to_string()],
+            )
+            .expect("task");
+            let outer_body = json!({"actor":if failure == "missing_actor" { None } else if failure == "actor" { Some("other") } else { Some("agent") },"reply":{"success":true,"contentItems":[]},"references":[]}).to_string();
+            if failure != "outer" {
+                db.execute(
+                    "INSERT INTO request_results VALUES('tool-id',?1,?2,?3)",
+                    params![outer_signature, outer_body, CUTOVER],
+                )
+                .expect("outer");
+            }
+            let tx = db.transaction().expect("tx");
+            let checkpoint =
+                MigrationCheckpoint::begin(&tx, ID, SOURCE, CUTOVER).expect("checkpoint");
+            let result = Family.move_batch(&tx, SOURCE, &checkpoint);
+            if failure == "none" {
+                result.expect("redundant message");
+                tx.commit().expect("commit");
+                let saved = crate::request_results::RequestResults::replay(
+                    &db,
+                    "tool-id",
+                    "outer-signature",
+                    CUTOVER + 1,
+                )
+                .expect("replay")
+                .expect("outer");
+                assert_eq!(saved.result, outer_body);
+                assert!(matches!(
+                    crate::request_results::RequestResults::replay(
+                        &db,
+                        "tool-id",
+                        SIGNATURE,
+                        CUTOVER + 1
+                    ),
+                    Err(crate::request_results::RequestResultError::Conflict { .. })
+                ));
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(ReceiptMigrationError::Unclassifiable { .. })
+                ));
+                tx.rollback().expect("rollback");
+                assert_eq!(
+                    db.query_row("SELECT count(*) FROM runtime_operation_receipts", [], |r| r
+                        .get::<_, i64>(0))
+                        .expect("source"),
+                    1
+                );
+            }
+        }
+    }
+    #[test]
+    fn receipts_requests_redundant_tool_work_requires_outer_result() {
         for (outer, owner) in [(true, true), (false, true), (true, false)] {
             let mut db = Connection::open_in_memory().expect("database");
             fixture(&mut db);
@@ -1345,7 +1423,7 @@ mod tests {
             let checkpoint =
                 MigrationCheckpoint::begin(&tx, ID, SOURCE, CUTOVER).expect("checkpoint");
             let result = Family.move_batch(&tx, SOURCE, &checkpoint);
-            if outer && owner {
+            if outer {
                 result.expect("redundant");
                 tx.commit().expect("commit");
                 assert_eq!(
