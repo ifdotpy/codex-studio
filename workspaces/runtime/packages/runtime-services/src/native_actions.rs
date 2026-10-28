@@ -1788,6 +1788,8 @@ pub fn command_cancel_claim(
     }
     let id = command_outbox_id(&ticket.request);
     let request = NativeRequest {
+        root_request_id: ticket.request.clone(),
+        admitted_request: None,
         ticket: ticket.clone(),
         method: "thread/backgroundTerminals/terminate".into(),
         params: json!({"threadId":ticket.thread,"processId":snapshot.process}),
