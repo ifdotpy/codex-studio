@@ -432,24 +432,27 @@ async fn prepare_vm_submission(
                     "Submit the exact layr state ID",
                 ));
             }
-            let evidence = serde_json::json!({
-                "layrProjectId": response.get("projectId").cloned().unwrap_or(Value::Null),
-                "layrLine": response.get("line").cloned().unwrap_or(Value::Null),
-                "layrStateId": expected_revision,
-            });
-            if evidence["layrProjectId"].as_str().is_none()
-                || evidence["layrLine"].as_str().is_none()
-            {
-                let task_id = input.task_id.clone();
-                let operation_id = call.request_id;
-                finish_vm_submission(&store, &task_id, &operation_id, Err(false))
-                    .await
-                    .map_err(write_error)?;
-                return Err(ApiError::new(
-                    StatusCode::BAD_GATEWAY,
-                    "Invalid layr evidence",
-                ));
-            }
+            let evidence = match (
+                response.get("projectId").and_then(Value::as_str),
+                response.get("line").and_then(Value::as_str),
+            ) {
+                (Some(project), Some(line)) => studio_runtime_store::vm_work_intent::Evidence {
+                    layr_project_id: project.to_owned(),
+                    layr_line: line.to_owned(),
+                    layr_state_id: expected_revision,
+                },
+                _ => {
+                    let task_id = input.task_id.clone();
+                    let operation_id = call.request_id;
+                    finish_vm_submission(&store, &task_id, &operation_id, Err(false))
+                        .await
+                        .map_err(write_error)?;
+                    return Err(ApiError::new(
+                        StatusCode::BAD_GATEWAY,
+                        "Invalid layr evidence",
+                    ));
+                }
+            };
             let task_id = input.task_id.clone();
             let operation_id = call.request_id;
             let evidence = finish_vm_submission(&store, &task_id, &operation_id, Ok(evidence))

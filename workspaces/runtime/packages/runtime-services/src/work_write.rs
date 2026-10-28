@@ -1073,7 +1073,7 @@ pub struct SubmitWork {
     pub files: Vec<String>,
     pub prepared_files: Option<PreparedSubmissionFiles>,
     pub state_dir: PathBuf,
-    pub vm_evidence: Option<Value>,
+    pub vm_evidence: Option<studio_runtime_store::vm_work_intent::Evidence>,
     pub vm_evidence_request_id: Option<String>,
 }
 
@@ -1143,10 +1143,18 @@ use studio_runtime_store::vm_work_intent::{
 };
 
 fn read_vm_view(connection: &Connection, task_id: &str) -> Result<VmView, WorkWriteError> {
-    let work = WorkItemsRepository::work_record(connection, task_id)?
+    WorkItemsRepository::work_record(connection, task_id)?
         .ok_or(Error::InvalidRequest("Unknown work item"))?;
-    Ok(serde_json::from_value(work.value().clone())
-        .map_err(studio_runtime_store::StoreError::from)?)
+    let raw: String = connection
+        .query_row(
+            "SELECT record FROM runtime_work WHERE id=?1",
+            [task_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(studio_runtime_store::StoreError::from)?
+        .ok_or(Error::InvalidRequest("Unknown work item"))?;
+    Ok(serde_json::from_str(&raw).map_err(studio_runtime_store::StoreError::from)?)
 }
 fn write_vm_view(tx: &Transaction<'_>, task_id: &str, view: &VmView) -> Result<(), WorkWriteError> {
     let mut work = WorkItemsRepository::work_record(tx, task_id)?
@@ -1165,7 +1173,10 @@ fn write_vm_view(tx: &Transaction<'_>, task_id: &str, view: &VmView) -> Result<(
 pub enum VmSubmissionPreparation {
     NotVm,
     Replay,
-    Evidence { evidence: Value, request_id: String },
+    Evidence {
+        evidence: studio_runtime_store::vm_work_intent::Evidence,
+        request_id: String,
+    },
     Call(VmSubmissionCall),
 }
 
@@ -1226,7 +1237,7 @@ pub async fn prepare_vm_submission(
         let mut view = read_vm_view(tx, &input.task_id)?;
         match &view.vm_submit {
             Some(VmWorkIntent::Pending(..) | VmWorkIntent::Unknown(..) | VmWorkIntent::UnknownUnattributed(..)) => return Err(Error::Conflict("A prior layr evidence request has an unknown outcome; inspect it before retrying").into()),
-            Some(VmWorkIntent::Completed { owner, result }) if owner.request_id==rpc_id && owner.owner==owner_id && Some(owner.id.version)==work.value()["version"].as_i64() && owner.revision==revision => return Ok(VmSubmissionPreparation::Evidence{evidence:serde_json::to_value(&result.evidence).map_err(studio_runtime_store::StoreError::from)?,request_id:rpc_id.clone()}),
+            Some(VmWorkIntent::Completed { owner, result }) if owner.request_id==rpc_id && owner.owner==owner_id && Some(owner.id.version)==work.value()["version"].as_i64() && owner.revision==revision => return Ok(VmSubmissionPreparation::Evidence{evidence:result.evidence.clone(),request_id:rpc_id.clone()}),
             Some(VmWorkIntent::Completed { .. } | VmWorkIntent::NotSent(..)) | None => {}
         }
         view.vm_submit = Some(VmWorkIntent::Pending(VmOwner {request_id:rpc_id.clone(),owner:owner_id.into(),revision:revision.clone(),id:Submission { version:work.value()["version"].as_i64().ok_or_else(|| invalid("runtime_work", &input.task_id))? },public:None}));
@@ -1249,25 +1260,14 @@ pub async fn finish_vm_submission(
     store: &RuntimeStore,
     task_id: &str,
     request_id: &str,
-    outcome: Result<Value, bool>,
-) -> Result<Option<Value>, WorkWriteError> {
-    let outcome = match outcome {
-        Ok(value) => Ok(VmSubmissionResult {
-            evidence: serde_json::from_value(value)
-                .map_err(studio_runtime_store::StoreError::from)?,
-        }),
-        Err(uncertain) => Err(uncertain),
-    };
+    outcome: Result<studio_runtime_store::vm_work_intent::Evidence, bool>,
+) -> Result<Option<studio_runtime_store::vm_work_intent::Evidence>, WorkWriteError> {
+    let outcome = outcome.map(|evidence| VmSubmissionResult { evidence });
     finish_vm_intent(store, task_id, request_id, outcome, |view| {
         &mut view.vm_submit
     })
-    .await?
-    .map(|result| {
-        serde_json::to_value(result.evidence)
-            .map_err(studio_runtime_store::StoreError::from)
-            .map_err(Into::into)
-    })
-    .transpose()
+    .await
+    .map(|result| result.map(|result| result.evidence))
 }
 
 async fn finish_vm_intent<I: Clone + Send + 'static, R: Clone + PartialEq + Send + 'static>(
@@ -2542,15 +2542,12 @@ fn decide_submit(
     }
     if let Some(evidence) = &input.vm_evidence {
         let normalized_revision = python_bounded_text(&input.revision, 200)?;
-        if evidence["layrStateId"] != normalized_revision
-            || evidence["layrProjectId"].as_str().is_none()
-            || evidence["layrLine"].as_str().is_none()
-        {
+        if evidence.layr_state_id != normalized_revision {
             return Err(Error::InvalidRequest("Submit the exact layr state ID"));
         }
-        result["layrProjectId"] = evidence["layrProjectId"].clone();
-        result["layrLine"] = evidence["layrLine"].clone();
-        result["layrStateId"] = evidence["layrStateId"].clone();
+        result["layrProjectId"] = json!(evidence.layr_project_id);
+        result["layrLine"] = json!(evidence.layr_line);
+        result["layrStateId"] = json!(evidence.layr_state_id);
     }
     if let Some(identity) = identity {
         result["runId"] = json!(identity.0);
@@ -3077,13 +3074,11 @@ fn submit(
             );
         };
         let revision = python_bounded_text(&input.revision, 200)?;
-        let evidence = serde_json::to_value(&result.evidence)
-            .map_err(studio_runtime_store::StoreError::from)?;
         if owner.request_id != request_id
             || owner.owner != submitter_id
             || Some(owner.id.version) != work.value()["version"].as_i64()
             || owner.revision != revision
-            || Some(&evidence) != input.vm_evidence.as_ref()
+            || Some(&result.evidence) != input.vm_evidence.as_ref()
         {
             return Err(
                 Error::Conflict("Layr submission evidence changed before it was saved").into(),
@@ -4212,21 +4207,23 @@ mod actor_tests {
             WorkItemsRepository::put_work(tx,"vm-known",&item)?;
             Ok(())
         }).await.expect("positive owner proof");
+        let evidence = studio_runtime_store::vm_work_intent::Evidence {
+            layr_project_id: "project".into(),
+            layr_line: "worker".into(),
+            layr_state_id: "state".into(),
+        };
         assert_eq!(
             super::finish_vm_submission(&store, "vm-known", "evidence", Err(true))
                 .await
                 .expect("late reply"),
-            Some(json!({"layrProjectId":"project","layrLine":"worker","layrStateId":"state"}))
+            Some(evidence.clone())
         );
-        for outcome in [
-            Err(false),
-            Ok(json!({"layrProjectId":"project","layrLine":"worker","layrStateId":"state"})),
-        ] {
+        for outcome in [Err(false), Ok(evidence.clone())] {
             assert_eq!(
                 super::finish_vm_submission(&store, "vm-known", "evidence", outcome)
                     .await
                     .expect("stable evidence"),
-                Some(json!({"layrProjectId":"project","layrLine":"worker","layrStateId":"state"}))
+                Some(evidence.clone())
             );
         }
         assert!(
@@ -4234,9 +4231,10 @@ mod actor_tests {
                 &store,
                 "vm-known",
                 "evidence",
-                Ok(
-                    json!({"layrProjectId":"project","layrLine":"worker","layrStateId":"different"})
-                )
+                Ok(studio_runtime_store::vm_work_intent::Evidence {
+                    layr_state_id: "different".into(),
+                    ..evidence
+                })
             )
             .await
             .is_err()
@@ -5093,7 +5091,11 @@ mod actor_tests {
                 files: vec![],
                 prepared_files: None,
                 state_dir: std::env::temp_dir(),
-                vm_evidence: Some(intent["evidence"].clone()),
+                vm_evidence: Some(studio_runtime_store::vm_work_intent::Evidence {
+                    layr_project_id: "project".into(),
+                    layr_line: "worker".into(),
+                    layr_state_id: "state-1".into(),
+                }),
                 vm_evidence_request_id: Some(request_id.to_owned()),
             }),
         );
