@@ -11,7 +11,7 @@ use studio_runtime_schema::persistence::{
 use studio_runtime_store::{
     RuntimeStore,
     outbox::{Outbox, OutboxRow},
-    request_results::{Admission, AdmittedRequest, RequestResults, ResultEnvelope},
+    request_results::{Admission, AdmittedRequest, RequestResults},
     system_reads as records,
 };
 
@@ -255,15 +255,20 @@ pub(super) fn saved_reply(
             .admission
             .as_ref()
             .ok_or(CallbackError::Unknown)?;
-        let saved = RequestResults::replay(
+        let saved = RequestResults::read::<CallbackResponse>(
             tx,
             admission.id(),
-            admission.signature(),
+            "provider_callback",
+            &[&owner.origin_key],
+            &owner.id,
+            &["response"],
             chrono::Utc::now().timestamp_millis(),
         )?
         .ok_or(CallbackError::Unknown)?;
-        let envelope: ResultEnvelope<CallbackResponse> = serde_json::from_str(&saved.result)?;
-        return Ok(Some(envelope.reply.into()));
+        if saved.signature != admission.signature() {
+            return Err(CallbackError::Conflict);
+        }
+        return Ok(Some(saved.reply.into()));
     }
     let Some(mut saved) = response(tx, identity)? else {
         return Err(CallbackError::Unknown);
@@ -407,14 +412,11 @@ fn delivery_in(
             .admission
             .as_ref()
             .ok_or(CallbackError::Unknown)?;
-        RequestResults::settle(
+        crate::event_write::settle_request(
             tx,
             admission,
-            &ResultEnvelope {
-                actor: Some(identity.context.agent.clone()),
-                reply: saved.payload.clone(),
-                references: vec![],
-            },
+            Some(&identity.context.agent),
+            &saved.payload,
         )?;
     }
     if let Some(card_id) = &saved.payload.card {
