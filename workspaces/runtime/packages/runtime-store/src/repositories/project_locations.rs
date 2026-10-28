@@ -7,40 +7,34 @@ use serde_json::Value;
 
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     tables: &[],
-    conditional_tables: &[
-        ConditionalTableRequirement {
-            table_exists: "runtime_server_outbox",
-            tables: &[TableRequirement {
-                name: "runtime_server_outbox",
-                columns: &[
-                    "id",
-                    "server",
-                    "body",
-                    "state",
-                    "result",
-                    "error",
-                    "completed_at",
-                ],
-            }],
-        },
-        ConditionalTableRequirement {
-            table_exists: "runtime_tool_requests",
-            tables: &[
-                TableRequirement {
-                    name: "runtime_tool_requests",
-                    columns: &["id", "agent", "record"],
-                },
-                TableRequirement {
-                    name: "request_results",
-                    columns: &["id", "signature", "result", "created"],
-                },
+    conditional_tables: &[ConditionalTableRequirement {
+        table_exists: "runtime_server_outbox",
+        tables: &[TableRequirement {
+            name: "runtime_server_outbox",
+            columns: &[
+                "id",
+                "server",
+                "body",
+                "state",
+                "result",
+                "error",
+                "completed_at",
             ],
-        },
-    ],
+        }],
+    }],
     triggers: &[],
     conditional_triggers: &[],
     connection_functions: &[],
-    bootstrap_tables: &[],
+    bootstrap_tables: &[
+        TableRequirement {
+            name: "runtime_tool_requests",
+            columns: &["id", "agent", "record"],
+        },
+        TableRequirement {
+            name: "request_results",
+            columns: &["id", "signature", "result", "created"],
+        },
+    ],
     bootstrap_triggers: &[],
     bootstrap_connection_functions: &[],
 };
