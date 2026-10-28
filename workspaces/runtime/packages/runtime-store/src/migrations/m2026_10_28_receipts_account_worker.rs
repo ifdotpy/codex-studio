@@ -11,6 +11,8 @@ use studio_runtime_schema::persistence::{
     HoldStatus, MigrationStatus, OutboxKind, OutboxStatus, OwnerKind,
 };
 const TABLE: &str = "runtime_operation_receipts";
+/// Frozen source-era hold signature, read only by this dated importer.
+const SOURCE_INVALID_AGENT_HOLD_SIGNATURE: &str = "invalid-agent-hold-v1";
 fn fail(row: &SourceReceipt) -> ReceiptMigrationError {
     unclassifiable(TABLE, &row.id, &row.signature)
 }
@@ -164,7 +166,7 @@ fn state(tx: &Transaction<'_>, row: &SourceReceipt) -> Result<()> {
     }
     if let Some(agent) = row.id.strip_prefix("account-worker:invalid-agent-hold:") {
         let value: Value = row.json(TABLE)?;
-        if row.signature != crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE
+        if row.signature != SOURCE_INVALID_AGENT_HOLD_SIGNATURE
             || value["held"] != true
             || value["diagnostic"].as_str().is_none()
         {
