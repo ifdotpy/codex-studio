@@ -11,6 +11,7 @@ use studio_runtime_schema::persistence::{
     MigrationStatus, OutboxKind, OutboxStatus, OwnerKind, RequestIdentity, ToolRequestKind,
     ToolRequestStatus,
 };
+use studio_runtime_schema::{provider_call_contract::ConnectionScope, provider_input::RequestId};
 const TABLE: &str = "runtime_operation_receipts";
 fn fail(row: &SourceReceipt) -> ReceiptMigrationError {
     unclassifiable(TABLE, &row.id, &row.signature)
@@ -342,9 +343,8 @@ fn frame(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()> 
     let saved = saved.ok_or_else(|| fail(row))?;
     let operation = saved["operation"].as_str().ok_or_else(|| fail(row))?;
     let (old_origin, attempt) = operation.rsplit_once(':').ok_or_else(|| fail(row))?;
-    let account = saved["scope"]["account"]
-        .as_str()
-        .ok_or_else(|| fail(row))?;
+    let scope = ConnectionScope::deserialize(&saved["scope"]).map_err(|_| fail(row))?;
+    let account = &scope.account;
     if base
         != format!(
             "account-worker:retained-frame:{account}:{}",
@@ -353,19 +353,10 @@ fn frame(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()> 
     {
         return Err(fail(row));
     }
-    saved["scope"]["connection"]
-        .as_str()
-        .ok_or_else(|| fail(row))?;
-    saved["scope"]["generation"]
-        .as_i64()
-        .ok_or_else(|| fail(row))?;
     let bytes = saved["frame"].as_str().ok_or_else(|| fail(row))?;
     let encoded: Value = serde_json::from_str(bytes).map_err(|_| fail(row))?;
-    if !encoded
-        .get("id")
-        .is_some_and(|id| id.is_string() || id.is_number())
-        || (encoded.get("result").is_some() == encoded.get("error").is_some())
-    {
+    let _: RequestId = RequestId::deserialize(&encoded["id"]).map_err(|_| fail(row))?;
+    if encoded.get("result").is_some() == encoded.get("error").is_some() {
         return Err(fail(row));
     }
     // The historical checkpoint may already have retired the canonical owner.
@@ -1009,6 +1000,43 @@ mod tests {
                     0
                 );
             }
+        }
+    }
+    #[test]
+    fn delivered_orphan_rejects_invalid_scope_and_rpc_numbers() {
+        for (generation, frame) in [
+            (-1, "{\"id\":1,\"result\":{}}"),
+            (7, "{\"id\":-1,\"result\":{}}"),
+            (7, "{\"id\":1.5,\"result\":{}}"),
+        ] {
+            let mut db = database();
+            let tx = db.transaction().unwrap();
+            let operation = "historical-origin:attempt";
+            let base = format!(
+                "account-worker:retained-frame:default:{}",
+                crate::sha256_hex(operation.as_bytes())
+            );
+            let saved = json!({"scope":{"account":"default","connection":"old","generation":generation},"operation":operation,"frame":frame}).to_string();
+            tx.execute(
+                "INSERT INTO runtime_operation_receipts VALUES(?1,'frame',?2)",
+                params![format!("{base}:frame"), saved],
+            )
+            .unwrap();
+            tx.execute(
+                "INSERT INTO runtime_operation_receipts VALUES(?1,'written','\"written\"')",
+                [format!("{base}:written")],
+            )
+            .unwrap();
+            let cp = MigrationCheckpoint::begin(&tx, Family.id(), "frames", 1000).unwrap();
+            assert!(Family.move_batch(&tx, "frames", &cp).is_err());
+            let retained: String = tx
+                .query_row(
+                    "SELECT result FROM runtime_operation_receipts WHERE id=?1",
+                    [format!("{base}:frame")],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(retained, saved);
         }
     }
     #[test]
