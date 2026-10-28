@@ -459,13 +459,17 @@ test("execution settings canonical browser", async ({ page }) => {
         };
         window.transferRelease!();
       });
-      await expect(page.getByRole("alert")).toContainText(
-        "The server did not confirm this account transfer.",
-      );
+      await expect(
+        page
+          .getByRole("dialog", { name: "Account transfer" })
+          .getByRole("alert"),
+      ).toContainText("The server did not confirm this account transfer.");
       assert.equal(await account.inputValue(), "second");
       assert.equal(await page.evaluate(() => window.refreshCount), 0);
       await expect(
-        page.getByRole("button", { name: "Retry", exact: true }),
+        page
+          .getByRole("dialog", { name: "Account transfer" })
+          .getByRole("button", { name: "Retry", exact: true }),
       ).toBeVisible();
     });
     await check("transfer-response-before-old-summary", async () => {
