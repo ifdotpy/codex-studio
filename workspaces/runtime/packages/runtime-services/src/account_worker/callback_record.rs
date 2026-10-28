@@ -177,13 +177,7 @@ fn put(tx: &Transaction<'_>, task: &Task) -> Result<(), WorkerError> {
     tool_requests::put_callback(tx, task).map_err(tool_error)
 }
 fn tool_error(error: tool_requests::ToolRequestError) -> WorkerError {
-    match error {
-        tool_requests::ToolRequestError::Store(error) => WorkerError::Store(error),
-        tool_requests::ToolRequestError::RequestResult(error) => WorkerError::Store(error.into()),
-        tool_requests::ToolRequestError::InvalidRequest(_)
-        | tool_requests::ToolRequestError::RequiresDependency(_)
-        | tool_requests::ToolRequestError::Payload(_) => WorkerError::CallbackUnknown,
-    }
+    callback_error(error.into())
 }
 fn callback_error(error: callbacks::CallbackError) -> WorkerError {
     match error {

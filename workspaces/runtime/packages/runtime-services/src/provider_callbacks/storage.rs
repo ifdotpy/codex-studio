@@ -60,9 +60,17 @@ pub struct CallbackResponse {
     pub card: Option<String>,
     pub tool_request: Option<String>,
     pub unanswered: Option<Value>,
-    pub journal_cursor: Option<u64>,
     pub delete_requested_at: Option<f64>,
     pub frame_fingerprint: Option<String>,
+}
+
+impl From<CallbackResponse> for Reply {
+    fn from(response: CallbackResponse) -> Self {
+        Self {
+            identity: response.identity,
+            body: response.body.into(),
+        }
+    }
 }
 
 type Owner = CallbackTask<CallbackOwner>;
@@ -227,7 +235,6 @@ pub(super) fn save_reply(
                 card: owner.payload.card.clone(),
                 tool_request: None,
                 unanswered: None,
-                journal_cursor: owner.payload.journal_cursor,
                 delete_requested_at: None,
                 frame_fingerprint: None,
             },
@@ -258,10 +265,7 @@ pub(super) fn saved_reply(
         )?
         .ok_or(CallbackError::Unknown)?;
         let envelope: ResultEnvelope<CallbackResponse> = serde_json::from_str(&saved.result)?;
-        return Ok(Some(Reply {
-            identity: envelope.reply.identity,
-            body: envelope.reply.body.into(),
-        }));
+        return Ok(Some(envelope.reply.into()));
     }
     let Some(mut saved) = response(tx, identity)? else {
         return Err(CallbackError::Unknown);
@@ -273,10 +277,7 @@ pub(super) fn saved_reply(
         return Err(CallbackError::Conflict);
     }
     match saved.status {
-        OutboxStatus::Pending => Ok(Some(Reply {
-            identity: saved.payload.identity,
-            body: saved.payload.body.into(),
-        })),
+        OutboxStatus::Pending => Ok(Some(saved.payload.into())),
         OutboxStatus::Committed => Err(CallbackError::Stored(
             "completed callback still has a response obligation".into(),
         )),
@@ -366,9 +367,6 @@ fn delivery_in(
         return Err(CallbackError::Stale);
     }
     if matches!(outcome, DeliveryOutcome::Unknown) && saved.status == OutboxStatus::Unknown {
-        return Ok(false);
-    }
-    if saved.status == OutboxStatus::Committed {
         return Ok(false);
     }
     if matches!(outcome, DeliveryOutcome::Submitted)
@@ -496,10 +494,6 @@ pub async fn bind_journal(
             }
             owner.payload.journal_cursor.get_or_insert(cursor);
             put_owner(tx, &owner)?;
-            if let Some(mut saved) = response(tx, &identity)? {
-                saved.payload.journal_cursor = owner.payload.journal_cursor;
-                put_response(tx, &saved)?;
-            }
             Ok(())
         })
         .await
@@ -562,10 +556,7 @@ pub async fn prepared_replies(
                     continue;
                 }
                 rebind_prepared(tx, &mut row, &context)?;
-                replies.push(Reply {
-                    identity: row.payload.identity,
-                    body: row.payload.body.into(),
-                });
+                replies.push(row.payload.into());
             }
             Ok(replies)
         })
@@ -621,10 +612,7 @@ pub fn begin_frame(
     {
         return Err(CallbackError::Stale);
     }
-    let reply = Reply {
-        identity: row.payload.identity.clone(),
-        body: row.payload.body.clone().into(),
-    };
+    let reply = Reply::from(row.payload.clone());
     if reply.frame() != *frame {
         return Err(CallbackError::Conflict);
     }
@@ -632,11 +620,7 @@ pub fn begin_frame(
         if *saved != fingerprint {
             return Err(CallbackError::Conflict);
         }
-        return Ok(if row.status == OutboxStatus::Committed {
-            FrameAdmission::Written
-        } else {
-            FrameAdmission::Unknown
-        });
+        return Ok(FrameAdmission::Unknown);
     }
     if !matches!(row.status, OutboxStatus::Pending | OutboxStatus::Submitted) {
         return Ok(FrameAdmission::Unknown);
@@ -677,28 +661,12 @@ pub(super) fn hold_card(tx: &Transaction<'_>, card: &str) -> Result<(), Callback
     for raw in owners {
         let mut owner: Owner = serde_json::from_str(&raw)?;
         owner.status = ToolRequestStatus::Unknown;
+        if let Some(mut saved) = response(tx, &owner.payload.identity)? {
+            saved.status = OutboxStatus::Unknown;
+            saved.next_at = None;
+            put_response(tx, &saved)?;
+        }
         put_owner(tx, &owner)?;
-    }
-    let mut statement = tx.prepare_cached("SELECT id FROM runtime_outbox WHERE kind=?1 AND json_extract(payload,'$.card')=?2 AND status IN (?3,?4)")?;
-    let ids = statement
-        .query_map(
-            params![
-                OutboxKind::ProviderCallback,
-                card,
-                OutboxStatus::Pending,
-                OutboxStatus::Submitted
-            ],
-            |row| row.get::<_, String>(0),
-        )?
-        .collect::<Result<Vec<_>, _>>()?;
-    for id in ids {
-        let mut saved: Response = Outbox::get(tx, &id)?.ok_or(CallbackError::Unknown)?;
-        saved.status = OutboxStatus::Unknown;
-        saved.next_at = None;
-        let mut owner = owner(tx, &saved.payload.identity)?.ok_or(CallbackError::Unknown)?;
-        owner.status = ToolRequestStatus::Unknown;
-        put_owner(tx, &owner)?;
-        put_response(tx, &saved)?;
     }
     Ok(())
 }
@@ -736,9 +704,7 @@ pub(super) fn resolve_owner(
         owner.payload.signature = signature.map(str::to_owned);
     }
     put_owner(tx, &owner)?;
-    if let Some(saved) = response(tx, identity)?
-        && saved.status != OutboxStatus::Committed
-    {
+    if let Some(saved) = response(tx, identity)? {
         Outbox::delete_settled(tx, &saved.id, &saved.signature)?;
     }
     Ok(())
@@ -752,13 +718,7 @@ pub fn callback_origin_key(
 }
 pub fn response_frame(tx: &Connection, key: &str) -> Result<Option<Frame>, CallbackError> {
     let saved: Option<Response> = Outbox::get(tx, key)?;
-    Ok(saved.map(|row| {
-        Reply {
-            identity: row.payload.identity,
-            body: row.payload.body.into(),
-        }
-        .frame()
-    }))
+    Ok(saved.map(|row| Reply::from(row.payload).frame()))
 }
 pub fn save_frame_response(
     tx: &Transaction<'_>,
@@ -769,14 +729,11 @@ pub fn save_frame_response(
     let input = Input::from_frame(input_frame)?
         .ok_or(CallbackError::Invalid("Expected callback request frame"))?;
     if let Some(saved) = response(tx, &ReplyIdentity::new(context, &input.id))? {
-        let reply = Reply {
-            identity: saved.payload.identity.clone(),
-            body: saved.payload.body.into(),
-        };
+        let reply = Reply::from(saved.payload);
         if reply.frame() != *response_frame {
             return Err(CallbackError::Conflict);
         }
-        return Ok(saved.payload.identity);
+        return Ok(reply.identity);
     }
     let Frame::Response { id, body, .. } = response_frame else {
         return Err(CallbackError::Invalid("Expected callback response frame"));
@@ -895,40 +852,6 @@ fn owner_by_root(db: &Connection, root: &str) -> Result<Option<Owner>, CallbackE
     Ok(task)
 }
 
-/// The exact final provider effect pointer, separate from the callback reply token.
-pub fn credential_refresh_admission(
-    db: &Connection,
-    root: &str,
-) -> Result<Option<AdmittedRequest>, CallbackError> {
-    Ok(owner_by_root(db, root)?.and_then(|owner| owner.payload.credential_refresh_admission))
-}
-
-/// Caller reserves the provider obligation in this same transaction. The pointer
-/// can only be written once; a retry cannot replace its admitted effect.
-pub fn set_credential_refresh_admission(
-    tx: &Transaction<'_>,
-    root: &str,
-    source: &AdmittedRequest,
-    final_effect: &AdmittedRequest,
-) -> Result<(), CallbackError> {
-    let mut owner = owner_by_root(tx, root)?.ok_or(CallbackError::Unknown)?;
-    if owner.payload.admission.as_ref() != Some(source) {
-        return Err(CallbackError::Conflict);
-    }
-    if let Some(previous) = &owner.payload.credential_refresh_admission {
-        return if previous == final_effect {
-            Ok(())
-        } else {
-            Err(CallbackError::Conflict)
-        };
-    }
-    if owner.status != ToolRequestStatus::Queued {
-        return Err(CallbackError::Unknown);
-    }
-    owner.payload.credential_refresh_admission = Some(final_effect.clone());
-    put_owner(tx, &owner)
-}
-
 /// First dispatch reserves and points at the effect atomically. Retries return
 /// the persisted final pointer and never call the reservation API again.
 pub fn reserve_credential_refresh(
@@ -937,7 +860,7 @@ pub fn reserve_credential_refresh(
     source: &AdmittedRequest,
     intent: crate::account_worker::retained::ProviderCallIntent,
 ) -> Result<AdmittedRequest, CallbackError> {
-    let owner = owner_by_root(tx, root)?.ok_or(CallbackError::Unknown)?;
+    let mut owner = owner_by_root(tx, root)?.ok_or(CallbackError::Unknown)?;
     if owner.payload.admission.as_ref() != Some(source)
         || intent.root_request_id != root
         || intent.scope.account != owner.payload.identity.context.account
@@ -975,7 +898,8 @@ pub fn reserve_credential_refresh(
         | crate::account_worker::WorkerError::Capacity
         | crate::account_worker::WorkerError::CallbackUnknown => CallbackError::Unknown,
     })?;
-    set_credential_refresh_admission(tx, root, source, &final_effect)?;
+    owner.payload.credential_refresh_admission = Some(final_effect.clone());
+    put_owner(tx, &owner)?;
     Ok(final_effect)
 }
 
@@ -1249,7 +1173,11 @@ mod tests {
             Some(source.clone())
         );
         assert_eq!(
-            credential_refresh_admission(&tx, &owner.id).expect("final pointer"),
+            owner_by_root(&tx, &owner.id)
+                .expect("owner")
+                .unwrap()
+                .payload
+                .credential_refresh_admission,
             Some(final_effect.clone())
         );
         tx.execute("DELETE FROM runtime_outbox", [])
@@ -1263,18 +1191,20 @@ mod tests {
             .query_row("SELECT count(*) FROM runtime_outbox", [], |row| row.get(0))
             .expect("no new effect");
         assert_eq!(count, 0);
-        let replacement =
-            source.derive_result("provider-call", &["replacement"], final_effect.signature());
-        assert!(matches!(
-            set_credential_refresh_admission(&tx, &owner.id, &source, &replacement),
-            Err(CallbackError::Conflict)
-        ));
         let mut changed = intent;
         changed.params = json!({"refreshToken":false});
         assert!(matches!(
             reserve_credential_refresh(&tx, &owner.id, &source, changed),
             Err(CallbackError::Conflict)
         ));
+        assert_eq!(
+            owner_by_root(&tx, &owner.id)
+                .expect("owner")
+                .unwrap()
+                .payload
+                .credential_refresh_admission,
+            Some(final_effect)
+        );
     }
 
     #[test]
