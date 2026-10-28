@@ -25,10 +25,6 @@ pub struct LocationResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
-pub struct CompletionReceipt<'a> {
-    pub reply: &'a LocationResult,
-    pub encoded_len: usize,
-}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LocationValue {
@@ -77,13 +73,14 @@ mod receipt_tests {
 
     #[test]
     fn outbox_size_includes_receipt() {
-        let outbox = json!({"body":"x".repeat(3 * 1024 * 1024),"result":null});
-        let mut receipt = LocationResult {
+        let body = json!({"extra":"x".repeat(3 * 1024 * 1024)}).to_string();
+        let outbox = json!({"id":"request","server":"peer","body":serde_json::from_str::<Value>(&body).expect("body"),"state":"complete","result":null});
+        let mut receipt = studio_runtime_store::multi_server_delivery::RemoteReply {
             request_id: "request".into(),
             outcome: LocationOutcome::NotApplied,
-            project_id: None,
             value: None,
             error: Some(String::new()),
+            waiting_for: None,
         };
         let outbox_len = outbox.to_string().len();
         let empty_receipt_len = serde_json::to_vec(&receipt).expect("receipt").len();
@@ -99,8 +96,10 @@ mod receipt_tests {
             outbox_len - 4 + receipt_len,
             crate::relocation::MAX_RECORD_BYTES + 1
         );
+        let mut db = rusqlite::Connection::open_in_memory().expect("database");
+        let tx = db.transaction().expect("transaction");
         assert!(
-            matches!(validate_outbox_size(&outbox, receipt_len), Err(LocationError::InvalidStored { pointer, .. }) if pointer == "record size")
+            matches!(complete_snapshot_in_transaction(&tx, "request", "peer", &body, &receipt, "local", 0.0), Err(LocationError::InvalidStored { pointer, .. }) if pointer == "record size")
         );
     }
 
@@ -118,10 +117,7 @@ mod receipt_tests {
             raw["id"].as_str().expect("id"),
             raw["server"].as_str().expect("server"),
             &raw["body"].to_string(),
-            CompletionReceipt {
-                reply: &receipt,
-                encoded_len: encoded.len(),
-            },
+            &receipt,
             local,
             now,
         )
@@ -435,7 +431,7 @@ pub fn complete_snapshot_in_transaction(
     id: &str,
     server: &str,
     body: &str,
-    receipt: CompletionReceipt<'_>,
+    response: &studio_runtime_store::multi_server_delivery::RemoteReply,
     local_server: &str,
     now: f64,
 ) -> Result<(), LocationError> {
@@ -443,7 +439,10 @@ pub fn complete_snapshot_in_transaction(
         serde_json::from_str(body).map_err(|_| invalid("runtime_server_outbox", "/body"))?;
     let outbox =
         json!({"id":id,"server":server,"body":body_value,"state":"complete","result":null});
-    validate_outbox_size(&outbox, receipt.encoded_len)?;
+    let receipt_len = serde_json::to_vec(response)
+        .map_err(studio_runtime_store::StoreError::from)?
+        .len();
+    validate_outbox_size(&outbox, receipt_len)?;
     validate(
         "relocation/LocationOutbox",
         "runtime_server_outbox",
@@ -461,14 +460,27 @@ pub fn complete_snapshot_in_transaction(
         },
         project.as_ref().map(|(_, value)| value),
     )?;
-    let decision = snapshot.decide(receipt.reply, local_server, now)?;
+    let receipt = LocationResult {
+        request_id: response.request_id.clone(),
+        outcome: response.outcome,
+        project_id: None,
+        value: response
+            .value
+            .as_ref()
+            .map(|value| serde_json::from_str(value.get()))
+            .transpose()
+            .map_err(studio_runtime_store::StoreError::from)?
+            .flatten(),
+        error: response.error.clone(),
+    };
+    let decision = snapshot.decide(&receipt, local_server, now)?;
     if decision.apply {
         settle_location(
             tx,
             &snapshot.outbox.body.payload.project,
             &snapshot.outbox.body.request_id,
             &snapshot.outbox.body.payload.request,
-            receipt.reply,
+            &receipt,
             decision.project,
         )?;
     }

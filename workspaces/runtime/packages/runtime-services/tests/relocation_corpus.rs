@@ -376,10 +376,7 @@ fn complete_location_in_fixture(
         key,
         server,
         &envelope.to_string(),
-        project_locations::CompletionReceipt {
-            reply: &typed,
-            encoded_len: receipt.to_string().len(),
-        },
+        &typed,
         local_server,
         now,
     )?;
