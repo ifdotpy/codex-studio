@@ -589,10 +589,6 @@
       "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:0"
     },
     {
-      "file": "workspaces/runtime/packages/runtime-services/src/projects/radio_state.rs",
-      "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:0"
-    },
-    {
       "file": "workspaces/runtime/packages/runtime-services/src/provider_callbacks/cards.rs",
       "fingerprint": "ec47b790fb802d8184bd5e84481710e6904d0c62f99fe382ae00d7e3dcab0a36:0"
     },
@@ -651,10 +647,6 @@
     {
       "file": "workspaces/runtime/packages/runtime-services/src/questions_write.rs",
       "fingerprint": "eef1a49005de15dc8b62b240413d697ea6cf01f9333938bfd5f4ca039432fc70:0"
-    },
-    {
-      "file": "workspaces/runtime/packages/runtime-services/src/radio.rs",
-      "fingerprint": "d98d9ceb1b374ec786b700fa9ffbd0bee40885f8bfa0abb2729a5a29b784bfa1:0"
     },
     {
       "file": "workspaces/runtime/packages/runtime-services/src/recovery_history.rs",
@@ -2226,10 +2218,6 @@
     {
       "file": "workspaces/runtime/packages/runtime-services/src/projects/radio_lifecycle.rs",
       "fingerprint": "92ed643b4f54fccf680506e570d98a2ed1fe248fdae2b196181e3cdf42f549b9:0"
-    },
-    {
-      "file": "workspaces/runtime/packages/runtime-services/src/projects/radio_state.rs",
-      "fingerprint": "4bf8ba4d2d21bb908196f15eaefd3d0645dd3c0c1402a54fda399ebc3668eae8:0"
     },
     {
       "file": "workspaces/runtime/packages/runtime-services/src/provider_callbacks/tools/services.rs",
@@ -3917,10 +3905,6 @@
     },
     {
       "file": "workspaces/runtime/packages/runtime-services/src/project_locations.rs",
-      "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:0"
-    },
-    {
-      "file": "workspaces/runtime/packages/runtime-services/src/projects/radio_state.rs",
       "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:0"
     },
     {
