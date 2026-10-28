@@ -48,6 +48,7 @@ async fn recover(
         .recover_connection(&account, &id)
         .await
         .map_err(|error| match error {
+            studio_runtime_services::account_session_runtime::AccountSessionError::Expired => ApiError::new(axum::http::StatusCode::GONE, error.to_string()),
             studio_runtime_services::account_session_runtime::AccountSessionError::Requires(
                 name,
             ) => ApiError::dependency(name),

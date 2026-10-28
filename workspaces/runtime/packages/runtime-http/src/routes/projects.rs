@@ -364,6 +364,9 @@ async fn delete_project(
             };
             return Err(error.into());
         }
+        Error::Lifecycle(studio_runtime_services::agent_management::ManagementError::Expired) => {
+            return Err(ApiError::new(StatusCode::GONE, error.to_string()));
+        }
         Error::NotFound => (StatusCode::NOT_FOUND, Code::ProjectNotFound),
         Error::Workspace => (StatusCode::CONFLICT, Code::ProjectWorkspaceConflict),
         Error::Sequence => (StatusCode::CONFLICT, Code::ProjectSequenceConflict),
