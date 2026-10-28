@@ -7,12 +7,12 @@
 /// The guest home of a VM agent whose record has no `layrHome`.
 pub(crate) const DEFAULT_GUEST_HOME: &str = "/home/studio";
 
+use crate::event_write::{replay_request, settle_request};
 use crate::linux_vm_guest::{GUEST_RPC_TIMEOUT_SECONDS, GuestError, GuestRpc};
 use base64::Engine as _;
 use rusqlite::Transaction;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     path::Path,
@@ -41,7 +41,8 @@ use studio_runtime_schema::shared_values::{
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, ExecutionHistoryRepository, RuntimeStore, StoreError,
     outbox::{Outbox, OutboxError, OutboxRow},
-    request_results::{AdmittedRequest, RequestResultError, RequestResults, ResultEnvelope},
+    request_results::{AdmittedRequest, RequestResultError},
+    sha256_hex as hex_digest,
 };
 use thiserror::Error;
 
@@ -189,6 +190,27 @@ struct BootstrapCompletion {
 pub struct VmBootstrapSource<'a> {
     pub attempt_id: &'a str,
     pub admission: &'a AdmittedRequest,
+}
+
+impl VmBootstrapSource<'_> {
+    fn state(
+        self,
+        agent: &str,
+        epoch: i64,
+        root: &str,
+        operation: &str,
+        signature: &str,
+    ) -> VmAuthBootstrap {
+        VmAuthBootstrap {
+            agent_id: agent.into(),
+            epoch,
+            request_id: operation.into(),
+            root_request_id: root.into(),
+            admitted_request: self.admission.clone(),
+            fingerprint: signature.into(),
+            state: WorkEffectStatus::NotSent,
+        }
+    }
 }
 
 /// Old credential identities are hashes; their source has no recoverable actor
@@ -739,7 +761,7 @@ impl GuestProviderSession {
                 Ok(info) => info,
                 Err(error) if error.uncertain() => return Err(GuestProviderError::Unknown),
                 Err(error) => {
-                    persist_not_sent(store.clone(), identity.clone()).await?;
+                    persist_start(store.clone(), identity.clone(), None).await?;
                     return Err(error.into());
                 }
             }
@@ -770,7 +792,7 @@ impl GuestProviderSession {
         };
         let info = parse_info(&identity.handle, &started, retained)?;
         if retained.is_none() {
-            persist_started(store, identity.clone(), started).await?;
+            persist_start(store, identity.clone(), Some(started)).await?;
         }
         let cursor = info.acknowledged;
         Ok(Self {
@@ -1047,9 +1069,12 @@ pub async fn copy_guest_credentials(
     target: GuestCredentialTarget<'_>,
     credential_document: &[u8],
 ) -> Result<String> {
+    let provider = target
+        .provider
+        .parse()
+        .map_err(|_| GuestProviderError::Invalid)?;
     if target.agent_id.is_empty()
         || target.actor_epoch < 0
-        || target.provider.parse::<ProviderKind>().is_err()
         || target.account_key.is_empty()
         || target.relative_path.is_empty()
         || target.relative_path.starts_with('/')
@@ -1075,10 +1100,7 @@ pub async fn copy_guest_credentials(
         agent_id: target.agent_id.to_owned(),
         epoch: target.actor_epoch,
         account_key: target.account_key.to_owned(),
-        provider: target
-            .provider
-            .parse()
-            .map_err(|_| GuestProviderError::Invalid)?,
+        provider,
         relative_path: target.relative_path.to_owned(),
         digest: digest.clone(),
         request_id: request_id.clone(),
@@ -1107,31 +1129,16 @@ pub async fn copy_guest_credentials(
         Duration::from_secs(GUEST_RPC_TIMEOUT_SECONDS),
     )
     .await;
-    let status = match result {
+    let status = match &result {
         Ok(_) => WorkEffectStatus::Complete,
         Err(error) if error.uncertain() => return Err(GuestProviderError::Unknown),
-        Err(error) => {
-            store
-                .transaction_with(move |tx| settle_credentials(tx, copy, WorkEffectStatus::NotSent))
-                .await?;
-            return Err(error.into());
-        }
+        Err(_) => WorkEffectStatus::NotSent,
     };
     store
         .transaction_with(move |tx| settle_credentials(tx, copy, status))
         .await?;
+    result?;
     Ok(digest)
-}
-
-fn hex_digest(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
-    let mut output = String::with_capacity(digest.len() * 2);
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    for byte in digest {
-        output.push(HEX[(byte >> 4) as usize] as char);
-        output.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    output
 }
 
 fn start_params(
@@ -1166,8 +1173,7 @@ fn start_params(
 }
 
 fn fingerprint(params: &Value) -> Result<String> {
-    let encoded = serde_json::to_vec(params)?;
-    Ok(data_encoding::HEXLOWER.encode(&Sha256::digest(encoded)))
+    Ok(hex_digest(&serde_json::to_vec(params)?))
 }
 
 async fn reserve_start(
@@ -1195,17 +1201,15 @@ async fn reserve_start(
                 }
                 if let Some(mut saved) = agent_field::<VmLaunch>(&agent, "vmLaunch")? {
                     if saved.identity.epoch != epoch {
-                        if unresolved(saved.status)? {
+                        if unresolved(saved.status) {
                             hold_obligation(
                                 tx,
-                                &agent_id,
+                                &mut agent,
                                 &saved.identity.request_id,
                                 &saved.signature,
                                 "vmLaunch",
                                 &VmObligation::VmLaunch(saved.clone()),
                             )?;
-                            agent.extra.remove("vmLaunch");
-                            AgentRepository::put(tx, &agent)?;
                             return Ok(None);
                         }
                     } else {
@@ -1219,27 +1223,16 @@ async fn reserve_start(
                         {
                             return Err(GuestProviderError::Unknown);
                         }
-                        let disposition = match saved.status {
-                            WorkEffectStatus::Submitted | WorkEffectStatus::Unknown => {
-                                StartDisposition::Reconcile
-                            }
-                            WorkEffectStatus::NotSent => {
-                                saved.status = WorkEffectStatus::Submitted;
-                                save_agent_field(tx, &mut agent, "vmLaunch", &saved)?;
-                                StartDisposition::Dispatch
-                            }
-                            WorkEffectStatus::Complete => StartDisposition::Retained(
+                        let disposition = if saved.status == WorkEffectStatus::NotSent {
+                            saved.status = WorkEffectStatus::Submitted;
+                            save_agent_field(tx, &mut agent, "vmLaunch", &saved)?;
+                            StartDisposition::Dispatch
+                        } else if saved.status == WorkEffectStatus::Complete {
+                            StartDisposition::Retained(
                                 saved.info.ok_or(GuestProviderError::Unknown)?,
-                            ),
-                            WorkEffectStatus::Completed
-                            | WorkEffectStatus::Terminal
-                            | WorkEffectStatus::Pending
-                            | WorkEffectStatus::Retryable
-                            | WorkEffectStatus::Applied
-                            | WorkEffectStatus::Failed
-                            | WorkEffectStatus::Cancelled => {
-                                return Err(GuestProviderError::Unknown);
-                            }
+                            )
+                        } else {
+                            StartDisposition::Reconcile
                         };
                         return Ok(Some((saved.identity, disposition)));
                     }
@@ -1269,21 +1262,18 @@ async fn reserve_start(
         .ok_or(GuestProviderError::Unknown)
 }
 
-async fn persist_not_sent(store: Arc<RuntimeStore>, identity: StartIdentity) -> Result<()> {
-    store
-        .transaction_with(move |tx| settle_start(tx, identity, WorkEffectStatus::NotSent, None))
-        .await
-}
-
-async fn persist_started(
+async fn persist_start(
     store: Arc<RuntimeStore>,
     identity: StartIdentity,
-    info: Value,
+    info: Option<Value>,
 ) -> Result<()> {
+    let status = if info.is_some() {
+        WorkEffectStatus::Complete
+    } else {
+        WorkEffectStatus::NotSent
+    };
     store
-        .transaction_with(move |tx| {
-            settle_start(tx, identity, WorkEffectStatus::Complete, Some(info))
-        })
+        .transaction_with(move |tx| settle_start(tx, identity, status, info))
         .await
 }
 
@@ -1294,8 +1284,7 @@ fn agent_field<T: serde::de::DeserializeOwned>(
     agent
         .extra
         .get(field)
-        .cloned()
-        .map(serde_json::from_value)
+        .map(T::deserialize)
         .transpose()
         .map_err(Into::into)
 }
@@ -1313,18 +1302,8 @@ fn save_agent_field(
     Ok(())
 }
 
-fn unresolved(status: WorkEffectStatus) -> Result<bool> {
-    match status {
-        WorkEffectStatus::Submitted | WorkEffectStatus::Unknown => Ok(true),
-        WorkEffectStatus::NotSent | WorkEffectStatus::Complete => Ok(false),
-        WorkEffectStatus::Completed
-        | WorkEffectStatus::Terminal
-        | WorkEffectStatus::Pending
-        | WorkEffectStatus::Retryable
-        | WorkEffectStatus::Applied
-        | WorkEffectStatus::Failed
-        | WorkEffectStatus::Cancelled => Err(GuestProviderError::Unknown),
-    }
+fn unresolved(status: WorkEffectStatus) -> bool {
+    status != WorkEffectStatus::NotSent && status != WorkEffectStatus::Complete
 }
 
 fn held_for_agent(tx: &Transaction<'_>, agent: &str, field: &str) -> Result<bool> {
@@ -1336,7 +1315,7 @@ fn held_for_agent(tx: &Transaction<'_>, agent: &str, field: &str) -> Result<bool
 
 fn hold_obligation(
     tx: &Transaction<'_>,
-    agent: &str,
+    agent: &mut AgentRecord,
     request: &str,
     signature: &str,
     field: &str,
@@ -1346,22 +1325,16 @@ fn hold_obligation(
         request,
         OutboxKind::ProviderCall,
         OwnerKind::Agent,
-        agent,
+        &agent.id.0,
         &[field],
     );
-    if let Some(saved) = Outbox::get::<VmObligation>(tx, &id)? {
-        if saved.signature != signature || saved.payload != *payload {
-            return Err(GuestProviderError::Unknown);
-        }
-        return Ok(());
-    }
     Outbox::put(
         tx,
         &OutboxRow {
             id,
             kind: OutboxKind::ProviderCall,
             owner_kind: OwnerKind::Agent,
-            owner_id: agent.to_owned(),
+            owner_id: agent.id.0.clone(),
             request_id: Some(request.to_owned()),
             signature: signature.to_owned(),
             status: OutboxStatus::Unknown,
@@ -1374,6 +1347,8 @@ fn hold_obligation(
             created: chrono::Utc::now().timestamp_millis(),
         },
     )?;
+    agent.extra.remove(field);
+    AgentRepository::put(tx, agent)?;
     Ok(())
 }
 
@@ -1402,7 +1377,7 @@ fn settle_start(
     if saved.status == status && saved.info == info {
         return Ok(());
     }
-    if !unresolved(saved.status)? {
+    if !unresolved(saved.status) {
         return Err(GuestProviderError::Unknown);
     }
     saved.status = status;
@@ -1438,22 +1413,16 @@ fn reserve_credentials(tx: &Transaction<'_>, mut copy: CredentialCopy) -> Result
     if let Some(saved) = agent_field::<CredentialCopy>(&agent, "credentialCopy")? {
         copy.status = saved.status;
         if saved == copy {
-            match saved.status {
-                WorkEffectStatus::Complete => return Ok(Some(false)),
-                WorkEffectStatus::NotSent => {}
-                WorkEffectStatus::Submitted | WorkEffectStatus::Unknown => return Ok(None),
-                WorkEffectStatus::Completed
-                | WorkEffectStatus::Terminal
-                | WorkEffectStatus::Pending
-                | WorkEffectStatus::Retryable
-                | WorkEffectStatus::Applied
-                | WorkEffectStatus::Failed
-                | WorkEffectStatus::Cancelled => return Err(GuestProviderError::Unknown),
+            if saved.status == WorkEffectStatus::Complete {
+                return Ok(Some(false));
             }
-        } else if unresolved(saved.status)? {
+            if saved.status != WorkEffectStatus::NotSent {
+                return Ok(None);
+            }
+        } else if unresolved(saved.status) {
             hold_obligation(
                 tx,
-                &copy.agent_id,
+                &mut agent,
                 &saved.request_id,
                 &saved.signature,
                 "credentialCopy",
@@ -1464,19 +1433,16 @@ fn reserve_credentials(tx: &Transaction<'_>, mut copy: CredentialCopy) -> Result
                     copy: Some(saved.clone()),
                 }),
             )?;
-            agent.extra.remove("credentialCopy");
-            AgentRepository::put(tx, &agent)?;
             return Ok(None);
         }
     }
-    if let Some(saved) = RequestResults::replay(
+    if let Some(saved) = replay_request::<WorkEffectStatus>(
         tx,
         &copy.request_id,
         &copy.signature,
         chrono::Utc::now().timestamp_millis(),
     )? {
-        let reply: ResultEnvelope<WorkEffectStatus> = serde_json::from_str(&saved.result)?;
-        if reply.reply != WorkEffectStatus::Complete {
+        if saved.reply != WorkEffectStatus::Complete {
             return Err(GuestProviderError::Unknown);
         }
         copy.status = WorkEffectStatus::Complete;
@@ -1506,7 +1472,7 @@ fn settle_credentials(
     if saved.status == status {
         return Ok(());
     }
-    if !unresolved(saved.status)? {
+    if !unresolved(saved.status) {
         return Err(GuestProviderError::Unknown);
     }
     copy.status = status;
@@ -1524,124 +1490,56 @@ pub async fn vm_bootstrap_admission(
     operation: &str,
     signature: &str,
 ) -> Result<bool> {
-    let source_attempt = source.attempt_id.to_owned();
-    let source = source.admission.clone();
-    let agent_id = agent_id.to_owned();
-    let root_request_id = root_request_id.to_owned();
-    let operation = operation.to_owned();
-    let signature = signature.to_owned();
-    store
-        .transaction_with(move |tx| -> Result<Option<bool>> {
-            let mut agent = bootstrap_agent(tx, &agent_id, epoch)?;
-            if root_request_id.is_empty() {
-                return Err(GuestProviderError::Invalid);
-            }
-            if ExecutionHistoryRepository::admission(tx, &source_attempt)?.as_ref() != Some(&source)
-            {
+    let state = source.state(agent_id, epoch, root_request_id, operation, signature);
+    with_bootstrap(store, source, state, |tx, mut agent, mut state, fresh| {
+        if let Some(saved) = replay_request::<BootstrapCompletion>(
+            tx,
+            state.admitted_request.id(),
+            state.admitted_request.signature(),
+            chrono::Utc::now().timestamp_millis(),
+        )? {
+            if saved.reply.signature != state.fingerprint {
                 return Err(GuestProviderError::Unknown);
             }
-            let previous =
-                ExecutionHistoryRepository::vm_auth_bootstrap_admission(tx, &source_attempt)?;
-            let fresh = previous.is_none();
-            let admitted = previous.unwrap_or_else(|| {
-                source.derive_result("vm-auth-bootstrap", &[&operation], &signature)
-            });
-            let state = VmAuthBootstrap {
-                agent_id,
-                epoch,
-                request_id: operation,
-                root_request_id,
-                admitted_request: admitted,
-                fingerprint: signature,
-                state: WorkEffectStatus::NotSent,
-            };
-            if let Some(saved) = RequestResults::replay(
-                tx,
-                state.admitted_request.id(),
-                state.admitted_request.signature(),
-                chrono::Utc::now().timestamp_millis(),
-            )? {
-                let saved: ResultEnvelope<BootstrapCompletion> =
-                    serde_json::from_str(&saved.result)?;
-                if saved.reply.signature != state.fingerprint {
-                    return Err(GuestProviderError::Unknown);
-                }
-                if fresh {
-                    ExecutionHistoryRepository::set_vm_auth_bootstrap_admission(
-                        tx,
-                        &source_attempt,
-                        &source,
-                        &state.admitted_request,
-                    )?;
-                }
-                return Ok(Some(true));
-            }
-            if held_for_agent(tx, &state.agent_id, "vmAuthBootstrap")? {
-                return Ok(None);
-            }
-            if let Some(saved) = agent_field::<VmAuthBootstrap>(&agent, "vmAuthBootstrap")? {
-                if saved.epoch == state.epoch
-                    && saved.admitted_request.id() == state.admitted_request.id()
-                {
-                    if saved.fingerprint != state.fingerprint
-                        || saved.agent_id != state.agent_id
-                        || saved.root_request_id != state.root_request_id
-                        || saved.admitted_request != state.admitted_request
-                        || saved.request_id != state.request_id
-                    {
-                        return Err(GuestProviderError::Unknown);
-                    }
-                    return match saved.state {
-                        WorkEffectStatus::Complete => Err(GuestProviderError::Unknown),
-                        WorkEffectStatus::NotSent => {
-                            let mut state = state;
-                            state.state = WorkEffectStatus::Submitted;
-                            save_agent_field(tx, &mut agent, "vmAuthBootstrap", &state)?;
-                            Ok(Some(false))
-                        }
-                        WorkEffectStatus::Submitted | WorkEffectStatus::Unknown => Ok(None),
-                        WorkEffectStatus::Completed
-                        | WorkEffectStatus::Terminal
-                        | WorkEffectStatus::Pending
-                        | WorkEffectStatus::Retryable
-                        | WorkEffectStatus::Applied
-                        | WorkEffectStatus::Failed
-                        | WorkEffectStatus::Cancelled => Err(GuestProviderError::Unknown),
-                    };
-                }
-                if !fresh {
+            return Ok(Some(true));
+        }
+        if held_for_agent(tx, &state.agent_id, "vmAuthBootstrap")? {
+            return Ok(None);
+        }
+        if let Some(saved) = agent_field::<VmAuthBootstrap>(&agent, "vmAuthBootstrap")? {
+            if saved.epoch == state.epoch
+                && saved.admitted_request.id() == state.admitted_request.id()
+            {
+                if saved != state {
                     return Ok(None);
                 }
-                if unresolved(saved.state)? {
-                    hold_obligation(
-                        tx,
-                        &state.agent_id,
-                        saved.admitted_request.id(),
-                        &saved.fingerprint,
-                        "vmAuthBootstrap",
-                        &VmObligation::VmAuthBootstrap(saved.clone()),
-                    )?;
-                    agent.extra.remove("vmAuthBootstrap");
-                    AgentRepository::put(tx, &agent)?;
-                    return Ok(None);
-                }
+                state.state = WorkEffectStatus::Submitted;
+                save_agent_field(tx, &mut agent, "vmAuthBootstrap", &state)?;
+                return Ok(Some(false));
             }
             if !fresh {
                 return Ok(None);
             }
-            ExecutionHistoryRepository::set_vm_auth_bootstrap_admission(
-                tx,
-                &source_attempt,
-                &source,
-                &state.admitted_request,
-            )?;
-            let mut state = state;
-            state.state = WorkEffectStatus::Submitted;
-            save_agent_field(tx, &mut agent, "vmAuthBootstrap", &state)?;
-            Ok(Some(false))
-        })
-        .await?
-        .ok_or(GuestProviderError::Unknown)
+            if unresolved(saved.state) {
+                hold_obligation(
+                    tx,
+                    &mut agent,
+                    saved.admitted_request.id(),
+                    &saved.fingerprint,
+                    "vmAuthBootstrap",
+                    &VmObligation::VmAuthBootstrap(saved.clone()),
+                )?;
+                return Ok(None);
+            }
+        }
+        if !fresh {
+            return Ok(None);
+        }
+        state.state = WorkEffectStatus::Submitted;
+        save_agent_field(tx, &mut agent, "vmAuthBootstrap", &state)?;
+        Ok(Some(false))
+    })
+    .await
 }
 
 pub async fn vm_bootstrap_settled(
@@ -1653,77 +1551,96 @@ pub async fn vm_bootstrap_settled(
     operation: &str,
     signature: &str,
 ) -> Result<()> {
-    let source_attempt = source.attempt_id.to_owned();
+    let state = source.state(agent_id, epoch, root_request_id, operation, signature);
+    with_bootstrap(store, source, state, |tx, mut agent, mut state, fresh| {
+        if fresh {
+            return Err(GuestProviderError::Unknown);
+        }
+        state.state = WorkEffectStatus::Complete;
+        let current = agent_field::<VmAuthBootstrap>(&agent, "vmAuthBootstrap")?;
+        let held_id = Outbox::effect_id(
+            state.admitted_request.id(),
+            OutboxKind::ProviderCall,
+            OwnerKind::Agent,
+            &state.agent_id,
+            &["vmAuthBootstrap"],
+        );
+        let held = Outbox::get::<VmObligation>(tx, &held_id)?;
+        let saved = current
+            .as_ref()
+            .filter(|saved| saved.admitted_request == state.admitted_request)
+            .or_else(|| {
+                held.as_ref().and_then(|held| match &held.payload {
+                    VmObligation::VmAuthBootstrap(saved) => Some(saved),
+                    VmObligation::VmLaunch(_) | VmObligation::CredentialCopy(_) => None,
+                })
+            })
+            .ok_or(GuestProviderError::Unknown)?;
+        let mut expected = state.clone();
+        expected.state = saved.state;
+        if saved != &expected {
+            return Err(GuestProviderError::Unknown);
+        }
+        settle_request(
+            tx,
+            &state.admitted_request,
+            Some(&state.agent_id),
+            &BootstrapCompletion {
+                signature: state.fingerprint.clone(),
+            },
+        )?;
+        if current.is_some_and(|saved| saved.admitted_request == state.admitted_request) {
+            save_agent_field(tx, &mut agent, "vmAuthBootstrap", &state)?;
+        }
+        if let Some(held) = held {
+            Outbox::delete_settled(tx, &held.id, &held.signature)?;
+        }
+        Ok(Some(()))
+    })
+    .await
+}
+
+async fn with_bootstrap<T: Send + 'static>(
+    store: &RuntimeStore,
+    source: VmBootstrapSource<'_>,
+    mut state: VmAuthBootstrap,
+    apply: impl FnOnce(&Transaction<'_>, AgentRecord, VmAuthBootstrap, bool) -> Result<Option<T>>
+    + Send
+    + 'static,
+) -> Result<T> {
+    let attempt = source.attempt_id.to_owned();
     let source = source.admission.clone();
-    let agent_id = agent_id.to_owned();
-    let root_request_id = root_request_id.to_owned();
-    let operation = operation.to_owned();
-    let signature = signature.to_owned();
     store
-        .transaction_with(move |tx| -> Result<()> {
-            let mut agent = bootstrap_agent(tx, &agent_id, epoch)?;
-            if root_request_id.is_empty()
-                || ExecutionHistoryRepository::admission(tx, &source_attempt)?.as_ref()
-                    != Some(&source)
+        .transaction_with(move |tx| -> Result<Option<T>> {
+            let agent = bootstrap_agent(tx, &state.agent_id, state.epoch)?;
+            if state.root_request_id.is_empty()
+                || ExecutionHistoryRepository::admission(tx, &attempt)?.as_ref() != Some(&source)
             {
                 return Err(GuestProviderError::Unknown);
             }
-            let admitted_request =
-                ExecutionHistoryRepository::vm_auth_bootstrap_admission(tx, &source_attempt)?
-                    .ok_or(GuestProviderError::Unknown)?;
-            let state = VmAuthBootstrap {
-                agent_id,
-                epoch,
-                request_id: operation,
-                root_request_id,
-                admitted_request,
-                fingerprint: signature,
-                state: WorkEffectStatus::Complete,
-            };
-            let current = agent_field::<VmAuthBootstrap>(&agent, "vmAuthBootstrap")?;
-            let held_id = Outbox::effect_id(
-                state.admitted_request.id(),
-                OutboxKind::ProviderCall,
-                OwnerKind::Agent,
-                &state.agent_id,
-                &["vmAuthBootstrap"],
-            );
-            let held = Outbox::get::<VmObligation>(tx, &held_id)?;
-            let saved = current
-                .as_ref()
-                .filter(|saved| saved.admitted_request == state.admitted_request)
-                .or_else(|| {
-                    held.as_ref().and_then(|held| match &held.payload {
-                        VmObligation::VmAuthBootstrap(saved) => Some(saved),
-                        VmObligation::VmLaunch(_) | VmObligation::CredentialCopy(_) => None,
-                    })
-                })
-                .ok_or(GuestProviderError::Unknown)?;
-            let mut expected = state.clone();
-            expected.state = saved.state;
-            if saved != &expected {
-                return Err(GuestProviderError::Unknown);
+            let previous = ExecutionHistoryRepository::vm_auth_bootstrap_admission(tx, &attempt)?;
+            let fresh = previous.is_none();
+            state.admitted_request = previous.unwrap_or_else(|| {
+                source.derive_result(
+                    "vm-auth-bootstrap",
+                    &[&state.request_id],
+                    &state.fingerprint,
+                )
+            });
+            let final_effect = state.admitted_request.clone();
+            let result = apply(tx, agent, state, fresh)?;
+            if fresh && result.is_some() {
+                ExecutionHistoryRepository::set_vm_auth_bootstrap_admission(
+                    tx,
+                    &attempt,
+                    &source,
+                    &final_effect,
+                )?;
             }
-            RequestResults::settle(
-                tx,
-                &state.admitted_request,
-                &ResultEnvelope {
-                    actor: Some(state.agent_id.clone()),
-                    reply: BootstrapCompletion {
-                        signature: state.fingerprint.clone(),
-                    },
-                    references: vec![],
-                },
-            )?;
-            if current.is_some_and(|saved| saved.admitted_request == state.admitted_request) {
-                save_agent_field(tx, &mut agent, "vmAuthBootstrap", &state)?;
-            }
-            if let Some(held) = held {
-                Outbox::delete_settled(tx, &held.id, &held.signature)?;
-            }
-            Ok(())
+            Ok(result)
         })
-        .await
+        .await?
+        .ok_or(GuestProviderError::Unknown)
 }
 
 fn bootstrap_agent(tx: &Transaction<'_>, agent_id: &str, epoch: i64) -> Result<AgentRecord> {
@@ -1738,25 +1655,6 @@ fn bootstrap_agent(tx: &Transaction<'_>, agent_id: &str, epoch: i64) -> Result<A
         return Err(GuestProviderError::Refused);
     }
     Ok(agent)
-}
-
-/// Return the existing launch root; absence never creates a replacement ID.
-pub fn vm_launch_request_id(
-    connection: &rusqlite::Connection,
-    agent_id: &str,
-    epoch: i64,
-) -> Result<String> {
-    let agent = AgentRepository::get(connection, &AgentId::from(agent_id))?
-        .ok_or(GuestProviderError::Refused)?;
-    let launch: VmLaunch = agent_field(&agent, "vmLaunch")?.ok_or(GuestProviderError::Unknown)?;
-    if agent.epoch != epoch
-        || launch.identity.agent_id != agent_id
-        || launch.identity.epoch != epoch
-        || launch.identity.request_id.is_empty()
-    {
-        return Err(GuestProviderError::Unknown);
-    }
-    Ok(launch.identity.request_id)
 }
 
 async fn call_guest(
@@ -1915,6 +1813,7 @@ mod tests {
     };
     use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId};
     use studio_runtime_schema::persistence::REQUEST_RESULT_TTL_MS;
+    use studio_runtime_store::request_results::{RequestResults, ResultEnvelope};
 
     struct FakeGuest {
         starts: Mutex<usize>,
@@ -2163,14 +2062,6 @@ mod tests {
         let guest = Arc::new(FakeGuest::new(false));
         let session = open_session(store.clone(), guest.clone()).await.unwrap();
         let connection = store.test_reader().unwrap();
-        assert_eq!(
-            vm_launch_request_id(&connection, "agent-1", 9).unwrap(),
-            session.identity().request_id
-        );
-        assert!(matches!(
-            vm_launch_request_id(&connection, "agent-1", 10),
-            Err(GuestProviderError::Unknown)
-        ));
         let agent = AgentRepository::get(&connection, &AgentId::from("agent-1"))
             .unwrap()
             .unwrap();
@@ -2247,12 +2138,12 @@ mod tests {
         let session = open_session(store.clone(), guest).await.unwrap();
         let original = saved_start(&store).await;
         assert!(matches!(
-            persist_not_sent(store.clone(), session.identity().clone()).await,
+            persist_start(store.clone(), session.identity().clone(), None).await,
             Err(GuestProviderError::Unknown)
         ));
         let mut later_info = FakeGuest::info();
         later_info["sequence"] = json!(2);
-        persist_started(store.clone(), session.identity().clone(), later_info)
+        persist_start(store.clone(), session.identity().clone(), Some(later_info))
             .await
             .unwrap();
         assert_eq!(saved_start(&store).await, original);
