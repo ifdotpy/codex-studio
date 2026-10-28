@@ -98,15 +98,19 @@ impl TryFrom<&mut SteerWire> for SteerState {
             }
             WireStage::Submitted | WireStage::Unconfirmed => {
                 let sent = SubmittedSteer {
-                    request_ticket: parse_wire(wire.request_ticket.take().ok_or(())?)?,
-                    generation: parse_wire(wire.generation.take().ok_or(())?)?,
-                    submitted_at: parse_wire(wire.submitted_at.take().ok_or(())?)?,
+                    request_ticket: parse_wire(&wire.request_ticket.take().ok_or(())?)?,
+                    generation: parse_wire(&wire.generation.take().ok_or(())?)?,
+                    submitted_at: parse_wire(&wire.submitted_at.take().ok_or(())?)?,
                     prepared_submission: wire.prepared_submission.take(),
-                    response: wire.response.take().map(parse_wire).transpose()?,
+                    response: wire
+                        .response
+                        .take()
+                        .map(|raw| parse_wire(&raw))
+                        .transpose()?,
                     interrupt_still_queued: wire
                         .interrupt_still_queued
                         .take()
-                        .map(parse_wire)
+                        .map(|raw| parse_wire(&raw))
                         .transpose()?
                         .unwrap_or(false),
                 };
@@ -120,9 +124,7 @@ impl TryFrom<&mut SteerWire> for SteerState {
     }
 }
 
-fn parse_wire<T: serde::de::DeserializeOwned>(
-    raw: Box<serde_json::value::RawValue>,
-) -> Result<T, ()> {
+fn parse_wire<T: serde::de::DeserializeOwned>(raw: &serde_json::value::RawValue) -> Result<T, ()> {
     serde_json::from_str(raw.get()).map_err(|_| ())
 }
 
