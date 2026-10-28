@@ -97,6 +97,37 @@ enum VoiceProviderCall {
     Retained(RetainedCall<Method, AdmittedRequest>),
 }
 
+#[derive(Deserialize)]
+struct LegacySubmission {
+    call: LegacyCall,
+}
+#[derive(Deserialize)]
+struct LegacyCall {
+    scope: ConnectionScope,
+    operation: String,
+    actor: Option<RequestActor>,
+    transfer: Option<studio_runtime_schema::provider_call_contract::TransferAuthorization>,
+    deleted_actor_session: Option<String>,
+    method: Method,
+    params: Value,
+}
+#[derive(Deserialize)]
+struct LegacySettled {
+    result: RequestResult,
+}
+#[derive(Deserialize)]
+struct LegacyStop {
+    agent: String,
+    epoch: i64,
+    status: String,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyVoiceAgent {
+    account_key: Option<String>,
+    thread_id: Option<String>,
+}
+
 fn prior_call(
     tx: &Transaction<'_>,
     session: &VoiceDeleteSession,
@@ -118,10 +149,19 @@ fn prior_call(
         return Ok(None);
     };
     let invalid = || unclassifiable(RECEIPT_SOURCE, &id, &signature);
-    let mut saved: Value = serde_json::from_str(&raw).map_err(|_| invalid())?;
-    saved["call"]["root_request_id"] = json!("");
-    saved["call"]["admitted_request"] = Value::Null;
-    let call: Call = serde_json::from_value(saved["call"].clone()).map_err(|_| invalid())?;
+    let saved: LegacySubmission = serde_json::from_str(&raw).map_err(|_| invalid())?;
+    let old = saved.call;
+    let call = Call {
+        root_request_id: String::new(),
+        admitted_request: None,
+        scope: old.scope,
+        operation: old.operation,
+        actor: old.actor,
+        transfer: old.transfer,
+        deleted_actor_session: old.deleted_actor_session,
+        method: old.method,
+        params: old.params,
+    };
     let actor = call.actor.as_ref().ok_or_else(invalid)?;
     if call.operation != operation
         || call.method != Method::ThreadRealtimeStop
@@ -193,10 +233,8 @@ fn prior(
     let Some(settled) = settled else {
         return Ok(Some(VoiceStopOutcome::Submitted));
     };
-    let settled: Value = serde_json::from_str(&settled).map_err(|_| invalid())?;
-    let result: RequestResult =
-        serde_json::from_value(settled["result"].clone()).map_err(|_| invalid())?;
-    Ok(Some(match result {
+    let settled: LegacySettled = serde_json::from_str(&settled).map_err(|_| invalid())?;
+    Ok(Some(match settled.result {
         RequestResult::Reply(_) => VoiceStopOutcome::Written,
         RequestResult::Rejected(_) => VoiceStopOutcome::Rejected,
         RequestResult::NotSent => VoiceStopOutcome::NotSent,
@@ -334,14 +372,17 @@ fn proven_session_scope(
     })
     .transpose()
 }
-fn capture(tx: &Transaction<'_>, row: &SourceReceipt, value: &Value) -> Result<VoiceStopPayload> {
+fn capture(
+    tx: &Transaction<'_>,
+    row: &SourceReceipt,
+    value: LegacyStop,
+) -> Result<VoiceStopPayload> {
     let invalid = || unclassifiable(RECEIPT_SOURCE, &row.id, &row.signature);
-    let agent = value["agent"]
-        .as_str()
-        .filter(|v| !v.is_empty())
+    let agent = (!value.agent.is_empty())
+        .then_some(value.agent.as_str())
         .ok_or_else(invalid)?;
-    let epoch = value["epoch"].as_i64().ok_or_else(invalid)?;
-    if value["status"] != "pending" && value["status"] != "unknown" {
+    let epoch = value.epoch;
+    if value.status != "pending" && value.status != "unknown" {
         return Err(invalid());
     }
     let raw: Option<String> = tx
@@ -351,12 +392,10 @@ fn capture(tx: &Transaction<'_>, row: &SourceReceipt, value: &Value) -> Result<V
             |r| r.get(0),
         )
         .optional()?;
-    let owner: Value = serde_json::from_str(&raw.ok_or_else(invalid)?).map_err(|_| invalid())?;
-    if !owner.is_object() {
-        return Err(invalid());
-    }
-    let account = owner["accountKey"].as_str().unwrap_or("default");
-    let thread = owner["threadId"].as_str();
+    let owner: LegacyVoiceAgent =
+        serde_json::from_str(&raw.ok_or_else(invalid)?).map_err(|_| invalid())?;
+    let account = owner.account_key.as_deref().unwrap_or("default");
+    let thread = owner.thread_id.as_deref();
     let mut sessions = Vec::new();
     if let Some(thread) = thread {
         let mut query=tx.prepare("SELECT id,connection_id,provider_scope FROM voice_sessions WHERE agent=?1 AND ended IS NULL AND state IS NOT NULL AND account_key=?2 AND native_thread=?3 AND connection_id IS NOT NULL ORDER BY created,id")?;
@@ -393,7 +432,7 @@ fn capture(tx: &Transaction<'_>, row: &SourceReceipt, value: &Value) -> Result<V
             });
         }
     }
-    let outcomes = if value["status"] == "unknown" {
+    let outcomes = if value.status == "unknown" {
         sessions
             .iter()
             .map(|s| (s.session_id.clone(), VoiceStopOutcome::Unknown))
@@ -567,18 +606,20 @@ impl ReceiptFamilyMigration for VoiceMigration {
         }
         for row in read_receipt_batch(tx, source, checkpoint, VOICE)? {
             let invalid = || unclassifiable(source, &row.id, &row.signature);
-            let value: Value = row.json(source)?;
             let (kind, mut payload) = if row.id.starts_with("agent-delete-voice:")
                 && row.signature == "voice-agent-delete-v1"
             {
                 (
                     OutboxKind::VoiceDelete,
-                    serde_json::from_value::<VoiceStopPayload>(value).map_err(|_| invalid())?,
+                    row.json::<VoiceStopPayload>(source)?,
                 )
             } else if row.id.starts_with("agent-voice-stop:")
                 && row.signature == "lifecycle.voice-stop.v1"
             {
-                (OutboxKind::VoiceStop, capture(tx, &row, &value)?)
+                (
+                    OutboxKind::VoiceStop,
+                    capture(tx, &row, row.json::<LegacyStop>(source)?)?,
+                )
             } else {
                 return Err(invalid());
             };
@@ -734,6 +775,10 @@ impl ReceiptFamilyMigration for VoiceMigration {
 
 #[cfg(test)]
 mod tests {
+    #[derive(serde::Serialize)]
+    struct SubmissionFixture<'a, T> {
+        call: &'a T,
+    }
     use super::*;
     use crate::outbox::Outbox;
     use crate::receipt_migration_contract::{MIGRATION_BATCH_ROWS, prepare_schema};
@@ -1024,7 +1069,7 @@ mod tests {
             "INSERT INTO runtime_operation_receipts VALUES(?1,'submitted',?2)",
             params![
                 format!("{prefix}:submitted"),
-                json!({"call":call}).to_string()
+                serde_json::to_string(&SubmissionFixture { call: &call }).expect("call")
             ],
         )
         .expect("submitted");
@@ -1101,7 +1146,10 @@ mod tests {
             );
             db.execute(
                 "INSERT INTO runtime_operation_receipts VALUES(?1,'submitted',?2)",
-                params![key, json!({"call":call}).to_string()],
+                params![
+                    key,
+                    serde_json::to_string(&SubmissionFixture { call: &call }).expect("call")
+                ],
             )
             .expect("call");
         }
@@ -1159,7 +1207,10 @@ mod tests {
         );
         db.execute(
             "INSERT INTO runtime_operation_receipts VALUES(?1,'submitted',?2)",
-            params![key, json!({"call":call}).to_string()],
+            params![
+                key,
+                serde_json::to_string(&SubmissionFixture { call: &call }).expect("call")
+            ],
         )
         .unwrap();
         assert!(
@@ -1211,7 +1262,10 @@ mod tests {
         };
         db.execute(
             "INSERT INTO runtime_operation_receipts VALUES(?1,'submitted',?2)",
-            params![format!("{key}:submitted"), json!({"call":call}).to_string()],
+            params![
+                format!("{key}:submitted"),
+                serde_json::to_string(&SubmissionFixture { call: &call }).expect("call")
+            ],
         )
         .expect("delete admission");
         batch(&mut db).expect("migrate");
