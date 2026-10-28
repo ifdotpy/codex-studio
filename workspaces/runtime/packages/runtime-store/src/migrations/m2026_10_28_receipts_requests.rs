@@ -824,7 +824,16 @@ fn exact_reply(row: &SourceReceipt, reply: &Value) -> bool {
         return reply["id"].is_string() && reply["name"].is_string();
     }
     if row.id.starts_with("sidebar-order:") {
-        return reply["revision"].is_number() && reply["groups"].is_array();
+        return reply["revision"].as_u64().is_some()
+            && reply["groups"].as_object().is_some_and(|groups| {
+                groups.values().all(|items| {
+                    items.as_array().is_some_and(|items| {
+                        items.iter().all(Value::is_string)
+                            && items.iter().collect::<std::collections::HashSet<_>>().len()
+                                == items.len()
+                    })
+                })
+            });
     }
     if row.id.starts_with("project-delete:") {
         return reply["id"].is_string()
@@ -2118,7 +2127,18 @@ mod tests {
                 json!({"event":"ready","count":1,"woken":{}}),
             ),
             ("peer-team:bad", json!({"id":"project","name":{}})),
-            ("sidebar-order:bad", json!({"revision":1,"groups":{}})),
+            (
+                "sidebar-order:bad",
+                json!({"revision":1,"groups":{"group":["same","same"]}}),
+            ),
+            (
+                "sidebar-order:bad-array",
+                json!({"revision":1,"groups":{"group":"not-an-array"}}),
+            ),
+            (
+                "sidebar-order:bad-item",
+                json!({"revision":1,"groups":{"group":[1]}}),
+            ),
             (
                 "project-delete:bad",
                 json!({"id":"project","outcome":"deleted","deletedAgentIds":{},"deletedRoomIds":[]}),
@@ -2401,7 +2421,7 @@ mod tests {
             let reply = if prefix == "peer-team:" {
                 json!({"id":"project","name":"Original"})
             } else {
-                json!({"revision":1,"groups":[]})
+                json!({"revision":1,"groups":{"workspace":["first","second"]}})
             };
             insert(&db, &id, reply.clone());
             migrate(&mut db);
