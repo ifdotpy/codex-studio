@@ -294,27 +294,54 @@ pub(super) async fn dispatch_with_ports(
             authorize_call(tx, &snapshot, &call_for_owner)?;
             let mut owner =
                 storage::admit_owner(tx, &origin_for_owner, &input_for_owner.signature())?;
-            let id = if let Some(id) = &owner.payload.tool_request { id.clone() } else {
-                let alias = call_for_owner.alias.as_deref().unwrap_or(&call_for_owner.call);
+            let id = if let Some(id) = &owner.payload.tool_request {
+                id.clone()
+            } else {
+                let alias = call_for_owner
+                    .alias
+                    .as_deref()
+                    .unwrap_or(&call_for_owner.call);
                 let existing = tool_requests::resolve(tx, &origin_for_owner.context.agent, alias)?;
                 let id = if let Some(existing) = existing {
-                    if existing["stage"] == "ambiguous" { return Err(CallbackError::Unknown); }
-                    if existing["signature"] != call_for_owner.signature { return Err(CallbackError::Conflict); }
-                    if existing["accountKey"] != origin_for_owner.context.account || existing["threadId"] != origin_for_owner.context.thread { return Err(CallbackError::Stale); }
-                    existing["id"].as_str().ok_or(CallbackError::Unknown)?.to_owned()
-                } else {
-                    if let Some(alias) = &call_for_owner.alias {
-                        let identity = studio_runtime_schema::persistence::RequestIdentity::new("managed_tool", &[], alias, &[])
-                            .map_err(|_| CallbackError::Invalid("Request id expired"))?;
-                        identity.validate(chrono::Utc::now().timestamp_millis(), studio_runtime_store::request_results::RequestResults::expired_before_ms(tx)?)
-                            .map_err(|_| CallbackError::Invalid("Request id expired"))?;
+                    if existing["stage"] == "ambiguous" {
+                        return Err(CallbackError::Unknown);
                     }
+                    if existing["signature"] != call_for_owner.signature {
+                        return Err(CallbackError::Conflict);
+                    }
+                    if existing["accountKey"] != origin_for_owner.context.account
+                        || existing["threadId"] != origin_for_owner.context.thread
+                    {
+                        return Err(CallbackError::Stale);
+                    }
+                    existing["id"]
+                        .as_str()
+                        .ok_or(CallbackError::Unknown)?
+                        .to_owned()
+                } else {
                     studio_runtime_schema::persistence::RequestIdentity::issue_root()
                 };
                 owner.payload.tool_request = Some(id.clone());
                 id
             };
             storage::put_owner(tx, &owner)?;
+            let call = &call_for_owner;
+            let context = &origin_for_owner.context;
+            let mut candidate = json!({
+                "id":id, "agent":context.agent, "threadId":context.thread,
+                "callId":call.call, "tool":call.name, "signature":call.signature,
+                "arguments":call.args,
+                "rpcId":input_for_owner.id, "turnId":context.turn, "epoch":context.epoch,
+                "accountKey":context.account, "connectionId":context.connection,
+                "supervisor":{"generation":context.generation},
+                "created":chrono::Utc::now().timestamp_millis() as f64 / 1000.0, "updated":now,
+                "readOnly":services::read_only(&call.name,&call.args),
+                "stage":"queued", "outcome":"pending", "cancelRequested":false
+            });
+            if let Some(alias) = &call.alias {
+                candidate["request_id"] = json!(alias);
+            }
+            admission::reserve(tx, candidate, &call.call, &call.prefix, call.alias.clone())?;
             Ok::<_, CallbackError>(id)
         })
         .await?;
@@ -327,36 +354,6 @@ pub(super) async fn dispatch_with_ports(
     if matches!(call.kind, ToolKind::Unknown) {
         return Ok(CallbackDecision::Unsupported);
     }
-    // The complete call identity and arguments commit before a service can act.
-    let context_for_admission = context.clone();
-    let call_for_admission = call.clone();
-    let input_for_admission = input.clone();
-    store
-        .transaction_with(move |tx| {
-            let context = &context_for_admission;
-            let call = &call_for_admission;
-            let input = &input_for_admission;
-            let snapshot = storage::snapshot(tx, context)?;
-            snapshot.active()?;
-            authorize_call(tx, &snapshot, call)?;
-            let mut candidate = json!({
-                "id":call.id, "agent":context.agent, "threadId":context.thread,
-                "callId":call.call, "tool":call.name, "signature":call.signature,
-                "arguments":call.args,
-                "rpcId":input.id, "turnId":context.turn, "epoch":context.epoch,
-                "accountKey":context.account, "connectionId":context.connection,
-                "supervisor":{"generation":context.generation},
-                "created":chrono::Utc::now().timestamp_millis() as f64 / 1000.0, "updated":now,
-                "readOnly":services::read_only(&call.name,&call.args),
-                "stage":"queued", "outcome":"pending", "cancelRequested":false
-            });
-            if let Some(alias) = &call.alias {
-                candidate["request_id"] = json!(alias);
-            }
-            admission::reserve(tx, candidate, &call.call, &call.prefix, call.alias.clone())?;
-            Ok::<_, CallbackError>(())
-        })
-        .await?;
     enum DispatchState {
         Result(Value),
         Claimed,

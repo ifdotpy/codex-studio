@@ -124,24 +124,26 @@ it("uses caller operation identities for sends and explicit request identities",
   ).toBe("edit-once");
   expect(rows.size).toBe(0);
 });
-it("releases a successful JSON write through the API facade after a lost response retry", async () => {
+it("retains a UUIDv7 preference write through a lost response retry", async () => {
   const requests: Request[] = [];
   const fetch = vi.fn(async (request: Request) => {
     requests.push(request);
     if (requests.length === 1) throw new Error("Lost response");
-    return Response.json({ rows: [] });
+    return Response.json({ fields: {} });
   });
   vi.stubGlobal("fetch", fetch);
   try {
-    await expect(post("/api/sync/drafts", { rows: [] })).rejects.toThrow(
-      "Lost response",
-    );
-    await post("/api/sync/drafts", { rows: [] });
-    await post("/api/sync/drafts", { rows: [] });
+    await expect(
+      post("/api/sync/preferences", { scope: "user", fields: {} }),
+    ).rejects.toThrow("Lost response");
+    await post("/api/sync/preferences", { scope: "user", fields: {} });
+    await post("/api/sync/preferences", { scope: "user", fields: {} });
     const ids = requests.map((request) =>
       request.headers.get("X-Studio-Request-Id"),
     );
-    expect(ids[0]).toBeTruthy();
+    expect(ids[0]).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
     expect(ids[1]).toBe(ids[0]);
     expect(ids[2]).not.toBe(ids[1]);
     expect(rows.size).toBe(0);

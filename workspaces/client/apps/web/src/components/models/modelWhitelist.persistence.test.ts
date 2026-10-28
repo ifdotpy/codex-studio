@@ -69,17 +69,13 @@ it("persists server-only selections via HTTP, restores an SSE projection after r
   await expectState(local, "saved");
   writeModelWhitelist(["codex:astra"], local);
   await expectState(local, "saved");
-  expect(post).toHaveBeenCalledWith(
-    "/api/sync/preferences",
-    {
-      scope: "server",
-      fields: expect.objectContaining({
-        [key]: expect.objectContaining({ value: ["codex:astra"] }),
-        [other]: fields[other],
-      }),
-    },
-    { requestId: expect.stringMatching(/^ui-preferences:[0-9a-f]{64}$/) },
-  );
+  expect(post).toHaveBeenCalledWith("/api/sync/preferences", {
+    scope: "server",
+    fields: expect.objectContaining({
+      [key]: expect.objectContaining({ value: ["codex:astra"] }),
+      [other]: fields[other],
+    }),
+  });
   expect(readModelWhitelist(remote)).toBeNull();
   expect(readPreferenceFields("server", local)[other]).toEqual(fields[other]);
   const saved = readPreferenceFields("server", local);
@@ -152,8 +148,8 @@ it("keeps newer rapid edits while an earlier request is in flight and clock-corr
   });
   await expectState(storage, "saved");
   expect(post).toHaveBeenCalledTimes(2);
-  expect(required(required(post.mock.calls[1])[2])?.requestId).not.toBe(
-    required(required(post.mock.calls[0])[2])?.requestId,
+  expect(required(post.mock.calls[1])[1]).not.toEqual(
+    required(post.mock.calls[0])[1],
   );
   expect(readModelWhitelist(storage)).toEqual(["codex:astra", "claude:opus"]);
   expect(readPreferenceWriteStatus(storage, "server").state).toBe("saved");
@@ -287,8 +283,8 @@ it.each(["edit", "retry"] as const)(
           required(post.mock.calls[0]),
         );
       else {
-        expect(required(required(post.mock.calls[2])[2])?.requestId).not.toBe(
-          required(required(post.mock.calls[0])[2])?.requestId,
+        expect(required(post.mock.calls[2])[1]).not.toEqual(
+          required(post.mock.calls[0])[1],
         );
         expect(readModelWhitelist(storage)).toEqual(["claude:opus"]);
       }
