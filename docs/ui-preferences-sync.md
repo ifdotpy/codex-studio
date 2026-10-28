@@ -52,7 +52,7 @@ Server preferences stay on their own server.
 `workspaces/client/apps/web/src/servers/storage.ts` adds the server namespace to local keys in server views.
 The offline cache retains the previous local keys for the first render.
 
-Message identities are not stored in browser storage. The native core mints each one with `outbox.reserve` (`client-core/src/outbox.rs`). `outbox.enqueue` stores the message under that identity before any HTTP request. A page that loses the enqueue reply keeps the identity in memory only, so a reload before the reply can send the text again under a new identity.
+Message identities are not stored in browser storage. The native core keeps each pending send per room in `client_outbox_pending` (`outbox.prepare`, `client-core/src/outbox.rs`). The same text returns the same identity until the page calls `outbox.release` after the outbox stores the message or refuses it. `outbox.enqueue` stores the message before any HTTP request. A lost enqueue reply followed by a resend reuses the stored identity, so no second message is created.
 
 ## Storage and delivery
 
