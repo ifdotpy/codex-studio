@@ -498,29 +498,78 @@ pub fn verify_multi_server_response(
     expected_server_id: &str,
     expected_public_key: &str,
 ) -> RemoteTransportResult<Value> {
+    verify_multi_server_identity(response_body, expected_server_id, expected_public_key)?;
+    parse_exact_json(response_body)
+}
+
+/// Verify the peer identity on the original bytes before decoding the durable reply.
+pub fn verify_multi_server_reply(
+    response_body: &[u8],
+    expected_server_id: &str,
+    expected_public_key: &str,
+) -> RemoteTransportResult<studio_runtime_store::multi_server_delivery::RemoteReply> {
+    verify_multi_server_identity(response_body, expected_server_id, expected_public_key)?;
+    serde_json::from_slice(response_body).map_err(|_| RemoteTransportError::InvalidResponse)
+}
+
+fn verify_multi_server_identity(
+    response_body: &[u8],
+    expected_server_id: &str,
+    expected_public_key: &str,
+) -> RemoteTransportResult<()> {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Identity {
+        #[serde(default, deserialize_with = "present")]
+        server_id: Option<Box<serde_json::value::RawValue>>,
+        #[serde(default, deserialize_with = "present")]
+        public_key: Option<Box<serde_json::value::RawValue>>,
+        identity: Option<Box<serde_json::value::RawValue>>,
+    }
+    fn present<'de, D: serde::Deserializer<'de>>(
+        d: D,
+    ) -> Result<Option<Box<serde_json::value::RawValue>>, D::Error> {
+        <Box<serde_json::value::RawValue> as serde::Deserialize>::deserialize(d).map(Some)
+    }
+    fn matches(identity: &Identity, server: &str, key: &str) -> bool {
+        [
+            (identity.server_id.as_deref(), server),
+            (identity.public_key.as_deref(), key),
+        ]
+        .into_iter()
+        .all(|(value, expected)| {
+            value.is_none_or(|value| {
+                serde_json::from_str::<String>(value.get()).ok().as_deref() == Some(expected)
+            })
+        })
+    }
     ed25519_public_key(expected_public_key)?;
-    let response = parse_exact_json(response_body)?;
-    let object = response
-        .as_object()
-        .ok_or(RemoteTransportError::InvalidResponse)?;
-    for identity in [
-        object,
-        object
-            .get("identity")
-            .and_then(Value::as_object)
-            .unwrap_or(object),
-    ] {
-        if identity
-            .get("serverId")
-            .is_some_and(|server_id| server_id.as_str() != Some(expected_server_id))
-            || identity
-                .get("publicKey")
-                .is_some_and(|public_key| public_key.as_str() != Some(expected_public_key))
-        {
+    reject_unrepresentable_integer_tokens(response_body)?;
+    if response_body
+        .iter()
+        .copied()
+        .find(|byte| !byte.is_ascii_whitespace())
+        != Some(b'{')
+    {
+        return Err(RemoteTransportError::InvalidResponse);
+    }
+    let identity: Identity =
+        serde_json::from_slice(response_body).map_err(|_| RemoteTransportError::InvalidResponse)?;
+    if !matches(&identity, expected_server_id, expected_public_key) {
+        return Err(RemoteTransportError::InvalidSignature);
+    }
+    if let Some(nested) = identity
+        .identity
+        .as_deref()
+        .filter(|value| value.get().trim_start().starts_with('{'))
+    {
+        let nested: Identity = serde_json::from_str(nested.get())
+            .map_err(|_| RemoteTransportError::InvalidResponse)?;
+        if !matches(&nested, expected_server_id, expected_public_key) {
             return Err(RemoteTransportError::InvalidSignature);
         }
     }
-    Ok(response)
+    Ok(())
 }
 
 fn ed25519_public_key(public_key_pem: &str) -> RemoteTransportResult<Vec<u8>> {
@@ -1644,6 +1693,22 @@ fn set_no_follow(options: &mut OpenOptions) -> RemoteTransportResult<()> {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    #[test]
+    fn typed_reply_checks_identity_and_numeric_tokens_before_decoding() {
+        let key = spki_pem();
+        let valid = br#"{"requestId":"r","outcome":"unknown","serverId":"server-peer"}"#;
+        assert!(super::verify_multi_server_reply(valid, "server-peer", &key).is_ok());
+        let wrong = br#"{"requestId":"r","outcome":"unknown","identity":{"serverId":"other"}}"#;
+        assert!(matches!(
+            super::verify_multi_server_reply(wrong, "server-peer", &key),
+            Err(super::RemoteTransportError::InvalidSignature)
+        ));
+        let invalid_number = br#"{"requestId":"r","outcome":"unknown","n":18446744073709551617}"#;
+        assert!(matches!(
+            super::verify_multi_server_reply(invalid_number, "server-peer", &key),
+            Err(super::RemoteTransportError::InvalidResponse)
+        ));
+    }
     use ring::signature::{Ed25519KeyPair, KeyPair};
     use std::sync::Arc;
 

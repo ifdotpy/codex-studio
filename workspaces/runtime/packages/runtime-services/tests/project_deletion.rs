@@ -359,11 +359,17 @@ async fn project_deletion_location_reservation_rechecks_the_checked_lifetime() {
             _: &'a str,
             envelope: &'a Value,
             _: std::time::Duration,
-        ) -> futures_util::future::BoxFuture<'a, Result<Value, AccessError>> {
+        ) -> futures_util::future::BoxFuture<
+            'a,
+            Result<studio_runtime_store::multi_server_delivery::RemoteReply, AccessError>,
+        > {
             self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Box::pin(
-                async move { Ok(json!({"requestId":envelope["requestId"],"outcome":"unknown"})) },
-            )
+            Box::pin(async move {
+                Ok(
+                    studio_runtime_services::multi_server_orchestration::ExchangeOutcome::Unknown
+                        .to_reply(envelope["requestId"].as_str().unwrap()),
+                )
+            })
         }
     }
     let (_root, store, project) = setup().await;
@@ -569,11 +575,17 @@ async fn project_deletion_refuses_fresh_markerless_location_reservations_but_rep
             _: &'a str,
             envelope: &'a Value,
             _: std::time::Duration,
-        ) -> futures_util::future::BoxFuture<'a, Result<Value, AccessError>> {
+        ) -> futures_util::future::BoxFuture<
+            'a,
+            Result<studio_runtime_store::multi_server_delivery::RemoteReply, AccessError>,
+        > {
             self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Box::pin(
-                async move { Ok(json!({"requestId":envelope["requestId"],"outcome":"unknown"})) },
-            )
+            Box::pin(async move {
+                Ok(
+                    studio_runtime_services::multi_server_orchestration::ExchangeOutcome::Unknown
+                        .to_reply(envelope["requestId"].as_str().unwrap()),
+                )
+            })
         }
     }
     let (_root, store, project) = setup().await;
@@ -676,7 +688,7 @@ async fn project_deletion_refuses_fresh_markerless_location_reservations_but_rep
         .await
         .expect("legacy completed receipt replays without admission");
     assert!(
-        matches!(replayed,studio_runtime_services::multi_server_transport::ExchangeOutcome::Applied(ref value) if value["retained"]==true)
+        matches!(replayed,studio_runtime_services::multi_server_transport::ExchangeOutcome::Applied(ref value) if serde_json::from_str::<Value>(value.value.get()).unwrap()["retained"]==true)
     );
     let mut changed = payload;
     changed["path"] = json!("/changed");

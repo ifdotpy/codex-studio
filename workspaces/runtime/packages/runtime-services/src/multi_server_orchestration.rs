@@ -227,8 +227,7 @@ fn settle_delivery(
             "This request id has different content",
         ));
     }
-    let response: RemoteReply = serde_json::from_value(result.to_value(root))
-        .map_err(|_| refused(503, "invalid_record", "Stored delivery result is invalid"))?;
+    let response = result.to_reply(root);
     let saved = SavedRemoteReply {
         principal,
         server,
@@ -287,38 +286,111 @@ use crate::multi_server_auth::{AccessError, digest, refused, schema, stored, tex
 use crate::remote_transport::{
     MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, MultiServerRequest, PairedRequest, canonical_json,
     exchange_paired_request, learn_paired_request_link, load_multi_server_identity,
-    multi_server_signed_headers, new_nonce, verify_multi_server_response,
+    multi_server_signed_headers, new_nonce, verify_multi_server_reply,
 };
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum ExchangeOutcome {
-    Applied(Value),
+    Applied(AppliedReply),
     NotApplied(String),
     Unknown,
     /// The receiver has not crossed the effect boundary and will wait for its
     /// prerequisite. Unlike `Unknown`, this claim is safe to retry later.
     PreEffectWaiting,
 }
-impl ExchangeOutcome {
-    pub fn to_value(&self, key: &str) -> Value {
-        match self {
-            Self::Applied(v) => json!({"requestId":key,"outcome":"applied","value":v}),
-            Self::NotApplied(e) => json!({"requestId":key,"outcome":"not_applied","error":e}),
-            Self::Unknown => json!({"requestId":key,"outcome":"unknown"}),
-            Self::PreEffectWaiting => {
-                json!({"requestId":key,"outcome":"unknown","waitingFor":"The stop or parent update"})
+#[derive(Clone, Debug)]
+pub struct AppliedReply {
+    pub value: Box<serde_json::value::RawValue>,
+    pub output_expires_at: Option<f64>,
+    pub handle: bool,
+    pub output_ref: bool,
+}
+impl AppliedReply {
+    pub fn new(value: Box<serde_json::value::RawValue>) -> Self {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Metadata<'a> {
+            #[serde(borrow)]
+            output_expires_at: Option<&'a serde_json::value::RawValue>,
+            #[serde(default, deserialize_with = "present")]
+            handle: bool,
+            #[serde(default, deserialize_with = "present")]
+            output_ref: bool,
+            #[serde(borrow)]
+            value: Option<&'a serde_json::value::RawValue>,
+            #[serde(borrow)]
+            result: Option<&'a serde_json::value::RawValue>,
+        }
+        fn present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+            <serde::de::IgnoredAny as serde::Deserialize>::deserialize(d).map(|_| true)
+        }
+        fn metadata(raw: &serde_json::value::RawValue) -> Option<(f64, bool, bool)> {
+            let item: Metadata<'_> = serde_json::from_str(raw.get()).ok()?;
+            if let Some(expires) = item
+                .output_expires_at
+                .and_then(|v| serde_json::from_str(v.get()).ok())
+                && (item.handle || item.output_ref)
+            {
+                return Some((expires, item.handle, item.output_ref));
             }
+            item.value
+                .and_then(metadata)
+                .or_else(|| item.result.and_then(metadata))
+        }
+        let (output_expires_at, handle, output_ref) = metadata(&value)
+            .map_or((None, false, false), |(expiry, handle, output_ref)| {
+                (Some(expiry), handle, output_ref)
+            });
+        Self {
+            value,
+            output_expires_at,
+            handle,
+            output_ref,
         }
     }
-    fn from_value(value: &Value, key: &str, now: i64) -> Result<Self, AccessError> {
-        if value.to_string().len() > MAX_RESPONSE_BYTES {
-            return Err(invalid_receipt());
+}
+impl PartialEq for ExchangeOutcome {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Applied(a), Self::Applied(b)) => a.value.get() == b.value.get(),
+            (Self::NotApplied(a), Self::NotApplied(b)) => a == b,
+            (Self::Unknown, Self::Unknown) | (Self::PreEffectWaiting, Self::PreEffectWaiting) => {
+                true
+            }
+            _ => false,
         }
-        Self::from_reply(
-            serde_json::from_value(value.clone()).map_err(|_| invalid_receipt())?,
-            key,
-            now,
-        )
+    }
+}
+impl ExchangeOutcome {
+    pub fn to_reply(&self, key: &str) -> RemoteReply {
+        use studio_runtime_schema::persistence::RemoteOutcome;
+        let (outcome, value, error, waiting_for) = match self {
+            Self::Applied(value) => (
+                RemoteOutcome::Applied,
+                Some(value.value.clone()),
+                None,
+                None,
+            ),
+            Self::NotApplied(error) => (RemoteOutcome::NotApplied, None, Some(error.clone()), None),
+            Self::Unknown => (RemoteOutcome::Unknown, None, None, None),
+            Self::PreEffectWaiting => (
+                RemoteOutcome::Unknown,
+                None,
+                None,
+                Some("The stop or parent update".to_owned()),
+            ),
+        };
+        RemoteReply {
+            request_id: key.to_owned(),
+            outcome,
+            value,
+            error,
+            waiting_for,
+        }
+    }
+    // TEMP bridge: removed by messaging-b <commit>
+    pub fn to_value(&self, key: &str) -> Value {
+        json!(self.to_reply(key))
     }
     fn from_reply(reply: RemoteReply, key: &str, now: i64) -> Result<Self, AccessError> {
         use studio_runtime_schema::persistence::RemoteOutcome;
@@ -327,17 +399,20 @@ impl ExchangeOutcome {
         }
         match reply.outcome {
             RemoteOutcome::Applied => {
-                let value: Value =
-                    serde_json::from_str(reply.value.ok_or_else(invalid_receipt)?.get())
-                        .map_err(|_| invalid_receipt())?;
-                if value
-                    .get("outputExpiresAt")
-                    .and_then(Value::as_f64)
+                #[derive(serde::Deserialize)]
+                struct ReplyExpiry {
+                    #[serde(rename = "outputExpiresAt")]
+                    output_expires_at: Option<f64>,
+                }
+                let value = reply.value.ok_or_else(invalid_receipt)?;
+                if serde_json::from_str::<ReplyExpiry>(value.get())
+                    .ok()
+                    .and_then(|reply| reply.output_expires_at)
                     .is_some_and(|expires| expires <= now as f64)
                 {
                     Ok(Self::Unknown)
                 } else {
-                    Ok(Self::Applied(value))
+                    Ok(Self::Applied(AppliedReply::new(value)))
                 }
             }
             RemoteOutcome::NotApplied => reply
@@ -355,6 +430,12 @@ fn invalid_receipt() -> AccessError {
         "The paired server returned an invalid receipt",
     )
 }
+fn applied(value: &impl serde::Serialize) -> Result<ExchangeOutcome, AccessError> {
+    serde_json::value::to_raw_value(value)
+        .map(AppliedReply::new)
+        .map(ExchangeOutcome::Applied)
+        .map_err(|_| invalid_receipt())
+}
 /// The transport must use the persisted envelope's requestId and return only a
 /// response verified against that server's saved credential. It must complete
 /// within the supplied deadline; a lost response returns Unknown, never retries.
@@ -364,7 +445,7 @@ pub trait PairedTransport: Send + Sync {
         server: &'a str,
         envelope: &'a Value,
         timeout: std::time::Duration,
-    ) -> BoxFuture<'a, Result<Value, AccessError>>;
+    ) -> BoxFuture<'a, Result<RemoteReply, AccessError>>;
 }
 
 /// Production adapter for existing paired-server credential rows. The shared
@@ -420,7 +501,7 @@ impl PairedTransport for HttpsPairedTransport {
         server: &'a str,
         envelope: &'a Value,
         timeout: std::time::Duration,
-    ) -> BoxFuture<'a, Result<Value, AccessError>> {
+    ) -> BoxFuture<'a, Result<RemoteReply, AccessError>> {
         Box::pin(async move {
             let store = Arc::clone(&self.store);
             let server = server.to_owned();
@@ -535,8 +616,8 @@ impl PairedTransport for HttpsPairedTransport {
                     "The paired server refused the request",
                 ));
             }
-            let value = verify_multi_server_response(&response.body, &server, &public_key)
-                .map_err(|_| {
+            let value =
+                verify_multi_server_reply(&response.body, &server, &public_key).map_err(|_| {
                     refused(
                         503,
                         "invalid_receipt",
@@ -682,7 +763,7 @@ impl RuntimeOrchestrationEffects {
             )
             .await;
         match result {
-            Ok(value) => Ok(ExchangeOutcome::Applied(value)),
+            Ok(value) => applied(&value),
             Err(crate::peer_updates::UpdateError::Refused(message)) => {
                 Ok(ExchangeOutcome::NotApplied(message))
             }
@@ -745,7 +826,6 @@ impl RuntimeOrchestrationEffects {
             Arc::clone(ports),
         )
         .await
-        .map(ExchangeOutcome::Applied)
         .map_err(|error| match error {
             crate::agent_management::ManagementError::Expired => {
                 refused(410, "request_expired", "The request ID expired")
@@ -763,6 +843,7 @@ impl RuntimeOrchestrationEffects {
                 "The remote stop could not be committed",
             ),
         })
+        .and_then(|value| applied(&value))
     }
 
     async fn project_location(
@@ -872,11 +953,11 @@ impl RuntimeOrchestrationEffects {
                 studio_runtime_store::ProjectsRepository::put_project(tx, &project)?;
                 Ok::<_, AccessError>(())
             }).await?;
-            return Ok(ExchangeOutcome::Applied(json!({
+            return applied(&json!({
                 "serverId":local_server,"path":path,"canonicalPath":canonical_path,
                 "projectId":project_id,"gitOrigin":git_origin,
                 "homeProjectId":home_project,"requestId":request_id
-            })));
+            }));
         }
         let location = &payload["location"];
         let project_id = text(location, "projectId");
@@ -923,9 +1004,7 @@ impl RuntimeOrchestrationEffects {
             )
         })??
         .unwrap_or_default();
-        Ok(ExchangeOutcome::Applied(
-            json!({"removed":true,"serverId":local_server}),
-        ))
+        applied(&json!({"removed":true,"serverId":local_server}))
     }
 
     async fn worker_call(
@@ -1060,8 +1139,8 @@ impl RuntimeOrchestrationEffects {
                         crate::provider_callbacks::tools::services::messages::send_remote_worker(
                             tx, &worker_id, &args, &key, now,
                         )
-                        .map(ExchangeOutcome::Applied)
                         .map_err(callback_error)
+                        .and_then(|value| applied(&value))
                     }
                     "move_send" => {
                         let target_id = args
@@ -1117,8 +1196,8 @@ impl RuntimeOrchestrationEffects {
                                 refused(503, "send_admission", "The message could not be admitted")
                             })?,
                         )
-                        .map(|result| ExchangeOutcome::Applied(result.receipt))
                         .map_err(|_| refused(403, "send_refused", "The message was refused"))
+                        .and_then(|result| applied(&result.receipt))
                     }
                     _ => Err(refused(
                         501,
@@ -1278,7 +1357,7 @@ async fn receive_remote_anchor_input(
             Ok::<_, AccessError>(posted.receipt)
         })
         .await?;
-    Ok(ExchangeOutcome::Applied(receipt))
+    applied(&receipt)
 }
 
 fn durable_anchor_input_receipt(
@@ -1586,7 +1665,7 @@ async fn receive_remote_input(
             Ok(json!({"eventId":key}))
         })
         .await?;
-    Ok(ExchangeOutcome::Applied(result))
+    applied(&result)
 }
 
 fn callback_error(error: crate::provider_callbacks::CallbackError) -> AccessError {
@@ -1756,7 +1835,7 @@ impl RuntimeOrchestrationEffects {
             _ => runner.control(principal, action, payload, key).await,
         };
         match result {
-            Ok(value) => Ok(ExchangeOutcome::Applied(value)),
+            Ok(value) => applied(&value),
             Err(crate::server_exec::ExecError::Refused(message)) => {
                 Ok(ExchangeOutcome::NotApplied(message))
             }
@@ -1782,7 +1861,7 @@ impl RuntimeOrchestrationEffects {
                     .then_with(|| text(left, "id").cmp(text(right, "id")))
             });
         }
-        Ok(ExchangeOutcome::Applied(listed))
+        applied(&listed)
     }
 
     /// Python `_git_action` for Git reads and branch bundles. A refusal is a
@@ -1799,7 +1878,7 @@ impl RuntimeOrchestrationEffects {
         .await
         .map_err(|_| refused(503, "git_unavailable", "The Git read could not run"))?;
         match result {
-            Ok(value) => Ok(ExchangeOutcome::Applied(value)),
+            Ok(value) => applied(&value),
             Err(crate::server_git::GitError::Refused(message)) => {
                 Ok(ExchangeOutcome::NotApplied(message))
             }
@@ -1822,7 +1901,7 @@ impl RuntimeOrchestrationEffects {
                 .browser_callback
                 .receive(envelope)
                 .await
-                .map(ExchangeOutcome::Applied);
+                .and_then(|value| applied(&value));
         }
         if action == "stop" {
             return self.stop_worker(principal, envelope).await;
@@ -1849,11 +1928,7 @@ impl RuntimeOrchestrationEffects {
             .await
             .map_err(|_| refused(400, "folder_unavailable", "This directory is unavailable"))?
             .map_err(|_| refused(400, "folder_unavailable", "This directory is unavailable"))?;
-            return serde_json::to_value(result)
-                .map(ExchangeOutcome::Applied)
-                .map_err(|_| {
-                    refused(503, "folder_unavailable", "The directory could not be read")
-                });
+            return applied(&result);
         }
         if matches!(action, "add_location" | "remove_location") {
             return self.project_location(principal, envelope).await;
@@ -1872,14 +1947,14 @@ impl RuntimeOrchestrationEffects {
                     "The project folder is unavailable",
                 )
             })?
-            .map(ExchangeOutcome::Applied)
             .map_err(|_| {
                 refused(
                     400,
                     "location_unavailable",
                     "The project folder is unavailable",
                 )
-            });
+            })
+            .and_then(|value| applied(&value));
         }
         if action == "location_matches" {
             let payload = &envelope["payload"];
@@ -1890,14 +1965,14 @@ impl RuntimeOrchestrationEffects {
                 .map(str::to_owned);
             return crate::projects::peer_location_matches(&self.store, origin, cwd)
                 .await
-                .map(ExchangeOutcome::Applied)
                 .map_err(|_| {
                     refused(
                         400,
                         "location_unavailable",
                         "Project location matches are unavailable",
                     )
-                });
+                })
+                .and_then(|value| applied(&value));
         }
         if action == "input" {
             if envelope["payload"]
@@ -2004,9 +2079,9 @@ impl RuntimeOrchestrationEffects {
                     ));
                 }
                 if link.get("parentEpoch").and_then(Value::as_i64) != Some(parent_epoch) {
-                    return Ok(ExchangeOutcome::Applied(
-                        json!({"stored":false,"reason":"The parent epoch was superseded"}),
-                    ));
+                    return applied(
+                        &json!({"stored":false,"reason":"The parent epoch was superseded"}),
+                    );
                 }
                 let parent = link.get("parent").and_then(Value::as_str).ok_or_else(|| {
                     refused(503, "invalid_record", "The remote-parent link is invalid")
@@ -2025,9 +2100,7 @@ impl RuntimeOrchestrationEffects {
                     || typed.extra.get("autoWake") != Some(&Value::Bool(true))
                     || studio_runtime_store::truthy(typed.extra.get("deletedAt"))
                 {
-                    return Ok(ExchangeOutcome::Applied(
-                        json!({"stored":false,"reason":"The parent was stopped"}),
-                    ));
+                    return applied(&json!({"stored":false,"reason":"The parent was stopped"}));
                 }
                 if kind_for_write == "child_result" {
                     let details: Value =
@@ -2125,7 +2198,7 @@ impl RuntimeOrchestrationEffects {
                         )
                     })?;
                 }
-                Ok(ExchangeOutcome::Applied(json!({"eventId":key_for_write})))
+                applied(&json!({"eventId":key_for_write}))
             })
             .await?;
         Ok(result)
@@ -2284,7 +2357,7 @@ fn receive_exec_event(
         })
         .optional()?;
     if stored.is_some() {
-        return Ok(ExchangeOutcome::Applied(json!({"stored": true})));
+        return applied(&json!({"stored": true}));
     }
     let actor = actor.as_str().ok_or_else(invalid)?;
     let Some(lead) = studio_runtime_store::AgentRepository::get(
@@ -2292,14 +2365,10 @@ fn receive_exec_event(
         &studio_runtime_store::AgentId::from(actor),
     )?
     else {
-        return Ok(ExchangeOutcome::Applied(
-            json!({"stored": false, "detail": "The lead no longer exists"}),
-        ));
+        return applied(&json!({"stored": false, "detail": "The lead no longer exists"}));
     };
     if studio_runtime_store::truthy(lead.extra.get("deletedAt")) {
-        return Ok(ExchangeOutcome::Applied(
-            json!({"stored": false, "detail": "The lead was deleted"}),
-        ));
+        return applied(&json!({"stored": false, "detail": "The lead was deleted"}));
     }
     let record = payload
         .get("record")
@@ -2334,7 +2403,7 @@ fn receive_exec_event(
             "The command event could not be stored",
         )
     })?;
-    Ok(ExchangeOutcome::Applied(json!({"stored": true})))
+    applied(&json!({"stored": true}))
 }
 
 /// The `exec_receipt` branch of Python `_receive`. `None` is an unexpected
@@ -2345,11 +2414,11 @@ fn exec_receipt_answer(
     principal: &str,
     payload: &Value,
     now: i64,
-) -> Result<Option<Result<Value, &'static str>>, AccessError> {
+) -> Result<Option<Result<RemoteReply, &'static str>>, AccessError> {
     let Some(handle) = payload.get("handle").and_then(Value::as_str) else {
         return Ok(None);
     };
-    let unknown = json!({"requestId":handle,"outcome":"unknown"});
+    let unknown = ExchangeOutcome::Unknown.to_reply(handle);
     let invalid = || refused(503, "invalid_record", "Stored delivery result is invalid");
     if let Some(saved) = saved_remote(tx, Direction::Incoming, principal, handle)? {
         let signature = saved.signature;
@@ -2362,13 +2431,12 @@ fn exec_receipt_answer(
         if payload.get("digest").and_then(Value::as_str) != Some(signature.as_str()) {
             return Ok(Some(Err(EXEC_RECEIPT_DIGEST_REFUSAL)));
         }
-        let receipt = serde_json::to_value(saved.response).map_err(|_| invalid())?;
         return Ok(Some(Ok(
-            match ExchangeOutcome::from_value(&receipt, handle, now)? {
+            match ExchangeOutcome::from_reply(saved.response.clone(), handle, now)? {
                 ExchangeOutcome::Unknown => unknown,
                 ExchangeOutcome::Applied(_)
                 | ExchangeOutcome::NotApplied(_)
-                | ExchangeOutcome::PreEffectWaiting => receipt,
+                | ExchangeOutcome::PreEffectWaiting => saved.response,
             },
         )));
     }
@@ -2409,9 +2477,7 @@ fn exec_receipt_answer(
             Some(_) => true,
         };
         if settled {
-            return Ok(Some(Ok(
-                json!({"requestId": handle, "outcome": "applied", "value": record}),
-            )));
+            return Ok(Some(Ok(applied(&record)?.to_reply(handle))));
         }
     }
     Ok(Some(Ok(unknown)))
@@ -2887,7 +2953,7 @@ impl OrchestrationDriver {
             self.transport
                 .exchange(server, &envelope.value(), timeout)
                 .await
-                .and_then(|value| ExchangeOutcome::from_value(&value, &envelope.root, now))
+                .and_then(|value| ExchangeOutcome::from_reply(value, &envelope.root, now))
         };
         let result = match exchange {
             Ok(value) => value,
@@ -3001,11 +3067,13 @@ impl OrchestrationDriver {
                 .transport
                 .exchange(server, probe, timeout)
                 .await
-                .and_then(|value| ExchangeOutcome::from_value(&value, probe_key, now)),
+                .and_then(|value| ExchangeOutcome::from_reply(value, probe_key, now)),
         };
         let result = match reply {
             Ok(ExchangeOutcome::Applied(receipt)) => {
-                ExchangeOutcome::from_value(&receipt, &envelope.root, now)
+                serde_json::from_str::<RemoteReply>(receipt.value.get())
+                    .map_err(|_| invalid_receipt())
+                    .and_then(|reply| ExchangeOutcome::from_reply(reply, &envelope.root, now))
                     .unwrap_or(ExchangeOutcome::Unknown)
             }
             _ => ExchangeOutcome::Unknown,
@@ -3152,7 +3220,7 @@ impl OrchestrationDriver {
                 })
                 && let Some(receipt) = durable_anchor_input_receipt(tx, &principal_for_claim, &envelope_for_claim)?
             {
-                let result = ExchangeOutcome::Applied(receipt);
+                let result = applied(&receipt)?;
                 let stored_result = result.to_value(&envelope_for_claim.root).to_string();
                 if stored_result.len() > MAX_RESPONSE_BYTES {
                     return Ok((
@@ -3260,7 +3328,7 @@ impl OrchestrationDriver {
                     return Ok(ExchangeOutcome::Unknown);
                 };
                 Ok(match answer {
-                    Ok(receipt) => ExchangeOutcome::Applied(receipt),
+                    Ok(receipt) => applied(&receipt)?,
                     Err(refusal) => ExchangeOutcome::NotApplied(refusal.to_owned()),
                 })
             })
@@ -3512,9 +3580,9 @@ mod tests {
                 if envelope["payload"]["unknown"] == true {
                     return Ok(super::ExchangeOutcome::Unknown);
                 }
-                Ok(super::ExchangeOutcome::Applied(
-                    serde_json::json!({"owner":principal,"root":envelope["requestId"],"operation":envelope["operation"]}),
-                ))
+                super::applied(
+                    &serde_json::json!({"owner":principal,"root":envelope["requestId"],"operation":envelope["operation"]}),
+                )
             })
         }
     }
@@ -3563,7 +3631,7 @@ mod tests {
                     )
                     .await
                     .expect("only canonical transport replay"),
-                super::ExchangeOutcome::Applied(serde_json::json!({"transport":"exact"}))
+                super::applied(&serde_json::json!({"transport":"exact"})).expect("reply")
             );
         }
         assert_eq!(effects.0.load(std::sync::atomic::Ordering::SeqCst), 0);
@@ -3614,9 +3682,8 @@ mod tests {
                     .receive(peer, &request, now)
                     .await
                     .expect("scoped reply"),
-                super::ExchangeOutcome::Applied(
-                    serde_json::json!({"owner":peer,"root":root,"operation":[]})
-                )
+                super::applied(&serde_json::json!({"owner":peer,"root":root,"operation":[]}))
+                    .expect("reply")
             );
         }
         assert_eq!(effects.0.load(std::sync::atomic::Ordering::SeqCst), 2);
@@ -3638,9 +3705,8 @@ mod tests {
                     .receive(peer, &request, now)
                     .await
                     .expect("original reply after restart"),
-                super::ExchangeOutcome::Applied(
-                    serde_json::json!({"owner":peer,"root":root,"operation":[]})
-                )
+                super::applied(&serde_json::json!({"owner":peer,"root":root,"operation":[]}))
+                    .expect("reply")
             );
         }
         assert_eq!(effects.0.load(std::sync::atomic::Ordering::SeqCst), 2);
@@ -3651,9 +3717,10 @@ mod tests {
                     .receive("peer-a", &chunk, now)
                     .await
                     .expect("chunk reply"),
-                super::ExchangeOutcome::Applied(
-                    serde_json::json!({"owner":"peer-a","root":root,"operation":[offset]})
+                super::applied(
+                    &serde_json::json!({"owner":"peer-a","root":root,"operation":[offset]})
                 )
+                .expect("reply")
             );
         }
         assert_eq!(
@@ -3738,7 +3805,7 @@ mod tests {
                 .receive("peer-a", &retained, now)
                 .await
                 .expect("retained v5 replay"),
-            super::ExchangeOutcome::Applied(serde_json::json!({"retained":true}))
+            super::applied(&serde_json::json!({"retained":true})).expect("reply")
         );
         let mut changed = retained.clone();
         changed["payload"] = serde_json::json!({"changedAfterCutover":true});
@@ -3800,6 +3867,29 @@ mod tests {
     use rusqlite::params;
     use std::sync::Arc;
     use studio_runtime_store::RuntimeStore;
+
+    #[test]
+    fn expired_applied_reply_is_unknown() {
+        let reply: super::RemoteReply = serde_json::from_str(
+            r#"{"requestId":"r","outcome":"applied","value":{"outputExpiresAt":10}}"#,
+        )
+        .expect("reply");
+        assert!(matches!(
+            ExchangeOutcome::from_reply(reply, "r", 10),
+            Ok(ExchangeOutcome::Unknown)
+        ));
+    }
+
+    #[test]
+    fn applied_metadata_follows_nested_results_and_counts_null_presence() {
+        let raw = serde_json::value::RawValue::from_string(
+            r#"{"outputExpiresAt":"ignored","value":{"result":{"handle":null,"outputExpiresAt":25}}}"#.into(),
+        ).expect("payload");
+        let reply = super::AppliedReply::new(raw);
+        assert_eq!(reply.output_expires_at, Some(25.0));
+        assert!(reply.handle);
+        assert!(!reply.output_ref);
+    }
 
     fn saved(state: &str, next_at: f64) -> DeliverySnapshot {
         DeliverySnapshot {
@@ -4032,7 +4122,8 @@ mod tests {
             .expect("offer receipt");
         assert_eq!(
             offered,
-            ExchangeOutcome::Applied(json!({"build": crate::peer_updates::fixture::build()}))
+            super::applied(&json!({"build": crate::peer_updates::fixture::build()}))
+                .expect("reply")
         );
         let other = driver
             .receive(
@@ -4061,6 +4152,8 @@ mod tests {
         else {
             panic!("the export is applied");
         };
+        let meta: serde_json::Value =
+            serde_json::from_str(meta.value.get()).expect("export metadata");
         assert_eq!(meta["size"], json!(b"app archive".len()));
         let chunk = request(
             "chunk-1",
@@ -4075,6 +4168,8 @@ mod tests {
             else {
                 panic!("the chunk is applied");
             };
+            let value: serde_json::Value =
+                serde_json::from_str(value.value.get()).expect("chunk payload");
             let data = base64::engine::general_purpose::STANDARD
                 .decode(value["data"].as_str().expect("chunk data"))
                 .expect("base64 chunk");

@@ -373,7 +373,8 @@ async fn callback_remote_message_uses_the_existing_federation_outbox() {
     let ExchangeOutcome::Applied(queued) = queued else {
         panic!("remote callback should be queued")
     };
-    assert_eq!(queued["status"], "queued");
+    let decoded: Value = serde_json::from_str(queued.value.get()).expect("queued receipt");
+    assert_eq!(decoded["status"], "queued");
     assert_eq!(rows(&store, "runtime_federation_outbox").len(), 1);
 
     let replay = effects

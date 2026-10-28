@@ -129,10 +129,11 @@ impl PairedTransport for LostExportReply {
         _: &'a str,
         envelope: &'a Value,
         _: std::time::Duration,
-    ) -> BoxFuture<'a, Result<Value, AccessError>> {
+    ) -> BoxFuture<'a, Result<studio_runtime_store::multi_server_delivery::RemoteReply, AccessError>>
+    {
         Box::pin(async move {
             self.sent.lock().unwrap().push(envelope.clone());
-            Ok(json!({"requestId":envelope["requestId"],"outcome":"unknown"}))
+            Ok(ExchangeOutcome::Unknown.to_reply(envelope["requestId"].as_str().unwrap()))
         })
     }
 }
@@ -202,13 +203,14 @@ impl PairedTransport for RecordingTransport {
         server: &'a str,
         envelope: &'a Value,
         _timeout: std::time::Duration,
-    ) -> BoxFuture<'a, Result<Value, AccessError>> {
+    ) -> BoxFuture<'a, Result<studio_runtime_store::multi_server_delivery::RemoteReply, AccessError>>
+    {
         Box::pin(async move {
             self.sent
                 .lock()
                 .unwrap()
                 .push(json!({"server": server, "envelope": envelope}));
-            Ok(reply(envelope))
+            Ok(serde_json::from_str(&reply(envelope).to_string()).unwrap())
         })
     }
 }
@@ -983,7 +985,10 @@ async fn a_lost_reply_is_unknown_and_an_exact_retry_does_not_send_again_in_fligh
             _server: &'a str,
             _envelope: &'a Value,
             _timeout: std::time::Duration,
-        ) -> BoxFuture<'a, Result<Value, AccessError>> {
+        ) -> BoxFuture<
+            'a,
+            Result<studio_runtime_store::multi_server_delivery::RemoteReply, AccessError>,
+        > {
             Box::pin(async move {
                 *self.0.lock().unwrap() += 1;
                 Err(crate::multi_server_auth::refused(
@@ -1066,7 +1071,8 @@ impl PairedTransport for LoopbackPeer {
         server: &'a str,
         envelope: &'a Value,
         _timeout: std::time::Duration,
-    ) -> BoxFuture<'a, Result<Value, AccessError>> {
+    ) -> BoxFuture<'a, Result<studio_runtime_store::multi_server_delivery::RemoteReply, AccessError>>
+    {
         Box::pin(async move {
             assert_eq!(server, PEER);
             self.sent
@@ -1076,7 +1082,7 @@ impl PairedTransport for LoopbackPeer {
             let key = envelope["requestId"].as_str().unwrap().to_owned();
             let now = crate::event_write::unix_time().unwrap() as i64;
             let outcome = self.driver.receive(&self.principal, envelope, now).await?;
-            Ok(outcome.to_value(&key))
+            Ok(outcome.to_reply(&key))
         })
     }
 }
@@ -1879,8 +1885,9 @@ async fn a_python_lead_runs_a_command_here_and_gets_one_exit_notice() {
     let ExchangeOutcome::Applied(value) = outcome else {
         panic!("{outcome:?}");
     };
-    assert_eq!(value["status"], "completed", "{value}");
-    assert_eq!(value["stdout"], "remote");
+    let decoded: Value = serde_json::from_str(value.value.get()).unwrap();
+    assert_eq!(decoded["status"], "completed", "{decoded}");
+    assert_eq!(decoded["stdout"], "remote");
     // A replay of the same envelope answers from the receipt.
     let replay = driver.receive(PEER, &envelope, now).await.unwrap();
     assert_eq!(replay, ExchangeOutcome::Applied(value.clone()));
@@ -1926,6 +1933,7 @@ async fn a_python_lead_runs_a_command_here_and_gets_one_exit_notice() {
     let ExchangeOutcome::Applied(missing) = missing else {
         panic!("{missing:?}");
     };
+    let missing: Value = serde_json::from_str(missing.value.get()).unwrap();
     assert_eq!(missing["status"], "failed", "{missing}");
     assert_eq!(missing["error"], "No such file or directory");
 }

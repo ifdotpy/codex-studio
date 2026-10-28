@@ -183,9 +183,16 @@ impl PairedTransport for Peer {
         _: &'a str,
         envelope: &'a Value,
         _: std::time::Duration,
-    ) -> futures_util::future::BoxFuture<'a, Result<Value, AccessError>> {
+    ) -> futures_util::future::BoxFuture<
+        'a,
+        Result<studio_runtime_store::multi_server_delivery::RemoteReply, AccessError>,
+    > {
         Box::pin(async move {
-            Ok(json!({"requestId":envelope["requestId"],"outcome":"applied","value":self.0}))
+            Ok(serde_json::from_str(
+                &json!({"requestId":envelope["requestId"],"outcome":"applied","value":self.0})
+                    .to_string(),
+            )
+            .unwrap())
         })
     }
 }

@@ -996,18 +996,23 @@ async fn remote_project_write(
         })?;
     match &outcome {
         ExchangeOutcome::Applied(value) => {
-            let remote = value;
-            if action != "remove_location"
-                && (remote.get("serverId").and_then(Value::as_str) != Some(server)
-                    || remote.get("homeProjectId").and_then(Value::as_str)
-                        != Some(project_id.as_str())
-                    || remote.get("requestId").and_then(Value::as_str)
-                        != Some(operation_id.as_str()))
-            {
-                return Err(ApiError::new(
-                    StatusCode::BAD_GATEWAY,
-                    "The paired server returned a different project location",
-                ));
+            if action != "remove_location" {
+                let remote: studio_runtime_services::project_locations::LocationValue =
+                    serde_json::from_str(value.value.get()).map_err(|_| {
+                        ApiError::new(
+                            StatusCode::BAD_GATEWAY,
+                            "The paired server returned a different project location",
+                        )
+                    })?;
+                if remote.server_id != server
+                    || remote.home_project_id.as_deref() != Some(project_id.as_str())
+                    || remote.request_id.as_deref() != Some(operation_id.as_str())
+                {
+                    return Err(ApiError::new(
+                        StatusCode::BAD_GATEWAY,
+                        "The paired server returned a different project location",
+                    ));
+                }
             }
         }
         ExchangeOutcome::NotApplied(_) => {}
@@ -1086,8 +1091,11 @@ async fn project_locations(
                 ));
             }
         };
-        return super::generated_json::<crate::generated::ProjectLocationQueryResponse>(value)
-            .map(Json);
+        return serde_json::from_str::<crate::generated::ProjectLocationQueryResponse>(
+            value.value.get(),
+        )
+        .map(Json)
+        .map_err(ApiError::json);
     }
     let value = projects::location_query(&store, query)
         .await
@@ -1387,25 +1395,32 @@ mod local_registration_tests {
             server: &'a str,
             envelope: &'a serde_json::Value,
             _timeout: std::time::Duration,
-        ) -> futures_util::future::BoxFuture<'a, Result<serde_json::Value, AccessError>> {
+        ) -> futures_util::future::BoxFuture<
+            'a,
+            Result<studio_runtime_store::multi_server_delivery::RemoteReply, AccessError>,
+        > {
             Box::pin(async move {
                 assert_eq!(server, "peer");
                 self.0.fetch_add(1, Ordering::SeqCst);
                 let payload = &envelope["payload"];
                 let path = payload["path"].as_str().expect("remote path");
-                Ok(json!({
-                    "requestId": envelope["requestId"],
-                    "outcome": "applied",
-                    "value": {
-                        "serverId": "peer",
-                        "path": path,
-                        "canonicalPath": path,
-                        "projectId": path,
-                        "gitOrigin": null,
-                        "homeProjectId": payload["project"],
-                        "requestId": envelope["requestId"]
-                    }
-                }))
+                Ok(serde_json::from_str(
+                    &json!({
+                        "requestId": envelope["requestId"],
+                        "outcome": "applied",
+                        "value": {
+                            "serverId": "peer",
+                            "path": path,
+                            "canonicalPath": path,
+                            "projectId": path,
+                            "gitOrigin": null,
+                            "homeProjectId": payload["project"],
+                            "requestId": envelope["requestId"]
+                        }
+                    })
+                    .to_string(),
+                )
+                .unwrap())
             })
         }
     }

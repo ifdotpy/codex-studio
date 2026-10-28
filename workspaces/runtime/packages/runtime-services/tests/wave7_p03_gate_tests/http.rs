@@ -151,7 +151,10 @@ async fn http_queues_remote_anchor_message_as_paired_event_intent() {
             _: &'a str,
             _: &'a serde_json::Value,
             _: std::time::Duration,
-        ) -> futures_util::future::BoxFuture<'a, Result<serde_json::Value, AccessError>> {
+        ) -> futures_util::future::BoxFuture<
+            'a,
+            Result<studio_runtime_store::multi_server_delivery::RemoteReply, AccessError>,
+        > {
             Box::pin(async {
                 Err(refused(
                     503,
@@ -418,6 +421,9 @@ async fn http_queues_remote_anchor_message_as_paired_event_intent() {
         panic!("paired input and its recovered retry must both be applied");
     };
     assert_eq!(recovered, delivered, "recovery returns the saved receipt");
+    let first_receipt: serde_json::Value = serde_json::from_str(first_receipt.value.get()).unwrap();
+    let recovered_receipt: serde_json::Value =
+        serde_json::from_str(recovered_receipt.value.get()).unwrap();
     assert_eq!(first_receipt["id"], recovered_receipt["id"]);
     let read_event_id = remote_event_id.clone();
     let (event_count, event_status, inbox_count, result) = support::read(
