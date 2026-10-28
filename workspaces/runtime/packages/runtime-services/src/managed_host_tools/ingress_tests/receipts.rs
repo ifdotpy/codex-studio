@@ -250,7 +250,7 @@ async fn expired_tool_result_refuses_a_new_rpc_alias_without_dispatch() {
     let retry = call(&context, "expiry-retry-rpc", "orchestration_spawn", args);
     assert!(matches!(
         dispatch_with_managed_tools(store.clone(), &context, &retry, 21.0, ports.clone()).await,
-        Err(CallbackError::Invalid("Request id expired"))
+        Err(CallbackError::Expired)
     ));
     assert_eq!(ports.staged.load(Ordering::SeqCst), 1);
     assert_eq!(intent_count(&store, "spawn"), 1);
