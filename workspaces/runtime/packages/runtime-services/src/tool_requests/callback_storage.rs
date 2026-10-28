@@ -37,13 +37,21 @@ pub fn put_callback<T: Serialize>(
     tx: &Transaction<'_>,
     task: &CallbackTask<T>,
 ) -> Result<(), ToolRequestError> {
-    let mut record = serde_json::to_value(task).map_err(studio_runtime_store::StoreError::from)?;
-    record["kind"] = serde_json::to_value(ToolRequestKind::ProviderCallback)
-        .map_err(studio_runtime_store::StoreError::from)?;
+    #[derive(Serialize)]
+    struct StoredCallback<'a, T> {
+        #[serde(flatten)]
+        task: &'a CallbackTask<T>,
+        kind: ToolRequestKind,
+    }
+    let record = serde_json::to_string(&StoredCallback {
+        task,
+        kind: ToolRequestKind::ProviderCallback,
+    })
+    .map_err(studio_runtime_store::StoreError::from)?;
     // Both keys are immutable: a reconnect cannot allocate another business operation.
     let count = tx.execute(
         "INSERT INTO runtime_tool_requests(id,record) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET record=excluded.record WHERE runtime_tool_requests.origin_key=?3 AND runtime_tool_requests.kind=?4",
-        params![task.id, record.to_string(),task.origin_key,ToolRequestKind::ProviderCallback],
+        params![task.id, record,task.origin_key,ToolRequestKind::ProviderCallback],
     )?;
     if count != 1 {
         return Err(ToolRequestError::InvalidRequest(
