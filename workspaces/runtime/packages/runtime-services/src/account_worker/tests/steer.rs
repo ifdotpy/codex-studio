@@ -495,7 +495,7 @@ async fn mixed_inputs(state: &State) {
                 ("review", EventKind::WorkReview, json!({"task":"task-1","result":{"id":"result-1","text":"checks passed","checks":"cargo test","files":["src/lib.rs"]}}).to_string()),
                 ("child", EventKind::ChildResult, json!({"agent":"mixed-child","name":"Child","status":"completed","result":"child evidence ".repeat(2000)}).to_string()),
                 ("message", EventKind::AgentMessage, json!({"sender":"mixed-child","room":"mixed-room","text":"inspect the evidence","importance":"message"}).to_string()),
-                (EventKind::Followup, EventKind::Followup, "Child asks for another check".to_owned()),
+                ("followup", EventKind::Followup, "Child asks for another check".to_owned()),
                 ("decision", EventKind::WorkDecision, "Accepted with the reported checks".to_owned()),
             ];
             for (index, (id, kind, text)) in rows.into_iter().enumerate() {
