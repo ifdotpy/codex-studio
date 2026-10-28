@@ -2104,12 +2104,14 @@ mod tests {
             "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES('old-message','lead','user','saved','delivered',1.0,0)",
             [],
         ).expect("migrated event");
+        let tx = connection.transaction().expect("migration fixture");
         studio_runtime_store::QueueWriteRepository::put_metadata(
-            &connection,
+            &tx,
             "old-message",
             &json!({"assets":[],"delivery":DeliveryMoment::CurrentTurn,"sendNow":true}),
         )
         .expect("lossy timing");
+        tx.commit().expect("migration committed");
         let before = count(&connection, "runtime_events");
         let tx = connection.transaction().expect("transaction");
         let result = post_message_with_admission(

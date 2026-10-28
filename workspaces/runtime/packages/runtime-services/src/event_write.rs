@@ -1391,11 +1391,14 @@ mod tests {
             json!(uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, b"imported")),
             Value::Null,
         ] {
-            QueueWriteRepository::put_metadata(
-                &connection,
-                "imported-event",
-                &json!({"remoteRequestId":preserved}),
-            )
+            with_transaction(&mut connection, |tx| {
+                QueueWriteRepository::put_metadata(
+                    tx,
+                    "imported-event",
+                    &json!({"remoteRequestId":preserved}),
+                )?;
+                Ok(())
+            })
             .unwrap();
             let before = counts(&connection);
             assert!(
