@@ -71,7 +71,7 @@ pub(crate) struct SubmittedSteer {
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
-#[serde(try_from = "String", into = "String")]
+#[serde(try_from = "String")]
 struct SteerTicket(String);
 
 impl TryFrom<String> for SteerTicket {
@@ -82,12 +82,6 @@ impl TryFrom<String> for SteerTicket {
         } else {
             Ok(Self(ticket))
         }
-    }
-}
-
-impl From<SteerTicket> for String {
-    fn from(ticket: SteerTicket) -> Self {
-        ticket.0
     }
 }
 
@@ -680,18 +674,20 @@ impl SchedulerRepository {
         thread_id: &str,
         turn_id: &str,
     ) -> StoreResult<Option<AcknowledgedSteer>> {
-        let found = receipts(tx, agent_id)?.into_iter().find(|(_, receipt)| {
-            receipt.agent == agent_id
+        let receipts = receipts(tx, agent_id)?;
+        let found = receipts.iter().find_map(|(id, receipt)| {
+            (receipt.agent == agent_id
                 && receipt.events[0] == first_event
                 && receipt.thread_id == thread_id
-                && receipt.turn_id == turn_id
-                && receipt.stage.sent().is_some()
+                && receipt.turn_id == turn_id)
+                .then(|| receipt.stage.sent().map(|sent| (id, receipt, sent)))
+                .flatten()
         });
-        let Some((id, receipt)) = found else {
+        let Some((id, receipt, sent)) = found else {
             return Ok(None);
         };
         let epoch = receipt.epoch;
-        let events = receipt_events(&id, &receipt)?;
+        let events = receipt_events(id, receipt)?;
         let changed = tx.execute_cached(
             "UPDATE runtime_events SET status='delivered',turn_id=?1,error=NULL \
              WHERE agent=?2 AND epoch=?3 AND id IN (SELECT value FROM json_each(?4)) \
@@ -699,7 +695,7 @@ impl SchedulerRepository {
             params![turn_id, agent_id, epoch, events, STEER_UNCONFIRMED_ERROR],
         )?;
         // Input a user already changed after it became unconfirmed keeps that change.
-        delete(tx, &id)?;
+        delete(tx, id)?;
         if changed == 0 {
             return Ok(None);
         }
@@ -732,21 +728,15 @@ impl SchedulerRepository {
         Self::project_delivered_chat_events(tx, agent_id, epoch, turn_id, &delivered_ids)?;
         Ok(Some(AcknowledgedSteer {
             agent_id: agent_id.into(),
-            admission: receipt.admission,
+            admission: receipt.admission.clone(),
             steer_id: id
                 .strip_prefix(&receipt_id(agent_id, ""))
                 .ok_or_else(|| invalid_receipt(&id))?
                 .to_owned(),
-            event_ids: receipt.events,
-            prepared_submission: receipt
-                .stage
-                .sent()
-                .and_then(|sent| sent.prepared_submission.clone()),
+            event_ids: receipt.events.clone(),
+            prepared_submission: sent.prepared_submission.clone(),
             events: delivered,
-            submitted_at: receipt
-                .stage
-                .sent()
-                .map_or(receipt.created, |sent| sent.submitted_at),
+            submitted_at: sent.submitted_at,
         }))
     }
 
@@ -809,11 +799,13 @@ impl SchedulerRepository {
             if receipt.agent != agent_id
                 || receipt.account_key != account
                 || receipt.thread_id != thread_id
-                || receipt
-                    .stage
-                    .sent()
-                    .is_none_or(|sent| sent.generation != generation)
             {
+                continue;
+            }
+            let Some(sent) = receipt.stage.sent_mut() else {
+                continue;
+            };
+            if sent.generation != generation {
                 continue;
             }
             let first = &receipt.events[0];
@@ -824,6 +816,10 @@ impl SchedulerRepository {
             } else {
                 continue;
             };
+            let event_ids = serde_json::to_string(&receipt.events)?;
+            if status != "cancelled" {
+                sent.interrupt_still_queued = true;
+            }
             tx.execute_cached(
                 "UPDATE runtime_events SET status=?1,error=?2 \
                  WHERE agent=?3 AND epoch=?4 AND id IN (SELECT value FROM json_each(?5)) \
@@ -837,7 +833,7 @@ impl SchedulerRepository {
                     },
                     agent_id,
                     receipt.epoch,
-                    receipt_events(&id, &receipt)?,
+                    event_ids,
                     STEER_UNCONFIRMED_ERROR
                 ],
             )?;
@@ -852,9 +848,6 @@ impl SchedulerRepository {
             if status == "cancelled" {
                 delete(tx, &id)?;
             } else {
-                if let Some(sent) = receipt.stage.sent_mut() {
-                    sent.interrupt_still_queued = true;
-                }
                 store(tx, &id, &receipt)?;
             }
         }

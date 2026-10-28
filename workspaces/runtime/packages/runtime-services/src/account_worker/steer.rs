@@ -200,7 +200,7 @@ pub(super) fn submitted(
         tx,
         &intent.agent_id,
         &intent.attempt_id,
-        &json!(context),
+        &serde_json::to_value(context).map_err(StoreError::from)?,
     )?;
     store::save_account_submission(tx, context, request)?;
     Ok(true)
