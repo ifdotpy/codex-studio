@@ -53,7 +53,9 @@ fn fixture_request_id(value: &Value) -> RequestId {
     match value {
         Value::String(id) => RequestId::String(id.clone()),
         Value::Number(id) => RequestId::Number(id.as_u64().expect("non-negative request id")),
-        _ => panic!("invalid request id fixture"),
+        Value::Null | Value::Bool(_) | Value::Array(_) | Value::Object(_) => {
+            panic!("invalid request id fixture")
+        }
     }
 }
 
