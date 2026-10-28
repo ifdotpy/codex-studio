@@ -2723,7 +2723,7 @@ mod tests {
         let mut closed: Vec<Value> = (0..8_192).map(|item| key("old-turn", item)).collect();
         closed.push(key("turn", 0));
         let mut streams: NotificationStreamBuffer =
-            serde_json::from_value(json!({"entries":[],"closed":closed}))
+            serde_json::from_str(&json!({"entries":[],"closed":closed}).to_string())
                 .expect("old buffer loads");
         assert_eq!(streams.closed_len(), 8_193);
         let mut connection = database();
@@ -3478,10 +3478,14 @@ mod tests {
             &json!({"method":"item/agentMessage/delta","params":{"threadId":"thread","turnId":"turn","itemId":"answer","delta":"pending"}}),
             1.0
         );
-        let mut saved_streams = serde_json::to_value(&streams).expect("stream serializes");
+        let mut saved_streams = serde_json::from_str::<Value>(
+            &serde_json::to_string(&streams).expect("stream serializes"),
+        )
+        .expect("JSON");
         saved_streams["entries"][0]["base"] = Value::String("base".into());
         saved_streams["entries"][0]["flushed"] = Value::Bool(true);
-        streams = serde_json::from_value(saved_streams).expect("persisted stream restores");
+        streams =
+            serde_json::from_str(&saved_streams.to_string()).expect("persisted stream restores");
         send!(
             &transaction,
             &mut streams,
@@ -3727,6 +3731,30 @@ mod tests {
             DispatchOutcome::Written
         );
         tx.commit().expect("replays commit");
+    }
+
+    #[test]
+    fn submission_owner_rejects_null_and_non_object_metadata() {
+        let mut connection = database();
+        connection.execute_batch(
+            "INSERT INTO runtime_events VALUES('e1','agent','user','hello','dispatching',1,1,'turn',NULL);
+             INSERT INTO runtime_event_meta VALUES('e1','{\"providerSubmission\":null}');",
+        ).expect("event creates");
+        let tx = connection.transaction().expect("transaction");
+        for metadata in [r#"{"providerSubmission":null}"#, "[]", "{}"] {
+            tx.execute(
+                "UPDATE runtime_event_meta SET record=?1 WHERE id='e1'",
+                [metadata],
+            )
+            .expect("metadata updates");
+            let owner =
+                NotificationDispatchRepository::submission_owner::<String>(&tx, "agent", "e1");
+            if metadata == "{}" {
+                assert!(owner.expect("absent owner is valid").is_none());
+            } else {
+                assert!(owner.is_err(), "invalid metadata must be rejected");
+            }
+        }
     }
 
     #[test]
@@ -4196,8 +4224,9 @@ mod tests {
         let mut streams = NotificationStreamBuffer::default();
         dispatch(&transaction, &mut streams, 1, &json!({"method":"item/agentMessage/delta","params":{"threadId":"thread","turnId":"turn","itemId":"answer","delta":"before"}}), 1.0).expect("flushed delta");
         dispatch(&transaction, &mut streams, 2, &json!({"method":"item/started","params":{"threadId":"thread","turnId":"turn","item":{"id":"answer","type":"agentMessage","text":"snapshot"}}}), 2.0).expect("snapshot");
-        let saved = serde_json::to_value(&streams).expect("current stream state");
-        assert_eq!(saved["entries"][0]["base"], "before");
+        let saved = serde_json::to_string(&streams).expect("current stream state");
+        let saved_value: Value = serde_json::from_str(&saved).expect("JSON");
+        assert_eq!(saved_value["entries"][0]["base"], "before");
         let bases: i64 = transaction
             .query_row(
                 "SELECT count(*) FROM sqlite_schema WHERE type='table' AND name='runtime_operation_receipts'",
@@ -4206,14 +4235,16 @@ mod tests {
             )
             .expect("old base count");
         assert_eq!(bases, 0);
-        streams = serde_json::from_value(saved).expect("restart");
+        streams = serde_json::from_str(&saved).expect("restart");
         dispatch(&transaction, &mut streams, 3, &json!({"method":"item/agentMessage/delta","params":{"threadId":"thread","turnId":"turn","itemId":"answer","delta":"after"}}), 3.0).expect("continued delta");
         let item = TranscriptRepository::item(&transaction, "agent", "agent:answer")
             .expect("read")
             .expect("item");
         assert_eq!(item.record["text"], "beforeafter");
         assert!(
-            serde_json::to_value(&streams).expect("stream state")["entries"][0]["base"].is_null()
+            serde_json::from_str::<Value>(&serde_json::to_string(&streams).expect("stream state"))
+                .expect("JSON")["entries"][0]["base"]
+                .is_null()
         );
     }
 
@@ -4279,7 +4310,8 @@ mod tests {
         assert_eq!(text(&transaction, "agent:short"), "snap");
         assert_eq!(base_rows(&transaction), 0);
         assert_eq!(
-            serde_json::to_value(&streams).expect("stream state")["entries"][0]["base"],
+            serde_json::from_str::<Value>(&serde_json::to_string(&streams).expect("stream state"))
+                .expect("JSON")["entries"][0]["base"],
             "one"
         );
         dispatch(&transaction, &mut streams, 34, &delta("short", "two"), 5.0).expect("delta");

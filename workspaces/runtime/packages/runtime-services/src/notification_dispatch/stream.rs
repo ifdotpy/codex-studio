@@ -989,7 +989,7 @@ mod tests {
             assert_eq!(capture.observation.params["delta"], expected);
             assert_eq!(capture.retained_bytes, retained_bytes);
             let restored: NotificationStreamBuffer =
-                serde_json::from_value(serde_json::to_value(&streams).unwrap()).unwrap();
+                serde_json::from_str(&serde_json::to_string(&streams).unwrap()).unwrap();
             assert_eq!(restored.analytics_bytes, streams.analytics_bytes);
         }
     }
@@ -1306,7 +1306,10 @@ mod tests {
         streams.flush(&key("c", Some("turn")), "").expect("flushes");
         streams.close(&key("c", Some("turn")));
         let former = |streams: &NotificationStreamBuffer| {
-            let mut metadata = serde_json::to_value(streams).expect("buffer encodes");
+            let mut metadata = serde_json::from_str::<Value>(
+                &serde_json::to_string(streams).expect("buffer encodes"),
+            )
+            .expect("JSON");
             let mut pending = Vec::new();
             for entry in metadata["entries"].as_array_mut().expect("entries") {
                 if entry["count"].as_u64().unwrap_or(0) > 0 {
@@ -1324,7 +1327,10 @@ mod tests {
             let (expected_metadata, expected_pending) = former(&buffer);
             assert_eq!(parse(&metadata), expected_metadata);
             assert_eq!(
-                pending.map(|pending| serde_json::to_value(pending).expect("pending state")),
+                pending.map(|pending| serde_json::from_str::<Value>(
+                    &serde_json::to_string(&pending).expect("pending state")
+                )
+                .expect("JSON")),
                 expected_pending
             );
         }
@@ -1332,17 +1338,20 @@ mod tests {
 
     #[test]
     fn unowned_stream_state_is_rejected_after_migration() {
-        let result = serde_json::from_value::<NotificationStreamBuffer>(serde_json::json!({
-            "entries": [],
-            "closed": [{
-                "account": "default",
-                "generation": 1,
-                "thread": "thread",
-                "turn": "turn",
-                "item": "answer",
-                "method": "item/agentMessage/delta"
-            }]
-        }));
+        let result = serde_json::from_str::<NotificationStreamBuffer>(
+            &serde_json::json!({
+                "entries": [],
+                "closed": [{
+                    "account": "default",
+                    "generation": 1,
+                    "thread": "thread",
+                    "turn": "turn",
+                    "item": "answer",
+                    "method": "item/agentMessage/delta"
+                }]
+            })
+            .to_string(),
+        );
         assert!(result.is_err());
     }
 
@@ -1383,9 +1392,10 @@ mod tests {
         streams.enqueue_delta(key.clone(), "abc", &json!({"delta":"abc"}));
         assert!(streams.has_pending(&key));
         assert_eq!(streams.pending_bytes(), 3);
-        let value = serde_json::to_value(&streams).unwrap();
+        let encoded = serde_json::to_string(&streams).unwrap();
+        let value: Value = serde_json::from_str(&encoded).unwrap();
         assert!(value.get("indexes").is_none());
-        let mut restored: NotificationStreamBuffer = serde_json::from_value(value).unwrap();
+        let mut restored: NotificationStreamBuffer = serde_json::from_str(&encoded).unwrap();
         assert!(restored.has_pending(&key));
         assert_eq!(restored.pending_bytes(), 3);
         let _flushed = restored.flush(&key, "").unwrap();
@@ -1426,7 +1436,7 @@ mod tests {
         assert_eq!(streams.analytics.len(), 1);
         assert_eq!(streams.analytics[0].observation.params["delta"], "ab");
         assert_eq!(
-            serde_json::to_value(&streams).unwrap()["analytics"][0]
+            serde_json::from_str::<Value>(&serde_json::to_string(&streams).unwrap()).unwrap()["analytics"][0]
                 .as_array()
                 .unwrap()
                 .len(),
@@ -1435,7 +1445,7 @@ mod tests {
         assert!(streams.analytics_bytes > first_size);
         assert_eq!(streams.indexes.analytics.get(&key), Some(&0));
         let mut restored: NotificationStreamBuffer =
-            serde_json::from_value(serde_json::to_value(&streams).unwrap()).unwrap();
+            serde_json::from_str(&serde_json::to_string(&streams).unwrap()).unwrap();
         assert_eq!(restored.analytics_bytes, streams.analytics_bytes);
         assert_eq!(restored.indexes.analytics.get(&key), Some(&0));
         restored.flush_analytics(&key, &json!({"id":"agent"}));

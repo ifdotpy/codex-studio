@@ -3,6 +3,7 @@
 use crate::CachedSql;
 use crate::schema::SchemaRequirements;
 use rusqlite::{OptionalExtension, Transaction, params};
+use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
 use crate::repositories::transcript::{TranscriptItem, TranscriptRepository, TranscriptStoreError};
@@ -54,23 +55,51 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
 
 impl NotificationDispatchRepository {
     /// The input event owns publication identity even after its replay body expires.
-    pub fn submission_owner(
+    pub fn submission_owner<T: DeserializeOwned>(
         tx: &Transaction<'_>,
         agent: &str,
         event: &str,
-    ) -> StoreResult<Option<Value>> {
+    ) -> StoreResult<Option<T>> {
         if Self::user_event(tx, agent, event)?.is_none() {
             return Err(invalid_record("runtime_events", event));
         }
-        Ok(Self::event_metadata(tx, event)?
-            .and_then(|meta| meta.get("providerSubmission").cloned()))
+        // Preserve the existing missing-table and malformed-object validation.
+        let has_table: bool = tx.query_row_cached(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_event_meta')",
+            [],
+            |row| row.get(0),
+        )?;
+        if !has_table {
+            return Err(invalid_record("runtime_event_meta", event));
+        }
+        let raw: Option<String> = tx
+            .query_row_cached(
+                "SELECT record FROM runtime_event_meta WHERE id=?1",
+                [event],
+                |row| row.get(0),
+            )
+            .optional()?;
+        raw.map(|raw| {
+            let metadata: std::collections::BTreeMap<String, Box<serde_json::value::RawValue>> =
+                serde_json::from_str(&raw)
+                    .map_err(|_| invalid_record("runtime_event_meta", event))?;
+            metadata
+                .get("providerSubmission")
+                .map(|owner| {
+                    serde_json::from_str(owner.get())
+                        .map_err(|_| invalid_record("runtime_event_meta", event))
+                })
+                .transpose()
+        })
+        .transpose()
+        .map(Option::flatten)
     }
 
-    pub fn put_submission_owner(
+    pub fn put_submission_owner<T: Serialize>(
         tx: &Transaction<'_>,
         attempt: Option<&str>,
         events: &[&str],
-        owner: &Value,
+        owner: &T,
     ) -> StoreResult<()> {
         let raw = serde_json::to_string(owner)?;
         for event in events {
