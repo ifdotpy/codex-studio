@@ -20687,6 +20687,11 @@
             "title": "Id",
             "type": "string"
           },
+          "request_id": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          },
           "task_id": {
             "title": "Task Id",
             "type": "string"
@@ -20695,6 +20700,7 @@
         "required": [
           "action",
           "id",
+          "request_id",
           "task_id"
         ],
         "title": "ClaudeSessionStopTaskRequest",

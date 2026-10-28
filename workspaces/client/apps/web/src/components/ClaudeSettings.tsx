@@ -74,7 +74,7 @@ type ClaudeSessionState = Extract<ClaudeSessionResponse, { turns: unknown[] }>;
 type ClaudeCommandsResponse = Extract<ClaudeSessionResponse, unknown[]>;
 type ClaudeSessionMutation = ClaudeSessionRequest extends infer Request
   ? Request extends {
-      action: "settings" | "command" | "rollback";
+      action: "settings" | "command" | "rollback" | "stop_task";
     }
     ? Omit<Request, "request_id">
     : never
@@ -606,7 +606,7 @@ export function ClaudeSettings({
                 onClick={() =>
                   void run(
                     () =>
-                      call({
+                      mutate({
                         id: agent.id,
                         action: "stop_task",
                         task_id: item.task_id,

@@ -10799,6 +10799,7 @@ export interface components {
       action: "stop_task";
       /** Id */
       id: string;
+      request_id: string;
       /** Task Id */
       task_id: string;
     };
