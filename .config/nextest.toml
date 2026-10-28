@@ -84,7 +84,7 @@ inherits = "ci"
 default-filter = '''
     (package(=studio-runtime-store) & kind(test) & binary(=integration) & test(/^receipts_cutover::/)) |
     (package(=studio-runtime-server) & kind(lib) & test(direct_generation_uses_only_migrated_account_counter)) |
-    (package(=studio-runtime-services) & kind(lib) & (test(/^studio_errors::/) | test(/^voice::provider::tests::voice_outbox_/) | test(receipt_domain_) | test(receipt_pivot_) | test(work_public_projection_excludes_private_effect_authority) | test(plan_write_replays_identically_and_refuses_conflicting_replay) | test(message_replay_is_idempotent_and_changed_content_conflicts) | test(expired_annotation_never_creates_an_event))) |
+    (package(=studio-runtime-services) & kind(lib) & (test(/^studio_errors::/) | test(/^voice::provider::tests::voice_outbox_/) | test(receipt_domain_) | test(receipt_pivot_) | test(work_public_projection_excludes_private_effect_authority) | test(plan_write_replays_identically_and_refuses_conflicting_replay) | test(message_replay_is_idempotent_and_changed_content_conflicts) | test(expired_annotation_never_creates_an_event) | test(remote_worker_user_input_is_saved_as_stable_paired_intent) | test(same_request_from_two_peers_replays_within_each_principal))) |
     (package(=studio-runtime-http) & kind(lib) & test(queue_http_typed_commands_preserve_order_guards_and_replay)) |
     ((package(=studio-runtime-schema) | package(=studio-runtime-store)) & kind(lib) & test(receipt_)) |
     (package(=studio-runtime-server) & kind(bin) & binary(=studio-runtime-server) & test(history_watch_)) |
@@ -323,7 +323,7 @@ platform = 'cfg(target_os = "linux")'
 default-filter = '''
     (package(=studio-runtime-store) & kind(test) & binary(=integration) & test(/^receipts_cutover::/)) |
     (package(=studio-runtime-server) & kind(lib) & test(direct_generation_uses_only_migrated_account_counter)) |
-    (package(=studio-runtime-services) & kind(lib) & (test(/^studio_errors::/) | test(/^voice::provider::tests::voice_outbox_/) | test(receipt_domain_) | test(receipt_pivot_) | test(work_public_projection_excludes_private_effect_authority) | test(plan_write_replays_identically_and_refuses_conflicting_replay) | test(message_replay_is_idempotent_and_changed_content_conflicts) | test(expired_annotation_never_creates_an_event))) |
+    (package(=studio-runtime-services) & kind(lib) & (test(/^studio_errors::/) | test(/^voice::provider::tests::voice_outbox_/) | test(receipt_domain_) | test(receipt_pivot_) | test(work_public_projection_excludes_private_effect_authority) | test(plan_write_replays_identically_and_refuses_conflicting_replay) | test(message_replay_is_idempotent_and_changed_content_conflicts) | test(expired_annotation_never_creates_an_event) | test(remote_worker_user_input_is_saved_as_stable_paired_intent) | test(same_request_from_two_peers_replays_within_each_principal))) |
     (package(=studio-runtime-http) & kind(lib) & test(queue_http_typed_commands_preserve_order_guards_and_replay)) |
     ((package(=studio-runtime-schema) | package(=studio-runtime-store)) & kind(lib) & test(receipt_)) |
     (package(=studio-runtime-server) & kind(bin) & binary(=studio-runtime-server) & test(history_watch_)) |
