@@ -422,6 +422,8 @@ fn assert_reaped(pid: u32) {
     let _pid = pid;
 }
 
+// Heavy: the child must exit within the 1-second reap grace, which load can exceed.
+#[ignore = "heavy timing check; run with just test-provider-reap-timing"]
 #[tokio::test]
 async fn explicit_cancel_stops_and_reaps_child() {
     let mut attachment = child(WAIT).await;

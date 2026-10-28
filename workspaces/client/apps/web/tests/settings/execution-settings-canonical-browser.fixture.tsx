@@ -275,16 +275,36 @@ function Fixture() {
       window.transferRelease = null;
       window.serverAccount = null;
     });
-  // @ts-expect-error stale fixture: ModelCatalogSource now requires subscribeState.
   const catalogSource: NonNullable<ContextType<typeof ModelCatalogReader>> = {
     scope: "settings-canonical-" + mount,
     read: fixtureModelRead,
+    subscribeState: (accept) => {
+      accept({
+        entitiesComplete: true,
+        runtime: {
+          modelsByAccount: Object.fromEntries(
+            ["default", "second"].map((accountKey) => [
+              accountKey,
+              models.map((model, catalogPosition) => ({
+                ...model,
+                accountKey,
+                catalogPosition,
+                provider: "codex" as const,
+              })),
+            ]),
+          ),
+        },
+      });
+      return () => {};
+    },
   };
   return (
     <MantineProvider>
       <ModelCatalogReader.Provider value={catalogSource}>
         <ExecutionSettings
           key={mount}
+          settingsRow={defaults}
+          initialRole={defaults ? "worker" : "orchestrator"}
           agent={agent}
           accounts={[
             fixtureAccount({

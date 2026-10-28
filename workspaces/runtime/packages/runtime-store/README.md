@@ -220,6 +220,8 @@ transitives (the crate dependency tree contains 36 distinct packages,
 including workspace dependencies). Serde and serde_json are existing workspace
 dependencies; Serde's derive feature is enabled for this crate's records.
 
+The 2026-10-27 startup migration removes retired Canvas and Analytics projections, including old rows, in each database transaction. It preserves budget state, the shared analytics usage ledger, payload records and blobs, and current search.
+
 State-directory table inventory, grouped by family (exact names from the
 committed snapshot; it includes both typed-record and specialized SQL tables):
 
@@ -230,7 +232,7 @@ committed snapshot; it includes both typed-record and specialized SQL tables):
   `runtime_access_outbound`, `runtime_access_receipts`.
 - Accounts and agents: `runtime_account_transfers`, `runtime_agent_moves`,
   `runtime_agent_record_generation`, `runtime_annotations`, `runtime_assets`,
-  `runtime_budget`, `runtime_budget_usage`, `runtime_capacity_retries`,
+  `runtime_budget`, `runtime_capacity_retries`,
   `runtime_checkpoints`, `runtime_compactions`, `runtime_complaints`,
   `runtime_completed_turns`, `runtime_context_manifests`,
   `runtime_context_reminders`.
@@ -242,30 +244,22 @@ committed snapshot; it includes both typed-record and specialized SQL tables):
   `runtime_federation_outbox`, `runtime_federation_peers`,
   `runtime_federation_rooms`, `runtime_federation_settings`.
 - Items and operations: `runtime_item_fulltext`, `runtime_items`,
-  `runtime_lead_requests`, `runtime_monitors`, `runtime_native_sweeps`,
-  `runtime_operation_receipts`, `runtime_payload_refs`, `runtime_plans`,
+  `runtime_lead_requests`, `runtime_monitors`, `runtime_operation_receipts`, `runtime_plans`,
   `runtime_profiles`, `runtime_projects`, `runtime_requests`, `runtime_rooms`,
   `runtime_rules`.
 - Scheduler: `runtime_scheduler_agent_change_state`,
   `runtime_scheduler_agent_changes`.
-- Search: `runtime_search`, `runtime_search_config`,
-  `runtime_search_content`, `runtime_search_data`, `runtime_search_docsize`,
-  `runtime_search_idx`, `runtime_search_indexed`, `runtime_search_next_meta`,
-  `runtime_search_rollout`, `runtime_search_rows`,
-  `runtime_search_rows_rollout`.
+- Search: `runtime_search_next`, `runtime_search_next_meta`,
+  `runtime_search_rollout` and FTS-owned shadows.
 - Server: `runtime_server_fetch`, `runtime_server_inbox`,
   `runtime_server_links`, `runtime_server_outbox`,
   `runtime_server_output_tools`, `runtime_server_retired`,
-  `runtime_server_sequence`, `runtime_sidebar_order`,
-  `runtime_supervisor_cursor`.
+  `runtime_sidebar_order`.
 - Tools and turns: `runtime_tool_request_aliases`, `runtime_tool_requests`,
-  `runtime_tool_results`, `runtime_turn_item_link_state_v1`,
-  `runtime_turn_item_links_v1`, `runtime_usage_resumes`, `runtime_work`,
+  `runtime_tool_results`, `runtime_usage_resumes`, `runtime_work`,
   `runtime_workspace_operations`.
 - Sync: `sync_documents`, `sync_entities`, `sync_entity_meta`, `sync_versions`.
-- Analytics database: `analytics_agents`, `analytics_cost_changes_v1`,
-  `analytics_cost_projection_v1`, `analytics_cost_roots_v1`,
-  `analytics_cost_state_v1`, `analytics_history`, `analytics_items`,
+- Analytics database: `analytics_agents`, `analytics_history`, `analytics_items`,
   `analytics_limits`, `analytics_meta`, `analytics_notifications`,
   `analytics_turns`, `analytics_usage`, `analytics_usage_roots`. Rust adds
   `analytics_cost_rows` and `analytics_cost_groups`, the incremental per-root

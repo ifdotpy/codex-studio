@@ -1360,21 +1360,39 @@ fn commit_tree(
         });
         let secs = state.time / 1000;
         let date = format!("{secs} +0000");
-        let mut c = base_cmd(&s);
-        c.args(["commit-tree", &tree]);
-        for p in parents {
-            c.args(["-p", p]);
+        let commit_tree = |sign: bool| -> Result<std::process::Output> {
+            let mut c = base_cmd(&s);
+            c.args(["commit-tree", &tree]);
+            if sign {
+                c.arg("-S");
+            }
+            for p in parents {
+                c.args(["-p", p]);
+            }
+            c.env("GIT_AUTHOR_NAME", &state.author.name)
+                .env("GIT_AUTHOR_EMAIL", &state.author.email)
+                .env("GIT_AUTHOR_DATE", &date)
+                .env("GIT_COMMITTER_NAME", &state.author.name)
+                .env("GIT_COMMITTER_EMAIL", &state.author.email)
+                .env("GIT_COMMITTER_DATE", &date);
+            c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+            let mut ch = c.spawn()?;
+            ch.stdin.take().unwrap().write_all(msg.as_bytes())?;
+            Ok(ch.wait_with_output()?)
+        };
+        // `git commit-tree` ignores commit.gpgSign. Sign as git commit would, but only the
+        // caller's own states: another person's state must not carry the caller's signature.
+        let sign = git_out(&s, &["config", "--bool", "commit.gpgsign"]).is_ok_and(|v| v.trim() == "true")
+            && git_out(&s, &["config", "user.email"]).is_ok_and(|v| v.trim() == state.author.email);
+        let mut out = commit_tree(sign)?;
+        if sign && !out.status.success() {
+            eprintln!(
+                "warning: could not sign the commit of state {} ({}); it is written unsigned",
+                state.id,
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+            out = commit_tree(false)?;
         }
-        c.env("GIT_AUTHOR_NAME", &state.author.name)
-            .env("GIT_AUTHOR_EMAIL", &state.author.email)
-            .env("GIT_AUTHOR_DATE", &date)
-            .env("GIT_COMMITTER_NAME", &state.author.name)
-            .env("GIT_COMMITTER_EMAIL", &state.author.email)
-            .env("GIT_COMMITTER_DATE", &date);
-        c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
-        let mut ch = c.spawn()?;
-        ch.stdin.take().unwrap().write_all(msg.as_bytes())?;
-        let out = ch.wait_with_output()?;
         if !out.status.success() {
             bail!("git commit-tree failed: {}", String::from_utf8_lossy(&out.stderr));
         }

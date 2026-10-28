@@ -304,6 +304,45 @@ mod tests {
     use std::sync::atomic::AtomicBool;
 
     #[test]
+    fn profile_invalidation_forces_one_full_discovery_scan() {
+        let root = tempfile::tempdir().expect("profile");
+        fs::create_dir_all(root.path().join("sessions/year/day")).expect("sessions");
+        fs::write(
+            root.path().join("sessions/year/day/rollout-thread.jsonl"),
+            b"{}",
+        )
+        .expect("rollout");
+        let mut discovery = DiscoveryRound::default();
+        let cancel = AtomicBool::new(false);
+        discovery
+            .resolve(root.path(), "thread", &cancel)
+            .expect("initial scan");
+        let initial_entries = discovery.entries;
+        assert!(initial_entries > 0);
+        discovery.begin_round();
+        discovery
+            .resolve(root.path(), "thread", &cancel)
+            .expect("cached lookup");
+        assert_eq!(discovery.entries, 0);
+        // HistoryCollector::profile_changed calls invalidate for directory events.
+        discovery.invalidate(root.path());
+        discovery
+            .resolve(root.path(), "thread", &cancel)
+            .expect("invalidated lookup");
+        assert_eq!(
+            discovery.entries, initial_entries,
+            "one directory invalidation walks the entire profile once"
+        );
+        discovery
+            .resolve(root.path(), "thread", &cancel)
+            .expect("cached again");
+        assert_eq!(discovery.entries, initial_entries);
+        eprintln!(
+            "discovery: cached lookup=0 entries; profile_changed=1 full scan, {initial_entries} entries"
+        );
+    }
+
+    #[test]
     fn file_notification_updates_cached_profile_without_rescanning() {
         let root = tempfile::tempdir().expect("profile");
         let sessions = root.path().join("sessions");

@@ -22,75 +22,148 @@ struct Pushed {
     canonical: Vec<u8>,
 }
 
-// Local metadata is small; full trees live in separate cache files and are loaded one at a time.
-// Remote state objects remain the source of truth after a lost checkpoint.
+#[derive(Default)]
+struct ContentHashes {
+    entries: BTreeMap<String, Vec<Link>>,
+    dirty: BTreeMap<String, Vec<Link>>,
+    tentative: BTreeMap<String, (Vec<Link>, i64)>,
+    pending: BTreeMap<String, Vec<Entry>>,
+}
+impl ContentHashes {
+    fn get(&self, sha: &str) -> Option<&Vec<Link>> {
+        self.entries.get(sha).or_else(|| self.tentative.get(sha).map(|value| &value.0))
+    }
+    fn insert(&mut self, sha: String, links: Vec<Link>) {
+        self.dirty.insert(sha.clone(), links.clone());
+        self.entries.insert(sha, links);
+    }
+    fn seed(&mut self, sha: String, links: Vec<Link>) {
+        if !self.entries.contains_key(&sha) {
+            self.insert(sha, links);
+        }
+    }
+    fn pending_part(&mut self, object: String, modified: i64, entries: Vec<Entry>) {
+        for entry in &entries {
+            if !self.entries.contains_key(&entry.2) {
+                self.tentative.insert(entry.2.clone(), (entry.3.clone(), modified));
+            }
+        }
+        self.pending.insert(object, entries);
+    }
+    fn protect(&mut self, tree: &Tree) -> Vec<String> {
+        let objects: BTreeSet<_> = tree.files.values().flat_map(|entry| entry.3.iter().map(Link::object)).collect();
+        let protected: Vec<_> = self.pending.keys().filter(|object| objects.contains(*object)).cloned().collect();
+        for object in &protected {
+            for entry in self.pending.remove(object).unwrap() {
+                self.tentative.remove(&entry.2);
+                self.seed(entry.2, entry.3);
+            }
+        }
+        protected
+    }
+    fn deadline(&self, tree: &Tree, started: i64) -> i64 {
+        tree.files.values().filter_map(|entry| self.tentative.get(&entry.2).map(|value| value.1)).fold(started, i64::min)
+            + 23 * 3600
+    }
+}
+
+fn push_now() -> i64 {
+    #[cfg(test)]
+    if let Some(path) = std::env::var_os("LAYR_TEST_PUSH_CLOCK") {
+        return std::fs::read_to_string(path).unwrap().trim().parse().unwrap();
+    }
+    chrono::Utc::now().timestamp()
+}
+
+// Completed uploads are durable remotely; both local caches can be discarded.
 const CHECKPOINT_STATES: usize = 128;
 const RECORD_SEGMENT_BYTES: usize = 4 << 20;
+const INDEX_STATES: usize = 16_384;
+#[cfg(test)]
+thread_local! {
+    static PUSH_STOP_AFTER: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+    static PUSH_DETERMINISTIC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static PUSH_CACHE_DISABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 #[derive(Clone, Serialize, Deserialize)]
 struct Cached {
     attempt: String,
     depth: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    root: Option<String>,
 }
 #[derive(Serialize, Deserialize)]
 struct PushIndex {
     format: u32,
     states: BTreeMap<String, Cached>,
 }
-fn cache_path(dir: &Path, state: &str, entry: &Cached) -> Result<std::path::PathBuf> {
-    if !crate::model::is_uuid(state) || !format::valid_attempt(&entry.attempt) || entry.depth >= format::FULL_TREE_EVERY {
-        bail!("invalid local pushed index metadata");
-    }
-    Ok(dir.join("pushed").join(format!("{state}.{}.json", entry.attempt)))
+fn valid_cached(state: &str, entry: &Cached) -> bool {
+    crate::model::is_uuid(state)
+        && format::valid_attempt(&entry.attempt)
+        && entry.depth < format::FULL_TREE_EVERY
+        && entry.root.as_ref().is_none_or(|root| root.len() == 64 && hex::decode(root).is_ok())
 }
-fn cache_tree(dir: &Path, state: &str, pushed: &Pushed) -> Result<Cached> {
-    let entry = Cached { attempt: pushed.attempt.clone(), depth: pushed.depth };
-    let path = cache_path(dir, state, &entry)?;
-    std::fs::create_dir_all(path.parent().unwrap())?;
-    fsutil::atomic_write(&path, &serde_json::to_vec(pushed)?, 0o600)?;
-    Ok(entry)
-}
-fn cached_tree(dir: &Path, state: &str, entry: &Cached) -> Result<Pushed> {
-    let pushed: Pushed = serde_json::from_slice(&std::fs::read(cache_path(dir, state, entry)?)?)?;
-    if pushed.attempt != entry.attempt || pushed.depth != entry.depth {
-        bail!("local pushed tree identity differs");
+fn cache_tree(cache: &mut Option<super::push_cache::TreeCache>, pushed: &Pushed, uploaded_bytes: u64) -> Cached {
+    Cached {
+        attempt: pushed.attempt.clone(),
+        depth: pushed.depth,
+        root: cache.as_mut().and_then(|cache| {
+            cache.record_upload(uploaded_bytes).ok()?;
+            cache.put(&pushed.tree)
+        }),
     }
-    Tree::parse(&pushed.tree.canonical()?)?;
-    Ok(pushed)
 }
-fn recovered_cache(dir: &Path, state: &str, attempt: String) -> Result<Cached> {
-    let entry = Cached { attempt, depth: format::FULL_TREE_EVERY - 1 };
-    // With no checkpoint, the local cache is not an authenticated description of
-    // the published tree. Discard it and let the parent selection read that tree
-    // through the normal remote signature checks (or upload a full child).
-    match std::fs::remove_file(cache_path(dir, state, &entry)?) {
-        Ok(()) => {},
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
-        Err(error) => return Err(error.into()),
-    }
-    Ok(entry)
+fn cached_tree(cache: &Option<super::push_cache::TreeCache>, entry: &Cached) -> Option<Pushed> {
+    let tree = cache.as_ref()?.get(entry.root.as_deref()?).ok()?;
+    let canonical = tree.canonical().ok()?;
+    Some(Pushed { attempt: entry.attempt.clone(), tree, depth: entry.depth, canonical })
 }
 fn load_index(dir: &Path) -> Result<BTreeMap<String, Cached>> {
-    let path = dir.join("pushed.json");
-    if !path.exists() {
+    let path = dir.join("pushed-v2.json.zst");
+    let bytes = if path.exists() {
+        match std::fs::read(&path).ok().and_then(|bytes| zst::decompress_with_limit(&bytes, None, 8 << 20).ok()) {
+            Some(bytes) => bytes,
+            None => return Ok(BTreeMap::new()),
+        }
+    } else if dir.join("pushed.json").exists() {
+        std::fs::read(dir.join("pushed.json"))?
+    } else {
         return Ok(BTreeMap::new());
-    }
-    let bytes = std::fs::read(path)?;
-    let value: serde_json::Value = serde_json::from_slice(&bytes).context("invalid local pushed index")?;
-    if value.get("format").is_some() {
-        let index: PushIndex = serde_json::from_value(value)?;
-        if index.format != 1 {
-            bail!("unsupported local pushed index format {}", index.format);
+    };
+    let value: serde_json::Value = match serde_json::from_slice(&bytes) {
+        Ok(value) => value,
+        Err(_) => return Ok(BTreeMap::new()),
+    };
+    let mut states = if value.get("format").is_some() {
+        let Ok(index) = serde_json::from_value::<PushIndex>(value) else {
+            return Ok(BTreeMap::new());
+        };
+        if index.format != 1 && index.format != 2 {
+            return Ok(BTreeMap::new());
         }
-        for (id, entry) in &index.states {
-            cache_path(dir, id, entry)?;
-        }
-        return Ok(index.states);
-    }
-    let legacy: BTreeMap<String, Pushed> = serde_json::from_value(value)?;
-    legacy.into_iter().map(|(id, pushed)| Ok((id.clone(), cache_tree(dir, &id, &pushed)?))).collect()
+        index.states
+    } else {
+        let Ok(legacy) = serde_json::from_value::<BTreeMap<String, Pushed>>(value) else {
+            return Ok(BTreeMap::new());
+        };
+        legacy.into_iter().map(|(id, pushed)| (id, Cached { attempt: pushed.attempt, depth: pushed.depth, root: None })).collect()
+    };
+    states.retain(|id, entry| valid_cached(id, entry));
+    Ok(states)
 }
 fn checkpoint(dir: &Path, index: &BTreeMap<String, Cached>) -> Result<()> {
-    fsutil::atomic_write(&dir.join("pushed.json"), &serde_json::to_vec(&PushIndex { format: 1, states: index.clone() })?, 0o600)
+    // UUIDv7 sorting keeps recent completions. Evicted metadata is rediscovered by state prefix.
+    let states = index.iter().rev().take(INDEX_STATES).map(|(id, entry)| (id.clone(), entry.clone())).collect();
+    let bytes = serde_json::to_vec(&PushIndex { format: 2, states })?;
+    fsutil::atomic_write(&dir.join("pushed-v2.json.zst"), &zst::compress(&bytes, None)?, 0o600)?;
+    // Only retire old formats after the replacement metadata is safely published.
+    if dir.join("pushed.json").exists() {
+        std::fs::remove_file(dir.join("pushed.json"))?;
+    }
+    if dir.join("pushed").exists() {
+        std::fs::remove_dir_all(dir.join("pushed"))?;
+    }
+    Ok(())
 }
 pub(super) fn parents_first(states: Vec<crate::model::StateRec>) -> Result<Vec<crate::model::StateRec>> {
     let mut pending: BTreeMap<_, _> = states.into_iter().map(|s| (s.id.clone(), s)).collect();
@@ -196,11 +269,7 @@ pub(super) fn initialize_tty(store: &Store, ctx: &Ctx) -> Result<String> {
         bail!("--paper-key-tty requires terminal stdin and stdout; run it in your private terminal without redirection");
     }
     let mut terminal = crate::privs::as_caller_fs(ctx, || {
-        Ok(std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_NOCTTY)
-            .open("/dev/tty")?)
+        Ok(std::fs::OpenOptions::new().read(true).write(true).custom_flags(libc::O_NOFOLLOW | libc::O_NOCTTY).open("/dev/tty")?)
     })
     .context("--paper-key-tty requires a controlling terminal; run it in your private terminal")?;
     if !terminal.is_terminal() {
@@ -317,9 +386,24 @@ pub(super) fn push_locked(store: &Store, ctx: &Ctx, repo: &Repo, opts: &Options)
     drop(stage);
     let stage = crate::trace::span("store load index");
     let mut index = load_index(&store.dir)?;
+    let mut journal = super::push_journal::Journal::open(&store.dir)?;
+    for done in journal.completed()? {
+        let root = index.get(&done.state).filter(|entry| entry.attempt == done.attempt).and_then(|entry| entry.root.clone());
+        index.insert(done.state, Cached { attempt: done.attempt, depth: done.depth, root });
+    }
+    // The old per-state tree files are unnecessary even before a new checkpoint. Free
+    // them first so upgrading a disk-full store does not need extra scratch space.
+    if store.dir.join("pushed").exists() {
+        std::fs::remove_dir_all(store.dir.join("pushed"))?;
+    }
+    let mut tree_cache = super::push_cache::TreeCache::open(&store.dir).ok();
+    #[cfg(test)]
+    if PUSH_CACHE_DISABLED.with(|disabled| disabled.get()) {
+        tree_cache = None;
+    }
     // Completed immutable trees are never collected. Cache metadata is written only after
     // publication, so a regular push need not enumerate every historical remote object.
-    index.retain(|id, entry| cache_path(&store.dir, id, entry).is_ok());
+    index.retain(|id, entry| valid_cached(id, entry));
     if !blind_layer {
         // A completed upload can be missing from a partial replica. Recheck advertised tips
         // without scanning historical states, so a later push can complete that replica.
@@ -342,6 +426,7 @@ pub(super) fn push_locked(store: &Store, ctx: &Ctx, repo: &Repo, opts: &Options)
     let stage = crate::trace::span("store select history");
     let required = reader::required_states(repo, &repo.p.export_jsonl()?.lines().map(str::to_string).collect::<Vec<_>>(), opts)?;
     let mut states = Vec::new();
+    let mut recovered = Vec::new();
     for (id, deleted) in repo.p.db.present_states()? {
         if deleted || present.contains_key(&id) {
             continue;
@@ -363,9 +448,15 @@ pub(super) fn push_locked(store: &Store, ctx: &Ctx, repo: &Repo, opts: &Options)
                 }
             }
             if let Some(attempt) = complete.remove(&id) {
+                // A fresh writer can discover another writer's completed history without
+                // having a reader slot. Only an existing transfer journal needs recovery.
+                if journal.resuming {
+                    recovered.push(id.clone());
+                }
                 present.insert(id.clone(), attempt.clone());
-                let cached = recovered_cache(&store.dir, &id, attempt)?;
-                index.insert(id, cached);
+                // No checkpoint authenticates a local root for this publication.
+                // Ignore every remaining local node and hydrate its signed remote tree.
+                index.insert(id, Cached { attempt, depth: format::FULL_TREE_EVERY - 1, root: None });
                 continue;
             }
         }
@@ -378,7 +469,48 @@ pub(super) fn push_locked(store: &Store, ctx: &Ctx, repo: &Repo, opts: &Options)
     crate::secrets::check_states(ctx, repo, states.iter().map(|state| state.id.as_str()))?;
     drop(stage);
     let stage = crate::trace::span("store collect hashes");
-    let mut hashes = BTreeMap::new();
+    let mut hashes = ContentHashes { entries: journal.hashes()?, ..Default::default() };
+    let pending = journal.pending()?;
+    if !pending.is_empty() || !recovered.is_empty() {
+        let started = std::time::Instant::now();
+        journal.stats.seed_started_ms = crate::ids::now_ms();
+        let identity = store.identity(&descriptor, opts.paper_key.as_deref())?;
+        if remote_records.is_none() {
+            remote_records = Some(reader::records(&store.backend, &identity, &descriptor.project)?);
+        }
+        let records = remote_records.as_ref().unwrap();
+        let mut source = reader::Reader::new(&store.backend, &identity, &records.keys);
+        for part in pending {
+            journal.stats.seed_pending_parts += 1;
+            journal.stats.seed_metadata_lists += 1;
+            let prefix = part.object.rsplit_once('/').unwrap().0.to_string() + "/";
+            let modified =
+                store.backend.list(&prefix)?.into_iter().find(|object| object.key == part.object).map(|object| object.modified);
+            let modified = modified.filter(|modified| push_now() - *modified < 12 * 3600);
+            if let Some(modified) = modified.filter(|_| part.entries.iter().all(|entry| source.read(entry).is_ok())) {
+                journal.validate_part(&part.object, modified)?;
+                hashes.pending_part(part.object, modified, part.entries);
+            } else {
+                journal.discard_part(&part.object)?;
+            }
+        }
+        for id in recovered {
+            let attempt = &present[&id];
+            let (_, _, tree) = source.tree(&id, attempt)?;
+            let depth = source.tree_depth(&id, attempt)?;
+            let protected = hashes.protect(&tree);
+            for entry in tree.files.values() {
+                hashes.seed(entry.2.clone(), entry.3.clone());
+            }
+            journal.checkpoint(&id, attempt, depth, &hashes.dirty, &protected)?;
+            hashes.dirty.clear();
+            index.get_mut(&id).unwrap().depth = depth;
+            journal.stats.seed_states += 1;
+        }
+        journal.stats.seed_reader_gets = source.get_count();
+        journal.stats.seed_finished_ms = crate::ids::now_ms();
+        journal.stats.seed_seconds = started.elapsed().as_secs_f64();
+    }
     drop(stage);
     let mut latest: Option<(String, Pushed)> = None;
     for state in parents_first(states)? {
@@ -397,9 +529,8 @@ pub(super) fn push_locked(store: &Store, ctx: &Ctx, repo: &Repo, opts: &Options)
         let base = match base_id {
             Some(id) if latest.as_ref().is_some_and(|(last, _)| last == &id) => latest.take(),
             Some(id) => {
-                if index.get(&id).map(|entry| cache_path(&store.dir, &id, entry).is_ok_and(|p| p.exists())) != Some(true)
-                    && store.backend.can_read()
-                {
+                let mut pushed = index.get(&id).and_then(|entry| cached_tree(&tree_cache, entry));
+                if pushed.is_none() && store.backend.can_read() {
                     if let Ok(identity) = store.identity(&descriptor, opts.paper_key.as_deref()) {
                         if remote_records.is_none() {
                             remote_records = Some(reader::records(&store.backend, &identity, &descriptor.project)?);
@@ -407,29 +538,30 @@ pub(super) fn push_locked(store: &Store, ctx: &Ctx, repo: &Repo, opts: &Options)
                         let records = remote_records.as_ref().unwrap();
                         let mut source = reader::Reader::new(&store.backend, &identity, &records.keys);
                         let attempt = &present[&id];
-                        let (header, canonical, tree) = source.tree(&id, attempt)?;
-                        let depth = if header.tree == "full" { 0 } else { format::FULL_TREE_EVERY - 1 };
-                        let pushed = Pushed { attempt: attempt.clone(), tree, depth, canonical };
-                        index.insert(id.clone(), cache_tree(&store.dir, &id, &pushed)?);
+                        let (_, canonical, tree) = source.tree(&id, attempt)?;
+                        let depth = source.tree_depth(&id, attempt)?;
+                        let restored = Pushed { attempt: attempt.clone(), tree, depth, canonical };
+                        index.insert(id.clone(), cache_tree(&mut tree_cache, &restored, 0));
+                        pushed = Some(restored);
                     }
                 }
-                if let Some(entry) = index.get(&id).filter(|entry| cache_path(&store.dir, &id, entry).is_ok_and(|p| p.exists())) {
-                    let pushed = cached_tree(&store.dir, &id, entry)?;
+                pushed.map(|pushed| {
                     for entry in pushed.tree.files.values() {
-                        hashes.entry(entry.2.clone()).or_insert_with(|| entry.3.clone());
+                        hashes.seed(entry.2.clone(), entry.3.clone());
                     }
-                    Some((id, pushed))
-                } else {
-                    None
-                }
+                    (id, pushed)
+                })
             }
             None => None,
         };
         drop(stage);
         let stage = crate::trace::span("store upload state");
         let root = repo.state_root(&state.id)?;
+        // A base that a history limit deleted here (docs/cache-overlays.md) cannot be compared:
+        // the state goes up as a complete tree.
+        let base = base.filter(|(id, _)| repo.p.has_state(id));
         let base_root = base.as_ref().map(|(id, _)| repo.state_root(id)).transpose()?;
-        let (pushed, files, bytes) = upload_state(
+        let (pushed, files, bytes) = upload_state_journal(
             store,
             &descriptor,
             &state.id,
@@ -438,10 +570,22 @@ pub(super) fn push_locked(store: &Store, ctx: &Ctx, repo: &Repo, opts: &Options)
             &mut hashes,
             base_root.as_deref(),
             btrfs_identity(&root, &state.subvol),
+            Some(&mut journal),
         )?;
         drop(stage);
         let stage = crate::trace::span("store checkpoint");
-        index.insert(state.id.clone(), cache_tree(&store.dir, &state.id, &pushed)?);
+        let protected = hashes.protect(&pushed.tree);
+        journal.checkpoint(&state.id, &pushed.attempt, pushed.depth, &hashes.dirty, &protected)?;
+        hashes.dirty.clear();
+        present.insert(state.id.clone(), pushed.attempt.clone());
+        index.insert(state.id.clone(), cache_tree(&mut tree_cache, &pushed, bytes));
+        #[cfg(test)]
+        PUSH_STOP_AFTER.with(|stop| -> Result<()> {
+            if stop.get() == Some(report.states + 1) {
+                return Err(std::io::Error::from_raw_os_error(libc::ENOSPC).into());
+            }
+            Ok(())
+        })?;
         if (report.states + 1) % CHECKPOINT_STATES == 0 {
             checkpoint(&store.dir, &index)?;
         }
@@ -453,6 +597,10 @@ pub(super) fn push_locked(store: &Store, ctx: &Ctx, repo: &Repo, opts: &Options)
         report.bytes += bytes;
     }
     checkpoint(&store.dir, &index)?;
+    let stats = journal.finish()?;
+    if std::env::var_os("LAYR_TRACE").is_some() {
+        eprintln!("trace push-journal {}", serde_json::to_string(&stats)?);
+    }
     for (id, _) in repo.p.db.present_states()? {
         for name in repo.state(&id)?.caches.values() {
             report.omitted.push(format!("cache snapshot {name}: legacy cache, use a peer remote or save it as a cache state"));
@@ -500,24 +648,33 @@ fn walk_state(root: &Path, visit: &mut dyn FnMut(&str, &fsutil::Meta) -> Result<
     Ok(())
 }
 
-fn upload_state(
+fn upload_state_journal(
     store: &Store,
     descriptor: &Descriptor,
     state: &str,
     root: &Path,
     base: Option<&(String, Pushed)>,
-    hashes: &mut BTreeMap<String, Vec<Link>>,
+    hashes: &mut ContentHashes,
     base_root: Option<&Path>,
     btrfs: Option<format::BtrfsIdentity>,
+    mut journal: Option<&mut super::push_journal::Journal>,
 ) -> Result<(Pushed, usize, u64)> {
     let started = std::time::Instant::now();
+    let started_at = push_now();
     let mut random = [0u8; 4];
     rand::rngs::OsRng.fill_bytes(&mut random);
     let attempt = hex::encode(random);
+    #[cfg(test)]
+    let attempt = if PUSH_DETERMINISTIC.with(|enabled| enabled.get()) {
+        hex::encode(Sha256::digest(state.as_bytes()))[..8].to_string()
+    } else {
+        attempt
+    };
     let delta_root = base_root.filter(|base| crate::storage::is_subvolume(base) && crate::storage::is_subvolume(root));
     let mut files =
         if delta_root.is_some() { base.map(|(_, p)| p.tree.files.clone()).unwrap_or_default() } else { BTreeMap::new() };
     let mut current = Vec::new();
+    let mut part_entries = Vec::new();
     let mut part = 0;
     let mut frames = 0;
     let mut bytes = 0;
@@ -573,7 +730,11 @@ fn upload_state(
             }
         }
         if !current.is_empty() && current.len() + frame.len() > format::PART_LIMIT {
-            put_part(store, descriptor, state, &attempt, part, std::mem::take(&mut current))?;
+            if let Some(journal) = journal.as_deref_mut() {
+                journal.prepare_part(state, &attempt, part, &part_entries)?;
+            }
+            put_part(store, descriptor, state, &attempt, part, std::mem::take(&mut current), &part_entries)?;
+            part_entries.clear();
             part += 1;
         }
         let link = Link(
@@ -588,7 +749,9 @@ fn upload_state(
         current.extend(frame);
         chain.insert(0, link);
         hashes.insert(sha.clone(), chain.clone());
-        files.insert(path.to_string(), Entry(mode, data.len() as u64, sha, chain));
+        let entry = Entry(mode, data.len() as u64, sha, chain);
+        part_entries.push(entry.clone());
+        files.insert(path.to_string(), entry);
         frames += 1;
         Ok(true)
     };
@@ -601,8 +764,12 @@ fn upload_state(
     } else {
         walk_state(root, &mut visit)?;
     }
+    drop(visit);
     if !current.is_empty() {
-        put_part(store, descriptor, state, &attempt, part, current)?;
+        if let Some(journal) = journal.as_deref_mut() {
+            journal.prepare_part(state, &attempt, part, &part_entries)?;
+        }
+        put_part(store, descriptor, state, &attempt, part, current, &part_entries)?;
         part += 1;
     }
     drop(stage);
@@ -637,17 +804,42 @@ fn upload_state(
     let mut object = canonical(&serde_json::to_value(&header)?)?;
     object.push(b'\n');
     object.extend(&body);
-    // Never race collection of parts whose attempt is older than the grace period.
-    if started.elapsed().as_secs() >= 86400 {
-        bail!("state upload exceeded 24 hours; retry with a new attempt");
+    push_failpoint("before_publish", state);
+    #[cfg(test)]
+    if std::env::var("LAYR_TEST_GC_STATE").ok().as_deref() == Some(state) {
+        std::fs::write(std::env::var_os("LAYR_TEST_PUSH_CLOCK").unwrap(), chrono::Utc::now().timestamp().to_string()).unwrap();
+        store.gc(false).unwrap();
+    }
+    // GC may collect unpublished parts at server modified +24h. Pending links keep
+    // that server timestamp across crashes; publish at least one hour before it.
+    if started.elapsed().as_secs() >= 23 * 3600 || push_now() >= hashes.deadline(&tree, started_at) {
+        bail!("state upload or recovered part reached its safe publication deadline; retry with a new attempt");
     }
     drop(stage);
     let _publish = crate::trace::span("store tree publish");
     if !store.backend.put_new(&format::tree_name(state, &attempt), keys::encrypt(&descriptor.recipient, &object)?)? {
         bail!("state attempt already exists; retry with a new attempt");
     }
+    push_failpoint("after_publish", state);
     bytes += body.len() as u64;
     Ok((Pushed { attempt, tree, depth: delta_base.map_or(0, |(_, p)| p.depth + 1), canonical: canonical_tree }, frames, bytes))
+}
+
+#[cfg(test)]
+fn upload_state(
+    store: &Store,
+    descriptor: &Descriptor,
+    state: &str,
+    root: &Path,
+    base: Option<&(String, Pushed)>,
+    hashes: &mut BTreeMap<String, Vec<Link>>,
+    base_root: Option<&Path>,
+    btrfs: Option<format::BtrfsIdentity>,
+) -> Result<(Pushed, usize, u64)> {
+    let mut index = ContentHashes { entries: std::mem::take(hashes), ..Default::default() };
+    let result = upload_state_journal(store, descriptor, state, root, base, &mut index, base_root, btrfs, None);
+    *hashes = index.entries;
+    result
 }
 
 fn btrfs_identity(root: &Path, signed_uuid: &str) -> Option<format::BtrfsIdentity> {
@@ -667,7 +859,26 @@ fn btrfs_identity(root: &Path, signed_uuid: &str) -> Option<format::BtrfsIdentit
     }
 }
 
-fn put_part(store: &Store, descriptor: &Descriptor, state: &str, attempt: &str, part: u32, data: Vec<u8>) -> Result<()> {
+fn push_failpoint(point: &str, state: &str) {
+    #[cfg(test)]
+    if std::env::var("LAYR_TEST_KILL_POINT").ok().as_deref() == Some(point)
+        && std::env::var("LAYR_TEST_KILL_STATE").ok().as_deref() == Some(state)
+    {
+        std::process::Command::new("kill").args(["-KILL", &std::process::id().to_string()]).status().unwrap();
+    }
+    let _ = (point, state);
+}
+
+fn put_part(
+    store: &Store,
+    descriptor: &Descriptor,
+    state: &str,
+    attempt: &str,
+    part: u32,
+    data: Vec<u8>,
+    entries: &[Entry],
+) -> Result<()> {
+    push_failpoint("before_part", state);
     let _publish = crate::trace::span("store part publish");
     if part >= format::MAX_PARTS {
         bail!("state exceeds 10000 data parts");
@@ -675,6 +886,15 @@ fn put_part(store: &Store, descriptor: &Descriptor, state: &str, attempt: &str, 
     if !store.backend.put_new(&format::data_name(state, attempt, part), keys::encrypt(&descriptor.recipient, &data)?)? {
         bail!("state attempt has an existing part; retry with a new attempt");
     }
+    #[cfg(test)]
+    if let Ok(path) = std::env::var("LAYR_TEST_PUT_LOG") {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path).unwrap();
+        writeln!(file, "{}", serde_json::json!({"object":format::data_name(state,attempt,part),"hashes":entries.iter().map(|entry|entry.2.clone()).collect::<Vec<_>>()})).unwrap();
+        file.sync_all().unwrap();
+    }
+    let _ = entries;
+    push_failpoint("after_part", state);
     Ok(())
 }
 
@@ -750,7 +970,9 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let ctx = context(&root);
         let mut store = remote(&root, &ctx);
-        store.configure(&ctx, &super::super::ConfigureOptions { paper_key_out: Some(root.join("paper")), ..Default::default() }).unwrap();
+        store
+            .configure(&ctx, &super::super::ConfigureOptions { paper_key_out: Some(root.join("paper")), ..Default::default() })
+            .unwrap();
         let dir = ctx.store.projects_dir().join("p");
         std::fs::create_dir_all(dir.join("meta/db")).unwrap();
         std::fs::create_dir_all(dir.join("states")).unwrap();
@@ -813,8 +1035,529 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    fn branch_fixture<'a>(ctx: &'a Ctx, store: &Store) -> Repo<'a> {
+        use crate::model::{Record, StateRec};
+        let dir = ctx.store.projects_dir().join("p");
+        let existing = dir.join("meta/db/layr.sqlite").exists();
+        std::fs::create_dir_all(dir.join("meta/db")).unwrap();
+        std::fs::create_dir_all(dir.join("states")).unwrap();
+        let project = crate::store::Project {
+            store: &ctx.store,
+            name: "p".into(),
+            dir: dir.clone(),
+            id: store.project.clone(),
+            db: crate::db::Db::open(&dir.join("meta/db/layr.sqlite")).unwrap(),
+        };
+        if !existing {
+            let mut record = Record::new("project");
+            record.data = serde_json::json!({"id":store.project,"name":"p","config":{}});
+            project.append(record, &ctx.actor()).unwrap();
+            let mut parents = Vec::<String>::new();
+            let mut first = None;
+            for n in 0..4 {
+                let id = crate::ids::new_id();
+                std::fs::create_dir(project.state_path(&id)).unwrap();
+                std::fs::write(project.state_path(&id).join("payload"), format!("version {}\n", if n == 3 { 1 } else { n }))
+                    .unwrap();
+                std::fs::write(project.state_path(&id).join("stable"), b"unchanged parent content\n").unwrap();
+                let state = StateRec {
+                    id: id.clone(),
+                    kind: crate::model::StateKind::Commit,
+                    change_id: None,
+                    derived_from: None,
+                    context: None,
+                    parents: parents.clone(),
+                    line: None,
+                    subvol: crate::ids::new_id(),
+                    author: crate::model::Author {
+                        name: "Test".into(),
+                        email: "test@example.test".into(),
+                        ..Default::default()
+                    },
+                    message: String::new(),
+                    time: crate::ids::now_ms(),
+                    running: false,
+                    conflicts: vec![],
+                    caches: Default::default(),
+                    cache_by: None,
+                    cache_shared: false,
+                    cache_platform: None,
+                };
+                let mut record = Record::new("state");
+                record.states.push(state);
+                project.append(record, &ctx.actor()).unwrap();
+                if n == 0 {
+                    first = Some(id.clone());
+                }
+                parents = vec![if n == 1 { first.clone().unwrap() } else { id }];
+            }
+        }
+        Repo { p: project }
+    }
+
     #[test]
-    fn legacy_pushed_cache_migrates_without_changing_attempt_or_tree() {
+    fn enospc_after_publication_resumes_with_missing_or_corrupt_cache() {
+        for corrupt in [false, true] {
+            let root = std::env::temp_dir().join(crate::ids::new_id());
+            std::fs::create_dir_all(&root).unwrap();
+            let ctx = context(&root);
+            let mut store = remote(&root, &ctx);
+            store
+                .configure(
+                    &ctx,
+                    &super::super::ConfigureOptions { paper_key_out: Some(root.join("paper")), ..Default::default() },
+                )
+                .unwrap();
+            let repo = branch_fixture(&ctx, &store);
+            // With no cache, the third state must hydrate a parent uploaded in this same push.
+            PUSH_DETERMINISTIC.with(|enabled| enabled.set(true));
+            PUSH_CACHE_DISABLED.with(|disabled| disabled.set(corrupt));
+            PUSH_STOP_AFTER.with(|stop| stop.set(Some(3)));
+            let error = push(&store, &ctx, &repo, &Options::default()).unwrap_err();
+            PUSH_STOP_AFTER.with(|stop| stop.set(None));
+            PUSH_CACHE_DISABLED.with(|disabled| disabled.set(false));
+            assert_eq!(error.downcast_ref::<std::io::Error>().unwrap().raw_os_error(), Some(libc::ENOSPC));
+            assert!(!store.dir.join("pushed-v2.json.zst").exists());
+            let before: BTreeMap<_, _> = store
+                .backend
+                .list("")
+                .unwrap()
+                .into_iter()
+                .map(|object| {
+                    let bytes = store.backend.get(&object.key).unwrap().unwrap();
+                    (object.key, Sha256::digest(bytes))
+                })
+                .collect();
+            assert_eq!(reader::attempts(&store.backend).unwrap().len(), 3);
+            if corrupt {
+                std::fs::write(store.dir.join("push-cache.sqlite3"), b"damaged cache").unwrap();
+            }
+            let report = push(&store, &ctx, &repo, &Options::default()).unwrap();
+            assert_eq!(report.states, 1);
+            assert_eq!(reader::attempts(&store.backend).unwrap().len(), 4);
+            assert_eq!(store.backend.list("states/").unwrap().iter().filter(|o| o.key.ends_with(".tree.age")).count(), 4);
+            for (key, digest) in before {
+                assert_eq!(Sha256::digest(store.backend.get(&key).unwrap().unwrap()), digest);
+            }
+            store.verify(true).unwrap();
+            // A zero-capacity cache must publish byte-for-byte the same compressed object payloads as
+            // the warm-cache push, including the signed tree compression/checkpoint cadence.
+            let mut empty_cache = remote(&root, &ctx);
+            empty_cache.backend = super::super::backend::Backend::file(root.join("uncached-remote"));
+            empty_cache.dir = root.join("uncached-meta");
+            empty_cache
+                .configure(
+                    &ctx,
+                    &super::super::ConfigureOptions { paper_key_out: Some(root.join("uncached-paper")), ..Default::default() },
+                )
+                .unwrap();
+            PUSH_CACHE_DISABLED.with(|disabled| disabled.set(true));
+            assert_eq!(push(&empty_cache, &ctx, &repo, &Options::default()).unwrap().states, 4);
+            PUSH_CACHE_DISABLED.with(|disabled| disabled.set(false));
+            PUSH_DETERMINISTIC.with(|enabled| enabled.set(false));
+            let payloads = |store: &Store| -> BTreeMap<String, Vec<u8>> {
+                let descriptor = store.descriptor().unwrap();
+                let identity = store.identity(&descriptor, None).unwrap();
+                store
+                    .backend
+                    .list("states/")
+                    .unwrap()
+                    .into_iter()
+                    .map(|object| {
+                        let payload = store.backend.decrypted(&object.key, &identity).unwrap();
+                        (object.key, payload)
+                    })
+                    .collect()
+            };
+            // age adds randomized header stanzas whose wire lengths can differ even
+            // for identical input. Compare the exact bytes passed to encryption.
+            assert_eq!(payloads(&store), payloads(&empty_cache));
+            // Losing both caches must only rediscover immutable uploads, never republish them.
+            std::fs::remove_file(store.dir.join("push-cache.sqlite3")).unwrap();
+            std::fs::remove_file(store.dir.join("pushed-v2.json.zst")).unwrap();
+            assert_eq!(push(&store, &ctx, &repo, &Options::default()).unwrap().states, 0);
+            drop(repo);
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    #[ignore = "subprocess helper for crash_content_hashes"]
+    fn crash_push_process() {
+        // CI runs ignored tests too (--include-ignored). Without the variable this is not a
+        // subprocess run, so do nothing. The crash tests fail if their subprocess does not push.
+        let Some(root) = std::env::var_os("LAYR_TEST_CRASH_ROOT").map(std::path::PathBuf::from) else {
+            return;
+        };
+        let ctx = context(&root);
+        let store = remote(&root, &ctx);
+        let repo = branch_fixture(&ctx, &store);
+        PUSH_CACHE_DISABLED.with(|disabled| disabled.set(true));
+        push(&store, &ctx, &repo, &Options::default()).unwrap();
+    }
+
+    #[test]
+    fn crash_content_hashes_are_reused_at_each_publication_boundary() {
+        use std::{
+            io::Write,
+            os::unix::process::ExitStatusExt,
+            process::{Command, Stdio},
+        };
+        for (point, corrupt) in [("before_part", false), ("after_part", false), ("after_publish", false), ("after_part", true)] {
+            let root = std::env::temp_dir().join(crate::ids::new_id());
+            std::fs::create_dir_all(&root).unwrap();
+            let ctx = context(&root);
+            let mut store = remote(&root, &ctx);
+            store
+                .configure(
+                    &ctx,
+                    &super::super::ConfigureOptions { paper_key_out: Some(root.join("paper")), ..Default::default() },
+                )
+                .unwrap();
+            let repo = branch_fixture(&ctx, &store);
+            let states =
+                parents_first(repo.p.db.present_states().unwrap().into_iter().map(|(id, _)| repo.state(&id).unwrap()).collect())
+                    .unwrap();
+            let kill_state = states[2].id.clone();
+            drop(repo);
+            let puts = root.join("puts.jsonl");
+            let invoke = |kill: bool, log: &str| {
+                let mut command = Command::new(std::env::current_exe().unwrap());
+                command
+                    .args(["--ignored", "--exact", "store_remote::writer::tests::crash_push_process", "--nocapture"])
+                    .env("LAYR_TEST_CRASH_ROOT", &root)
+                    .env("LAYR_TEST_PUT_LOG", &puts)
+                    .env("LAYR_TRACE", "1")
+                    .env_remove("LAYR_TEST_KILL_POINT")
+                    .env_remove("LAYR_TEST_KILL_STATE")
+                    .stdout(Stdio::null())
+                    .stderr(std::fs::File::create(root.join(log)).unwrap());
+                if kill {
+                    command.env("LAYR_TEST_KILL_POINT", point).env("LAYR_TEST_KILL_STATE", &kill_state);
+                }
+                command.status().unwrap()
+            };
+            assert_eq!(invoke(true, "killed.log").signal(), Some(libc::SIGKILL));
+            let read_puts = || -> Vec<serde_json::Value> {
+                std::fs::read_to_string(&puts).unwrap().lines().map(|line| serde_json::from_str(line).unwrap()).collect()
+            };
+            let before_puts = read_puts();
+            let damaged = corrupt.then(|| before_puts.last().unwrap()["object"].as_str().unwrap().to_string());
+            if let Some(key) = &damaged {
+                let path = root.join("remote").join(key);
+                let mut bytes = std::fs::read(&path).unwrap();
+                *bytes.last_mut().unwrap() ^= 1;
+                std::fs::write(path, bytes).unwrap();
+            }
+            let existing_hashes: BTreeSet<String> = before_puts
+                .iter()
+                .filter(|row| damaged.as_deref() != row["object"].as_str())
+                .flat_map(|row| row["hashes"].as_array().unwrap().iter().map(|value| value.as_str().unwrap().to_string()))
+                .collect();
+            let before: BTreeMap<String, _> = store
+                .backend
+                .list("")
+                .unwrap()
+                .into_iter()
+                .filter(|object| damaged.as_deref() != Some(object.key.as_str()))
+                .map(|object| {
+                    let digest = Sha256::digest(store.backend.get(&object.key).unwrap().unwrap());
+                    (object.key, digest)
+                })
+                .collect();
+            assert!(invoke(false, "resumed.log").success());
+            let after_puts = read_puts();
+            for row in &after_puts[before_puts.len()..] {
+                for hash in row["hashes"].as_array().unwrap() {
+                    assert!(!existing_hashes.contains(hash.as_str().unwrap()), "{point}: duplicate content {hash}");
+                }
+            }
+            for (key, digest) in &before {
+                assert_eq!(&Sha256::digest(store.backend.get(key).unwrap().unwrap()), digest);
+            }
+            assert_eq!(reader::attempts(&store.backend).unwrap().len(), 4);
+            store.verify(true).unwrap();
+            let descriptor = store.descriptor().unwrap();
+            let identity = store.identity(&descriptor, None).unwrap();
+            let records = reader::records(&store.backend, &identity, &descriptor.project).unwrap();
+            let mut source = reader::Reader::new(&store.backend, &identity, &records.keys);
+            let mut referenced = BTreeSet::new();
+            for (state, attempt) in reader::attempts(&store.backend).unwrap() {
+                for entry in source.tree(&state, &attempt).unwrap().2.files.into_values() {
+                    referenced.extend(entry.3.iter().map(|link| link.object()));
+                }
+            }
+            for object in store.backend.list("states/").unwrap() {
+                if format::parse_data_name(&object.key).is_some() {
+                    if damaged.as_deref() == Some(object.key.as_str()) {
+                        assert!(!referenced.contains(&object.key), "corrupt pending part was reused");
+                        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(90000);
+                        std::fs::File::options()
+                            .write(true)
+                            .open(root.join("remote").join(&object.key))
+                            .unwrap()
+                            .set_modified(old)
+                            .unwrap();
+                    } else {
+                        assert!(referenced.contains(&object.key), "{point}: orphan {}", object.key);
+                    }
+                }
+            }
+            let collected = store.gc(false).unwrap();
+            assert_eq!(collected, damaged.into_iter().collect::<Vec<_>>());
+            assert!(!store.dir.join("push-journal.sqlite3").exists());
+            let log = std::fs::read_to_string(root.join("resumed.log")).unwrap();
+            let stats: serde_json::Value =
+                serde_json::from_str(log.lines().find_map(|line| line.strip_prefix("trace push-journal ")).unwrap()).unwrap();
+            assert!(stats["seed_states"].as_u64().unwrap() <= 1);
+            let report = serde_json::json!({"point":point,"corrupt_pending":corrupt,"preserved_objects":before.len(),"duplicate_content_uploads":0,"orphan_parts":0,"gc_parts":collected.len(),"journal":stats});
+            println!("crash recovery {report}");
+            if let Some(path) = std::env::var_os("LAYR_TEST_CRASH_REPORT") {
+                let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path).unwrap();
+                writeln!(file, "{report}").unwrap();
+            }
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn pending_part_age_survives_double_crash_and_gc_before_publication() {
+        use std::{
+            os::unix::process::ExitStatusExt,
+            process::{Command, Stdio},
+        };
+        for mode in ["expired", "double_crash", "gc_before_publish"] {
+            let root = std::env::temp_dir().join(crate::ids::new_id());
+            std::fs::create_dir_all(&root).unwrap();
+            let ctx = context(&root);
+            let mut store = remote(&root, &ctx);
+            store
+                .configure(
+                    &ctx,
+                    &super::super::ConfigureOptions { paper_key_out: Some(root.join("paper")), ..Default::default() },
+                )
+                .unwrap();
+            let repo = branch_fixture(&ctx, &store);
+            let states =
+                parents_first(repo.p.db.present_states().unwrap().into_iter().map(|(id, _)| repo.state(&id).unwrap()).collect())
+                    .unwrap();
+            let target = states[2].id.clone();
+            drop(repo);
+            let puts = root.join("puts.jsonl");
+            let clock = root.join("clock");
+            let invoke = |point: Option<&str>, simulated_clock: bool, gc: bool, log: &str| {
+                let mut command = Command::new(std::env::current_exe().unwrap());
+                command
+                    .args(["--ignored", "--exact", "store_remote::writer::tests::crash_push_process", "--nocapture"])
+                    .env("LAYR_TEST_CRASH_ROOT", &root)
+                    .env("LAYR_TEST_PUT_LOG", &puts)
+                    .env_remove("LAYR_TEST_KILL_POINT")
+                    .env_remove("LAYR_TEST_KILL_STATE")
+                    .env_remove("LAYR_TEST_PUSH_CLOCK")
+                    .env_remove("LAYR_TEST_GC_STATE")
+                    .stdout(Stdio::null())
+                    .stderr(std::fs::File::create(root.join(log)).unwrap());
+                if let Some(point) = point {
+                    command.env("LAYR_TEST_KILL_POINT", point).env("LAYR_TEST_KILL_STATE", &target);
+                }
+                if simulated_clock {
+                    command.env("LAYR_TEST_PUSH_CLOCK", &clock);
+                }
+                if gc {
+                    command.env("LAYR_TEST_GC_STATE", &target);
+                }
+                command.status().unwrap()
+            };
+            assert_eq!(invoke(Some("after_part"), false, false, "first.log").signal(), Some(libc::SIGKILL));
+            let initial: Vec<serde_json::Value> =
+                std::fs::read_to_string(&puts).unwrap().lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+            let part = initial.last().unwrap()["object"].as_str().unwrap().to_string();
+            let sha = initial.last().unwrap()["hashes"][0].as_str().unwrap();
+            if mode == "double_crash" {
+                assert_eq!(invoke(Some("before_publish"), false, false, "second.log").signal(), Some(libc::SIGKILL));
+                let journal = super::super::push_journal::Journal::open(&store.dir).unwrap();
+                assert!(!journal.hashes().unwrap().contains_key(sha), "unpublished hash escaped its pending object");
+                assert!(journal.pending().unwrap().iter().any(|pending| pending.object == part));
+            }
+            let age = if mode == "expired" { 13 * 3600 } else { 25 * 3600 };
+            let old = std::time::SystemTime::now() - std::time::Duration::from_secs(age);
+            std::fs::File::options().write(true).open(root.join("remote").join(&part)).unwrap().set_modified(old).unwrap();
+            if mode == "gc_before_publish" {
+                std::fs::write(&clock, (chrono::Utc::now().timestamp() - 24 * 3600).to_string()).unwrap();
+                assert!(!invoke(None, true, true, "gc.log").success());
+                assert!(std::fs::read_to_string(root.join("gc.log")).unwrap().contains("safe publication deadline"));
+                assert!(store.backend.get(&part).unwrap().is_none());
+                assert!(!reader::attempts(&store.backend).unwrap().contains_key(&target));
+                store.verify(true).unwrap();
+            }
+            assert!(invoke(None, false, false, "final.log").success());
+            assert_eq!(reader::attempts(&store.backend).unwrap().len(), 4);
+            store.verify(true).unwrap();
+            let descriptor = store.descriptor().unwrap();
+            let identity = store.identity(&descriptor, None).unwrap();
+            let records = reader::records(&store.backend, &identity, &descriptor.project).unwrap();
+            let mut source = reader::Reader::new(&store.backend, &identity, &records.keys);
+            for (state, attempt) in reader::attempts(&store.backend).unwrap() {
+                for entry in source.tree(&state, &attempt).unwrap().2.files.values() {
+                    assert!(entry.3.iter().all(|link| link.object() != part), "{mode}: expired part reused");
+                }
+            }
+            if store.backend.get(&part).unwrap().is_some() {
+                std::fs::File::options()
+                    .write(true)
+                    .open(root.join("remote").join(&part))
+                    .unwrap()
+                    .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(25 * 3600))
+                    .unwrap();
+                assert_eq!(store.gc(false).unwrap(), vec![part]);
+            }
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn rolling_back_journal_rows_only_causes_authenticated_reseeding() {
+        use std::{
+            os::unix::process::ExitStatusExt,
+            process::{Command, Stdio},
+        };
+        let root = std::env::temp_dir().join(crate::ids::new_id());
+        std::fs::create_dir_all(&root).unwrap();
+        let ctx = context(&root);
+        let mut store = remote(&root, &ctx);
+        store
+            .configure(&ctx, &super::super::ConfigureOptions { paper_key_out: Some(root.join("paper")), ..Default::default() })
+            .unwrap();
+        let repo = branch_fixture(&ctx, &store);
+        let states =
+            parents_first(repo.p.db.present_states().unwrap().into_iter().map(|(id, _)| repo.state(&id).unwrap()).collect())
+                .unwrap();
+        drop(repo);
+        let invoke = |point: Option<(&str, &str)>, log: &str| {
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command
+                .args(["--ignored", "--exact", "store_remote::writer::tests::crash_push_process", "--nocapture"])
+                .env("LAYR_TEST_CRASH_ROOT", &root)
+                .env("LAYR_TRACE", "1")
+                .env_remove("LAYR_TEST_KILL_POINT")
+                .env_remove("LAYR_TEST_KILL_STATE")
+                .stdout(Stdio::null())
+                .stderr(std::fs::File::create(root.join(log)).unwrap());
+            if let Some((point, state)) = point {
+                command.env("LAYR_TEST_KILL_POINT", point).env("LAYR_TEST_KILL_STATE", state);
+            }
+            command.status().unwrap()
+        };
+        assert_eq!(invoke(Some(("before_part", &states[1].id)), "first.log").signal(), Some(libc::SIGKILL));
+        let path = store.dir.join("push-journal.sqlite3");
+        let older = root.join("older.sqlite3");
+        {
+            let db = rusqlite::Connection::open(&path).unwrap();
+            db.execute("VACUUM INTO ?1", [older.to_str().unwrap()]).unwrap();
+        }
+        assert_eq!(invoke(Some(("after_publish", &states[2].id)), "second.log").signal(), Some(libc::SIGKILL));
+        let before: BTreeMap<_, _> = store
+            .backend
+            .list("")
+            .unwrap()
+            .into_iter()
+            .map(|object| {
+                let digest = Sha256::digest(store.backend.get(&object.key).unwrap().unwrap());
+                (object.key, digest)
+            })
+            .collect();
+        let parts_before = before.keys().filter(|key| format::parse_data_name(key).is_some()).count();
+        // Drop the newer WAL as well: restore a coherent older committed database.
+        for suffix in ["-wal", "-shm"] {
+            let path = std::path::PathBuf::from(format!("{}{suffix}", path.display()));
+            if path.exists() {
+                std::fs::remove_file(path).unwrap();
+            }
+        }
+        std::fs::copy(older, &path).unwrap();
+        assert!(invoke(None, "resumed.log").success());
+        for (key, digest) in before {
+            assert_eq!(Sha256::digest(store.backend.get(&key).unwrap().unwrap()), digest);
+        }
+        store.verify(true).unwrap();
+        assert_eq!(reader::attempts(&store.backend).unwrap().len(), 4);
+        let parts_after =
+            store.backend.list("states/").unwrap().iter().filter(|object| format::parse_data_name(&object.key).is_some()).count();
+        assert_eq!(parts_before, parts_after);
+        let log = std::fs::read_to_string(root.join("resumed.log")).unwrap();
+        let stats: serde_json::Value =
+            serde_json::from_str(log.lines().find_map(|line| line.strip_prefix("trace push-journal ")).unwrap()).unwrap();
+        assert_eq!(stats["seed_states"], 2);
+        let report =
+            serde_json::json!({"case":"older_journal_copy","extra_uploaded_parts":parts_after-parts_before,"journal":stats});
+        if let Some(path) = std::env::var_os("LAYR_TEST_CRASH_REPORT") {
+            use std::io::Write;
+            writeln!(std::fs::OpenOptions::new().create(true).append(true).open(path).unwrap(), "{report}").unwrap();
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn fresh_push_discards_wal_sidecars_without_their_main_database() {
+        let root = std::env::temp_dir().join(crate::ids::new_id());
+        std::fs::create_dir_all(&root).unwrap();
+        let ctx = context(&root);
+        let mut store = remote(&root, &ctx);
+        store
+            .configure(&ctx, &super::super::ConfigureOptions { paper_key_out: Some(root.join("paper")), ..Default::default() })
+            .unwrap();
+        let repo = branch_fixture(&ctx, &store);
+        store.private_dir().unwrap();
+        let path = store.dir.join("push-journal.sqlite3");
+        {
+            let mut old = super::super::push_journal::Journal::open(&store.dir).unwrap();
+            old.checkpoint("old-state", "deadbeef", 0, &BTreeMap::new(), &[]).unwrap();
+            old.prepare_part("old-state", "deadbeef", 0, &[]).unwrap();
+            for suffix in ["-wal", "-shm"] {
+                std::fs::copy(format!("{}{suffix}", path.display()), root.join(format!("old{suffix}"))).unwrap();
+            }
+        }
+        std::fs::remove_file(&path).unwrap();
+        for suffix in ["-wal", "-shm"] {
+            std::fs::copy(root.join(format!("old{suffix}")), format!("{}{suffix}", path.display())).unwrap();
+        }
+        {
+            let fresh = super::super::push_journal::Journal::open(&store.dir).unwrap();
+            assert!(!fresh.resuming);
+            assert!(fresh.completed().unwrap().is_empty());
+            assert!(fresh.pending().unwrap().is_empty());
+            fresh.finish().unwrap();
+        }
+        assert_eq!(push(&store, &ctx, &repo, &Options::default()).unwrap().states, 4);
+        store.verify(true).unwrap();
+        for name in ["push-journal.sqlite3", "push-journal.sqlite3-wal", "push-journal.sqlite3-shm"] {
+            assert!(!store.dir.join(name).exists());
+        }
+        drop(repo);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn completion_metadata_is_bounded_and_invalid_metadata_rebuilds() {
+        let root = std::env::temp_dir().join(crate::ids::new_id());
+        std::fs::create_dir_all(&root).unwrap();
+        let index: BTreeMap<_, _> = (0..INDEX_STATES + 2)
+            .map(|_| (crate::ids::new_id(), Cached { attempt: "0123abcd".into(), depth: 0, root: None }))
+            .collect();
+        checkpoint(&root, &index).unwrap();
+        let restored = load_index(&root).unwrap();
+        assert_eq!(restored.len(), INDEX_STATES);
+        assert!(!restored.contains_key(index.first_key_value().unwrap().0));
+        assert!(restored.contains_key(index.last_key_value().unwrap().0));
+        for bytes in [b"damaged".as_slice(), b"{\"format\":2,\"states\":false}".as_slice()] {
+            std::fs::write(root.join("pushed-v2.json.zst"), zst::compress(bytes, None).unwrap()).unwrap();
+            assert!(load_index(&root).unwrap().is_empty());
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn legacy_pushed_cache_migrates_without_changing_completion() {
         let root = std::env::temp_dir().join(crate::ids::new_id());
         std::fs::create_dir_all(&root).unwrap();
         let id = crate::ids::new_id();
@@ -823,13 +1566,16 @@ mod tests {
         let legacy = BTreeMap::from([(id.clone(), pushed)]);
         std::fs::write(root.join("pushed.json"), serde_json::to_vec(&legacy).unwrap()).unwrap();
         let index = load_index(&root).unwrap();
-        let restored = cached_tree(&root, &id, &index[&id]).unwrap();
-        assert_eq!(restored.attempt, "0123abcd");
-        assert!(restored.tree.files.is_empty());
+        assert_eq!(index[&id].attempt, "0123abcd");
+        assert_eq!(index[&id].depth, 0);
+        assert!(index[&id].root.is_none());
         checkpoint(&root, &index).unwrap();
         assert_eq!(load_index(&root).unwrap()[&id].attempt, "0123abcd");
-        let json: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("pushed.json")).unwrap()).unwrap();
-        assert_eq!(json["format"], 1);
+        let json: serde_json::Value =
+            serde_json::from_slice(&zst::decompress(&std::fs::read(root.join("pushed-v2.json.zst")).unwrap(), None).unwrap())
+                .unwrap();
+        assert_eq!(json["format"], 2);
+        assert!(!root.join("pushed.json").exists());
         assert!(json["states"][&id].get("tree").is_none());
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -841,11 +1587,16 @@ mod tests {
         let mut store = remote(&root, &ctx);
         let path = root.join("keep.txt");
         fsutil::atomic_write(&path, b"do not replace", 0o600).unwrap();
-        assert!(store.configure(&ctx, &super::super::ConfigureOptions { paper_key_out: Some(path.clone()), ..Default::default() }).is_err());
+        assert!(store
+            .configure(&ctx, &super::super::ConfigureOptions { paper_key_out: Some(path.clone()), ..Default::default() })
+            .is_err());
         assert_eq!(std::fs::read(&path).unwrap(), b"do not replace");
         assert!(store.backend.get("store.json").unwrap().is_none());
         assert!(store
-            .configure(&ctx, &super::super::ConfigureOptions { paper_key_out: Some(ctx.store.root.join("bad.txt")), ..Default::default() })
+            .configure(
+                &ctx,
+                &super::super::ConfigureOptions { paper_key_out: Some(ctx.store.root.join("bad.txt")), ..Default::default() }
+            )
             .is_err());
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -864,8 +1615,10 @@ mod tests {
                     let ctx = context(&own);
                     let mut store = remote(&root, &ctx);
                     barrier.wait();
-                    let result =
-                        store.configure(&ctx, &super::super::ConfigureOptions { paper_key_out: Some(own.join("paper.txt")), ..Default::default() });
+                    let result = store.configure(
+                        &ctx,
+                        &super::super::ConfigureOptions { paper_key_out: Some(own.join("paper.txt")), ..Default::default() },
+                    );
                     result.map(|r| r.created)
                 })
             })
@@ -891,7 +1644,9 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let ctx = context(&root);
         let mut store = remote(&root, &ctx);
-        store.configure(&ctx, &super::super::ConfigureOptions { paper_key_out: Some(root.join("paper")), ..Default::default() }).unwrap();
+        store
+            .configure(&ctx, &super::super::ConfigureOptions { paper_key_out: Some(root.join("paper")), ..Default::default() })
+            .unwrap();
         let descriptor = store.descriptor().unwrap();
         let mut base = None;
         let mut base_root = None;
@@ -941,7 +1696,9 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let ctx = context(&root);
         let mut store = remote(&root, &ctx);
-        store.configure(&ctx, &super::super::ConfigureOptions { paper_key_out: Some(root.join("paper")), ..Default::default() }).unwrap();
+        store
+            .configure(&ctx, &super::super::ConfigureOptions { paper_key_out: Some(root.join("paper")), ..Default::default() })
+            .unwrap();
         let descriptor = store.descriptor().unwrap();
         let mut record = crate::model::Record::new("machine");
         record.id = crate::ids::new_id();

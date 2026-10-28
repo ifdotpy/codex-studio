@@ -8,6 +8,8 @@ mod index;
 mod legacy;
 pub(crate) mod overlays;
 mod public;
+mod push_cache;
+mod push_journal;
 pub(crate) mod reader;
 mod release;
 mod writer;
@@ -335,7 +337,7 @@ impl Store {
         if let Some(pin) = &self.pin {
             pin.check(&descriptor)?;
         }
-        if let Some(pin) = self.person.as_ref().and_then(|person|person.index.pin(&descriptor.project)) {
+        if let Some(pin) = self.person.as_ref().and_then(|person| person.index.pin(&descriptor.project)) {
             pin.check_store(&descriptor)?;
         }
         let paper_recipient = self.pin.as_ref().and_then(|pin| pin.paper_recipient.clone());
@@ -372,7 +374,7 @@ impl Store {
             // machine its own slot. Never create a slot to perform this transition.
             if repo.p.config_value(&format!("cloud.remote.{name}.public"))? == Some(serde_json::json!(true)) {
                 if let Some(slot) = self.backend.get(&format!("slots/machine-{}.age", self.machine))? {
-                    let current_recipient=self.descriptor()?.recipient;
+                    let current_recipient = self.descriptor()?.recipient;
                     if keys::open_machine_slot(&slot, &self.key)
                         .ok()
                         .is_some_and(|identity| keys::recipient_of(&identity).ok().as_deref() == Some(current_recipient.as_str()))
@@ -398,7 +400,7 @@ impl Store {
     pub fn trust_store(&mut self, ctx: &Ctx, repo: &Repo, name: &str, recipient: &str) -> Result<()> {
         recipient.parse::<age::x25519::Recipient>().map_err(|e| anyhow::anyhow!("invalid store recipient: {e}"))?;
         let previous = self.pin.take();
-        let descriptor = self.connect(ctx).and_then(|_|self.root_descriptor());
+        let descriptor = self.connect(ctx).and_then(|_| self.root_descriptor());
         self.pin = previous;
         let descriptor = descriptor?;
         if let Some(pin) = &self.pin {
@@ -414,10 +416,13 @@ impl Store {
     }
 
     fn root_descriptor(&self) -> Result<Descriptor> {
-        let descriptor:Descriptor=serde_json::from_slice(&self.backend.root().get("store.json")?.context("missing root descriptor")?)?;
-        if descriptor.format!=2 || !crate::model::is_uuid(&descriptor.project) {bail!("invalid root store descriptor");}
-        descriptor.recipient.parse::<age::x25519::Recipient>().map_err(|_|anyhow::anyhow!("invalid root store recipient"))?;
-        if !self.project.is_empty() && self.project!=descriptor.project {
+        let descriptor: Descriptor =
+            serde_json::from_slice(&self.backend.root().get("store.json")?.context("missing root descriptor")?)?;
+        if descriptor.format != 2 || !crate::model::is_uuid(&descriptor.project) {
+            bail!("invalid root store descriptor");
+        }
+        descriptor.recipient.parse::<age::x25519::Recipient>().map_err(|_| anyhow::anyhow!("invalid root store recipient"))?;
+        if !self.project.is_empty() && self.project != descriptor.project {
             bail!("store project differs: local {}, store.json {}", self.project, descriptor.project);
         }
         Ok(descriptor)
@@ -567,11 +572,20 @@ impl Store {
                 self.identity(&descriptor, opts.paper_key.as_deref())?;
             }
         }
-        let mode = if public {layr_store::epochs::Mode::Public} else if self.backend.get("slots/service.age")?.is_some() {layr_store::epochs::Mode::Service} else {layr_store::epochs::Mode::Private};
+        let mode = if public {
+            layr_store::epochs::Mode::Public
+        } else if self.backend.get("slots/service.age")?.is_some() {
+            layr_store::epochs::Mode::Service
+        } else {
+            layr_store::epochs::Mode::Private
+        };
         for name in repo.visible_overlay_names(ctx)? {
             if let Ok(overlay) = repo.overlay_repo(&name) {
                 if epochs::overlay_mode(&overlay)? > mode {
-                    bail!("overlay {name} is more open than remote project mode {}; change the remote mode before pushing", mode.name());
+                    bail!(
+                        "overlay {name} is more open than remote project mode {}; change the remote mode before pushing",
+                        mode.name()
+                    );
                 }
             }
         }

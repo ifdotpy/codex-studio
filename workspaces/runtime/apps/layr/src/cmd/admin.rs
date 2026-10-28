@@ -101,6 +101,13 @@ pub fn save(ctx: &Ctx, args: &[String]) -> Result<i32> {
                     // Caches saved on a protected line may warm other users' lines.
                     let shared = repo.policy().rule_for(&l.name).is_some();
                     record_caches(ctx, repo, &s.id, &repo.working(&l), &caches, shared)?;
+                    // The line's caches as cache overlays (docs/cache-overlays.md): new lines from
+                    // this line take them, whatever state the line's name selects.
+                    for (p, name, id) in repo.save_cache_overlays(ctx, &l, &caches, shared)? {
+                        if !a.has("-q") {
+                            outln!(ctx, "{p}: overlay {name} {}", ids::short(&id));
+                        }
+                    }
                 }
                 if !a.has("-q") {
                     outln!(ctx, "{} {}", l.name, ids::display(&s.id));
@@ -949,6 +956,13 @@ pub fn run_gc(ctx: &Ctx, repo: &Repo, dry: bool) -> Result<Vec<String>> {
         }
     }
     let caches = prune_caches(repo)?;
+    // Overlays with a history limit and folder overlays with an LRU limit (docs/cache-overlays.md).
+    for name in repo.overlay_names()? {
+        repo.after_overlay_move(ctx, &name);
+    }
+    if let Err(e) = repo.cache_gc_lru() {
+        eprintln!("warning: cache size limits not applied: {e:#}");
+    }
     #[cfg(target_os = "macos")]
     {
         let lines = repo.lines()?;
@@ -1920,93 +1934,26 @@ pub fn protect(ctx: &Ctx, args: &[String]) -> Result<i32> {
     Ok(0)
 }
 
-/// Why a cache path is no cache (`save --caches`, `cache list`, `cache add`): its folder holds
+/// Why a cache path is no cache (`save --caches`, `overlay list`, `overlay repair`): its folder holds
 /// files of the head state, and a cache would hide them from the states that follow.
-const VERSIONED: &str = "not a cache: has versioned files; remove them from history first";
+pub(crate) const VERSIONED: &str = "not a cache: has versioned files; remove them from history first";
 /// A folder with versioned files that an older layr made a cache, after it became plain again.
-const VERSIONED_AGAIN: &str = "not a cache: has versioned files; a plain folder again";
+pub(crate) const VERSIONED_AGAIN: &str = "not a cache: has versioned files; a plain folder again";
 
-/// Regenerable caches: folders kept as nested subvolumes, outside automatic states.
-pub fn cache(ctx: &Ctx, args: &[String]) -> Result<i32> {
-    let h = here(ctx)?;
-    let repo = &h.repo;
-    let sub = args.first().map(|s| s.as_str()).unwrap_or("list");
-    match sub {
-        "list" => {
-            // The machine setting, and in a line also the regenerable folders of `.layrattributes`.
-            let (paths, versioned) = match &h.line {
-                Some(l) => (repo.cache_paths(&repo.working(l)), repo.line_cache_paths(l)?.1),
-                None => (repo.p.config_strings("regenerable"), Vec::new()),
-            };
-            for p in paths {
-                let state = match &h.line {
-                    Some(l) => {
-                        let cp = repo.working(l).join(&p);
-                        match (versioned.contains(&p), btrfs::is_subvolume(&cp)) {
-                            (true, true) => "not a cache: has versioned files (run layr cache repair)",
-                            (true, false) => VERSIONED,
-                            (false, true) => "cache",
-                            (false, false) if cp.exists() => "plain folder (run layr cache repair)",
-                            (false, false) => "absent",
-                        }
-                    }
-                    None => "",
-                };
-                outln!(ctx, "{p}\t{state}");
-            }
-            Ok(0)
+/// The `layr cache` forms that the cache overlays replaced (docs/cache-overlays.md, section 4).
+/// Each fails and names its replacement; no repository is opened.
+pub fn removed_cache(args: &[String]) -> Result<i32> {
+    let (old, new) = match args.first().map(|s| s.as_str()) {
+        Some("add") => ("layr cache add", "'regenerable' in .layrattributes, then 'layr save --caches'"),
+        Some("remove") => {
+            ("layr cache remove", "'-regenerable' in .layrattributes, or 'layr config regenerable' without the path")
         }
-        "add" | "remove" => {
-            repo.require(ctx, "config")?;
-            let path = args.get(1).ok_or_else(|| exit(128, "usage: layr cache add|remove <path>"))?;
-            fsutil::check_rel(path)?;
-            let mut v = repo.p.config_strings("regenerable");
-            if sub == "add" {
-                if !v.contains(path) {
-                    v.push(path.clone());
-                }
-            } else {
-                v.retain(|x| x != path);
-            }
-            let _lock = repo.p.lock()?;
-            set_config(ctx, repo, "regenerable", serde_json::json!(v))?;
-            if sub == "add" {
-                if let Some(l) = &h.line {
-                    if crate::repo::holds_files(&repo.state_root(&l.head)?, path) {
-                        outln!(ctx, "{path}: {VERSIONED}");
-                    } else {
-                        let (u, g) = repo.owner_ids(l);
-                        crate::repo::convert_cache(&repo.working(l), path, u, g)?;
-                    }
-                }
-            }
-            Ok(0)
-        }
-        "repair" => {
-            // Cache folders that a tool deleted and made again as plain folders become caches
-            // again. Best at a quiet point, when no build runs in the line. A cache folder that
-            // holds versioned files (an older layr made it a cache) becomes a plain folder again.
-            let l = h.line()?.clone();
-            repo.authorize_line(ctx, &l, crate::repo::LineOp::Save)?;
-            let _lock = repo.p.lock()?;
-            let l = repo.line(&l.id)?;
-            let (u, g) = repo.owner_ids(&l);
-            crate::repo::recover_cache_replacements(&repo.working(&l))?;
-            let (caches, versioned) = repo.line_cache_paths(&l)?;
-            for p in versioned {
-                if crate::repo::uncache(&repo.working(&l), &p, u, g)? {
-                    outln!(ctx, "{p}: {VERSIONED_AGAIN}");
-                }
-            }
-            for p in caches {
-                if crate::repo::convert_cache(&repo.working(&l), &p, u, g)? {
-                    outln!(ctx, "{p}: a cache again");
-                }
-            }
-            Ok(0)
-        }
-        _ => Err(exit(128, "usage: layr cache (list|add|remove|repair) [<path>]")),
-    }
+        Some("pull") => ("layr cache pull", "'layr line new <name> <line>' or 'layr merge <line>'"),
+        Some("repair") => ("layr cache repair", "'layr overlay repair <overlay>'"),
+        Some("list") => ("layr cache list", "'layr overlay list'"),
+        _ => ("layr cache", "'layr overlay list'"),
+    };
+    Err(exit(2, format!("{old} was removed. Use {new}.")))
 }
 
 /// Hidden helpers for tests: `layr debug changes <a> <b>` prints the raw change list.
@@ -2048,5 +1995,21 @@ pub fn debug(ctx: &Ctx, args: &[String]) -> Result<i32> {
             Ok(0)
         }
         _ => Err(exit(128, "usage: layr debug changes <a> <b> | layr debug receive <name> <uuid> < stream")),
+    }
+}
+
+/// A byte count for people: `812 MiB`.
+pub(crate) fn human_size(n: u64) -> String {
+    let units = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut v = n as f64;
+    let mut i = 0;
+    while v >= 1024.0 && i + 1 < units.len() {
+        v /= 1024.0;
+        i += 1;
+    }
+    if i == 0 {
+        format!("{n} B")
+    } else {
+        format!("{v:.1} {}", units[i])
     }
 }

@@ -468,7 +468,124 @@ pub fn migrate_with_options(
                 allocation.preflight(&main)
             },
             || {
+<<<<<<< head
                 let state_id = import_worktree_line(state_dir, &main, &plan, &relative, &name)?;
+||||||| base
+                run(state_dir, &main, &["line", "new", &name, "main"])?;
+                let cwd = main
+                    .parent()
+                    .ok_or_else(|| NativeLayrError::Refused("Missing lines directory".into()))?
+                    .join(&name);
+                let line_directory = super::private_tree::Directory::open(&cwd)?;
+                let destination = line_directory.child(&relative, true)?;
+                let root_mode = destination.mode()?;
+                // Move only the entry itself through the pinned destination parent.
+                let saved_git = if destination.exists(std::ffi::OsStr::new(".git"))? {
+                    Some(tempfile::tempdir_in(state_dir.join(NATIVE_LAYR_DIRECTORY))?)
+                } else {
+                    None
+                };
+                let saved_directory = saved_git
+                    .as_ref()
+                    .map(|saved| super::private_tree::Directory::open(saved.path()))
+                    .transpose()?;
+                with_git_aside(&destination, saved_directory.as_ref(), || {
+                    let mut cache_roots: BTreeSet<PathBuf> =
+                        run(state_dir, &cwd, &["cache", "list"])?
+                            .lines()
+                            .filter_map(|line| line.split_once('\t'))
+                            .filter(|(_, kind)| *kind == "cache")
+                            .map(|(path, _)| PathBuf::from(path))
+                            .collect();
+                    let versioned_roots: Vec<_> = cache_roots
+                        .iter()
+                        .filter(|cache| {
+                            cache
+                                .strip_prefix(&relative)
+                                .is_ok_and(|local| plan.has_versioned_files_under(local))
+                        })
+                        .cloned()
+                        .collect();
+                    for cache in versioned_roots {
+                        discard_inherited_cache(&line_directory, &cache)?;
+                        cache_roots.remove(&cache);
+                    }
+                    let cache_roots = cache_roots
+                        .iter()
+                        .filter_map(|cache| cache.strip_prefix(&relative).ok().map(Path::to_owned))
+                        .collect();
+                    clear_at(&destination, &cache_roots)?;
+                    // Reuse the pinned subtree even if its pathname was replaced after opening it.
+                    plan.stage_open(&destination, &line_directory, &relative)
+                })?;
+                // A top-level line is a private container, distinct from a nested repository root.
+                if relative.as_os_str().is_empty() {
+                    destination.set_mode(root_mode)?;
+                }
+                super::git_guard::install_hook(state_dir, &cwd)?;
+                runtime::save_imported_tree(state_dir, &cwd, "Import Git worktree")?;
+                plan.warm_caches(state_dir, &cwd, &relative)?;
+=======
+                run(state_dir, &main, &["line", "new", &name, "main"])?;
+                let cwd = main
+                    .parent()
+                    .ok_or_else(|| NativeLayrError::Refused("Missing lines directory".into()))?
+                    .join(&name);
+                let line_directory = super::private_tree::Directory::open(&cwd)?;
+                let destination = line_directory.child(&relative, true)?;
+                let root_mode = destination.mode()?;
+                // Move only the entry itself through the pinned destination parent.
+                let saved_git = if destination.exists(std::ffi::OsStr::new(".git"))? {
+                    Some(tempfile::tempdir_in(state_dir.join(NATIVE_LAYR_DIRECTORY))?)
+                } else {
+                    None
+                };
+                let saved_directory = saved_git
+                    .as_ref()
+                    .map(|saved| super::private_tree::Directory::open(saved.path()))
+                    .transpose()?;
+                with_git_aside(&destination, saved_directory.as_ref(), || {
+                    let overlays: Vec<Value> = serde_json::from_str(&run(
+                        state_dir,
+                        &cwd,
+                        &["overlay", "list", "--json"],
+                    )?)
+                    .map_err(|error| NativeLayrError::Refused(error.to_string()))?;
+                    let mut cache_roots: BTreeSet<PathBuf> = overlays
+                        .iter()
+                        .filter(|overlay| overlay["state"] == "cache")
+                        .filter_map(|overlay| overlay["folder"].as_str())
+                        .map(PathBuf::from)
+                        .collect();
+                    let versioned_roots: Vec<_> = cache_roots
+                        .iter()
+                        .filter(|cache| {
+                            cache
+                                .strip_prefix(&relative)
+                                .is_ok_and(|local| plan.has_versioned_files_under(local))
+                        })
+                        .cloned()
+                        .collect();
+                    for cache in versioned_roots {
+                        discard_inherited_cache(&line_directory, &cache)?;
+                        cache_roots.remove(&cache);
+                    }
+                    let cache_roots = cache_roots
+                        .iter()
+                        .filter_map(|cache| cache.strip_prefix(&relative).ok().map(Path::to_owned))
+                        .collect();
+                    clear_at(&destination, &cache_roots)?;
+                    // Reuse the pinned subtree even if its pathname was replaced after opening it.
+                    plan.stage_open(&destination, &line_directory, &relative)
+                })?;
+                // A top-level line is a private container, distinct from a nested repository root.
+                if relative.as_os_str().is_empty() {
+                    destination.set_mode(root_mode)?;
+                }
+                super::git_guard::install_hook(state_dir, &cwd)?;
+                runtime::save_imported_tree(state_dir, &cwd, "Import Git worktree")?;
+                plan.warm_caches(state_dir, &cwd, &relative)?;
+>>>>>>> origin/main
                 Ok(
                     json!({"line":name,"headCommit":imported_head,"worktreeSelection":selection,"stateId":state_id}),
                 )
@@ -585,7 +702,7 @@ mod tests {
         let aside = super::super::private_tree::Directory::open(saved.path()).expect("aside");
         let failed: Result<()> = with_git_aside(&destination, Some(&aside), || {
             assert!(!line.join(".git").exists());
-            Err(NativeLayrError::Refused("cache list failed".into()))
+            Err(NativeLayrError::Refused("overlay list failed".into()))
         });
         assert!(failed.is_err());
         drop(saved);
@@ -968,18 +1085,17 @@ mod tests {
             fs::read_to_string(line.join("sub/target/from-main")).expect("warm worktree cache"),
             "base-data"
         );
-        let caches = run(&state, &line, &["cache", "list"]).expect("line cache list");
         assert!(
-            caches
-                .lines()
-                .any(|entry| entry.starts_with("target\tnot a cache: has versioned files"))
+            super::super::overlay_folder_state(&state, &line, "target")
+                .is_some_and(|folder| folder.starts_with("not a cache: has versioned files"))
         );
-        assert!(caches.lines().any(|entry| entry == "sub/target\tcache"));
-        assert!(
-            run(&state, &main, &["cache", "list"])
-                .expect("main caches")
-                .lines()
-                .any(|entry| entry == "target\tcache")
+        assert_eq!(
+            super::super::overlay_folder_state(&state, &line, "sub/target").as_deref(),
+            Some("cache")
+        );
+        assert_eq!(
+            super::super::overlay_folder_state(&state, &main, "target").as_deref(),
+            Some("cache")
         );
         assert_eq!(
             run(&state, &main, &["show", "head:sub/target/from-main"])

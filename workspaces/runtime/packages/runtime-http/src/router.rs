@@ -113,6 +113,7 @@ pub struct HttpState {
         Option<Arc<dyn studio_runtime_services::linux_vm_guest::GuestRpc>>,
     pub(crate) browser_host_local_forwarder:
         Option<Arc<studio_runtime_services::browser::BrowserForwarder>>,
+    pub(crate) peer_projects_wake: Arc<studio_runtime_services::peer_projects::PeerProjectsWake>,
     pub(crate) orchestration_driver:
         Option<Arc<studio_runtime_services::multi_server_orchestration::OrchestrationDriver>>,
     pub(crate) server_discovery:
@@ -212,6 +213,8 @@ impl HttpState {
             studio_runtime_services::vault::linux_vm_state_dir(std::path::Path::new(&state_dir));
         let sync_changes = Arc::new(ChangeNotificationHub::new());
         let project_accounts = account_policy.as_ref().map(|policy| policy.accounts());
+        let peer_projects_wake =
+            Arc::new(studio_runtime_services::peer_projects::PeerProjectsWake::default());
         let orchestration_driver = store.as_ref().map(|store| {
             Arc::new(studio_runtime_services::multi_server_orchestration::OrchestrationDriver::new(
                 Arc::clone(store),
@@ -224,7 +227,7 @@ impl HttpState {
                         .unwrap_or("default")
                         .to_owned(),
                     project_accounts.as_ref().map(|snapshot| snapshot.accounts.clone()).unwrap_or_default(),
-                )),
+                ).with_projects_changed(Arc::clone(&peer_projects_wake))),
             ))
         });
         let browser_forwarder = orchestration_driver
@@ -273,6 +276,7 @@ impl HttpState {
             browser_answer_guest: Some(browser_answer_guest),
             browser_answer_host_guest: Some(browser_answer_host_guest),
             browser_host_local_forwarder,
+            peer_projects_wake,
             orchestration_driver,
             server_discovery: None,
             tailscale_whoami: None,
@@ -628,6 +632,12 @@ impl HttpState {
         sources
     }
 
+    pub fn peer_projects_wake_handle(
+        &self,
+    ) -> Arc<studio_runtime_services::peer_projects::PeerProjectsWake> {
+        Arc::clone(&self.peer_projects_wake)
+    }
+
     pub fn orchestration_driver_handle(
         &self,
     ) -> Option<Arc<studio_runtime_services::multi_server_orchestration::OrchestrationDriver>> {
@@ -664,7 +674,7 @@ impl HttpState {
                             default_account,
                             known_accounts,
                             lifecycle_ports,
-                        ),
+                        ).with_projects_changed(Arc::clone(&self.peer_projects_wake)),
                     ),
                 ),
             );

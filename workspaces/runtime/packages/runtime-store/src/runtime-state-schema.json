@@ -12,20 +12,6 @@
         "type": "index"
       },
       {
-        "create_order": 37,
-        "name": "analytics_cost_changes_revision_v1",
-        "sql": "CREATE INDEX analytics_cost_changes_revision_v1 ON analytics_cost_changes_v1(root,revision)",
-        "table": "analytics_cost_changes_v1",
-        "type": "index"
-      },
-      {
-        "create_order": 32,
-        "name": "analytics_cost_projection_seq_v1",
-        "sql": "CREATE INDEX analytics_cost_projection_seq_v1 ON analytics_cost_projection_v1(json_extract(packed,'$[0]'))",
-        "table": "analytics_cost_projection_v1",
-        "type": "index"
-      },
-      {
         "create_order": 25,
         "name": "analytics_items_scope",
         "sql": "CREATE INDEX analytics_items_scope ON analytics_items(agent,at)",
@@ -110,34 +96,6 @@
         "type": "table"
       },
       {
-        "create_order": 35,
-        "name": "analytics_cost_changes_v1",
-        "sql": "CREATE TABLE analytics_cost_changes_v1 (\n        root TEXT NOT NULL,id TEXT NOT NULL,revision INTEGER NOT NULL,PRIMARY KEY(root,id))",
-        "table": "analytics_cost_changes_v1",
-        "type": "table"
-      },
-      {
-        "create_order": 30,
-        "name": "analytics_cost_projection_v1",
-        "sql": "CREATE TABLE analytics_cost_projection_v1 (id TEXT PRIMARY KEY,root TEXT,packed TEXT NOT NULL)",
-        "table": "analytics_cost_projection_v1",
-        "type": "table"
-      },
-      {
-        "create_order": 33,
-        "name": "analytics_cost_roots_v1",
-        "sql": "CREATE TABLE analytics_cost_roots_v1 (\n        root TEXT PRIMARY KEY,revision INTEGER NOT NULL,floor INTEGER NOT NULL)",
-        "table": "analytics_cost_roots_v1",
-        "type": "table"
-      },
-      {
-        "create_order": 29,
-        "name": "analytics_cost_state_v1",
-        "sql": "CREATE TABLE analytics_cost_state_v1 (\n        singleton INTEGER PRIMARY KEY CHECK(singleton=1), token TEXT NOT NULL)",
-        "table": "analytics_cost_state_v1",
-        "type": "table"
-      },
-      {
         "create_order": 47,
         "name": "analytics_history",
         "sql": "CREATE TABLE analytics_history (id TEXT PRIMARY KEY, agent TEXT NOT NULL, record TEXT NOT NULL)",
@@ -192,69 +150,6 @@
         "sql": "CREATE TABLE analytics_usage_roots (root TEXT PRIMARY KEY, generation INTEGER NOT NULL)",
         "table": "analytics_usage_roots",
         "type": "table"
-      },
-      {
-        "create_order": 40,
-        "name": "analytics_cost_projection_delete_v1",
-        "sql": "CREATE TRIGGER analytics_cost_projection_delete_v1 AFTER DELETE ON analytics_cost_projection_v1 BEGIN INSERT INTO analytics_cost_roots_v1 SELECT OLD.root,1,0 WHERE OLD.root IS NOT NULL ON CONFLICT(root) DO UPDATE SET revision=revision+1,floor=MAX(0,revision+1-8192); INSERT INTO analytics_cost_changes_v1 SELECT root,OLD.id,revision FROM analytics_cost_roots_v1 WHERE root IS OLD.root AND OLD.root IS NOT NULL ON CONFLICT(root,id) DO UPDATE SET revision=excluded.revision; DELETE FROM analytics_cost_changes_v1 WHERE root IS OLD.root AND OLD.root IS NOT NULL AND revision<=(SELECT floor FROM analytics_cost_roots_v1 WHERE root IS OLD.root); END",
-        "table": "analytics_cost_projection_v1",
-        "type": "trigger"
-      },
-      {
-        "create_order": 38,
-        "name": "analytics_cost_projection_insert_v1",
-        "sql": "CREATE TRIGGER analytics_cost_projection_insert_v1 AFTER INSERT ON analytics_cost_projection_v1 BEGIN INSERT INTO analytics_cost_roots_v1 SELECT NEW.root,1,0 WHERE NEW.root IS NOT NULL ON CONFLICT(root) DO UPDATE SET revision=revision+1,floor=MAX(0,revision+1-8192); INSERT INTO analytics_cost_changes_v1 SELECT root,NEW.id,revision FROM analytics_cost_roots_v1 WHERE root IS NEW.root AND NEW.root IS NOT NULL ON CONFLICT(root,id) DO UPDATE SET revision=excluded.revision; DELETE FROM analytics_cost_changes_v1 WHERE root IS NEW.root AND NEW.root IS NOT NULL AND revision<=(SELECT floor FROM analytics_cost_roots_v1 WHERE root IS NEW.root); END",
-        "table": "analytics_cost_projection_v1",
-        "type": "trigger"
-      },
-      {
-        "create_order": 39,
-        "name": "analytics_cost_projection_update_v1",
-        "sql": "CREATE TRIGGER analytics_cost_projection_update_v1 AFTER UPDATE ON analytics_cost_projection_v1 BEGIN INSERT INTO analytics_cost_roots_v1 SELECT NEW.root,1,0 WHERE NEW.root IS NOT NULL ON CONFLICT(root) DO UPDATE SET revision=revision+1,floor=MAX(0,revision+1-8192); INSERT INTO analytics_cost_changes_v1 SELECT root,NEW.id,revision FROM analytics_cost_roots_v1 WHERE root IS NEW.root AND NEW.root IS NOT NULL ON CONFLICT(root,id) DO UPDATE SET revision=excluded.revision; DELETE FROM analytics_cost_changes_v1 WHERE root IS NEW.root AND NEW.root IS NOT NULL AND revision<=(SELECT floor FROM analytics_cost_roots_v1 WHERE root IS NEW.root); INSERT INTO analytics_cost_roots_v1 SELECT OLD.root,1,0 WHERE OLD.root IS NOT NULL AND OLD.root IS NOT NEW.root ON CONFLICT(root) DO UPDATE SET revision=revision+1,floor=MAX(0,revision+1-8192); INSERT INTO analytics_cost_changes_v1 SELECT root,OLD.id,revision FROM analytics_cost_roots_v1 WHERE root IS OLD.root AND OLD.root IS NOT NULL AND OLD.root IS NOT NEW.root ON CONFLICT(root,id) DO UPDATE SET revision=excluded.revision; DELETE FROM analytics_cost_changes_v1 WHERE root IS OLD.root AND OLD.root IS NOT NULL AND OLD.root IS NOT NEW.root AND revision<=(SELECT floor FROM analytics_cost_roots_v1 WHERE root IS OLD.root); END",
-        "table": "analytics_cost_projection_v1",
-        "type": "trigger"
-      },
-      {
-        "create_order": 42,
-        "name": "analytics_cost_usage_before_delete_v1",
-        "sql": "CREATE TRIGGER analytics_cost_usage_before_delete_v1 BEFORE DELETE ON analytics_usage BEGIN INSERT INTO analytics_cost_projection_v1 SELECT OLD.id,OLD.root,(WITH cost_raw AS MATERIALIZED (SELECT jsonb(OLD.record) AS cost_document) SELECT json_array(OLD.seq,OLD.agent,OLD.thread,OLD.turn,OLD.at,CASE WHEN json_type(cost_document,'$.agentId') IN ('array','object') THEN json_extract(OLD.record,'$.agentId') || '' ELSE json_extract(cost_document,'$.agentId') END,CASE WHEN json_type(cost_document,'$.threadId') IN ('array','object') THEN json_extract(OLD.record,'$.threadId') || '' ELSE json_extract(cost_document,'$.threadId') END,CASE WHEN json_type(cost_document,'$.turnId') IN ('array','object') THEN json_extract(OLD.record,'$.turnId') || '' ELSE json_extract(cost_document,'$.turnId') END,CASE WHEN json_type(cost_document,'$.responseId') IS NULL OR json_type(cost_document,'$.responseId') IN ('null','false') OR (json_type(cost_document,'$.responseId') IN ('integer','real') AND json_extract(cost_document,'$.responseId')=0) OR (json_type(cost_document,'$.responseId')='text' AND json_extract(cost_document,'$.responseId')='') OR (json_type(cost_document,'$.responseId')='array' AND json_array_length(cost_document,'$.responseId')=0) OR (json_type(cost_document,'$.responseId')='object' AND NOT EXISTS (SELECT 1 FROM json_each(cost_document,'$.responseId'))) THEN 0 ELSE 1 END,CASE WHEN json_type(cost_document,'$.model')='text' THEN json_extract(cost_document,'$.model') END,COALESCE(CASE WHEN json_type(cost_document,'$.accountKey') IN ('array','object') THEN json_extract(OLD.record,'$.accountKey') || '' ELSE json_extract(cost_document,'$.accountKey') END,'default'),CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.inputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.inputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.inputTokens') END END,CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.cachedInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.cachedInputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.cachedInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.cachedInputTokens') END END,CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.cacheWriteInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.cacheWriteInputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.cacheWriteInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.cacheWriteInputTokens') END END,CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.outputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.outputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.outputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.outputTokens') END END,CASE WHEN json_extract(cost_document,'$.inputTokensAreUncached')=1 THEN 1 ELSE 0 END,CASE WHEN json_type(cost_document,'$.accountKey') IN ('array','object') THEN json_extract(OLD.record,'$.accountKey') || '' ELSE json_extract(cost_document,'$.accountKey') END,CASE WHEN json_type(cost_document,'$.responseId') IN ('array','object') THEN json_extract(OLD.record,'$.responseId') || '' ELSE json_extract(cost_document,'$.responseId') END) FROM cost_raw) WHERE NOT EXISTS (SELECT 1 FROM analytics_cost_projection_v1 WHERE id=OLD.id); END",
-        "table": "analytics_usage",
-        "type": "trigger"
-      },
-      {
-        "create_order": 43,
-        "name": "analytics_cost_usage_before_insert_v1",
-        "sql": "CREATE TRIGGER analytics_cost_usage_before_insert_v1 BEFORE INSERT ON analytics_usage BEGIN INSERT INTO analytics_cost_projection_v1 SELECT u.id,u.root,(WITH cost_raw AS MATERIALIZED (SELECT jsonb(u.record) AS cost_document) SELECT json_array(u.seq,u.agent,u.thread,u.turn,u.at,CASE WHEN json_type(cost_document,'$.agentId') IN ('array','object') THEN json_extract(u.record,'$.agentId') || '' ELSE json_extract(cost_document,'$.agentId') END,CASE WHEN json_type(cost_document,'$.threadId') IN ('array','object') THEN json_extract(u.record,'$.threadId') || '' ELSE json_extract(cost_document,'$.threadId') END,CASE WHEN json_type(cost_document,'$.turnId') IN ('array','object') THEN json_extract(u.record,'$.turnId') || '' ELSE json_extract(cost_document,'$.turnId') END,CASE WHEN json_type(cost_document,'$.responseId') IS NULL OR json_type(cost_document,'$.responseId') IN ('null','false') OR (json_type(cost_document,'$.responseId') IN ('integer','real') AND json_extract(cost_document,'$.responseId')=0) OR (json_type(cost_document,'$.responseId')='text' AND json_extract(cost_document,'$.responseId')='') OR (json_type(cost_document,'$.responseId')='array' AND json_array_length(cost_document,'$.responseId')=0) OR (json_type(cost_document,'$.responseId')='object' AND NOT EXISTS (SELECT 1 FROM json_each(cost_document,'$.responseId'))) THEN 0 ELSE 1 END,CASE WHEN json_type(cost_document,'$.model')='text' THEN json_extract(cost_document,'$.model') END,COALESCE(CASE WHEN json_type(cost_document,'$.accountKey') IN ('array','object') THEN json_extract(u.record,'$.accountKey') || '' ELSE json_extract(cost_document,'$.accountKey') END,'default'),CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.inputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.inputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.inputTokens') END END,CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.cachedInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.cachedInputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.cachedInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.cachedInputTokens') END END,CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.cacheWriteInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.cacheWriteInputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.cacheWriteInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.cacheWriteInputTokens') END END,CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.outputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.outputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.outputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.outputTokens') END END,CASE WHEN json_extract(cost_document,'$.inputTokensAreUncached')=1 THEN 1 ELSE 0 END,CASE WHEN json_type(cost_document,'$.accountKey') IN ('array','object') THEN json_extract(u.record,'$.accountKey') || '' ELSE json_extract(cost_document,'$.accountKey') END,CASE WHEN json_type(cost_document,'$.responseId') IN ('array','object') THEN json_extract(u.record,'$.responseId') || '' ELSE json_extract(cost_document,'$.responseId') END) FROM cost_raw) FROM analytics_usage u WHERE (u.seq=NEW.seq OR u.id=NEW.id) AND NOT EXISTS (SELECT 1 FROM analytics_cost_projection_v1 WHERE id=u.id); END",
-        "table": "analytics_usage",
-        "type": "trigger"
-      },
-      {
-        "create_order": 41,
-        "name": "analytics_cost_usage_before_update_v1",
-        "sql": "CREATE TRIGGER analytics_cost_usage_before_update_v1 BEFORE UPDATE ON analytics_usage BEGIN INSERT INTO analytics_cost_projection_v1 SELECT OLD.id,OLD.root,(WITH cost_raw AS MATERIALIZED (SELECT jsonb(OLD.record) AS cost_document) SELECT json_array(OLD.seq,OLD.agent,OLD.thread,OLD.turn,OLD.at,CASE WHEN json_type(cost_document,'$.agentId') IN ('array','object') THEN json_extract(OLD.record,'$.agentId') || '' ELSE json_extract(cost_document,'$.agentId') END,CASE WHEN json_type(cost_document,'$.threadId') IN ('array','object') THEN json_extract(OLD.record,'$.threadId') || '' ELSE json_extract(cost_document,'$.threadId') END,CASE WHEN json_type(cost_document,'$.turnId') IN ('array','object') THEN json_extract(OLD.record,'$.turnId') || '' ELSE json_extract(cost_document,'$.turnId') END,CASE WHEN json_type(cost_document,'$.responseId') IS NULL OR json_type(cost_document,'$.responseId') IN ('null','false') OR (json_type(cost_document,'$.responseId') IN ('integer','real') AND json_extract(cost_document,'$.responseId')=0) OR (json_type(cost_document,'$.responseId')='text' AND json_extract(cost_document,'$.responseId')='') OR (json_type(cost_document,'$.responseId')='array' AND json_array_length(cost_document,'$.responseId')=0) OR (json_type(cost_document,'$.responseId')='object' AND NOT EXISTS (SELECT 1 FROM json_each(cost_document,'$.responseId'))) THEN 0 ELSE 1 END,CASE WHEN json_type(cost_document,'$.model')='text' THEN json_extract(cost_document,'$.model') END,COALESCE(CASE WHEN json_type(cost_document,'$.accountKey') IN ('array','object') THEN json_extract(OLD.record,'$.accountKey') || '' ELSE json_extract(cost_document,'$.accountKey') END,'default'),CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.inputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.inputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.inputTokens') END END,CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.cachedInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.cachedInputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.cachedInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.cachedInputTokens') END END,CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.cacheWriteInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.cacheWriteInputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.cacheWriteInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.cacheWriteInputTokens') END END,CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.outputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.outputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.outputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.outputTokens') END END,CASE WHEN json_extract(cost_document,'$.inputTokensAreUncached')=1 THEN 1 ELSE 0 END,CASE WHEN json_type(cost_document,'$.accountKey') IN ('array','object') THEN json_extract(OLD.record,'$.accountKey') || '' ELSE json_extract(cost_document,'$.accountKey') END,CASE WHEN json_type(cost_document,'$.responseId') IN ('array','object') THEN json_extract(OLD.record,'$.responseId') || '' ELSE json_extract(cost_document,'$.responseId') END) FROM cost_raw) WHERE NOT EXISTS (SELECT 1 FROM analytics_cost_projection_v1 WHERE id=OLD.id); END",
-        "table": "analytics_usage",
-        "type": "trigger"
-      },
-      {
-        "create_order": 46,
-        "name": "analytics_cost_usage_delete_v1",
-        "sql": "CREATE TRIGGER analytics_cost_usage_delete_v1 AFTER DELETE ON analytics_usage BEGIN DELETE FROM analytics_cost_projection_v1 WHERE id=OLD.id; END",
-        "table": "analytics_usage",
-        "type": "trigger"
-      },
-      {
-        "create_order": 44,
-        "name": "analytics_cost_usage_insert_v1",
-        "sql": "CREATE TRIGGER analytics_cost_usage_insert_v1 AFTER INSERT ON analytics_usage BEGIN DELETE FROM analytics_cost_projection_v1 WHERE json_extract(packed,'$[0]')=+NEW.seq AND id IS NOT NEW.id; INSERT INTO analytics_cost_projection_v1 VALUES (NEW.id,NEW.root,(WITH cost_raw AS MATERIALIZED (SELECT jsonb(NEW.record) AS cost_document) SELECT json_array(NEW.seq,NEW.agent,NEW.thread,NEW.turn,NEW.at,CASE WHEN json_type(cost_document,'$.agentId') IN ('array','object') THEN json_extract(NEW.record,'$.agentId') || '' ELSE json_extract(cost_document,'$.agentId') END,CASE WHEN json_type(cost_document,'$.threadId') IN ('array','object') THEN json_extract(NEW.record,'$.threadId') || '' ELSE json_extract(cost_document,'$.threadId') END,CASE WHEN json_type(cost_document,'$.turnId') IN ('array','object') THEN json_extract(NEW.record,'$.turnId') || '' ELSE json_extract(cost_document,'$.turnId') END,CASE WHEN json_type(cost_document,'$.responseId') IS NULL OR json_type(cost_document,'$.responseId') IN ('null','false') OR (json_type(cost_document,'$.responseId') IN ('integer','real') AND json_extract(cost_document,'$.responseId')=0) OR (json_type(cost_document,'$.responseId')='text' AND json_extract(cost_document,'$.responseId')='') OR (json_type(cost_document,'$.responseId')='array' AND json_array_length(cost_document,'$.responseId')=0) OR (json_type(cost_document,'$.responseId')='object' AND NOT EXISTS (SELECT 1 FROM json_each(cost_document,'$.responseId'))) THEN 0 ELSE 1 END,CASE WHEN json_type(cost_document,'$.model')='text' THEN json_extract(cost_document,'$.model') END,COALESCE(CASE WHEN json_type(cost_document,'$.accountKey') IN ('array','object') THEN json_extract(NEW.record,'$.accountKey') || '' ELSE json_extract(cost_document,'$.accountKey') END,'default'),CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.inputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.inputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.inputTokens') END END,CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.cachedInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.cachedInputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.cachedInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.cachedInputTokens') END END,CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.cacheWriteInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.cacheWriteInputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.cacheWriteInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.cacheWriteInputTokens') END END,CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.outputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.outputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.outputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.outputTokens') END END,CASE WHEN json_extract(cost_document,'$.inputTokensAreUncached')=1 THEN 1 ELSE 0 END,CASE WHEN json_type(cost_document,'$.accountKey') IN ('array','object') THEN json_extract(NEW.record,'$.accountKey') || '' ELSE json_extract(cost_document,'$.accountKey') END,CASE WHEN json_type(cost_document,'$.responseId') IN ('array','object') THEN json_extract(NEW.record,'$.responseId') || '' ELSE json_extract(cost_document,'$.responseId') END) FROM cost_raw)) ON CONFLICT(id) DO UPDATE SET root=excluded.root,packed=excluded.packed WHERE root IS NOT excluded.root OR packed IS NOT excluded.packed; END",
-        "table": "analytics_usage",
-        "type": "trigger"
-      },
-      {
-        "create_order": 45,
-        "name": "analytics_cost_usage_update_v1",
-        "sql": "CREATE TRIGGER analytics_cost_usage_update_v1 AFTER UPDATE ON analytics_usage BEGIN DELETE FROM analytics_cost_projection_v1 WHERE json_extract(packed,'$[0]')=+NEW.seq AND id IS NOT NEW.id; DELETE FROM analytics_cost_projection_v1 WHERE id=OLD.id AND OLD.id IS NOT NEW.id; INSERT INTO analytics_cost_projection_v1 VALUES (NEW.id,NEW.root,(WITH cost_raw AS MATERIALIZED (SELECT jsonb(NEW.record) AS cost_document) SELECT json_array(NEW.seq,NEW.agent,NEW.thread,NEW.turn,NEW.at,CASE WHEN json_type(cost_document,'$.agentId') IN ('array','object') THEN json_extract(NEW.record,'$.agentId') || '' ELSE json_extract(cost_document,'$.agentId') END,CASE WHEN json_type(cost_document,'$.threadId') IN ('array','object') THEN json_extract(NEW.record,'$.threadId') || '' ELSE json_extract(cost_document,'$.threadId') END,CASE WHEN json_type(cost_document,'$.turnId') IN ('array','object') THEN json_extract(NEW.record,'$.turnId') || '' ELSE json_extract(cost_document,'$.turnId') END,CASE WHEN json_type(cost_document,'$.responseId') IS NULL OR json_type(cost_document,'$.responseId') IN ('null','false') OR (json_type(cost_document,'$.responseId') IN ('integer','real') AND json_extract(cost_document,'$.responseId')=0) OR (json_type(cost_document,'$.responseId')='text' AND json_extract(cost_document,'$.responseId')='') OR (json_type(cost_document,'$.responseId')='array' AND json_array_length(cost_document,'$.responseId')=0) OR (json_type(cost_document,'$.responseId')='object' AND NOT EXISTS (SELECT 1 FROM json_each(cost_document,'$.responseId'))) THEN 0 ELSE 1 END,CASE WHEN json_type(cost_document,'$.model')='text' THEN json_extract(cost_document,'$.model') END,COALESCE(CASE WHEN json_type(cost_document,'$.accountKey') IN ('array','object') THEN json_extract(NEW.record,'$.accountKey') || '' ELSE json_extract(cost_document,'$.accountKey') END,'default'),CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.inputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.inputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.inputTokens') END END,CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.cachedInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.cachedInputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.cachedInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.cachedInputTokens') END END,CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.cacheWriteInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.cacheWriteInputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.cacheWriteInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.cacheWriteInputTokens') END END,CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.outputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.outputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.outputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.outputTokens') END END,CASE WHEN json_extract(cost_document,'$.inputTokensAreUncached')=1 THEN 1 ELSE 0 END,CASE WHEN json_type(cost_document,'$.accountKey') IN ('array','object') THEN json_extract(NEW.record,'$.accountKey') || '' ELSE json_extract(cost_document,'$.accountKey') END,CASE WHEN json_type(cost_document,'$.responseId') IN ('array','object') THEN json_extract(NEW.record,'$.responseId') || '' ELSE json_extract(cost_document,'$.responseId') END) FROM cost_raw)) ON CONFLICT(id) DO UPDATE SET root=excluded.root,packed=excluded.packed WHERE root IS NOT excluded.root OR packed IS NOT excluded.packed; END",
-        "table": "analytics_usage",
-        "type": "trigger"
       }
     ]
   },
@@ -401,13 +296,6 @@
         "name": "runtime_agent_unsettled_legacy",
         "sql": "CREATE INDEX runtime_agent_unsettled_legacy ON runtime_agents(id) WHERE (json_extract(record,'$.workspaceMode')='image' OR json_extract(record,'$.imageWorkspace')=1) AND COALESCE(json_extract(record,'$.legacyWorkspaceSettled'),0)=0",
         "table": "runtime_agents",
-        "type": "index"
-      },
-      {
-        "create_order": 199,
-        "name": "runtime_budget_usage_agent",
-        "sql": "CREATE INDEX runtime_budget_usage_agent ON runtime_budget_usage(agent,kind)",
-        "table": "runtime_budget_usage",
         "type": "index"
       },
       {
@@ -600,13 +488,6 @@
         "type": "index"
       },
       {
-        "create_order": 238,
-        "name": "runtime_payload_refs_hash",
-        "sql": "CREATE INDEX runtime_payload_refs_hash ON runtime_payload_refs(sha256)",
-        "table": "runtime_payload_refs",
-        "type": "index"
-      },
-      {
         "create_order": 265,
         "name": "runtime_request_agent_status",
         "sql": "CREATE INDEX runtime_request_agent_status ON runtime_requests(json_extract(record,'$.agent'),json_extract(record,'$.status'))",
@@ -733,13 +614,6 @@
         "type": "index"
       },
       {
-        "create_order": 150,
-        "name": "runtime_turn_item_link_scope_v1",
-        "sql": "CREATE INDEX runtime_turn_item_link_scope_v1 ON runtime_turn_item_links_v1(agent,turn_id,epoch,created,id)",
-        "table": "runtime_turn_item_links_v1",
-        "type": "index"
-      },
-      {
         "create_order": 95,
         "name": "runtime_usage_resume_account",
         "sql": "CREATE INDEX runtime_usage_resume_account ON runtime_usage_resumes(json_extract(record,'$.accountKey'),json_extract(record,'$.status'))",
@@ -813,27 +687,6 @@
         "create_order": 4,
         "name": "sync_entities_collection_seq",
         "sql": "CREATE INDEX sync_entities_collection_seq ON sync_entities(collection,seq)",
-        "table": "sync_entities",
-        "type": "index"
-      },
-      {
-        "create_order": 286,
-        "name": "sync_entities_invalid_payload",
-        "sql": "CREATE INDEX sync_entities_invalid_payload ON sync_entities(collection,id)\n        WHERE deleted=0 AND collection NOT LIKE 'transcript:%' AND NOT json_valid(payload)",
-        "table": "sync_entities",
-        "type": "index"
-      },
-      {
-        "create_order": 285,
-        "name": "sync_entities_live_agent_scope",
-        "sql": "CREATE INDEX sync_entities_live_agent_scope ON sync_entities(json_extract(payload,'$.value.agent'),collection,seq)\n        WHERE deleted=0 AND collection NOT LIKE 'transcript:%' AND json_valid(payload)",
-        "table": "sync_entities",
-        "type": "index"
-      },
-      {
-        "create_order": 284,
-        "name": "sync_entities_live_root_scope",
-        "sql": "CREATE INDEX sync_entities_live_root_scope ON sync_entities(json_extract(payload,'$.value.rootId'),collection,seq)\n        WHERE deleted=0 AND collection NOT LIKE 'transcript:%' AND json_valid(payload)",
         "table": "sync_entities",
         "type": "index"
       },
@@ -1010,13 +863,6 @@
         "name": "runtime_budget",
         "sql": "CREATE TABLE runtime_budget (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
         "table": "runtime_budget",
-        "type": "table"
-      },
-      {
-        "create_order": 197,
-        "name": "runtime_budget_usage",
-        "sql": "CREATE TABLE runtime_budget_usage (id TEXT PRIMARY KEY, agent TEXT NOT NULL, kind TEXT NOT NULL, tokens INTEGER NOT NULL, at REAL NOT NULL, breakdown TEXT, details TEXT)",
-        "table": "runtime_budget_usage",
         "type": "table"
       },
       {
@@ -1209,24 +1055,10 @@
         "type": "table"
       },
       {
-        "create_order": 75,
-        "name": "runtime_native_sweeps",
-        "sql": "CREATE TABLE runtime_native_sweeps (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
-        "table": "runtime_native_sweeps",
-        "type": "table"
-      },
-      {
         "create_order": 210,
         "name": "runtime_operation_receipts",
         "sql": "CREATE TABLE runtime_operation_receipts (id TEXT PRIMARY KEY, signature TEXT NOT NULL, result TEXT NOT NULL)",
         "table": "runtime_operation_receipts",
-        "type": "table"
-      },
-      {
-        "create_order": 236,
-        "name": "runtime_payload_refs",
-        "sql": "CREATE TABLE runtime_payload_refs (\n            table_name TEXT NOT NULL, record_id TEXT NOT NULL, field TEXT NOT NULL,\n            sha256 TEXT NOT NULL, PRIMARY KEY(table_name,record_id,field))",
-        "table": "runtime_payload_refs",
         "type": "table"
       },
       {
@@ -1286,55 +1118,6 @@
         "type": "table"
       },
       {
-        "create_order": 220,
-        "name": "runtime_search",
-        "sql": "CREATE VIRTUAL TABLE runtime_search USING fts5(id UNINDEXED,agent UNINDEXED,kind UNINDEXED,body,tokenize='unicode61')",
-        "table": "runtime_search",
-        "type": "table"
-      },
-      {
-        "create_order": 225,
-        "name": "runtime_search_config",
-        "sql": "CREATE TABLE 'runtime_search_config'(k PRIMARY KEY, v) WITHOUT ROWID",
-        "table": "runtime_search_config",
-        "type": "table"
-      },
-      {
-        "create_order": 223,
-        "name": "runtime_search_content",
-        "sql": "CREATE TABLE 'runtime_search_content'(id INTEGER PRIMARY KEY, c0, c1, c2, c3)",
-        "table": "runtime_search_content",
-        "type": "table"
-      },
-      {
-        "create_order": 221,
-        "name": "runtime_search_data",
-        "sql": "CREATE TABLE 'runtime_search_data'(id INTEGER PRIMARY KEY, block BLOB)",
-        "table": "runtime_search_data",
-        "type": "table"
-      },
-      {
-        "create_order": 224,
-        "name": "runtime_search_docsize",
-        "sql": "CREATE TABLE 'runtime_search_docsize'(id INTEGER PRIMARY KEY, sz BLOB)",
-        "table": "runtime_search_docsize",
-        "type": "table"
-      },
-      {
-        "create_order": 222,
-        "name": "runtime_search_idx",
-        "sql": "CREATE TABLE 'runtime_search_idx'(segid, term, pgno, PRIMARY KEY(segid, term)) WITHOUT ROWID",
-        "table": "runtime_search_idx",
-        "type": "table"
-      },
-      {
-        "create_order": 226,
-        "name": "runtime_search_indexed",
-        "sql": "CREATE TABLE runtime_search_indexed (id TEXT PRIMARY KEY)",
-        "table": "runtime_search_indexed",
-        "type": "table"
-      },
-      {
         "create_order": 216,
         "name": "runtime_search_next_meta",
         "sql": "CREATE TABLE runtime_search_next_meta (\n                id TEXT PRIMARY KEY, agent TEXT NOT NULL, kind TEXT NOT NULL,\n                search_rowid INTEGER NOT NULL UNIQUE)",
@@ -1346,20 +1129,6 @@
         "name": "runtime_search_rollout",
         "sql": "CREATE TABLE runtime_search_rollout (\n                id INTEGER PRIMARY KEY CHECK(id=1), phase TEXT NOT NULL,\n                cursor INTEGER NOT NULL DEFAULT 0, updated REAL NOT NULL)",
         "table": "runtime_search_rollout",
-        "type": "table"
-      },
-      {
-        "create_order": 228,
-        "name": "runtime_search_rows",
-        "sql": "CREATE TABLE runtime_search_rows (id TEXT PRIMARY KEY, search_rowid INTEGER NOT NULL UNIQUE)",
-        "table": "runtime_search_rows",
-        "type": "table"
-      },
-      {
-        "create_order": 231,
-        "name": "runtime_search_rows_rollout",
-        "sql": "CREATE TABLE runtime_search_rows_rollout (id INTEGER PRIMARY KEY CHECK(id=1),cursor INTEGER NOT NULL DEFAULT 0)",
-        "table": "runtime_search_rows_rollout",
         "type": "table"
       },
       {
@@ -1405,24 +1174,10 @@
         "type": "table"
       },
       {
-        "create_order": 46,
-        "name": "runtime_server_sequence",
-        "sql": "CREATE TABLE runtime_server_sequence (\n                    id INTEGER PRIMARY KEY CHECK(id=1), value INTEGER NOT NULL)",
-        "table": "runtime_server_sequence",
-        "type": "table"
-      },
-      {
         "create_order": 257,
         "name": "runtime_sidebar_order",
         "sql": "CREATE TABLE runtime_sidebar_order (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
         "table": "runtime_sidebar_order",
-        "type": "table"
-      },
-      {
-        "create_order": 77,
-        "name": "runtime_supervisor_cursor",
-        "sql": "CREATE TABLE runtime_supervisor_cursor (handle TEXT PRIMARY KEY, sequence INTEGER NOT NULL, epoch TEXT)",
-        "table": "runtime_supervisor_cursor",
         "type": "table"
       },
       {
@@ -1451,20 +1206,6 @@
         "name": "runtime_tool_results",
         "sql": "CREATE TABLE runtime_tool_results (id TEXT PRIMARY KEY, result TEXT NOT NULL)",
         "table": "runtime_tool_results",
-        "type": "table"
-      },
-      {
-        "create_order": 149,
-        "name": "runtime_turn_item_link_state_v1",
-        "sql": "CREATE TABLE runtime_turn_item_link_state_v1 (id INTEGER PRIMARY KEY CHECK(id=1),epoch TEXT NOT NULL,source_rootpage INTEGER NOT NULL,cursor INTEGER,target INTEGER,complete INTEGER NOT NULL CHECK(complete IN (0,1)),scanned_rows INTEGER NOT NULL,source_bytes INTEGER NOT NULL,updated REAL NOT NULL)",
-        "table": "runtime_turn_item_link_state_v1",
-        "type": "table"
-      },
-      {
-        "create_order": 147,
-        "name": "runtime_turn_item_links_v1",
-        "sql": "CREATE TABLE runtime_turn_item_links_v1 (id TEXT PRIMARY KEY,agent TEXT NOT NULL,turn_id,created REAL NOT NULL,epoch TEXT NOT NULL)",
-        "table": "runtime_turn_item_links_v1",
         "type": "table"
       },
       {
@@ -1535,90 +1276,6 @@
         "name": "runtime_agent_record_generation_update",
         "sql": "CREATE TRIGGER runtime_agent_record_generation_update AFTER UPDATE ON runtime_agents WHEN OLD.record IS NOT NEW.record OR OLD.id IS NOT NEW.id OR OLD.rowid IS NOT NEW.rowid BEGIN UPDATE runtime_agent_record_generation SET value=value+1 WHERE id=1; UPDATE runtime_scheduler_agent_change_state SET entries=entries+CASE WHEN EXISTS(SELECT 1 FROM runtime_scheduler_agent_changes WHERE id=OLD.id) THEN 0 ELSE 1 END,total=total-COALESCE((SELECT generation FROM runtime_scheduler_agent_changes WHERE id=OLD.id),0)+(SELECT value FROM runtime_agent_record_generation WHERE id=1) WHERE id=1 AND OLD.id IS NOT NEW.id; INSERT INTO runtime_scheduler_agent_changes(id,generation) SELECT OLD.id,value FROM runtime_agent_record_generation WHERE id=1 AND OLD.id IS NOT NEW.id ON CONFLICT(id) DO UPDATE SET generation=excluded.generation; UPDATE runtime_scheduler_agent_change_state SET entries=entries+CASE WHEN EXISTS(SELECT 1 FROM runtime_scheduler_agent_changes WHERE id=NEW.id) THEN 0 ELSE 1 END,total=total-COALESCE((SELECT generation FROM runtime_scheduler_agent_changes WHERE id=NEW.id),0)+(SELECT value FROM runtime_agent_record_generation WHERE id=1) WHERE id=1; INSERT INTO runtime_scheduler_agent_changes(id,generation) SELECT NEW.id,value FROM runtime_agent_record_generation WHERE id=1 ON CONFLICT(id) DO UPDATE SET generation=excluded.generation; UPDATE runtime_scheduler_agent_change_state SET generation=(SELECT value FROM runtime_agent_record_generation WHERE id=1) WHERE id=1; END",
         "table": "runtime_agents",
-        "type": "trigger"
-      },
-      {
-        "create_order": 241,
-        "name": "runtime_payload_checkpoints_delete",
-        "sql": "CREATE TRIGGER runtime_payload_checkpoints_delete AFTER DELETE ON runtime_checkpoints BEGIN\n            DELETE FROM runtime_payload_refs WHERE table_name='runtime_checkpoints' AND record_id=OLD.id;\n        END",
-        "table": "runtime_checkpoints",
-        "type": "trigger"
-      },
-      {
-        "create_order": 239,
-        "name": "runtime_payload_checkpoints_insert",
-        "sql": "CREATE TRIGGER runtime_payload_checkpoints_insert AFTER INSERT ON runtime_checkpoints BEGIN\n            INSERT OR REPLACE INTO runtime_payload_refs(table_name,record_id,field,sha256)\n            SELECT 'runtime_checkpoints',NEW.id,j.key,json_extract(j.value,'$.sha256')\n            FROM json_each(json_extract(NEW.record,'$._payloadBlobs')) AS j\n            WHERE json_type(j.value,'$.sha256')='text';\n        END",
-        "table": "runtime_checkpoints",
-        "type": "trigger"
-      },
-      {
-        "create_order": 240,
-        "name": "runtime_payload_checkpoints_update",
-        "sql": "CREATE TRIGGER runtime_payload_checkpoints_update AFTER UPDATE OF record ON runtime_checkpoints BEGIN\n            DELETE FROM runtime_payload_refs WHERE table_name='runtime_checkpoints' AND record_id=OLD.id;\n            INSERT OR REPLACE INTO runtime_payload_refs(table_name,record_id,field,sha256)\n            SELECT 'runtime_checkpoints',NEW.id,j.key,json_extract(j.value,'$.sha256')\n            FROM json_each(json_extract(NEW.record,'$._payloadBlobs')) AS j\n            WHERE json_type(j.value,'$.sha256')='text';\n        END",
-        "table": "runtime_checkpoints",
-        "type": "trigger"
-      },
-      {
-        "create_order": 244,
-        "name": "runtime_payload_requests_delete",
-        "sql": "CREATE TRIGGER runtime_payload_requests_delete AFTER DELETE ON runtime_tool_requests BEGIN\n            DELETE FROM runtime_payload_refs WHERE table_name='runtime_tool_requests' AND record_id=OLD.id;\n        END",
-        "table": "runtime_tool_requests",
-        "type": "trigger"
-      },
-      {
-        "create_order": 242,
-        "name": "runtime_payload_requests_insert",
-        "sql": "CREATE TRIGGER runtime_payload_requests_insert AFTER INSERT ON runtime_tool_requests BEGIN\n            INSERT OR REPLACE INTO runtime_payload_refs(table_name,record_id,field,sha256)\n            SELECT 'runtime_tool_requests',NEW.id,j.key,json_extract(j.value,'$.sha256')\n            FROM json_each(json_extract(NEW.record,'$._payloadBlobs')) AS j\n            WHERE json_type(j.value,'$.sha256')='text';\n        END",
-        "table": "runtime_tool_requests",
-        "type": "trigger"
-      },
-      {
-        "create_order": 243,
-        "name": "runtime_payload_requests_update",
-        "sql": "CREATE TRIGGER runtime_payload_requests_update AFTER UPDATE OF record ON runtime_tool_requests BEGIN\n            DELETE FROM runtime_payload_refs WHERE table_name='runtime_tool_requests' AND record_id=OLD.id;\n            INSERT OR REPLACE INTO runtime_payload_refs(table_name,record_id,field,sha256)\n            SELECT 'runtime_tool_requests',NEW.id,j.key,json_extract(j.value,'$.sha256')\n            FROM json_each(json_extract(NEW.record,'$._payloadBlobs')) AS j\n            WHERE json_type(j.value,'$.sha256')='text';\n        END",
-        "table": "runtime_tool_requests",
-        "type": "trigger"
-      },
-      {
-        "create_order": 247,
-        "name": "runtime_payload_results_delete",
-        "sql": "CREATE TRIGGER runtime_payload_results_delete AFTER DELETE ON runtime_tool_results BEGIN\n            DELETE FROM runtime_payload_refs WHERE table_name='runtime_tool_results' AND record_id=OLD.id;\n        END",
-        "table": "runtime_tool_results",
-        "type": "trigger"
-      },
-      {
-        "create_order": 245,
-        "name": "runtime_payload_results_insert",
-        "sql": "CREATE TRIGGER runtime_payload_results_insert AFTER INSERT ON runtime_tool_results BEGIN\n            INSERT OR REPLACE INTO runtime_payload_refs(table_name,record_id,field,sha256)\n            SELECT 'runtime_tool_results',NEW.id,j.key,json_extract(j.value,'$.sha256')\n            FROM json_each(json_extract(NEW.result,'$._payloadBlobs')) AS j\n            WHERE json_type(j.value,'$.sha256')='text';\n        END",
-        "table": "runtime_tool_results",
-        "type": "trigger"
-      },
-      {
-        "create_order": 246,
-        "name": "runtime_payload_results_update",
-        "sql": "CREATE TRIGGER runtime_payload_results_update AFTER UPDATE OF result ON runtime_tool_results BEGIN\n            DELETE FROM runtime_payload_refs WHERE table_name='runtime_tool_results' AND record_id=OLD.id;\n            INSERT OR REPLACE INTO runtime_payload_refs(table_name,record_id,field,sha256)\n            SELECT 'runtime_tool_results',NEW.id,j.key,json_extract(j.value,'$.sha256')\n            FROM json_each(json_extract(NEW.result,'$._payloadBlobs')) AS j\n            WHERE json_type(j.value,'$.sha256')='text';\n        END",
-        "table": "runtime_tool_results",
-        "type": "trigger"
-      },
-      {
-        "create_order": 153,
-        "name": "runtime_turn_item_link_delete_v1",
-        "sql": "CREATE TRIGGER runtime_turn_item_link_delete_v1 AFTER DELETE ON runtime_items BEGIN DELETE FROM runtime_turn_item_links_v1 WHERE id=OLD.id;  END",
-        "table": "runtime_items",
-        "type": "trigger"
-      },
-      {
-        "create_order": 151,
-        "name": "runtime_turn_item_link_insert_v1",
-        "sql": "CREATE TRIGGER runtime_turn_item_link_insert_v1 AFTER INSERT ON runtime_items BEGIN INSERT INTO runtime_turn_item_links_v1(id,agent,turn_id,created,epoch) VALUES (NEW.id,NEW.agent,json_extract(NEW.record,'$.turnId'),NEW.created,COALESCE((SELECT epoch FROM runtime_turn_item_link_state_v1 WHERE id=1),'')) ON CONFLICT(id) DO UPDATE SET agent=excluded.agent,turn_id=excluded.turn_id,created=excluded.created,epoch=excluded.epoch WHERE runtime_turn_item_links_v1.agent IS NOT excluded.agent OR runtime_turn_item_links_v1.turn_id IS NOT excluded.turn_id OR runtime_turn_item_links_v1.created IS NOT excluded.created OR runtime_turn_item_links_v1.epoch IS NOT excluded.epoch; END",
-        "table": "runtime_items",
-        "type": "trigger"
-      },
-      {
-        "create_order": 152,
-        "name": "runtime_turn_item_link_update_v1",
-        "sql": "CREATE TRIGGER runtime_turn_item_link_update_v1 AFTER UPDATE ON runtime_items WHEN OLD.id IS NOT NEW.id OR OLD.agent IS NOT NEW.agent OR OLD.record IS NOT NEW.record OR OLD.created IS NOT NEW.created OR OLD.rowid IS NOT NEW.rowid BEGIN DELETE FROM runtime_turn_item_links_v1 WHERE id=OLD.id AND OLD.id IS NOT NEW.id; INSERT INTO runtime_turn_item_links_v1(id,agent,turn_id,created,epoch) VALUES (NEW.id,NEW.agent,json_extract(NEW.record,'$.turnId'),NEW.created,COALESCE((SELECT epoch FROM runtime_turn_item_link_state_v1 WHERE id=1),'')) ON CONFLICT(id) DO UPDATE SET agent=excluded.agent,turn_id=excluded.turn_id,created=excluded.created,epoch=excluded.epoch WHERE runtime_turn_item_links_v1.agent IS NOT excluded.agent OR runtime_turn_item_links_v1.turn_id IS NOT excluded.turn_id OR runtime_turn_item_links_v1.created IS NOT excluded.created OR runtime_turn_item_links_v1.epoch IS NOT excluded.epoch; END",
-        "table": "runtime_items",
         "type": "trigger"
       },
       {

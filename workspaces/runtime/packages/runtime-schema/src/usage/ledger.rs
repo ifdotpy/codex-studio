@@ -146,17 +146,6 @@ pub fn budget_state_write_schema() -> Value {
     schema
 }
 
-/// Unknown rows are zero-token replay receipts, never accounting evidence.
-pub fn budget_usage_schema() -> Value {
-    let mut schema: Value = serde_json::from_str(include_str!(
-        "../schemas/persisted-budget-usage.schema.json"
-    ))
-    .expect("usage schema");
-    schema["properties"]["kind"]["enum"] = json!(["response", "notice", UNKNOWN_USAGE_KIND]);
-    schema["allOf"] = json!([{"if":{"properties":{"kind":{"const":UNKNOWN_USAGE_KIND}},"required":["kind"]},"then":{"properties":{"tokens":{"const":0},"details":{"type":"null"},"breakdown":{"type":"null"}}}}]);
-    schema
-}
-
 /// An unknown receipt is immutable because its primary key is the accounting facts.
 pub fn receipt_replay(kind: &str) -> Option<UsageCorrection> {
     (kind == UNKNOWN_USAGE_KIND).then_some(UsageCorrection::Replay)

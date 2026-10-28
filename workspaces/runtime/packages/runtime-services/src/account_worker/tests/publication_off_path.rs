@@ -174,6 +174,25 @@ async fn restart_replays_undelivered_publications_once() {
     worker.shutdown().await.expect("stop worker");
 }
 
+/// The writer-job callback and its counter are process-wide, so a test that counts
+/// jobs runs its body alone in a child process, not beside other tests of this binary.
+fn run_counting_probe(probe: &str) {
+    const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+    const PROBE_OUTPUT_LIMIT_BYTES: usize = 64 * 1024;
+    let executable = std::env::current_exe().expect("test executable");
+    crate::bounded_child::run(crate::bounded_child::Request {
+        program: executable.as_os_str(),
+        git_directory: None,
+        args: &["--ignored", "--exact", probe, "--nocapture"],
+        environment: &[],
+        input: None,
+        stdout_limit: PROBE_OUTPUT_LIMIT_BYTES,
+        stderr_limit: PROBE_OUTPUT_LIMIT_BYTES,
+        timeout: PROBE_TIMEOUT,
+    })
+    .expect("counting probe passes");
+}
+
 static WRITER_JOBS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 fn count_writer_job(event: studio_runtime_store::StoreDiagnosticsEvent) {
@@ -212,8 +231,16 @@ fn projection_log_rows(state: &State) -> i64 {
 /// row exists when the frame is acknowledged, with the sink still shut, and each
 /// frame costs one writer transaction. The projector then applies the row to
 /// analytics without a Canvas writer transaction.
+#[test]
+fn analytics_are_logged_in_the_journal_commit_and_projected_off_the_writer() {
+    run_counting_probe(
+        "account_worker::tests::publication_off_path::probe_analytics_are_logged_in_the_journal_commit_and_projected_off_the_writer",
+    );
+}
+
+#[ignore = "run by its isolated wrapper test"]
 #[tokio::test]
-async fn analytics_are_logged_in_the_journal_commit_and_projected_off_the_writer() {
+async fn probe_analytics_are_logged_in_the_journal_commit_and_projected_off_the_writer() {
     let state = State::new().await;
     let mut peer = Peer::new();
     let sink = GatedSink::new(false);
@@ -288,8 +315,16 @@ fn receipts_for(state: &State, cursor: u64) -> i64 {
 /// The drain writes nothing: the worker's next journal transaction deletes the
 /// receipts it delivered, so every frame costs one writer transaction, and no
 /// receipt is delivered twice while it waits for that deletion.
+#[test]
+fn delivered_receipts_are_deleted_by_the_next_journal_commit() {
+    run_counting_probe(
+        "account_worker::tests::publication_off_path::probe_delivered_receipts_are_deleted_by_the_next_journal_commit",
+    );
+}
+
+#[ignore = "run by its isolated wrapper test"]
 #[tokio::test]
-async fn delivered_receipts_are_deleted_by_the_next_journal_commit() {
+async fn probe_delivered_receipts_are_deleted_by_the_next_journal_commit() {
     const FRAME_LIMIT: usize = 64;
     let state = State::new().await;
     let mut peer = Peer::new();

@@ -57,9 +57,11 @@ pub fn status(ctx: &Ctx, args: &[String]) -> Result<i32> {
     let filtered = h.repo.filtered_view(ctx, &line)?;
     let specs = h.specs(&a.rest())?;
     #[cfg(target_os = "macos")]
-    let st = if filtered.is_some() { h.repo.snapshot_status(ctx, &line)? } else { h.repo.status_report(&line)? };
+    let mut st = if filtered.is_some() { h.repo.snapshot_status(ctx, &line)? } else { h.repo.status_report(&line)? };
     #[cfg(not(target_os = "macos"))]
-    let st = if filtered.is_some() { h.repo.snapshot_status(ctx, &line)? } else { h.repo.status(&line)?.0 };
+    let mut st = if filtered.is_some() { h.repo.snapshot_status(ctx, &line)? } else { h.repo.status(&line)?.0 };
+    // The files of quiet overlays are not shown (docs/cache-overlays.md, section 4.1).
+    st.drop_paths(&h.repo.quiet_paths(&line)?);
     let overlaps = if filtered.is_none() && (a.has("--json") || (!a.has("-s") && !a.has("--porcelain"))) {
         h.repo.overlaps(ctx, &line)?.into_iter().filter(|o| matches(&specs, &o.path)).collect::<Vec<_>>()
     } else {
@@ -355,6 +357,7 @@ fn select_add(
     st: &Status,
     scan: &Path,
     index: &(impl fsutil::Src + ?Sized),
+    quiet: &BTreeSet<String>,
 ) -> Result<(BTreeSet<String>, Vec<String>)> {
     let mut paths: BTreeSet<String> = BTreeSet::new();
     for c in &st.unstaged {
@@ -392,6 +395,8 @@ fn select_add(
             }
         }
     }
+    // A quiet overlay's files never go into the index: a named save takes them as they are.
+    paths.retain(|p| !quiet.contains(p));
     Ok((paths, ignored_named))
 }
 
@@ -425,6 +430,7 @@ pub fn add(ctx: &Ctx, args: &[String]) -> Result<i32> {
     h.repo.authorize_line(ctx, &line, crate::repo::LineOp::Direct)?;
     let _lock = h.repo.p.lock()?;
     let line = h.repo.line(&line.id)?;
+    let quiet = h.repo.quiet_paths(&line)?;
     #[cfg(target_os = "macos")]
     let prepared = {
         let work = h.repo.working(&line);
@@ -435,7 +441,7 @@ pub fn add(ctx: &Ctx, args: &[String]) -> Result<i32> {
         }
         crate::storage::stable_read(&roots, || {
             let st = h.repo.status_for_add(&line, &work, &index)?;
-            let (paths, ignored) = select_add(&h, &a, &specs, &st, &work, &index)?;
+            let (paths, ignored) = select_add(&h, &a, &specs, &st, &work, &index, &quiet)?;
             let scan = crate::repo::Temp { path: h.repo.p.scan_dir().join(ids::new_id()) };
             crate::storage::create_subvolume(&scan.path)?;
             crate::storage::copy_selected(&work, &scan.path, &paths)?;
@@ -448,7 +454,7 @@ pub fn add(ctx: &Ctx, args: &[String]) -> Result<i32> {
         Some(v) => v,
         None => {
             let (st, scan, _it, index) = h.repo.status(&line)?;
-            let (paths, ignored) = select_add(&h, &a, &specs, &st, &scan.path, &index)?;
+            let (paths, ignored) = select_add(&h, &a, &specs, &st, &scan.path, &index, &quiet)?;
             (scan, paths, ignored)
         }
     };
@@ -856,7 +862,8 @@ pub fn commit(ctx: &Ctx, args: &[String]) -> Result<i32> {
         }
     }
     let nothing = |h: &Here, line: &Line| -> Result<i32> {
-        let (st2, _s2, _i2, _x2) = h.repo.status(line)?;
+        let (mut st2, _s2, _i2, _x2) = h.repo.status(line)?;
+        st2.drop_paths(&h.repo.quiet_paths(line)?);
         outln!(ctx, "On line {}", line.name);
         if !st2.unstaged.is_empty() {
             outln!(ctx, "Changes not staged for a state:");
@@ -1026,12 +1033,15 @@ fn commit_stacked(
     // refused commit leaves the index as it was). It becomes the line's base.
     // The files of `overlay move` come from the working folder as they are now.
     let pending = repo.pending_moves(line);
-    let new_tree = if all || !pending.is_empty() {
+    // A quiet overlay's files come from the working folder too (they never enter the index).
+    let quiet_files = repo.quiet_paths(line)?;
+    let new_tree = if all || !pending.is_empty() || !quiet_files.is_empty() {
         let (st, scan, _it, _index) = repo.status(line)?;
         let mut paths: BTreeSet<String> = BTreeSet::new();
         if all {
             paths.extend(st.unstaged.iter().map(|c| c.path.clone()));
         }
+        paths.extend(st.unstaged.iter().filter(|c| quiet_files.contains(&c.path)).map(|c| c.path.clone()));
         paths.extend(pending.keys().cloned());
         let work = repo.temp_work(&src)?;
         stage_into(repo, line, &work.path, &scan.path, &paths)?;

@@ -1,3 +1,4 @@
+import { appendAppLog } from "../appLog";
 import {
   AccountStatus as GeneratedApiAccountStatus,
   AccountTransferStatus as GeneratedApiAccountTransferStatus,
@@ -501,18 +502,23 @@ export function AccountTransferStatus({
   transfer,
   targetLabel,
   pending,
-  showCompleted = false,
+  opened = true,
+  onClose = () => {},
+  error,
+  retryStart,
   onAction,
 }: {
-  transfer?: NonNullable<Agent["accountTransfer"]>;
+  transfer?: NonNullable<Agent["accountTransfer"]> | undefined;
   targetLabel?: string;
   pending?: boolean;
-  showCompleted?: boolean;
+  opened?: boolean;
+  onClose?: () => void;
+  error?: string;
+  retryStart?: (() => void) | undefined;
   onAction: (action: "retry" | "cancel") => void;
 }) {
-  if (!transfer) return null;
-  const waiting = Number(transfer.waitingCount || 0);
-  const left = Array.isArray(transfer.leftOnSource)
+  const waiting = Number(transfer?.waitingCount || 0);
+  const left = Array.isArray(transfer?.leftOnSource)
     ? transfer.leftOnSource
     : [];
   // One line per reason: a team move can leave many subagents for one reason.
@@ -542,87 +548,113 @@ export function AccountTransferStatus({
       )
       .values(),
   ];
-  const blocked = Array.isArray(transfer.blocked) ? transfer.blocked : [];
-  const interrupted = Array.isArray(transfer.interrupted)
+  const blocked = Array.isArray(transfer?.blocked) ? transfer.blocked : [];
+  const interrupted = Array.isArray(transfer?.interrupted)
     ? transfer.interrupted
     : [];
-  if (
-    transfer.status !== GeneratedApiAccountTransferStatus.pending &&
-    !left.length &&
-    !blocked.length &&
-    (!showCompleted ||
-      !Number(transfer.moved ?? transfer.completed ?? 0) ||
-      !targetLabel)
-  )
-    return null;
   return (
-    <div className="account-menu-note" role="status">
-      <ArrowRightLeft size={14} />
-      <div>
-        {Number(transfer.moved ?? transfer.completed ?? 0) > 0 &&
-          targetLabel && (
-            <div>
-              Moved {transfer.moved ?? transfer.completed} subagents to{" "}
-              {targetLabel}.
-            </div>
+    <Modal
+      opened={opened}
+      onClose={onClose}
+      title="Account transfer"
+      centered
+      zIndex={layerZIndex.modalAbovePopover}
+    >
+      {!transfer ? (
+        <div>
+          {error ? (
+            <p role="alert">{error}</p>
+          ) : (
+            <p role="status">Starting transfer…</p>
           )}
-        {transfer.status === GeneratedApiAccountTransferStatus.pending &&
-          waiting > 0 && <div>{waiting} waiting</div>}
-        {!!transfer.nativeHistoryPending && (
-          <small>
-            History transfer in progress: {transfer.nativeHistoryPending}{" "}
-            remaining.
-          </small>
-        )}
-        {!!transfer.movingNow && <small>{transfer.movingNow} moving now</small>}
-        {transfer.waiting && <small>{transfer.waiting}</small>}
-        {interrupted.map((member) => (
-          <small key={String(member.id)}>
-            {member.name || "Agent"}: {member.reason}
-          </small>
-        ))}
-        {blocked.map((member) => (
-          <small key={String(member.id)} role="alert">
-            {member.name || "Agent"} blocked: {member.reason}
-          </small>
-        ))}
-        {leftGroups.map((group) => (
-          <small key={group.key}>
-            {group.names.join(", ")} left on source ({group.provider}):{" "}
-            {group.reason}
-          </small>
-        ))}
-        <div className="account-transfer-actions">
-          {transfer.canRetry && (
-            <Button
-              size="compact-xs"
-              variant="subtle"
-              disabled={!!pending}
-              onClick={() => onAction("retry")}
-            >
+          {retryStart && (
+            <Button onClick={retryStart} disabled={!!pending}>
               Retry
             </Button>
           )}
-          {transfer.status === GeneratedApiAccountTransferStatus.pending && (
-            <Button
-              size="compact-xs"
-              variant="subtle"
-              // A subagent whose history is moving now finishes first; the server
-              // refuses a cancel until then.
-              disabled={pending || Number(transfer.movingNow || 0) > 0}
-              title={
-                Number(transfer.movingNow || 0) > 0
-                  ? "Cancel after the subagent that is moving now finishes."
-                  : undefined
-              }
-              onClick={() => onAction("cancel")}
-            >
-              Cancel remaining
+        </div>
+      ) : (
+        <div className="account-menu-note" role="status">
+          {error && <p role="alert">{error}</p>}
+          {retryStart && (
+            <Button onClick={retryStart} disabled={!!pending}>
+              Retry
             </Button>
           )}
+          <ArrowRightLeft size={14} />
+          <div>
+            {transfer.status !== GeneratedApiAccountTransferStatus.pending && (
+              <div>Transfer {transfer.status}.</div>
+            )}
+            {Number(transfer.moved ?? transfer.completed ?? 0) > 0 &&
+              targetLabel && (
+                <div>
+                  Moved {transfer.moved ?? transfer.completed} subagents to{" "}
+                  {targetLabel}.
+                </div>
+              )}
+            {transfer.status === GeneratedApiAccountTransferStatus.pending &&
+              waiting > 0 && <div>{waiting} waiting</div>}
+            {!!transfer.nativeHistoryPending && (
+              <small>
+                History transfer in progress: {transfer.nativeHistoryPending}{" "}
+                remaining.
+              </small>
+            )}
+            {!!transfer.movingNow && (
+              <small>{transfer.movingNow} moving now</small>
+            )}
+            {transfer.waiting && <small>{transfer.waiting}</small>}
+            {interrupted.map((member) => (
+              <small key={String(member.id)}>
+                {member.name || "Agent"}: {member.reason}
+              </small>
+            ))}
+            {blocked.map((member) => (
+              <small key={String(member.id)} role="alert">
+                {member.name || "Agent"} blocked: {member.reason}
+              </small>
+            ))}
+            {leftGroups.map((group) => (
+              <small key={group.key}>
+                {group.names.join(", ")} left on source ({group.provider}):{" "}
+                {group.reason}
+              </small>
+            ))}
+            <div className="account-transfer-actions">
+              {transfer.canRetry && (
+                <Button
+                  size="compact-xs"
+                  variant="subtle"
+                  disabled={!!pending}
+                  onClick={() => onAction("retry")}
+                >
+                  Retry
+                </Button>
+              )}
+              {transfer.status ===
+                GeneratedApiAccountTransferStatus.pending && (
+                <Button
+                  size="compact-xs"
+                  variant="subtle"
+                  // A subagent whose history is moving now finishes first; the server
+                  // refuses a cancel until then.
+                  disabled={pending || Number(transfer.movingNow || 0) > 0}
+                  title={
+                    Number(transfer.movingNow || 0) > 0
+                      ? "Cancel after the subagent that is moving now finishes."
+                      : undefined
+                  }
+                  onClick={() => onAction("cancel")}
+                >
+                  Cancel remaining
+                </Button>
+              )}
+            </div>
+          </div>
         </div>
-      </div>
-    </div>
+      )}
+    </Modal>
   );
 }
 
@@ -728,6 +760,12 @@ export function AccountTransferConfirmation({
             await onConfirm();
             onClose();
           } catch (failure) {
+            appendAppLog({
+              at: Date.now(),
+              level: "error",
+              title: "Account transfer failed",
+              reason: errorText(failure),
+            });
             setError(errorText(failure));
           } finally {
             lock.current = false;
@@ -748,6 +786,7 @@ export default function Accounts({
   changeAccount,
   onError,
   onModalOpenChange,
+  onTransferStarted,
   managerOnly = false,
   renderPicker,
   externalCommand,
@@ -759,6 +798,7 @@ export default function Accounts({
   agent?: Agent;
   accountKey?: string;
   onModalOpenChange?: (opened: boolean) => void;
+  onTransferStarted?: () => void;
   managerOnly?: boolean;
   renderPicker?: (
     selectAccount: (key: string) => void,
@@ -1611,6 +1651,7 @@ export default function Accounts({
             account_key: transferChoice.target.id,
             request_id: transferChoice.requestId,
           });
+          onTransferStarted?.();
         }}
       />
       <Modal

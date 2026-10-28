@@ -14,6 +14,9 @@ const root = fileURLToPath(new URL("../../../..", import.meta.url));
 const sg = fileURLToPath(
   new URL("../../../../node_modules/.bin/ast-grep", import.meta.url),
 );
+// Vendored upstream layr source, updated by the vendor updater. Same folder as the Cargo
+// workspace exclude and the Oxfmt ignorePatterns; Studio rules do not apply to it.
+const VENDORED_LAYR = "workspaces/runtime/apps/layr/";
 
 export function scan(): Record<string, Violation[]> {
   const paths = execFileSync("git", ["ls-files", "-z"], {
@@ -21,7 +24,9 @@ export function scan(): Record<string, Violation[]> {
     encoding: "utf8",
   })
     .split("\0")
-    .filter((file) => /\.(rs|ts|tsx)$/.test(file));
+    .filter(
+      (file) => /\.(rs|ts|tsx)$/.test(file) && !file.startsWith(VENDORED_LAYR),
+    );
   const output: unknown = JSON.parse(
     execFileSync(sg, ["scan", "--json=compact", ...paths], {
       cwd: root,

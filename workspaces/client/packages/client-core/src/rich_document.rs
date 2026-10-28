@@ -282,7 +282,7 @@ mod mac {
     fn evaluate(
         view: &WKWebView,
         script: &str,
-        callback: block2::RcBlock<dyn Fn(*mut AnyObject, *mut NSError)>,
+        callback: &block2::RcBlock<dyn Fn(*mut AnyObject, *mut NSError)>,
     ) {
         // WebKit invokes this renderer only on the main thread.
         unsafe {
@@ -292,7 +292,7 @@ mod mac {
                 &WKContentWorld::defaultClientWorld(
                     MainThreadMarker::new().expect("WebKit runs on the main thread"),
                 ),
-                Some(&callback),
+                Some(callback),
             );
         }
     }
@@ -304,7 +304,7 @@ mod mac {
         evaluate(
             web,
             MERMAID,
-            block2::RcBlock::new(move |_: *mut AnyObject, error: *mut NSError| {
+            &block2::RcBlock::new(move |_: *mut AnyObject, error: *mut NSError| {
                 if !error.is_null() {
                     finish(
                         id,
@@ -374,7 +374,7 @@ mod mac {
         evaluate(
             web,
             "String(Math.max(document.documentElement.scrollHeight,document.body?.scrollHeight||0))",
-            block2::RcBlock::new(move |value: *mut AnyObject, error: *mut NSError| {
+            &block2::RcBlock::new(move |value: *mut AnyObject, error: *mut NSError| {
                 if !error.is_null() {
                     finish(
                         id,
@@ -413,7 +413,7 @@ mod mac {
                 evaluate(
                     &web,
                     &script,
-                    block2::RcBlock::new(move |value: *mut AnyObject, error: *mut NSError| {
+                    &block2::RcBlock::new(move |value: *mut AnyObject, error: *mut NSError| {
                         if !error.is_null() {
                             finish(
                                 id,

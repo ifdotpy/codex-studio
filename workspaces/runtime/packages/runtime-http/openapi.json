@@ -37458,6 +37458,17 @@
             ],
             "title": "Projectaliases"
           },
+          "serverLabel": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Serverlabel"
+          },
           "updated": {
             "anyOf": [
               {

@@ -2776,6 +2776,9 @@ export default function App({ active = true }: { active?: boolean }) {
             setSharedCreate({ path });
           }}
           addProject={openAddProject}
+          remoteProjects={
+            isServerView ? undefined : data.runtime.remoteProjects
+          }
           changeProject={folders}
           projectFolders={(path) => openProjectFolders(path)}
           deleteProject={projectDeletion.open}

@@ -449,12 +449,6 @@ async fn content_fingerprint(state: HttpState, resource: ResourceRef) -> Option<
             .ok()
             .and_then(|value| serde_json::to_vec(&value).ok());
     }
-    let reference = serde_json::to_value(&resource).ok()?;
-    if reference["kind"].as_str().is_some_and(|kind| {
-        studio_runtime_schema::sync_protocol::subscription_entity_scopes().contains_key(kind)
-    }) {
-        return super::subscription_entities::content_fingerprint(state, resource).await;
-    }
     match resource {
         ResourceRef::DraftsResource(_) => state
             .store?

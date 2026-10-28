@@ -55,7 +55,12 @@ export type ConnectionHealth =
   | "offline"
   | "paused"
   | "schema-mismatch";
-export type ConnectionActivity = ReconnectingActivity | "paused" | "offline";
+export type ConnectionActivity =
+  | ReconnectingActivity
+  /** The open stream waits for a local write that outlasted its deadline. */
+  | "storage-slow"
+  | "paused"
+  | "offline";
 
 export function healthOf(state: ConnectionState): ConnectionHealth {
   switch (state.phase) {

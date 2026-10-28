@@ -4,8 +4,10 @@ import { subscriptionKey } from "./subscriptions/contracts";
 // Frames waiting for persistence. Accommodates four full 256-resource subscription
 // bursts; the write deadline catches stuck storage before ordinary traffic fills it.
 export const MAX_PENDING_RESOURCE_FRAMES = 1024;
-// Time one frame may take to reach storage, in milliseconds. WebKit storage
-// took over a second for startup snapshots in the desktop app (2026-10-26).
+// Time one frame write may take before local storage counts as slow, in
+// milliseconds. A slow write is not a failure: the stream stays open, further
+// frames wait, and only a rejected write fails. A full disk made writes take
+// over ten seconds in the desktop app (2026-10-27).
 export const PERSIST_DEADLINE_MS = 10_000;
 
 type QueuedFrame = {
@@ -36,6 +38,8 @@ export class ResourceEntityDelivery {
   declare private readonly failed:
     | ((event: ResourceChangeEvent, error: unknown) => boolean | void)
     | undefined;
+  declare private readonly slow: ((settled: Promise<void>) => void) | undefined;
+  /** `slow` gets a promise that settles when the write that outlasted the deadline ends. */
   constructor(
     persist: (
       event: ResourceChangeEvent,
@@ -43,10 +47,12 @@ export class ResourceEntityDelivery {
     ) => Promise<void>,
     dispatch: (event: ResourceChangeEvent) => void,
     failed?: (event: ResourceChangeEvent, error: unknown) => boolean | void,
+    slow?: (settled: Promise<void>) => void,
   ) {
     this.persist = persist;
     this.dispatch = dispatch;
     this.failed = failed;
+    this.slow = slow;
   }
 
   /** Source close silently cancels writes; the next source resumes durable cursors. */
@@ -180,18 +186,20 @@ export class ResourceEntityDelivery {
             }
           }
           try {
-            await Promise.race([
-              queued.operation
-                ? queued.operation.persist(isCurrent)
-                : this.persist(event, isCurrent),
-              new Promise<never>((_, reject) => {
-                timer = setTimeout(
-                  () =>
-                    reject(new Error("Stream entity persistence timed out")),
-                  PERSIST_DEADLINE_MS,
-                );
-              }),
-            ]);
+            const write = queued.operation
+              ? queued.operation.persist(isCurrent)
+              : this.persist(event, isCurrent);
+            timer = setTimeout(
+              () =>
+                this.slow?.(
+                  write.then(
+                    () => {},
+                    () => {},
+                  ),
+                ),
+              PERSIST_DEADLINE_MS,
+            );
+            await write;
           } catch (error) {
             if (isCurrent()) this.fail(error);
             continue;

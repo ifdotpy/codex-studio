@@ -92,7 +92,7 @@ so models learn it quickly, and it has equal convenience. It does not take the n
     layr's default push keeps every state as a commit.
 20. Exploration groups (below) and the `host_exec` slots are Studio workflows built from lines,
     `merge --expect`, `layr export` and the line folders; layr no longer has `group` and `slot`.
-21. The end of an agent turn: `layr cache repair`, then `layr save --force --note "Studio turn <n>"`
+21. The end of an agent turn: `layr overlay repair <overlay>` for each folder overlay, then `layr save --force --note "Studio turn <n>"`
     (replaces `layr save --turn-end`).
 22. The layr copy in `workspaces/runtime/apps/layr` is vendored from a fixed revision
     (`workspaces/tooling/apps/repository-checks/update-vm-layr.py`). Moving it to `942c1b6` also needs
@@ -659,7 +659,7 @@ Design:
 Studio integration:
 
 - Use Layr for native and [Linux VM workspaces](linux-vm-workspaces.md).
-- Call `layr cache repair` and `layr save` at the end of each agent turn; run `layr daemon` in the
+- Call `layr overlay repair <overlay>` for each folder overlay and `layr save` at the end of each agent turn; run `layr daemon` in the
   VM.
 - The read-only network share of the main line and `states/`.
 

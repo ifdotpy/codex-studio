@@ -220,14 +220,13 @@ async fn diagnostics(
             (supervisor, process_tree, host_resources)
         },
     );
-    let analytics_root = store.root().to_path_buf();
+    let analytics_store = std::sync::Arc::clone(&store);
     let analytics_capture = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/routes/system_reads",
         move || {
-            let db = studio_runtime_store::analytics::AnalyticsRepository::new(analytics_root)
-                .open_read_only()
-                .map_err(|_| ())?;
-            studio_runtime_store::analytics::capture_error_summary(&db).map_err(|_| ())
+            analytics_store
+                .with_cost_reader(|db| studio_runtime_store::analytics::capture_error_summary(db))
+                .map_err(|_| ())
         },
     );
     let durable = store.read_async("runtime-http/routes/system_reads", |connection| {

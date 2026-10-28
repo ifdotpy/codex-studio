@@ -226,8 +226,10 @@ struct HistoryWatcher {
     watcher: RecommendedWatcher,
     registry_parent: PathBuf,
     accounts: BTreeMap<String, PathBuf>,
-    watched: BTreeSet<PathBuf>,
+    watched: BTreeMap<PathBuf, RecursiveMode>,
     registry_watches: BTreeSet<PathBuf>,
+    #[cfg(test)]
+    watch_registrations: Vec<(PathBuf, RecursiveMode)>,
 }
 
 impl HistoryWatcher {
@@ -242,17 +244,19 @@ impl HistoryWatcher {
         let mut watcher = notify::recommended_watcher(move |event| {
             callback_wake.filesystem(event, &callback_parent);
         })?;
-        let mut watched = BTreeSet::new();
+        let mut watched = BTreeMap::new();
         let directory = nearest_existing_directory(&registry_parent)?;
         watcher.watch(&directory, RecursiveMode::NonRecursive)?;
-        watched.insert(directory);
-        let registry_watches = watched.clone();
+        watched.insert(directory.clone(), RecursiveMode::NonRecursive);
+        let registry_watches = BTreeSet::from([directory]);
         Ok(Self {
             watcher,
             registry_parent,
             accounts: BTreeMap::new(),
             watched,
             registry_watches,
+            #[cfg(test)]
+            watch_registrations: Vec::new(),
         })
     }
 
@@ -287,8 +291,37 @@ impl HistoryWatcher {
     }
 
     fn reconfigure(&mut self) -> Result<(), HistoryError> {
-        for path in self.watched.difference(&self.registry_watches) {
-            if let Err(error) = self.watcher.unwatch(path)
+        self.registry_watches.retain(|path| path.is_dir());
+        let registry_directory = nearest_existing_directory(&self.registry_parent)?;
+        self.registry_watches.insert(registry_directory);
+        let mut directories = BTreeMap::<PathBuf, RecursiveMode>::new();
+        for directory in &self.registry_watches {
+            directories.insert(directory.clone(), RecursiveMode::NonRecursive);
+        }
+        for home in self.accounts.values() {
+            let existing_home = nearest_existing_directory(home)?;
+            directories
+                .entry(existing_home)
+                .or_insert(RecursiveMode::NonRecursive);
+            for name in ["sessions", "archived_sessions"] {
+                let session_root = home.join(name);
+                if session_root.is_dir() {
+                    directories.insert(session_root, RecursiveMode::Recursive);
+                } else {
+                    directories
+                        .entry(nearest_existing_directory(&session_root)?)
+                        .or_insert(RecursiveMode::NonRecursive);
+                }
+            }
+        }
+        let obsolete = self
+            .watched
+            .iter()
+            .filter(|(path, mode)| directories.get(*path) != Some(*mode))
+            .map(|(path, mode)| (path.clone(), *mode))
+            .collect::<Vec<_>>();
+        for (path, mode) in obsolete {
+            if let Err(error) = self.watcher.unwatch(&path)
                 && !matches!(
                     error.kind,
                     notify::ErrorKind::WatchNotFound | notify::ErrorKind::PathNotFound
@@ -296,38 +329,19 @@ impl HistoryWatcher {
             {
                 return Err(error.into());
             }
-        }
-        self.watched.clone_from(&self.registry_watches);
-        let registry_directory = nearest_existing_directory(&self.registry_parent)?;
-        if self.registry_watches.insert(registry_directory.clone()) {
-            self.watcher
-                .watch(&registry_directory, RecursiveMode::NonRecursive)?;
-            self.watched.insert(registry_directory);
-        }
-        let mut directories = BTreeMap::<PathBuf, RecursiveMode>::new();
-        for directory in &self.registry_watches {
-            directories.insert(directory.clone(), RecursiveMode::NonRecursive);
-        }
-        for home in self.accounts.values() {
-            let existing_home = nearest_existing_directory(home)?;
-            directories.insert(existing_home, RecursiveMode::NonRecursive);
-            for name in ["sessions", "archived_sessions"] {
-                let session_root = home.join(name);
-                if session_root.is_dir() {
-                    directories.insert(session_root, RecursiveMode::Recursive);
-                } else {
-                    directories.insert(
-                        nearest_existing_directory(&session_root)?,
-                        RecursiveMode::NonRecursive,
-                    );
-                }
-            }
+            // Removing a recursive watch also removes any separately registered descendants.
+            self.watched.retain(|candidate, _| {
+                candidate != &path
+                    && !(mode == RecursiveMode::Recursive && candidate.starts_with(&path))
+            });
         }
         for (path, mode) in directories {
-            if !self.watched.contains(&path) {
+            if self.watched.get(&path) != Some(&mode) {
                 self.watcher.watch(&path, mode)?;
+                #[cfg(test)]
+                self.watch_registrations.push((path.clone(), mode));
             }
-            self.watched.insert(path);
+            self.watched.insert(path, mode);
         }
         Ok(())
     }
@@ -607,6 +621,19 @@ async fn run_event_driven_with_wake(
         let roster_rows = pending.agent_rows;
         let roster_changed = roster_full || !roster_rows.is_empty();
         let mut reconfigure_watches = pending.overflow;
+
+        // A removed/replaced root loses its kernel watch. Descendant events are
+        // already maintained incrementally by notify's recursive watcher.
+        for (path, event) in &pending.files {
+            if event.structural {
+                watcher
+                    .watched
+                    .retain(|watched, _| !watched.starts_with(path));
+                watcher
+                    .registry_watches
+                    .retain(|watched| !watched.starts_with(path));
+            }
+        }
 
         if pending.accounts_dirty {
             let changed_profiles = match runtime.refresh_accounts(&mut watcher).await {
@@ -1449,6 +1476,78 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn history_watch_events_do_not_readd_or_walk_unchanged_trees() {
+        let root = tempdir().expect("state");
+        let home = root.path().join("profile");
+        std::fs::create_dir_all(root.path().join("accounts")).expect("registry directory");
+        std::fs::create_dir_all(home.join("sessions/year/day")).expect("sessions");
+        std::fs::create_dir_all(home.join("archived_sessions")).expect("archive");
+        let wake = Arc::new(HistoryWake::default());
+        let mut watcher = HistoryWatcher::new(root.path(), Arc::clone(&wake)).expect("watcher");
+        watcher
+            .watch_profiles(BTreeMap::from([("account".into(), home.clone())]))
+            .expect("profiles");
+        watcher.watch_registrations.clear();
+        for path in [
+            root.path().join("accounts/registry.json"),
+            home.join("sessions/year/day"),
+        ] {
+            wake.filesystem(
+                Ok(Event::new(EventKind::Create(notify::event::CreateKind::Folder)).add_path(path)),
+                &watcher.registry_parent,
+            );
+            let pending = wake.take();
+            assert!(
+                pending.accounts_dirty
+                    || pending
+                        .files
+                        .iter()
+                        .any(|(path, event)| profile_tree_changed(&home, path, *event))
+            );
+            watcher.reconfigure().expect("incremental watches");
+        }
+        let adds = watcher.watch_registrations.len();
+        // notify's recursive watch registration calls WalkDir over the entire root.
+        let walks = watcher
+            .watch_registrations
+            .iter()
+            .filter(|(_, mode)| *mode == RecursiveMode::Recursive)
+            .count();
+        assert_eq!(
+            (adds, walks),
+            (0, 0),
+            "watch adds and full tree walks per unchanged event batch"
+        );
+    }
+
+    #[test]
+    fn history_watch_account_changes_keep_existing_tree_registrations() {
+        let root = tempdir().expect("state");
+        let home = root.path().join("first");
+        let other = root.path().join("second");
+        std::fs::create_dir_all(root.path().join("accounts")).expect("accounts");
+        std::fs::create_dir_all(home.join("sessions/day")).expect("sessions");
+        std::fs::create_dir_all(&other).expect("second profile");
+        let mut watcher =
+            HistoryWatcher::new(root.path(), Arc::new(HistoryWake::default())).expect("watcher");
+        let first = BTreeMap::from([("first".into(), home)]);
+        watcher
+            .watch_profiles(first.clone())
+            .expect("initial profile");
+        watcher.watch_registrations.clear();
+        let mut both = first.clone();
+        both.insert("second".into(), other.clone());
+        watcher.watch_profiles(both).expect("added account");
+        assert_eq!(
+            watcher.watch_registrations,
+            vec![(other, RecursiveMode::NonRecursive)]
+        );
+        watcher.watch_registrations.clear();
+        watcher.watch_profiles(first).expect("removed account");
+        assert!(watcher.watch_registrations.is_empty());
+    }
+
     /// Cutover attempt 3: the kqueue watcher held one descriptor per session file
     /// and folder (about 14,000). New descriptors then got numbers above macOS
     /// OPEN_MAX (10240), and every child spawn of the server failed with EBADF
@@ -1836,24 +1935,14 @@ mod tests {
                 .expect("first composed history step")
         );
 
-        // The history import writes analytics only; the removed team token
-        // budget kept its own usage rows.
-        let budget_counts = || {
-            store
-                .test_reader()
-                .and_then(|tx| {
-                    Ok((
-                        tx.query_row("SELECT count(*) FROM runtime_budget_usage", [], |row| {
-                            row.get::<_, i64>(0)
-                        })?,
-                        tx.query_row(
-                            "SELECT COALESCE(sum(tokens), 0) FROM runtime_budget_usage",
-                            [],
-                            |row| row.get::<_, i64>(0),
-                        )?,
-                    ))
-                })
-                .expect("read budget usage")
+        let budget_absent = || {
+            let db = store.test_reader().expect("canvas");
+            !db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='runtime_budget_usage')",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .expect("catalog")
         };
         let analytics = rusqlite::Connection::open(state.join("analytics.sqlite3"))
             .expect("analytics database");
@@ -1866,7 +1955,7 @@ mod tests {
                 )
                 .expect("read analytics usage")
         };
-        assert_eq!(budget_counts(), (0, 0));
+        assert!(budget_absent());
         assert_eq!(analytics_count(), 1);
 
         trigger
@@ -1876,7 +1965,7 @@ mod tests {
             })
             .await
             .expect("replay composed history step");
-        assert_eq!(budget_counts(), (0, 0));
+        assert!(budget_absent());
         assert_eq!(analytics_count(), 1);
 
         shutdown.send_replace(true);

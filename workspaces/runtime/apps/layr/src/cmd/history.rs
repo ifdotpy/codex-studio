@@ -268,6 +268,11 @@ pub fn diff(ctx: &Ctx, args: &[String]) -> Result<i32> {
         }
         _ => (resolve(&revs_v[0])?, resolve(&revs_v[1])?, false),
     };
+    // The files of quiet overlays stay out of a diff of the working content or the index.
+    let quiet_paths = match (&line, revs_v.len()) {
+        (Some(l), n) if n <= 1 && !revs_v.iter().any(|r| r.contains("..")) => repo.quiet_paths(l)?,
+        _ => Default::default(),
+    };
     let reverse = a.has("-R");
     let renames = !a.has("--no-renames");
     let compute = |old: &Snap, new: &Snap| -> Result<Vec<FileDiff>> {
@@ -276,6 +281,7 @@ pub fn diff(ctx: &Ctx, args: &[String]) -> Result<i32> {
             .into_iter()
             .filter(|c| {
                 !skip_path(&c.path)
+                    && !quiet_paths.contains(&c.path)
                     && (matches(&specs, &c.path) || c.old_path.as_deref().map(|o| matches(&specs, o)).unwrap_or(false))
             })
             .collect();
@@ -1457,6 +1463,14 @@ pub fn grep(ctx: &Ctx, args: &[String]) -> Result<i32> {
     Ok(if found { 0 } else { 1 })
 }
 
+/// The first `ls-files` argument that names a revision, if no path was printed.
+fn rev_argument<'a>(args: &'a [String], printed: usize, is_rev: impl Fn(&str) -> bool) -> Option<&'a String> {
+    if printed > 0 {
+        return None;
+    }
+    args.iter().find(|a| is_rev(a))
+}
+
 pub fn ls_files(ctx: &Ctx, args: &[String]) -> Result<i32> {
     let spec = Spec::new()
         .flag("-c|--cached")
@@ -1473,8 +1487,10 @@ pub fn ls_files(ctx: &Ctx, args: &[String]) -> Result<i32> {
     let h = here(ctx)?;
     let line = h.line()?.clone();
     let filtered = h.repo.filtered_view(ctx, &line)?;
-    let specs = h.specs(&a.rest())?;
+    let rest = a.rest();
+    let specs = h.specs(&rest)?;
     let end = if a.has("-z") { "\0" } else { "\n" };
+    let mut printed = 0usize;
     let show = |p: &str| if a.has("--full-name") { p.to_string() } else { h.rel(p) };
     let want_cached = a.has("-c") || !(a.has("-o") || a.has("-m") || a.has("-d") || a.has("-i"));
     if want_cached || a.has("-s") {
@@ -1498,8 +1514,10 @@ pub fn ls_files(ctx: &Ctx, args: &[String]) -> Result<i32> {
                     fsutil::FType::File => fsutil::git_blob_id_file(&idx, &p)?,
                     _ => fsutil::git_blob_id(&fsutil::entry_bytes(&idx, &p)?),
                 };
+                printed += 1;
                 out!(ctx, "{:06o} {} 0\t{}{}", m.git_mode(), id, show(&p), end);
             } else {
+                printed += 1;
                 out!(ctx, "{}{}", show(&p), end);
             }
         }
@@ -1509,6 +1527,7 @@ pub fn ls_files(ctx: &Ctx, args: &[String]) -> Result<i32> {
         if a.has("-m") || a.has("-d") {
             for c in &st.unstaged {
                 if (a.has("-m") || c.new.is_none()) && matches(&specs, &c.path) {
+                    printed += 1;
                     out!(ctx, "{}{}", show(&c.path), end);
                 }
             }
@@ -1528,6 +1547,7 @@ pub fn ls_files(ctx: &Ctx, args: &[String]) -> Result<i32> {
             };
             for u in list {
                 if matches(&specs, u.trim_end_matches('/')) {
+                    printed += 1;
                     out!(ctx, "{}{}", show(&u), end);
                 }
             }
@@ -1535,13 +1555,34 @@ pub fn ls_files(ctx: &Ctx, args: &[String]) -> Result<i32> {
         if a.has("-i") {
             for i in &st.ignored {
                 if matches(&specs, i) {
+                    printed += 1;
                     out!(ctx, "{}{}", show(i), end);
                 }
             }
         }
+    }
+    if let Some(arg) = rev_argument(&rest, printed, |r| revs::resolve(&h.repo, Some(&line), r).is_ok()) {
+        return Err(exit(
+            128,
+            format!("ls-files takes paths of the line's index, not states: '{arg}' is a revision. To list a state, use `layr show {arg}:<folder>`."),
+        ));
     }
     Ok(0)
 }
 
 #[allow(dead_code)]
 fn unused(_: &Here) {}
+
+#[cfg(test)]
+mod tests {
+    use super::rev_argument;
+
+    #[test]
+    fn revision_argument_is_named_only_when_nothing_printed() {
+        let is_rev = |a: &str| a == "0123abcd";
+        let args = vec!["src/a.txt".to_string(), "0123abcd".to_string()];
+        assert_eq!(rev_argument(&args, 0, is_rev).map(String::as_str), Some("0123abcd"));
+        assert_eq!(rev_argument(&args, 1, is_rev), None);
+        assert_eq!(rev_argument(&args[..1], 0, is_rev), None);
+    }
+}

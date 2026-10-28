@@ -8,7 +8,7 @@ use crate::diff;
 use crate::ids;
 use crate::merge;
 use crate::model::{Line, Record, StateKind, StateRec};
-use crate::overlay::{Layer, Mode};
+use crate::overlay::{Layer, MergeKind, Mode};
 use crate::repo::{skip_path, Repo};
 use crate::revs;
 use anyhow::Result;
@@ -148,9 +148,26 @@ fn plan_overlays(ctx: &Ctx, repo: &Repo, line: &Line, theirs: Option<&Line>, lab
                 m.moves.push((tl.overlay.clone(), ol, tl.state.clone(), None));
                 continue;
             }
+            if repo.overlay_props(&tl.overlay)?.merge == MergeKind::UnionTheirs {
+                let st = crate::overlay::union_state(&o, ctx, &ol, &ours_s, &tl.state, message)?;
+                m.layers[i].state = st.id.clone();
+                m.moves.push((tl.overlay.clone(), ol, st.id.clone(), Some(st)));
+                continue;
+            }
             let base = o
                 .merge_base(&ours_s, &tl.state)?
                 .ok_or_else(|| exit(128, format!("fatal: overlay '{}': refusing to merge unrelated histories", tl.overlay)))?;
+            if !o.p.has_state(&base) {
+                return Err(exit(
+                    1,
+                    format!(
+                        "error: overlay '{}': the merge base {} was deleted by its history limit; use 'layr overlay set {} --merge union-theirs'",
+                        tl.overlay,
+                        crate::ids::short(&base),
+                        tl.overlay
+                    ),
+                ));
+            }
             let (st, out) =
                 merge_states(ctx, &o, &ol, &base, &ours_s, &tl.state, label, vec![ours_s.clone(), tl.state.clone()], message)?;
             m.conflicts += out.conflicts.len();
@@ -238,6 +255,9 @@ fn finish(
     if let Some(v) = view {
         repo.install_base(line, v, new_head, &layers)?;
     }
+    for name in ovl.filter(|o| o.changed()).map(|o| o.names()).unwrap_or_default() {
+        repo.after_overlay_move(ctx, &name);
+    }
     let mut l2 = line.clone();
     l2.head = new_head.to_string();
     if let Err(e) = crate::gitbridge::refresh_git_folder(repo, &l2) {
@@ -291,30 +311,7 @@ fn check_approvals(
         Some(r) if r.approvals > 0 && !ctx.caller.is_root() => r,
         _ => return Ok(()),
     };
-    let pol = repo.policy();
-    let counted = layr_model::protection::approvals(
-        theirs,
-        Some(head),
-        layr_model::protection::ApprovalMode::Merge,
-        &repo.p.db.approvals(theirs)?,
-        |id| {
-            let state = repo.p.db.state(id)?;
-            if state.as_ref().is_some_and(|state| state.kind.auxiliary()) {
-                repo.source_state(id)?;
-            }
-            Ok(state)
-        },
-        |uid| pol.may_approve(rule, &crate::access::Who::of(uid, crate::ctx::Caller::from_uid(uid).gid)),
-    )?;
-    let count = counted.len()
-        + crate::access::person_approval_count(
-            repo,
-            &pol,
-            rule,
-            Some(head),
-            theirs,
-            layr_model::protection::ApprovalMode::Merge,
-        )?;
+    let count = approval_count(repo, rule, head, theirs)?;
     if (count as u32) < rule.approvals {
         let from: Vec<String> = rule.approvers.iter().map(|k| crate::access::show_principal(k)).collect();
         return Err(exit(
@@ -330,6 +327,51 @@ fn check_approvals(
         ));
     }
     Ok(())
+}
+
+/// The approvals of `theirs` that a merge into a line with `rule` at `head` counts.
+fn approval_count(repo: &Repo, rule: &crate::access::Rule, head: &str, theirs: &str) -> Result<usize> {
+    let pol = repo.policy();
+    let counted = layr_model::protection::approvals(
+        theirs,
+        Some(head),
+        layr_model::protection::ApprovalMode::Merge,
+        &repo.p.db.approvals(theirs)?,
+        |id| {
+            let state = repo.p.db.state(id)?;
+            if state.as_ref().is_some_and(|state| state.kind.auxiliary()) {
+                repo.source_state(id)?;
+            }
+            Ok(state)
+        },
+        |uid| pol.may_approve(rule, &crate::access::Who::of(uid, crate::ctx::Caller::from_uid(uid).gid)),
+    )?;
+    Ok(counted.len()
+        + crate::access::person_approval_count(
+            repo,
+            &pol,
+            rule,
+            Some(head),
+            theirs,
+            layr_model::protection::ApprovalMode::Merge,
+        )?)
+}
+
+/// Whether a finished merge of `theirs` into a protected line (from `before` to `after`) met the
+/// line's protection, with no bypass: each required check passed on the new head, and `theirs`
+/// has the required approvals. Only such a merge carries the source line's caches
+/// (docs/cache-overlays.md, section 5): a cache holds code that review does not see.
+fn merge_met_rule(repo: &Repo, rule: &crate::access::Rule, before: &str, after: &str, theirs: &str) -> Result<bool> {
+    for name in &rule.check {
+        let Some(cmd) = repo.p.config_value(&format!("check.{name}"))?.and_then(|v| v.as_str().map(str::to_owned)) else {
+            return Ok(false);
+        };
+        let argv = layr_model::protection::check_argv(&cmd);
+        if repo.p.db.check_exit(after, &argv, Some(0))?.is_none() {
+            return Ok(false);
+        }
+    }
+    Ok(rule.approvals == 0 || approval_count(repo, rule, before, theirs)? as u32 >= rule.approvals)
 }
 
 /// The authorization and reviewed source before the merge releases the project lock.
@@ -480,7 +522,40 @@ pub fn merge(ctx: &Ctx, args: &[String]) -> Result<i32> {
         return Err(exit(1, "layr merges never stop on a conflict: fix the files and run 'layr save -m <message>'."));
     }
     let rev = a.pos.first().ok_or_else(|| exit(128, "usage: layr merge <rev> [--expect <state>]"))?.clone();
-    merge_rev(ctx, &h.repo, &line, &rev, &a)
+    let before = line.head.clone();
+    let code = merge_rev(ctx, &h.repo, &line, &rev, &a)?;
+    // The caches of a merged line go with it (docs/cache-overlays.md, section 5). They are
+    // regenerable: a failure is reported and never undoes the merge.
+    if let Some(theirs) = h.repo.p.db.line_by_name(&rev)? {
+        let r = (|| -> Result<()> {
+            let theirs = h.repo.localize(theirs)?;
+            let _lock = h.repo.p.lock()?;
+            let line = h.repo.line(&line.id)?;
+            // A protected line takes caches only with a merge that met its protection.
+            if let Some(rule) = h.repo.policy().rule_for(&line.name) {
+                if !merge_met_rule(&h.repo, &rule, &before, &line.head, &theirs.head)? {
+                    if !a.has("-q") {
+                        outln!(
+                            ctx,
+                            "Caches of '{rev}' not merged: the merge did not pass the checks and approvals of line '{}'",
+                            line.name
+                        );
+                    }
+                    return Ok(());
+                }
+            }
+            for (p, id) in h.repo.pull_caches(ctx, &line, &crate::cache_overlay::Source::Line(&theirs))? {
+                if !a.has("-q") {
+                    outln!(ctx, "Merged cache {p}: {}", ids::short(&id));
+                }
+            }
+            Ok(())
+        })();
+        if let Err(e) = r {
+            eprintln!("warning: caches of '{rev}' not merged: {e:#}");
+        }
+    }
+    Ok(code)
 }
 
 #[derive(Debug)]
