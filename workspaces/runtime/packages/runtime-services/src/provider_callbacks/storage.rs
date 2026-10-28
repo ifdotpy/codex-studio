@@ -406,7 +406,10 @@ fn delivery_in(
     }
     if saved.status == OutboxStatus::Committed {
         owner.status = ToolRequestStatus::Completed;
-        owner.payload.frame_fingerprint = saved.payload.frame_fingerprint.clone();
+        owner.payload.frame_fingerprint = Some(studio_runtime_store::sha256_hex(
+            &encode_line(&Reply::from(saved.payload.clone()).frame())
+                .map_err(|_| CallbackError::Invalid("Invalid callback response frame"))?,
+        ));
         let admission = owner
             .payload
             .admission
