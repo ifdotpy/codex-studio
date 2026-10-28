@@ -27,6 +27,10 @@ async fn seeded<T: serde::de::DeserializeOwned>(
     let statements = seed
         .statements
         .join("\n")
+        .replace(
+            "INSERT OR REPLACE INTO \"runtime_agents\" VALUES(",
+            "INSERT OR REPLACE INTO \"runtime_agents\"(id,record) VALUES(",
+        )
         .replace("${ROOT}", &state.0.to_string_lossy().replace('\'', "''"));
     store
         .transaction(move |tx| {
@@ -62,6 +66,65 @@ async fn fixture() -> (TemporaryState, RuntimeStore, String, i64, Vec<String>) {
     let (store, fixture): (_, Events) =
         seeded(&state, include_str!("fixtures/scheduler-events.json")).await;
     (state, store, fixture.agent, fixture.epoch, fixture.events)
+}
+
+#[tokio::test]
+async fn send_now_recovers_unsent_batch_after_result_gc() {
+    let (_state, store, agent, epoch, events) = fixture().await;
+    let attempt = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    let intent = claim_intent(&store, &agent, epoch, &attempt, 10.0)
+        .await
+        .expect("claim")
+        .expect("pending batch");
+    settle_start_outcome(
+        &store,
+        &intent,
+        TurnStart::Blocked {
+            reason: "preparation failed".into(),
+        },
+    )
+    .await
+    .expect("settle unsent");
+    let target = events[0].clone();
+    let request = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    let claim_agent = agent.clone();
+    store
+        .transaction_with(move |tx| {
+            let current = AgentRepository::get(tx, &AgentId::from(agent.as_str()))?.expect("agent");
+            assert!(
+                studio_runtime_store::SchedulerRepository::proven_unsent_pending_batch(
+                    tx, &current, &target
+                )?
+            );
+            tx.execute("UPDATE request_results SET created=0", [])?;
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_millis() as i64;
+            assert!(studio_runtime_store::request_results::RequestResults::gc(tx, now)? > 0);
+            let body = serde_json::from_value(
+                json!({"action":"send_now", "message_id":target, "request_id":request}),
+            )
+            .expect("queue command");
+            studio_runtime_services::queue_write::action(
+                tx,
+                &agent,
+                &body,
+                "send-now-after-gc",
+                |tx, agent| studio_runtime_services::queue_write::queue_snapshot(tx, agent),
+            )
+            .expect("durably unsent batch remains retryable");
+            Ok::<(), studio_runtime_store::StoreError>(())
+        })
+        .await
+        .expect("queue transaction");
+    let next = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    assert!(
+        claim_intent(&store, &claim_agent, epoch, &next, 11.0)
+            .await
+            .expect("retry claim")
+            .is_some()
+    );
 }
 
 #[tokio::test]

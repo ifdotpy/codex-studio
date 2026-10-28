@@ -276,7 +276,7 @@ impl SchedulerRepository {
             || agent.extra.get("autoWake") != Some(&json!(true))
             || agent.extra.get("inFlight") != Some(&json!(false))
             || !continuation_allowed(agent)
-            || ["startAttempt", "turnId"]
+            || ["turnId"]
                 .iter()
                 .any(|key| agent.extra.get(*key).is_some_and(|value| !value.is_null()))
             || [
@@ -345,28 +345,32 @@ impl SchedulerRepository {
         {
             return Ok(false);
         }
-        let Some(receipt) =
-            ExecutionHistoryRepository::receipt(tx, id, ExecutionReceiptKind::StartResult)?
-        else {
+        if let Some(attempt) = agent
+            .extra
+            .get("startAttempt")
+            .filter(|value| !value.is_null())
+            && [
+                "id",
+                "epoch",
+                "accountKey",
+                "events",
+                "submitted",
+                "activeAtReservation",
+                "executionOutcome",
+            ]
+            .iter()
+            .any(|key| attempt.get(*key) != saved.get(*key))
+        {
             return Ok(false);
-        };
-        let Some(reason) = receipt.input["input"]["reason"]
-            .as_str()
+        }
+        let Some(reason) = agent
+            .extra
+            .get("error")
+            .and_then(Value::as_str)
             .filter(|value| !value.is_empty())
         else {
             return Ok(false);
         };
-        if receipt.result != true
-            || receipt.input["agent"] != agent.id.0
-            || receipt.input["epoch"] != agent.epoch
-            || !matches!(
-                receipt.input["input"]["outcome"].as_str(),
-                Some("held" | "pending")
-            )
-            || agent.extra.get("error") != Some(&json!(reason))
-        {
-            return Ok(false);
-        }
         let original: AgentRecord = serde_json::from_value(saved["claimResult"]["agent"].clone())
             .map_err(|_| {
             ExecutionHistoryRepository::invalid("runtime_execution_attempts", id)
