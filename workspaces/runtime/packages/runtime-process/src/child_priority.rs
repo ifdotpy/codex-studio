@@ -64,6 +64,7 @@ impl ChildPriority {
         if self == Self::Normal {
             return;
         }
+        use rustix::io::Errno;
         use rustix::process::{Pid, getpgid, setpriority_pgrp};
         let Some(pid) = child_id
             .and_then(|id| i32::try_from(id).ok())
@@ -73,9 +74,14 @@ impl ChildPriority {
             return;
         };
         // Refuse callers that forgot group isolation: never target the backend group.
-        if getpgid(Some(pid)) != Ok(pid) {
-            record_failure("child process group", io::ErrorKind::InvalidInput);
-            return;
+        match getpgid(Some(pid)) {
+            Ok(group) if group == pid => {}
+            // ESRCH: the child exited before this hook, so no group is left to lower.
+            Err(error) if error == Errno::SRCH => return,
+            _ => {
+                record_failure("child process group", io::ErrorKind::InvalidInput);
+                return;
+            }
         }
         report(
             "CPU priority",
@@ -150,7 +156,10 @@ impl CommandWrapper for ChildPriority {
 #[cfg(unix)]
 fn report(mechanism: &'static str, result: io::Result<()>) {
     if let Err(error) = result {
-        record_failure(mechanism, error.kind());
+        // ESRCH: the child exited after its group check, so no group is left to lower.
+        if error.raw_os_error() != Some(rustix::io::Errno::SRCH.raw_os_error()) {
+            record_failure(mechanism, error.kind());
+        }
     }
 }
 
@@ -229,6 +238,27 @@ mod tests {
                 error: io::ErrorKind::PermissionDenied,
             })
         );
+    }
+
+    #[test]
+    fn a_child_that_already_exited_is_not_a_priority_failure() {
+        use rustix::process::{Pid, WaitId, WaitIdOptions, waitid};
+        use std::os::unix::process::CommandExt;
+
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "exit 0"])
+            .process_group(0)
+            .spawn()
+            .expect("spawn");
+        let pid = Pid::from_raw(child.id().try_into().expect("pid fits")).expect("nonzero pid");
+        // Wait for the exit without reaping, as a fast command does before its owner reaps it.
+        let exited = waitid(WaitId::Pid(pid), WaitIdOptions::EXITED | WaitIdOptions::NOWAIT)
+            .expect("wait for exit");
+        assert!(exited.is_some());
+        let before = priority_diagnostics();
+        ChildPriority::Background.apply_after_spawn(&child);
+        assert_eq!(priority_diagnostics(), before);
+        child.wait().expect("reap the child");
     }
 
     #[cfg(target_os = "linux")]
