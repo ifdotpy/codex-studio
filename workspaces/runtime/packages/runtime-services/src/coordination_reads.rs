@@ -300,7 +300,7 @@ fn message_deliveries(
     deliveries: &str,
 ) -> Result<BTreeMap<String, RecipientDelivery>, studio_runtime_store::StoreError> {
     let mut deliveries: BTreeMap<String, RecipientDelivery> = serde_json::from_str(deliveries)
-        .map_err(|_| records::invalid("runtime_chat_messages", &id))?;
+        .map_err(|_| records::invalid("runtime_chat_messages", id))?;
     for (recipient, delivery) in &mut deliveries {
         if delivery.status != DeliveryStatus::Queued {
             continue;

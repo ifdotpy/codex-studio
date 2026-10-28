@@ -212,18 +212,16 @@ fn execute_with_payload_recovery(
         }
         save(tx, &record, &actor, payloads)?;
     }
-    if !cancel {
-        if let Some(ids) = record["agentIds"].as_array().filter(|ids| !ids.is_empty()) {
-            let states=ids.iter().map(|id| {
+    if !cancel && let Some(ids) = record["agentIds"].as_array().filter(|ids| !ids.is_empty()) {
+        let states=ids.iter().map(|id| {
                 let child=records::get(tx,"runtime_agents",id.as_str().unwrap_or_default())?;
                 Ok::<Value,StoreError>(match child.filter(|child|child["parentId"]==actor_id) {
                     Some(child)=>json!({"id":id,"name":child["name"],"status":child["status"],"turnId":child["turnId"],"model":child["model"],"deleted":truthy(child.get("deletedAt"))}),
                     None=>json!({"id":id,"absent":true}),
                 })
             }).collect::<Result<Vec<_>,_>>()?;
-            record["agents"] = json!(states);
-            record["registryObservedAt"] = json!(now);
-        }
+        record["agents"] = json!(states);
+        record["registryObservedAt"] = json!(now);
     }
     if payloads.is_none()
         && let Some(result) = record.get_mut("result")

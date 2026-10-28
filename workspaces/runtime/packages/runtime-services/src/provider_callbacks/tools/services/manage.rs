@@ -345,7 +345,7 @@ fn park_action(
             }
             event_write::CallerAdmission::Fresh(admitted) => admitted,
         };
-        if !studio_runtime_store::AgentRepository::fire_event(tx, root, &name)? {
+        if !studio_runtime_store::AgentRepository::fire_event(tx, root, name)? {
             let result = ParkReply {
                 event: name.to_owned(),
                 count: 0,
@@ -392,7 +392,7 @@ fn park_action(
     let target_id = text(&target, "id")?.to_owned();
     if action == "park" {
         let name = event_name(&args["event"])?;
-        if studio_runtime_store::AgentRepository::event_fired(tx, root, &name)? {
+        if studio_runtime_store::AgentRepository::event_fired(tx, root, name)? {
             return Err(CallbackError::Invalid("This event already occurred"));
         }
         if studio_runtime_store::truthy(target.get("parkedEvent")) {
