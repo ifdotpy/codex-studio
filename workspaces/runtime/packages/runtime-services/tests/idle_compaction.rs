@@ -266,8 +266,13 @@ async fn idle_claude_dispatches_once_and_restart_does_not_repeat() {
         .query_row(
             "SELECT json_extract(result,'$.reply.outcome.status') FROM request_results WHERE id=?1",
             [studio_runtime_schema::persistence::RequestIdentity::new(
-                "native-action", &[], &episode.id, &[],
-            ).unwrap().id()],
+                "native-action",
+                &[],
+                &episode.id,
+                &[],
+            )
+            .unwrap()
+            .id()],
             |row| row.get(0),
         )
         .unwrap();

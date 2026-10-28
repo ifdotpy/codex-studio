@@ -222,7 +222,8 @@ mod tests {
 
     #[test]
     fn historical_thread_is_readable_but_does_not_change_operation_identity() {
-        let base = serde_json::json!({"agent":"a","epoch":1,"accountKey":"default","connectionId":"c"});
+        let base =
+            serde_json::json!({"agent":"a","epoch":1,"accountKey":"default","connectionId":"c"});
         let mut historical = base.clone();
         historical["threadId"] = serde_json::json!("thread");
         let original: super::MonitorOperation = serde_json::from_value(base.clone()).unwrap();

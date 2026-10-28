@@ -224,20 +224,48 @@ async fn python_constructor_and_rust_startup_match_requests_monitors_events_and_
         .expect("existing account-worker startup recovery");
     let mut rust = rust_snapshot(&store);
     let mut python = python;
-    for id in ["7476dd05-6094-5a65-9ba0-3007fab6be6b", "rule-linked-monitor"] {
-        let monitor = rust["monitors"].as_array().unwrap().iter().find(|row| row["id"] == id).unwrap();
+    for id in [
+        "7476dd05-6094-5a65-9ba0-3007fab6be6b",
+        "rule-linked-monitor",
+    ] {
+        let monitor = rust["monitors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["id"] == id)
+            .unwrap();
         assert_eq!(monitor["operation"]["threadId"], "thread-1");
         assert_eq!(monitor["reattachRecovery"]["status"], "running");
     }
     // Current owner state retains execution and admitted monitor identities that
     // did not exist in the frozen Python snapshot.
     let agent = &mut rust["agents"][0];
-    assert_eq!(agent["activeExecution"]["attemptId"], "0897d819-94be-44cd-930e-574c1c026bb7");
-    assert_eq!(agent["activeExecution"]["runId"], "run:0897d819-94be-44cd-930e-574c1c026bb7");
+    assert_eq!(
+        agent["activeExecution"]["attemptId"],
+        "0897d819-94be-44cd-930e-574c1c026bb7"
+    );
+    assert_eq!(
+        agent["activeExecution"]["runId"],
+        "run:0897d819-94be-44cd-930e-574c1c026bb7"
+    );
     agent.as_object_mut().unwrap().remove("activeExecution");
-    let approval = rust["monitors"].as_array_mut().unwrap().iter_mut().find(|row| row["id"] == "ef833e85-ebe4-5750-a66f-ccf85ea2043c").unwrap();
-    let root = approval.as_object_mut().unwrap().remove("rootRequestId").unwrap();
-    assert_eq!(uuid::Uuid::parse_str(root.as_str().unwrap()).unwrap().get_version_num(), 7);
+    let approval = rust["monitors"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|row| row["id"] == "ef833e85-ebe4-5750-a66f-ccf85ea2043c")
+        .unwrap();
+    let root = approval
+        .as_object_mut()
+        .unwrap()
+        .remove("rootRequestId")
+        .unwrap();
+    assert_eq!(
+        uuid::Uuid::parse_str(root.as_str().unwrap())
+            .unwrap()
+            .get_version_num(),
+        7
+    );
     let deviations_path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/turn_lifecycle/deviations.json");
     let deviations: Value = serde_json::from_slice(
