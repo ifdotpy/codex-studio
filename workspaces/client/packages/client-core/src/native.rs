@@ -27,6 +27,11 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 pub struct ConnectionConfig {
     pub state_directory: PathBuf,
     pub backend_origin: String,
+    /// The key of a paired server. `None` is the local server, which uses its
+    /// loopback session token. With a signer, `backend_origin` must be the
+    /// origin of that paired server.
+    #[serde(skip)]
+    pub signer: Option<Arc<dyn crate::server_keys::Signer>>,
 }
 
 /// File in the client state directory that the core holds with an exclusive
@@ -110,7 +115,10 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     // Electron verifies/starts the backend before opening the client. Rust must
     // never race that owner by launching a second backend.
-    let backend = Arc::new(Backend::new(&config.backend_origin));
+    let backend = Arc::new(match config.signer.clone() {
+        Some(signer) => Backend::signed(&config.backend_origin, signer),
+        None => Backend::new(&config.backend_origin),
+    });
     channel.set_nonblocking(true).map_err(|e| e.to_string())?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -609,6 +617,7 @@ mod audio_ownership_tests {
             let config = ConnectionConfig {
                 state_directory: directory.path().join(name),
                 backend_origin: "http://127.0.0.1:9".into(),
+                signer: None,
             };
             let worker = thread::spawn(move || serve(core, config));
             (host, worker)

@@ -27,6 +27,10 @@ use tokio::sync::Mutex;
 #[derive(Default)]
 struct Clients {
     local: Mutex<Option<Arc<Client>>>,
+    /// One core per paired server, by server id (state `client/<server id>`).
+    servers: Mutex<std::collections::HashMap<String, Arc<Client>>>,
+    /// The verified workspace of each paired server core, by server id.
+    server_workspaces: Mutex<std::collections::HashMap<String, String>>,
     #[cfg(target_os = "macos")]
     remote: Mutex<Option<Arc<studio_client_core::server_transport::RemoteClient>>>,
     backend_verified: Mutex<bool>,
@@ -86,6 +90,108 @@ fn lock_profile(directory: &std::path::Path) -> Result<ProfileLock, String> {
         );
     }
     Ok(ProfileLock(file))
+}
+
+/// The profile folder of this desktop: the client state and the server keys.
+fn profile_directory(window: &WebviewWindow) -> Result<std::path::PathBuf, String> {
+    match std::env::var_os("CODEX_DESKTOP_PROFILE").filter(|v| !v.is_empty()) {
+        Some(path) => Ok(std::path::PathBuf::from(path)),
+        None => window
+            .app_handle()
+            .path()
+            .app_data_dir()
+            .map_err(|error| error.to_string()),
+    }
+}
+
+/// A paired server id names a core and its state folder.
+fn valid_server_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value != "local"
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+}
+
+/// Commands that a paired server's core serves. Device actions, the key
+/// store and profile export stay with the desktop and its local core.
+fn server_core_method(request: &Request) -> bool {
+    !studio_client_core::native::device_only(request)
+        && !request.method.starts_with("servers.")
+        && !request.method.starts_with("profile.")
+}
+
+/// Sends one command to the core of a paired server. The core signs every
+/// request with this device's key for that server.
+async fn server_request(
+    window: &WebviewWindow,
+    state: &State<'_, Clients>,
+    server: String,
+    request: Request,
+) -> Result<Response, String> {
+    if !valid_server_id(&server) {
+        return Err("The server identity is invalid.".into());
+    }
+    if !server_core_method(&request) {
+        return Err("This command does not belong to a server core.".into());
+    }
+    let client = {
+        let mut servers = state.servers.lock().await;
+        match servers.get(&server) {
+            Some(client) => client.clone(),
+            None => {
+                let directory = profile_directory(window)?;
+                let vault = Arc::new(studio_client_core::server_keys::FileVault::new(&directory));
+                let signer = studio_client_core::server_keys::VaultSigner::new(vault, &server)?;
+                let origin = format!(
+                    "{}/",
+                    studio_client_core::server_keys::Signer::origin(&signer)
+                );
+                let events_window = window.clone();
+                let owner = server.clone();
+                let client = Arc::new(Client::open(
+                    ConnectionConfig {
+                        state_directory: directory.join("client").join(&server),
+                        backend_origin: origin,
+                        signer: Some(Arc::new(signer)),
+                    },
+                    move |mut event| {
+                        // The page routes each event to the services of its server.
+                        event["server"] = owner.clone().into();
+                        drop(events_window.emit("studio-client-event", event));
+                    },
+                )?);
+                servers.insert(server.clone(), client.clone());
+                client
+            }
+        }
+    };
+    let method = request.method.clone();
+    if method.starts_with("drafts.") {
+        let workspaces = state.server_workspaces.lock().await;
+        if !draft_workspace_allowed(workspaces.get(&server).map(String::as_str), &request.params) {
+            return Err("Draft commands require the verified workspace identity.".into());
+        }
+    }
+    let response = client.request(request).await?;
+    if matches!(method.as_str(), "sync.open" | "identity.get")
+        && response.error.is_none()
+        && let Some(workspace) = response
+            .result
+            .as_ref()
+            .and_then(|value| value["workspaceId"].as_str())
+    {
+        let mut workspaces = state.server_workspaces.lock().await;
+        if workspaces
+            .get(&server)
+            .is_some_and(|value| value != workspace)
+        {
+            return Err("The server workspace changed. Reload to synchronize.".into());
+        }
+        workspaces.insert(server, workspace.to_owned());
+    }
+    Ok(response)
 }
 
 fn draft_workspace_allowed(verified: Option<&str>, params: &serde_json::Value) -> bool {
@@ -196,6 +302,63 @@ mod tests {
     }
 
     #[test]
+    fn a_paired_server_core_serves_only_server_commands() {
+        use studio_client_core::protocol::Request;
+        let request = |method: &str, params: serde_json::Value| Request {
+            id: "id".into(),
+            method: method.into(),
+            params,
+        };
+        for method in [
+            "outbox.enqueue",
+            "outbox.list",
+            "drafts.edit",
+            "uploads.enqueue",
+            "files.begin",
+            "dictation.create",
+            "projection.getRows",
+            "preferences.raw_set",
+            "api.request",
+            "sync.open",
+        ] {
+            assert!(
+                super::server_core_method(&request(method, serde_json::Value::Null)),
+                "{method}"
+            );
+        }
+        for method in [
+            "servers.pair",
+            "servers.request",
+            "profile.snapshot",
+            "desktop.openExternal",
+            "desktop.fileAction",
+            "media.captureStart",
+            "voice.create",
+            "notifications.show",
+            "desktop.notify",
+        ] {
+            assert!(
+                !super::server_core_method(&request(method, serde_json::Value::Null)),
+                "{method}"
+            );
+        }
+        assert!(!super::server_core_method(&request(
+            "view.subscribe",
+            serde_json::json!({"topic":"microphone"})
+        )));
+        assert!(super::server_core_method(&request(
+            "view.subscribe",
+            serde_json::json!({"topic":"outbox"})
+        )));
+        for id in ["fixture-remote", "a_b-9"] {
+            assert!(super::valid_server_id(id), "{id}");
+        }
+        for id in ["", "local", "../a", "a/b", "a.b", &"x".repeat(129)] {
+            assert!(!super::valid_server_id(id), "{id}");
+        }
+    }
+
+    #[test]
     fn drafts_require_a_verified_matching_workspace() {
         let params = serde_json::json!({"workspace":"workspace"});
         assert!(!super::draft_workspace_allowed(None, &params));
@@ -301,12 +464,17 @@ async fn client_request(
     window: WebviewWindow,
     state: State<'_, Clients>,
     mut request: Request,
+    server: Option<String>,
 ) -> Result<Response, String> {
     #[cfg(feature = "native-check")]
     eprintln!("Hidden native command: {}", request.method);
     trusted(&window)?;
     let resources = window.app_handle().state::<StartupResources>();
     let resources = resources.0.as_ref().map_err(Clone::clone)?;
+    // No server, or "local", is the local server. Any other id is a paired server.
+    if let Some(server) = server.filter(|server| server != "local") {
+        return server_request(&window, &state, server, request).await;
+    }
     if request.method.starts_with("servers.") {
         #[cfg(not(target_os = "macos"))]
         return Err("The native server key store is unavailable on this platform.".into());
@@ -339,6 +507,7 @@ async fn client_request(
                                 method: "api.request".into(),
                                 params,
                             },
+                            None,
                         ))
                         .await?;
                         response.result.ok_or_else(|| {
@@ -403,7 +572,16 @@ async fn client_request(
                 // The branch above initializes the client while this lock is held.
                 remote.as_ref().expect("remote client initialized").clone()
             };
-            return match client.dispatch(&request.method, &request.params).await {
+            let result = client.dispatch(&request.method, &request.params).await;
+            if result.is_ok()
+                && request.method == "servers.forget"
+                && let Some(server) = request.params["serverId"].as_str()
+            {
+                // A removed pairing keeps no core and no verified workspace.
+                state.servers.lock().await.remove(server);
+                state.server_workspaces.lock().await.remove(server);
+            }
+            return match result {
                 Ok(value) => Ok(Response::success(request.id, value)),
                 Err(error) => Ok(Response::failure(request.id, "server_error", error)),
             };
@@ -597,6 +775,7 @@ async fn client_request(
                 ConnectionConfig {
                     state_directory: directory,
                     backend_origin: origin,
+                    signer: None,
                 },
                 move |event| {
                     drop(events_window.emit("studio-client-event", event));

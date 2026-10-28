@@ -7,10 +7,20 @@ use serde_json::Value;
 use std::{sync::Arc, time::Duration};
 use tokio::sync::Mutex;
 
+/// How a core proves its identity to its server.
+#[derive(Clone)]
+enum Auth {
+    /// The local server: the session token from `/api/session` on loopback.
+    Session,
+    /// A paired server: each request is signed with this device's key for it.
+    Signed(Arc<dyn crate::server_keys::Signer>),
+}
+
 #[derive(Clone)]
 pub struct Backend {
     origin: Url,
     client: Client,
+    auth: Auth,
     credentials: Arc<Mutex<Option<String>>>,
     authorized: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -74,9 +84,83 @@ impl Backend {
         Ok(Self {
             origin,
             client,
+            auth: Auth::Session,
             credentials: Arc::new(Mutex::new(None)),
             authorized: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         })
+    }
+
+    /// A core of one paired server. `origin` must be the origin of the key
+    /// that `signer` holds, so a core never sends a request of one server to another.
+    pub fn signed(
+        origin: &str,
+        signer: Arc<dyn crate::server_keys::Signer>,
+    ) -> Result<Self, String> {
+        let origin = Url::parse(origin).map_err(|e| e.to_string())?;
+        if !matches!(origin.scheme(), "http" | "https")
+            || !origin.username().is_empty()
+            || origin.password().is_some()
+            || origin.path() != "/"
+            || origin.query().is_some()
+            || origin.fragment().is_some()
+            || origin.origin().ascii_serialization() != signer.origin()
+        {
+            return Err("The server key belongs to another server.".into());
+        }
+        let client = crate::tls::client_builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .retry(reqwest::retry::never())
+            .connect_timeout(Duration::from_secs(15))
+            .build()
+            .map_err(|e| e.to_string())?;
+        Ok(Self {
+            origin,
+            client,
+            auth: Auth::Signed(signer),
+            credentials: Arc::new(Mutex::new(None)),
+            authorized: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        })
+    }
+
+    /// Adds the signature of a paired server. A local request is unchanged.
+    fn sign(
+        &self,
+        builder: reqwest::RequestBuilder,
+        method: &str,
+        url: &Url,
+        request_id: Option<&str>,
+        body: &[u8],
+    ) -> Result<reqwest::RequestBuilder, CommandError> {
+        let Auth::Signed(signer) = &self.auth else {
+            return Ok(builder);
+        };
+        let path = percent_encoding::percent_decode_str(url.path())
+            .decode_utf8()
+            .map_err(|_| error("invalid_path", "Invalid server path."))?;
+        if crate::server_keys::management_request(method, &path) {
+            return Err(error(
+                "server_management",
+                "Use the workspace shell for server management.",
+            ));
+        }
+        let target = match url.query() {
+            Some(query) => format!("{}?{query}", url.path()),
+            None => url.path().to_owned(),
+        };
+        let generated;
+        let request_id = match request_id {
+            Some(id) => id,
+            None => {
+                generated = crate::server_keys::random_id().map_err(|e| error("signature", e))?;
+                &generated
+            }
+        };
+        let headers = signer
+            .headers(method, &target, request_id, body)
+            .map_err(|e| error("signature", e))?;
+        Ok(headers.into_iter().fold(builder, |builder, (name, value)| {
+            builder.header(name, value)
+        }))
     }
 
     pub fn desktop_client(origin: &str) -> Result<Self, String> {
@@ -140,10 +224,16 @@ impl Backend {
                 "The local backend identity has not been verified.",
             ));
         }
-        let mut request = self
-            .client
-            .get(self.url(path)?)
-            .header("Accept", "text/event-stream");
+        let url = self.url(path)?;
+        let mut request = self.sign(
+            self.client
+                .get(url.clone())
+                .header("Accept", "text/event-stream"),
+            "GET",
+            &url,
+            None,
+            &[],
+        )?;
         if !last_id.is_empty() {
             request = request.header("Last-Event-ID", last_id);
         }
@@ -253,6 +343,9 @@ impl Backend {
     }
 
     pub async fn prepare_session(&self) -> Result<(), CommandError> {
+        if matches!(self.auth, Auth::Signed(_)) {
+            return Ok(());
+        }
         self.token().await.map(|_| ())
     }
 
@@ -296,22 +389,31 @@ impl Backend {
             ));
         }
         let conditional_read = method == "GET";
+        let signed = matches!(self.auth, Auth::Signed(_));
         let mut builder = if method == "POST" {
-            let body = request.body.unwrap_or(Value::Null);
-            let token = self.token().await?;
+            let body = serde_json::to_vec(&request.body.unwrap_or(Value::Null))
+                .map_err(|e| error("invalid_params", e))?;
             let mut builder = self
                 .client
-                .post(url)
-                .header("X-Canvas-Token", token)
-                .json(&body);
+                .post(url.clone())
+                .header(reqwest::header::CONTENT_TYPE, "application/json");
+            if !signed {
+                builder = builder.header("X-Canvas-Token", self.token().await?);
+            }
             if let Some(workspace) = request.workspace_id.filter(|value| !value.is_empty()) {
                 builder = builder.header("X-Canvas-Workspace", workspace);
             }
-            builder
+            self.sign(builder, "POST", &url, request.request_id.as_deref(), &body)?
+                .body(body)
         } else {
-            self.client.get(url).timeout(Duration::from_secs(15))
+            let builder = self
+                .client
+                .get(url.clone())
+                .timeout(Duration::from_secs(15));
+            self.sign(builder, "GET", &url, request.request_id.as_deref(), &[])?
         };
-        if let Some(id) = request.request_id {
+        // A signed request carries its identity in the signed headers.
+        if !signed && let Some(id) = request.request_id {
             builder = builder.header("X-Studio-Request-Id", id);
         }
         if let Some(schema) = request.api_schema {
@@ -480,10 +582,18 @@ impl Backend {
         if !self.authorized.load(std::sync::atomic::Ordering::Acquire) {
             return Err("The local backend identity has not been verified.".into());
         }
+        let url = self.url(path).map_err(|e| e.message)?;
         let mut response = self
-            .client
-            .get(self.url(path).map_err(|e| e.message)?)
-            .timeout(Duration::from_secs(15))
+            .sign(
+                self.client
+                    .get(url.clone())
+                    .timeout(Duration::from_secs(15)),
+                "GET",
+                &url,
+                None,
+                &[],
+            )
+            .map_err(|e| e.message)?
             .send()
             .await
             .map_err(|e| e.to_string())?;
@@ -755,6 +865,118 @@ pub(crate) mod tests {
             .unwrap_err();
         assert_eq!(failure.code, "download_too_large");
         server.await.unwrap();
+    }
+
+    /// Records each request it signs; the test server checks the headers.
+    struct FixtureSigner(String);
+    impl crate::server_keys::Signer for FixtureSigner {
+        fn origin(&self) -> &str {
+            &self.0
+        }
+        fn headers(
+            &self,
+            method: &str,
+            target: &str,
+            request_id: &str,
+            body: &[u8],
+        ) -> Result<Vec<(&'static str, String)>, String> {
+            Ok(vec![
+                ("x-studio-request-id", request_id.to_owned()),
+                (
+                    "x-studio-signature",
+                    format!("{method} {target} {}", body.len()),
+                ),
+            ])
+        }
+    }
+
+    #[tokio::test]
+    async fn paired_server_core_signs_each_request_and_never_reads_a_session() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut command, _) = listener.accept().await.unwrap();
+            let (headers, body) = read_http(&mut command).await;
+            let lower = headers.to_ascii_lowercase();
+            assert!(
+                headers.starts_with("POST /api/messages?room=a "),
+                "{headers}"
+            );
+            assert!(
+                lower.contains("x-studio-request-id: exact-write\r\n"),
+                "{headers}"
+            );
+            assert!(
+                lower.contains("x-studio-signature: post /api/messages?room=a 13\r\n"),
+                "{headers}"
+            );
+            assert_eq!(lower.matches("x-studio-request-id").count(), 1);
+            assert!(!lower.contains("x-canvas-token"));
+            assert_eq!(body, serde_json::json!({"text":"hi"}));
+            reply(&mut command, "{}").await;
+            let (mut read, _) = listener.accept().await.unwrap();
+            let (headers, _) = read_http(&mut read).await;
+            assert!(headers.starts_with("GET /api/sync/identity "), "{headers}");
+            assert!(
+                headers
+                    .to_ascii_lowercase()
+                    .contains("x-studio-signature: get /api/sync/identity 0")
+            );
+            reply(&mut read, r#"{"workspaceId":"remote"}"#).await;
+        });
+        let backend = Backend::signed(
+            &format!("{origin}/"),
+            Arc::new(FixtureSigner(origin.clone())),
+        )
+        .unwrap();
+        let write = backend
+            .dispatch(Request {
+                id: "write".into(),
+                method: "api.request".into(),
+                params: serde_json::json!({"path":"/api/messages?room=a","method":"POST","requestId":"exact-write","body":{"text":"hi"}}),
+            })
+            .await;
+        assert!(write.error.is_none(), "{:?}", write.error);
+        let read = backend
+            .dispatch(Request {
+                id: "read".into(),
+                method: "api.request".into(),
+                params: serde_json::json!({"path":"/api/sync/identity"}),
+            })
+            .await;
+        assert_eq!(read.result.unwrap()["workspaceId"], "remote");
+        server.await.unwrap();
+    }
+
+    #[test]
+    fn a_server_key_never_manages_servers() {
+        let backend = Backend::signed(
+            "https://a.example.ts.net/",
+            Arc::new(FixtureSigner("https://a.example.ts.net".into())),
+        )
+        .unwrap();
+        let builder = || backend.client.get("https://a.example.ts.net/");
+        for (method, path) in [
+            ("POST", "/api/multi-server"),
+            ("POST", "/api/multi-server/pair"),
+            ("GET", "/api/multi-server/v1/status"),
+            ("GET", "/api/%6Dulti-server/v1/status"),
+        ] {
+            let url = Url::parse(&format!("https://a.example.ts.net{path}")).unwrap();
+            assert!(
+                backend.sign(builder(), method, &url, None, &[]).is_err(),
+                "{method} {path}"
+            );
+        }
+        let url = Url::parse("https://a.example.ts.net/api/multi-server").unwrap();
+        assert!(backend.sign(builder(), "GET", &url, None, &[]).is_ok());
+    }
+
+    #[test]
+    fn a_server_key_never_signs_for_another_server() {
+        let signer = Arc::new(FixtureSigner("https://a.example.ts.net".into()));
+        assert!(Backend::signed("https://b.example.ts.net/", signer.clone()).is_err());
+        assert!(Backend::signed("https://a.example.ts.net/", signer).is_ok());
     }
 
     #[tokio::test]

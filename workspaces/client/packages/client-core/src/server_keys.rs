@@ -219,6 +219,112 @@ pub fn signature(
     Ok(STANDARD.encode(key(credential)?.sign(text.as_bytes()).as_ref()))
 }
 
+/// Server management (pairing, access, the server-to-server protocol) belongs
+/// to the workspace shell of the local server. A device key for a paired
+/// server never sends these requests. `path` is the decoded URL path.
+pub fn management_request(method: &str, path: &str) -> bool {
+    let path = path.trim_end_matches('/');
+    path.starts_with("/api/multi-server/v1/")
+        || (method == "POST"
+            && (path == "/api/multi-server" || path.starts_with("/api/multi-server/")))
+}
+
+/// Authentication headers of one signed request to a paired server. The
+/// server checks the signature over the method, target, identities, time,
+/// nonce, request ID and the SHA-256 of the exact body bytes.
+pub fn signed_headers(
+    credential: &Value,
+    method: &str,
+    target: &str,
+    request_id: &str,
+    body: &[u8],
+) -> Result<Vec<(&'static str, String)>, String> {
+    if request_id.is_empty() || request_id.len() > 128 || request_id.contains(['\n', '\r']) {
+        return Err("Invalid server request identity.".into());
+    }
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_secs()
+        .to_string();
+    let nonce = request_nonce()?;
+    let signature = signature(
+        credential, method, target, &timestamp, &nonce, request_id, body,
+    )?;
+    Ok(vec![
+        ("x-studio-client", field(credential, "clientId")?.to_owned()),
+        ("x-studio-server", field(credential, "serverId")?.to_owned()),
+        ("x-studio-timestamp", timestamp),
+        ("x-studio-nonce", nonce),
+        ("x-studio-request-id", request_id.to_owned()),
+        ("x-studio-signature", signature),
+    ])
+}
+
+/// Signs the requests of one client core to one paired server.
+pub trait Signer: Send + Sync {
+    /// The exact origin of the paired server. A core sends signed requests only there.
+    fn origin(&self) -> &str;
+    /// Authentication headers for one request.
+    fn headers(
+        &self,
+        method: &str,
+        target: &str,
+        request_id: &str,
+        body: &[u8],
+    ) -> Result<Vec<(&'static str, String)>, String>;
+}
+
+/// The key of one paired server in a vault. Each request reads the vault
+/// again, so a forgotten or replaced pairing stops signing at once.
+pub struct VaultSigner {
+    vault: std::sync::Arc<dyn Vault>,
+    server: String,
+    client: String,
+    origin: String,
+}
+impl VaultSigner {
+    pub fn new(vault: std::sync::Arc<dyn Vault>, server: &str) -> Result<Self, String> {
+        let state = vault.read()?;
+        let credential = &state["servers"][server];
+        if credential.is_null() {
+            return Err("This device is not paired with the server.".into());
+        }
+        let origin = origin(field(credential, "origin")?)?;
+        if field(credential, "serverId")? != server {
+            return Err("The saved server key belongs to another server.".into());
+        }
+        Ok(Self {
+            client: field(credential, "clientId")?.to_owned(),
+            server: server.to_owned(),
+            vault,
+            origin,
+        })
+    }
+}
+impl Signer for VaultSigner {
+    fn origin(&self) -> &str {
+        &self.origin
+    }
+    fn headers(
+        &self,
+        method: &str,
+        target: &str,
+        request_id: &str,
+        body: &[u8],
+    ) -> Result<Vec<(&'static str, String)>, String> {
+        let state = self.vault.read()?;
+        let credential = &state["servers"][&self.server];
+        if credential.is_null()
+            || field(credential, "clientId")? != self.client
+            || origin(field(credential, "origin")?)? != self.origin
+        {
+            return Err("The server key changed or was removed. Open the server again.".into());
+        }
+        signed_headers(credential, method, target, request_id, body)
+    }
+}
+
 // The caller serializes vault mutations. Import is additive and refuses a
 // conflicting identity; retrying cannot replace keys created after migration.
 pub fn import(vault: &dyn Vault, source: &Value) -> Result<(), String> {
@@ -347,5 +453,33 @@ mod tests {
         vault.write(&newer).unwrap();
         import(&vault, &source).unwrap();
         assert_eq!(vault.read().unwrap(), newer);
+    }
+
+    #[test]
+    fn vault_signer_signs_only_for_its_paired_server_and_stops_after_forget() {
+        let invitation = json!({"protocol":1,"origin":"https://a.tailnet.ts.net","serverId":"a","inviteId":"invite","token":"test","publicKey":"fixture","tailscaleUser":"user"});
+        let credential = new_pair(&invitation, "request").unwrap();
+        let vault: std::sync::Arc<dyn Vault> = std::sync::Arc::new(Memory(Mutex::new(
+            json!({"drafts":{},"servers":{"a":credential}}),
+        )));
+        assert!(VaultSigner::new(vault.clone(), "b").is_err());
+        let signer = VaultSigner::new(vault.clone(), "a").unwrap();
+        assert_eq!(signer.origin(), "https://a.tailnet.ts.net");
+        let headers = signer
+            .headers("GET", "/api/sync/identity", "id", b"")
+            .unwrap();
+        assert!(headers.contains(&("x-studio-server", "a".to_owned())));
+        assert!(headers.contains(&("x-studio-request-id", "id".to_owned())));
+        assert!(
+            headers
+                .iter()
+                .all(|(_, value)| !value.contains("PRIVATE KEY"))
+        );
+        vault.write(&json!({"drafts":{},"servers":{}})).unwrap();
+        assert!(
+            signer
+                .headers("GET", "/api/sync/identity", "id", b"")
+                .is_err()
+        );
     }
 }

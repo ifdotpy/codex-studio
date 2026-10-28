@@ -195,6 +195,7 @@ mod tests {
             ConnectionConfig {
                 state_directory: directory.into(),
                 backend_origin: "http://127.0.0.1:9".into(),
+                signer: None,
             },
             |_| {},
         )

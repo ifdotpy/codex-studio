@@ -9,7 +9,7 @@ use std::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
@@ -90,27 +90,15 @@ impl RemoteClient {
         {
             return Err("The request does not belong to this server API.".into());
         }
-        if request_id.is_empty()
-            || request_id.len() > 128
-            || request_id.contains(['\n', '\r'])
-            || body.len() > 32 * 1024 * 1024
-        {
+        if body.len() > 32 * 1024 * 1024 {
             return Err("Invalid server request identity or body.".into());
         }
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|e| e.to_string())?
-            .as_secs()
-            .to_string();
-        let nonce = server_keys::request_nonce()?;
         let target = format!(
             "{}{}",
             url.path(),
             url.query().map(|v| format!("?{v}")).unwrap_or_default()
         );
-        let signature = server_keys::signature(
-            credential, method, &target, &timestamp, &nonce, request_id, &body,
-        )?;
+        let signed = server_keys::signed_headers(credential, method, &target, request_id, &body)?;
         let mut request = self.http.request(
             method
                 .parse::<reqwest::Method>()
@@ -137,13 +125,9 @@ impl RemoteClient {
                 }
             }
         }
-        request = request
-            .header("x-studio-client", field(credential, "clientId")?)
-            .header("x-studio-server", field(credential, "serverId")?)
-            .header("x-studio-timestamp", timestamp)
-            .header("x-studio-nonce", nonce)
-            .header("x-studio-request-id", request_id)
-            .header("x-studio-signature", signature);
+        for (name, value) in signed {
+            request = request.header(name, value);
+        }
         if method == "POST" {
             request = request.body(body);
         }
@@ -166,11 +150,7 @@ impl RemoteClient {
                 let path = percent_encoding::percent_decode_str(target.path())
                     .decode_utf8()
                     .map_err(|_| "Invalid server path.")?;
-                let path = path.trim_end_matches('/');
-                if path.starts_with("/api/multi-server/v1/")
-                    || (p["method"] == "POST"
-                        && (path == "/api/multi-server" || path.starts_with("/api/multi-server/")))
-                {
+                if server_keys::management_request(p["method"].as_str().unwrap_or(""), &path) {
                     return Err("Use the workspace shell for server management.".into());
                 }
                 let body = STANDARD
