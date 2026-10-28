@@ -40,6 +40,10 @@ pub(super) async fn vm_codex_refresh_response(
     resolver: Option<
         std::sync::Arc<dyn crate::account_worker::preparation::VmProviderLaunchResolver>,
     >,
+    source: Option<(
+        String,
+        studio_runtime_store::request_results::AdmittedRequest,
+    )>,
 ) -> Option<Frame> {
     if !is_vm_codex_refresh_request(frame) {
         return None;
@@ -76,6 +80,9 @@ pub(super) async fn vm_codex_refresh_response(
     let Some(resolver) = resolver else {
         return Some(failed());
     };
+    let Some((root_request_id, admitted_request)) = source else {
+        return Some(failed());
+    };
     let result = resolver
         .refresh_codex(
             account.to_owned(),
@@ -83,6 +90,8 @@ pub(super) async fn vm_codex_refresh_response(
             emitting_actor.to_owned(),
             actor_epoch,
             generation,
+            root_request_id,
+            admitted_request,
         )
         .await;
     let Ok(payload) = result else {
@@ -514,7 +523,7 @@ pub(super) fn managed_reply_authority_in(
     }))
 }
 
-fn callback_context_in(
+pub(super) fn callback_context_in(
     db: &rusqlite::Connection,
     account: &str,
     generation: u64,
@@ -556,6 +565,11 @@ fn callback_context_in(
     Ok(Some(crate::provider_callbacks::CallbackContext {
         agent: agent_id.to_owned(),
         account: account.to_owned(),
+        stream_id: if agent["executionMode"] == "vm" {
+            super::vm_journal_scope(account, agent_id)
+        } else {
+            account.to_owned()
+        },
         connection: connection.to_owned(),
         generation,
         epoch,

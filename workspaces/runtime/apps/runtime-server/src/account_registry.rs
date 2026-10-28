@@ -102,7 +102,7 @@ mod registry_hints {
                             ObservedTable::AccessClients
                             | ObservedTable::UsageResumes
                             | ObservedTable::Rooms
-                            | ObservedTable::OperationReceipts
+                            | ObservedTable::RequestResults
                             | ObservedTable::Monitors
                             | ObservedTable::Rules
                             | ObservedTable::ServerOutbox
@@ -113,12 +113,13 @@ mod registry_hints {
                             | ObservedTable::FederationInvites
                             | ObservedTable::FederationRooms
                             | ObservedTable::FederationOutbox
-                            | ObservedTable::NativeActionReceipts
-                            | ObservedTable::AccessReceipts
+                            | ObservedTable::RuntimeOutbox
+                            | ObservedTable::ErrorIncidents
                             | ObservedTable::AccountTransfers
                             | ObservedTable::OrchestrationSettings
                             | ObservedTable::RuntimeRequests
                             | ObservedTable::RuntimeToolRequests
+                            | ObservedTable::AccountState
                             | ObservedTable::AnalyticsProjection => return self.wake.notify_one(),
                         };
                         if rows.len() + ids.len() > MAX_PENDING_ROW_HINTS {

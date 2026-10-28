@@ -212,14 +212,6 @@ fn execute_with_payload_recovery(
         save(tx, &record, &actor, payloads)?;
     }
     if !cancel {
-        if !terminal(&record)?
-            && record.get("operationResult").is_none()
-            && let Some(result) = operation_result(tx, text(&record, "id"))?
-        {
-            record["operationApplied"] = json!(true);
-            record["operationResult"] = result;
-            record["evidenceSource"] = json!("operation_receipt");
-        }
         if let Some(ids) = record["agentIds"].as_array().filter(|ids| !ids.is_empty()) {
             let states=ids.iter().map(|id| {
                 let child=records::get(tx,"runtime_agents",id.as_str().unwrap_or_default())?;
@@ -364,7 +356,7 @@ fn refresh(
         // it passes the result to finish_tool_request (codex_tool_requests.py:301-307, 512-520).
         expire(&mut result, now);
     }
-    let committed = operation_result(tx, text(record, "id"))?.is_some();
+    let committed = record["operationApplied"] == true || record["deliveryCertainty"] == "written";
     if lifecycle::settle(record, &result, committed)? {
         // Store the same recovered value used for settlement. This keeps an
         // unchanged externalized unknown result from comparing unequal on the
@@ -494,25 +486,6 @@ fn relocation_error(error: crate::relocation::RelocationError) -> ToolRequestErr
     }
 }
 
-fn operation_result(tx: &Transaction<'_>, id: &str) -> Result<Option<Value>, ToolRequestError> {
-    {
-        use rusqlite::OptionalExtension;
-        let raw: Option<String> = tx
-            .query_row(
-                "SELECT result FROM request_results WHERE id=?1",
-                [id],
-                |row| row.get(0),
-            )
-            .optional()?;
-        raw.map(|raw| {
-            serde_json::from_str::<ResultEnvelope<Value>>(&raw)
-                .map(|result| result.reply)
-                .map_err(StoreError::from)
-                .map_err(Into::into)
-        })
-        .transpose()
-    }
-}
 fn save(
     tx: &Transaction<'_>,
     record: &Value,
@@ -542,7 +515,7 @@ fn save(
         params![persisted.to_string(), id],
     )?;
     if terminal(persisted)?
-        && let Some(result) = persisted.get("result")
+        && let Some(result) = record.get("result")
     {
         settle_result(tx, id, result)?;
     }

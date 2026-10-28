@@ -266,13 +266,14 @@ pub(super) fn apply(
                 put_task(tx, &task)?;
             }
             if decision.compacted {
-                if let Some(request_id) = agent["startAttempt"]["actionRequestId"].as_str()
-                    && request_id.starts_with(crate::idle_compaction::REQUEST_PREFIX)
+                if let Some(request_id) = agent["startAttempt"]["actionRequestId"]
+                    .as_str()
+                    .map(str::to_owned)
+                    && agent["idleCompactionEpisode"]["id"].as_str() == Some(request_id.as_str())
                 {
-                    tx.execute_cached(
-                        "UPDATE runtime_operation_receipts SET result=json_set(result,'$.outcome','compacted','$.completedAt',?2) WHERE id=?1 AND signature='idle-compaction'",
-                        params![request_id, at],
-                    ).map_err(StoreError::from)?;
+                    agent["idleCompactionEpisode"]["outcome"] =
+                        json!(studio_runtime_schema::persistence::IdleEpisodeOutcome::Compacted);
+                    agent["idleCompactionEpisode"]["completedAt"] = json!(at);
                     write_item(
                         tx,
                         &id,
@@ -465,7 +466,6 @@ pub(super) fn flush_command(
     let id = format!("{agent_id}:{}", key.item);
     let Some((record, _)) = NotificationDispatchRepository::notification_item(tx, agent_id, &id)?
     else {
-        NotificationDispatchRepository::put_stream_base(tx, &super::stream_base_id(key), None)?;
         streams.discard(key);
         if close {
             streams.close(key);
@@ -485,7 +485,6 @@ pub(super) fn flush_command(
             .as_ref()
             .is_some_and(|task| task["kind"] == "command" && task["turnId"] == json!(key.turn))
     {
-        NotificationDispatchRepository::put_stream_base(tx, &super::stream_base_id(key), None)?;
         streams.discard(key);
         if close {
             streams.close(key);
@@ -497,12 +496,8 @@ pub(super) fn flush_command(
         .filter(Value::is_object);
     // The stored item holds the flushed output unless item/started replaced
     // it, which preserved the flushed output as the durable base first.
-    let previous = match super::durable_stream_base(tx, streams, key)? {
-        Some(base) if streams.has_pending(key) => {
-            NotificationDispatchRepository::put_stream_base(tx, &super::stream_base_id(key), None)?;
-            base
-        }
-        Some(base) => base,
+    let previous = match streams.base(key) {
+        Some(base) => base.to_owned(),
         None => command_base(saved.as_ref(), task.as_ref()),
     };
     let mut item = saved.unwrap_or_else(|| json!({"type":"commandExecution","id":key.item}));
@@ -541,7 +536,6 @@ pub(super) fn flush_command(
         }
     }
     if close {
-        NotificationDispatchRepository::put_stream_base(tx, &super::stream_base_id(key), None)?;
         streams.close(key);
     }
     Ok(())
@@ -565,13 +559,7 @@ pub(super) fn preserve_command_base(
         None
     };
     let previous = command_base(saved.as_ref(), task.as_ref().map(|task| task.value()));
-    if streams.preserve_base(key, super::sha256_hex(previous.as_bytes())) {
-        NotificationDispatchRepository::put_stream_base(
-            tx,
-            &super::stream_base_id(key),
-            Some(&previous),
-        )?;
-    }
+    streams.preserve_base(key, previous);
     Ok(())
 }
 

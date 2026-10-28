@@ -128,6 +128,44 @@ impl From<studio_runtime_store::StoreError> for ApiError {
     }
 }
 
+impl From<studio_runtime_store::request_results::RequestResultError> for ApiError {
+    fn from(error: studio_runtime_store::request_results::RequestResultError) -> Self {
+        use studio_runtime_schema::persistence::RequestIdentityError;
+        use studio_runtime_store::request_results::RequestResultError;
+        match error {
+            RequestResultError::Conflict { .. } => Self::new(
+                StatusCode::CONFLICT,
+                "This request ID has different content",
+            ),
+            RequestResultError::Identity(
+                RequestIdentityError::Expired { .. } | RequestIdentityError::InvalidUuidV7(_),
+            ) => Self::new(StatusCode::GONE, "This request ID has expired"),
+            RequestResultError::Identity(RequestIdentityError::FutureTimestamp { .. }) => {
+                Self::new(
+                    StatusCode::BAD_REQUEST,
+                    "This request ID was issued in the future",
+                )
+            }
+            RequestResultError::Json(error) => Self::json(error),
+            RequestResultError::Sql(error) => Self::stored(error.into()),
+        }
+    }
+}
+
+impl From<studio_runtime_store::outbox::OutboxError> for ApiError {
+    fn from(error: studio_runtime_store::outbox::OutboxError) -> Self {
+        use studio_runtime_store::outbox::OutboxError;
+        match error {
+            OutboxError::Conflict(_) => Self::new(
+                StatusCode::CONFLICT,
+                "This request ID has different content",
+            ),
+            OutboxError::Json(error) => Self::json(error),
+            OutboxError::Sql(error) => Self::stored(error.into()),
+        }
+    }
+}
+
 impl ApiError {
     /// HTTP status alone never establishes whether a mutation took effect.
     pub(crate) fn status(&self) -> StatusCode {
@@ -143,6 +181,8 @@ impl ApiError {
         let cause = store_error_kind(&error);
         let causes = store_causes(&error);
         let mut result = match error {
+            StoreError::RequestResult(error) => error.into(),
+            StoreError::Outbox(error) => error.into(),
             StoreError::Migration { source, .. } => Self::stored(*source),
             StoreError::InvalidSyncObject { scope, id } => Self::invalid_stored(&scope, &id),
             StoreError::InvalidStoredObject { table, id }

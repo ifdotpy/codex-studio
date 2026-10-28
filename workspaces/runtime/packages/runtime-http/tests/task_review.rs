@@ -133,7 +133,7 @@ async fn task_review_projects_default_and_current_refusals_through_http() {
     );
     // Existing installations have count-only counter receipts. Their saved refusal is readable.
     store.transaction(|tx| {
-        tx.execute("UPDATE runtime_operation_receipts SET result=json_remove(result, '$.errors') WHERE signature='work-result-failures-v1'", [])?;
+        tx.execute("UPDATE runtime_work SET record=json_remove(record, '$.resultFailures.errors') WHERE json_type(record,'$.resultFailures') IS NOT NULL", [])?;
         Ok(())
     }).await.unwrap();
     let (_, legacy) = call(&app, "GET", None).await;

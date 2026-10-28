@@ -7,6 +7,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::{Extension, Json};
 use serde_json::Value;
+use studio_runtime_schema::persistence::WorkEffectStatus;
 use studio_runtime_services::work_write::{
     self, AcceptWork, SubmitWork, WorkWrite, WorkWriteError,
 };
@@ -766,18 +767,18 @@ async fn finalize_accepted_archive(
     }
     if retryable {
         let intent_id = format!("{work_id}:{archive_result_id}");
-        work["archiveIntent"] = serde_json::json!({
-            "id": intent_id,
-            "status": "pending",
-            "owner": work["owner"],
-            "attempts": 0,
-            "created": updated,
+        let mut intent = work.get("archiveIntent").cloned().unwrap_or_else(|| {
+            serde_json::json!({
+                "id": intent_id, "owner": work["owner"], "attempts": 0, "created": updated,
+            })
         });
+        intent["status"] = serde_json::json!(WorkEffectStatus::Pending);
+        work["archiveIntent"] = intent;
     } else if work.get("archiveIntent").is_some() {
         let intent_status = if work["archive"]["status"] == "archived" {
-            "complete"
+            WorkEffectStatus::Complete
         } else {
-            "terminal"
+            WorkEffectStatus::Terminal
         };
         let archive_outcome = work["archive"].clone();
         if let Some(intent) = work.get_mut("archiveIntent") {
@@ -792,18 +793,52 @@ async fn finalize_accepted_archive(
     let ((response, _event_inserted), _) = store
         .transaction_with_post_commit(
             move |tx| -> Result<_, studio_runtime_store::StoreError> {
+                if let Some(token) = work
+                    .get("archiveIntent")
+                    .and_then(|intent| intent.get("publicAdmission"))
+                {
+                    let token: studio_runtime_store::request_results::AdmittedRequest =
+                        serde_json::from_value(token.clone())?;
+                    if let Some(saved) =
+                        studio_runtime_services::event_write::replay_request::<WorkItemRecord>(
+                            tx,
+                            token.id(),
+                            token.signature(),
+                            (updated * 1000.0) as i64,
+                        )?
+                    {
+                        return Ok((saved.reply.into_value(), false));
+                    }
+                }
+                let current = studio_runtime_store::WorkItemsRepository::work_record(tx, &work_id)?
+                    .ok_or(studio_runtime_store::StoreError::RecordContract(
+                        "accepted archive owner",
+                    ))?;
+                if current.value()["archiveIntent"]["publicAdmission"]
+                    != work["archiveIntent"]["publicAdmission"]
+                {
+                    return Err(studio_runtime_store::StoreError::RecordContract(
+                        "accepted archive admission changed",
+                    ));
+                }
+                if current.value()["version"] != work["version"] {
+                    return Err(studio_runtime_store::StoreError::RecordContract(
+                        "accepted archive owner changed",
+                    ));
+                }
+                let current_intent = current.value().get("archiveIntent").cloned();
                 studio_runtime_store::WorkItemsRepository::update_work(tx, &work_id, &work)?;
                 let attempt_status = if retryable {
-                    "retryable"
+                    WorkEffectStatus::Retryable
                 } else if work["archive"]["status"] == "archived" {
-                    "complete"
+                    WorkEffectStatus::Complete
                 } else if work["archive"]["reason"]
                     .as_str()
                     .is_some_and(|reason| reason.starts_with("The archive check failed:"))
                 {
-                    "unknown"
+                    WorkEffectStatus::Unknown
                 } else {
-                    "terminal"
+                    WorkEffectStatus::Terminal
                 };
                 let actor_epoch = studio_runtime_store::AgentRepository::get(
                     tx,
@@ -817,26 +852,16 @@ async fn finalize_accepted_archive(
                     .as_str()
                     .is_some_and(|owner| owner != work["rootId"].as_str().unwrap_or_default())
                 {
-                    let attempt_receipt_id =
-                        format!("work-archive:{}:{archive_result_id}", work_id);
-                    let prior_attempt = tx.query_row(
-                        "SELECT result FROM runtime_operation_receipts WHERE id=?1",
-                        [attempt_receipt_id.as_str()],
-                        |row| row.get::<_, String>(0),
+                    let prior_attempt = current_intent.ok_or(
+                        studio_runtime_store::StoreError::RecordContract("archive intent"),
                     )?;
-                    let prior_attempt =
-                        serde_json::from_str::<Value>(&prior_attempt).map_err(|_| {
-                            studio_runtime_store::StoreError::RecordContract(
-                                "archive attempt receipt",
-                            )
-                        })?;
                     let attempts = prior_attempt["attempts"].as_u64().unwrap_or_default();
                     let delay = 2_u64.pow(attempts.min(6) as u32).min(60);
                     let mut attempt_receipt = prior_attempt;
-                    attempt_receipt["status"] = Value::String(if retryable {
-                        "pending".to_owned()
+                    attempt_receipt["status"] = serde_json::json!(if retryable {
+                        WorkEffectStatus::Pending
                     } else {
-                        attempt_status.to_owned()
+                        attempt_status
                     });
                     attempt_receipt["taskId"] = serde_json::json!(work_id);
                     attempt_receipt["intentId"] =
@@ -852,10 +877,8 @@ async fn finalize_accepted_archive(
                     if !retryable {
                         attempt_receipt["outcome"] = work["archive"].clone();
                     }
-                    tx.execute(
-                        "UPDATE runtime_operation_receipts SET result=?1 WHERE id=?2",
-                        [attempt_receipt.to_string(), attempt_receipt_id],
-                    )?;
+                    work["archiveIntent"] = attempt_receipt;
+                    studio_runtime_store::WorkItemsRepository::update_work(tx, &work_id, &work)?;
                 }
                 let mut event_inserted = false;
                 if outcome_status_is_terminal(&work)
@@ -905,14 +928,23 @@ async fn finalize_accepted_archive(
                 if let Some(object) = response.as_object_mut() {
                     object.remove("archiveIntent");
                 }
-                let receipt_result = serde_json::to_string(&response).map_err(|_| {
-                    studio_runtime_store::StoreError::RecordContract("work response")
-                })?;
-                if let Some(request_id) = request {
-                    tx.execute(
-                        "UPDATE runtime_operation_receipts SET result=?1 WHERE id=?2",
-                        (&receipt_result, request_id),
-                    )?;
+                if let Some(request_id) = request
+                    && work
+                        .get("archiveIntent")
+                        .and_then(|intent| intent.get("publicAdmission"))
+                        .is_some_and(|token| !token.is_null())
+                {
+                    studio_runtime_services::work_write::settle_accepted_archive(
+                        tx,
+                        &work_id,
+                        &request_id,
+                        &WorkItemRecord::checked(response.clone())?,
+                    )
+                    .map_err(|_| {
+                        studio_runtime_store::StoreError::RecordContract(
+                            "accepted archive response",
+                        )
+                    })?;
                 }
                 Ok((response, event_inserted))
             },
@@ -987,6 +1019,19 @@ mod managed_work_port_tests {
     use studio_runtime_services::provider_callbacks::WorkActionOutcome;
     use studio_runtime_store::{AgentRecord, AgentRepository, RuntimeStore};
 
+    thread_local! {
+        static REQUESTS: std::cell::RefCell<std::collections::HashMap<String, String>> = std::cell::RefCell::new(std::collections::HashMap::new());
+    }
+    fn request_id(label: &str) -> String {
+        REQUESTS.with(|requests| {
+            requests
+                .borrow_mut()
+                .entry(label.to_owned())
+                .or_insert_with(studio_runtime_schema::persistence::RequestIdentity::issue_root)
+                .clone()
+        })
+    }
+
     async fn state() -> (HttpState, Arc<RuntimeStore>, tempfile::TempDir) {
         let directory = tempfile::tempdir().expect("isolated state directory");
         let store = Arc::new(
@@ -1017,6 +1062,7 @@ mod managed_work_port_tests {
             Some(Arc::clone(&store)),
             None,
         );
+        REQUESTS.with(|requests| requests.borrow_mut().clear());
         (state, store, directory)
     }
 
@@ -1037,13 +1083,13 @@ mod managed_work_port_tests {
             port.act(
                 "lead",
                 &json!({"action":"create","title":"Task","description":"🙂".repeat(32000)}),
-                "tool-bound-create",
+                &request_id("tool-bound-create"),
             )
             .await,
         );
         let task = &created["id"];
         for action in ["create", "update"] {
-            let outcome = port.act("lead", &json!({"action":action,"task_id":task,"title":"Task","description":"🙂".repeat(32001)}), &format!("tool-bound-{action}")).await;
+            let outcome = port.act("lead", &json!({"action":action,"task_id":task,"title":"Task","description":"🙂".repeat(32001)}), &request_id(&format!("tool-bound-{action}"))).await;
             assert!(
                 matches!(outcome, WorkActionOutcome::Refused(_)),
                 "{outcome:?}"
@@ -1053,7 +1099,7 @@ mod managed_work_port_tests {
             port.act(
                 "lead",
                 &json!({"action":"update","task_id":task,"description":"🙂".repeat(32000)}),
-                "tool-bound-update",
+                &request_id("tool-bound-update"),
             )
             .await,
         );
@@ -1061,7 +1107,7 @@ mod managed_work_port_tests {
             .act(
                 "lead",
                 &json!({"action":"cancel","task_id":task,"reason":"🙂".repeat(32001)}),
-                "tool-bound-reason-long",
+                &request_id("tool-bound-reason-long"),
             )
             .await;
         assert!(
@@ -1072,7 +1118,7 @@ mod managed_work_port_tests {
             port.act(
                 "lead",
                 &json!({"action":"cancel","task_id":task,"reason":"🙂".repeat(32000)}),
-                "tool-bound-reason",
+                &request_id("tool-bound-reason"),
             )
             .await,
         );
@@ -1089,7 +1135,7 @@ mod managed_work_port_tests {
         let created = super::perform(
             state.clone(),
             None,
-            json!({"action":"create","agent":"lead","id":"seed-create","title":"Task"}),
+            json!({"action":"create","agent":"lead","id":request_id("seed-create"),"title":"Task"}),
             None,
         )
         .await
@@ -1103,10 +1149,10 @@ mod managed_work_port_tests {
             let signature = super::work_items::work_request_signature("lead", actor, &original)
                 .expect("original hash");
             let saved_signature = signature.clone();
-            let saved_result = created.to_string();
+            let saved_result = json!({"actor":actor,"reply":created,"references":[]}).to_string();
             let saved_request = request.clone();
             store.transaction(move |tx| {
-                tx.execute("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,?2,?3)",
+                tx.execute("INSERT INTO request_results(id,signature,result,created) VALUES (?1,?2,?3,unixepoch()*1000)",
                     rusqlite::params![saved_request,saved_signature,saved_result])?;
                 Ok(())
             }).await.expect("pre-upgrade successful receipt");
@@ -1126,7 +1172,7 @@ mod managed_work_port_tests {
             let (actual_signature, actual_result, task_count) = store
                 .read_async("legacy-replay-test", move |db| {
                     let (signature, result) = db.query_row(
-                        "SELECT signature,result FROM runtime_operation_receipts WHERE id=?1",
+                        "SELECT signature,result FROM request_results WHERE id=?1",
                         [query_request],
                         |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
                     )?;
@@ -1137,7 +1183,10 @@ mod managed_work_port_tests {
                 .await
                 .expect("exact saved receipt");
             assert_eq!(actual_signature, signature);
-            assert_eq!(actual_result, created.to_string());
+            assert_eq!(
+                serde_json::from_str::<Value>(&actual_result).expect("envelope")["reply"],
+                created
+            );
             assert_eq!(task_count, 1, "replay creates no additional task");
             let mut changed = original;
             changed.as_object_mut().expect("body").remove("checks");
@@ -1154,23 +1203,23 @@ mod managed_work_port_tests {
     async fn task_command_ingress_preserves_receipt_body_and_owner_presence() {
         let (state, _store, _directory) = state().await;
         let port = managed_work_port(state, None);
-        let created = written(port.act("lead", &json!({"action":"create","title":"Typed ingress","description":"x".repeat(32000),"owner":"worker"}), "typed-create").await);
+        let created = written(port.act("lead", &json!({"action":"create","title":"Typed ingress","description":"x".repeat(32000),"owner":"worker"}), &request_id("typed-create")).await);
         let task = &created["id"];
         let update =
             json!({"action":"update","task_id":task,"version":1.0,"description":"Changed"});
-        let updated = written(port.act("lead", &update, "typed-update").await);
+        let updated = written(port.act("lead", &update, &request_id("typed-update")).await);
         assert_eq!(
             updated["owner"], "worker",
             "omitted owner retains assignment"
         );
         assert_eq!(
-            written(port.act("lead", &update, "typed-update").await),
+            written(port.act("lead", &update, &request_id("typed-update")).await),
             updated
         );
         let mut changed = update;
         changed["version"] = json!(1);
         assert!(
-            matches!(port.act("lead", &changed, "typed-update").await,
+            matches!(port.act("lead", &changed, &request_id("typed-update")).await,
             WorkActionOutcome::Refused(message) if message.contains("different content")),
             "decimal spelling remains part of the original receipt signature"
         );
@@ -1178,7 +1227,7 @@ mod managed_work_port_tests {
             port.act(
                 "lead",
                 &json!({"action":"update","task_id":task,"version":2.0,"owner":null}),
-                "typed-clear",
+                &request_id("typed-clear"),
             )
             .await,
         );
@@ -1187,7 +1236,7 @@ mod managed_work_port_tests {
             port.act(
                 "lead",
                 &json!({"action":"update","task_id":task,"owner":42}),
-                "typed-malformed"
+                &request_id("typed-malformed")
             )
             .await,
             WorkActionOutcome::Refused(_)
@@ -1202,17 +1251,17 @@ mod managed_work_port_tests {
             port.act(
                 "lead",
                 &json!({"action":"create","title":"Replay boundary","owner":"worker"}),
-                "replay-create",
+                &request_id("replay-create"),
             )
             .await,
         );
         let task_id = created["id"].as_str().expect("task id").to_owned();
         let args = json!({"action":"claim","task_id":task_id,"version":created["version"]});
         // Commit the first claim and discard its response, as on response loss.
-        drop(port.act("worker", &args, "same-claim").await);
+        drop(port.act("worker", &args, &request_id("same-claim")).await);
         let reader = store.test_reader().expect("reader");
         let snapshot = || {
-            reader.query_row("SELECT w.record,r.signature,r.result FROM runtime_work w JOIN runtime_operation_receipts r ON r.id='same-claim' WHERE w.id=?1", [&task_id], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?))).expect("successful claim and exact receipt")
+            reader.query_row("SELECT w.record,r.signature,r.result FROM runtime_work w JOIN request_results r ON json_extract(r.result,'$.reply.id')=w.id WHERE w.id=?1", [&task_id], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?))).expect("successful claim and exact receipt")
         };
         let before = snapshot();
         assert_eq!(
@@ -1223,7 +1272,7 @@ mod managed_work_port_tests {
             tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.workspaceMode',7) WHERE id='worker'", [])?;
             Ok(())
         }).await.expect("corrupt actor after committed success");
-        let replay = port.act("worker", &args, "same-claim").await;
+        let replay = port.act("worker", &args, &request_id("same-claim")).await;
         assert!(
             matches!(replay, WorkActionOutcome::Unknown(_)),
             "a prior committed effect cannot become NotApplied: {replay:?}"
@@ -1274,7 +1323,7 @@ mod managed_work_port_tests {
                 port.act(
                     "lead",
                     &json!({"action":"create","title":"Stored boundary","owner":"worker","dependencies":["prerequisite"]}),
-                    "boundary-create",
+                    &request_id("boundary-create"),
                 )
                 .await,
             );
@@ -1304,7 +1353,7 @@ mod managed_work_port_tests {
             let snapshot = || {
                 [
                     "SELECT id,record FROM runtime_work ORDER BY id",
-                    "SELECT id,json_array(signature,result) FROM runtime_operation_receipts ORDER BY id",
+                    "SELECT id,json_array(signature,result) FROM request_results ORDER BY id",
                     "SELECT id,json_array(agent,kind,text,status,created,epoch,turn_id,error) FROM runtime_events ORDER BY id",
                 ]
                 .into_iter()
@@ -1322,12 +1371,14 @@ mod managed_work_port_tests {
                 .collect::<Vec<_>>()
             };
             let before = snapshot();
-            let claim = json!({"action":"claim","agent":"worker","task_id":id,"version":created["version"],"id":"boundary-http-claim"});
+            let claim = json!({"action":"claim","agent":"worker","task_id":id,"version":created["version"],"id":request_id("boundary-http-claim")});
             let error = super::perform(state.clone(), None, claim.clone(), None)
                 .await
                 .expect_err("HTTP claim refuses malformed stored work");
             assert!(error.message().contains("runtime_work"), "{error:?}");
-            let outcome = port.act("worker", &claim, "boundary-native-claim").await;
+            let outcome = port
+                .act("worker", &claim, &request_id("boundary-native-claim"))
+                .await;
             assert!(
                 matches!(outcome, WorkActionOutcome::Refused(_)),
                 "{outcome:?}"
@@ -1345,7 +1396,11 @@ mod managed_work_port_tests {
                 args["task_id"] = json!(id);
                 args["version"] = created["version"].clone();
                 let outcome = port
-                    .act(actor, &args, &format!("boundary-native-{action}"))
+                    .act(
+                        actor,
+                        &args,
+                        &request_id(&format!("boundary-native-{action}")),
+                    )
                     .await;
                 assert!(
                     matches!(outcome, WorkActionOutcome::Unknown(_)),
@@ -1438,7 +1493,7 @@ mod managed_work_port_tests {
                 .contains("result_schema")
         );
         for (index, contract) in [json!({"type":"wrong"}), json!({"required":true}), json!({"description":"x".repeat(studio_runtime_schema::task_results::MAX_RESULT_SCHEMA_BYTES)})].into_iter().enumerate() {
-            let message = refused(port.act("lead", &json!({"action":"create","title":"invalid","result_schema":contract}), &format!("invalid-{index}")).await);
+            let message = refused(port.act("lead", &json!({"action":"create","title":"invalid","result_schema":contract}), &request_id(&format!("invalid-{index}"))).await);
             assert!(message.contains("result_schema"), "{message}");
         }
         let count = store
@@ -1455,7 +1510,7 @@ mod managed_work_port_tests {
             port.act(
                 "lead",
                 &json!({"action":"create","title":"valid","result_schema":schema()}),
-                "create",
+                &request_id("create"),
             )
             .await,
         );
@@ -1465,7 +1520,7 @@ mod managed_work_port_tests {
             port.act(
                 "lead",
                 &json!({"action":"update","task_id":task,"result_schema":{"properties":false}}),
-                "invalid-update",
+                &request_id("invalid-update"),
             )
             .await,
         );
@@ -1478,16 +1533,22 @@ mod managed_work_port_tests {
     async fn task_result_schema_submit_errors_retry_and_json_get_history() {
         let (state, store, _dir) = state().await;
         let port = managed_work_port(state, None);
-        let created = written(port.act("lead", &json!({"action":"create","title":"results","owner":"worker","result_schema":schema()}), "create").await);
+        let created = written(port.act("lead", &json!({"action":"create","title":"results","owner":"worker","result_schema":schema()}), &request_id("create")).await);
         let task = created["id"].as_str().expect("id");
         let before = created.clone();
         let args = json!({"action":"submit","task_id":task,"result":{"count":"bad"},"checks":"checked","revision":"abc","files":[]});
-        let message = refused(port.act("worker", &args, "invalid-submit").await);
+        let message = refused(
+            port.act("worker", &args, &request_id("invalid-submit"))
+                .await,
+        );
         let error: Value = serde_json::from_str(&message).expect("structured refusal");
         assert_eq!(error["errors"][0]["path"], "/count");
         assert_eq!(error["failedSubmits"], 1);
         assert_eq!(
-            refused(port.act("worker", &args, "invalid-submit").await),
+            refused(
+                port.act("worker", &args, &request_id("invalid-submit"))
+                    .await
+            ),
             message
         );
         let task_id = task.to_owned();
@@ -1504,10 +1565,16 @@ mod managed_work_port_tests {
         assert!(saved.get("submissionRefusal").is_none());
         let mut valid = args;
         valid["result"] = json!({"count":7});
-        let submitted = written(port.act("worker", &valid, "valid-submit").await);
+        let submitted = written(
+            port.act("worker", &valid, &request_id("valid-submit"))
+                .await,
+        );
         assert_eq!(submitted["status"], "review");
         assert_eq!(
-            written(port.act("worker", &valid, "valid-submit").await),
+            written(
+                port.act("worker", &valid, &request_id("valid-submit"))
+                    .await
+            ),
             submitted
         );
         let got = read_task_tool(Arc::clone(&store), task, "get").await;
@@ -1529,31 +1596,37 @@ mod managed_work_port_tests {
             port.act(
                 "lead",
                 &json!({"action":"create","title":"cap","owner":"worker","result_schema":schema()}),
-                "create",
+                &request_id("create"),
             )
             .await,
         );
         let task = created["id"].as_str().expect("id");
         let mut args = json!({"action":"submit","task_id":task,"result":"not JSON","checks":"checked","revision":"abc"});
         for index in 0..MAX_FAILED_RESULT_SUBMITS_PER_ATTEMPT {
-            let message = refused(port.act("worker", &args, &format!("invalid-{index}")).await);
+            let message = refused(
+                port.act("worker", &args, &request_id(&format!("invalid-{index}")))
+                    .await,
+            );
             let refusal: Value = serde_json::from_str(&message).expect("refusal");
             assert_eq!(refusal["failedSubmits"], index + 1);
         }
         args["result"] = json!({"count":2});
-        assert!(refused(port.act("worker", &args, "over-cap").await).contains("limit reached"));
+        assert!(
+            refused(port.act("worker", &args, &request_id("over-cap")).await)
+                .contains("limit reached")
+        );
         let events = store.read_async("test", |db| db.query_row("SELECT count(*) FROM runtime_events WHERE kind='work_result_invalid' AND agent='lead' AND status='pending'", [], |r| r.get::<_,i64>(0)).map_err(studio_runtime_store::StoreError::from)).await.expect("events");
         assert_eq!(events, 1);
         written(
             port.act(
                 "lead",
                 &json!({"action":"update","task_id":task,"result_schema":schema()}),
-                "reset",
+                &request_id("reset"),
             )
             .await,
         );
         assert_eq!(
-            written(port.act("worker", &args, "new-attempt").await)["status"],
+            written(port.act("worker", &args, &request_id("new-attempt")).await)["status"],
             "review"
         );
     }
@@ -1566,12 +1639,12 @@ mod managed_work_port_tests {
             port.act(
                 "lead",
                 &json!({"action":"create","title":"legacy","owner":"worker"}),
-                "create",
+                &request_id("create"),
             )
             .await,
         );
         let args = json!({"action":"submit","task_id":created["id"],"result":"plain text","checks":"checked","revision":"abc"});
-        let result = written(port.act("worker", &args, "submit").await);
+        let result = written(port.act("worker", &args, &request_id("submit")).await);
         assert_eq!(result["results"][0]["text"], "plain text");
         assert!(result["results"][0].get("result").is_none());
     }
@@ -1584,7 +1657,7 @@ mod managed_work_port_tests {
             port.act(
                 "lead",
                 &json!({"action":"create","title":"Port check","owner":"worker"}),
-                "tool-create",
+                &request_id("tool-create"),
             )
             .await,
         );
@@ -1595,13 +1668,13 @@ mod managed_work_port_tests {
             Ok(())
         }).await.expect("stored extension");
         let claim = json!({"action":"claim","task_id":task,"version":created["version"]});
-        let claimed = written(port.act("worker", &claim, "tool-claim").await);
+        let claimed = written(port.act("worker", &claim, &request_id("tool-claim")).await);
         assert_eq!(claimed["owner"], "worker");
         assert_eq!(claimed["status"], "running");
         assert_eq!(claimed["retainedExtension"], json!({"proof":[7,null]}));
         // The same tool request replays its receipt instead of acting again.
         assert_eq!(
-            written(port.act("worker", &claim, "tool-claim").await),
+            written(port.act("worker", &claim, &request_id("tool-claim")).await),
             claimed
         );
         // A refusal before any write reaches the model as a refusal.
@@ -1609,7 +1682,7 @@ mod managed_work_port_tests {
             .act(
                 "worker",
                 &json!({"action":"claim","task_id":"missing-task","version":1}),
-                "tool-claim-missing",
+                &request_id("tool-claim-missing"),
             )
             .await;
         assert!(
@@ -1628,7 +1701,7 @@ mod managed_work_port_tests {
                 &json!({"action":"create",
             "title":"Schema before gate", "owner":"worker", "gate":"true",
             "result_schema":schema()}),
-                "schema-gate-create",
+                &request_id("schema-gate-create"),
             )
             .await,
         );
@@ -1637,7 +1710,8 @@ mod managed_work_port_tests {
             "result":{"count":"invalid"}, "checks":"checked",
             "revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"});
         let refusal: Value = serde_json::from_str(&refused(
-            port.act("worker", &args, "schema-gate-invalid").await,
+            port.act("worker", &args, &request_id("schema-gate-invalid"))
+                .await,
         ))
         .expect("schema refusal parses");
         assert_eq!(refusal["errors"][0]["path"], "/count");
@@ -1653,7 +1727,10 @@ mod managed_work_port_tests {
         assert_eq!(count, 0);
         let mut valid = args;
         valid["result"] = json!({"count":1});
-        let submitted = written(port.act("worker", &valid, "schema-gate-valid").await);
+        let submitted = written(
+            port.act("worker", &valid, &request_id("schema-gate-valid"))
+                .await,
+        );
         // No prepared workspace is recorded explicitly, never certified as a pass.
         assert_eq!(submitted["results"][0]["gate"]["status"], "not_run");
         assert!(matches!(
@@ -1661,7 +1738,7 @@ mod managed_work_port_tests {
                 "lead",
                 &json!({"action":"accept",
             "task_id":task,"result":"reviewed"}),
-                "schema-gate-accept"
+                &request_id("schema-gate-accept")
             )
             .await,
             WorkActionOutcome::Refused(_)
@@ -1689,7 +1766,7 @@ mod managed_work_port_tests {
             port.act(
                 "lead",
                 &json!({"action":"set_default_gate","gate":{"command":"false","timeout_ms":4321}}),
-                "set-default",
+                &request_id("set-default"),
             )
             .await,
         );
@@ -1698,7 +1775,7 @@ mod managed_work_port_tests {
             port.act(
                 "worker",
                 &json!({"action":"set_default_gate","gate":null}),
-                "worker-default"
+                &request_id("worker-default")
             )
             .await,
             WorkActionOutcome::Refused(_)
@@ -1707,7 +1784,7 @@ mod managed_work_port_tests {
             port.act(
                 "lead",
                 &json!({"action":"create","title":"Gate","owner":"worker"}),
-                "create-gate",
+                &request_id("create-gate"),
             )
             .await,
         );
@@ -1721,7 +1798,7 @@ mod managed_work_port_tests {
                 "worker",
                 &json!({"action":"submit","task_id":task,"result":"done","checks":"reported",
             "revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}),
-                "submit-gate",
+                &request_id("submit-gate"),
             )
             .await,
         );
@@ -1760,13 +1837,13 @@ mod managed_work_port_tests {
             port.act(
                 "lead",
                 &json!({"action":"accept","task_id":task,"result":"reviewed"}),
-                "accept-gate"
+                &request_id("accept-gate")
             )
             .await,
             WorkActionOutcome::Refused(_)
         ));
-        assert!(matches!(port.act("worker",&json!({"action":"accept","task_id":task,"result":"reviewed","override_reason":"skip"}),"worker-override").await,WorkActionOutcome::Refused(_)));
-        let accepted=written(port.act("lead",&json!({"action":"accept","task_id":task,"result":"reviewed","override_reason":"Manual evidence checked"}),"override-gate").await);
+        assert!(matches!(port.act("worker",&json!({"action":"accept","task_id":task,"result":"reviewed","override_reason":"skip"}),&request_id("worker-override")).await,WorkActionOutcome::Refused(_)));
+        let accepted=written(port.act("lead",&json!({"action":"accept","task_id":task,"result":"reviewed","override_reason":"Manual evidence checked"}),&request_id("override-gate")).await);
         assert_eq!(accepted["status"], "accepted");
         assert_eq!(
             accepted["decisions"][0]["gateOverrideReason"],
@@ -1797,7 +1874,7 @@ mod managed_work_port_tests {
                     &json!({
                         "action":"create", "title":"Lead task", "owner":"lead", "gate":gate
                     }),
-                    &format!("{name}-create"),
+                    &request_id(&format!("{name}-create")),
                 )
                 .await,
             );
@@ -1808,7 +1885,11 @@ mod managed_work_port_tests {
             let submit = json!({"action":"submit", "task_id":task,
                 "result":"done", "checks":"checked", "revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"});
             let outcome = port
-                .act("worker", &submit, &format!("{name}-spoof-submit"))
+                .act(
+                    "worker",
+                    &submit,
+                    &request_id(&format!("{name}-spoof-submit")),
+                )
                 .await;
             assert!(
                 matches!(&outcome, WorkActionOutcome::Refused(message)
@@ -1834,7 +1915,10 @@ mod managed_work_port_tests {
                     .is_empty()
             );
             if gate.is_none() {
-                let submitted = written(port.act("lead", &submit, "auth-owner-submit").await);
+                let submitted = written(
+                    port.act("lead", &submit, &request_id("auth-owner-submit"))
+                        .await,
+                );
                 assert_eq!(submitted["results"][0]["agent"], "lead");
             }
         }
@@ -1851,7 +1935,7 @@ mod managed_work_port_tests {
                     &json!({
                         "action":"create", "title":"Review task", "owner":"worker"
                     }),
-                    &format!("auth-create-{action}"),
+                    &request_id(&format!("auth-create-{action}")),
                 )
                 .await,
             );
@@ -1869,7 +1953,7 @@ mod managed_work_port_tests {
                             "action":"submit", "task_id":task, "result":"done",
                             "checks":"checked", "revision":"abc1234"
                         }),
-                        &format!("auth-submit-{action}"),
+                        &request_id(&format!("auth-submit-{action}")),
                     )
                     .await,
                 )
@@ -1877,7 +1961,11 @@ mod managed_work_port_tests {
             let args = json!({"action":action,"task_id":task,"result":"reviewed",
                 "reason":"cancelled", "title":"Changed title"});
             let refused = port
-                .act("worker", &args, &format!("auth-worker-{action}"))
+                .act(
+                    "worker",
+                    &args,
+                    &request_id(&format!("auth-worker-{action}")),
+                )
                 .await;
             assert!(
                 matches!(refused, WorkActionOutcome::Refused(_)),
@@ -1902,7 +1990,7 @@ mod managed_work_port_tests {
                 "{action}"
             );
             let allowed = written(
-                port.act("lead", &args, &format!("auth-lead-{action}"))
+                port.act("lead", &args, &request_id(&format!("auth-lead-{action}")))
                     .await,
             );
             assert_eq!(
@@ -1921,7 +2009,7 @@ mod managed_work_port_tests {
                 "lead",
                 &json!({"action":"create",
             "title":"Worker task", "owner":"worker"}),
-                "auth-worker-create",
+                &request_id("auth-worker-create"),
             )
             .await,
         );
@@ -1948,7 +2036,7 @@ mod managed_work_port_tests {
                 "worker",
                 &json!({"action":"cancel",
             "task_id":created["id"],"reason":"No longer needed"}),
-                "auth-creator-cancel",
+                &request_id("auth-creator-cancel"),
             )
             .await,
         );
@@ -1964,7 +2052,7 @@ mod managed_work_port_tests {
                 "lead",
                 &json!({"action":"create",
             "title":"User receipt", "owner":"worker"}),
-                "auth-receipt-create",
+                &request_id("auth-receipt-create"),
             )
             .await,
         );
@@ -1974,17 +2062,19 @@ mod managed_work_port_tests {
                 "worker",
                 &json!({"action":"submit", "task_id":task,
             "result":"done", "checks":"checked", "revision":"abc1234"}),
-                "auth-receipt-submit",
+                &request_id("auth-receipt-submit"),
             )
             .await,
         );
         let args = json!({"action":"accept", "task_id":task, "result":"reviewed",
-            "agent":"worker", "id":"auth-user-accept"});
+            "agent":"worker", "id":request_id("auth-user-accept")});
         let accepted = super::perform(state, None, args.clone(), None)
             .await
             .expect("gate override accepts");
         assert_eq!(accepted["status"], "accepted");
-        let refused = port.act("worker", &args, "auth-user-accept").await;
+        let refused = port
+            .act("worker", &args, &request_id("auth-user-accept"))
+            .await;
         assert!(
             matches!(&refused, WorkActionOutcome::Refused(message)
             if message.contains("different content")),
@@ -2000,7 +2090,7 @@ mod managed_work_port_tests {
             port.act(
                 "lead",
                 &json!({"action":"create","title":"Named refusal","owner":"worker"}),
-                "tool-create-named",
+                &request_id("tool-create-named"),
             )
             .await,
         );
@@ -2009,7 +2099,7 @@ mod managed_work_port_tests {
             .act(
                 "lead",
                 &json!({"action":"accept","task_id":task}),
-                "tool-accept-without-result",
+                &request_id("tool-accept-without-result"),
             )
             .await;
         assert!(
@@ -2023,7 +2113,7 @@ mod managed_work_port_tests {
             .act(
                 "worker",
                 &json!({"action":"submit","task_id":task,"result":"done","revision":"abc"}),
-                "tool-submit-without-checks",
+                &request_id("tool-submit-without-checks"),
             )
             .await;
         assert!(

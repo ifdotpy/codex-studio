@@ -298,7 +298,7 @@ impl TailscaleServerDiscovery {
         .and_then(Result::ok) else {
             return;
         };
-        let request_id = uuid::Uuid::new_v4().to_string();
+        let request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
         let Ok(nonce) = remote_transport::new_nonce() else {
             return;
         };
@@ -408,7 +408,7 @@ async fn reserve_auto_pair_id(
                 return Ok(saved["requestId"].as_str().unwrap_or_default().to_owned());
             }
         }
-        let request_id = uuid::Uuid::new_v4().to_string();
+        let request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
         let mut record = request_content;
         record["requestId"] = json!(request_id);
         record["state"] = json!("attempted");

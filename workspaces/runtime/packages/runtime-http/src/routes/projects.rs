@@ -19,6 +19,75 @@ use studio_runtime_services::projects::{self, ProjectsError};
 use crate::error::ApiError;
 use crate::router::HttpState;
 
+use studio_runtime_schema::persistence::WorkEffectStatus;
+use studio_runtime_services::event_write::{
+    CallerAdmission, RequestKey, begin_request, replay_request, settle_request,
+};
+use studio_runtime_store::request_results::AdmittedRequest;
+
+use studio_runtime_services::project_locations::{LocationOutcome, LocationResult};
+enum LocationAdmission {
+    Replay(LocationResult),
+    Pending(AdmittedRequest, String),
+}
+struct LocationRequest<'a> {
+    raw_key: &'a str,
+    root: &'a str,
+    signature: &'a str,
+    server: &'a str,
+    project: &'a str,
+}
+fn admit_location(
+    tx: &studio_runtime_store::Transaction<'_>,
+    input: LocationRequest<'_>,
+    now_ms: i64,
+) -> Result<LocationAdmission, ApiError> {
+    if let Some(saved) =
+        replay_request::<LocationResult>(tx, input.raw_key, input.signature, now_ms)?
+    {
+        return Ok(LocationAdmission::Replay(saved.reply));
+    }
+    for operation in [input.root, input.raw_key] {
+        if let Some(request) = studio_runtime_store::ProjectsRepository::location_request(
+            tx,
+            input.project,
+            operation,
+        )? {
+            if request.signature() != input.signature {
+                return Err(ApiError::new(
+                    StatusCode::CONFLICT,
+                    "This request ID has different content",
+                ));
+            }
+            return Ok(LocationAdmission::Pending(request, operation.to_owned()));
+        }
+    }
+    let request = match begin_request(
+        tx,
+        RequestKey::new("project-location", &[input.server, "ui"], input.root)
+            .raw(input.raw_key)
+            .operation(&["location"]),
+        input.signature,
+        now_ms,
+    )? {
+        CallerAdmission::Replay(reply) => return Ok(LocationAdmission::Replay(reply)),
+        CallerAdmission::Fresh(request) => request,
+    };
+    // The caller creates registration owners before saving the admission token.
+    Ok(LocationAdmission::Pending(request, input.root.to_owned()))
+}
+fn settle_location(
+    tx: &studio_runtime_store::Transaction<'_>,
+    project: &str,
+    raw_key: &str,
+    request: &AdmittedRequest,
+    result: &LocationResult,
+) -> Result<(), ApiError> {
+    settle_request(tx, request, None, result)?;
+    studio_runtime_store::ProjectsRepository::remove_location_request(tx, project, raw_key)?;
+    Ok(())
+}
+
 struct RadioCreationAdapter {
     /// Model lists fetched before blocking preparation, keyed by account key;
     /// an account whose list request failed is absent.
@@ -283,7 +352,15 @@ async fn delete_project(
         }
         Err(error) => error,
     };
+    let error = match error {
+        Error::Request(studio_runtime_store::request_results::RequestResultError::Conflict {
+            ..
+        }) => Error::RequestConflict,
+        Error::Request(error) => return Err(error.into()),
+        error => error,
+    };
     let (status, code) = match &error {
+        Error::Request(_) => return Err(ApiError::internal()),
         Error::NotFound => (StatusCode::NOT_FOUND, Code::ProjectNotFound),
         Error::Workspace => (StatusCode::CONFLICT, Code::ProjectWorkspaceConflict),
         Error::Sequence => (StatusCode::CONFLICT, Code::ProjectSequenceConflict),
@@ -374,9 +451,6 @@ async fn write_project(
             let value =
                 local_project_registration(store.clone(), body, default, known, local.clone())
                     .await?;
-            let value = super::generated_json::<crate::generated::RemoteProjectRegistrationResponse>(
-                value,
-            )?;
             return Ok(Json(ProjectWriteResponse::RemoteRegistration(value)).into_response());
         }
         let action = body
@@ -406,16 +480,8 @@ async fn write_project(
             let value =
                 remote_project_write(store.clone(), body, default, known, driver, now).await?;
             let response = if is_registration {
-                ProjectWriteResponse::RemoteRegistration(super::generated_json::<
-                    crate::generated::RemoteProjectRegistrationResponse,
-                >(value)?)
+                ProjectWriteResponse::RemoteRegistration(value)
             } else {
-                if studio_runtime_schema::first_error("ServerOperationResponse", &value)
-                    .map_err(|_| ApiError::internal())?
-                    .is_some()
-                {
-                    return Err(ApiError::internal());
-                }
                 ProjectWriteResponse::Remote(value)
             };
             return Ok(Json(response).into_response());
@@ -449,7 +515,7 @@ async fn local_project_registration(
     default_account: String,
     known_accounts: Vec<Value>,
     local_server: String,
-) -> Result<Value, ApiError> {
+) -> Result<LocationResult, ApiError> {
     let path = body
         .get("path")
         .and_then(Value::as_str)
@@ -474,7 +540,7 @@ async fn local_project_registration(
         "project:{}",
         projects::cross_server_identity(&["logical-project", local_server.as_str(), request_id])
     );
-    let operation_id = projects::cross_server_identity(&["project-location", "ui", request_id]);
+    let operation_id = request_id.to_owned();
     let registration = json!({"server":local_server,"path":path,"name":name});
     let operation =
         json!({"action":"add_location","project":project_id,"server":local_server,"path":path});
@@ -491,76 +557,41 @@ async fn local_project_registration(
     let now =
         studio_runtime_services::event_write::unix_time().map_err(|_| ApiError::internal())? as i64;
     let first_project_id = project_id.clone();
-    let first_registration_signature = registration_signature.clone();
     let first_local_server = local_server.clone();
     let first_default_account = default_account.clone();
     let first_name = name.to_owned();
     let first_operation_id = operation_id.clone();
-    store
-        .transaction_with(move |tx| -> Result<(), ProjectsError> {
-            let receipt_id = format!("project-registration:{first_project_id}");
-            if let Some((saved, previous)) =
-                studio_runtime_store::ProjectsRepository::receipt(tx, &receipt_id)?
-            {
-                if saved != first_registration_signature {
-                    return Err(ProjectsError::Conflict(
-                        "This request ID has different content",
-                    ));
-                }
-                if previous.get("outcome").and_then(Value::as_str) == Some("applied") {
-                    return Ok(());
-                }
-            } else {
-                let project = json!({"id":first_project_id,"path":first_project_id,"name":first_name,"created":now,
-                    "homeServerId":first_local_server,"locations":[],"locationsRevision":0,
-                    "accountKey":first_default_account,"accountRevision":1,"registration":registration});
-                studio_runtime_store::ProjectsRepository::put_project(tx, &project)?;
-                studio_runtime_store::ProjectsRepository::save_receipt(
-                    tx,
-                    &receipt_id,
-                    &first_registration_signature,
-                    &json!({"outcome":"unknown","projectId":first_project_id,"requestId":first_operation_id}),
-                )?;
-            }
-            Ok(())
-        })
-        .await
-        .map_err(projects_error)?;
-    let replay_project_id = project_id.clone();
-    let replay_operation_id = operation_id.clone();
-    let replay_signature = operation_signature.clone();
-    let replay = store
-        .transaction_with(move |tx| -> Result<Option<Value>, ProjectsError> {
-            if let Some((saved, mut previous)) =
-                studio_runtime_store::ProjectsRepository::receipt(tx, &replay_operation_id)?
-            {
-                if saved != replay_signature {
-                    return Err(ProjectsError::Conflict(
-                        "This request ID has different content",
-                    ));
-                }
-                previous["projectId"] = json!(replay_project_id);
-                if previous.get("outcome").and_then(Value::as_str) == Some("unknown") {
-                    // The stable local register operation is idempotent. Continue
-                    // it on an exact retry so cancellation before its actor write
-                    // cannot strand the durable unknown receipt forever.
-                    return Ok(None);
-                }
-                return Ok(Some(previous));
-            }
-            studio_runtime_store::ProjectsRepository::save_receipt(
-                tx,
-                &replay_operation_id,
-                &replay_signature,
-                &json!({"requestId":replay_operation_id,"outcome":"unknown","projectId":replay_project_id}),
-            )?;
-            Ok(None)
-        })
-        .await
-        .map_err(projects_error)?;
-    if let Some(previous) = replay {
-        return Ok(previous);
-    }
+    let raw_key = projects::cross_server_identity(&["project-location", "ui", request_id]);
+    let first_signature = operation_signature.clone();
+    let root = request_id.to_owned();
+    let admitted = store.transaction_with_error(move |tx| -> Result<LocationAdmission, ApiError> {
+        if let Some((_, project)) = studio_runtime_store::ProjectsRepository::get(tx, &first_project_id)?
+            && project["registration"]["signature"].as_str().is_some_and(|saved| saved != registration_signature)
+        {
+            return Err(ApiError::new(StatusCode::CONFLICT, "This request ID has different content"));
+        }
+        let admission = admit_location(tx, LocationRequest { raw_key: &raw_key, root: &root, signature: &first_signature, server: &first_local_server, project: &first_project_id }, now * 1000)?;
+        if matches!(admission, LocationAdmission::Replay(_)) { return Ok(admission); }
+        if studio_runtime_store::ProjectsRepository::get(tx, &first_project_id)?.is_none() {
+            let project = json!({"id":first_project_id,"path":first_project_id,"name":first_name,"created":now,
+                "homeServerId":first_local_server,"locations":[],"locationsRevision":0,
+                "accountKey":first_default_account,"accountRevision":1,
+                "registration":{"server":registration["server"],"path":registration["path"],"name":registration["name"],"signature":registration_signature,"requestId":first_operation_id,"status":WorkEffectStatus::Unknown}});
+            studio_runtime_store::ProjectsRepository::put_project(tx, &project)?;
+        }
+        if let Some((_, mut project)) = studio_runtime_store::ProjectsRepository::get(tx, &first_project_id)? {
+            project["sidebarHidden"] = json!(false);
+            studio_runtime_store::ProjectsRepository::put_project(tx, &project)?;
+        }
+        if let LocationAdmission::Pending(request, operation) = &admission {
+            studio_runtime_store::ProjectsRepository::put_location_request(tx, &first_project_id, operation, request)?;
+        }
+        Ok(admission)
+    }).await?;
+    let (request, operation_id) = match admitted {
+        LocationAdmission::Replay(result) => return location_reply(result),
+        LocationAdmission::Pending(request, operation) => (request, operation),
+    };
     let registered = projects::write(
         store.clone(),
         json!({"action":"register","path":path,"name":name}),
@@ -598,10 +629,19 @@ async fn local_project_registration(
     let canonical_for_write = canonical.to_owned();
     let git_origin_for_write = git_origin.clone();
     let operation_for_write = operation_id.clone();
-    let signature_for_write = operation_signature.clone();
-    let value_for_write = value.clone();
+    let result = LocationResult {
+        request_id: operation_id.clone(),
+        outcome: LocationOutcome::Applied,
+        project_id: Some(project_id.clone()),
+        value: Some(serde_json::from_value(value).map_err(ApiError::json)?),
+        error: None,
+    };
+    let result_for_write = result.clone();
     store
-        .transaction_with(move |tx| -> Result<(), ProjectsError> {
+        .transaction_with_error(move |tx| -> Result<(), ApiError> {
+            if replay_request::<LocationResult>(tx, request.id(), request.signature(), now * 1000)?.is_some() {
+                return Ok(());
+            }
             if physical_id_for_write != project_id_for_write
                 && let Some((_, mut physical)) =
                     studio_runtime_store::ProjectsRepository::get(tx, &physical_id_for_write)?
@@ -622,7 +662,7 @@ async fn local_project_registration(
                 studio_runtime_store::ProjectsRepository::put_project(tx, &physical)?;
             }
             let (_, mut logical) = studio_runtime_store::ProjectsRepository::get(tx, &project_id_for_write)?
-                .ok_or(ProjectsError::Invalid("project is unavailable"))?;
+                .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "The project is unavailable"))?;
             let mut locations = logical
                 .get("locations")
                 .and_then(Value::as_array)
@@ -639,26 +679,21 @@ async fn local_project_registration(
             logical["locationsRevision"] = json!(logical.get("locationsRevision")
                 .and_then(Value::as_u64).unwrap_or(0).saturating_add(1));
             studio_runtime_store::ProjectsRepository::put_project(tx, &logical)?;
-            tx.execute(
-                "UPDATE runtime_operation_receipts SET result=?1 WHERE id=?2 AND signature=?3",
-                rusqlite::params![json!({"requestId":operation_for_write,"outcome":"applied","value":value_for_write,"projectId":project_id_for_write}).to_string(), operation_for_write, signature_for_write],
-            )?;
-            tx.execute(
-                "UPDATE runtime_operation_receipts SET result=?1 WHERE id=?2",
-                rusqlite::params![json!({"requestId":operation_for_write,"outcome":"applied","value":value_for_write,"projectId":project_id_for_write}).to_string(),format!("project-registration:{project_id_for_write}")],
-            )?;
+            logical["registration"]["status"] = json!(WorkEffectStatus::Applied);
+            studio_runtime_store::ProjectsRepository::put_project(tx, &logical)?;
+            settle_location(tx, &project_id_for_write, &operation_for_write, &request, &result_for_write)?;
             Ok(())
         })
         .await
-        .map_err(projects_error)?;
-    Ok(json!({"requestId":operation_id,"outcome":"applied","value":value,"projectId":project_id}))
+        ?;
+    Ok(result)
 }
 
 #[derive(serde::Serialize)]
 #[serde(untagged)]
 enum ProjectWriteResponse {
-    Remote(Value),
-    RemoteRegistration(crate::generated::RemoteProjectRegistrationResponse),
+    Remote(LocationResult),
+    RemoteRegistration(LocationResult),
     Removal(crate::generated::ProjectRemovalResponse),
     Sidebar(crate::generated::SidebarOrderResponse),
     Mutation(Box<crate::generated::ProjectMutationRecord>),
@@ -671,7 +706,7 @@ async fn remote_project_write(
     known_accounts: Vec<Value>,
     driver: Arc<studio_runtime_services::multi_server_orchestration::OrchestrationDriver>,
     now: i64,
-) -> Result<Value, ApiError> {
+) -> Result<LocationResult, ApiError> {
     use studio_runtime_services::multi_server_orchestration::ExchangeOutcome;
     let action = body
         .get("action")
@@ -732,7 +767,7 @@ async fn remote_project_write(
     {
         return Err(ApiError::internal());
     }
-    let (project_id, operation_id, signature_data, mut payload, creation_signature) = if action
+    let (project_id, _operation_id, signature_data, mut payload, creation_signature) = if action
         == "register"
     {
         let path = body
@@ -754,7 +789,7 @@ async fn remote_project_write(
             "project:{}",
             projects::cross_server_identity(&["logical-project", &local_server, request_id])
         );
-        let op = projects::cross_server_identity(&["project-location", "ui", request_id]);
+        let op = request_id.to_owned();
         let registration = json!({"server":server,"path":path,"name":name});
         let signature_data =
             json!({"action":"add_location","project":id,"server":server,"path":path});
@@ -767,7 +802,7 @@ async fn remote_project_write(
             .and_then(Value::as_str)
             .filter(|value| !value.is_empty())
             .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Select an existing project"))?;
-        let operation = projects::cross_server_identity(&["project-location", "ui", request_id]);
+        let operation = request_id.to_owned();
         let project_store = store.clone();
         let project_id_for_read = project.to_owned();
         let (record, admission) = project_store
@@ -834,76 +869,98 @@ async fn remote_project_write(
             .as_bytes(),
     );
     payload["signature"] = json!(signature);
-    let mut registration_signature = None;
+    let admission_store = store.clone();
+    let raw_key = projects::cross_server_identity(&["project-location", "ui", request_id]);
+    let root = request_id.to_owned();
+    let scope_server = local_server.clone();
+    let scope_project = project_id.clone();
+    let request_signature = signature.clone();
+    let registration_signature = creation_signature
+        .as_ref()
+        .map(|registration| {
+            studio_runtime_services::remote_transport::canonical_json(registration)
+                .map(|value| studio_runtime_store::sha256_hex(value.as_bytes()))
+        })
+        .transpose()
+        .map_err(|_| ApiError::internal())?;
+    let admitted = admission_store
+        .transaction_with_error(move |tx| {
+            if let Some(signature) = &registration_signature
+                && let Some((_, project)) =
+                    studio_runtime_store::ProjectsRepository::get(tx, &scope_project)?
+                && project["registration"]["signature"]
+                    .as_str()
+                    .is_some_and(|saved| saved != signature)
+            {
+                return Err(ApiError::new(
+                    StatusCode::CONFLICT,
+                    "This request ID has different content",
+                ));
+            }
+            admit_location(
+                tx,
+                LocationRequest {
+                    raw_key: &raw_key,
+                    root: &root,
+                    signature: &request_signature,
+                    server: &scope_server,
+                    project: &scope_project,
+                },
+                now * 1000,
+            )
+        })
+        .await?;
+    let (request, operation_id) = match admitted {
+        LocationAdmission::Replay(result) => return location_reply(result),
+        LocationAdmission::Pending(request, operation) => (request, operation),
+    };
     if let Some(registration) = &creation_signature {
         let creation_signature = studio_runtime_store::sha256_hex(
             studio_runtime_services::remote_transport::canonical_json(registration)
                 .map_err(|_| ApiError::internal())?
                 .as_bytes(),
         );
-        registration_signature = Some(creation_signature.clone());
         let project_for_registration = project_id.clone();
-        let signature_for_registration = creation_signature.clone();
+
         let local_for_registration = local_server.clone();
         let account_for_registration = default_account.clone();
-        let operation_for_registration = operation_id.clone();
+
         let registration_for_write = registration.clone();
+        let registration_operation = operation_id.clone();
+        let registration_request = request.clone();
         let admission=store.transaction_with(move |tx| -> Result<Value, ProjectsError> {
-            let receipt_id = format!("project-registration:{project_for_registration}");
-            let mut has_receipt = false;
-            if let Some((saved, previous)) = studio_runtime_store::ProjectsRepository::receipt(tx, &receipt_id)? {
-                has_receipt = true;
-                if saved != signature_for_registration {
-                    return Err(ProjectsError::Conflict("This request ID has different content"));
-                }
-                if previous.get("outcome").and_then(Value::as_str) == Some("applied") {
-                    return studio_runtime_services::project_locations::location_admission(tx,&project_for_registration,None).map_err(|_|ProjectsError::Conflict("The project changed before location reservation"));
-                }
-            }
             if studio_runtime_store::ProjectsRepository::get(tx, &project_for_registration)?.is_none() {
                 let name = registration_for_write["name"].as_str().unwrap_or("Project");
                 let project = json!({"id":project_for_registration,"path":project_for_registration,"name":name,"created":now,
                     "homeServerId":local_for_registration,"locations":[],"locationsRevision":0,"accountKey":account_for_registration,
-                    "accountRevision":1,"registration":registration_for_write});
+                    "accountRevision":1,"registration":{"server":registration_for_write["server"],"path":registration_for_write["path"],"name":registration_for_write["name"],"signature":creation_signature,"requestId":registration_operation,"status":WorkEffectStatus::Unknown}});
                 studio_runtime_store::ProjectsRepository::put_project(tx, &project)?;
             }
-            if !has_receipt {
-                studio_runtime_store::ProjectsRepository::save_receipt(tx, &receipt_id, &signature_for_registration,
-                    &json!({"outcome":"unknown","projectId":project_for_registration,"requestId":operation_for_registration}))?;
-            }
+            let (_, mut project) = studio_runtime_store::ProjectsRepository::get(tx, &project_for_registration)?.ok_or(ProjectsError::Invalid("project is unavailable"))?;
+            project["sidebarHidden"] = json!(false);
+            studio_runtime_store::ProjectsRepository::put_project(tx, &project)?;
+            studio_runtime_store::ProjectsRepository::put_location_request(tx, &project_for_registration, &registration_operation, &registration_request)?;
             studio_runtime_services::project_locations::location_admission(tx,&project_for_registration,None).map_err(|_|ProjectsError::Conflict("The project changed before location reservation"))
         })
         .await
         .map_err(projects_error)?;
         payload[studio_runtime_services::project_locations::LOCATION_ADMISSION_FIELD] = admission;
     }
-    let receipt_store = store.clone();
-    let receipt_operation_id = operation_id.clone();
-    let receipt = receipt_store
-        .read_async(
-            "runtime-http/routes/projects/receipt-read",
-            move |connection| {
-                studio_runtime_store::ProjectsRepository::receipt(connection, &receipt_operation_id)
-                    .map_err(ApiError::stored)
-            },
-        )
-        .await?;
-    if let Some((saved, mut previous)) = receipt {
-        if saved != signature {
-            return Err(ApiError::new(
-                StatusCode::CONFLICT,
-                "This request ID has different content",
-            ));
-        }
-        if previous.get("outcome").and_then(Value::as_str) != Some("unknown") {
-            if action == "register" {
-                previous["projectId"] = json!(project_id);
-            }
-            return Ok(previous);
-        }
-        // Reconcile an uncertain exact request through the same stable remote
-        // operation ID. The receiver's receipt prevents duplicate effects.
-    }
+    let pending_project = project_id.clone();
+    let pending_operation = operation_id.clone();
+    let pending_request = request.clone();
+    store
+        .transaction(move |tx| {
+            studio_runtime_store::ProjectsRepository::put_location_request(
+                tx,
+                &pending_project,
+                &pending_operation,
+                &pending_request,
+            )
+        })
+        .await
+        .map_err(ApiError::stored)?;
+    payload["resultId"] = json!(request.id());
     let action_for_exchange = if action == "register" {
         "add_location".to_owned()
     } else {
@@ -933,65 +990,41 @@ async fn remote_project_write(
                     "The paired server returned a different project location",
                 ));
             }
-            let remote = remote.clone();
-            let outcome_for_write = outcome.clone();
-            let location_action = if action == "register" {
-                "add_location"
-            } else {
-                action
-            };
-            let server_for_write = server.to_owned();
-            let signature_for_write = signature.clone();
-            let operation_for_write = operation_id.clone();
-            let project_for_write = project_id.clone();
-            let location_action = location_action.to_owned();
-            let registration_signature_for_write = registration_signature.clone();
-            store.transaction_with(move |tx| -> Result<(), ProjectsError> {
-                let Some((_, mut record)) = studio_runtime_store::ProjectsRepository::get(tx, &project_for_write)? else {
-                    return Ok(());
-                };
-                let mut locations = record.get("locations").and_then(Value::as_array).cloned().unwrap_or_default();
-                locations.retain(|row| row.get("serverId").and_then(Value::as_str) != Some(server_for_write.as_str()));
-                if location_action == "add_location" {
-                    let canonical = remote.get("canonicalPath").and_then(Value::as_str).unwrap_or_default();
-                    let remote_project = remote.get("projectId").and_then(Value::as_str).unwrap_or_default();
-                    if !Path::new(canonical).is_absolute() || canonical != remote_project {
-                        return Err(ProjectsError::BadRequest("The server returned a different project location"));
-                    }
-                    let mut location = json!({"serverId":server_for_write,"path":canonical,"projectId":remote_project});
-                    if !remote["gitOrigin"].is_null() { location["gitOrigin"] = remote["gitOrigin"].clone(); }
-                    if remote.get("path").and_then(Value::as_str) != Some(canonical) { location["requestedPath"] = remote["path"].clone(); }
-                    locations.push(location);
-                }
-                record["locations"] = Value::Array(locations);
-                record["locationsRevision"] = json!(record.get("locationsRevision").and_then(Value::as_u64).unwrap_or(0) + 1);
-                studio_runtime_store::ProjectsRepository::put_project(tx, &record)?;
-                    studio_runtime_store::ProjectsRepository::save_receipt(tx, &operation_for_write, &signature_for_write, &outcome_for_write.to_value(&operation_for_write))?;
-                if registration_signature_for_write.is_some() {
-                    tx.execute(
-                        "UPDATE runtime_operation_receipts SET result=?1 WHERE id=?2",
-                        rusqlite::params![json!({"requestId":operation_for_write,"outcome":"applied","value":remote,"projectId":project_for_write}).to_string(), format!("project-registration:{project_for_write}")],
-                    )?;
-                }
-                Ok(())
-            })
-            .await
-            .map_err(projects_error)?;
         }
-        ExchangeOutcome::NotApplied(message) => {
-            return Err(ApiError::new(StatusCode::BAD_REQUEST, message));
-        }
+        ExchangeOutcome::NotApplied(_) => {}
         ExchangeOutcome::Unknown | ExchangeOutcome::PreEffectWaiting => {
-            return Ok(
-                json!({"requestId":operation_id,"outcome":"unknown","projectId":project_id}),
-            );
+            return Ok(LocationResult {
+                request_id: operation_id,
+                outcome: LocationOutcome::Unknown,
+                project_id: Some(project_id),
+                value: None,
+                error: None,
+            });
         }
     }
-    let mut response = outcome.to_value(&operation_id);
-    if action == "register" {
-        response["projectId"] = json!(project_id);
+    let result = store
+        .read_async(
+            "runtime-http/project-location-result",
+            move |tx| -> Result<LocationResult, ApiError> {
+                replay_request::<LocationResult>(tx, request.id(), request.signature(), now * 1000)?
+                    .map(|saved| saved.reply)
+                    .ok_or_else(ApiError::internal)
+            },
+        )
+        .await?;
+    location_reply(result)
+}
+
+fn location_reply(result: LocationResult) -> Result<LocationResult, ApiError> {
+    if result.outcome == LocationOutcome::NotApplied {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            result
+                .error
+                .unwrap_or_else(|| "The project operation was refused".to_owned()),
+        ));
     }
-    Ok(response)
+    Ok(result)
 }
 
 async fn project_locations(
@@ -1394,7 +1427,7 @@ mod local_registration_tests {
             "action":"register",
             "server":"local",
             "path":project_path.to_string_lossy(),
-            "request_id":"local-registration-1"
+            "request_id":studio_runtime_schema::persistence::RequestIdentity::issue_root()
         });
         let state = crate::router::HttpState::new(
             "token".into(),
@@ -1416,6 +1449,22 @@ mod local_registration_tests {
             assert_eq!(first[field], replay[field], "saved receipt field {field}");
         }
         assert_eq!(first["outcome"], "applied");
+        let mut conflicting = body.clone();
+        conflicting["name"] = json!("Different project name");
+        assert_eq!(
+            post_project(&app, &conflicting).await.0,
+            axum::http::StatusCode::CONFLICT
+        );
+        let mut expired = body.clone();
+        expired["request_id"] = json!("f43c1885-f4fc-485b-bf99-8b4f31e7e7c4");
+        let (status, refusal) = post_project(&app, &expired).await;
+        assert_eq!(status, axum::http::StatusCode::GONE, "{refusal}");
+        assert!(
+            refusal["error"]
+                .as_str()
+                .expect("expired error")
+                .contains("expired")
+        );
         let connection = store.test_reader().expect("store read");
         let (_, logical) = ProjectsRepository::get(
             &connection,
@@ -1471,7 +1520,7 @@ mod local_registration_tests {
             "server":"peer",
             "path":"/remote/project",
             "name":"Remote project",
-            "request_id":"remote-registration-1"
+            "request_id":studio_runtime_schema::persistence::RequestIdentity::issue_root()
         });
         let mut state = crate::router::HttpState::new(
             "token".into(),
@@ -1544,7 +1593,7 @@ mod local_registration_tests {
         let path = project_path.to_string_lossy();
         let (status, _) = post_project(
             &app,
-            &json!({"action":"register","server":"local","path":path,"request_id":"policy-registration"}),
+            &json!({"action":"register","server":"local","path":path,"request_id":studio_runtime_schema::persistence::RequestIdentity::issue_root()}),
         )
         .await;
         assert_eq!(status, axum::http::StatusCode::OK, "registration");

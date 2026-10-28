@@ -169,6 +169,7 @@ async fn scenario_prepared_replies_of_the_live_turn_do_not_fail_a_tool_call(
                             context: crate::provider_callbacks::CallbackContext {
                                 agent: agent.clone(),
                                 account: "default".into(),
+                                stream_id: "default".into(),
                                 connection: "1".into(),
                                 generation: 1,
                                 epoch: 0,

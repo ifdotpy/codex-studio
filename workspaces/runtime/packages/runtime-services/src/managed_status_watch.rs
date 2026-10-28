@@ -12,12 +12,16 @@ use std::path::{Path, PathBuf};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use studio_runtime_schema::agent_limits::{
     DEFAULT_GLOBAL_CONCURRENCY, DEFAULT_MAX_TEAM_AGENTS, DEFAULT_SUBAGENT_CONCURRENCY,
     MAX_SUBAGENT_CONCURRENCY, MIN_GLOBAL_CONCURRENCY, MIN_SUBAGENT_CONCURRENCY,
 };
+use studio_runtime_schema::persistence::{OutboxKind, OutboxStatus, OwnerKind, RequestIdentity};
+use studio_runtime_store::outbox::{Outbox, OutboxError, OutboxRow};
+use studio_runtime_store::request_results::{Admission, RequestResultError, ResultEnvelope};
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, MonitorRecord, RecordOrder, RecordPredicate, RuleRecord,
     RulesRepository, RuntimeStore, StoreError, Table, truthy,
@@ -35,6 +39,7 @@ const RULE_YEAR_SECONDS: f64 = 31_536_000.0;
 const RULE_DEFAULT_INTERVAL_SECONDS: u64 = 60;
 const RULE_DEFAULT_STALL_SECONDS: u64 = 1800;
 const DEFAULT_DELEGATION_DEPTH: u64 = 1;
+const RULE_REQUEST_NAMESPACE: &str = "managed-rules";
 
 #[derive(Debug, Error)]
 pub enum StatusError {
@@ -90,6 +95,58 @@ fn status_to_rules(error: StatusError) -> RulesServiceError {
 pub struct RulesActionResult {
     pub value: Value,
     pub cancel_monitor_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct RulesReply {
+    value: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum RuleObligation {
+    CancelMonitors { monitor_ids: Vec<String> },
+}
+
+fn rules_request_error(error: RequestResultError) -> RulesServiceError {
+    match error {
+        RequestResultError::Sql(error) => RulesServiceError::Sqlite(error),
+        RequestResultError::Json(error) => RulesServiceError::Json(error),
+        RequestResultError::Identity(_) => RulesServiceError::Invalid(
+            "Request id expired or invalid; inspect the existing rule before retrying",
+        ),
+        RequestResultError::Conflict { .. } => {
+            RulesServiceError::Invalid("Request identity was reused with different content")
+        }
+    }
+}
+
+fn rules_outbox_error(error: OutboxError) -> RulesServiceError {
+    match error {
+        OutboxError::Sql(error) => RulesServiceError::Sqlite(error),
+        OutboxError::Json(error) => RulesServiceError::Json(error),
+        OutboxError::Conflict(_) => RulesServiceError::Invalid(
+            "Rule cancellation identity was reused with different content",
+        ),
+    }
+}
+
+fn cancellation_id(request_key: &str, actor: &str) -> String {
+    Outbox::effect_id(
+        request_key,
+        OutboxKind::ManagedTool,
+        OwnerKind::Agent,
+        actor,
+        &["rule-monitor-cancellation"],
+    )
+}
+
+fn rules_identity(actor: &str, request_id: &str) -> Result<RequestIdentity, RulesServiceError> {
+    RequestIdentity::new(RULE_REQUEST_NAMESPACE, &[actor], request_id, &[]).map_err(|_| {
+        RulesServiceError::Invalid(
+            "Request id expired or invalid; inspect the existing rule before retrying",
+        )
+    })
 }
 
 /// Filesystem work for rule actions. Implementations must be called only before
@@ -803,48 +860,55 @@ fn rules_request_signature(
     Ok(data_encoding::HEXLOWER.encode(&Sha256::digest(content)))
 }
 
-fn read_rules_receipt(
+fn rules_result(
     connection: &Connection,
-    receipt_id: &str,
-    signature: &str,
-) -> Result<Option<RulesActionResult>, RulesServiceError> {
-    let Some((saved_signature, raw_result)) = connection
-        .query_row(
-            "SELECT signature,result FROM runtime_operation_receipts WHERE id=?1",
-            [receipt_id],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-        )
-        .optional()?
-    else {
-        return Ok(None);
-    };
-    if saved_signature != signature {
+    actor_id: &str,
+    request_key: &str,
+    reply: RulesReply,
+) -> Result<RulesActionResult, RulesServiceError> {
+    let cancel_monitor_ids =
+        match Outbox::get::<RuleObligation>(connection, &cancellation_id(request_key, actor_id))
+            .map_err(rules_outbox_error)?
+        {
+            Some(row) => match row.payload {
+                RuleObligation::CancelMonitors { monitor_ids } => monitor_ids,
+            },
+            None => Vec::new(),
+        };
+    if cancel_monitor_ids.windows(2).any(|pair| pair[0] >= pair[1]) {
         return Err(RulesServiceError::Invalid(
-            "Request identity was reused with different content",
+            "Invalid stored cancellation monitor IDs",
         ));
     }
-    let invalid_receipt = || {
-        RulesServiceError::Store(StoreError::InvalidStoredRecord {
-            object: "runtime_operation_receipts",
-            id: receipt_id.to_owned(),
-        })
-    };
-    let result: Value = serde_json::from_str(&raw_result).map_err(|_| invalid_receipt())?;
-    let value = result.get("value").cloned().ok_or_else(invalid_receipt)?;
-    let cancel_monitor_ids = result
-        .get("cancelMonitorIds")
-        .and_then(Value::as_array)
-        .ok_or_else(invalid_receipt)?
-        .iter()
-        .map(|item| item.as_str().map(str::to_owned).ok_or_else(invalid_receipt))
-        .collect::<Result<Vec<_>, _>>()?;
-    if cancel_monitor_ids.windows(2).any(|pair| pair[0] >= pair[1]) {
-        return Err(invalid_receipt());
-    }
-    Ok(Some(RulesActionResult {
-        value,
+    Ok(RulesActionResult {
+        value: reply.value,
         cancel_monitor_ids,
-    }))
+    })
+}
+
+fn read_rules_request(
+    connection: &Connection,
+    actor_id: &str,
+    request_id: &str,
+    signature: &str,
+) -> Result<Option<RulesActionResult>, RulesServiceError> {
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let request_key = format!("{RULE_REQUEST_NAMESPACE}:{actor_id}:{request_id}");
+    if let Some(saved) = crate::event_write::replay_request::<RulesReply>(
+        connection,
+        &request_key,
+        signature,
+        now_ms,
+    )
+    .map_err(rules_request_error)?
+    {
+        return rules_result(connection, actor_id, &request_key, saved.reply).map(Some);
+    }
+    let identity = rules_identity(actor_id, request_id)?;
+    crate::event_write::replay_request::<RulesReply>(connection, identity.id(), signature, now_ms)
+        .map_err(rules_request_error)?
+        .map(|saved| rules_result(connection, actor_id, identity.id(), saved.reply))
+        .transpose()
 }
 
 /// Apply one `RulesRuntime.rules` action. The optional result's cancellation
@@ -908,7 +972,6 @@ pub async fn rules(
     if request_id.is_empty() || request_id.chars().count() > 200 {
         return Err(RulesServiceError::Invalid("request id"));
     }
-    let receipt_id = format!("managed-rules:{actor_id}:{request_id}");
     let signature = rules_request_signature(actor_id, actor_epoch, data)?;
     let key = match body
         .get("id")
@@ -918,13 +981,14 @@ pub async fn rules(
         Some(id) => id.to_owned(),
         None => stable_rule_id(request_id)?,
     };
-    let (read_actor, read_receipt_id) = (actor_id.to_owned(), receipt_id.clone());
+    let (read_actor, read_request_id) = (actor_id.to_owned(), request_id.to_owned());
     let (read_signature, read_key) = (signature.clone(), key.clone());
     let (prepared_actor, old_before, saved_receipt) = store
         .read_async("runtime-services/managed_status_watch", move |connection| {
             let actor =
                 checked_actor(connection, &read_actor, actor_epoch).map_err(status_to_rules)?;
-            let saved_receipt = read_rules_receipt(connection, &read_receipt_id, &read_signature)?;
+            let saved_receipt =
+                read_rules_request(connection, &read_actor, &read_request_id, &read_signature)?;
             let old =
                 RulesRepository::get(connection, &read_key)?.map(|record| record.value().clone());
             Ok::<_, RulesServiceError>((actor, old, saved_receipt))
@@ -989,13 +1053,34 @@ pub async fn rules(
 
     let transaction_actor_id = actor_id.to_owned();
     let transaction_actor_epoch = actor_epoch;
+    let request_id = request_id.to_owned();
     let result = store
         .transaction_with(move |tx| {
             let actor = checked_actor(tx, &transaction_actor_id, transaction_actor_epoch)
                 .map_err(status_to_rules)?;
-            if let Some(saved_receipt) = read_rules_receipt(tx, &receipt_id, &signature)? {
+            if let Some(saved_receipt) =
+                read_rules_request(tx, &transaction_actor_id, &request_id, &signature)?
+            {
                 return Ok::<_, RulesServiceError>(saved_receipt);
             }
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            let admitted = match crate::event_write::admit_request(
+                tx,
+                RULE_REQUEST_NAMESPACE,
+                &[&transaction_actor_id],
+                &request_id,
+                &[],
+                &signature,
+                now_ms,
+            )
+            .map_err(rules_request_error)?
+            {
+                Admission::Fresh(admitted) => admitted,
+                Admission::Replay(saved) => {
+                    let envelope: ResultEnvelope<RulesReply> = serde_json::from_str(&saved.result)?;
+                    return rules_result(tx, &transaction_actor_id, &saved.id, envelope.reply);
+                }
+            };
             if actor.value() != prepared_actor.value() {
                 return Err(RulesServiceError::Stale);
             }
@@ -1103,18 +1188,81 @@ pub async fn rules(
                 value,
                 cancel_monitor_ids,
             };
-            let result = json!({
-                "value": saved.value.clone(),
-                "cancelMonitorIds": saved.cancel_monitor_ids.clone(),
-            });
-            tx.execute(
-                "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3)",
-                params![receipt_id, signature, result.to_string()],
-            )?;
+            if !saved.cancel_monitor_ids.is_empty() {
+                Outbox::put(
+                    tx,
+                    &OutboxRow {
+                        id: cancellation_id(admitted.id(), &transaction_actor_id),
+                        kind: OutboxKind::ManagedTool,
+                        owner_kind: OwnerKind::Agent,
+                        owner_id: transaction_actor_id.clone(),
+                        request_id: Some(admitted.id().to_owned()),
+                        signature: signature.clone(),
+                        status: OutboxStatus::Pending,
+                        account: None,
+                        stream_id: None,
+                        generation: None,
+                        ordinal: None,
+                        next_at: Some(now_ms),
+                        created: now_ms,
+                        payload: RuleObligation::CancelMonitors {
+                            monitor_ids: saved.cancel_monitor_ids.clone(),
+                        },
+                    },
+                )
+                .map_err(rules_outbox_error)?;
+            }
+            crate::event_write::settle_request(
+                tx,
+                &admitted,
+                Some(&transaction_actor_id),
+                &RulesReply {
+                    value: saved.value.clone(),
+                },
+            )
+            .map_err(rules_request_error)?;
             Ok(saved)
         })
         .await?;
     Ok(result)
+}
+
+/// Call only after every returned monitor cancellation has been acknowledged.
+/// Failed delivery leaves the original obligation intact, independently of response expiry.
+pub async fn acknowledge_rule_cancellations(
+    store: &RuntimeStore,
+    actor_id: &str,
+    actor_epoch: u64,
+    request_id: &str,
+) -> Result<(), RulesServiceError> {
+    let actor_id = actor_id.to_owned();
+    let request_id = request_id.to_owned();
+    store
+        .transaction_with(move |tx| {
+            checked_actor(tx, &actor_id, actor_epoch).map_err(status_to_rules)?;
+            let request_key = format!("{RULE_REQUEST_NAMESPACE}:{actor_id}:{request_id}");
+            let mut row =
+                Outbox::get::<RuleObligation>(tx, &cancellation_id(&request_key, &actor_id))
+                    .map_err(rules_outbox_error)?;
+            if row.is_none() {
+                let identity = rules_identity(&actor_id, &request_id)?;
+                row = Outbox::get::<RuleObligation>(tx, &cancellation_id(identity.id(), &actor_id))
+                    .map_err(rules_outbox_error)?;
+            }
+            if let Some(row) = row {
+                if row.owner_kind != OwnerKind::Agent
+                    || row.owner_id != actor_id
+                    || row.kind != OutboxKind::ManagedTool
+                {
+                    return Err(RulesServiceError::Invalid(
+                        "Rule cancellation owner changed",
+                    ));
+                }
+                Outbox::delete_settled(tx, &row.id, &row.signature).map_err(rules_outbox_error)?;
+            }
+            Ok(())
+        })
+        .await
 }
 
 struct RuleSave<'a> {
@@ -1364,6 +1512,7 @@ mod tests {
         let cwd = directory.path().to_string_lossy().into_owned();
         store
             .transaction_with(move |tx| {
+                studio_runtime_store::receipt_schema::create(tx)?;
                 for record in [
                     json!({"provider":studio_runtime_schema::ProviderKind::Codex,
                         "id":"lead","rootId":"lead","epoch":3,"status":"running",
@@ -1602,6 +1751,9 @@ mod tests {
     #[tokio::test]
     async fn file_rule_save_pause_and_post_commit_cancellations() {
         let (_directory, store) = fixture().await;
+        let generated_request = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let save_request = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let pause_request = studio_runtime_schema::persistence::RequestIdentity::issue_root();
 
         let generated =
             json!({"kind":"file","name":"watch","path":"notes.txt","intervalSeconds":30});
@@ -1610,7 +1762,7 @@ mod tests {
             "lead",
             3,
             Some(&generated),
-            "generated-rule",
+            &generated_request,
             100.0,
             &Files,
         )
@@ -1621,7 +1773,7 @@ mod tests {
             "lead",
             3,
             Some(&generated),
-            "generated-rule",
+            &generated_request,
             101.0,
             &Files,
         )
@@ -1638,7 +1790,7 @@ mod tests {
             "lead",
             3,
             Some(&save),
-            "rule-save-request",
+            &save_request,
             100.0,
             &LocalRuleWatchFiles,
         )
@@ -1652,7 +1804,7 @@ mod tests {
                 "lead",
                 3,
                 Some(&mismatched),
-                "rule-save-request",
+                &save_request,
                 102.0,
                 &LocalRuleWatchFiles,
             )
@@ -1687,7 +1839,7 @@ mod tests {
             "lead",
             3,
             Some(&json!({"action":"pause","id":"rule-fixed"})),
-            "rule-pause-request",
+            &pause_request,
             100.0,
             &LocalRuleWatchFiles,
         )
@@ -1695,6 +1847,10 @@ mod tests {
         .expect("pause file rule");
 
         assert_eq!(paused.cancel_monitor_ids, ["watch-monitor"]);
+        let outbox_count: i64 = store.test_reader().expect("reader").query_row(
+            "SELECT COUNT(*) FROM runtime_outbox WHERE kind='managed_tool' AND status='pending'", [], |row| row.get(0)
+        ).expect("pending cancellation");
+        assert_eq!(outbox_count, 1, "cancellation stays owed after rule commit");
         let stored = RulesRepository::get(
             &store.test_reader().expect("read paused rule"),
             "rule-fixed",
@@ -1711,6 +1867,85 @@ mod tests {
                 |row| row.get::<_, String>(0),
             )
             .expect("rule sync projection exists");
+        let resumed_request = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        rules(
+            &store,
+            "lead",
+            3,
+            Some(&json!({"action":"resume","id":"rule-fixed"})),
+            &resumed_request,
+            102.0,
+            &Files,
+        )
+        .await
+        .expect("later rule mutation");
+        let replay = rules(
+            &store,
+            "lead",
+            3,
+            Some(&json!({"action":"pause","id":"rule-fixed"})),
+            &pause_request,
+            103.0,
+            &Files,
+        )
+        .await
+        .expect("replay pause");
+        assert_eq!(
+            replay, paused,
+            "return original reply and still-owed cancellations"
+        );
+        assert!(
+            super::acknowledge_rule_cancellations(&store, "lead", 2, &pause_request)
+                .await
+                .is_err()
+        );
+        store
+            .transaction_with(|tx| {
+                studio_runtime_store::request_results::RequestResults::gc(
+                    tx,
+                    chrono::Utc::now().timestamp_millis()
+                        + studio_runtime_schema::persistence::REQUEST_RESULT_TTL_MS
+                        + 1_000,
+                )
+                .map_err(super::rules_request_error)?;
+                Ok::<_, RulesServiceError>(())
+            })
+            .await
+            .expect("expire completed responses");
+        assert!(
+            rules(
+                &store,
+                "lead",
+                3,
+                Some(&json!({"action":"pause","id":"rule-fixed"})),
+                &pause_request,
+                104.0,
+                &Files
+            )
+            .await
+            .is_err()
+        );
+        let pending: i64 = store
+            .test_reader()
+            .expect("reader")
+            .query_row("SELECT COUNT(*) FROM runtime_outbox", [], |row| row.get(0))
+            .expect("held cancellation");
+        assert_eq!(
+            pending, 1,
+            "expiry never discards an undelivered cancellation"
+        );
+        super::acknowledge_rule_cancellations(&store, "lead", 3, &pause_request)
+            .await
+            .expect("delivered cancellation");
+        super::acknowledge_rule_cancellations(&store, "lead", 3, &pause_request)
+            .await
+            .expect("idempotent acknowledgment");
+        let pending: i64 = store
+            .test_reader()
+            .expect("reader")
+            .query_row("SELECT COUNT(*) FROM runtime_outbox", [], |row| row.get(0))
+            .expect("settled cancellation");
+        assert_eq!(pending, 0);
     }
 
     #[tokio::test]
@@ -1975,7 +2210,7 @@ mod tests {
                 "lead",
                 3,
                 Some(&file_rule),
-                "failed-preparation",
+                &studio_runtime_schema::persistence::RequestIdentity::issue_root(),
                 100.0,
                 &FailingFiles,
             )
@@ -2005,7 +2240,7 @@ mod tests {
                 "lead",
                 3,
                 Some(&interval_rule),
-                "failed-commit",
+                &studio_runtime_schema::persistence::RequestIdentity::issue_root(),
                 100.0,
                 &LocalRuleWatchFiles,
             )
@@ -2035,7 +2270,7 @@ mod tests {
                 "lead",
                 3,
                 Some(&json!({"id":"rule-write-fail","kind":"interval","name":"rule"})),
-                "failed-rule-row",
+                &studio_runtime_schema::persistence::RequestIdentity::issue_root(),
                 100.0,
                 &LocalRuleWatchFiles,
             )

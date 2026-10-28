@@ -74,6 +74,41 @@ fn identifier(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
 
+/// Call only after classifying the source row. Metadata and the owning state
+/// commit in the same transaction; interrupted batches never publish a root.
+pub fn hydrate_source_root(
+    tx: &Transaction<'_>,
+    table: &str,
+    id: &str,
+    signature: &str,
+    column: &str,
+    path: &str,
+) -> Result<String> {
+    let table_sql = identifier(table);
+    let column_sql = identifier(column);
+    let invalid = || unclassifiable(table, id, signature);
+    let existing: Option<String> = tx
+        .query_row(
+            &format!("SELECT json_extract({column_sql},?1) FROM {table_sql} WHERE id=?2"),
+            params![path, id],
+            |row| row.get(0),
+        )
+        .map_err(|_| invalid())?;
+    if let Some(root) = existing.filter(|root| !root.is_empty()) {
+        RequestIdentity::new("migration-root", &[], &root, &[]).map_err(|_| invalid())?;
+        return Ok(root);
+    }
+    let root = RequestIdentity::issue_root();
+    let changed = tx.execute(
+        &format!("UPDATE {table_sql} SET {column_sql}=json_set({column_sql},?1,?2) WHERE id=?3"),
+        params![path, root, id],
+    )?;
+    if changed != 1 {
+        return Err(invalid());
+    }
+    Ok(root)
+}
+
 pub fn source_exists(tx: &Transaction<'_>, table: &str) -> Result<bool> {
     Ok(tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?1)",
@@ -363,6 +398,33 @@ pub fn phase_id(migration: &str, phase: ReceiptMigrationPhase) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn receipt_migration_source_root_is_stable_and_atomic() {
+        let mut db = rusqlite::Connection::open_in_memory().expect("database");
+        db.execute_batch("CREATE TABLE source(id TEXT PRIMARY KEY,result TEXT); INSERT INTO source VALUES('owner','{\"call\":{}}'),('invalid','{\"call\":{\"root\":\"opaque\"}}')").expect("source");
+        let tx = db.transaction().expect("tx");
+        let root = hydrate_source_root(&tx, "source", "owner", "sig", "result", "$.call.root")
+            .expect("hydrate once");
+        assert!(RequestIdentity::new("source", &[], &root, &[]).is_ok());
+        assert_eq!(
+            hydrate_source_root(&tx, "source", "owner", "sig", "result", "$.call.root")
+                .expect("preserve root"),
+            root
+        );
+        assert!(
+            matches!(hydrate_source_root(&tx,"source","invalid","sig","result","$.call.root"),Err(ReceiptMigrationError::Unclassifiable{table,key,signature}) if table=="source"&&key=="invalid"&&signature=="sig")
+        );
+        tx.rollback().expect("atomic rollback");
+        assert!(
+            db.query_row(
+                "SELECT json_extract(result,'$.call.root') FROM source WHERE id='owner'",
+                [],
+                |row| row.get::<_, Option<String>>(0)
+            )
+            .expect("unchanged source")
+            .is_none()
+        );
+    }
     #[test]
     fn receipt_migration_cutover_fences_fresh_ids_without_expiring_imports() {
         let mut db = rusqlite::Connection::open_in_memory().expect("database");

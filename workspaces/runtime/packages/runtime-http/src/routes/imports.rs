@@ -207,6 +207,8 @@ async fn provider_request(
     params: Value,
 ) -> Result<Value, ApiError> {
     let request = ProviderRequest {
+        root_request_id: String::new(),
+        admitted_request: None,
         account: account.to_owned(),
         operation,
         actor: None,

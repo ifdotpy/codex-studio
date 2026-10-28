@@ -181,7 +181,7 @@ mod tests {
         let revision = queue_write::queue_snapshot(&reader, &agent)
             .expect("queue")
             .revision;
-        let reorder = json!({"action":"reorder","ordered_ids":["b","a","c"],"expected_revision":revision,"request_id":" reorder "});
+        let reorder = json!({"action":"reorder","ordered_ids":["b","a","c"],"expected_revision":revision,"request_id":studio_runtime_schema::persistence::RequestIdentity::issue_root()});
         let (status, receipt) = call(&app, reorder.clone()).await;
         assert_eq!(status, 200, "{receipt}");
         assert_eq!(
@@ -220,7 +220,7 @@ mod tests {
             "This queued message changed",
         )
         .await;
-        let edit = json!({"action":"edit","id":"a","message_id":"b","text":" Edited ","request_id":"edit"});
+        let edit = json!({"action":"edit","id":"a","message_id":"b","text":" Edited ","request_id":studio_runtime_schema::persistence::RequestIdentity::issue_root()});
         let edit_receipt = call(&app, edit.clone()).await;
         assert_eq!(edit_receipt.0, 200, "{}", edit_receipt.1);
         let text: String = reader
@@ -238,14 +238,14 @@ mod tests {
         );
         failure(
             &app,
-            json!({"action":"send_now","id":"c","request_id":"followup"}),
+            json!({"action":"send_now","id":"c","request_id":studio_runtime_schema::persistence::RequestIdentity::issue_root()}),
             "Only a user message can be sent now",
         )
         .await;
         assert_eq!(
             call(
                 &app,
-                json!({"action":"send_now","id":"b","request_id":"send"})
+                json!({"action":"send_now","id":"b","request_id":studio_runtime_schema::persistence::RequestIdentity::issue_root()})
             )
             .await
             .0,

@@ -861,6 +861,8 @@ fn validate_entity_envelope(payload: &Value, collection: &str, id: &str, deleted
 fn map_sync_store_error(error: StoreError) -> ApiError {
     match error {
         StoreError::InvalidSyncObject { scope, id } => ApiError::invalid_stored(&scope, &id),
+        StoreError::RequestResult(error) => error.into(),
+        StoreError::Outbox(error) => error.into(),
         StoreError::StateDirectory(_)
         | StoreError::AlreadyOwned
         | StoreError::MissingDatabase(_)
