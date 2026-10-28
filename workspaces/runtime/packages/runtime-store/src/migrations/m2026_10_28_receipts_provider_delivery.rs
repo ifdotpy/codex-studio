@@ -130,7 +130,16 @@ fn migrate(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()
     if actor.is_some() != epoch.is_some() {
         return Err(fail(row));
     }
-    call["root_request_id"] = json!("");
+    let source_root = call
+        .get("root_request_id")
+        .map(|value| value.as_str().map(str::to_owned).ok_or_else(|| fail(row)))
+        .transpose()?;
+    if let Some(root) = &source_root
+        && RequestIdentity::new("provider-call", &[], root, &[]).is_err()
+    {
+        return Err(fail(row));
+    }
+    call["root_request_id"] = json!(source_root.as_deref().unwrap_or_default());
     call["admitted_request"] = Value::Null;
     let mut typed_call: ProviderCallIntent<Method, AdmittedRequest> =
         serde_json::from_value(call.clone()).map_err(|_| fail(row))?;
@@ -159,8 +168,13 @@ fn migrate(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()
         }
         serde_json::from_str::<Value>(&raw).map_err(|_|fail(row))?["reply"]["call"]["root_request_id"].as_str().ok_or_else(||fail(row))?.to_owned()
     } else {
-        RequestIdentity::issue_root()
+        source_root
+            .clone()
+            .unwrap_or_else(RequestIdentity::issue_root)
     };
+    if source_root.as_ref().is_some_and(|source| source != &root) {
+        return Err(fail(row));
+    }
     if RequestIdentity::new("provider-call", &[], &root, &[]).is_err() {
         return Err(fail(row));
     }
@@ -646,6 +660,44 @@ mod tests {
         assert_eq!(
             record["operation"]["providerRequest"],
             before.payload["payload"]["admitted"]
+        );
+    }
+    #[test]
+    fn receipt_provider_delivery_preserves_hydrated_source_root() {
+        let mut db = database();
+        let tx = db.transaction().expect("transaction");
+        let key = fixture(&tx, "source-root", json!("Unknown"));
+        let root = RequestIdentity::issue_root();
+        tx.execute("UPDATE runtime_operation_receipts SET result=json_set(result,'$.call.root_request_id',?1) WHERE signature='submitted'",[&root]).expect("owner hydration");
+        let cp = MigrationCheckpoint::begin(&tx, Family.id(), SOURCES[0], 1000).expect("begin");
+        Family.move_batch(&tx, SOURCES[0], &cp).expect("move");
+        let call = Outbox::get::<Value>(&tx, &key)
+            .expect("lookup")
+            .expect("call");
+        assert_eq!(call.payload["payload"]["call"]["root_request_id"], root);
+    }
+    #[test]
+    fn receipt_provider_delivery_invalid_source_root_aborts_without_source_delete() {
+        let mut db = database();
+        let tx = db.transaction().expect("transaction");
+        fixture(&tx, "bad-root", json!("Unknown"));
+        tx.execute("UPDATE runtime_operation_receipts SET result=json_set(result,'$.call.root_request_id','invalid-root') WHERE signature='submitted'",[]).expect("invalid root");
+        let cp = MigrationCheckpoint::begin(&tx, Family.id(), SOURCES[0], 1000).expect("begin");
+        assert!(matches!(
+            Family.move_batch(&tx, SOURCES[0], &cp),
+            Err(ReceiptMigrationError::Unclassifiable { .. })
+        ));
+        assert_eq!(
+            tx.query_row("SELECT count(*) FROM runtime_operation_receipts", [], |r| r
+                .get::<_, i64>(0))
+                .expect("source"),
+            3
+        );
+        assert_eq!(
+            tx.query_row("SELECT count(*) FROM runtime_outbox", [], |r| r
+                .get::<_, i64>(0))
+                .expect("destination"),
+            0
         );
     }
     #[test]
