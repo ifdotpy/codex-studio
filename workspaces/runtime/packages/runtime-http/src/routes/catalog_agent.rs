@@ -387,7 +387,9 @@ async fn native_command(
                 .await
                 .map_err(|_| ApiError::internal())?;
             state.event_wake_handle().notify_one();
-            super::generated_json::<crate::generated::NativeCommandResponse>(posted).map(Json)
+            serde_json::from_str::<crate::generated::NativeCommandResponse>(posted.get())
+                .map(Json)
+                .map_err(ApiError::json)
         }
         NativeCommandAction::Cancel => native_command_cancel(state, body.id, request_id)
             .await
@@ -676,7 +678,10 @@ impl studio_runtime_services::native_actions::CommandAdmission for NativeCommand
         _agent: &Value,
         key: &str,
         instruction: &str,
-    ) -> Result<Value, studio_runtime_services::native_actions::NativeError> {
+    ) -> Result<
+        Box<serde_json::value::RawValue>,
+        studio_runtime_services::native_actions::NativeError,
+    > {
         let result = studio_runtime_services::coordination::post_message_with_admission(
             tx,
             studio_runtime_services::coordination::PostManagedMessage {
@@ -693,7 +698,9 @@ impl studio_runtime_services::native_actions::CommandAdmission for NativeCommand
                 "workspace-policy/message-admission",
             )
         })?;
-        Ok(result.receipt)
+        serde_json::value::to_raw_value(&result.receipt).map_err(|error| {
+            studio_runtime_services::native_actions::NativeError::Store(error.into())
+        })
     }
 }
 

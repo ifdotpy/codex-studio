@@ -35,16 +35,22 @@ pub fn delivery_receipts(
         WHERE e.agent=?1 AND e.kind='user' AND e.id IN (SELECT value FROM json_each(?2))",
     )?;
     let items = statement
-        .query_map(rusqlite::params![agent, json!(ids).to_string()], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, Option<String>>(2)?,
-                row.get::<_, Option<String>>(3)?,
-                row.get::<_, Option<String>>(4)?,
-                row.get::<_, Option<String>>(5)?,
-            ))
-        })?
+        .query_map(
+            rusqlite::params![
+                agent,
+                serde_json::to_string(ids).map_err(studio_runtime_store::StoreError::from)?
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                ))
+            },
+        )?
         .map(|row| {
             let (id, status, error, metadata, item_id, item) = row?;
             let mut event = records::validate(
@@ -77,13 +83,35 @@ pub fn delivery_receipts(
     Ok(json!({"agent":agent,"items":items}))
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatRead {
+    pub room: Value,
+    pub messages: Vec<ChatMessage>,
+    pub next_before: Option<i64>,
+    pub next_after: Option<i64>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatMessage {
+    pub seq: i64,
+    pub id: String,
+    pub room: String,
+    pub sender: String,
+    pub text: String,
+    pub created: f64,
+    pub deliveries: BTreeMap<String, RecipientDelivery>,
+    pub sender_name: Value,
+}
+
 pub fn chat_read(
     connection: &Transaction<'_>,
     room_id: &str,
     before: Option<i64>,
     after: Option<i64>,
     requested_limit: i64,
-) -> Result<Value, CoordinationError> {
+) -> Result<ChatRead, CoordinationError> {
     if before.is_some() && after.is_some() {
         return Err(CoordinationError::InvalidRequest("Use one message cursor"));
     }
@@ -124,16 +152,19 @@ pub fn chat_read(
         let ids = selection
             .query_map(
                 rusqlite::params![
-                    json!(members).to_string(),
-                    json!(context.projects()).to_string(),
-                    json!(rooms).to_string(),
+                    serde_json::to_string(&members)
+                        .map_err(studio_runtime_store::StoreError::from)?,
+                    serde_json::to_string(context.projects())
+                        .map_err(studio_runtime_store::StoreError::from)?,
+                    serde_json::to_string(&rooms)
+                        .map_err(studio_runtime_store::StoreError::from)?,
                     root_id
                 ],
                 |row| row.get::<_, String>(0),
             )?
             .collect::<Result<Vec<_>, _>>()?;
         (
-            json!({"id":room_id,"name":root.name,"members":members}),
+            json!({"id":room_id,"name":studio_runtime_store::projection_value(&root.name).map_err(studio_runtime_store::StoreError::from)?,"members":studio_runtime_store::projection_value(&members).map_err(studio_runtime_store::StoreError::from)?}),
             ids,
         )
     } else {
@@ -179,7 +210,15 @@ pub fn chat_read(
     let mut names = context
         .agents()
         .iter()
-        .filter_map(|a| Some((a.id.clone()?, json!(a.name))))
+        .filter_map(|a| {
+            Some((
+                a.id.clone()?,
+                a.name
+                    .value_or(None)
+                    .cloned()
+                    .map_or(Value::Null, Value::String),
+            ))
+        })
         .collect::<BTreeMap<_, _>>();
     for person in room["remoteMembers"].as_array().into_iter().flatten() {
         if let Some(id) = person["id"].as_str().filter(|_| truthy(person.get("name"))) {
@@ -197,62 +236,81 @@ pub fn chat_read(
         ))?;
         let rows = statement.query_map(
             rusqlite::params![
-                json!(room_ids).to_string(),
+                serde_json::to_string(&room_ids).map_err(studio_runtime_store::StoreError::from)?,
                 before,
                 after,
                 (limit + 1) as i64
             ],
             |row| {
-                Ok(
-                    json!({"seq":row.get::<_,i64>(0)?,"id":row.get::<_,String>(1)?,
-                "room":row.get::<_,String>(2)?,"sender":row.get::<_,String>(3)?,
-                "text":row.get::<_,String>(4)?,"created":row.get::<_,f64>(5)?,
-                "deliveries":row.get::<_,String>(6)?}),
-                )
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, f64>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
             },
         )?;
         let mut page_bytes = 0usize;
         let mut more = false;
         for row in rows {
-            let mut message = row?;
-            let id = message["id"].as_str().unwrap_or_default().to_owned();
-            let sender = message["sender"].as_str().unwrap_or_default().to_owned();
-            let deliveries = message["deliveries"].as_str().unwrap_or_default();
+            let (seq, id, message_room, sender, text, created, deliveries) = row?;
             if messages.len() == limit {
                 more = true;
                 break;
             }
-            page_bytes +=
-                message["text"].as_str().unwrap_or_default().len() + deliveries.len() + 256;
+            page_bytes += text.len() + deliveries.len() + 256;
             if !messages.is_empty() && page_bytes > 1_000_000 {
                 more = true;
                 break;
             }
-            let deliveries = message_deliveries(connection, &id, deliveries)?;
-            message["deliveries"] =
-                serde_json::to_value(deliveries).map_err(studio_runtime_store::StoreError::from)?;
-            let mut message = records::validate("runtime_chat_messages", &id, message)?;
-            message["senderName"] = names.get(&sender).cloned().unwrap_or(json!(sender));
-            messages.push(message);
+            let deliveries = message_deliveries(connection, &id, &deliveries)?;
+            if seq < 1
+                || seq > studio_runtime_schema::shared_values::MAX_SAFE_INTEGER as i64
+                || !created.is_finite()
+            {
+                return Err(records::invalid("runtime_chat_messages", &id).into());
+            }
+            let sender_name = names.get(&sender).cloned().unwrap_or(json!(sender));
+            messages.push(ChatMessage {
+                seq,
+                id,
+                room: message_room,
+                sender,
+                text,
+                created,
+                deliveries,
+                sender_name,
+            });
         }
         if after.is_none() {
             messages.reverse();
         }
         let next_before = (after.is_none() && more)
-            .then(|| messages.first().map(|m| &m["seq"]))
+            .then(|| messages.first().map(|m| m.seq))
             .flatten();
         let next_after = (if after.is_some() {
             more
         } else {
             before.is_some()
         })
-        .then(|| messages.last().map(|m| &m["seq"]))
+        .then(|| messages.last().map(|m| m.seq))
         .flatten();
-        return Ok(
-            json!({"room":room,"messages":messages,"nextBefore":next_before,"nextAfter":next_after}),
-        );
+        return Ok(ChatRead {
+            room,
+            messages,
+            next_before,
+            next_after,
+        });
     }
-    Ok(json!({"room":room,"messages":[],"nextBefore":null,"nextAfter":null}))
+    Ok(ChatRead {
+        room,
+        messages,
+        next_before: None,
+        next_after: None,
+    })
 }
 
 pub fn delete_room(
@@ -332,7 +390,7 @@ fn message_deliveries(
             records::validate(
                 "runtime_events",
                 &event_id,
-                json!({"id":event_id,"status":event.0,"error":event.1}),
+                json!({"id":event_id,"status":event.0.as_str(),"error":event.1}),
             )?;
             delivery.status = status;
             delivery.error = event.1;

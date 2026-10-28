@@ -1650,7 +1650,7 @@ pub trait CommandAdmission {
         agent: &Value,
         key: &str,
         instruction: &str,
-    ) -> Result<Value>;
+    ) -> Result<Box<serde_json::value::RawValue>>;
 }
 #[derive(Clone, Copy)]
 pub enum CommandAction<'a> {
@@ -1734,10 +1734,10 @@ pub fn command_input(
     snapshot: &CommandSnapshot,
     text: &str,
     admission: &impl CommandAdmission,
-) -> Result<Value> {
+) -> Result<Box<serde_json::value::RawValue>> {
     use crate::event_write::{CallerAdmission, RequestKey, begin_request};
     let signature = json!({"task":snapshot.task["id"],"action":"input","text":text}).to_string();
-    let admitted = match begin_request::<Value>(
+    let admitted = match begin_request::<Box<serde_json::value::RawValue>>(
         tx,
         RequestKey::new("native-command", &[], key).raw(&format!("native-command:{key}")),
         &signature,
@@ -1748,7 +1748,9 @@ pub fn command_input(
     };
     snapshot.current(tx)?;
     let result = admission.enqueue(tx, &snapshot.agent, key, &snapshot.input(text)?)?;
-    bounded(&result, "command.result")?;
+    if result.get().len() > MAX_BYTES {
+        return Err(NativeError::Invalid("command.result"));
+    }
     settle_request(tx, &admitted, snapshot.agent["id"].as_str(), &result)?;
     Ok(result)
 }

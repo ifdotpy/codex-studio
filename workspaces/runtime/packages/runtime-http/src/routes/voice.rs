@@ -312,9 +312,11 @@ async fn submit(
     let result = voice::submit(store, &agent, &message, &record_ids, edited.as_deref())
         .await
         .map_err(voice_error)?;
-    Ok(Json(super::generated_json::<
-        crate::generated::VoiceDeliveryResponse,
-    >(result)?))
+    let encoded = serde_json::to_vec(&result).map_err(ApiError::json)?;
+    Ok(Json(
+        serde_json::from_slice::<crate::generated::VoiceDeliveryResponse>(&encoded)
+            .map_err(ApiError::json)?,
+    ))
 }
 
 async fn start(

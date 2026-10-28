@@ -564,14 +564,15 @@ async fn provider_callbacks_local_message_once_and_worker_chat() {
         "orchestration_chat_read",
         json!({"room_id":room}),
     );
-    assert_eq!(
-        body(&reply(
-            dispatch(std::sync::Arc::clone(&store), &context, &read, 12.0)
-                .await
-                .unwrap()
-        ))["success"],
-        true
+    let read_reply = reply(
+        dispatch(std::sync::Arc::clone(&store), &context, &read, 12.0)
+            .await
+            .unwrap(),
     );
+    assert_eq!(body(&read_reply)["success"], true);
+    let message = &tool_value(&read_reply)["messages"][0];
+    assert_eq!(message["text"], "A real stored message");
+    assert!(message.get("deliveries").is_none());
 }
 
 #[tokio::test]

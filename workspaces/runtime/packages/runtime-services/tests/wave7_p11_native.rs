@@ -1053,9 +1053,11 @@ impl CommandAdmission for Enqueue {
         _: &Value,
         key: &str,
         instruction: &str,
-    ) -> Result<Value> {
+    ) -> Result<Box<serde_json::value::RawValue>> {
         tx.execute("INSERT INTO effects VALUES('queued')", [])?;
-        Ok(json!({"id":key,"text":instruction}))
+        Ok(serde_json::value::to_raw_value(
+            &json!({"id":key,"text":instruction}),
+        )?)
     }
 }
 #[test]

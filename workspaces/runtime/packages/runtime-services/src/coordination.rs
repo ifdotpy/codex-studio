@@ -33,42 +33,61 @@ pub enum CoordinationError {
     Store(#[from] StoreError),
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
-struct ManagedMessageReply {
-    id: String,
-    status: studio_runtime_schema::persistence::DeliveryStatus,
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ManagedMessageReply {
+    pub id: String,
+    pub status: studio_runtime_schema::persistence::DeliveryStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
+    pub error: Option<String>,
     #[serde(
         default,
         rename = "waitingFor",
         skip_serializing_if = "Option::is_none"
     )]
-    waiting_for: Option<Vec<Value>>,
+    pub waiting_for: Option<Vec<Value>>,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
-struct GroupMessageReply {
-    id: String,
-    room: String,
-    author: String,
-    text: String,
-    at: f64,
-    deliveries: BTreeMap<String, studio_runtime_schema::persistence::RecipientDelivery>,
-    status: studio_runtime_schema::persistence::DeliveryStatus,
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct GroupMessageReply {
+    pub id: String,
+    pub room: String,
+    pub author: String,
+    pub text: String,
+    pub at: f64,
+    pub deliveries: BTreeMap<String, studio_runtime_schema::persistence::RecipientDelivery>,
+    pub status: studio_runtime_schema::persistence::DeliveryStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct FollowupMessageReply {
+    pub id: String,
+    pub status: FollowupStatus,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[serde(untagged)]
+pub enum FollowupStatus {
+    Event(studio_runtime_schema::persistence::EventStatus),
+    Delivery(studio_runtime_schema::persistence::DeliveryStatus),
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[serde(untagged)]
+pub enum PostMessageReceipt {
+    Managed(ManagedMessageReply),
+    Group(GroupMessageReply),
+    Followup(FollowupMessageReply),
 }
 
 pub fn history(
     connection: &studio_runtime_store::Connection,
     room: &str,
-) -> Result<Value, CoordinationError> {
+) -> Result<Vec<ValidatedMessage>, CoordinationError> {
     let rows = CoordinationRepository::messages(connection, room)?;
-    rows.into_iter()
-        .map(|row| validated_message(row).map(message_json))
-        .collect::<Result<Vec<_>, _>>()
-        .map(Value::Array)
+    rows.into_iter().map(validated_message).collect()
 }
 
 pub fn create_chat(
@@ -120,7 +139,7 @@ pub fn create_chat(
         id: id.to_owned(),
         name: name.to_owned(),
         members: members.clone(),
-        original_members: json!(members).to_string(),
+        original_members: serde_json::to_string(&members).map_err(StoreError::from)?,
     };
     CoordinationRepository::put_group(transaction, &group)?;
     for member in members {
@@ -196,13 +215,13 @@ pub(crate) fn remote_message_receipt(
     id: &str,
     text: &str,
     delivery: DeliveryMoment,
-) -> Result<Option<Value>, CoordinationError> {
+) -> Result<Option<ManagedMessageReply>, CoordinationError> {
     let text = crate::event_write::python_strip(text);
     let Some(event) = QueueEventRepository::get(connection, &QueueEventId::from(id))? else {
         return Ok(None);
     };
     let metadata = QueueWriteRepository::metadata(connection, id)?
-        .unwrap_or_else(|| json!({"assets": [], "delivery": DeliveryMoment::CurrentTurn}));
+        .unwrap_or_else(|| json!({"assets": [], "delivery": DeliveryMoment::CurrentTurn.as_str()}));
     let assets = metadata
         .get("assets")
         .and_then(Value::as_array)
@@ -243,18 +262,12 @@ pub(crate) fn remote_message_receipt(
             now_ms,
         )?
     };
-    saved
-        .map(|saved| {
-            serde_json::to_value(saved.reply)
-                .map_err(StoreError::from)
-                .map_err(Into::into)
-        })
-        .transpose()
+    Ok(saved.map(|saved| saved.reply))
 }
 
 #[derive(Debug, PartialEq)]
 pub struct PostMessageResult {
-    pub receipt: Value,
+    pub receipt: PostMessageReceipt,
     pub event_inserted: bool,
 }
 
@@ -283,7 +296,7 @@ pub fn post_message_with_admission(
         },
     ) {
         Ok(receipt) => Ok(PostMessageResult {
-            receipt,
+            receipt: PostMessageReceipt::Group(receipt),
             event_inserted: false,
         }),
         Err(CoordinationError::RequiresDependency("event-driver/message-send")) => {
@@ -330,7 +343,7 @@ fn post_managed_message(
         if event.agent.0 != input.room
             || event.kind != "user"
             || event.text != text
-            || metadata["assets"] != json!(input.assets)
+            || metadata["assets"].as_array().map(Vec::as_slice) != Some(input.assets)
             || !matches_requested_delivery(&metadata, input.delivery)?
         {
             return Err(CoordinationError::Conflict(
@@ -341,7 +354,7 @@ fn post_managed_message(
     let admitted = match result_admission {
         crate::event_write::CallerAdmission::Replay(reply) => {
             return Ok(PostMessageResult {
-                receipt: serde_json::to_value(reply).map_err(StoreError::from)?,
+                receipt: PostMessageReceipt::Managed(reply),
                 event_inserted: false,
             });
         }
@@ -375,15 +388,14 @@ fn post_managed_message(
     agent.extra.remove("nativeFailureHold");
     capacity_reset(transaction, &mut agent)?;
     studio_runtime_store::AgentRepository::put(transaction, &agent)?;
-    let projection =
-        serde_json::to_value(&agent).map_err(studio_runtime_store::StoreError::from)?;
+    let projection = studio_runtime_store::projection_value(&agent).map_err(StoreError::from)?;
     crate::agents_create::publish_agent(transaction, &projection)?;
 
     let created = crate::event_write::unix_time().map_err(event_write_error)?;
     QueueWriteRepository::put_metadata(
         transaction,
         input.id,
-        &json!({"assets": input.assets, "acceptedAt": created, "delivery": input.delivery, "requestedDelivery": input.delivery}),
+        &json!({"assets": input.assets, "acceptedAt": created, "delivery": input.delivery.as_str(), "requestedDelivery": input.delivery.as_str()}),
     )?;
     let inserted = crate::event_write::enqueue_event(
         transaction,
@@ -394,16 +406,13 @@ fn post_managed_message(
         created,
     )
     .map_err(event_write_error)?;
-    let mut result = json!({"id": input.id, "status": "queued"});
-    if !blockers.is_empty() {
-        result["waitingFor"] = json!(blockers);
-    }
-    crate::event_write::settle_request(
-        transaction,
-        &admitted,
-        Some("user"),
-        &serde_json::from_value::<ManagedMessageReply>(result.clone()).map_err(StoreError::from)?,
-    )?;
+    let result = ManagedMessageReply {
+        id: input.id.to_owned(),
+        status: studio_runtime_schema::persistence::DeliveryStatus::Queued,
+        error: None,
+        waiting_for: (!blockers.is_empty()).then_some(blockers),
+    };
+    crate::event_write::settle_request(transaction, &admitted, Some("user"), &result)?;
 
     if CoordinationRepository::message(transaction, input.id)?.is_none() {
         CoordinationRepository::put_message(
@@ -419,7 +428,7 @@ fn post_managed_message(
         )?;
     }
     Ok(PostMessageResult {
-        receipt: result,
+        receipt: PostMessageReceipt::Managed(result),
         event_inserted: inserted,
     })
 }
@@ -575,12 +584,23 @@ fn send_followup_inner(
                 "This message id has different content",
             ));
         }
+        studio_runtime_store::system_reads::validate(
+            "runtime_events",
+            id,
+            json!({"id":id,"status":event.status,"error":event.error}),
+        )?;
+        let parse =
+            || serde::de::value::StrDeserializer::<serde::de::value::Error>::new(&event.status);
+        let status = <studio_runtime_schema::persistence::EventStatus as serde::Deserialize>::deserialize(parse())
+            .map(FollowupStatus::Event)
+            .or_else(|_| <studio_runtime_schema::persistence::DeliveryStatus as serde::Deserialize>::deserialize(parse()).map(FollowupStatus::Delivery))
+            .map_err(|_| invalid_stored("runtime_events", id))?;
         return Ok(PostMessageResult {
-            receipt: studio_runtime_store::system_reads::validate(
-                "runtime_events",
-                id,
-                json!({"id":id,"status":event.status,"error":event.error}),
-            )?,
+            receipt: PostMessageReceipt::Followup(FollowupMessageReply {
+                id: id.to_owned(),
+                status,
+                error: event.error,
+            }),
             event_inserted: false,
         });
     }
@@ -591,11 +611,11 @@ fn send_followup_inner(
         recipient.extra.remove("nativeFailureHold");
         capacity_reset(transaction, &mut recipient)?;
         studio_runtime_store::AgentRepository::put(transaction, &recipient)?;
-        let projection = serde_json::to_value(&recipient).map_err(StoreError::from)?;
+        let projection =
+            studio_runtime_store::projection_value(&recipient).map_err(StoreError::from)?;
         crate::agents_create::publish_agent(transaction, &projection)?;
     }
-    let mut metadata =
-        json!({"assets":[],"acceptedAt":now,"delivery":delivery,"requestedDelivery":delivery});
+    let mut metadata = json!({"assets":[],"acceptedAt":now,"delivery":delivery.as_str(),"requestedDelivery":delivery.as_str()});
     if let Some(turn_id) = radio_answer_turn_id.filter(|value| !value.is_empty()) {
         metadata["radioAnswerTurnId"] = Value::String(turn_id.to_owned());
     }
@@ -612,12 +632,14 @@ fn send_followup_inner(
         now,
     )
     .map_err(event_write_error)?;
-    let mut receipt = json!({"id":id,"status":"queued"});
-    if !blockers.is_empty() {
-        receipt["waitingFor"] = json!(blockers);
-    }
+    let receipt = ManagedMessageReply {
+        id: id.to_owned(),
+        status: studio_runtime_schema::persistence::DeliveryStatus::Queued,
+        error: None,
+        waiting_for: (!blockers.is_empty()).then_some(blockers),
+    };
     Ok(PostMessageResult {
-        receipt,
+        receipt: PostMessageReceipt::Managed(receipt),
         event_inserted: inserted,
     })
 }
@@ -765,7 +787,7 @@ fn capacity_reset(
 pub fn post_message(
     transaction: &Transaction<'_>,
     input: PostMessage<'_>,
-) -> Result<Value, CoordinationError> {
+) -> Result<GroupMessageReply, CoordinationError> {
     if CoordinationRepository::federated_room_exists(transaction, input.room)? {
         return Err(CoordinationError::RequiresDependency(
             "federation-driver/rooms",
@@ -820,9 +842,7 @@ pub fn post_message(
         now_ms,
     )? {
         crate::event_write::CallerAdmission::Replay(reply) => {
-            return serde_json::to_value(reply)
-                .map_err(StoreError::from)
-                .map_err(Into::into);
+            return Ok(reply);
         }
         crate::event_write::CallerAdmission::Fresh(admitted) => admitted,
     };
@@ -854,12 +874,7 @@ pub fn post_message(
     CoordinationRepository::put_message(transaction, &message)?;
     CoordinationRepository::chat_projection(transaction, input.room, false)?;
     let reply = message_receipt(validated_message(message)?, true);
-    crate::event_write::settle_request(
-        transaction,
-        &admitted,
-        Some("user"),
-        &serde_json::from_value::<GroupMessageReply>(reply.clone()).map_err(StoreError::from)?,
-    )?;
+    crate::event_write::settle_request(transaction, &admitted, Some("user"), &reply)?;
     Ok(reply)
 }
 
@@ -1068,13 +1083,14 @@ fn validate_group(
     Ok(members)
 }
 
-struct ValidatedMessage {
-    id: String,
-    room: String,
-    author: String,
-    text: String,
-    at: f64,
-    deliveries: BTreeMap<String, studio_runtime_schema::persistence::RecipientDelivery>,
+#[derive(serde::Serialize)]
+pub struct ValidatedMessage {
+    pub id: String,
+    pub room: String,
+    pub author: String,
+    pub text: String,
+    pub at: f64,
+    pub deliveries: BTreeMap<String, studio_runtime_schema::persistence::RecipientDelivery>,
 }
 
 fn validated_message(
@@ -1112,11 +1128,7 @@ fn parse_deliveries(
     serde_json::from_str(raw).map_err(|_| invalid_stored("messages", id))
 }
 
-fn message_json(message: ValidatedMessage) -> Value {
-    json!({"id":message.id,"room":message.room,"author":message.author,"text":message.text,"at":message.at,"deliveries":message.deliveries})
-}
-
-fn message_receipt(message: ValidatedMessage, newly_queued: bool) -> Value {
+fn message_receipt(message: ValidatedMessage, newly_queued: bool) -> GroupMessageReply {
     use studio_runtime_schema::persistence::DeliveryStatus as S;
     let all_accepted = message.deliveries.values().all(|item| {
         matches!(
@@ -1143,20 +1155,28 @@ fn message_receipt(message: ValidatedMessage, newly_queued: bool) -> Value {
     } else {
         S::Uncertain
     };
-    let mut reply = json!({"id":message.id,"room":message.room,"author":message.author,"text":message.text,"at":message.at,"deliveries":message.deliveries,"status":status});
-    if status == S::Failed {
+    let error = if status == S::Failed {
         let errors = message
             .deliveries
             .values()
             .filter_map(|item| item.error.as_deref())
             .collect::<BTreeSet<_>>();
-        reply["error"] = json!(errors.into_iter().collect::<Vec<_>>().join("; "));
+        Some(errors.into_iter().collect::<Vec<_>>().join("; "))
     } else if status == S::Uncertain {
-        reply["error"] = json!(
-            "Delivery is unconfirmed for one or more recipients. Check the saved deliveries before sending again."
-        );
+        Some("Delivery is unconfirmed for one or more recipients. Check the saved deliveries before sending again.".to_owned())
+    } else {
+        None
+    };
+    GroupMessageReply {
+        id: message.id,
+        room: message.room,
+        author: message.author,
+        text: message.text,
+        at: message.at,
+        deliveries: message.deliveries,
+        status,
+        error,
     }
-    reply
 }
 
 fn invalid_agent(id: &str) -> CoordinationError {
@@ -1818,8 +1838,26 @@ mod tests {
             result
         };
         let first = post(&mut connection, "Hello").expect("message writes");
-        assert_eq!(first["status"], "queued");
-        assert_eq!(first["deliveries"]["worker"]["status"], "pending");
+        let stored: String = connection
+            .query_row("SELECT result FROM request_results", [], |row| row.get(0))
+            .expect("stored receipt");
+        let decoded: studio_runtime_store::request_results::ResultEnvelope<GroupMessageReply> =
+            serde_json::from_str(&stored).expect("typed stored receipt");
+        let rewritten: Value =
+            serde_json::from_slice(&serde_json::to_vec(&decoded).expect("typed bytes"))
+                .expect("typed JSON");
+        assert_eq!(
+            rewritten,
+            serde_json::from_str::<Value>(&stored).expect("stored envelope")
+        );
+        assert_eq!(
+            first.status,
+            studio_runtime_schema::persistence::DeliveryStatus::Queued
+        );
+        assert_eq!(
+            first.deliveries["worker"].status,
+            studio_runtime_schema::persistence::DeliveryStatus::Pending
+        );
         connection
             .execute(
                 "UPDATE messages SET deliveries=?1 WHERE id=?2",
@@ -1830,7 +1868,7 @@ mod tests {
             )
             .expect("later delivery update");
         let replay = post(&mut connection, "Hello").expect("exact replay returns receipt");
-        assert_eq!(replay["deliveries"], first["deliveries"]);
+        assert_eq!(replay.deliveries, first.deliveries);
         assert_eq!(
             replay, first,
             "retry must return the original acceptance reply"
@@ -2069,9 +2107,15 @@ mod tests {
             },
         )
         .expect("message writes");
-        assert_eq!(receipt["status"], "queued");
-        assert_eq!(receipt["deliveries"]["lead"]["status"], "pending");
-        assert!(receipt["deliveries"].get("user").is_none());
+        assert_eq!(
+            receipt.status,
+            studio_runtime_schema::persistence::DeliveryStatus::Queued
+        );
+        assert_eq!(
+            receipt.deliveries["lead"].status,
+            studio_runtime_schema::persistence::DeliveryStatus::Pending
+        );
+        assert!(!receipt.deliveries.contains_key("user"));
         transaction.commit().expect("message commits");
         let payload: String = connection
             .query_row(

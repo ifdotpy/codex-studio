@@ -267,7 +267,10 @@ async fn python_send_and_receipt_corpus() {
                     .expect("advance event");
             } else {
                 results.push(match send(&store, step, &request_id).await {
-                    Ok(posted) => posted.receipt,
+                    Ok(posted) => serde_json::from_slice(
+                        &serde_json::to_vec(&posted.receipt).expect("receipt bytes"),
+                    )
+                    .expect("receipt JSON"),
                     Err(coordination::CoordinationError::RequestResult(
                         studio_runtime_store::request_results::RequestResultError::Conflict {
                             ..
@@ -334,6 +337,14 @@ async fn python_send_and_receipt_corpus() {
             "{name}: saved receipt count"
         );
         if let Some((signature, raw)) = saved {
+            let typed: studio_runtime_store::request_results::ResultEnvelope<
+                coordination::ManagedMessageReply,
+            > = serde_json::from_str(&raw).expect("stored managed reply decodes");
+            let original: Value = serde_json::from_str(&raw).expect("stored envelope");
+            let rewritten: Value =
+                serde_json::from_slice(&serde_json::to_vec(&typed).expect("typed bytes"))
+                    .expect("typed JSON");
+            assert_eq!(rewritten, original, "{name}: stored reply round trip");
             assert_eq!(
                 signature,
                 studio_runtime_services::event_write::python_json(&old[0]["signature"]),
@@ -971,6 +982,9 @@ async fn voice_delivery_prepares_workspace_admission() {
         )
         .await
         .expect("accepted voice delivery");
+        let receipt: Value =
+            serde_json::from_slice(&serde_json::to_vec(&receipt).expect("receipt bytes"))
+                .expect("receipt JSON");
         assert_eq!(receipt["status"], "queued", "{operation}");
         assert_eq!(
             receipt.get("waitingFor").is_some(),
@@ -1102,6 +1116,9 @@ async fn late_operation_paths_use_the_prepared_canonical_relation() {
             assert_eq!(snapshot(&store), before);
         } else {
             let receipt = result.expect("known relation permits admission").receipt;
+            let receipt: Value =
+                serde_json::from_slice(&serde_json::to_vec(&receipt).expect("receipt bytes"))
+                    .expect("receipt JSON");
             assert_eq!(receipt["status"], "queued");
             if scenario == "known_alias" {
                 assert_eq!(

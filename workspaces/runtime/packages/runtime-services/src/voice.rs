@@ -421,7 +421,7 @@ pub async fn submit(
     message_id: &str,
     record_ids: &[String],
     edited_text: Option<&str>,
-) -> Result<Value, VoiceError> {
+) -> Result<crate::coordination::PostMessageReceipt, VoiceError> {
     if message_id.is_empty()
         || record_ids.is_empty()
         || record_ids.len() > MAX_DELIVERY_RECORDS
