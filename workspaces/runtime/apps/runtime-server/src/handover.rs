@@ -3,10 +3,13 @@
 //!
 //! 1. The running server offers a Unix socket `handover.sock` in its state directory.
 //! 2. The new server (`--takeover`) connects, sends `GO` and receives the listening TCP
-//!    socket (SCM_RIGHTS). It keeps the connection and waits for its end.
+//!    socket (SCM_RIGHTS). It keeps the connection and waits for its end. The old server
+//!    never closes its end before the process exits (also not when its drain fails), so the
+//!    end means that the old process is gone.
 //! 3. The old server drains like a SIGTERM stop, then starts a standby: its own executable
-//!    file with `--handover-standby`. It gives the standby the listening socket and exits.
-//!    The standby listens on `handover-standby.sock`.
+//!    file with `--handover-standby`. It gives the standby the listening socket. The standby
+//!    listens on `handover-standby.sock` and tells the old server (one byte) that it is bound.
+//!    Only then does the old server exit.
 //! 4. The end of the first connection tells the new server that the old process ended, so
 //!    its database lock is free. The new server connects to the standby and reads
 //!    `DRAINED`. It sends `OPEN` just before it opens the state (after that, a failure goes
@@ -37,14 +40,13 @@ pub const STANDBY_ARG: &str = "--handover-standby";
 const SOCKET_FILE: &str = "handover.sock";
 /// Socket of the standby in the state directory.
 const STANDBY_SOCKET: &str = "handover-standby.sock";
-/// How long the new server waits for the old process to end. Unit: seconds. It exceeds the
-/// 20 s shutdown grace of the old server, which exits by force after that.
-const DRAIN_WAIT: Duration = Duration::from_secs(40);
+/// How long the old server waits for the standby to bind its socket. Unit: seconds.
+const BIND_WAIT: Duration = Duration::from_secs(10);
+/// Margin that `take` adds to the shutdown grace of the old server. Unit: seconds.
+const LOCK_MARGIN: Duration = Duration::from_secs(10);
 /// How long the new server looks for the standby after the old process ended, and how long
 /// the standby waits for the new server. Unit: seconds.
 const STANDBY_WAIT: Duration = Duration::from_secs(5);
-/// How long the new server waits for the runtime lock after the old server ended. Unit: seconds.
-const LOCK_WAIT: Duration = Duration::from_secs(10);
 /// How long the old server waits for `GO` from a connected peer. Unit: seconds.
 const REQUEST_WAIT: Duration = Duration::from_secs(2);
 
@@ -110,7 +112,7 @@ mod other {
     pub fn request(_: &Path) -> std::io::Result<(TcpListener, ())> {
         Err(std::io::Error::other("live handover needs a Unix host"))
     }
-    pub fn take(_: &Path) -> std::io::Result<Taken> {
+    pub fn take(_: &Path, _: Duration) -> std::io::Result<Taken> {
         Err(std::io::Error::other("live handover needs a Unix host"))
     }
     pub fn from_parent() -> std::io::Result<Taken> {
@@ -211,7 +213,9 @@ mod unix {
 
     /// A new server has the listening socket. The old server hands the state off.
     pub struct Handed {
-        pub(super) stream: UnixStream,
+        /// Never closed before the process exits: the new server reads its end as "the old
+        /// process ended", also when the drain fails and `run` returns an error.
+        pub(super) _stream: ManuallyDrop<UnixStream>,
         listener: TcpListener,
         exe: File,
         state_dir: PathBuf,
@@ -247,7 +251,7 @@ mod unix {
                     if let Some(listener) = give(&stream, &offered) {
                         sender
                             .send(Handed {
-                                stream,
+                                _stream: ManuallyDrop::new(stream),
                                 listener,
                                 exe,
                                 state_dir,
@@ -304,10 +308,12 @@ mod unix {
                 .process_group(0)
                 .spawn()?;
             send_fds(&ours, &[self.listener.as_fd()])?;
-            // The standby and the new server wait for the end of these sockets: this process
-            // ends them by exiting, so they must stay open until then.
+            // Wait for the standby to bind its socket, so that the new server finds it.
+            ours.set_read_timeout(Some(BIND_WAIT))?;
+            (&ours).read_exact(&mut [0_u8; 1])?;
+            // The standby waits for the end of this socket: this process ends it by exiting,
+            // so it must stay open until then.
             std::mem::forget(ours);
-            std::mem::forget(self.stream);
             Ok(())
         }
     }
@@ -325,10 +331,12 @@ mod unix {
 
     /// Take the listening socket from the running server of `state_dir` and wait until the
     /// state is free. Blocking.
-    pub fn take(state_dir: &Path) -> std::io::Result<Taken> {
+    /// `grace` is the shutdown grace of the old server (its owner is `main.rs`): that server
+    /// drains for up to `grace` and then exits by force.
+    pub fn take(state_dir: &Path, grace: Duration) -> std::io::Result<Taken> {
         let (listener, mut old) = request(state_dir)?;
         // The old server ends this connection when it exits.
-        old.set_read_timeout(Some(DRAIN_WAIT))?;
+        old.set_read_timeout(Some(grace * 2))?;
         std::io::copy(&mut old, &mut std::io::sink())?;
         let deadline = std::time::Instant::now() + STANDBY_WAIT;
         let standby = loop {
@@ -359,7 +367,7 @@ mod unix {
             .read(true)
             .write(true)
             .open(state_dir.join("runtime.lock"))?;
-        let deadline = std::time::Instant::now() + LOCK_WAIT;
+        let deadline = std::time::Instant::now() + grace + LOCK_MARGIN;
         while lock.try_lock().is_err() {
             if std::time::Instant::now() >= deadline {
                 return Err(std::io::Error::other(
@@ -410,6 +418,8 @@ mod unix {
         offer.set_nonblocking(true)?;
         let parent = UnixStream::from(std::io::stdin().as_fd().try_clone_to_owned()?);
         let listener = recv_fds(&parent)?.pop().ok_or_else(|| missing("socket"))?;
+        // Bound and ready: the old server may exit now.
+        (&parent).write_all(b"B")?;
         // The old process ended, so it no longer holds the database.
         std::io::copy(&mut &parent, &mut std::io::sink())?;
         // The new server connects at once. If it never does, it is gone.
@@ -472,12 +482,13 @@ mod tests {
         let port = kept.local_addr().expect("address").port();
         let (offered, _kept) = offer(dir.path(), kept).expect("offer");
         let state = dir.path().to_path_buf();
-        let new_server = std::thread::spawn(move || take(&state));
+        let new_server = std::thread::spawn(move || take(&state, Duration::from_secs(20)));
         let handed = offered.blocking_recv().expect("handover request");
         // The standby listens before the old server ends its connection.
         let standby = std::os::unix::net::UnixListener::bind(dir.path().join(STANDBY_SOCKET))
             .expect("standby socket");
-        drop(handed); // The old process exits.
+        // The old process exits: its end of the connection closes.
+        drop(std::mem::ManuallyDrop::into_inner(handed._stream));
         let (mut line_out, _) = standby.accept().expect("new server connects");
         line_out.write_all(b"DRAINED\n").expect("drained");
         let mut taken = new_server.join().expect("join").expect("take");
@@ -513,6 +524,6 @@ mod tests {
     #[test]
     fn take_without_an_offer_fails_and_changes_nothing() {
         let dir = tempfile::tempdir().expect("temporary state");
-        assert!(take(dir.path()).is_err());
+        assert!(take(dir.path(), Duration::from_secs(20)).is_err());
     }
 }

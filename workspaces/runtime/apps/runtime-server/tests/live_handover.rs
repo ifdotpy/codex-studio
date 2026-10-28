@@ -346,10 +346,11 @@ async fn a_new_server_that_fails_after_it_opens_the_state_fails_forward() {
     let port = served_port(&mut old).await;
     let _listeners = Listeners(vec![port]);
     let state = site.state.clone();
-    let mut taken = tokio::task::spawn_blocking(move || handover::take(&state))
-        .await
-        .unwrap()
-        .unwrap();
+    let mut taken =
+        tokio::task::spawn_blocking(move || handover::take(&state, Duration::from_secs(20)))
+            .await
+            .unwrap()
+            .unwrap();
     let mut line = taken.line.take().expect("a standby line");
     line.open().unwrap();
     line.close();
@@ -362,7 +363,15 @@ async fn a_new_server_that_fails_after_it_opens_the_state_fails_forward() {
     })
     .await
     .expect("the port stayed open after a failure past OPEN");
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    // The standby says why it left the port, and the old build did not come back.
+    timeout(Duration::from_secs(30), async {
+        while !log_has(&site, "old", "failed after it opened the state").await {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the standby did not report a failure forward");
+    assert!(!log_has(&site, "old", "the old build resumes").await);
     assert!(TcpStream::connect(("127.0.0.1", port)).await.is_err());
 }
 

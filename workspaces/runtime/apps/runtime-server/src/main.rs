@@ -412,7 +412,7 @@ async fn run(
         Some(
             studio_runtime_process::blocking_pool::spawn_blocking(
                 "runtime-server/handover",
-                move || handover::take(&state_dir),
+                move || handover::take(&state_dir, SERVER_SHUTDOWN_GRACE),
             )
             .await??,
         )
