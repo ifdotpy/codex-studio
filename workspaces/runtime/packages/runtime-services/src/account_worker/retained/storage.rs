@@ -626,7 +626,7 @@ pub(super) fn replay_in_transaction(
                 studio_runtime_schema::persistence::RequestIdentityError::Expired { .. } => {
                     PortError::Expired
                 }
-                studio_runtime_schema::persistence::RequestIdentityError::InvalidUuidV7
+                studio_runtime_schema::persistence::RequestIdentityError::InvalidUuidV7(_)
                 | studio_runtime_schema::persistence::RequestIdentityError::FutureTimestamp {
                     ..
                 } => PortError::Invalid,
@@ -715,7 +715,7 @@ pub(super) fn replay_recorded(
                 studio_runtime_schema::persistence::RequestIdentityError::Expired { .. } => {
                     PortError::Expired
                 }
-                studio_runtime_schema::persistence::RequestIdentityError::InvalidUuidV7
+                studio_runtime_schema::persistence::RequestIdentityError::InvalidUuidV7(_)
                 | studio_runtime_schema::persistence::RequestIdentityError::FutureTimestamp {
                     ..
                 } => PortError::Invalid,
@@ -1066,7 +1066,7 @@ fn proven_not_sent(payload: &RetainedCall) -> bool {
     })
 }
 
-pub(super) fn record_outcome(
+pub(in crate::account_worker) fn record_outcome(
     tx: &rusqlite::Transaction<'_>,
     key: &str,
     written: Option<RecoveredRequest>,
