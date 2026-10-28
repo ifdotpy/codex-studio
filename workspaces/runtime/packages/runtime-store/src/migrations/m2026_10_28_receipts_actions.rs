@@ -1163,6 +1163,11 @@ fn operation_owner(
         return Err(invalid());
     }
     if table == "runtime_safety_retries" {
+        for key in ["admittedRequest", "error"] {
+            if value.get(key).is_some_and(Value::is_null) {
+                value.as_object_mut().ok_or_else(invalid)?.remove(key);
+            }
+        }
         let _: SafetyRetryStage =
             serde_json::from_value(value["stage"].clone()).map_err(|_| invalid())?;
         if !value["dispatch"].is_null() {
@@ -2155,6 +2160,40 @@ mod tests {
                 .get_version_num(),
             7
         );
+    }
+    #[test]
+    fn safety_null_fields_are_normalized_without_losing_errors() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&db);
+        db.execute_batch("CREATE TABLE runtime_safety_retries(id TEXT PRIMARY KEY,record TEXT)")
+            .expect("safety owners");
+        for (id, stage, dispatch, error) in [
+            ("empty", "unknown", "unknown", serde_json::Value::Null),
+            ("unknown", "unknown", "unknown", json!("outcome unknown")),
+            ("failed", "failed", "rejected", json!("outcome unknown")),
+            ("active", "turns", "ready", json!("outcome unknown")),
+        ] {
+            db.execute("INSERT INTO runtime_safety_retries VALUES(?1,?2)", params![id, json!({"id":id,"stage":stage,"dispatch":dispatch,"error":error,"admittedRequest":null}).to_string()]).expect("safety retry");
+        }
+        batch(&mut db, "runtime_safety_retries").expect("normalize safety retries");
+        let mut stmt = db
+            .prepare("SELECT id,record FROM runtime_safety_retries ORDER BY id")
+            .expect("query");
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .expect("rows");
+        for row in rows {
+            let (id, raw) = row.expect("row");
+            let record: Value = serde_json::from_str(&raw).expect("record");
+            assert!(record.get("admittedRequest").is_none());
+            if id == "empty" {
+                assert!(record.get("error").is_none());
+            } else {
+                assert_eq!(record["error"], "outcome unknown");
+            }
+        }
     }
     #[test]
     fn receipts_actions_safety_and_credit_preserve_existing_effect_and_credit_fence() {
