@@ -110,12 +110,14 @@ impl Fixture {
                     project["registration"] = json!({"requestId":outbox["id"],"status":studio_runtime_schema::persistence::WorkEffectStatus::Unknown});
                     ProjectsRepository::put_project(tx,&project)?;
                     let identity = studio_runtime_schema::persistence::RequestIdentity::new("project-location", &["local-fixture","ui"], text(&case,"requestRoot"), &["location"]).expect("fixture identity");
-                    // This is an already admitted owner recovered after cutover, not fresh ingress.
-                    let admitted: studio_runtime_store::request_results::AdmittedRequest = serde_json::from_value(json!({
-                        "id": identity.id(),
-                        "signature": studio_runtime_store::sha256_hex(studio_runtime_schema::json_compat::python_json_compact(&outbox["body"]["payload"]["request"]).as_bytes()),
-                        "created": identity.issued_ms(),
-                    })).expect("saved fixture admission");
+                    let signature = studio_runtime_store::sha256_hex(studio_runtime_schema::json_compat::python_json_compact(&outbox["body"]["payload"]["request"]).as_bytes());
+                    // This token was admitted before the expiry watermark advanced.
+                    let fields = serde_json::Map::from_iter([
+                        ("id".into(), Value::String(identity.id().to_owned())),
+                        ("signature".into(), Value::String(signature)),
+                        ("created".into(), Value::Number(identity.issued_ms().into())),
+                    ]);
+                    let admitted: studio_runtime_store::request_results::AdmittedRequest = serde_json::from_value(Value::Object(fields)).expect("saved fixture admission");
                     ProjectsRepository::put_location_request(tx,"/home-project",text(outbox,"id"),&admitted)?;
                 }
                 tx.execute("INSERT INTO runtime_server_outbox(id,server,body,state,result) VALUES(?1,?2,?3,?4,?5)",params![text(outbox,"id"),text(outbox,"server"),outbox["body"].to_string(),text(outbox,"state"),outbox.get("result").filter(|v|!v.is_null()).map(Value::to_string)])?;

@@ -73,7 +73,7 @@ async fn early_unknown_does_not_finalize_the_control_request() {
         native.clone(),
     );
     let request = || {
-        serde_json::from_value(json!({"action":"settings","id":"agent","request_id":"early-unknown","settings":{"thinking":false}})).unwrap()
+        serde_json::from_str(r#"{"action":"settings","id":"agent","request_id":"early-unknown","settings":{"thinking":false}}"#).unwrap()
     };
     assert!(matches!(
         controls.execute(request()).await,

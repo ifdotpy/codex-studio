@@ -843,9 +843,9 @@ mod native_command_tests {
             let missing = json!({"id":"task","action":action,"text":"input"});
             assert!(serde_json::from_value::<NativeCommandRequest>(missing).is_err());
             let root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
-            let parsed: NativeCommandRequest = serde_json::from_value(
-                json!({"id":"task","action":action,"text":"input","request_id":root}),
-            )
+            let parsed: NativeCommandRequest = serde_json::from_str(&format!(
+                r#"{{"id":"task","action":"{action}","text":"input","request_id":"{root}"}}"#
+            ))
             .expect("caller identity");
             assert_eq!(parsed.request_id, root);
         }
