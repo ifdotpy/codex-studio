@@ -435,7 +435,7 @@ mod tests {
                  CREATE INDEX runtime_task_agent ON runtime_tasks(json_extract(record,'$.agent'));
                  CREATE TABLE runtime_events(id TEXT,agent TEXT,status TEXT,epoch INTEGER);
                  CREATE INDEX runtime_event_agent ON runtime_events(agent);
-                 INSERT INTO runtime_agents VALUES
+                 INSERT INTO runtime_agents(id,record) VALUES
                     ('root','{\"id\":\"root\",\"provider\":\"codex\"}'),('child','{\"id\":\"child\",\"provider\":\"codex\"}'),
                     ('unrelated','{\"id\":\"unrelated\",\"provider\":\"codex\"}');
                  INSERT INTO runtime_tasks VALUES
