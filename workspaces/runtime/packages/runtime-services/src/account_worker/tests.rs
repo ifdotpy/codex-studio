@@ -3376,7 +3376,7 @@ async fn committed_batch_replay_after_mid_batch_ack_loss_is_exactly_once() {
             .run(move |store| async move {
                 store.transaction_with(move |tx| {
                     let saved = studio_runtime_store::account_state::streams(tx,"default")?
-                        .map(|raw|serde_json::from_str::<Value>(&raw)).transpose()?
+                        .map(|raw|serde_json::from_str::<Value>(&raw)).transpose().map_err(StoreError::from)?
                         .unwrap_or_else(||json!({"metadata":{"entries":[],"closed":[]}}));
                     let metadata = &saved["metadata"];
                     Ok(json!({
@@ -3650,7 +3650,7 @@ async fn scenario_stream_base_survives_replaced_visible_item() {
             let raw =
                 studio_runtime_store::account_state::streams(&store.test_reader()?, "default")?
                     .expect("current stream owner");
-            let saved: Value = serde_json::from_str(&raw)?;
+            let saved: Value = serde_json::from_str(&raw).map_err(StoreError::from)?;
             Ok(saved["metadata"]["entries"]
                 .as_array()
                 .expect("stream entries")
