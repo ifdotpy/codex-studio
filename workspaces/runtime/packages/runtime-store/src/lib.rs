@@ -41,6 +41,7 @@ pub mod stored_text;
 pub mod stored_text_compaction;
 pub mod stored_text_dictionary;
 pub mod supervisor_journal;
+pub mod vm_work_intent;
 pub use schema::{
     python_float_json, python_json, python_json_compact, python_json_utf8,
     python_json_with_separators, sha256_hex, truthy,

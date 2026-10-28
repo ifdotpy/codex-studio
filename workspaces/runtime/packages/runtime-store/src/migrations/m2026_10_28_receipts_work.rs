@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 use studio_runtime_schema::persistence::{
     MigrationStatus, OutboxKind, OutboxStatus, OwnerKind, WorkEffectStatus,
 };
+use studio_runtime_schema::queue_command::Field;
 use studio_runtime_schema::task_results::MAX_FAILED_RESULT_SUBMITS_PER_ATTEMPT;
 pub(super) struct Family;
 pub(super) const SOURCES: &[&str] = &["work-current-counters", "runtime_operation_receipts"];
@@ -303,17 +304,79 @@ struct ArchiveIntent {
     #[serde(flatten)]
     extra: serde_json::Map<String, Value>,
 }
-#[derive(Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct VmIntent {
-    status: WorkEffectStatus,
+#[derive(Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum LegacyVmIntent {
+    Pending(LegacyVmOwner),
+    Unknown(LegacyVmOwner),
+    NotSent(LegacyVmOwner),
+    Completed(LegacyVmOwner),
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LegacyVmOwner {
     task_id: String,
     request_id: String,
     owner: String,
     revision: String,
     created: f64,
-    #[serde(flatten)]
-    extra: serde_json::Map<String, Value>,
+    #[serde(default)]
+    version: Field<i64>,
+    #[serde(default)]
+    result_id: Field<String>,
+    #[serde(default)]
+    evidence: Field<crate::vm_work_intent::Evidence>,
+}
+impl LegacyVmIntent {
+    fn parts(self) -> (LegacyVmOwner, WorkEffectStatus) {
+        match self {
+            Self::Pending(owner) => (owner, WorkEffectStatus::Pending),
+            Self::Unknown(owner) => (owner, WorkEffectStatus::Unknown),
+            Self::NotSent(owner) => (owner, WorkEffectStatus::NotSent),
+            Self::Completed(owner) => (owner, WorkEffectStatus::Completed),
+        }
+    }
+}
+fn vm_target<I, R>(
+    owner: crate::vm_work_intent::Owner<I>,
+    status: WorkEffectStatus,
+    result: Option<R>,
+) -> Option<crate::vm_work_intent::Intent<I, R>> {
+    use crate::vm_work_intent::Intent;
+    match (status, result) {
+        (WorkEffectStatus::Pending, None) => Some(Intent::Pending { owner }),
+        (WorkEffectStatus::Unknown, None) => Some(Intent::Unknown { owner }),
+        (WorkEffectStatus::NotSent, None) => Some(Intent::NotSent { owner }),
+        (WorkEffectStatus::Completed, Some(result)) => Some(Intent::Completed { owner, result }),
+        (WorkEffectStatus::Completed, None)
+        | (
+            WorkEffectStatus::Pending | WorkEffectStatus::Unknown | WorkEffectStatus::NotSent,
+            Some(_),
+        )
+        | (
+            WorkEffectStatus::Terminal
+            | WorkEffectStatus::Retryable
+            | WorkEffectStatus::Submitted
+            | WorkEffectStatus::Complete
+            | WorkEffectStatus::Applied
+            | WorkEffectStatus::Failed
+            | WorkEffectStatus::Cancelled,
+            _,
+        ) => None,
+    }
+}
+fn vm_owner<I>(
+    legacy: &LegacyVmOwner,
+    id: I,
+    public: Option<crate::vm_work_intent::PublicRequest>,
+) -> crate::vm_work_intent::Owner<I> {
+    crate::vm_work_intent::Owner {
+        request_id: legacy.request_id.clone(),
+        owner: legacy.owner.clone(),
+        revision: legacy.revision.clone(),
+        id,
+        public,
+    }
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -487,30 +550,76 @@ fn move_effect(tx: &Transaction<'_>, row: &contract::SourceReceipt, cutover_ms: 
             "merge" => "vmAccept",
             _ => return Err(invalid()),
         };
-        let intent: VmIntent = row.json(TABLE)?;
+        let transport: Value = row.json(TABLE)?;
+        let (intent, status) = serde_json::from_value::<LegacyVmIntent>(transport)
+            .map_err(|_| invalid())?
+            .parts();
         if intent.task_id != task
             || intent.request_id.is_empty()
+            || intent.owner.is_empty()
+            || intent.revision.is_empty()
             || !intent.created.is_finite()
-            || !matches!(
-                intent.status,
-                WorkEffectStatus::Pending
-                    | WorkEffectStatus::Unknown
-                    | WorkEffectStatus::Completed
-                    | WorkEffectStatus::NotSent
-            )
         {
             return Err(invalid());
         }
         let mut work = read_work(tx, task, row)?;
-        let public = work[field].get("publicAdmission").cloned();
-        let public_id = work[field].get("publicRequestId").cloned();
-        work[field] = row.json::<Value>(TABLE)?;
-        if let Some(public) = public {
-            work[field]["publicAdmission"] = public;
+        let public = match (
+            work[field].get("publicRequestId"),
+            work[field].get("publicAdmission"),
+        ) {
+            (None, None) => None,
+            (Some(id), Some(admission)) => Some(crate::vm_work_intent::PublicRequest {
+                public_request_id: id.as_str().ok_or_else(invalid)?.to_owned(),
+                public_admission: serde_json::from_value(admission.clone())
+                    .map_err(|_| invalid())?,
+            }),
+            _ => return Err(invalid()),
+        };
+        use crate::vm_work_intent::{Acceptance, Submission, SubmissionResult};
+        work[field] = match (kind, &intent.version, &intent.result_id, &intent.evidence) {
+            ("submission", Field::Value(version), Field::Missing, Field::Missing) => {
+                serde_json::to_value(
+                    vm_target::<_, SubmissionResult>(
+                        vm_owner(&intent, Submission { version: *version }, public),
+                        status,
+                        None,
+                    )
+                    .ok_or_else(invalid)?,
+                )
+            }
+            ("submission", Field::Value(version), Field::Missing, Field::Value(evidence)) => {
+                serde_json::to_value(
+                    vm_target(
+                        vm_owner(&intent, Submission { version: *version }, public),
+                        status,
+                        Some(SubmissionResult {
+                            evidence: evidence.clone(),
+                        }),
+                    )
+                    .ok_or_else(invalid)?,
+                )
+            }
+            ("merge", Field::Missing, Field::Value(result_id), Field::Missing)
+                if !result_id.is_empty() =>
+            {
+                serde_json::to_value(
+                    vm_target(
+                        vm_owner(
+                            &intent,
+                            Acceptance {
+                                result_id: result_id.clone(),
+                            },
+                            public,
+                        ),
+                        status,
+                        (status == WorkEffectStatus::Completed).then_some(()),
+                    )
+                    .ok_or_else(invalid)?,
+                )
+            }
+            _ => return Err(invalid()),
         }
-        if let Some(public_id) = public_id {
-            work[field]["publicRequestId"] = public_id;
-        }
+        .map_err(|_| invalid())?;
         (task.into(), work)
     } else {
         let reservation: Reservation = row.json(TABLE)?;
@@ -524,7 +633,17 @@ fn move_effect(tx: &Transaction<'_>, row: &contract::SourceReceipt, cutover_ms: 
             return Err(invalid());
         }
         if work.get("vmAccept").is_none() {
-            work["vmAccept"] = json!({"status":WorkEffectStatus::Unknown});
+            let public = crate::vm_work_intent::PublicRequest {
+                public_request_id: row.id.clone(),
+                public_admission: admitted.clone(),
+            };
+            work["vmAccept"] = serde_json::to_value(crate::vm_work_intent::Intent::<
+                crate::vm_work_intent::Acceptance,
+                (),
+            >::UnknownUnattributed {
+                public,
+            })
+            .map_err(|_| invalid())?;
         }
         work["vmAccept"]["publicAdmission"] = json!(admitted);
         work["vmAccept"]["publicRequestId"] = json!(row.id);
@@ -605,6 +724,51 @@ mod tests {
         serde_json::from_str(&raw).expect("JSON")
     }
     #[test]
+    fn receipts_work_vm_typed_source_preserves_last_key_and_refuses_null_proofs() {
+        let mut db = fixture();
+        db.execute("INSERT INTO runtime_work VALUES('t','{\"id\":\"t\"}')", [])
+            .unwrap();
+        db.execute("INSERT INTO runtime_operation_receipts VALUES(?1,?2,?3)", params![
+            "work-write-vm-intent:submission:t", "work-write-vm-intent-v1",
+            r#"{"status":"pending","status":"completed","taskId":"t","requestId":"old","requestId":"rpc","owner":"a","revision":"rev","version":1,"created":1.0,"evidence":{"layrProjectId":"p","layrLine":"a","layrStateId":"rev"}}"#
+        ]).unwrap();
+        migrate(&mut db);
+        assert_eq!(
+            work(&db, "t")["vmSubmit"],
+            json!({"status":"completed","requestId":"rpc","owner":"a","revision":"rev","version":1,"evidence":{"layrProjectId":"p","layrLine":"a","layrStateId":"rev"}})
+        );
+
+        for (kind, extra) in [
+            ("submission", json!({"version":null})),
+            ("submission", json!({"version":1,"evidence":null})),
+            ("submission", json!({"version":1,"resultId":null})),
+            ("merge", json!({"resultId":null})),
+            ("merge", json!({})),
+        ] {
+            let mut db = fixture();
+            db.execute("INSERT INTO runtime_work VALUES('t','{\"id\":\"t\"}')", [])
+                .unwrap();
+            let mut source = json!({"status":"unknown","taskId":"t","requestId":"rpc","owner":"a","revision":"rev","created":1.0});
+            source
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            let id = format!("work-write-vm-intent:{kind}:t");
+            put(&db, &id, "work-write-vm-intent-v1", source);
+            assert!(batch(&mut db, TABLE).is_err());
+            assert!(work(&db, "t").get("vmSubmit").is_none());
+            assert_eq!(
+                db.query_row(
+                    "SELECT count(*) FROM runtime_operation_receipts",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+                1
+            );
+        }
+    }
+    #[test]
     fn receipts_work_preserves_superseded_archive_and_public_vm_reservation() {
         let mut db = fixture();
         db.execute(
@@ -644,6 +808,7 @@ mod tests {
         migrate(&mut db);
         assert_eq!(work(&db, "current")["archiveIntent"]["status"], "unknown");
         assert_eq!(work(&db, "t")["archiveIntent"]["id"], "t:new");
+        assert_eq!(work(&db, "t")["vmAccept"]["status"], "unknown_unattributed");
         assert_eq!(
             work(&db, "t")["vmAccept"]["publicAdmission"]["id"],
             "public"
@@ -683,7 +848,7 @@ mod tests {
                 &db,
                 &format!("work-write-vm-intent:submission:{id}"),
                 "work-write-vm-intent-v1",
-                json!({"status":"unknown","taskId":id,"requestId":"rpc","owner":"a","revision":"rev","version":1,"created":1.0,"evidence":"x".repeat(bytes)}),
+                json!({"status":"unknown","taskId":id,"requestId":"rpc","owner":"x".repeat(bytes),"revision":"rev","version":1,"created":1.0}),
             );
         }
         assert_eq!(batch(&mut db, TABLE).expect("oversized alone").cursor, 1);
@@ -770,7 +935,10 @@ mod tests {
             json!({"version":1,"owner":"a","epoch":2,"providerAttempt":null,"count":2,"errors":[{"path":"/x","message":"bad"}]})
         );
         assert_eq!(work(&db, "t")["archive"], json!({"status":"archived"}));
-        assert_eq!(work(&db, "t")["vmSubmit"]["status"], "unknown");
+        assert_eq!(
+            work(&db, "t")["vmSubmit"],
+            json!({"status":"unknown","requestId":"rpc","owner":"a","revision":"rev","version":1})
+        );
         assert_eq!(work(&db, "t")["archiveIntent"]["owner"], "a");
         let before = work(&db, "t");
         migrate(&mut db);

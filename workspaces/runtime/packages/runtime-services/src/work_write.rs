@@ -1026,64 +1026,31 @@ pub struct VmSubmissionCall {
     pub request_id: String,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct VmWorkIntent {
-    status: WorkEffectStatus,
-    request_id: String,
-    task_id: String,
-    owner: String,
-    revision: String,
-    version: Option<i64>,
-    result_id: Option<String>,
-    evidence: Option<Value>,
-    created: f64,
-    public_request_id: Option<String>,
-    public_admission: Option<AdmittedRequest>,
-}
+use studio_runtime_store::vm_work_intent::{
+    Acceptance, Intent as VmWorkIntent, Owner as VmOwner, PublicRequest as VmPublic, Submission,
+    SubmissionResult as VmSubmissionResult, View as VmView,
+};
 
-#[derive(Clone, Copy)]
-enum VmIntentKind {
-    Submit,
-    Accept,
-}
-impl VmIntentKind {
-    fn field(self) -> &'static str {
-        match self {
-            Self::Submit => "vmSubmit",
-            Self::Accept => "vmAccept",
-        }
-    }
-}
-
-fn read_vm_intent(
-    connection: &Connection,
-    kind: VmIntentKind,
-    task_id: &str,
-) -> Result<Option<VmWorkIntent>, WorkWriteError> {
+fn read_vm_view(connection: &Connection, task_id: &str) -> Result<VmView, WorkWriteError> {
     let work = WorkItemsRepository::work_record(connection, task_id)?
         .ok_or(Error::InvalidRequest("Unknown work item"))?;
-    work.get(kind.field())
-        .filter(|value| !value.is_null())
-        .map(|intent| {
-            serde_json::from_value(intent.clone())
-                .map_err(studio_runtime_store::StoreError::from)
-                .map_err(Into::into)
-        })
-        .transpose()
+    serde_json::from_value(work.value().clone())
+        .map_err(studio_runtime_store::StoreError::from)
+        .map_err(Into::into)
 }
-
-fn write_vm_intent(
-    tx: &Transaction<'_>,
-    kind: VmIntentKind,
-    task_id: &str,
-    intent: &VmWorkIntent,
-) -> Result<(), WorkWriteError> {
+fn write_vm_view(tx: &Transaction<'_>, task_id: &str, view: &VmView) -> Result<(), WorkWriteError> {
     let mut work = WorkItemsRepository::work_record(tx, task_id)?
         .ok_or(Error::InvalidRequest("Unknown work item"))?
         .into_value();
-    work[kind.field()] =
-        serde_json::to_value(intent).map_err(studio_runtime_store::StoreError::from)?;
+    let fields = serde_json::to_value(view).map_err(studio_runtime_store::StoreError::from)?;
+    work.as_object_mut()
+        .ok_or_else(|| invalid("runtime_work", task_id))?
+        .extend(
+            fields
+                .as_object()
+                .ok_or_else(|| invalid("runtime_work", task_id))?
+                .clone(),
+        );
     WorkItemsRepository::update_work(tx, task_id, &work)?;
     Ok(())
 }
@@ -1151,17 +1118,13 @@ pub async fn prepare_vm_submission(
             return Ok(VmSubmissionPreparation::NotVm);
         }
         let rpc_id = format!("layr-evidence:{owner_id}:{revision}");
-        if let Some(intent) = read_vm_intent(tx,VmIntentKind::Submit,&input.task_id)? {
-            if matches!(intent.status,WorkEffectStatus::Pending|WorkEffectStatus::Unknown) {
-                return Err(Error::Conflict("A prior layr evidence request has an unknown outcome; inspect it before retrying").into());
-            }
-            if intent.request_id==rpc_id && intent.status==WorkEffectStatus::Completed
-                && intent.owner==owner_id && intent.version==work.value()["version"].as_i64()
-                && intent.revision==revision && let Some(evidence)=intent.evidence {
-                return Ok(VmSubmissionPreparation::Evidence{evidence,request_id:rpc_id.clone()});
-            }
+        let mut view = read_vm_view(tx, &input.task_id)?;
+        match &view.vm_submit {
+            Some(VmWorkIntent::Pending { .. } | VmWorkIntent::Unknown { .. } | VmWorkIntent::UnknownUnattributed { .. }) => return Err(Error::Conflict("A prior layr evidence request has an unknown outcome; inspect it before retrying").into()),
+            Some(VmWorkIntent::Completed { owner, result }) if owner.request_id==rpc_id && owner.owner==owner_id && Some(owner.id.version)==work.value()["version"].as_i64() && owner.revision==revision => return Ok(VmSubmissionPreparation::Evidence{evidence:serde_json::to_value(&result.evidence).map_err(studio_runtime_store::StoreError::from)?,request_id:rpc_id.clone()}),
+            Some(VmWorkIntent::Completed { .. } | VmWorkIntent::NotSent { .. }) | None => {}
         }
-        let intent=VmWorkIntent{status:WorkEffectStatus::Pending,request_id:rpc_id.clone(),task_id:input.task_id.clone(),owner:owner_id.into(),revision:revision.clone(),version:work.value()["version"].as_i64(),result_id:None,evidence:None,created:event_write::unix_time()?,public_request_id:None,public_admission:None};
+        view.vm_submit = Some(VmWorkIntent::Pending { owner: VmOwner {request_id:rpc_id.clone(),owner:owner_id.into(),revision:revision.clone(),id:Submission { version:work.value()["version"].as_i64().ok_or_else(|| invalid("runtime_work", &input.task_id))? },public:None} });
         if let Some(root) = request_id.as_deref() {
             let token = if let Some(saved) = pending_work_request(tx,&agent,root,&signature)? {
                 if saved.task != input.task_id { return Err(Error::Conflict("This request id has different content").into()); }
@@ -1174,7 +1137,7 @@ pub async fn prepare_vm_submission(
             };
             reserve_work_request(tx,&agent,root,&input.task_id,&token,false)?;
         }
-        write_vm_intent(tx, VmIntentKind::Submit, &input.task_id, &intent)?;
+        write_vm_view(tx, &input.task_id, &view)?;
         Ok(VmSubmissionPreparation::Call(VmSubmissionCall {
             owner_id: owner_id.to_owned(),
             revision,
@@ -1191,40 +1154,76 @@ pub async fn finish_vm_submission(
     request_id: &str,
     outcome: Result<Value, bool>,
 ) -> Result<Option<Value>, WorkWriteError> {
+    let outcome = match outcome {
+        Ok(value) => Ok(VmSubmissionResult {
+            evidence: serde_json::from_value(value)
+                .map_err(studio_runtime_store::StoreError::from)?,
+        }),
+        Err(uncertain) => Err(uncertain),
+    };
+    finish_vm_intent(store, task_id, request_id, outcome, |view| {
+        &mut view.vm_submit
+    })
+    .await?
+    .map(|result| {
+        serde_json::to_value(result.evidence)
+            .map_err(studio_runtime_store::StoreError::from)
+            .map_err(Into::into)
+    })
+    .transpose()
+}
+
+async fn finish_vm_intent<I: Clone + Send + 'static, R: Clone + PartialEq + Send + 'static>(
+    store: &RuntimeStore,
+    task_id: &str,
+    request_id: &str,
+    outcome: Result<R, bool>,
+    select: for<'a> fn(&'a mut VmView) -> &'a mut Option<VmWorkIntent<I, R>>,
+) -> Result<Option<R>, WorkWriteError> {
     let task_id = task_id.to_owned();
     let request_id = request_id.to_owned();
     store
         .transaction_with_error(move |tx| {
-            WorkItemsRepository::work_record(tx, &task_id)?
-                .ok_or(Error::InvalidRequest("Unknown work item"))?;
-            let mut intent = read_vm_intent(tx, VmIntentKind::Submit, &task_id)?
-                .filter(|value| value.request_id == request_id)
-                .ok_or(Error::Conflict("The layr evidence intent changed"))?;
-            if intent.status == WorkEffectStatus::Completed {
-                if let Ok(evidence) = &outcome
-                    && intent.evidence.as_ref() != Some(evidence)
+            let mut view = read_vm_view(tx, &task_id)?;
+            let intent = select(&mut view)
+                .take()
+                .ok_or(Error::Conflict("The layr intent changed"))?;
+            let owner = match intent {
+                VmWorkIntent::Completed { owner, result } if owner.request_id == request_id => {
+                    if outcome.as_ref().is_ok_and(|value| value != &result) {
+                        return Err(Error::Conflict("The layr result changed").into());
+                    }
+                    return Ok(Some(result));
+                }
+                VmWorkIntent::Pending { owner }
+                | VmWorkIntent::Unknown { owner }
+                | VmWorkIntent::NotSent { owner }
+                    if owner.request_id == request_id =>
                 {
-                    return Err(Error::Conflict("The layr evidence changed").into());
+                    owner
                 }
-                return Ok(intent.evidence);
-            }
-            match outcome {
-                Ok(evidence) => {
-                    intent.status = WorkEffectStatus::Completed;
-                    intent.evidence = Some(evidence.clone());
-                    write_vm_intent(tx, VmIntentKind::Submit, &task_id, &intent)?;
-                    Ok(Some(evidence))
+                VmWorkIntent::Pending { .. }
+                | VmWorkIntent::Unknown { .. }
+                | VmWorkIntent::NotSent { .. }
+                | VmWorkIntent::Completed { .. }
+                | VmWorkIntent::UnknownUnattributed { .. } => {
+                    return Err(Error::Conflict("The layr intent changed").into());
                 }
-                Err(uncertain) => {
-                    intent.status = if uncertain {
-                        WorkEffectStatus::Unknown
-                    } else {
-                        WorkEffectStatus::NotSent
-                    };
-                    write_vm_intent(tx, VmIntentKind::Submit, &task_id, &intent)?;
-                    Ok(None)
-                }
-            }
+            };
+            let (intent, result) = match outcome {
+                Ok(result) => (
+                    VmWorkIntent::Completed {
+                        owner,
+                        result: result.clone(),
+                    },
+                    Some(result),
+                ),
+                Err(true) => (VmWorkIntent::Unknown { owner }, None),
+                Err(false) => (VmWorkIntent::NotSent { owner }, None),
+            };
+            *select(&mut view) = Some(intent);
+            write_vm_view(tx, &task_id, &view)?;
+            Ok(result)
         })
         .await
 }
@@ -1362,32 +1361,31 @@ pub async fn prepare_vm_accept(
                 .ok_or_else(|| invalid("runtime_work", &task_id))?
                 .to_owned();
             let rpc_id = format!("layr-accept:{result_id}");
-            if let Some(intent) = read_vm_intent(tx, VmIntentKind::Accept, &task_id)? {
-                if matches!(
-                    intent.status,
-                    WorkEffectStatus::Pending | WorkEffectStatus::Unknown
-                ) {
+            let mut view = read_vm_view(tx, &task_id)?;
+            match &view.vm_accept {
+                Some(
+                    VmWorkIntent::Pending { .. }
+                    | VmWorkIntent::Unknown { .. }
+                    | VmWorkIntent::UnknownUnattributed { .. },
+                ) => {
                     return Err(Error::Conflict(
                         "The prior layr merge outcome is unknown; inspect it before retrying",
                     )
                     .into());
                 }
-                if intent.request_id == rpc_id && intent.status == WorkEffectStatus::Completed {
+                Some(VmWorkIntent::Completed { owner, .. }) if owner.request_id == rpc_id => {
                     return Ok(VmAcceptPreparation::Merged(result_id.to_owned()));
                 }
+                Some(VmWorkIntent::Completed { .. } | VmWorkIntent::NotSent { .. }) | None => {}
             }
-            let mut intent = VmWorkIntent {
-                status: WorkEffectStatus::Pending,
+            let mut owner = VmOwner {
                 request_id: rpc_id.clone(),
-                task_id: task_id.clone(),
                 owner: owner_id.clone(),
                 revision: revision.clone(),
-                version: None,
-                result_id: Some(result_id.clone()),
-                evidence: None,
-                created: event_write::unix_time()?,
-                public_request_id: None,
-                public_admission: None,
+                id: Acceptance {
+                    result_id: result_id.clone(),
+                },
+                public: None,
             };
             if let Some(root) = request_id.as_deref() {
                 let token = if let Some(saved) = pending_work_request(tx, &lead, root, &signature)?
@@ -1411,11 +1409,14 @@ pub async fn prepare_vm_accept(
                         }
                     }
                 };
-                intent.public_admission = Some(token.clone());
-                intent.public_request_id = Some(root.into());
+                owner.public = Some(VmPublic {
+                    public_admission: token.clone(),
+                    public_request_id: root.into(),
+                });
                 reserve_work_request(tx, &lead, root, &task_id, &token, false)?;
             }
-            write_vm_intent(tx, VmIntentKind::Accept, &task_id, &intent)?;
+            view.vm_accept = Some(VmWorkIntent::Pending { owner });
+            write_vm_view(tx, &task_id, &view)?;
             Ok(VmAcceptPreparation::Call(VmMergeCall {
                 lead_id: lead.id.0,
                 owner_id,
@@ -1433,31 +1434,12 @@ pub async fn finish_vm_accept(
     request_id: &str,
     uncertain: Option<bool>,
 ) -> Result<(), WorkWriteError> {
-    let task_id = task_id.to_owned();
-    let request_id = request_id.to_owned();
-    store
-        .transaction_with_error(move |tx| {
-            WorkItemsRepository::work_record(tx, &task_id)?
-                .ok_or(Error::InvalidRequest("Unknown work item"))?;
-            let mut intent = read_vm_intent(tx, VmIntentKind::Accept, &task_id)?
-                .filter(|value| value.request_id == request_id)
-                .ok_or(Error::Conflict("The layr merge intent changed"))?;
-            if intent.status == WorkEffectStatus::Completed {
-                return Ok(());
-            }
-            if let Some(uncertain) = uncertain {
-                intent.status = if uncertain {
-                    WorkEffectStatus::Unknown
-                } else {
-                    WorkEffectStatus::NotSent
-                };
-            } else {
-                intent.status = WorkEffectStatus::Completed;
-            }
-            write_vm_intent(tx, VmIntentKind::Accept, &task_id, &intent)?;
-            Ok(())
-        })
-        .await
+    let outcome = uncertain.map_or(Ok(()), Err);
+    finish_vm_intent(store, task_id, request_id, outcome, |view| {
+        &mut view.vm_accept
+    })
+    .await
+    .map(|_| ())
 }
 
 /// Verify the exact accepted result has a durable successful guest merge.
@@ -1467,12 +1449,8 @@ pub fn vm_merge_confirmed(
     result_id: &str,
     revision: &str,
 ) -> Result<bool, WorkWriteError> {
-    let Some(intent) = read_vm_intent(connection, VmIntentKind::Accept, task_id)? else {
-        return Ok(false);
-    };
-    Ok(intent.status == WorkEffectStatus::Completed
-        && intent.result_id.as_deref() == Some(result_id)
-        && intent.revision == revision)
+    Ok(matches!(read_vm_view(connection, task_id)?.vm_accept,
+        Some(VmWorkIntent::Completed { owner, .. }) if owner.id.result_id == result_id && owner.revision == revision))
 }
 
 pub enum WorkWrite {
@@ -2984,19 +2962,22 @@ fn submit(
             )
             .into());
         };
-        let Some(intent) = read_vm_intent(tx, VmIntentKind::Submit, &input.task_id)? else {
+        let Some(VmWorkIntent::Completed { owner, result }) =
+            read_vm_view(tx, &input.task_id)?.vm_submit
+        else {
             return Err(
                 Error::Conflict("Layr submission evidence changed before it was saved").into(),
             );
         };
         let revision = python_bounded_text(&input.revision, 200)?;
+        let evidence = serde_json::to_value(&result.evidence)
+            .map_err(studio_runtime_store::StoreError::from)?;
         if input.vm_evidence.is_none()
-            || intent.status != WorkEffectStatus::Completed
-            || intent.request_id != request_id
-            || intent.owner != submitter_id
-            || intent.version != work.value()["version"].as_i64()
-            || intent.revision != revision
-            || intent.evidence.as_ref() != input.vm_evidence.as_ref()
+            || owner.request_id != request_id
+            || owner.owner != submitter_id
+            || Some(owner.id.version) != work.value()["version"].as_i64()
+            || owner.revision != revision
+            || Some(&evidence) != input.vm_evidence.as_ref()
         {
             return Err(
                 Error::Conflict("Layr submission evidence changed before it was saved").into(),
@@ -3978,6 +3959,29 @@ mod actor_tests {
     }
 
     #[test]
+    fn vm_submission_completed_requires_evidence() {
+        let missing = json!({"status":"completed","requestId":"evidence","taskId":"task","owner":"worker","revision":"state","version":2,"created":1.0});
+        assert!(
+            serde_json::from_value::<
+                super::VmWorkIntent<super::Submission, super::VmSubmissionResult>,
+            >(missing)
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn vm_submission_migrated_unknown_round_trips() {
+        let stored =
+            json!({"status":"unknown","requestId":"rpc","owner":"a","revision":"rev","version":1});
+        let intent: super::VmWorkIntent<super::Submission, super::VmSubmissionResult> =
+            serde_json::from_value(stored.clone()).expect("migrated intent");
+        assert_eq!(
+            serde_json::to_value(intent).expect("serialized intent"),
+            stored
+        );
+    }
+
+    #[test]
     fn receipt_domain_refusal_reads_current_owner_without_receipt_history() {
         let connection = database();
         let owner = AgentRecord::from_value(json!({
@@ -4097,7 +4101,7 @@ mod actor_tests {
         let store = RuntimeStore::open(Some(root.path())).await.expect("store");
         store.transaction(|tx| {
             let mut item = work("vm-known", Some("worker"), "running", json!([]));
-            item["vmSubmit"] = json!({"status":"completed","requestId":"evidence","taskId":"vm-known","owner":"worker","revision":"state","version":2,"created":1.0,"evidence":{"layrStateId":"state"}});
+            item["vmSubmit"] = json!({"status":"completed","requestId":"evidence","taskId":"vm-known","owner":"worker","revision":"state","version":2,"created":1.0,"evidence":{"layrProjectId":"project","layrLine":"worker","layrStateId":"state"}});
             item["vmAccept"] = json!({"status":"completed","requestId":"merge","taskId":"vm-known","owner":"worker","revision":"state","resultId":"result","created":1.0});
             WorkItemsRepository::put_work(tx,"vm-known",&item)?;
             Ok(())
@@ -4106,14 +4110,17 @@ mod actor_tests {
             super::finish_vm_submission(&store, "vm-known", "evidence", Err(true))
                 .await
                 .expect("late reply"),
-            Some(json!({"layrStateId":"state"}))
+            Some(json!({"layrProjectId":"project","layrLine":"worker","layrStateId":"state"}))
         );
-        for outcome in [Err(false), Ok(json!({"layrStateId":"state"}))] {
+        for outcome in [
+            Err(false),
+            Ok(json!({"layrProjectId":"project","layrLine":"worker","layrStateId":"state"})),
+        ] {
             assert_eq!(
                 super::finish_vm_submission(&store, "vm-known", "evidence", outcome)
                     .await
                     .expect("stable evidence"),
-                Some(json!({"layrStateId":"state"}))
+                Some(json!({"layrProjectId":"project","layrLine":"worker","layrStateId":"state"}))
             );
         }
         assert!(
@@ -4121,7 +4128,9 @@ mod actor_tests {
                 &store,
                 "vm-known",
                 "evidence",
-                Ok(json!({"layrStateId":"different"}))
+                Ok(
+                    json!({"layrProjectId":"project","layrLine":"worker","layrStateId":"different"})
+                )
             )
             .await
             .is_err()
