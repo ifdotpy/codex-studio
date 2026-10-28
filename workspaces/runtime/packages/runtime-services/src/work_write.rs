@@ -11,7 +11,7 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 use studio_runtime_schema::persistence::{
-    OutboxKind, OutboxStatus, OwnerKind, WorkEffectStatus,
+    OutboxKind, OutboxStatus, OwnerKind, RequestIdentity, WorkEffectStatus,
 };
 use studio_runtime_schema::shared_values::{
     TASK_SUBMISSION_MAX_FILES, TASK_SUBMISSION_PATH_MAX_CODEPOINTS,
@@ -1602,7 +1602,7 @@ fn work_receipt_in(
         saved
     } else {
         let identity =
-            studio_runtime_schema::persistence::RequestIdentity::new("work", &[&agent.root_id.0], request_id, &[]).map_err(|_| {
+            RequestIdentity::new("work", &[&agent.root_id.0], request_id, &[]).map_err(|_| {
                 Error::RequestResult(
                     studio_runtime_store::request_results::RequestResultError::Identity(
                         studio_runtime_schema::persistence::RequestIdentityError::Expired {
