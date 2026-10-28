@@ -71,8 +71,9 @@ async function moveFile(
   });
 }
 
-export function openLegacyUploads(): LegacyUploadSource {
-  const name = storageNameForServer("local", UPLOAD_DATABASE_NAME);
+/** The old browser rows of one server ("local" or a paired server id). */
+export function openLegacyUploads(server = "local"): LegacyUploadSource {
+  const name = storageNameForServer(server, UPLOAD_DATABASE_NAME);
   return {
     async list() {
       const db = await openLegacyDatabase(name);

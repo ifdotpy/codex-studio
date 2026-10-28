@@ -22,7 +22,10 @@ vi.mock("react", () => ({
   useCallback: (callback: unknown) => callback,
   useEffect: (effect: () => void | (() => void)) => mocks.effects.push(effect),
 }));
-vi.mock("./client", () => ({ nativeRequest: mocks.request }));
+vi.mock("./client", () => ({
+  nativeRequest: mocks.request,
+  localCore: { server: "local", request: mocks.request },
+}));
 vi.mock("./legacyDrafts", () => ({ importLegacyDrafts: async () => {} }));
 vi.mock("./closeState", () => ({ guardNativeClose: () => () => {} }));
 vi.mock("../sync/resume", () => ({

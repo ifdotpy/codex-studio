@@ -40,6 +40,7 @@ import {
   useServerResources,
   useServerAccountLimits,
   useServerOutbox,
+  useServerCore,
   useServerActivityScope,
   useServerSidebarServices,
 } from "./servers/ServerServicesContext";
@@ -305,6 +306,8 @@ export default function App({ active = true }: { active?: boolean }) {
     useServerActivityScope();
   const { acknowledgeOutbox, editOutboxDisplay, durableSend, useOutbox } =
     useServerOutbox();
+  // Message identities live in the core of the chat's own server.
+  const serverCore = useServerCore();
   const {
     get,
     post,
@@ -1801,12 +1804,15 @@ export default function App({ active = true }: { active?: boolean }) {
             (options?.delivery || DeliveryMoment.CurrentTurn)
         )
           // Enter delivers after the current tool call; Tab after the turn.
-          sends.current[id] = await prepareMessage({
-            room: id,
-            text,
-            assets: options?.assets || [],
-            delivery: options?.delivery || DeliveryMoment.CurrentTurn,
-          });
+          sends.current[id] = await prepareMessage(
+            {
+              room: id,
+              text,
+              assets: options?.assets || [],
+              delivery: options?.delivery || DeliveryMoment.CurrentTurn,
+            },
+            serverCore,
+          );
         // Retain the exact request until the durable outbox owns its retry.
         request = sends.current[id];
         const entry: OutgoingMessage = {
@@ -1836,8 +1842,8 @@ export default function App({ active = true }: { active?: boolean }) {
             }
             await options?.onPersist?.();
             // The core stored the message, so its pending send can go.
-            await releaseMessage(id, entry.id).catch((error: unknown) =>
-              notify(errorText(error)),
+            await releaseMessage(id, entry.id, serverCore).catch(
+              (error: unknown) => notify(errorText(error)),
             );
             release();
           },
@@ -1910,8 +1916,8 @@ export default function App({ active = true }: { active?: boolean }) {
           delete sends.current[request.room];
         // A refused request must not keep its identity for a later send.
         if (rejected)
-          await releaseMessage(request.room, key).catch((error: unknown) =>
-            notify(errorText(error)),
+          await releaseMessage(request.room, key, serverCore).catch(
+            (error: unknown) => notify(errorText(error)),
           );
         if (
           !rejected &&

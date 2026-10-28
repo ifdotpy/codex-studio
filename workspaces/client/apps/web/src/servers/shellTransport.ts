@@ -5,7 +5,7 @@ import {
   nativeRequest,
   listenNativeEvents,
 } from "../native/client";
-import { bindNativeFrames } from "../native/frame";
+import { bindNativeFrames, isServerManagementRequest } from "../native/frame";
 import { nativeFetch } from "../native/http";
 import { bindNativeCloseFrames } from "../native/close";
 import type { CredentialBridge, StreamPayload } from "../../../desktop/api.ts";
@@ -77,16 +77,7 @@ export function bindShellTransport(frames: Map<string, HTMLIFrameElement>) {
         !isServerMethod(value.method)
       )
         throw new Error("The request does not belong to this server.");
-      const path = decodeURIComponent(new URL(value.url).pathname).replace(
-        /\/+$/,
-        "",
-      );
-      if (
-        (value.method === "POST" &&
-          (path === "/api/multi-server" ||
-            path.startsWith("/api/multi-server/"))) ||
-        path.startsWith("/api/multi-server/v1/")
-      )
+      if (isServerManagementRequest(value.method, new URL(value.url)))
         throw new Error("Use the workspace shell for server management.");
       const controller = new AbortController();
       active.set(key, { controller, frame });

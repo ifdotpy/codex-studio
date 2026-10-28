@@ -1,4 +1,4 @@
-import { hasNativeClient } from "../native/client";
+import { hasNativeClient, pageCore } from "../native/client";
 import { NativeEventSource } from "../native/stream";
 import { apiOrigin, serverFetch } from "./transport";
 import { serverViewId, isolatedServerView } from "./environment";
@@ -155,8 +155,8 @@ export function openServerEvents(
   url: string,
   options?: { backpressure?: boolean },
 ): ServerEventSource {
-  // The same condition sends this page's requests to the native client.
-  if (hasNativeClient() && !serverViewId) return new NativeEventSource(url);
+  // The same condition sends this page's requests to its server's client core.
+  if (hasNativeClient()) return new NativeEventSource(url, pageCore());
   return options?.backpressure ||
     hasNativeClient() ||
     (serverViewId && (serverViewId !== "local" || isolatedServerView))

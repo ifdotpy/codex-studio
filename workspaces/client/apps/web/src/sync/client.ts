@@ -176,8 +176,11 @@ import type { TranscriptProjectionPayload } from "../apiTypes.ts";
 export type { TranscriptProjectionPayload } from "../apiTypes.ts";
 
 import { clearTranscript } from "./transcriptCache";
-import { nativeProjectionStore } from "./nativeProjections";
-import { hasNativeClient } from "../native/client";
+import {
+  createNativeProjectionStore,
+  type nativeProjectionStore,
+} from "./nativeProjections";
+import { hasNativeClient, pageCore } from "../native/client";
 type NativeProjectionStore = typeof nativeProjectionStore;
 export type SyncClientOptions = {
   api: Pick<
@@ -3256,6 +3259,7 @@ export function createSyncClient(options: SyncClientOptions) {
     subscribeTranscriptProjection,
   };
 }
+let pageProjections: NativeProjectionStore | undefined;
 const defaultSyncClient = createSyncClient({
   api: {
     syncGet,
@@ -3282,9 +3286,10 @@ const defaultSyncClient = createSyncClient({
     subscribeTranscript,
   },
   databaseSuffix: serverDatabaseSuffix,
+  // The core of the server that this page shows stores its projections.
   projectionStore: () =>
-    hasNativeClient() && serverDatabaseSuffix === ""
-      ? nativeProjectionStore
+    hasNativeClient()
+      ? (pageProjections ??= createNativeProjectionStore(pageCore().request))
       : undefined,
 });
 export const {

@@ -1,9 +1,18 @@
 import { afterEach, expect, it, vi } from "vitest";
-vi.mock("./client", () => ({
-  nativeRequest: vi.fn(),
-  listenNativeEvents: vi.fn(),
-  hasNativeClient: () => true,
-}));
+vi.mock("./client", () => {
+  const nativeRequest = vi.fn();
+  const listenNativeEvents = vi.fn();
+  return {
+    nativeRequest,
+    listenNativeEvents,
+    hasNativeClient: () => true,
+    localCore: {
+      server: "local",
+      request: nativeRequest,
+      listen: listenNativeEvents,
+    },
+  };
+});
 vi.mock("./frame", () => ({ isNativeFrame: () => false }));
 import { nativeRequest } from "./client";
 import { createNativeOutbox, prepareMessage, releaseMessage } from "./outbox";

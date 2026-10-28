@@ -24,13 +24,25 @@ import { draftsForServer } from "../native/draftSource";
 import { createOutbox, type OutboxService } from "../sync/send";
 import { createNativeOutbox } from "../native/outbox";
 import { createSyncClient } from "../sync/client";
-import { nativeProjectionStore } from "../sync/nativeProjections";
+import { createNativeProjectionStore } from "../sync/nativeProjections";
+import {
+  importLegacyUploads,
+  openLegacyUploads,
+} from "../native/legacyUploads";
+import {
+  importLegacyRecordings,
+  openLegacyRecordings,
+} from "../native/legacyRecordings";
 import { createServerSubscriptions } from "../sync/subscriptions/server";
 import { createTranscriptCache } from "../sync/transcriptCache";
 import { createTokenRateCache } from "../usage/tokenRate";
 import { createEntitySequenceScope } from "../sync/entitySequence";
 import { createApiScope } from "../api";
-import { hasNativeClient, nativeRequest } from "../native/client";
+import {
+  coreForServer,
+  hasNativeClient,
+  type CoreClient,
+} from "../native/client";
 import { nativeFetch } from "../native/http";
 import { preferenceStorageForServer } from "../sync/uiPreferenceStore";
 import { createServerActivity } from "./activity";
@@ -40,22 +52,36 @@ import { createServerTransport } from "./serverTransport";
 import { scopedStorage } from "./storage";
 import { serverCredentialAdapter } from "./transport";
 
+/** The queue, files, recordings and drafts that the core of one server keeps. */
+export function coreStores(
+  core: CoreClient,
+  outboxDatabase: Parameters<typeof createNativeOutbox>[0],
+) {
+  return {
+    outbox: createNativeOutbox(outboxDatabase, core),
+    uploads: createNativeUploads(core.request, () =>
+      importLegacyUploads(core.request, openLegacyUploads(core.server)),
+    ),
+    recordings: createNativeRecordings(core.request, () =>
+      importLegacyRecordings(core.request, openLegacyRecordings(core.server)),
+    ),
+    useDrafts: draftsForServer(core),
+  };
+}
+
 /** Services belong to a server, never to the currently visible chat. */
 export function createServerServices(server: StudioServer) {
+  // Each server has its own client core: the desktop keeps one per paired
+  // server, and a browser page uses the cores that its server hosts for the device.
+  const core = hasNativeClient() ? coreForServer(server.id) : undefined;
   const transport = createServerTransport(server, (owner, request) => {
-    if (owner.id === "local") {
-      if (hasNativeClient()) return nativeFetch(request, owner.origin);
-      if (!window.codexDesktop) return fetch(request);
-    }
+    if (core) return nativeFetch(request, owner.origin, core);
+    if (owner.id === "local" && !window.codexDesktop) return fetch(request);
     return serverCredentialAdapter().fetch(owner, request);
   });
   const storage = preferenceStorageForServer(transport.owner.id);
-  // The native core stores the projections of the local server; every other server keeps the page cache.
-  const localNativeClient = () =>
-    transport.owner.id === "local" && hasNativeClient();
-  // Usage caches persist only in the local native core; other servers keep memory only.
-  const usage: UsagePersistence = () =>
-    localNativeClient() ? nativeRequest : undefined;
+  const projections = core && createNativeProjectionStore(core.request);
+  const usage: UsagePersistence = () => core?.request;
   const accountLimits = createAccountLimitsCache(usage);
   const sequences = createEntitySequenceScope();
   const activity = createServerActivity();
@@ -89,15 +115,14 @@ export function createServerServices(server: StudioServer) {
       tokenRates,
       sync: () => sync,
       owner: transport.owner,
-      nativeCore: localNativeClient,
+      core,
     });
     sync = createSyncClient({
       api,
       resources,
       sequences,
       transcripts,
-      projectionStore: () =>
-        localNativeClient() ? nativeProjectionStore : undefined,
+      projectionStore: () => projections,
       databaseSuffix:
         transport.owner.id === "local"
           ? ""
@@ -111,8 +136,10 @@ export function createServerServices(server: StudioServer) {
       stopName = watchServerName(transport.owner, resources);
     return runtime;
   };
-  const outbox: OutboxService = localNativeClient()
-    ? createNativeOutbox(() => synchronization().sync.outboxDatabase())
+  const stores =
+    core && coreStores(core, () => synchronization().sync.outboxDatabase());
+  const outbox: OutboxService = stores
+    ? stores.outbox
     : createOutbox({
         api,
         syncDatabase: () => synchronization().sync.outboxDatabase(),
@@ -122,9 +149,9 @@ export function createServerServices(server: StudioServer) {
     storage,
     storageNameForServer(transport.owner.id, LOCAL_DRAFT_DATABASE_NAME),
   );
-  // The native core owns uploads and recordings of the local server. Other servers keep the page stores.
-  const uploads = localNativeClient()
-    ? createNativeUploads(nativeRequest)
+  // The core of the server owns its uploads and recordings.
+  const uploads = stores
+    ? stores.uploads
     : createUploads({
         databaseName: storageNameForServer(
           transport.owner.id,
@@ -156,11 +183,13 @@ export function createServerServices(server: StudioServer) {
   }
   return {
     owner: transport.owner,
+    /** The client core of this server, or undefined without a client core. */
+    core,
     audio,
     sessionCosts,
     chatCreations: createChatCreationStore(storage),
-    recordings: localNativeClient()
-      ? createNativeRecordings(nativeRequest)
+    recordings: stores
+      ? stores.recordings
       : createRecordingStorage(
           storageNameForServer(transport.owner.id, DICTATION_DATABASE_NAME),
         ),
@@ -182,7 +211,7 @@ export function createServerServices(server: StudioServer) {
     transcripts,
     outbox,
     get useDrafts() {
-      return draftsForServer(transport.owner.id === "local");
+      return stores?.useDrafts ?? draftsForServer(undefined);
     },
     tokenRates,
     get sync() {

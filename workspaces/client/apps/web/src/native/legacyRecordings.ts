@@ -51,8 +51,9 @@ export async function importLegacyRecordings(
   }
 }
 
-export function openLegacyRecordings(): LegacyRecordingSource {
-  const name = storageNameForServer("local", DICTATION_DATABASE_NAME);
+/** The old browser rows of one server ("local" or a paired server id). */
+export function openLegacyRecordings(server = "local"): LegacyRecordingSource {
+  const name = storageNameForServer(server, DICTATION_DATABASE_NAME);
   return {
     async list() {
       const db = await openLegacyDatabase(name);

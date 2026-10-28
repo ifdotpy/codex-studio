@@ -1,10 +1,10 @@
-import { hasNativeClient } from "./client";
-import { useNativeDrafts } from "./useNativeDrafts";
+import type { CoreClient } from "./client";
+import { nativeDraftsHook } from "./useNativeDrafts";
 import { useUnavailableDrafts } from "./unavailableDrafts";
 
 /**
- * The core stores the drafts of the local server only. Every other view
- * has no drafts until a transport reaches its own core.
+ * The core of each server stores its drafts. A page without a client core
+ * has no drafts.
  */
-export const draftsForServer = (localServer: boolean) =>
-  localServer && hasNativeClient() ? useNativeDrafts : useUnavailableDrafts;
+export const draftsForServer = (core: CoreClient | undefined) =>
+  core ? nativeDraftsHook(core) : useUnavailableDrafts;

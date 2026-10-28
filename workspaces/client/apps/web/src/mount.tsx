@@ -1,7 +1,7 @@
 import { BottomInsetBand } from "./hooks/BottomInsetBand";
 import "./browser-reset.css";
 import { NativeServerCredentials } from "./native/serverCredentials";
-import { hasDeviceClient } from "./native/client";
+import { hasNativeClient } from "./native/client";
 import { isNativeFrame } from "./native/frame";
 import {
   bootstrapPreferenceCache,
@@ -42,10 +42,12 @@ async function mount() {
   setServerCredentialAdapter(
     nativeCredentials
       ? new DesktopServerCredentials(nativeCredentials)
-      : hasDeviceClient() && !isServerView
-        ? new NativeServerCredentials()
-        : isNativeFrame()
-          ? new DesktopServerCredentials(shellCredentialBridge())
+      : isNativeFrame()
+        ? new DesktopServerCredentials(shellCredentialBridge())
+        : // The desktop and the server of a browser page keep the keys in a
+          // client core; each paired server's requests go through its core.
+          hasNativeClient()
+          ? new NativeServerCredentials()
           : isRemoteServerView
             ? new BrowserServerCredentials()
             : isServerView && window.parent !== window

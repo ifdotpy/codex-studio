@@ -106,7 +106,6 @@ it("does not send a late result to a replaced server view", async () => {
 });
 
 it.each([
-  "drafts.edit",
   "desktop.fileAction",
   "desktop.pickDirectory",
   "desktop.pickAttachments",

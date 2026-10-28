@@ -1,5 +1,5 @@
 import { SignedEventSource } from "../../servers/eventSource";
-import { hasNativeClient } from "../../native/client";
+import type { CoreClient } from "../../native/client";
 import { NativeEventSource } from "../../native/stream";
 import type { createApiScope } from "../../api";
 import type { createSyncClient } from "../client";
@@ -18,13 +18,13 @@ type ServerSubscriptionOptions = {
   tokenRates: ResourceEventsOptions["tokenRates"];
   sync: () => ReturnType<typeof createSyncClient>;
   owner: { id: string; origin: string };
-  /** The native core owns this server's stream and projections: no browser storage, locks or channels. */
-  nativeCore?: () => boolean;
+  /** The core of this server owns its stream and projections: no browser storage, locks or channels. */
+  core?: CoreClient | undefined;
 };
 
 /** The server service supplies ownership and cache access, never stream details. */
 export function createServerSubscriptions(options: ServerSubscriptionOptions) {
-  const { api, tokenRates, sync, owner, nativeCore } = options;
+  const { api, tokenRates, sync, owner, core } = options;
   const transport = createResourceEvents({
     api,
     tokenRates,
@@ -36,13 +36,12 @@ export function createServerSubscriptions(options: ServerSubscriptionOptions) {
       persistStagedEntityTransfer: (...args) =>
         sync().persistStagedEntityTransfer(...args),
     },
-    // The local server's requests use the native client there (serverServices.ts).
-    transferStorage: () =>
-      nativeCore?.() ? new MemoryTransferStorage() : undefined,
-    ...(nativeCore?.() ? { independent: true } : {}),
+    // The server's requests use its client core (serverServices.ts).
+    transferStorage: () => (core ? new MemoryTransferStorage() : undefined),
+    ...(core ? { independent: true } : {}),
     openEvents: (url) =>
-      owner.id === "local" && hasNativeClient()
-        ? new NativeEventSource(url)
+      core
+        ? new NativeEventSource(url, core)
         : new SignedEventSource(
             new URL(url, owner.origin).href,
             api.fetchApiRequest,

@@ -1,4 +1,4 @@
-import { hasNativeClient } from "../native/client";
+import { hasNativeClient, pageCore } from "../native/client";
 import { nativeFetch } from "../native/http";
 import { serverViewId, isolatedServerView } from "./environment";
 import { viewServer, type StudioServer } from "./registry";
@@ -56,8 +56,8 @@ export function apiOrigin() {
     : (globalThis.location?.origin ?? "http://localhost");
 }
 export function serverFetch(request: Request) {
-  if (hasNativeClient() && !serverViewId)
-    return nativeFetch(request, apiOrigin());
+  // The page reaches its server through that server's client core.
+  if (hasNativeClient()) return nativeFetch(request, apiOrigin(), pageCore());
   // In a browser the backend also serves the local frame origin and takes
   // these account requests there. In the desktop a separate UI host serves the
   // frames and owns no API, so the desktop bridge carries them to the local

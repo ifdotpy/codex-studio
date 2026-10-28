@@ -1,9 +1,18 @@
 import { afterEach, expect, it, vi } from "vitest";
-vi.mock("./client", () => ({
+const mocks = vi.hoisted(() => ({
   nativeRequest: vi.fn(),
-  hasNativeClient: () => true,
+  coreRequest: vi.fn(),
+  servers: [] as string[],
 }));
-import { nativeRequest } from "./client";
+vi.mock("./client", () => ({
+  nativeRequest: mocks.nativeRequest,
+  hasNativeClient: () => true,
+  localCore: { server: "local", request: mocks.nativeRequest },
+  coreForServer: (server: string) => {
+    mocks.servers.push(server);
+    return { server, request: mocks.coreRequest, listen: vi.fn() };
+  },
+}));
 import { NativeServerCredentials } from "./serverCredentials";
 const server = {
   id: "remote",
@@ -11,59 +20,58 @@ const server = {
   origin: "https://remote.tailnet.ts.net",
   credentialId: "client",
 };
-afterEach(() => vi.resetAllMocks());
-it("preserves request identity and exact bytes through native response chunks", async () => {
-  const invoke = vi.mocked(nativeRequest);
-  invoke
-    .mockResolvedValueOnce({
-      status: 409,
-      headers: [["content-type", "application/octet-stream"]],
-      stream: "s",
-    })
-    .mockResolvedValueOnce({ base64: "YQD/" })
-    .mockResolvedValueOnce({ done: true });
+afterEach(() => {
+  vi.resetAllMocks();
+  mocks.servers = [];
+});
+
+const reply = (status: number, body: string) => ({
+  status,
+  headers: { "content-type": "application/octet-stream" },
+  base64: btoa(body),
+});
+
+it("sends a paired server's request through that server's core with its original identity", async () => {
+  mocks.coreRequest.mockResolvedValueOnce(reply(409, "conflict"));
   const response = await new NativeServerCredentials().fetch(
     server,
-    new Request(server.origin + "/api/test", {
+    new Request(server.origin + "/api/test?x=1", {
       method: "POST",
       body: "null",
       headers: { "X-Studio-Request-Id": "original" },
     }),
   );
   expect(response.status).toBe(409);
-  expect([...new Uint8Array(await response.arrayBuffer())]).toEqual([
-    97, 0, 255,
-  ]);
-  expect(invoke.mock.calls[0]).toEqual([
-    "servers.request",
+  expect(await response.text()).toBe("conflict");
+  expect(mocks.servers).toEqual(["remote"]);
+  expect(mocks.nativeRequest).not.toHaveBeenCalled();
+  expect(mocks.coreRequest).toHaveBeenCalledWith(
+    "api.request",
     expect.objectContaining({
-      serverId: "remote",
-      credentialId: "client",
+      path: "/api/test?x=1",
+      method: "POST",
+      body: null,
       requestId: "original",
-      base64: "bnVsbA==",
     }),
-  ]);
-});
-it("cancels the native stream when the caller aborts", async () => {
-  const abort = new AbortController();
-  const invoke = vi.mocked(nativeRequest);
-  invoke.mockImplementation(async (method) =>
-    method === "servers.request"
-      ? { status: 200, headers: [], stream: "s" }
-      : method === "servers.read"
-        ? new Promise(() => {})
-        : undefined,
   );
-  const response = await new NativeServerCredentials().fetch(
+});
+
+it("keeps the identity of a write body for the signed request", async () => {
+  mocks.coreRequest.mockResolvedValueOnce(reply(200, "{}"));
+  await new NativeServerCredentials().fetch(
     server,
-    new Request(server.origin + "/api/test", { signal: abort.signal }),
+    new Request(server.origin + "/api/messages", {
+      method: "POST",
+      body: JSON.stringify({ id: "message-one", text: "hi" }),
+    }),
   );
-  abort.abort();
-  await expect(response.text()).rejects.toThrow();
-  expect(invoke).toHaveBeenCalledWith("servers.cancel", { stream: "s" });
+  expect(mocks.coreRequest.mock.lastCall?.[1]).toMatchObject({
+    requestId: "message-one",
+  });
 });
+
 it("does not retry an uncertain server write", async () => {
-  vi.mocked(nativeRequest).mockRejectedValue(new Error("lost response"));
+  mocks.coreRequest.mockRejectedValue(new Error("lost response"));
   await expect(
     new NativeServerCredentials().fetch(
       server,
@@ -74,40 +82,23 @@ it("does not retry an uncertain server write", async () => {
       }),
     ),
   ).rejects.toThrow("lost response");
-  expect(nativeRequest).toHaveBeenCalledOnce();
+  expect(mocks.coreRequest).toHaveBeenCalledOnce();
 });
-it("releases every rejected summary response before the next poll", async () => {
-  const { setServerCredentialAdapter } = await import("../servers/transport");
-  const { fetchServerSummary, SchemaMismatchError } =
-    await import("../servers/summary");
-  vi.stubGlobal("window", {});
-  const open = new Set<string>();
-  let next = 0;
-  vi.mocked(nativeRequest).mockImplementation(async (method, params) => {
-    if (method === "servers.request") {
-      if (open.size >= 32) throw new Error("Too many open server responses.");
-      const stream = String(++next);
-      open.add(stream);
-      return {
-        status: 200,
-        headers: [["x-studio-api-schema", "other"]],
-        stream,
-      };
-    }
-    if (method === "servers.read") return { base64: "e30=" };
-    if (method === "servers.cancel")
-      open.delete((params as { stream: string }).stream);
-    return undefined;
-  });
-  setServerCredentialAdapter(new NativeServerCredentials());
-  try {
-    for (let index = 0; index < 40; index++) {
-      await expect(
-        fetchServerSummary(server, new AbortController().signal),
-      ).rejects.toBeInstanceOf(SchemaMismatchError);
-      expect(open.size).toBe(0);
-    }
-  } finally {
-    vi.unstubAllGlobals();
-  }
+
+it("pairs and forgets in the key store of this device, never a server core", async () => {
+  mocks.nativeRequest.mockResolvedValueOnce(true);
+  await expect(
+    new NativeServerCredentials().hasPairAttempt({
+      requestId: "r",
+      serverId: "remote",
+      origin: server.origin,
+    }),
+  ).resolves.toBe(true);
+  mocks.nativeRequest.mockResolvedValueOnce(null);
+  await new NativeServerCredentials().forget(server);
+  expect(mocks.nativeRequest.mock.calls.map((call) => call[0])).toEqual([
+    "servers.pairAttempt",
+    "servers.forget",
+  ]);
+  expect(mocks.coreRequest).not.toHaveBeenCalled();
 });

@@ -2,6 +2,7 @@ import { randomUUID } from "../uuid";
 import { audioFrameMethod, bindAudioFrames } from "./audioFrames";
 import { preferenceScope } from "./preferenceState";
 import { nativeSignInMethods } from "./signInProtocol";
+import { coreForServer, type CoreClient } from "./client";
 
 const REQUEST = "studio-native-frame-request";
 const RESPONSE = "studio-native-frame-response";
@@ -68,15 +69,102 @@ export function frameRequest<T>(
   });
 }
 
+// Commands that the core of a frame's own server runs: its data, queue,
+// drafts, files and views. Device commands keep their own rules below.
+const SERVER_CORE_PREFIXES = [
+  "outbox.",
+  "drafts.",
+  "uploads.",
+  "files.",
+  "dictation.",
+  "projection.",
+  "usage.",
+  "terminal.",
+];
+const SERVER_CORE_METHODS = ["api.request", "sync.open", "identity.get"];
+const SERVER_VIEW_METHODS = [
+  "view.subscribe",
+  "view.next",
+  "view.resume",
+  "view.restart",
+  "view.unsubscribe",
+];
+// View topics of server data. Microphone, voice, transcription and navigation belong to the device.
+const SERVER_VIEW_TOPICS = [
+  "projection",
+  "outbox",
+  "drafts",
+  "sse",
+  "terminal",
+];
+
+/** Server management belongs to the workspace shell, never to a server view. */
+export function isServerManagementRequest(method: string, url: URL) {
+  const path = decodeURIComponent(url.pathname).replace(/\/+$/, "");
+  return (
+    path.startsWith("/api/multi-server/v1/") ||
+    (method === "POST" &&
+      (path === "/api/multi-server" || path.startsWith("/api/multi-server/")))
+  );
+}
+
+function frameManagementRequest(method: string, params: unknown) {
+  if (method !== "api.request") return false;
+  const value = params as { path?: unknown; method?: unknown } | null;
+  if (typeof value?.path !== "string") return true;
+  try {
+    return isServerManagementRequest(
+      typeof value.method === "string"
+        ? value.method
+        : "body" in (value as object)
+          ? "POST"
+          : "GET",
+      new URL(value.path, "http://localhost"),
+    );
+  } catch {
+    return true;
+  }
+}
+
+export function serverCoreMethod(method: string, params: unknown) {
+  if (method === "dictation.wav") return false;
+  if (method === "view.subscribe")
+    return SERVER_VIEW_TOPICS.includes(
+      String((params as { topic?: unknown } | null)?.topic),
+    );
+  return (
+    SERVER_VIEW_METHODS.includes(method) ||
+    SERVER_CORE_METHODS.includes(method) ||
+    SERVER_CORE_PREFIXES.some((prefix) => method.startsWith(prefix))
+  );
+}
+
 export function bindNativeFrames(
   frames: Map<string, HTMLIFrameElement>,
   invoke: (method: string, params: unknown, id?: string) => Promise<unknown>,
   listen?: (callback: (value: unknown) => void) => Promise<() => void>,
+  coreFor: (owner: string) => CoreClient = coreForServer,
 ) {
   const audio = bindAudioFrames(invoke, listen);
   const active = new Map<HTMLIFrameElement, Set<string>>();
   const saves = new Map<string, HTMLIFrameElement>();
+  // One listener per server core forwards its events to the frame of that server only.
+  const coreEvents = new Map<string, Promise<() => void>>();
   let disposed = false;
+  const forwardCoreEvents = (owner: string) => {
+    if (coreEvents.has(owner)) return coreEvents.get(owner);
+    const listening = coreFor(owner).listen((value) => {
+      const frame = frames.get(owner);
+      if (disposed || !frame?.isConnected) return;
+      frame.contentWindow?.postMessage(
+        { kind: "studio-native-core-event", value },
+        `studio-view://${new URL(frame.src).host}`,
+      );
+    });
+    coreEvents.set(owner, listening);
+    listening.catch(() => coreEvents.delete(owner));
+    return listening;
+  };
   const receive = async (event: MessageEvent) => {
     if (event.data?.kind !== REQUEST) return;
     const entry = [...frames].find(([owner, frame]) => {
@@ -100,8 +188,7 @@ export function bindNativeFrames(
           event.origin,
         );
     };
-    // Remote frames cannot use the local client's data. The native host also
-    // checks draft workspace ownership against its verified sync identity.
+    // Local file actions belong to the local server only.
     const localService =
       owner === "local" &&
       [
@@ -110,16 +197,10 @@ export function bindNativeFrames(
         "desktop.showVaultKeys",
         "desktop.pickDirectory",
         "desktop.pickAttachments",
-        "identity.get",
-        "sync.open",
-        "drafts.view",
-        "drafts.import",
-        "drafts.edit",
-        "drafts.dismiss",
-        "drafts.queue",
-        "drafts.queued",
-        "drafts.refresh",
       ].includes(method);
+    // Server data goes to the core of the frame's own server, never another
+    // one. The native host also checks draft workspace ownership.
+    const coreMethod = serverCoreMethod(method, params);
     const saveMethod = [
       "desktop.saveBegin",
       "desktop.saveChunk",
@@ -143,11 +224,14 @@ export function bindNativeFrames(
       method !== "browser.preferences" &&
       method !== "browser.profile" &&
       method !== "browser.profileChunk" &&
-      !localService
+      !localService &&
+      !coreMethod
     )
       return reply({
         error: "This native service is not available to server views.",
       });
+    if (coreMethod && frameManagementRequest(method, params))
+      return reply({ error: "Use the workspace shell for server management." });
     if (
       method === nativeSignInMethods.open &&
       params?.value?.forward !== undefined &&
@@ -163,34 +247,42 @@ export function bindNativeFrames(
     active.set(frame, pending);
     pending.add(id);
     try {
-      const result = audioMethod
-        ? await audio.request(method, params, id, {
-            frame,
-            origin: event.origin,
-            live: () =>
-              !disposed && frame.isConnected && frames.get(owner) === frame,
-          })
-        : method === "browser.profileChunk"
-          ? await invoke(
-              "profile.chunk",
-              { owner: `server:${owner}`, sha256: params?.sha256 },
-              id,
-            )
-          : method === "browser.profile"
-            ? await invoke("profile.snapshot", { owner: `server:${owner}` }, id)
-            : method === "browser.preferences"
-              ? await preferenceScope(invoke, `server:${owner}`)(
-                  params?.method,
-                  params?.params,
+      if (coreMethod && method === "view.subscribe")
+        await forwardCoreEvents(owner);
+      const result = coreMethod
+        ? await coreFor(owner).request(method, params, id)
+        : audioMethod
+          ? await audio.request(method, params, id, {
+              frame,
+              origin: event.origin,
+              live: () =>
+                !disposed && frame.isConnected && frames.get(owner) === frame,
+            })
+          : method === "browser.profileChunk"
+            ? await invoke(
+                "profile.chunk",
+                { owner: `server:${owner}`, sha256: params?.sha256 },
+                id,
+              )
+            : method === "browser.profile"
+              ? await invoke(
+                  "profile.snapshot",
+                  { owner: `server:${owner}` },
                   id,
                 )
-              : await invoke(
-                  method,
-                  signInMethod
-                    ? { value: params?.value, signInOwner: owner }
-                    : params,
-                  id,
-                );
+              : method === "browser.preferences"
+                ? await preferenceScope(invoke, `server:${owner}`)(
+                    params?.method,
+                    params?.params,
+                    id,
+                  )
+                : await invoke(
+                    method,
+                    signInMethod
+                      ? { value: params?.value, signInOwner: owner }
+                      : params,
+                    id,
+                  );
       if (method === "desktop.saveBegin") {
         const transfer = (result as { transfer?: string })?.transfer;
         if (typeof transfer !== "string")
@@ -213,6 +305,9 @@ export function bindNativeFrames(
   return () => {
     disposed = true;
     audio.dispose();
+    for (const listening of coreEvents.values())
+      void listening.then((unlisten) => unlisten()).catch(() => {});
+    coreEvents.clear();
     for (const transfer of saves.keys())
       void invoke("desktop.saveCancel", { value: { transfer } }).catch(
         () => {},

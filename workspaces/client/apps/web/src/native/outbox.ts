@@ -7,7 +7,7 @@ import {
   type OutboxEntry,
   type OutboxService,
 } from "../sync/send";
-import { listenNativeEvents, nativeRequest } from "./client";
+import { localCore, type CoreClient } from "./client";
 
 type LegacyOutbox = () => Promise<{
   workspaceId: string;
@@ -18,21 +18,27 @@ type LegacyOutbox = () => Promise<{
 
 type MessageBody = PostBody<"/api/messages">;
 
-let identity: Promise<string> | undefined;
-/** The local workspace of the core, read once until a read fails. */
-function workspaceId(): Promise<string> {
-  return (identity ??= (async () => {
-    const cached = await nativeRequest<{ workspaceId: string } | null>(
-      "identity.get",
-      {},
-    );
-    const current =
-      cached ?? (await nativeRequest<{ workspaceId: string }>("sync.open", {}));
-    return current.workspaceId;
-  })().catch((error: unknown) => {
-    identity = undefined;
-    throw error;
-  }));
+const identities = new Map<string, Promise<string>>();
+/** The workspace of a server core, read once until a read fails. */
+function workspaceId(core: CoreClient): Promise<string> {
+  let identity = identities.get(core.server);
+  if (!identity) {
+    identity = (async () => {
+      const cached = await core.request<{ workspaceId: string } | null>(
+        "identity.get",
+        {},
+      );
+      const current =
+        cached ??
+        (await core.request<{ workspaceId: string }>("sync.open", {}));
+      return current.workspaceId;
+    })().catch((error: unknown) => {
+      identities.delete(core.server);
+      throw error;
+    });
+    identities.set(core.server, identity);
+  }
+  return identity;
 }
 
 /**
@@ -42,9 +48,10 @@ function workspaceId(): Promise<string> {
  */
 export async function prepareMessage(
   message: Omit<MessageBody, "id">,
+  core: CoreClient = localCore,
 ): Promise<MessageBody> {
-  const body = await nativeRequest<MessageBody>("outbox.prepare", {
-    workspace: await workspaceId(),
+  const body = await core.request<MessageBody>("outbox.prepare", {
+    workspace: await workspaceId(core),
     ...message,
   });
   if (!body.id)
@@ -53,27 +60,34 @@ export async function prepareMessage(
 }
 
 /** Removes the pending send after the outbox owns it or it was refused. */
-export async function releaseMessage(room: string, id: string): Promise<void> {
-  await nativeRequest("outbox.release", {
-    workspace: await workspaceId(),
+export async function releaseMessage(
+  room: string,
+  id: string,
+  core: CoreClient = localCore,
+): Promise<void> {
+  await core.request("outbox.release", {
+    workspace: await workspaceId(core),
     room,
     id,
   });
 }
 
 /**
- * The message queue of the local server in the native client. The core owns
+ * The message queue of one server in its client core. The core owns
  * queue states, delivery, retry, receipts, and remove and restore
  * (`client-core/src/outbox.rs`, `delivery.rs`). The page only renders entries
  * and forwards user commands. The server deduplicates each message ID, so a
  * retry with the same identity never sends a user message twice.
  */
-export function createNativeOutbox(legacyOutbox: LegacyOutbox): OutboxService {
-  const workspace = workspaceId;
+export function createNativeOutbox(
+  legacyOutbox: LegacyOutbox,
+  core: CoreClient = localCore,
+): OutboxService {
+  const workspace = () => workspaceId(core);
 
   const entry = async (workspaceId: string, id: string) =>
     (
-      await nativeRequest<OutboxEntry[]>("outbox.list", {
+      await core.request<OutboxEntry[]>("outbox.list", {
         workspace: workspaceId,
       })
     ).find((item) => item.id === id);
@@ -87,17 +101,19 @@ export function createNativeOutbox(legacyOutbox: LegacyOutbox): OutboxService {
       throw new Error("A message identity is required");
     const workspaceId = await workspace();
     // A lost reply replays the stored result of this exact request.
-    await nativeRequest(
+    await core.request(
       "outbox.enqueue",
       { workspace: workspaceId, body, attachments },
       `outbox.enqueue:${body.id}`,
     );
     await onPersist?.();
     let failure: unknown;
-    await nativeRequest("outbox.deliver", {
-      workspace: workspaceId,
-      id: body.id,
-    }).catch((error: unknown) => (failure = error));
+    await core
+      .request("outbox.deliver", {
+        workspace: workspaceId,
+        id: body.id,
+      })
+      .catch((error: unknown) => (failure = error));
     // The stored entry is the outcome; the core retries a queued message.
     const stored = await entry(workspaceId, body.id);
     if (!stored) throw failure ?? new Error("The message left this device.");
@@ -109,7 +125,7 @@ export function createNativeOutbox(legacyOutbox: LegacyOutbox): OutboxService {
   };
 
   const command = async (method: string, params: Record<string, unknown>) =>
-    nativeRequest(method, { workspace: await workspace(), ...params });
+    core.request(method, { workspace: await workspace(), ...params });
 
   const changeOutbox: OutboxService["changeOutbox"] = async (id, action) => {
     await command("outbox.change", { id, action });
@@ -127,7 +143,7 @@ export function createNativeOutbox(legacyOutbox: LegacyOutbox): OutboxService {
         const value: unknown = JSON.parse(row.payload);
         if (!value || typeof value !== "object" || Array.isArray(value))
           throw new Error("Invalid saved message.");
-        await nativeRequest("outbox.import", {
+        await core.request("outbox.import", {
           workspace: workspaceId,
           entries: [{ ...value, id: row.id }],
         });
@@ -147,7 +163,7 @@ export function createNativeOutbox(legacyOutbox: LegacyOutbox): OutboxService {
       const subscription = randomUUID();
       let unlisten = () => {};
       const recover = () =>
-        void nativeRequest("outbox.recover", {}).catch(() => {});
+        void core.request("outbox.recover", {}).catch(() => {});
       void (async () => {
         const workspaceId = await workspace();
         // Old browser rows keep their state; the core accepts each once.
@@ -158,7 +174,7 @@ export function createNativeOutbox(legacyOutbox: LegacyOutbox): OutboxService {
             ? `Saved messages could not be read; delivery is uncertain: ${unreadable.join(", ")}.`
             : "",
         );
-        const stop = await listenNativeEvents((input) => {
+        const stop = await core.listen((input) => {
           const message = input as {
             event?: string;
             value?: { entries?: OutboxEntry[] };
@@ -174,17 +190,17 @@ export function createNativeOutbox(legacyOutbox: LegacyOutbox): OutboxService {
         });
         if (stopped) return stop();
         unlisten = stop;
-        await nativeRequest("view.subscribe", {
+        await core.request("view.subscribe", {
           subscription,
           topic: "outbox",
           workspace: workspaceId,
         });
         // A cleanup can race the subscription request.
         if (stopped)
-          return void nativeRequest("view.unsubscribe", { subscription }).catch(
-            () => {},
-          );
-        await nativeRequest("outbox.activate", {});
+          return void core
+            .request("view.unsubscribe", { subscription })
+            .catch(() => {});
+        await core.request("outbox.activate", {});
         recover();
       })().catch((failure: unknown) => {
         if (!stopped) setError(errorText(failure));
@@ -194,9 +210,7 @@ export function createNativeOutbox(legacyOutbox: LegacyOutbox): OutboxService {
         stopped = true;
         stopResume();
         unlisten();
-        void nativeRequest("view.unsubscribe", { subscription }).catch(
-          () => {},
-        );
+        void core.request("view.unsubscribe", { subscription }).catch(() => {});
       };
     }, []);
     return { entries, error: legacyError || error };

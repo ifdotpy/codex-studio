@@ -72,6 +72,7 @@ vi.mock("./servers/ServerServicesContext", () => ({
   useServerSidebarServices: () => ({}),
   useServerAccountLimits: () => ({}),
   useServerOutbox: () => ({ useOutbox: () => ({ entries: [] }) }),
+  useServerCore: () => undefined,
   useServerActivityScope: () => ({}),
 }));
 vi.mock("@mantine/hooks", async (original) => ({

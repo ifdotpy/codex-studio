@@ -1,5 +1,5 @@
 import { randomUUID } from "../uuid";
-import { listenNativeEvents, nativeRequest } from "./client";
+import { localCore, type CoreClient } from "./client";
 import type {
   NativeStreamRetry,
   ServerEventSource,
@@ -46,8 +46,11 @@ export class NativeEventSource
   private granted: string | undefined;
   private unlisten: (() => void) | undefined;
 
-  constructor(path: string) {
+  private readonly core: CoreClient;
+
+  constructor(path: string, core: CoreClient = localCore) {
     super();
+    this.core = core;
     void this.start(path).catch((error: unknown) => this.fail(error));
   }
 
@@ -70,17 +73,19 @@ export class NativeEventSource
     this.stopped = true;
     this.unlisten?.();
     if (this.confirmed)
-      void nativeRequest("view.unsubscribe", {
-        subscription: this.subscription,
-        reason: reason.slice(0, 300),
-      }).catch(() => {});
+      void this.core
+        .request("view.unsubscribe", {
+          subscription: this.subscription,
+          reason: reason.slice(0, 300),
+        })
+        .catch(() => {});
   }
 
   private async start(path: string) {
-    const unlisten = await listenNativeEvents((input) => this.receive(input));
+    const unlisten = await this.core.listen((input) => this.receive(input));
     if (this.stopped) return unlisten();
     this.unlisten = unlisten;
-    await nativeRequest("view.subscribe", {
+    await this.core.request("view.subscribe", {
       subscription: this.subscription,
       topic: "sse",
       path,
@@ -89,17 +94,21 @@ export class NativeEventSource
     this.confirmed = true;
     // A close can race backend verification and subscription creation.
     if (this.stopped)
-      void nativeRequest("view.unsubscribe", {
-        subscription: this.subscription,
-      }).catch(() => {});
+      void this.core
+        .request("view.unsubscribe", {
+          subscription: this.subscription,
+        })
+        .catch(() => {});
   }
 
   private command(method: string, params: Record<string, unknown>) {
     if (this.stopped) return;
-    void nativeRequest(method, {
-      subscription: this.subscription,
-      ...params,
-    }).catch((error: unknown) => this.fail(error));
+    void this.core
+      .request(method, {
+        subscription: this.subscription,
+        ...params,
+      })
+      .catch((error: unknown) => this.fail(error));
   }
 
   private fail(error: unknown) {

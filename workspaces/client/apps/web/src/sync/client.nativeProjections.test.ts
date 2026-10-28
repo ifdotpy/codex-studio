@@ -26,11 +26,15 @@ vi.mock("rxdb", async (original) => ({
     throw new Error("RxDB must not open in the native path.");
   },
 }));
-vi.mock("../native/client", () => ({
-  hasNativeClient: () => true,
-  nativeRequest: (method: string, params: unknown) =>
-    mocks.core!.request(method, params),
-}));
+vi.mock("../native/client", () => {
+  const nativeRequest = (method: string, params: unknown) =>
+    mocks.core!.request(method, params);
+  return {
+    hasNativeClient: () => true,
+    nativeRequest,
+    pageCore: () => ({ server: "local", request: nativeRequest }),
+  };
+});
 vi.mock("../api", () => ({
   ApiError: class extends Error {},
   syncGet: mocks.syncGet,

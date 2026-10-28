@@ -2,7 +2,6 @@ import * as defaultSessionCosts from "../usage/sessionCostCache";
 import * as defaultUploads from "../sync/uploads";
 import { defaultServerAudio } from "../native/serverAudio";
 import { draftsForServer } from "../native/draftSource";
-import { isRemoteServerView } from "./environment";
 import * as defaultRecordings from "../dictation/storage";
 import * as defaultLocalDrafts from "../sync/localDraft";
 import { serverStorageEventKey } from "./storage";
@@ -31,9 +30,20 @@ import * as defaultSync from "../sync/client";
 import { defaultSubscriptions as defaultResources } from "../sync/subscriptions/events";
 import * as defaultTranscripts from "../sync/transcriptCache";
 import * as defaultTokenRates from "../usage/tokenRate";
-import type { ServerServices } from "./serverServices";
+import { coreStores, type ServerServices } from "./serverServices";
+import { hasNativeClient, pageCore } from "../native/client";
 
 const Context = createContext<ServerServices | null>(null);
+
+// A server view page has one owner. Outside a provider, the core of that
+// server keeps its queue, files, recordings and drafts.
+let pageStores: ReturnType<typeof coreStores> | undefined;
+function pageCoreStores() {
+  if (!hasNativeClient()) return undefined;
+  return (pageStores ??= coreStores(pageCore(), () =>
+    defaultSync.outboxDatabase(),
+  ));
+}
 
 /** A chat/project subtree receives the services of its own resource owner. */
 export function ServerServicesProvider({
@@ -76,12 +86,19 @@ export const useServerTranscripts = () =>
 export const useServerTokenRates = () =>
   useServerServices()?.tokenRates ?? defaultTokenRates;
 
+/** The client core of the server of this subtree, or undefined without one. */
+export const useServerCore = () =>
+  useServerServices()?.core ?? (hasNativeClient() ? pageCore() : undefined);
+
 export const useServerOutbox = () =>
-  useServerServices()?.outbox ?? defaultOutbox;
+  useServerServices()?.outbox ?? pageCoreStores()?.outbox ?? defaultOutbox;
 
 export function useServerDrafts() {
   const services = useServerServices();
-  const useDrafts = services?.useDrafts ?? draftsForServer(!isRemoteServerView);
+  const useDrafts =
+    services?.useDrafts ??
+    pageCoreStores()?.useDrafts ??
+    draftsForServer(undefined);
   return useDrafts();
 }
 
@@ -113,13 +130,15 @@ export const useServerStorageEventKey = () =>
   useServerServices()?.storageEventKey ?? serverStorageEventKey;
 
 export const useServerRecordings = () =>
-  useServerServices()?.recordings ?? defaultRecordings;
+  useServerServices()?.recordings ??
+  pageCoreStores()?.recordings ??
+  defaultRecordings;
 
 export const useServerAudio = () =>
   useServerServices()?.audio ?? defaultServerAudio;
 
 export const useServerUploads = () =>
-  useServerServices()?.uploads ?? defaultUploads;
+  useServerServices()?.uploads ?? pageCoreStores()?.uploads ?? defaultUploads;
 
 export const useServerSessionCosts = () =>
   useServerServices()?.sessionCosts ?? defaultSessionCosts;

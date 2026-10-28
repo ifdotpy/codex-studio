@@ -1,4 +1,5 @@
-import { nativeRequest } from "./client";
+import { localCore, type CoreClient } from "./client";
+import { requestIdentity } from "../servers/pairing";
 
 import type { HttpResponse } from "./host";
 
@@ -15,9 +16,11 @@ function waitFor<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
   });
 }
 
+/** One API request through the client core of the server at `expectedOrigin`. */
 export async function nativeFetch(
   request: Request,
   expectedOrigin: string,
+  core: CoreClient = localCore,
 ): Promise<Response> {
   request.signal.throwIfAborted();
   const url = new URL(request.url);
@@ -33,6 +36,13 @@ export async function nativeFetch(
     throw new Error("The native API accepts only GET and POST requests.");
   if (request.headers.get("Accept") === "text/event-stream")
     throw new Error("Native event streams use NativeEventSource.");
+  // A paired server checks the signed request identity. A write keeps the
+  // identity of its body, so a resend after a lost reply is the same request.
+  const requestId =
+    request.headers.get("X-Studio-Request-Id") ??
+    (core.server !== "local" && request.method === "POST"
+      ? await waitFor(requestIdentity(request), request.signal)
+      : undefined);
   let body: unknown;
   if (request.method === "POST") {
     const text = await waitFor(request.text(), request.signal);
@@ -40,11 +50,11 @@ export async function nativeFetch(
   }
   request.signal.throwIfAborted();
   const reply = await waitFor(
-    nativeRequest<HttpResponse>("api.request", {
+    core.request<HttpResponse>("api.request", {
       path: url.pathname + url.search,
       method: request.method,
       body,
-      requestId: request.headers.get("X-Studio-Request-Id") ?? undefined,
+      requestId,
       apiSchema: request.headers.get("X-Studio-API-Schema") ?? undefined,
       workspaceId: request.headers.get("X-Canvas-Workspace") ?? undefined,
       etag: request.headers.get("If-None-Match") ?? undefined,
