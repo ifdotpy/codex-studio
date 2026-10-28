@@ -99,6 +99,8 @@ pub(crate) async fn plan(
                 studio_runtime_store::StoreError::InvalidStoredObject { table, id } => {
                     invalid_stored(table, &id)
                 }
+                studio_runtime_store::StoreError::RequestResult(error) => error.into(),
+                studio_runtime_store::StoreError::Outbox(error) => error.into(),
                 studio_runtime_store::StoreError::StateDirectory(_)
                 | studio_runtime_store::StoreError::AlreadyOwned
                 | studio_runtime_store::StoreError::MissingDatabase(_)
@@ -296,6 +298,7 @@ pub(crate) fn work_request_signature(
 
 pub(crate) fn write_error(error: EventWriteError) -> ApiError {
     match error {
+        EventWriteError::RequestResult(error) => error.into(),
         EventWriteError::InvalidResultSchema(message) => {
             ApiError::new(StatusCode::BAD_REQUEST, message)
         }

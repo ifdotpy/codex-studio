@@ -372,6 +372,8 @@ fn store_api_error(error: StoreError) -> ApiError {
         | StoreError::InvalidSyncObjectField { scope, id, .. } => {
             ApiError::invalid_stored(&scope, &id)
         }
+        StoreError::RequestResult(error) => error.into(),
+        StoreError::Outbox(error) => error.into(),
         StoreError::StateDirectory(_)
         | StoreError::AlreadyOwned
         | StoreError::MissingDatabase(_)
