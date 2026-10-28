@@ -1,5 +1,7 @@
 //! Execution evidence shares the lifecycle transaction; no commits or provider retries here.
-use crate::request_results::{Admission, AdmittedRequest, RequestResults, ResultEnvelope};
+use crate::request_results::{
+    Admission, AdmittedRequest, RequestResultError, RequestResults, ResultEnvelope,
+};
 use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
 use crate::{AgentRecord, StoreError, StoreResult};
 use rusqlite::{OptionalExtension, Transaction, params};
@@ -258,7 +260,10 @@ impl ExecutionHistoryRepository {
             reply: result,
             references: vec![id.into()],
         };
-        let saved = RequestResults::settle(tx, &admitted, &envelope).map_err(StoreError::from)?;
+        let saved = RequestResults::settle(tx, &admitted, &envelope).map_err(|error| match error {
+            RequestResultError::Conflict { .. } => Self::invalid("runtime_execution_attempts", id),
+            other => StoreError::from(other),
+        })?;
         if serde_json::from_str::<ResultEnvelope<Value>>(&saved.result)? != envelope {
             return Err(Self::invalid("runtime_execution_attempts", id));
         }
@@ -876,6 +881,17 @@ mod tests {
             )
             .is_err()
         );
+        assert!(matches!(
+            ExecutionHistoryRepository::save_receipt(
+                &tx,
+                "attempt",
+                ExecutionReceiptKind::StartResult,
+                json!({"changed":true}),
+                json!(false),
+            ),
+            Err(StoreError::InvalidSyncObject { scope, id })
+                if scope == "runtime_execution_attempts" && id == "attempt"
+        ));
         assert!(
             ExecutionHistoryRepository::attempt(&tx, "attempt")
                 .expect("owner")
