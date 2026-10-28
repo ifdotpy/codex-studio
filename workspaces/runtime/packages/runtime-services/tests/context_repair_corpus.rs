@@ -6,6 +6,211 @@ use studio_runtime_services::context_repair::{
 };
 use studio_runtime_store::{ContextRepairRepository, RuntimeStore, Transaction};
 
+struct RepairSession {
+    path: std::path::PathBuf,
+    calls: std::sync::Mutex<Vec<studio_runtime_providers::Method>>,
+}
+impl studio_runtime_services::account_session_runtime::AccountSessionPort for RepairSession {
+    fn current_scope(
+        &self,
+        _: &str,
+    ) -> Option<studio_runtime_services::account_session_runtime::ConnectionScope> {
+        Some(
+            studio_runtime_services::account_session_runtime::ConnectionScope {
+                account: "default".into(),
+                connection: "connection".into(),
+                generation: 1,
+            },
+        )
+    }
+    fn callback_barrier<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a studio_runtime_services::account_session_runtime::ConnectionScope,
+        _: std::time::Instant,
+    ) -> studio_runtime_services::account_session_runtime::AccountSessionFuture<'a, ()> {
+        Box::pin(async { Ok(()) })
+    }
+    fn provider_request<'a>(
+        &'a self,
+        request: studio_runtime_services::account_session_runtime::ProviderRequest,
+    ) -> studio_runtime_services::account_session_runtime::AccountSessionFuture<
+        'a,
+        studio_runtime_services::account_session_runtime::SessionReceipt,
+    > {
+        Box::pin(async move {
+            use studio_runtime_providers::{Method, RequestId, RequestTicket};
+            use studio_runtime_services::account_session_runtime::{
+                ProviderResponse, SessionOutcome, SessionReceipt,
+            };
+            self.calls.lock().expect("calls").push(request.method);
+            let value = match request.method {
+                Method::ThreadRead => {
+                    json!({"thread":{"id":"11111111-1111-4111-8111-111111111111","status":{"type":"idle"},"path":self.path}})
+                }
+                Method::ThreadTurnsList => {
+                    json!({"data":[{"id":"turn-1","status":"completed","startedAt":1.0,"completedAt":10.0}]})
+                }
+                Method::ThreadFork => json!({"thread":{"id":"new-thread"}}),
+                _ => json!({"data":[],"nextCursor":null}),
+            };
+            let scope = request.expected_scope.expect("scope");
+            Ok(SessionReceipt {
+                scope: scope.clone(),
+                operation: request.operation,
+                outcome: SessionOutcome::Written {
+                    ticket: RequestTicket {
+                        generation: scope.generation,
+                        id: RequestId::Number(1),
+                        method: request.method,
+                    },
+                    response: ProviderResponse::Reply(value),
+                },
+                replayed: false,
+            })
+        })
+    }
+}
+
+struct StopPorts;
+impl studio_runtime_services::agent_lifecycle_runtime::LifecyclePorts for StopPorts {
+    fn stage(
+        &self,
+        _: &Transaction<'_>,
+        _: &studio_runtime_services::agent_lifecycle_runtime::LifecycleEffect,
+    ) -> Result<(), studio_runtime_services::agent_management::ManagementError> {
+        Ok(())
+    }
+    fn committed(
+        &self,
+    ) -> studio_runtime_services::agent_lifecycle_runtime::LifecycleCommitFuture<'_> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+#[tokio::test]
+async fn stop_then_repair_preserves_historical_attempt_ownership() {
+    use std::sync::Arc;
+    use studio_runtime_services::{agent_lifecycle_runtime, agent_management::Action};
+    let root = tempfile::tempdir().expect("fixture");
+    let home = root.path().join("provider");
+    fs::create_dir_all(home.join("sessions")).expect("sessions");
+    let thread = "11111111-1111-4111-8111-111111111111";
+    let path = home
+        .join("sessions")
+        .join(format!("rollout-{thread}.jsonl"));
+    let text = "review ".repeat(600);
+    let message = format!("[Orchestration event: work_review]\n{text}");
+    let records = [
+        json!({"type":"session_meta","payload":{"id":thread},"ordinal":0}),
+        json!({"type":"turn_context","payload":{"turn_id":"turn-1"},"ordinal":1}),
+        json!({"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"},"ordinal":2}),
+        json!({"type":"response_item","payload":{"type":"message","role":"user","id":"item-1","internal_chat_message_metadata_passthrough":{"turn_id":"turn-1"},"content":[{"type":"input_text","text":message}]},"ordinal":3}),
+        json!({"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1","completed_at":10.0},"ordinal":4}),
+    ];
+    fs::write(
+        &path,
+        records
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n",
+    )
+    .expect("history");
+    fs::create_dir_all(root.path().join("state")).expect("state directory");
+    let store = Arc::new(
+        RuntimeStore::open(Some(&root.path().join("state")))
+            .await
+            .expect("store"),
+    );
+    store.transaction(move |tx| {
+        let attempt = json!({"id":"attempt","epoch":1,"events":[],"submitted":true,"turnId":"turn-1"});
+        let agent = json!({"id":"agent","rootId":"agent","isLead":true,"epoch":1,"accountKey":"default","threadId":thread,"provider":"codex","model":"fixture","yoloMode":true,"status":"waiting","autoWake":true,"inFlight":false,"startAttempt":attempt});
+        ContextRepairRepository::put_agent(tx, &agent)?;
+        tx.execute("INSERT INTO runtime_execution_runs(id,agent,account,epoch,thread,turn,created,record) VALUES ('run','agent','default',1,?1,'turn-1',1,?2)", rusqlite::params![thread,json!({"id":"run","agent":"agent","accountKey":"default","epoch":1,"threadId":thread,"turnId":"turn-1","status":"completed","created":1.0}).to_string()])?;
+        tx.execute("INSERT INTO runtime_execution_attempts(id,run,record) VALUES ('attempt','run',?1)", [attempt.to_string()])?;
+        tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,turn_id,error) VALUES ('review','agent','work_review',?1,'delivered',2,1,'turn-1',NULL)", [&text])?;
+        tx.execute("INSERT INTO runtime_event_meta(id,record) VALUES ('review','{}')", [])?;
+        Ok(())
+    }).await.expect("seed");
+    agent_lifecycle_runtime::execute(
+        Arc::clone(&store),
+        &Action::Stop {
+            target: "agent".into(),
+            descendants: false,
+            reason: None,
+            sender: None,
+            sender_epoch: None,
+        },
+        11.0,
+        Arc::new(StopPorts),
+    )
+    .await
+    .expect("stop");
+    let session = RepairSession {
+        path,
+        calls: std::sync::Mutex::new(Vec::new()),
+    };
+    store
+        .transaction(|tx| {
+            tx.execute(
+                "UPDATE runtime_execution_runs SET turn='different-turn' WHERE id='run'",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("change historical owner");
+    assert!(matches!(
+        context_repair::repair_idle_with_broker(
+            Arc::clone(&store),
+            "agent",
+            &home,
+            &session,
+            std::time::Instant::now() + std::time::Duration::from_secs(30)
+        )
+        .await,
+        Err(RepairError::ReceiptHold)
+    ));
+    assert!(
+        !session
+            .calls
+            .lock()
+            .expect("calls")
+            .contains(&studio_runtime_providers::Method::ThreadFork)
+    );
+    store
+        .transaction(|tx| {
+            tx.execute(
+                "UPDATE runtime_execution_runs SET turn='turn-1' WHERE id='run'",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("restore historical owner");
+    let result = context_repair::repair_idle_with_broker(
+        Arc::clone(&store),
+        "agent",
+        &home,
+        &session,
+        std::time::Instant::now() + std::time::Duration::from_secs(30),
+    )
+    .await
+    .expect("repair after stop");
+    assert_eq!(result["repair"]["phase"], "completed");
+    assert_eq!(result["repair"]["source"]["epoch"], 2);
+    assert_eq!(result["repair"]["startAttemptSnapshot"]["epoch"], 1);
+    assert!(
+        session
+            .calls
+            .lock()
+            .expect("calls")
+            .contains(&studio_runtime_providers::Method::ThreadFork)
+    );
+}
+
 fn identity() -> ConnectionIdentity {
     ConnectionIdentity {
         account_key: "default".into(),

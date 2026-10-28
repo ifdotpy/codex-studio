@@ -188,6 +188,7 @@ pub(crate) fn source_terminal_attempt(
     }
     if studio_runtime_store::truthy(agent.get("deletedAt"))
         || agent["epoch"] != epoch
+        || snapshot["epoch"] != epoch
         || agent["accountKey"].as_str().unwrap_or("default") != account
         || !exact
         || destination != agent["threadId"].as_str().unwrap_or_default()
@@ -1505,6 +1506,9 @@ async fn repair_idle_with_broker_inner(
                 return Err(RepairError::ReceiptHold);
             }
             ensure_local_idle(tx, &current)?;
+            if !ContextRepairRepository::validate_terminal_owner(tx, &current["contextRepair"])? {
+                return Err(RepairError::ReceiptHold);
+            }
             current["contextRepair"]["phase"] = json!(ContextRepairPhase::Submitted);
             current["contextRepair"]["rpcMethod"] = json!("thread/fork");
             current["contextRepair"]["forkOperation"] =

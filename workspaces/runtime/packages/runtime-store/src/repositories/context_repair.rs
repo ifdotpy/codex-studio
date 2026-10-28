@@ -66,6 +66,18 @@ fn capture_bytes(used: &mut usize, value: &Value, maximum_bytes: usize) -> Store
 }
 
 impl ContextRepairRepository {
+    /// Check the original attempt and native turn before dispatching the fork.
+    pub fn validate_terminal_owner(tx: &Transaction<'_>, repair: &Value) -> StoreResult<bool> {
+        if repair["nativeTerminalReceipt"]["turnId"].is_null() {
+            return Ok(true);
+        }
+        Ok(tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM runtime_execution_attempts a JOIN runtime_execution_runs r ON r.id=a.run WHERE a.id=?1 AND json_extract(a.record,'$.epoch')=?2 AND r.epoch=?2 AND r.agent=?3 AND r.account=?4 AND r.thread=?5 AND r.turn=?6 AND json_type(a.record,'$.terminalRepair') IS NULL)",
+            params![repair["startAttemptSnapshot"]["id"].as_str(), repair["startAttemptSnapshot"]["epoch"].as_i64(), repair["source"]["id"].as_str(), repair["source"]["accountKey"].as_str(), repair["source"]["threadId"].as_str(), repair["nativeTerminalReceipt"]["turnId"].as_str()],
+            |row| row.get(0),
+        )?)
+    }
+
     /// Long-lived callback authority belongs to the original execution attempt.
     pub fn save_terminal_provenance(
         tx: &Transaction<'_>,
@@ -73,8 +85,8 @@ impl ContextRepairRepository {
         record: &Value,
     ) -> StoreResult<()> {
         let changed = tx.execute(
-            "UPDATE runtime_execution_attempts SET record=json_set(record,'$.terminalRepair',json(?1)) WHERE id=?2 AND json_extract(record,'$.epoch')=?3 AND run IN (SELECT id FROM runtime_execution_runs WHERE agent=?4 AND account=?5 AND thread=?6) AND (json_type(record,'$.terminalRepair') IS NULL OR json_extract(record,'$.terminalRepair')=json(?1))",
-            params![record.to_string(), attempt, record["source"]["epoch"].as_i64(),record["source"]["id"].as_str(),record["source"]["accountKey"].as_str(),record["source"]["threadId"].as_str()],
+            "UPDATE runtime_execution_attempts SET record=json_set(record,'$.terminalRepair',json(?1)) WHERE id=?2 AND json_extract(record,'$.epoch')=?3 AND run IN (SELECT id FROM runtime_execution_runs WHERE agent=?4 AND account=?5 AND thread=?6 AND epoch=?3 AND turn=?7) AND (json_type(record,'$.terminalRepair') IS NULL OR json_extract(record,'$.terminalRepair')=json(?1))",
+            params![record.to_string(), attempt, record["startAttemptSnapshot"]["epoch"].as_i64(),record["source"]["id"].as_str(),record["source"]["accountKey"].as_str(),record["source"]["threadId"].as_str(),record["proof"]["turnId"].as_str()],
         )?;
         if changed != 1 {
             return Err(StoreError::RecordContract(
@@ -189,12 +201,12 @@ mod tests {
     #[test]
     fn terminal_provenance_remains_on_its_exact_execution_owner() {
         let mut db = Connection::open_in_memory().expect("database");
-        db.execute_batch("CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,agent TEXT,account TEXT,thread TEXT);
-            INSERT INTO runtime_execution_runs VALUES('run','agent','account','source');
+        db.execute_batch("CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,agent TEXT,account TEXT,thread TEXT,epoch INTEGER,turn TEXT);
+            INSERT INTO runtime_execution_runs VALUES('run','agent','account','source',2,'turn');
             CREATE TABLE runtime_execution_attempts(id TEXT PRIMARY KEY,run TEXT,record TEXT);
             INSERT INTO runtime_execution_attempts VALUES('attempt','run','{\"id\":\"attempt\",\"epoch\":2}');").expect("owners");
         let tx = db.transaction().expect("transaction");
-        let proof = json!({"operationId":"repair","source":{"id":"agent","accountKey":"account","threadId":"source","epoch":2},"proof":{"turnId":"turn","threadId":"source","status":"completed"},"startAttemptSnapshot":{"id":"attempt"},"connectionId":"old-connection","connectionGeneration":7,"newThreadId":"destination","phase":"completed"});
+        let proof = json!({"operationId":"repair","source":{"id":"agent","accountKey":"account","threadId":"source","epoch":2},"proof":{"turnId":"turn","threadId":"source","status":"completed"},"startAttemptSnapshot":{"id":"attempt","epoch":2},"connectionId":"old-connection","connectionGeneration":7,"newThreadId":"destination","phase":"completed"});
         ContextRepairRepository::save_terminal_provenance(&tx, "attempt", &proof)
             .expect("save authority");
         ContextRepairRepository::save_terminal_provenance(&tx, "attempt", &proof)
