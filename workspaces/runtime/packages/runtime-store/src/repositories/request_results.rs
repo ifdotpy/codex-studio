@@ -33,15 +33,6 @@ pub struct ResultEnvelope<R> {
     pub references: Vec<String>,
 }
 
-/// Exact outbox identity authorized for abandonment by the domain owner.
-pub struct AbandonedOutbox<'a> {
-    pub id: &'a str,
-    pub signature: &'a str,
-    pub kind: studio_runtime_schema::persistence::OutboxKind,
-    pub owner_kind: studio_runtime_schema::persistence::OwnerKind,
-    pub owner_id: &'a str,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AbandonedResult {
     Abandoned { outcome: AbandonedOutcome },
@@ -120,40 +111,22 @@ pub struct RequestResults;
 impl RequestResults {
     /// Settle an explicitly authorized abandonment and remove its exact outbox
     /// in the same owner transaction. The effect may have happened.
-    pub fn settle_abandoned(
+    pub fn settle_abandoned<P>(
         tx: &Transaction<'_>,
-        effect: &AbandonedOutbox<'_>,
-        actor: Option<String>,
+        row: &crate::outbox::OutboxRow<P>,
     ) -> crate::StoreResult<()> {
-        let created: Option<i64> = tx.query_row(
-            "SELECT created FROM runtime_outbox WHERE id=?1 AND signature=?2 AND kind=?3 AND owner_kind=?4 AND owner_id=?5 AND status!=?6",
-            params![effect.id, effect.signature, effect.kind, effect.owner_kind, effect.owner_id, studio_runtime_schema::persistence::OutboxStatus::Unrecognized],
-            |row| row.get(0),
-        ).optional()?;
-        let created = created.ok_or(crate::StoreError::RecordContract(
-            "abandoned outbox identity mismatch",
-        ))?;
         let result = ResultEnvelope {
-            actor,
+            actor: (row.owner_kind == studio_runtime_schema::persistence::OwnerKind::Agent)
+                .then(|| row.owner_id.clone()),
             reply: AbandonedResult::Abandoned {
                 outcome: AbandonedOutcome::Unknown,
             },
             references: vec![],
         };
-        let saved = Self::settle_exact(tx, effect.id, effect.signature, created, &result)
+        Self::settle_exact(tx, &row.id, &row.signature, row.created, &result)
             .map_err(crate::StoreError::from)?;
-        if serde_json::from_str::<ResultEnvelope<AbandonedResult>>(&saved.result)? != result {
-            return Err(crate::StoreError::RecordContract(
-                "abandoned result conflicts with prior result",
-            ));
-        }
-        let removed = crate::outbox::Outbox::delete_settled(tx, effect.id, effect.signature)
+        crate::outbox::Outbox::delete_settled(tx, &row.id, &row.signature)
             .map_err(crate::StoreError::from)?;
-        if !removed {
-            return Err(crate::StoreError::RecordContract(
-                "abandoned outbox disappeared",
-            ));
-        }
         Ok(())
     }
     /// Authorized status recovery only: exact imported PK first, then canonical
@@ -332,21 +305,24 @@ mod tests {
         let tx = db.transaction().expect("transaction");
         tx.execute("INSERT INTO runtime_outbox(id,kind,owner_kind,owner_id,signature,status,payload,created) VALUES('effect',?1,?2,'owner','sig',?3,'{}',1)", params![OutboxKind::ProviderCall, OwnerKind::Agent, OutboxStatus::Unknown]).expect("outbox");
         let token = AdmittedRequest::from_migration("effect", "sig", 1);
-        let mut effect = AbandonedOutbox {
-            id: "effect",
-            signature: "sig",
-            kind: OutboxKind::ProviderCall,
-            owner_kind: OwnerKind::Agent,
-            owner_id: "wrong",
-        };
-        assert!(RequestResults::settle_abandoned(&tx, &effect, None).is_err());
+        let effect: crate::outbox::OutboxRow<serde_json::Value> =
+            crate::outbox::Outbox::get(&tx, "effect")
+                .expect("row")
+                .expect("exists");
+        tx.execute(
+            "INSERT INTO request_results VALUES('effect','different','{}',1)",
+            [],
+        )
+        .expect("conflict");
+        assert!(RequestResults::settle_abandoned(&tx, &effect).is_err());
         assert!(
-            RequestResults::admitted_result(&tx, &token)
-                .expect("result")
-                .is_none()
+            crate::outbox::Outbox::get::<serde_json::Value>(&tx, "effect")
+                .expect("row")
+                .is_some()
         );
-        effect.owner_id = "owner";
-        RequestResults::settle_abandoned(&tx, &effect, None).expect("settle");
+        tx.execute("DELETE FROM request_results WHERE id='effect'", [])
+            .expect("clear conflict");
+        RequestResults::settle_abandoned(&tx, &effect).expect("settle");
         let saved = RequestResults::admitted_result(&tx, &token)
             .expect("read")
             .expect("saved");
