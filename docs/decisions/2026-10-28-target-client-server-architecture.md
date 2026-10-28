@@ -163,7 +163,7 @@ Invalid state must be impossible to express in Rust, TypeScript, and SQLite.
 
 - **One owner: the Rust type.** TypeScript types come from it through the generated
   OpenAPI contract (`pnpm run contracts:generate`). SQLite constraints come from it too:
-  a generated `CHECK` for each enum column, and a parity check that fails when a column
+  a generated check trigger for each enum column, and a parity check that fails when a column
   and its Rust enum differ. No language keeps a hand-written copy of a value list.
 - **Enums with data instead of a status string and optional fields.** A state is one
   variant that carries exactly the fields it needs.
@@ -174,13 +174,29 @@ Invalid state must be impossible to express in Rust, TypeScript, and SQLite.
 - **Strict decoding.** Rows decode with `serde::Deserialize` straight into the type,
   without an intermediate `serde_json::Value`. An unknown variant is an error, not a
   default. Old data changes through a migration, not through a fallback in the decoder.
-- **Columns instead of JSON records.** A row stores typed columns. The SQLite form of an
-  enum is a variant column with a `CHECK`, plus columns that the `CHECK` requires for
-  that variant and forbids for the others.
+- **Columns for state, a typed payload for content.** State and everything that is
+  searched or filtered are typed columns. The SQLite form of an enum is a variant column
+  plus columns that are required for that variant and forbidden for the others. Nested
+  content that is only shown (tool call arguments, item bodies) is one JSON payload
+  column that decodes straight into a struct.
+- **Checks as generated triggers.** SQLite cannot change a table `CHECK` without a table
+  rebuild, and a rebuild of a large table (`runtime_items` has 1.5M rows) blocks the
+  single writer. The checks are generated `BEFORE INSERT` and `BEFORE UPDATE` triggers,
+  which a migration replaces in milliseconds.
+- **Strict inside, tolerant at the provider boundary.** Codex and Claude add item types
+  in new releases. Provider data decodes into a variant `Unknown { kind, raw }` when its
+  type is new. Studio stores it and shows it as is. Inside Studio an unknown variant is
+  an error.
+- **Internally tagged enums only** (`#[serde(tag = "kind")]`). Other serde forms produce
+  poor generated TypeScript types.
+- **Version skew.** An older server cannot decode a new variant from a newer peer. All
+  paired servers update together.
 
 Example, the delivery state of a message:
 
 ```rust
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 enum Delivery {
     Queued,
     Submitted { turn: TurnId },
@@ -191,8 +207,16 @@ enum Delivery {
 ```
 
 ```sql
-delivery TEXT NOT NULL CHECK (delivery IN ('queued','submitted','applied','withdrawn','unknown')),
-turn TEXT CHECK ((delivery IN ('submitted','applied')) = (turn IS NOT NULL)),
+-- Columns: delivery TEXT NOT NULL, turn TEXT, at REAL, since REAL.
+CREATE TRIGGER messages_delivery_insert BEFORE INSERT ON messages
+WHEN NOT (
+  NEW.delivery IN ('queued','submitted','applied','withdrawn','unknown')
+  AND (NEW.delivery IN ('submitted','applied')) = (NEW.turn IS NOT NULL)
+  AND (NEW.delivery IN ('applied','withdrawn')) = (NEW.at IS NOT NULL)
+  AND (NEW.delivery = 'unknown') = (NEW.since IS NOT NULL)
+)
+BEGIN SELECT RAISE(ABORT, 'invalid delivery state'); END;
+-- The same trigger exists for BEFORE UPDATE.
 ```
 
 ### One owner for each kind of data
