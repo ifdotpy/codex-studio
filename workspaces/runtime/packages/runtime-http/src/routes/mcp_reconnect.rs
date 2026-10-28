@@ -1,9 +1,28 @@
 //! Human-authorized, durable reconnect of one server on one retained session.
+use crate::generated::{McpReconnectResponse, McpReconnectResponseStatus};
 use axum::{Json, extract::State, http::StatusCode};
 use serde_json::{Value, json};
 use studio_runtime_providers::ProviderKind;
+use studio_runtime_schema::persistence::{OutboxKind, OutboxStatus, OwnerKind};
 use studio_runtime_services::account_session_runtime::ConnectionScope;
-use studio_runtime_store::{EventWriteRepository, WorkspaceViewsRepository};
+use studio_runtime_services::event_write::{
+    CallerAdmission, RequestKey, begin_request, replay_request, settle_request,
+};
+use studio_runtime_store::WorkspaceViewsRepository;
+use studio_runtime_store::outbox::{Outbox, OutboxRow};
+use studio_runtime_store::request_results::AdmittedRequest;
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ReconnectAttempt {
+    request: AdmittedRequest,
+}
+enum ReconnectAdmission {
+    Send(AdmittedRequest),
+    Replay(McpReconnectResponse),
+}
+fn unknown() -> McpReconnectResponse {
+    McpReconnectResponse { status: McpReconnectResponseStatus::Unknown, message: "Reconnect outcome is unconfirmed. Check this request again; do not start another reconnect.".to_owned() }
+}
 
 use super::{
     extractors::ApiJson,
@@ -55,13 +74,13 @@ async fn reconnect(
     let result = tokio::spawn(execute(state, body))
         .await
         .map_err(|_| ApiError::internal())??;
-    Ok(Json(super::generated_json(result)?))
+    Ok(Json(result))
 }
 
 async fn execute(
     state: HttpState,
     body: crate::generated::McpReconnectRequest,
-) -> Result<Value, ApiError> {
+) -> Result<McpReconnectResponse, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     // Retained receipts use the canonical JSON object encoding, including its
     // key ordering and normalized UUID. Keep those bytes across typed adapters.
@@ -117,26 +136,34 @@ async fn execute(
     let claim_signature = signature.clone();
     let claim_id = id.clone();
     let claim_expected = expected.clone();
-    let replay = store.transaction_with_error(move |tx| {
-        let agent = WorkspaceViewsRepository::agent(tx, &claim_id).map_err(ApiError::stored)?
-            .ok_or_else(changed)?.value();
-        if !matches_agent(&agent, &claim_expected) { return Err(changed()); }
-        if let Some(prior) = EventWriteRepository::receipt(tx, &claim_key).map_err(ApiError::stored)? {
-            if prior.signature != claim_signature {
-                return Err(ApiError::new(StatusCode::CONFLICT, "This reconnect request identity has different content."));
+    let root = body.request_id.to_string();
+    let claim_root = root.clone();
+    let now_ms = (studio_runtime_services::event_write::unix_time()
+        .map_err(|_| ApiError::internal())?
+        * 1000.0) as i64;
+    let replay = store
+        .transaction_with_error(move |tx| {
+            let agent = WorkspaceViewsRepository::agent(tx, &claim_id)
+                .map_err(ApiError::stored)?
+                .ok_or_else(changed)?
+                .value();
+            if !matches_agent(&agent, &claim_expected) {
+                return Err(changed());
             }
-            let saved = EventWriteRepository::receipt(tx, &format!("{claim_key}:result")).map_err(ApiError::stored)?;
-            return Ok(Some(match saved {
-                Some(saved) => serde_json::from_str(&saved.result).map_err(|_| ApiError::internal())?,
-                None => json!({"status":"unknown","message":"Reconnect outcome is unconfirmed. Check this request again; do not start another reconnect."}),
-            }));
-        }
-        EventWriteRepository::put_receipt(tx, &claim_key, &claim_signature, "{\"status\":\"submitted\"}").map_err(ApiError::stored)?;
-        Ok(None)
-    }).await?;
-    if let Some(replay) = replay {
-        return Ok(replay);
-    }
+            claim_request(
+                tx,
+                &claim_key,
+                &claim_signature,
+                &claim_root,
+                &claim_id,
+                now_ms,
+            )
+        })
+        .await?;
+    let admitted = match replay {
+        ReconnectAdmission::Replay(reply) => return Ok(reply),
+        ReconnectAdmission::Send(request) => request,
+    };
     let ticket = studio_runtime_services::workspace_operations::ProviderTicket {
         operation: key.clone(),
         agent: id,
@@ -157,30 +184,103 @@ async fn execute(
         &key,
         "mcpServer/reconnect",
         json!({"threadId":ticket.thread,"name":body.name}),
+        (&root, None),
     )
     .await
     {
-        Ok(_) => json!({"status":"completed","message":"Reconnect completed."}),
+        Ok(_) => McpReconnectResponse {
+            status: McpReconnectResponseStatus::Completed,
+            message: "Reconnect completed.".to_owned(),
+        },
         Err(error) => {
             // Keep uncertain outcomes explicit and retain the same request ID.
             // The provider adapter reports all failures as typed HTTP errors.
             let (status, message) = (error.status(), error.message());
-            json!({"status":if status == StatusCode::CONFLICT {"unknown"} else {"failed"},"message":message})
+            McpReconnectResponse {
+                status: if status == StatusCode::CONFLICT {
+                    McpReconnectResponseStatus::Unknown
+                } else {
+                    McpReconnectResponseStatus::Failed
+                },
+                message: message.to_owned(),
+            }
         }
     };
     let saved = result.clone();
     store
         .transaction_with_error(move |tx| {
-            EventWriteRepository::put_receipt(
-                tx,
-                &format!("{key}:result"),
-                &signature,
-                &saved.to_string(),
-            )
-            .map_err(ApiError::stored)
+            settle_request(tx, &admitted, Some(&ticket.agent), &saved)?;
+            // An unconfirmed provider call remains an obligation for its owner.
+            if saved.status != McpReconnectResponseStatus::Unknown {
+                Outbox::delete_settled(tx, &key, &signature)?;
+            }
+            Ok::<_, ApiError>(())
         })
         .await?;
     Ok(result)
+}
+
+fn claim_request(
+    tx: &studio_runtime_store::Transaction<'_>,
+    key: &str,
+    signature: &str,
+    root: &str,
+    agent: &str,
+    now_ms: i64,
+) -> Result<ReconnectAdmission, ApiError> {
+    if let Some(saved) = replay_request::<McpReconnectResponse>(tx, key, signature, now_ms)? {
+        return Ok(ReconnectAdmission::Replay(saved.reply));
+    }
+    if let Some(attempt) = Outbox::get::<ReconnectAttempt>(tx, key)? {
+        if attempt.signature != signature || attempt.owner_id != agent {
+            return Err(ApiError::new(
+                StatusCode::CONFLICT,
+                "This request ID has different content",
+            ));
+        }
+        if let Some(saved) = replay_request::<McpReconnectResponse>(
+            tx,
+            attempt.payload.request.id(),
+            signature,
+            now_ms,
+        )? {
+            return Ok(ReconnectAdmission::Replay(saved.reply));
+        }
+        return Ok(ReconnectAdmission::Replay(unknown()));
+    }
+    let request = match begin_request(
+        tx,
+        RequestKey::new("mcp-reconnect", &[agent], root)
+            .raw(key)
+            .operation(&["reconnect"]),
+        signature,
+        now_ms,
+    )? {
+        CallerAdmission::Replay(reply) => return Ok(ReconnectAdmission::Replay(reply)),
+        CallerAdmission::Fresh(request) => request,
+    };
+    Outbox::put(
+        tx,
+        &OutboxRow {
+            id: key.to_owned(),
+            kind: OutboxKind::McpReconnect,
+            owner_kind: OwnerKind::Agent,
+            owner_id: agent.to_owned(),
+            request_id: Some(request.id().to_owned()),
+            signature: signature.to_owned(),
+            status: OutboxStatus::Unknown,
+            account: None,
+            stream_id: None,
+            generation: None,
+            ordinal: None,
+            next_at: None,
+            payload: ReconnectAttempt {
+                request: request.clone(),
+            },
+            created: request.created(),
+        },
+    )?;
+    Ok(ReconnectAdmission::Send(request))
 }
 
 inventory::submit! {crate::routes::manifest::RouteModuleRegistration{name:"mcp_reconnect",routes:Some(routes),dependencies:&[]}}
@@ -190,8 +290,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn reconnect_non_v7_miss_is_expired() {
+        let mut db = studio_runtime_store::Connection::open_in_memory().expect("database");
+        studio_runtime_store::receipt_schema::create(&db).expect("schema");
+        db.execute_batch(
+            "CREATE TABLE runtime_orchestration_settings(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
+        )
+        .expect("owner");
+        let tx = db.transaction().expect("transaction");
+        let error = match claim_request(
+            &tx,
+            "mcp-reconnect:old-id",
+            "signature",
+            "old-id",
+            "agent",
+            1000,
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("opaque miss must expire"),
+        };
+        assert_eq!(error.status(), StatusCode::GONE);
+        assert!(error.message().contains("expired"));
+    }
+
+    #[test]
     fn reconnect_helpers_preserve_request_types() {
-        fn typed_execute<F: Future<Output = Result<Value, ApiError>>>(
+        fn typed_execute<F: Future<Output = Result<McpReconnectResponse, ApiError>>>(
             _: fn(HttpState, crate::generated::McpReconnectRequest) -> F,
         ) {
         }

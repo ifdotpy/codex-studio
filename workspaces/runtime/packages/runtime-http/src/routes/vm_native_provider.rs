@@ -491,6 +491,8 @@ mod tests {
         let scope = provider.current_scope("acct").unwrap();
         let receipt = provider
             .provider_request(ProviderRequest {
+                root_request_id: studio_runtime_schema::persistence::RequestIdentity::issue_root(),
+                admitted_request: None,
                 account: "acct".into(),
                 operation: "op-1".into(),
                 actor: None,
@@ -533,6 +535,8 @@ mod tests {
         let provider = VmNativeProvider::new(guest, sink, "acct", "vm-agent", 4);
         let receipt = provider
             .provider_request(ProviderRequest {
+                root_request_id: studio_runtime_schema::persistence::RequestIdentity::issue_root(),
+                admitted_request: None,
                 account: "acct".into(),
                 operation: "op-poll-failure".into(),
                 actor: None,
@@ -562,6 +566,8 @@ mod tests {
         let provider = VmNativeProvider::new(guest, sink, "acct", "vm-agent", 4);
         let receipt = provider
             .provider_request(ProviderRequest {
+                root_request_id: studio_runtime_schema::persistence::RequestIdentity::issue_root(),
+                admitted_request: None,
                 account: "acct".into(),
                 operation: "op-expired".into(),
                 actor: None,
@@ -594,6 +600,8 @@ mod tests {
         let provider = VmNativeProvider::new(guest, sink, "acct", "vm-agent", 4);
         let receipt = provider
             .provider_request(ProviderRequest {
+                root_request_id: studio_runtime_schema::persistence::RequestIdentity::issue_root(),
+                admitted_request: None,
                 account: "acct".into(),
                 operation: "op-notification".into(),
                 actor: None,
@@ -632,6 +640,8 @@ mod tests {
         let provider = VmNativeProvider::new(guest.clone(), sink, "acct", "vm-agent", 4);
         let receipt = provider
             .provider_request(ProviderRequest {
+                root_request_id: studio_runtime_schema::persistence::RequestIdentity::issue_root(),
+                admitted_request: None,
                 account: "acct".into(),
                 operation: "op-review-notification".into(),
                 actor: None,
@@ -720,6 +730,8 @@ mod tests {
         let provider = VmNativeProvider::new(guest.clone(), sink, "acct", "vm-agent", 4);
         let receipt = provider
             .provider_request(ProviderRequest {
+                root_request_id: studio_runtime_schema::persistence::RequestIdentity::issue_root(),
+                admitted_request: None,
                 account: "acct".into(),
                 operation: "op-server-requests".into(),
                 actor: None,

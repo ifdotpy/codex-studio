@@ -355,6 +355,9 @@ fn voice_provider_unavailable() -> ApiError {
 fn provider_error(error: voice::provider::VoiceProviderError) -> ApiError {
     use voice::provider::VoiceProviderError as E;
     match error {
+        E::RequestResult(error) => error.into(),
+        E::Outbox(error) => error.into(),
+        E::Provider(_) => ApiError::internal(),
         E::RequiresDependency(dependency) => ApiError::new(
             StatusCode::NOT_IMPLEMENTED,
             format!("Not implemented: requires {dependency}"),

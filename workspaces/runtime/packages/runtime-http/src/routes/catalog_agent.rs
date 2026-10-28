@@ -442,6 +442,7 @@ async fn native_command_cancel(
             &list_key,
             "thread/backgroundTerminals/list",
             params.clone(),
+            ("", None),
         )
         .await?;
         let Some(entries) = page.get("data").and_then(Value::as_array) else {
@@ -510,6 +511,7 @@ async fn native_command_cancel(
         &request.ticket.request,
         &request.method,
         request.params.clone(),
+        (&request.root_request_id, request.admitted_request.as_ref()),
     )
     .await?;
     if result.get("terminated") != Some(&Value::Bool(true)) {
@@ -539,6 +541,10 @@ pub(super) async fn provider_call(
     operation: &str,
     method: &str,
     params: Value,
+    request_identity: (
+        &str,
+        Option<&studio_runtime_store::request_results::AdmittedRequest>,
+    ),
 ) -> Result<Value, ApiError> {
     use studio_runtime_services::account_session_runtime::{ProviderRequest, ProviderResponse};
     let method_value = studio_runtime_providers::Method::from_wire(method).ok_or_else(|| {
@@ -558,6 +564,8 @@ pub(super) async fn provider_call(
     let expected_operation = operation.clone();
     let receipt = port
         .provider_request(ProviderRequest {
+            root_request_id: request_identity.0.to_owned(),
+            admitted_request: request_identity.1.cloned(),
             account,
             operation: operation.clone(),
             actor: Some(actor),

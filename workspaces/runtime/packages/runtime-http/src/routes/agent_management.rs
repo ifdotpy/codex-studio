@@ -1100,6 +1100,8 @@ mod native_review_preflight_tests {
         let scope = provider.current_scope("vm-account").expect("guest scope");
         let receipt = provider
             .provider_request(ProviderRequest {
+                root_request_id: studio_runtime_schema::persistence::RequestIdentity::issue_root(),
+                admitted_request: None,
                 account: "vm-account".into(),
                 operation: "vm-native-op".into(),
                 actor: None,
