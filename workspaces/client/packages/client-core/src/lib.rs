@@ -36,6 +36,7 @@ pub mod sync;
 pub mod terminal;
 mod tls;
 pub mod uploads;
+pub mod usage;
 pub mod views;
 pub mod voice;
 pub mod voice_audio;

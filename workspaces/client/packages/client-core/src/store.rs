@@ -59,6 +59,7 @@ impl Store {
         crate::draft_store::initialize(&connection)?;
         crate::uploads::initialize(&connection)?;
         crate::dictation::initialize(&connection)?;
+        crate::usage::initialize(&connection)?;
         Ok(Self { connection })
     }
 
@@ -96,6 +97,9 @@ impl Store {
             }
             method if method.starts_with("projection.") || method.starts_with("identity.") => {
                 Ok(crate::projections::dispatch(&self.connection, request))
+            }
+            method if method.starts_with("usage.") => {
+                Ok(crate::usage::dispatch(&mut self.connection, request))
             }
             method if method.starts_with("actions.") => {
                 Ok(crate::actions::stored(&mut self.connection, request))
