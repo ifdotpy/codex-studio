@@ -349,9 +349,6 @@ impl Controls {
         Self { store, session }
     }
     pub async fn execute(&self, request: ControlRequest) -> Result<Value> {
-        if let Some(result) = self.store.replay(request.clone()).await? {
-            return result;
-        }
         let _running =
             crate::checkpoints::RestoreExecution::acquire(self.store.execution_key(&request))
                 .map_err(|_| ControlError::Busy)?;
