@@ -5079,11 +5079,11 @@ mod actor_tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn nonempty_file_submission_rechecks_cwd_and_replays_without_filesystem_work() {
-        let request_root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
         let state = tempfile::tempdir().expect("state directory");
         let project = tempfile::tempdir().expect("project directory");
         let changed = tempfile::tempdir().expect("changed project directory");
         let store = RuntimeStore::open(Some(state.path())).await.expect("store");
+        let request_root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
         let cwd = project.path().to_string_lossy().into_owned();
         let record = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":1,"status":"running",
             "autoWake":true,"cwd":cwd});
@@ -5124,14 +5124,17 @@ mod actor_tests {
             .expect("cwd changes after preparation");
         let stale = input.clone();
         let refused = store
-            .transaction_with(move |tx| {
-                super::write(
-                    tx,
-                    "lead",
-                    Some(request_root.as_str()),
-                    "signature",
-                    WorkWrite::Submit(stale),
-                )
+            .transaction_with({
+                let request_root = request_root.clone();
+                move |tx| {
+                    super::write(
+                        tx,
+                        "lead",
+                        Some(request_root.as_str()),
+                        "signature",
+                        WorkWrite::Submit(stale),
+                    )
+                }
             })
             .await
             .map(|_| ())
@@ -5145,28 +5148,34 @@ mod actor_tests {
             .expect("new path observation");
         let first = input.clone();
         let result = store
-            .transaction_with(move |tx| {
-                super::write(
-                    tx,
-                    "lead",
-                    Some(request_root.as_str()),
-                    "signature",
-                    WorkWrite::Submit(first),
-                )
+            .transaction_with({
+                let request_root = request_root.clone();
+                move |tx| {
+                    super::write(
+                        tx,
+                        "lead",
+                        Some(request_root.as_str()),
+                        "signature",
+                        WorkWrite::Submit(first),
+                    )
+                }
             })
             .await
             .expect("nonempty non-VM submission");
         assert_eq!(result.record["results"][0]["files"], json!(input.files));
         input.prepared_files = None;
         let replay = store
-            .transaction_with(move |tx| {
-                super::write(
-                    tx,
-                    "lead",
-                    Some(request_root.as_str()),
-                    "signature",
-                    WorkWrite::Submit(input),
-                )
+            .transaction_with({
+                let request_root = request_root.clone();
+                move |tx| {
+                    super::write(
+                        tx,
+                        "lead",
+                        Some(request_root.as_str()),
+                        "signature",
+                        WorkWrite::Submit(input),
+                    )
+                }
             })
             .await
             .expect("exact replay needs no filesystem observation");
