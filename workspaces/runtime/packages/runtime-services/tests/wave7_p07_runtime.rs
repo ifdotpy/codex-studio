@@ -880,7 +880,7 @@ async fn accepted_start_failpoints_never_deliver_input_without_its_attempt_recei
     for (table, operation) in [
         ("runtime_events", "UPDATE"),
         ("runtime_agents", "UPDATE"),
-        ("runtime_execution_attempts", "UPDATE"),
+        ("runtime_execution_attempts", "INSERT"),
         ("sync_entities", "INSERT"),
     ] {
         for timing in ["BEFORE", "AFTER"] {
@@ -1200,7 +1200,26 @@ async fn accepted_start_matches_real_python_agent_event_and_transcript_rows() {
     )
     .await
     .expect("accept");
-    assert_eq!(agent(&store), case["after"]);
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ActiveExecution {
+        attempt_id: String,
+        run_id: String,
+    }
+    let mut actual = agent(&store);
+    let active: ActiveExecution = serde_json::from_value(
+        actual
+            .as_object_mut()
+            .expect("agent")
+            .remove("activeExecution")
+            .expect("active execution"),
+    )
+    .expect("typed active execution");
+    assert_eq!(
+        (active.attempt_id.as_str(), active.run_id.as_str()),
+        ("attempt", "run:attempt")
+    );
+    assert_eq!(actual, case["after"]);
     let rows: Vec<Value> = store.test_reader().expect("read").prepare("SELECT id,agent,kind,text,status,created,epoch,turn_id,error FROM runtime_events ORDER BY id").expect("query")
         .query_map([], |r| Ok(json!({"id":r.get::<_,String>(0)?,"agent":r.get::<_,String>(1)?,"kind":r.get::<_,String>(2)?,"text":r.get::<_,String>(3)?,"status":r.get::<_,String>(4)?,"created":r.get::<_,f64>(5)?,"epoch":r.get::<_,i64>(6)?,"turn_id":r.get::<_,Option<String>>(7)?,"error":r.get::<_,Option<String>>(8)?}))).expect("rows").collect::<Result<_,_>>().expect("events");
     assert_eq!(json!(rows), case["events"]);
@@ -1220,7 +1239,8 @@ async fn accepted_terminal_start_calls_canonical_messages_and_finishes_atomicall
             "runtime_execution_attempts",
             "runtime_execution_runs",
             "runtime_execution_inputs",
-            "runtime_operation_receipts",
+            "request_results",
+            "runtime_outbox",
             "runtime_completed_turns",
             "sync_entities",
             "sync_documents",
