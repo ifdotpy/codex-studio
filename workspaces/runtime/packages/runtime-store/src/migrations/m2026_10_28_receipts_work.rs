@@ -117,6 +117,91 @@ fn counter(row: &contract::SourceReceipt) -> Result<Counter> {
     Ok(value)
 }
 
+// Source-era refusal hashes depended on the historical run selector.
+// Keep that frozen mapping here; runtime reads the persisted active execution pointer.
+fn source_submission_identity(
+    connection: &rusqlite::Connection,
+    agent: &crate::AgentRecord,
+) -> crate::StoreResult<Option<(String, Option<String>)>> {
+    let table_exists: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_execution_runs')",
+            [],
+            |row| row.get(0),
+        )?;
+    if !table_exists {
+        return Ok(None);
+    }
+
+    let account = agent
+        .extra
+        .get("accountKey")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("default");
+    let thread = agent
+        .extra
+        .get("threadId")
+        .and_then(serde_json::Value::as_str);
+    let turn = agent
+        .extra
+        .get("turnId")
+        .and_then(serde_json::Value::as_str);
+    let row: Option<(String, String)> = if let Some(turn) = turn {
+        let mut statement = connection.prepare_cached(
+            "SELECT id, record FROM runtime_execution_runs \
+                 WHERE agent=?1 AND account=?2 AND thread IS ?3 AND turn=?4 LIMIT 2",
+        )?;
+        let rows = statement
+            .query_map(params![agent.id.0, account, thread, turn], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        (rows.len() == 1).then(|| rows.into_iter().next()).flatten()
+    } else {
+        connection
+            .query_row(
+                "SELECT id, record FROM runtime_execution_runs \
+                     WHERE agent=?1 AND account=?2 AND epoch=?3 AND turn IS NULL \
+                     ORDER BY created DESC LIMIT 1",
+                params![agent.id.0, account, agent.epoch],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?
+    };
+    let Some((id, record)) = row else {
+        return Ok(None);
+    };
+    let typed = serde_json::from_str::<crate::ExecutionRunRecord>(&record).map_err(|_| {
+        crate::StoreError::InvalidStoredObject {
+            table: "runtime_execution_runs",
+            id: id.clone(),
+        }
+    })?;
+    if typed.id().as_ref() != id
+        || crate::Table::<crate::ExecutionRunRecord>::new(connection)
+            .validate(&typed)
+            .is_err()
+    {
+        return Err(crate::StoreError::InvalidStoredObject {
+            table: "runtime_execution_runs",
+            id,
+        });
+    }
+    let value = typed.value();
+    if turn.is_none()
+        && matches!(
+            value.get("status").and_then(serde_json::Value::as_str),
+            Some("completed" | "failed" | "interrupted" | "cancelled")
+        )
+    {
+        return Ok(None);
+    }
+    let attempt_id = value
+        .get("latestAttemptId")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    Ok(Some((id, attempt_id)))
+}
+
 fn move_counter(
     tx: &Transaction<'_>,
     row: &contract::SourceReceipt,
@@ -145,8 +230,7 @@ fn move_counter(
         return Err(invalid());
     }
     let version = work["version"].as_i64().ok_or_else(invalid)?;
-    let attempt =
-        crate::WorkItemsRepository::submission_identity(tx, &agent).map_err(|_| invalid())?;
+    let attempt = source_submission_identity(tx, &agent).map_err(|_| invalid())?;
     let id = format!(
         "work-result-failures:{}",
         crate::sha256_hex(
@@ -605,6 +689,43 @@ mod tests {
         assert_eq!(batch(&mut db, TABLE).expect("oversized alone").cursor, 1);
         assert!(work(&db, "t1")["vmSubmit"].is_null());
         assert_eq!(batch(&mut db, TABLE).expect("tail").cursor, 2);
+    }
+    #[test]
+    fn receipts_work_refusal_hash_uses_source_run_identity_without_runtime_pointer() {
+        let mut db = fixture();
+        db.execute_batch("CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,agent TEXT,account TEXT,epoch INTEGER,thread TEXT,turn TEXT,created REAL,record TEXT);").expect("source history");
+        let agent = json!({"id":"a","rootId":"a","epoch":2,"status":"idle"});
+        db.execute(
+            "INSERT INTO runtime_agents VALUES('a',?1)",
+            [agent.to_string()],
+        )
+        .expect("agent");
+        db.execute(
+            "INSERT INTO runtime_work VALUES('t',?1)",
+            [json!({"id":"t","version":1,"owner":"a","rootId":"a"}).to_string()],
+        )
+        .expect("work");
+        db.execute("INSERT INTO runtime_execution_runs VALUES('run','a','default',2,NULL,NULL,1.0,?1)",[json!({"id":"run","agent":"a","accountKey":"default","epoch":2,"status":"running","created":1.0,"latestAttemptId":"attempt"}).to_string()]).expect("run");
+        let counter = format!(
+            "work-result-failures:{}",
+            crate::sha256_hex(
+                json!(["t", 1, "a", 2, ["run", "attempt"]])
+                    .to_string()
+                    .as_bytes()
+            )
+        );
+        put(
+            &db,
+            &counter,
+            "work-result-failures-v1",
+            json!({"failed":2,"errors":[]}),
+        );
+        migrate(&mut db);
+        assert_eq!(
+            work(&db, "t")["resultFailures"]["providerAttempt"],
+            json!(["run", "attempt"])
+        );
+        assert_eq!(work(&db, "t")["resultFailures"]["count"], 2);
     }
     #[test]
     fn receipts_work_hydrates_old_counter_before_deleting_sources_and_reopens() {
