@@ -722,6 +722,46 @@ export interface paths {
     patch?: never | undefined;
     trace?: never | undefined;
   };
+  "/api/client/events": {
+    parameters: {
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
+    };
+    /**
+     * Client Core Events
+     * @description Server-sent events of the client core of this browser device.
+     */
+    get: operations["client_events_api_client_events_get"];
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
+  };
+  "/api/client/request": {
+    parameters: {
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
+    };
+    get?: never | undefined;
+    put?: never | undefined;
+    /**
+     * Client Core Request
+     * @description Runs one command in the client core that this server hosts for the browser device of the HttpOnly device cookie. Commands that need the device of the person answer the error code unsupported_here.
+     */
+    post: operations["client_request_api_client_request_post"];
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
+  };
   "/api/complaint": {
     parameters: {
       query?: never | undefined;
@@ -10895,6 +10935,41 @@ export interface components {
         | "uncertain";
       /** Text */
       text: string;
+    };
+    /** ClientCoreError */
+    ClientCoreError: {
+      code: string;
+      details?: unknown | undefined;
+      message: string;
+      status?: number | undefined;
+    };
+    /**
+     * ClientCoreEvent
+     * @description One client core event; `event` names the page subscription.
+     */
+    ClientCoreEvent: {
+      event: string;
+    };
+    /**
+     * ClientCoreRequest
+     * @description One client core command (studio_client_domain::protocol::Request owns the shape; the core checks identity and method lengths).
+     */
+    ClientCoreRequest: {
+      /** @description Exact request identity. A retry sends the same identity. */
+      id: string;
+      method: string;
+      /** @description Command parameters. */
+      params?: unknown | undefined;
+    };
+    /**
+     * ClientCoreResponse
+     * @description The core reply to one command: exactly one of result or error (studio_client_domain::protocol::Response owns the shape).
+     */
+    ClientCoreResponse: {
+      error?: components["schemas"]["ClientCoreError"] | undefined;
+      id: string;
+      /** @description Command result. */
+      result?: unknown | undefined;
     };
     /**
      * CodexLoginReceipt
@@ -28679,6 +28754,8 @@ export interface components {
     LogTruncated: string;
     ReferrerPolicy: string;
     ServerTiming: string;
+    /** @description Sets the HttpOnly device cookie when the server makes a new browser device. */
+    SetCookie: string;
     StudioApiSchema: string;
     StudioApiSchemaMismatch: string;
     StudioServer: string;
@@ -31339,6 +31416,100 @@ export interface operations {
       500: components["responses"]["ApiError500"];
       /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
+    };
+  };
+  client_events_api_client_events_get: {
+    parameters: {
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
+    };
+    requestBody?: never | undefined;
+    responses: {
+      /** @description Server-sent client core events */
+      200: {
+        headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Set-Cookie": components["headers"]["SetCookie"];
+          "X-Accel-Buffering": components["headers"]["AccelBuffering"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
+          [name: string]: unknown;
+        };
+        content: {
+          "text/event-stream": components["schemas"]["ClientCoreEvent"];
+        };
+      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Not Implemented */
+      501: components["responses"]["ApiError501"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
+    };
+  };
+  client_request_api_client_request_post: {
+    parameters: {
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ClientCoreRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          "Set-Cookie": components["headers"]["SetCookie"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ClientCoreResponse"];
+        };
+      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Request Timeout */
+      408: components["responses"]["ApiError408"];
+      /** @description Payload Too Large */
+      413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
+      415: components["responses"]["ApiError415"];
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Not Implemented */
+      501: components["responses"]["ApiError501"];
       /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };

@@ -12,6 +12,8 @@ mod catalog_agent;
 mod checkpoints;
 mod claude_controls;
 mod claude_login;
+#[cfg(unix)]
+pub(crate) mod client_core;
 pub(crate) mod compose;
 mod context_repair;
 pub(crate) mod desktop;

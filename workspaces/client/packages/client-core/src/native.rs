@@ -29,6 +29,10 @@ pub struct ConnectionConfig {
     pub backend_origin: String,
 }
 
+/// File in the client state directory that the core holds with an exclusive
+/// `flock` while it serves that state.
+pub const STATE_LOCK_FILE: &str = "studio-native-client.lock";
+
 // SAFETY: flock uses the descriptor of the live lock file retained by this owner.
 #[allow(unsafe_code)]
 fn open_store(state: &std::path::Path) -> Result<(Store, File), String> {
@@ -45,7 +49,7 @@ fn open_store(state: &std::path::Path) -> Result<(Store, File), String> {
         .write(true)
         .create(true)
         .truncate(false)
-        .open(state.join("studio-native-client.lock"))
+        .open(state.join(STATE_LOCK_FILE))
         .map_err(|e| e.to_string())?;
     if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
         return Err("Another native client owns this local client state.".into());
@@ -407,6 +411,25 @@ fn audio_request(request: &Request) -> bool {
             ))
 }
 
+/// Commands that need the device of the person: microphone, playback, voice,
+/// speech capture, desktop actions and dialogs (quick look, file dialogs, file
+/// save, external links), native file previews, and system notifications. A
+/// core that a server hosts for a browser page must refuse them.
+pub fn device_only(request: &Request) -> bool {
+    ["media.", "voice.", "speech.", "desktop.", "preview."]
+        .iter()
+        .any(|prefix| request.method.starts_with(prefix))
+        || matches!(
+            request.method.as_str(),
+            "notifications.show" | "dictation.wav"
+        )
+        || (request.method == "view.subscribe"
+            && matches!(
+                request.params["topic"].as_str(),
+                Some("microphone" | "voice" | "transcription" | "navigation")
+            ))
+}
+
 fn claim_audio(lease: &mut Option<tokio::sync::OwnedSemaphorePermit>) -> bool {
     static OWNER: std::sync::OnceLock<Arc<tokio::sync::Semaphore>> = std::sync::OnceLock::new();
     claim_audio_from(
@@ -624,6 +647,57 @@ mod audio_ownership_tests {
         assert!(call(&mut next, "next").error.is_none());
         drop(next);
         next_worker.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn device_only_covers_every_audio_entry_point_and_device_action() {
+        let request = |method: &str, params: serde_json::Value| Request {
+            id: "test".into(),
+            method: method.into(),
+            params,
+        };
+        for method in [
+            "media.captureStart",
+            "voice.create",
+            "speech.uploadBegin",
+            "desktop.pickDirectory",
+            "desktop.fileAction",
+            "desktop.openExternal",
+            "desktop.saveBegin",
+            "preview.open",
+            "notifications.show",
+        ] {
+            assert!(
+                device_only(&request(method, serde_json::Value::Null)),
+                "{method}"
+            );
+        }
+        for topic in ["microphone", "voice", "transcription", "navigation"] {
+            let subscribe = request("view.subscribe", serde_json::json!({ "topic": topic }));
+            assert!(device_only(&subscribe), "{topic}");
+            assert!(
+                !audio_request(&subscribe) || device_only(&subscribe),
+                "every audio subscription is device-only"
+            );
+        }
+        for method in [
+            "preferences.raw_all",
+            "api.request",
+            "terminal.open",
+            "outbox.enqueue",
+            "markdown.parse",
+        ] {
+            assert!(
+                !device_only(&request(method, serde_json::Value::Null)),
+                "{method}"
+            );
+        }
+        for topic in ["sse", "projection", "outbox", "drafts", "terminal"] {
+            assert!(!device_only(&request(
+                "view.subscribe",
+                serde_json::json!({ "topic": topic })
+            )));
+        }
     }
 
     #[test]

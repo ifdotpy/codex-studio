@@ -76,6 +76,12 @@
           "type": "string"
         }
       },
+      "SetCookie": {
+        "description": "Sets the HttpOnly device cookie when the server makes a new browser device.",
+        "schema": {
+          "type": "string"
+        }
+      },
       "StudioApiSchema": {
         "schema": {
           "type": "string"
@@ -20862,6 +20868,86 @@
           "text"
         ],
         "title": "ClaudeTurn",
+        "type": "object"
+      },
+      "ClientCoreError": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "details": {},
+          "message": {
+            "type": "string"
+          },
+          "status": {
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "ClientCoreError",
+        "type": "object"
+      },
+      "ClientCoreEvent": {
+        "description": "One client core event; `event` names the page subscription.",
+        "properties": {
+          "event": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "event"
+        ],
+        "title": "ClientCoreEvent",
+        "type": "object"
+      },
+      "ClientCoreRequest": {
+        "additionalProperties": false,
+        "description": "One client core command (studio_client_domain::protocol::Request owns the shape; the core checks identity and method lengths).",
+        "properties": {
+          "id": {
+            "description": "Exact request identity. A retry sends the same identity.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "method": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "params": {
+            "description": "Command parameters."
+          }
+        },
+        "required": [
+          "id",
+          "method"
+        ],
+        "title": "ClientCoreRequest",
+        "type": "object"
+      },
+      "ClientCoreResponse": {
+        "additionalProperties": false,
+        "description": "The core reply to one command: exactly one of result or error (studio_client_domain::protocol::Response owns the shape).",
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ClientCoreError"
+          },
+          "id": {
+            "type": "string"
+          },
+          "result": {
+            "description": "Command result."
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "ClientCoreResponse",
         "type": "object"
       },
       "CodexLoginReceipt": {
@@ -69597,6 +69683,189 @@
           }
         },
         "summary": "Claude Session"
+      }
+    },
+    "/api/client/events": {
+      "get": {
+        "description": "Server-sent events of the client core of this browser device.",
+        "operationId": "client_events_api_client_events_get",
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientCoreEvent"
+                },
+                "x-sse-events": {
+                  "message": "ClientCoreEvent"
+                }
+              }
+            },
+            "description": "Server-sent client core events",
+            "headers": {
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              },
+              "Access-Control-Expose-Headers": {
+                "$ref": "#/components/headers/AccessControlExposeHeaders"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              },
+              "Content-Type": {
+                "$ref": "#/components/headers/ContentType"
+              },
+              "Set-Cookie": {
+                "$ref": "#/components/headers/SetCookie"
+              },
+              "X-Accel-Buffering": {
+                "$ref": "#/components/headers/AccelBuffering"
+              },
+              "X-Studio-API-Schema": {
+                "$ref": "#/components/headers/StudioApiSchema"
+              },
+              "X-Studio-Server": {
+                "$ref": "#/components/headers/StudioServer"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError400",
+            "description": "Bad Request"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError403",
+            "description": "Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/ApiError500",
+            "description": "Internal Server Error"
+          },
+          "501": {
+            "$ref": "#/components/responses/ApiError501",
+            "description": "Not Implemented"
+          },
+          "503": {
+            "$ref": "#/components/responses/ApiError503",
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Client Core Events",
+        "tags": [
+          "core"
+        ]
+      }
+    },
+    "/api/client/request": {
+      "post": {
+        "description": "Runs one command in the client core that this server hosts for the browser device of the HttpOnly device cookie. Commands that need the device of the person answer the error code unsupported_here.",
+        "operationId": "client_request_api_client_request_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClientCoreRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientCoreResponse"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              },
+              "Access-Control-Expose-Headers": {
+                "$ref": "#/components/headers/AccessControlExposeHeaders"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              },
+              "Content-Encoding": {
+                "$ref": "#/components/headers/ContentEncoding"
+              },
+              "Content-Length": {
+                "$ref": "#/components/headers/ContentLength"
+              },
+              "Content-Security-Policy": {
+                "$ref": "#/components/headers/ContentSecurityPolicy"
+              },
+              "Content-Type": {
+                "$ref": "#/components/headers/ContentType"
+              },
+              "Referrer-Policy": {
+                "$ref": "#/components/headers/ReferrerPolicy"
+              },
+              "Server-Timing": {
+                "$ref": "#/components/headers/ServerTiming"
+              },
+              "Set-Cookie": {
+                "$ref": "#/components/headers/SetCookie"
+              },
+              "Vary": {
+                "$ref": "#/components/headers/Vary"
+              },
+              "X-Content-Type-Options": {
+                "$ref": "#/components/headers/XContentTypeOptions"
+              },
+              "X-Studio-API-Schema": {
+                "$ref": "#/components/headers/StudioApiSchema"
+              },
+              "X-Studio-Server": {
+                "$ref": "#/components/headers/StudioServer"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError400",
+            "description": "Bad Request"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError403",
+            "description": "Forbidden"
+          },
+          "408": {
+            "$ref": "#/components/responses/ApiError408",
+            "description": "Request Timeout"
+          },
+          "413": {
+            "$ref": "#/components/responses/ApiError413",
+            "description": "Payload Too Large"
+          },
+          "415": {
+            "$ref": "#/components/responses/ApiError415",
+            "description": "Unsupported Media Type"
+          },
+          "426": {
+            "$ref": "#/components/responses/ApiError426",
+            "description": "Upgrade Required"
+          },
+          "500": {
+            "$ref": "#/components/responses/ApiError500",
+            "description": "Internal Server Error"
+          },
+          "501": {
+            "$ref": "#/components/responses/ApiError501",
+            "description": "Not Implemented"
+          },
+          "503": {
+            "$ref": "#/components/responses/ApiError503",
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Client Core Request",
+        "tags": [
+          "core"
+        ]
       }
     },
     "/api/complaint": {
