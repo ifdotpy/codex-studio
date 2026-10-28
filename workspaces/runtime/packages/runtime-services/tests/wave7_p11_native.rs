@@ -98,6 +98,55 @@ impl Admission for Gate {
         Ok(())
     }
 }
+
+struct IdleGate {
+    episode: String,
+}
+impl Admission for IdleGate {
+    fn check(&self, _: &Transaction<'_>, _: &Value, _: Action) -> Result<()> {
+        Ok(())
+    }
+    fn idle_episode_id(&self) -> Option<&str> {
+        Some(&self.episode)
+    }
+}
+
+#[test]
+fn receipt_pivot_superseded_idle_purpose_never_becomes_manual_compaction() {
+    let case = &corpus()["actions"][0];
+    let mut db = db(case);
+    let request: Request = serde_json::from_value(case["request"].clone()).expect("request");
+    let before = actor(&db);
+    let tx = db.transaction().expect("transaction");
+    reserve(
+        &tx,
+        &request,
+        "attempt",
+        1234567.5,
+        &IdleGate {
+            episode: request.request_id.clone(),
+        },
+    )
+    .expect("idle admission");
+    let provenance = idle_provenance(&tx, &request.request_id)
+        .expect("immutable purpose")
+        .expect("idle purpose captured");
+    assert_eq!(provenance.episode_id, request.request_id);
+    assert_eq!(provenance.before.start_attempt, before["startAttempt"]);
+    // A new report can remove the old episode, while its native reservation remains.
+    tx.execute("UPDATE runtime_agents SET record=json_remove(record,'$.idleCompactionEpisode') WHERE id='lead'",[]).expect("superseding episode");
+    assert!(
+        matches!(
+            claim(&tx, &request.request_id, &ticket()),
+            Err(NativeError::Invalid("newer_request"))
+        ),
+        "captured idle purpose still invokes the final authority gate"
+    );
+    assert!(matches!(
+        outcome(&tx, &request.request_id).expect("outcome"),
+        Some(Outcome::Pending { .. })
+    ));
+}
 struct Accept;
 impl Acceptance for Accept {
     fn apply(&self, tx: &Transaction<'_>, _: &NativeRequest, _: &Delivery) -> Result<()> {
