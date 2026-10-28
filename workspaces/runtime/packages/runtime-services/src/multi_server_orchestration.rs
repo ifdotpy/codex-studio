@@ -1711,23 +1711,14 @@ impl crate::server_exec::ExecEvents for ExecNotices {
                         receive_exec_event(tx, &principal, &payload, key, now)?;
                         return Ok(());
                     }
-                    let queued: Option<i64> = tx
-                        .query_row(
-                            "SELECT 1 FROM runtime_server_outbox WHERE id=?1",
-                            [&key],
-                            |row| row.get(0),
-                        )
-                        .optional()?;
-                    if queued.is_none() {
-                        enqueue_in_transaction(
-                            tx,
-                            &principal,
-                            EXEC_EVENT_ACTION,
-                            &payload,
-                            &key,
-                            now as i64,
-                        )?;
-                    }
+                    enqueue_in_transaction(
+                        tx,
+                        &principal,
+                        EXEC_EVENT_ACTION,
+                        &payload,
+                        &handle,
+                        now as i64,
+                    )?;
                     Ok(())
                 })
                 .await;
@@ -1924,8 +1915,12 @@ impl RuntimeOrchestrationEffects {
             return self.worker_call(principal, envelope).await;
         }
         if action == EXEC_EVENT_ACTION {
-            let key = text(envelope, "requestId").to_owned();
             let payload = envelope["payload"].clone();
+            let key = crate::projects::cross_server_identity(&[
+                "command-exit",
+                text(&payload, "handle"),
+                text(&payload["record"], "status"),
+            ]);
             let principal = principal.to_owned();
             let now = crate::event_write::unix_time().map_err(|_| {
                 refused(503, "clock_unavailable", "The system clock is unavailable")
@@ -2239,6 +2234,9 @@ fn exec_owner(
             let Some(saved) = saved_remote(tx, Direction::Outgoing, server, handle, now)? else {
                 return Ok(false);
             };
+            if saved.server.as_deref() != Some(server) {
+                return Ok(false);
+            }
             let Some(body) = saved.body else {
                 return Ok(false);
             };
@@ -2515,13 +2513,12 @@ impl Envelope {
         json!({"requestId":self.root,"operation":self.operation,"action":self.action,"payload":self.payload})
     }
     fn scoped(mut self, direction: Direction, peer: &str) -> Self {
-        self.key = serde_json::to_string(&(
+        self.key = remote_operation_key(
             direction.namespace(),
-            [peer],
+            &[peer],
             &self.root,
-            self.operation_parts(),
-        ))
-        .expect("string tuple serializes");
+            &self.operation_parts(),
+        );
         self
     }
     fn operation_parts(&self) -> Vec<&str> {
@@ -3181,6 +3178,10 @@ impl OrchestrationDriver {
             if let Some(result) = replay_delivery(tx,Direction::Incoming,&principal_for_claim,&envelope_for_claim,now)? {
                 return Ok((DeliveryDecision::Return(result), false, key));
             }
+            let clock=chrono::Utc::now().timestamp_millis();
+            let identity=studio_runtime_schema::persistence::RequestIdentity::new(Direction::Incoming.namespace(),&[&principal_for_claim],&envelope_for_claim.root,&envelope_for_claim.operation_parts())
+                .map_err(|_|replay_error(studio_runtime_schema::persistence::RequestIdentityError::Expired{issued_ms:0,expired_before_ms:clock}.into()))?;
+            identity.validate(clock,studio_runtime_store::request_results::RequestResults::expired_before_ms(tx).map_err(replay_error)?).map_err(|error|replay_error(error.into()))?;
             let saved = inbox(tx, &key, now)?;
             let replaying_claim = saved.is_some();
             let decision = decide_delivery(
@@ -3675,6 +3676,86 @@ mod tests {
             })
             .expect("pending rows");
         assert_eq!(pending, 1, "only unresolved obligations remain");
+        let legacy =
+            uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, b"retained-peer-request").to_string();
+        let retained =
+            serde_json::json!({"requestId":legacy,"operation":[],"action":"projects","payload":{}});
+        let signature = super::Envelope::from_value(&retained)
+            .expect("retained envelope")
+            .incoming_signature("peer-a")
+            .expect("signature");
+        let legacy_for_import = legacy.clone();
+        store
+            .transaction(move |tx| {
+                let reply = studio_runtime_store::multi_server_delivery::SavedRemoteReply {
+                    principal: Some("peer-a".into()),
+                    server: None,
+                    actor: None,
+                    body: None,
+                    response: studio_runtime_store::multi_server_delivery::RemoteReply {
+                        request_id: legacy_for_import.clone(),
+                        outcome: studio_runtime_schema::persistence::RemoteOutcome::Applied,
+                        value: Some(
+                            serde_json::value::to_raw_value(&serde_json::json!({"retained":true}))
+                                .expect("original reply"),
+                        ),
+                        error: None,
+                        waiting_for: None,
+                    },
+                };
+                studio_runtime_store::receipt_migration_contract::import_result(
+                    tx,
+                    &legacy_for_import,
+                    &signature,
+                    &studio_runtime_store::request_results::ResultEnvelope {
+                        actor: None,
+                        reply,
+                        references: Vec::new(),
+                    },
+                    chrono::Utc::now().timestamp_millis(),
+                )
+                .expect("classified import");
+                Ok(())
+            })
+            .await
+            .expect("retained result");
+        assert_eq!(
+            driver
+                .receive("peer-a", &retained, now)
+                .await
+                .expect("retained v5 replay"),
+            super::ExchangeOutcome::Applied(serde_json::json!({"retained":true}))
+        );
+        let missing = serde_json::json!({"requestId":uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID,b"missing-peer-request").to_string(),"operation":[],"action":"projects","payload":{}});
+        assert_eq!(
+            driver
+                .receive("peer-a", &missing, now)
+                .await
+                .expect_err("unretained v5 expired")
+                .status(),
+            410
+        );
+        let missing_for_import = missing.clone();
+        store.transaction(move|tx|{
+            let envelope=super::Envelope::from_value(&missing_for_import).expect("pending source envelope");
+            let signature=envelope.incoming_signature("peer-a").expect("source signature");
+            let token=serde_json::json!({"id":envelope.root,"signature":signature,"created":chrono::Utc::now().timestamp_millis()});
+            tx.execute("INSERT INTO runtime_server_inbox(id,signature,state,result,created_at,principal,actor,admission) VALUES(?1,?2,?3,NULL,?4,'peer-a',NULL,?5)",rusqlite::params![envelope.root,signature,studio_runtime_schema::persistence::ServerDeliveryState::Waiting,now,token.to_string()])?;
+            Ok(())
+        }).await.expect("classified pending source");
+        assert_eq!(
+            driver
+                .receive("peer-a", &missing, now)
+                .await
+                .expect_err("pending v5 never starts another effect")
+                .status(),
+            410
+        );
+        assert_eq!(
+            effects.0.load(std::sync::atomic::Ordering::SeqCst),
+            5,
+            "v5 cache hit and miss both execute no effect"
+        );
         let root_for_expiry = root.clone();
         store.transaction(move|tx|{tx.execute("UPDATE request_results SET created=?1 WHERE json_extract(result,'$.reply.response.requestId')=?2",rusqlite::params![chrono::Utc::now().timestamp_millis()-studio_runtime_schema::persistence::REQUEST_RESULT_TTL_MS-1,root_for_expiry])?;Ok(())}).await.expect("expired cache fixture");
         assert_eq!(
