@@ -78,6 +78,7 @@ export const ServerOperationKindValues = [
   "input",
   "message",
   "move_send",
+  "move_status",
   "location_info",
   "location_matches",
   "stop",
