@@ -1250,13 +1250,14 @@ pub(crate) fn event_write_error(error: crate::event_write::EventWriteError) -> C
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
+    use serde_json::{Value, json};
     use studio_runtime_schema::delivery::DeliveryMoment;
     use studio_runtime_store::Connection;
 
     use super::{
-        CoordinationError, PostManagedMessage, PostMessage, connect_chat, create_chat,
-        message_text_within_limit, post_message, post_message_with_admission, require_single_team,
+        CoordinationError, GroupMessageReply, PostManagedMessage, PostMessage, connect_chat,
+        create_chat, message_text_within_limit, post_message, post_message_with_admission,
+        require_single_team,
     };
 
     #[test]

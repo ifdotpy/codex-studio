@@ -112,9 +112,15 @@ async fn voice_accepts_unrelated_operation_started_after_preparation() {
     ));
     operation.await.expect("late operation task completes");
     let receipt = caller.await.expect("caller joins").expect("voice accepted");
-    assert_eq!(receipt["status"], "queued");
+    let crate::coordination::PostMessageReceipt::Managed(receipt) = receipt else {
+        panic!("voice delivery must return a managed receipt");
+    };
+    assert_eq!(
+        receipt.status,
+        studio_runtime_schema::persistence::DeliveryStatus::Queued
+    );
     assert!(
-        receipt.get("waitingFor").is_none(),
+        receipt.waiting_for.is_none(),
         "unrelated operation is not a blocker"
     );
 }
