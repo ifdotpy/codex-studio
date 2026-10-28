@@ -54,6 +54,21 @@ impl Room {
     pub(super) fn id(&self) -> &str {
         self.value["id"].as_str().unwrap_or_default()
     }
+    pub(super) fn into_reply(self) -> Result<RadioReply, ProjectsError> {
+        let id = self.id().to_owned();
+        let Value::Object(mut fields) = self.value else {
+            return Err(invalid(&id));
+        };
+        fields.remove("id");
+        fields.remove("radio");
+        Ok(RadioReply {
+            room: RadioRoomReply {
+                id,
+                radio: self.radio,
+                fields,
+            },
+        })
+    }
     pub(super) fn members(&self) -> Vec<String> {
         self.value["members"]
             .as_array()

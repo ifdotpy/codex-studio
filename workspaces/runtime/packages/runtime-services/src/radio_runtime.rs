@@ -47,7 +47,7 @@ struct RadioRoomReply {
     fields: Map<String, Value>,
 }
 #[derive(Serialize, Deserialize)]
-struct RadioReply {
+pub struct RadioReply {
     room: RadioRoomReply,
 }
 
@@ -59,21 +59,8 @@ pub(crate) fn publish_room(
     state::publish_room(db, value, prepared)
 }
 
-/// HTTP path after the runtime-server registry wires the retained scheduler and
-/// post-commit interrupt transport.
-pub async fn manage_http(store: Arc<RuntimeStore>, body: &Value) -> Result<Value, ProjectsError> {
-    manage_command(store, body, true).await
-}
-
 /// Local open/send/pass/stop; direct creation is injected separately by P02.
-pub async fn manage(store: Arc<RuntimeStore>, body: &Value) -> Result<Value, ProjectsError> {
-    manage_command(store, body, true).await
-}
-async fn manage_command(
-    store: Arc<RuntimeStore>,
-    body: &Value,
-    live: bool,
-) -> Result<Value, ProjectsError> {
+pub async fn manage(store: Arc<RuntimeStore>, body: &Value) -> Result<RadioReply, ProjectsError> {
     let action = body["radio_action"].as_str().unwrap_or_default().to_owned();
     if action == "create" {
         return Err(ProjectsError::Requires("host-project/radio-create"));
@@ -100,9 +87,7 @@ async fn manage_command(
         })
         .await?
     {
-        return serde_json::to_value(result)
-            .map_err(studio_runtime_store::StoreError::from)
-            .map_err(Into::into);
+        return Ok(result);
     }
     let body_for_preparation = body.clone();
     let prepared = PreparedHost::load(&store).await?;
@@ -125,7 +110,7 @@ async fn manage_command(
     let signature_for_write = signature.clone();
     store.transaction_with(move |db| {
         let admitted=match event_write::begin_request::<RadioReply>(db,event_write::RequestKey::new("radio",&["owner-api"],&root).raw(&key_for_write),&signature_for_write,chrono::Utc::now().timestamp_millis()).map_err(studio_runtime_store::StoreError::from)? {
-            event_write::CallerAdmission::Replay(reply)=>return serde_json::to_value(reply).map_err(studio_runtime_store::StoreError::from).map_err(Into::into),
+            event_write::CallerAdmission::Replay(reply)=>return Ok(reply),
             event_write::CallerAdmission::Fresh(admitted)=>admitted,
         };
         prepared.recheck(db)?;
@@ -139,7 +124,6 @@ async fn manage_command(
             let team_row = teams.iter().find(|t| t["id"] == team && t["members"].as_array().is_some_and(|m|m.len()==2)).ok_or(ProjectsError::Invalid("Select a team with exactly two chats in this project"))?;
             Room::checked(json!({"id":id,"kind":"private","members":team_row["members"],"projectPath":path,"customName":format!("{} · Shared chat",team_row["name"].as_str().unwrap_or_default()),"created":now,"userHidden":false,"radio":{"teamId":team,"revision":0,"status":"idle","speaker":null,"next":[],"active":null,"error":null,"seen":{}}}))?
         };
-        if !live && action=="stop" && room.radio.active.is_some() {return Err(ProjectsError::Requires("workspace-state/peer-radio"));}
         if room.value["projectPath"] != path { return Err(ProjectsError::Invalid("The shared chat belongs to another project")); }
         if let Some(denial) = validate(db,&room,&prepared,matches!(action.as_str(),"send"|"pass"))? && action != "stop" { return Err(ProjectsError::Invalid(denial)); }
         if action != "open" {
@@ -166,8 +150,8 @@ async fn manage_command(
             }
         }
         save(db,&mut room,&prepared,now)?;
-        let result = json!({"room":room.value});
-        event_write::settle_request(db,&admitted,Some("owner-api"),&serde_json::from_value::<RadioReply>(result.clone()).map_err(studio_runtime_store::StoreError::from)?).map_err(studio_runtime_store::StoreError::from)?;
+        let result = room.into_reply()?;
+        event_write::settle_request(db,&admitted,Some("owner-api"),&result).map_err(studio_runtime_store::StoreError::from)?;
         Ok(result)
     }).await
 }
@@ -272,7 +256,7 @@ pub async fn create_with(
     store: Arc<RuntimeStore>,
     body: &Value,
     mut creation: Box<dyn RadioCreation + Send>,
-) -> Result<Value, ProjectsError> {
+) -> Result<RadioReply, ProjectsError> {
     let key = request_key(body)?;
     let signature = event_write::request_signature(&json!({"operation":"radio","body":body}));
     let root = bounded_text(&body["request_id"], 255)?;
@@ -292,9 +276,7 @@ pub async fn create_with(
         })
         .await?
     {
-        return serde_json::to_value(result)
-            .map_err(studio_runtime_store::StoreError::from)
-            .map_err(Into::into);
+        return Ok(result);
     }
     let body_for_preparation = body.clone();
     let (path, name, namespace, room_id, ids, drafts, mut creation) =
@@ -344,7 +326,7 @@ pub async fn create_with(
     let replay_signature = signature.clone();
     store.transaction_with(move |db| {
         let admitted=match event_write::begin_request::<RadioReply>(db,event_write::RequestKey::new("radio",&["owner-api"],&root).raw(&replay_key),&replay_signature,chrono::Utc::now().timestamp_millis()).map_err(studio_runtime_store::StoreError::from)? {
-            event_write::CallerAdmission::Replay(reply)=>return serde_json::to_value(reply).map_err(studio_runtime_store::StoreError::from).map_err(Into::into),
+            event_write::CallerAdmission::Replay(reply)=>return Ok(reply),
             event_write::CallerAdmission::Fresh(admitted)=>admitted,
         };
         prepared.recheck(db)?;
@@ -363,7 +345,7 @@ pub async fn create_with(
         let now=crate::projects::now_seconds();
         let mut room=Room::checked(json!({"id":room_id,"kind":"private","members":ids,"projectPath":path,"customName":name,"created":now,"userHidden":false,"radio":{"direct":true,"teamId":namespace.to_string(),"revision":0,"status":"idle","speaker":null,"next":[],"active":null,"error":null,"seen":{}}}))?;
         save(db,&mut room,&prepared,now)?;
-        let result=json!({"room":room.value});event_write::settle_request(db,&admitted,Some("owner-api"),&serde_json::from_value::<RadioReply>(result.clone()).map_err(studio_runtime_store::StoreError::from)?).map_err(studio_runtime_store::StoreError::from)?;Ok(result)
+        let result=room.into_reply()?;event_write::settle_request(db,&admitted,Some("owner-api"),&result).map_err(studio_runtime_store::StoreError::from)?;Ok(result)
     }).await
 }
 fn prepared_agent_exists(db: &Connection, id: &str) -> Result<bool, ProjectsError> {

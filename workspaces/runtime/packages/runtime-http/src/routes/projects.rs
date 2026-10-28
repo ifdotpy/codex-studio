@@ -1258,7 +1258,14 @@ async fn peer_teams(
         .await
         .map_err(projects_error)?;
         state.event_wake.notify_one();
-        return Ok(Json(PeerTeamWriteResponse::Raw(value)));
+        return Ok(Json(PeerTeamWriteResponse::Radio(value)));
+    }
+    if body.get("action").and_then(Value::as_str) == Some("radio") {
+        let result = studio_runtime_services::radio_runtime::manage(store, &body)
+            .await
+            .map_err(projects_error)?;
+        state.event_wake.notify_one();
+        return Ok(Json(PeerTeamWriteResponse::Radio(result)));
     }
     if body.get("action").and_then(Value::as_str) == Some("convert") {
         let reply = studio_runtime_services::peer_conversion::convert(store, &body)
@@ -1277,7 +1284,7 @@ async fn peer_teams(
 #[derive(serde::Serialize)]
 #[serde(untagged)]
 enum PeerTeamWriteResponse {
-    Raw(Value),
+    Radio(studio_runtime_services::radio_runtime::RadioReply),
     Conversion(studio_runtime_services::peer_conversion::ConversionReply),
     Project(crate::generated::PeerProjectResponse),
 }
