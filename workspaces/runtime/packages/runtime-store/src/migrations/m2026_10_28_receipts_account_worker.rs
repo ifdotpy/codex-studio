@@ -2,7 +2,7 @@
 use crate::receipt_migration_contract::load_operation_receipt as load;
 use crate::receipt_migration_contract::*;
 use crate::{
-    outbox::{Outbox, OutboxRow},
+    outbox::{Outbox, OutboxRow, Publication, PublicationClass},
     request_results::ResultEnvelope,
 };
 use rusqlite::{OptionalExtension, Transaction, params};
@@ -268,10 +268,16 @@ fn validate_outcome(row: &SourceReceipt, value: &Value) -> Result<()> {
     }
 }
 
+#[derive(Serialize)]
+#[serde(untagged)]
+enum EffectPayload {
+    Followup(Value),
+    Publication(Publication),
+}
 fn effects(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()> {
-    let value: Value = row.json(TABLE)?;
     let (id, account, kind, signature, ordinal, payload) =
         if row.id.starts_with("account-worker:effect:") {
+            let value: Value = row.json(TABLE)?;
             let key = phase_key(row, "account-worker:effect:", ":pending")?;
             let (account, hash) = key.rsplit_once(':').ok_or_else(|| fail(row))?;
             if row.signature != "pending" || hash.len() != 64 {
@@ -294,7 +300,7 @@ fn effects(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()
                 OutboxKind::FollowupEffect,
                 hash.to_owned(),
                 order,
-                payload,
+                EffectPayload::Followup(payload),
             )
         } else {
             let key = phase_key(row, "account-worker:notification-publication:", ":pending")?;
@@ -306,25 +312,28 @@ fn effects(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()
                 .filter(|v| *v >= 0)
                 .ok_or_else(|| fail(row))?;
             let index = index.parse::<u64>().map_err(|_| fail(row))?;
-            if !matches!(
-                row.signature.as_str(),
-                "pending" | "token-rate" | "invalidation"
-            ) || value["account"] != account
-                || value["sequence"].as_i64() != Some(sequence)
-                || value["index"].as_u64() != Some(index)
+            let mut value: Publication = row.json(TABLE)?;
+            let class = match row.signature.as_str() {
+                "pending" => PublicationClass::Pending,
+                "token-rate" => PublicationClass::TokenRate,
+                "invalidation" => PublicationClass::Invalidation,
+                _ => return Err(fail(row)),
+            };
+            if value.account != account
+                || i64::try_from(value.sequence).ok() != Some(sequence)
+                || u64::try_from(value.index).ok() != Some(index)
             {
                 return Err(fail(row));
             }
             let id = format!("notification-publication:{account}:{sequence:020}:{index:020}");
-            let mut value = value;
-            value["class"] = json!(row.signature);
+            value.class = class;
             (
                 id.clone(),
                 account.to_owned(),
                 OutboxKind::Publication,
                 crate::sha256_hex(id.as_bytes()),
                 sequence,
-                value,
+                EffectPayload::Publication(value),
             )
         };
     ensure_account(tx, &account, 0)?;
@@ -1017,6 +1026,22 @@ mod tests {
                 .expect("kept"),
             row
         );
+    }
+    #[test]
+    fn receipt_account_worker_rejects_invalid_publication_header() {
+        let mut db = database();
+        let tx = db.transaction().expect("transaction");
+        let row = SourceReceipt {
+            rowid: 1,
+            id: "account-worker:notification-publication:default:5:2:pending".into(),
+            signature: "pending".into(),
+            result: r#"{"account":"default","sequence":5,"index":2,"stateInvalidation":"bad"}"#
+                .into(),
+        };
+        assert!(matches!(
+            effects(&tx, &row, 1000),
+            Err(ReceiptMigrationError::Unclassifiable { .. })
+        ));
     }
     #[test]
     fn receipt_account_worker_mixed_old_key_formats_keep_numeric_journal_and_publication_order() {
