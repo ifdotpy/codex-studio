@@ -362,7 +362,7 @@ class RustSelectionTest(unittest.TestCase):
             self.assertEqual(recovery.supervisor_tick(config, self.state), (None, "supervisor ready"))
         thread.join(5)
         self.assertEqual(received, [
-            {"protocol": 2, "stateDir": str(self.state), "probe": True},
+            {"protocol": recovery.SUPERVISOR_PROTOCOL_VERSION, "stateDir": str(self.state), "probe": True},
             {"requestId": 1, "action": "health"}])
         spawn.assert_not_called()
 
@@ -379,7 +379,7 @@ class RustSelectionTest(unittest.TestCase):
 
     def test_supervisor_reply_errors_and_wrong_request_ids_fail_closed(self):
         for reply in ({"requestId": 2, "result": {}}, {"requestId": 1, "error": "uncertain owner"}):
-            received, thread = self.serve_supervisor({"ok": True, "protocol": 3}, reply)
+            received, thread = self.serve_supervisor({"ok": True, "protocol": recovery.SUPERVISOR_PROTOCOL_VERSION}, reply)
             with self.assertRaises(RuntimeError):
                 recovery.supervisor_request(self.state, recovery.SupervisorAction.HEALTH)
             thread.join(5)
@@ -392,13 +392,13 @@ class RustSelectionTest(unittest.TestCase):
         self.assertEqual(recovery.supervisor_request(self.state, recovery.SupervisorAction.FINISH_FALLBACK),
                          {"finished": True})
         thread.join(5)
-        self.assertEqual(received[0], {"protocol": 2, "stateDir": str(self.state), "operator": True})
+        self.assertEqual(received[0], {"protocol": recovery.SUPERVISOR_PROTOCOL_VERSION, "stateDir": str(self.state), "operator": True})
         self.assertEqual(received[-1], {"requestId": 1, "action": "finishFallback"})
 
     def test_a_python_supervisor_blocks_the_rust_backend(self):
         config = {**self.config, "supervisorEnabled": True}
         received, thread = self.serve_supervisor({"error": "Supervisor protocol or state directory mismatch"})
-        with self.assertRaisesRegex(RuntimeError, "does not serve protocol 2"):
+        with self.assertRaisesRegex(RuntimeError, "incompatible protocol"):
             recovery.supervisor_tick(config, self.state)
         thread.join(5)
         self.assertEqual(len(received), 1)
