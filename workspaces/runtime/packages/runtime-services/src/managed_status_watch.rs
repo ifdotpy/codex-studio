@@ -21,7 +21,7 @@ use studio_runtime_schema::agent_limits::{
 };
 use studio_runtime_schema::persistence::{OutboxKind, OutboxStatus, OwnerKind, RequestIdentity};
 use studio_runtime_store::outbox::{Outbox, OutboxError, OutboxRow};
-use studio_runtime_store::request_results::{Admission, RequestResultError, ResultEnvelope};
+use studio_runtime_store::request_results::RequestResultError;
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, MonitorRecord, RecordOrder, RecordPredicate, RuleRecord,
     RulesRepository, RuntimeStore, StoreError, Table, truthy,
@@ -141,12 +141,21 @@ fn cancellation_id(request_key: &str, actor: &str) -> String {
     )
 }
 
-fn rules_identity(actor: &str, request_id: &str) -> Result<RequestIdentity, RulesServiceError> {
-    RequestIdentity::new(RULE_REQUEST_NAMESPACE, &[actor], request_id, &[]).map_err(|_| {
-        RulesServiceError::Invalid(
-            "Request id expired or invalid; inspect the existing rule before retrying",
-        )
-    })
+fn cancellation(
+    connection: &Connection,
+    actor: &str,
+    root: &str,
+) -> Result<Option<OutboxRow<RuleObligation>>, RulesServiceError> {
+    let raw = format!("{RULE_REQUEST_NAMESPACE}:{actor}:{root}");
+    if let Some(row) =
+        Outbox::get(connection, &cancellation_id(&raw, actor)).map_err(rules_outbox_error)?
+    {
+        return Ok(Some(row));
+    }
+    let Ok(identity) = RequestIdentity::new(RULE_REQUEST_NAMESPACE, &[actor], root, &[]) else {
+        return Ok(None);
+    };
+    Outbox::get(connection, &cancellation_id(identity.id(), actor)).map_err(rules_outbox_error)
 }
 
 /// Filesystem work for rule actions. Implementations must be called only before
@@ -863,18 +872,15 @@ fn rules_request_signature(
 fn rules_result(
     connection: &Connection,
     actor_id: &str,
-    request_key: &str,
+    request_id: &str,
     reply: RulesReply,
 ) -> Result<RulesActionResult, RulesServiceError> {
-    let cancel_monitor_ids =
-        match Outbox::get::<RuleObligation>(connection, &cancellation_id(request_key, actor_id))
-            .map_err(rules_outbox_error)?
-        {
-            Some(row) => match row.payload {
-                RuleObligation::CancelMonitors { monitor_ids } => monitor_ids,
-            },
-            None => Vec::new(),
-        };
+    let cancel_monitor_ids = match cancellation(connection, actor_id, request_id)? {
+        Some(row) => match row.payload {
+            RuleObligation::CancelMonitors { monitor_ids } => monitor_ids,
+        },
+        None => Vec::new(),
+    };
     if cancel_monitor_ids.windows(2).any(|pair| pair[0] >= pair[1]) {
         return Err(RulesServiceError::Invalid(
             "Invalid stored cancellation monitor IDs",
@@ -892,23 +898,16 @@ fn read_rules_request(
     request_id: &str,
     signature: &str,
 ) -> Result<Option<RulesActionResult>, RulesServiceError> {
-    let now_ms = chrono::Utc::now().timestamp_millis();
-    let request_key = format!("{RULE_REQUEST_NAMESPACE}:{actor_id}:{request_id}");
-    if let Some(saved) = crate::event_write::replay_request::<RulesReply>(
+    crate::event_write::saved_request::<RulesReply>(
         connection,
-        &request_key,
+        crate::event_write::RequestKey::new(RULE_REQUEST_NAMESPACE, &[actor_id], request_id)
+            .raw(&format!("{RULE_REQUEST_NAMESPACE}:{actor_id}:{request_id}")),
         signature,
-        now_ms,
+        chrono::Utc::now().timestamp_millis(),
     )
     .map_err(rules_request_error)?
-    {
-        return rules_result(connection, actor_id, &request_key, saved.reply).map(Some);
-    }
-    let identity = rules_identity(actor_id, request_id)?;
-    crate::event_write::replay_request::<RulesReply>(connection, identity.id(), signature, now_ms)
-        .map_err(rules_request_error)?
-        .map(|saved| rules_result(connection, actor_id, identity.id(), saved.reply))
-        .transpose()
+    .map(|reply| rules_result(connection, actor_id, request_id, reply))
+    .transpose()
 }
 
 /// Apply one `RulesRuntime.rules` action. The optional result's cancellation
@@ -1058,27 +1057,25 @@ pub async fn rules(
         .transaction_with(move |tx| {
             let actor = checked_actor(tx, &transaction_actor_id, transaction_actor_epoch)
                 .map_err(status_to_rules)?;
-            if let Some(saved_receipt) =
-                read_rules_request(tx, &transaction_actor_id, &request_id, &signature)?
-            {
-                return Ok::<_, RulesServiceError>(saved_receipt);
-            }
             let now_ms = chrono::Utc::now().timestamp_millis();
-            let admitted = match crate::event_write::admit_request(
+            let admitted = match crate::event_write::begin_request::<RulesReply>(
                 tx,
-                RULE_REQUEST_NAMESPACE,
-                &[&transaction_actor_id],
-                &request_id,
-                &[],
+                crate::event_write::RequestKey::new(
+                    RULE_REQUEST_NAMESPACE,
+                    &[&transaction_actor_id],
+                    &request_id,
+                )
+                .raw(&format!(
+                    "{RULE_REQUEST_NAMESPACE}:{transaction_actor_id}:{request_id}"
+                )),
                 &signature,
                 now_ms,
             )
             .map_err(rules_request_error)?
             {
-                Admission::Fresh(admitted) => admitted,
-                Admission::Replay(saved) => {
-                    let envelope: ResultEnvelope<RulesReply> = serde_json::from_str(&saved.result)?;
-                    return rules_result(tx, &transaction_actor_id, &saved.id, envelope.reply);
+                crate::event_write::CallerAdmission::Fresh(admitted) => admitted,
+                crate::event_write::CallerAdmission::Replay(reply) => {
+                    return rules_result(tx, &transaction_actor_id, &request_id, reply);
                 }
             };
             if actor.value() != prepared_actor.value() {
@@ -1240,15 +1237,7 @@ pub async fn acknowledge_rule_cancellations(
     store
         .transaction_with(move |tx| {
             checked_actor(tx, &actor_id, actor_epoch).map_err(status_to_rules)?;
-            let request_key = format!("{RULE_REQUEST_NAMESPACE}:{actor_id}:{request_id}");
-            let mut row =
-                Outbox::get::<RuleObligation>(tx, &cancellation_id(&request_key, &actor_id))
-                    .map_err(rules_outbox_error)?;
-            if row.is_none() {
-                let identity = rules_identity(&actor_id, &request_id)?;
-                row = Outbox::get::<RuleObligation>(tx, &cancellation_id(identity.id(), &actor_id))
-                    .map_err(rules_outbox_error)?;
-            }
+            let row = cancellation(tx, &actor_id, &request_id)?;
             if let Some(row) = row {
                 if row.owner_kind != OwnerKind::Agent
                     || row.owner_id != actor_id
