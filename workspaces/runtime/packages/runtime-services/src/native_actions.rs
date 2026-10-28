@@ -190,6 +190,12 @@ struct CommandCancelIntent {
     request: NativeRequest,
 }
 
+#[derive(Serialize, Deserialize)]
+struct CommandCancelReply {
+    request: NativeRequest,
+    result: Value,
+}
+
 fn action_outbox_id(root: &str) -> String {
     json!(["native-action", root]).to_string()
 }
@@ -1680,22 +1686,25 @@ pub fn replay_command(
         CommandAction::Cancel => json!({"task":task_id,"action":"cancel"}),
     }
     .to_string();
-    if let Some((saved_signature, reply)) =
-        saved_reply::<Value>(connection, "native-command", root)?
-    {
+    let saved = match action {
+        CommandAction::Input(_) => saved_reply::<Value>(connection, "native-command", root)?,
+        CommandAction::Cancel => {
+            saved_reply::<CommandCancelReply>(connection, "native-command", root)?
+                .map(|(signature, reply)| {
+                    if reply.request.ticket.agent != agent_id
+                        || reply.request.ticket.operation != task_id
+                    {
+                        return Err(NativeError::Changed);
+                    }
+                    Ok((signature, reply.result))
+                })
+                .transpose()?
+        }
+    };
+    if let Some((saved_signature, reply)) = saved {
         if signature != saved_signature {
             return Err(NativeError::Conflict);
         }
-        let reply = match action {
-            CommandAction::Input(_) => reply,
-            CommandAction::Cancel => {
-                let request: NativeRequest = decode(reply["request"].clone(), "command.result")?;
-                if request.ticket.agent != agent_id || request.ticket.operation != task_id {
-                    return Err(NativeError::Changed);
-                }
-                reply["result"].clone()
-            }
-        };
         return Ok(Some(CommandReply {
             response_json: reply.to_string(),
         }));
@@ -1727,35 +1736,21 @@ pub fn command_input(
     text: &str,
     admission: &impl CommandAdmission,
 ) -> Result<Value> {
-    if key.is_empty() || key.len() > MAX_ID {
-        return Err(NativeError::Invalid("command.requestId"));
-    }
+    use crate::event_write::{CallerAdmission, RequestKey, begin_request, settle_request};
     let signature = json!({"task":snapshot.task["id"],"action":"input","text":text}).to_string();
-    if let Some((saved, reply)) = saved_reply::<Value>(tx, "native-command", key)? {
-        if saved != signature {
-            return Err(NativeError::Conflict);
-        }
-        return Ok(reply);
-    }
-    let admitted = admit(
+    let admitted = match begin_request::<Value>(
         tx,
-        "native-command",
-        key,
+        RequestKey::new("native-command", &[], key).raw(&format!("native-command:{key}")),
         &signature,
         chrono::Utc::now().timestamp_millis(),
-    )?;
+    )? {
+        CallerAdmission::Fresh(admitted) => admitted,
+        CallerAdmission::Replay(reply) => return Ok(reply),
+    };
     snapshot.current(tx)?;
     let result = admission.enqueue(tx, &snapshot.agent, key, &snapshot.input(text)?)?;
     bounded(&result, "command.result")?;
-    RequestResults::settle(
-        tx,
-        &admitted,
-        &ResultEnvelope {
-            actor: snapshot.agent["id"].as_str().map(str::to_owned),
-            reply: result.clone(),
-            references: vec![],
-        },
-    )?;
+    settle_request(tx, &admitted, snapshot.agent["id"].as_str(), &result)?;
     Ok(result)
 }
 
@@ -1809,17 +1804,12 @@ pub fn command_cancel_claim(
     };
     let signature = json!({"task":snapshot.task["id"],"action":"cancel"}).to_string();
     if let Some((saved_signature, saved)) =
-        saved_reply::<Value>(tx, "native-command", &ticket.request)?
+        saved_reply::<CommandCancelReply>(tx, "native-command", &ticket.request)?
     {
-        if saved_signature != signature
-            || !same_native_request(
-                &decode::<NativeRequest>(saved["request"].clone(), "command.result")?,
-                &request,
-            )
-        {
+        if saved_signature != signature || !same_native_request(&saved.request, &request) {
             return Err(NativeError::Conflict);
         }
-        return Ok(CommandCancelClaim::Replay(saved["result"].clone()));
+        return Ok(CommandCancelClaim::Replay(saved.result));
     }
     if let Some(saved) = Outbox::get::<CommandCancelIntent>(tx, &id)? {
         if saved.signature != signature || !same_native_request(&saved.payload.request, &request) {
@@ -1869,13 +1859,13 @@ pub fn command_cancel_settle(tx: &Transaction<'_>, receipt: &TransportReceipt) -
     let id = command_outbox_id(&receipt.ticket.request);
     let saved = Outbox::get::<CommandCancelIntent>(tx, &id)?;
     let Some(saved) = saved else {
-        let (_, saved) = saved_reply::<Value>(tx, "native-command", &receipt.ticket.request)?
-            .ok_or(NativeError::Changed)?;
-        let request: NativeRequest = decode(saved["request"].clone(), "command.result")?;
-        return if request.ticket == receipt.ticket
-            && matches!(&receipt.delivery, Delivery::Written(result) if *result == saved["result"])
+        let (_, saved) =
+            saved_reply::<CommandCancelReply>(tx, "native-command", &receipt.ticket.request)?
+                .ok_or(NativeError::Changed)?;
+        return if saved.request.ticket == receipt.ticket
+            && matches!(&receipt.delivery, Delivery::Written(result) if *result == saved.result)
         {
-            Ok(saved["result"].clone())
+            Ok(saved.result)
         } else {
             Err(NativeError::Conflict)
         };
@@ -1896,7 +1886,10 @@ pub fn command_cancel_settle(tx: &Transaction<'_>, receipt: &TransportReceipt) -
         &saved.payload.admitted,
         &ResultEnvelope {
             actor: Some(request.ticket.agent.clone()),
-            reply: json!({"request":request,"result":result}),
+            reply: CommandCancelReply {
+                request: request.clone(),
+                result: result.clone(),
+            },
             references: vec![saved.owner_id.clone()],
         },
     )?;

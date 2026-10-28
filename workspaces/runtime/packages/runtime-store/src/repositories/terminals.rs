@@ -235,7 +235,7 @@ impl TerminalsRepository {
         failure: Option<TerminalActionFailure>,
     ) -> StoreResult<()> {
         let identity = RequestIdentity::new("terminal-action", &[], id, &[])
-            .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
+            .map_err(|error| StoreError::RequestResult(error.into()))?;
         let admitted = match RequestResults::admit(tx, &identity, signature, now_ms()?)
             .map_err(StoreError::from)?
         {
