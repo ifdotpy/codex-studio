@@ -51,6 +51,12 @@ enum Owner {
     Stop { ticket: String, terminals: String },
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StopRoot {
+    root_request_id: String,
+}
+
 impl StoppedTurn {
     fn interrupt_operation(&self) -> String {
         match &self.owner {
@@ -229,11 +235,11 @@ async fn request(
             };
             let root = match &actor.owner {
                 Owner::Disconnect { .. } => execution_root,
-                Owner::Stop { .. } => pointer
-                    .get("rootRequestId")
-                    .and_then(Value::as_str)
-                    .ok_or(super::WorkerError::CallbackUnknown)?
-                    .to_owned(),
+                Owner::Stop { .. } => {
+                    serde_json::from_value::<StopRoot>(pointer.clone())
+                        .map_err(studio_runtime_store::StoreError::from)?
+                        .root_request_id
+                }
             };
             let admitted = if let Some(saved) = pointer.get(field) {
                 serde_json::from_value(saved.clone())

@@ -154,7 +154,10 @@ pub use repositories::transcript::{
 pub use repositories::usage::{
     UsageRepositoryError, cancel_capacity_retry, cancel_usage_resume, disable_usage_resume,
 };
-pub use repositories::voice::{VoiceDelivery, VoiceEffect, VoiceEffectAuthority, VoiceRecord, VoiceRepository};
+pub use repositories::voice::{
+    VoiceDelivery, VoiceEffect, VoiceEffectAuthority, VoiceEffectDisposition, VoiceRecord,
+    VoiceRepository,
+};
 pub use repositories::work_items::{StoredQueueEvent, StoredRecord, WorkItemsRepository};
 pub use repositories::workspace_files::{StoredWorkspaceAsset, WorkspaceFilesRepository};
 pub use repositories::workspace_operations;

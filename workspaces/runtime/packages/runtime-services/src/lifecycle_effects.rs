@@ -666,7 +666,7 @@ impl LifecyclePorts for ProductionLifecyclePorts {
     ) -> Result<(), ManagementError> {
         let intent = crate::voice::provider::stage_delete_sessions(tx, agent_id)
             .map_err(voice_effect_error)?;
-        if !intent.sessions.is_empty() && self.voice_provider.is_none() {
+        if !intent.is_empty() && self.voice_provider.is_none() {
             return Err(ManagementError::Unavailable("voice-driver/agent-stop"));
         }
         Ok(())
@@ -829,7 +829,7 @@ impl ProductionLifecyclePorts {
                     provider,
                     intent.id,
                     studio_runtime_schema::persistence::OutboxKind::VoiceStop,
-                    intent.sessions,
+                    intent.session,
                     now,
                 )
                 .await
@@ -853,18 +853,11 @@ impl ProductionLifecyclePorts {
             return Ok(());
         }
         let Some(provider) = self.voice_provider.clone() else {
-            return if intents.iter().all(|intent| intent.sessions.is_empty()) {
-                Ok(())
-            } else {
-                Err(ManagementError::Unavailable("voice-driver/agent-stop"))
-            };
+            return Err(ManagementError::Unavailable("voice-driver/agent-stop"));
         };
         let handle = tokio::runtime::Handle::try_current()
             .map_err(|_| ManagementError::Unavailable("voice-driver/agent-stop"))?;
         for intent in intents {
-            if intent.sessions.is_empty() && intent.held_uncertain.is_empty() {
-                continue;
-            }
             let already_dispatching = !self
                 .voice_dispatching
                 .lock()
@@ -884,7 +877,7 @@ impl ProductionLifecyclePorts {
                     )
                     .await
                     {
-                        Ok(Some(pending)) if !pending.sessions.is_empty() => pending,
+                        Ok(Some(pending)) => pending,
                         Ok(_) => break,
                         Err(error) => {
                             eprintln!("deleted voice sessions remain pending: {error}");
@@ -899,7 +892,7 @@ impl ProductionLifecyclePorts {
                         Arc::clone(&store),
                         Arc::clone(&provider),
                         pending.id,
-                        pending.sessions,
+                        pending.session,
                         now,
                     )
                     .await

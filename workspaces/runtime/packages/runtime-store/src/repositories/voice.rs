@@ -16,7 +16,15 @@ pub struct VoiceEffect {
     pub epoch: i64,
     pub account: String,
     pub thread: String,
+    pub disposition: VoiceEffectDisposition,
     pub authority: VoiceEffectAuthority,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum VoiceEffectDisposition {
+    Active,
+    Deleted { epoch: i64 },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -25,6 +33,7 @@ pub enum VoiceEffectAuthority {
     Admitted {
         scope: studio_runtime_schema::persistence::ProviderScope,
         root_request_id: String,
+        owner: crate::request_results::AdmittedRequest,
         admission: crate::request_results::AdmittedRequest,
         outcome: studio_runtime_schema::persistence::VoiceStopOutcome,
     },

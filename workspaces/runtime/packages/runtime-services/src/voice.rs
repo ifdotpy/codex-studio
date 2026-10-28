@@ -23,6 +23,7 @@ pub use audio::{VoiceAudioError, save_audio};
 #[path = "voice/policy.rs"]
 pub mod policy;
 
+mod effects;
 #[path = "voice/provider.rs"]
 pub mod provider;
 
