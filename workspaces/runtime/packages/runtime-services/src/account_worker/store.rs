@@ -3052,6 +3052,7 @@ pub(super) async fn attach_provider_stream(
             let next_generation=generation.checked_add(1).ok_or_else(||invalid(&account))?;
             if previous.is_some_and(|old|old>generation){return Err(invalid(&account));}
             if let Some(previous)=previous && previous!=generation {super::retained::storage::checkpoint_covered(tx,&account,previous as u64,ack as u64)?;}
+            // Direct-to-supervisor changes can inherit a colliding generation's ACK and lose notifications; do not switch until fixed.
             tx.execute_cached("UPDATE runtime_account_state SET connection_generation=?2,connection_id=?3,journal_ack=CASE WHEN connection_generation=?2 THEN journal_ack ELSE 0 END,recovery_required=0,next_generation=MAX(next_generation,?4) WHERE account=?1",params![account,generation,connection,next_generation])?;
         }
         Ok(())
