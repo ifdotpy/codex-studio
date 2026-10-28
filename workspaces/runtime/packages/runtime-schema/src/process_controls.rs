@@ -278,10 +278,12 @@ pub struct ProcessActionResult {
     #[schemars(length(min = 1, max = ACTION_ID_MAX_CODEPOINTS))]
     pub request_id: String,
     pub status: ProcessActionStatus,
-    #[serde(default)]
-    pub processes: Vec<ProcessEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub processes: Option<Vec<ProcessEntry>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response: Option<ProcessResponse>,
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, Value>,
 }
 /// A response stop or background entry, or the receipt of HTTP monitor input.
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -328,8 +330,7 @@ pub enum ProcessReceipt {
 pub struct FoundProcessReceipt {
     #[schemars(extend("const" = true))]
     found: bool,
-    #[schemars(with = "ProcessActionResult")]
-    result: Value,
+    pub result: ProcessActionResult,
 }
 #[derive(Serialize, JsonSchema)]
 pub struct MissingProcessReceipt {
@@ -338,14 +339,12 @@ pub struct MissingProcessReceipt {
     result: (),
 }
 impl ProcessReceipt {
-    /// Check the owned fields once; publish the retained payload without rewriting
-    /// historical nulls, omission, or opaque extension fields.
-    pub fn found(result: Value) -> Result<Self, serde_json::Error> {
-        ProcessActionResult::validate(&result)?;
-        Ok(Self::Found(FoundProcessReceipt {
+    /// Publish the typed result, including retained extension fields.
+    pub fn found(result: ProcessActionResult) -> Self {
+        Self::Found(FoundProcessReceipt {
             found: true,
             result,
-        }))
+        })
     }
     pub fn not_found() -> Self {
         Self::NotFound(MissingProcessReceipt {
@@ -377,6 +376,40 @@ pub(crate) fn schemas() -> Vec<(String, Value)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn found_receipt_exposes_typed_result_and_preserves_wire_fields() {
+        let result = json!({"requestId":"request", "status":"completed", "response": {
+            "kind":"monitor_input", "monitorId":"monitor", "status":"acknowledged"
+        }, "legacy":null});
+        let typed =
+            serde_json::from_str::<ProcessActionResult>(&result.to_string()).expect("valid result");
+        let receipt = ProcessReceipt::found(typed);
+        let ProcessReceipt::Found(found) = &receipt else {
+            panic!("expected found receipt")
+        };
+        assert_eq!(found.result.status, ProcessActionStatus::Completed);
+        assert!(matches!(
+            found.result.response,
+            Some(ProcessResponse::MonitorInput(MonitorInputResponse {
+                status: MonitorInputStatus::Acknowledged,
+                ..
+            }))
+        ));
+        assert_eq!(
+            serde_json::from_str::<Value>(
+                &serde_json::to_string(&receipt).expect("serialize receipt")
+            )
+            .expect("decode receipt"),
+            json!({"found":true,"result":result})
+        );
+        assert!(
+            serde_json::from_str::<ProcessActionResult>(
+                r#"{"requestId":"request","status":"invalid"}"#
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn schema_references_leave_literal_text_untouched() {
