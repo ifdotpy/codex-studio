@@ -13,11 +13,6 @@ const allowed: Record<string, string> = {
     "legacy browser profile import writes WebView storage that the legacy import reads",
   "native/legacyDrafts.ts":
     "one-time legacy import of browser drafts into the core (step 6)",
-  "servers/storage.ts": "sessionStorage view for UI shells (G14)",
-  "servers/serverServices.ts": "sessionStorage view for UI shells (G14)",
-  "components/shell/BackgroundTasks.tsx": "sessionStorage UI state (G14)",
-  "components/shell/McpInventory.tsx": "sessionStorage UI state (G14)",
-  "components/shell/MonitorRestart.tsx": "sessionStorage UI state (G14)",
 };
 
 const root = fileURLToPath(new URL(".", import.meta.url));
