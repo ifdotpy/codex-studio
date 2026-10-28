@@ -49,6 +49,14 @@ async fn fixture_with_oracle() -> (
     };
     (directory, store, context, oracle)
 }
+fn fixture_request_id(value: &Value) -> RequestId {
+    match value {
+        Value::String(id) => RequestId::String(id.clone()),
+        Value::Number(id) => RequestId::Number(id.as_u64().expect("non-negative request id")),
+        _ => panic!("invalid request id fixture"),
+    }
+}
+
 fn request(method: Method, id: RequestId, params: Value) -> Frame {
     Frame::Request(RequestFrame {
         id,
@@ -591,8 +599,16 @@ async fn provider_callbacks_worker_versioned_progress_reaches_the_parent_once() 
             .unwrap(),
     );
     assert_eq!(body(&first)["success"], true, "{:?}", body(&first));
-    let delivery: studio_runtime_schema::persistence::RecipientDelivery =
-        serde_json::from_value(tool_value(&first)["deliveries"][lead].clone()).unwrap();
+    #[derive(serde::Deserialize)]
+    struct DeliveryReply {
+        deliveries: std::collections::BTreeMap<
+            String,
+            studio_runtime_schema::persistence::RecipientDelivery,
+        >,
+    }
+    let delivery_reply: DeliveryReply =
+        serde_json::from_str(body(&first)["contentItems"][0]["text"].as_str().unwrap()).unwrap();
+    let delivery = &delivery_reply.deliveries[lead];
     assert_eq!(
         delivery.status,
         studio_runtime_schema::persistence::DeliveryStatus::Queued
@@ -705,7 +721,7 @@ async fn provider_callbacks_python_reservations_and_restart() {
         .unwrap();
     for case in oracle["reservations"].as_array().unwrap() {
         let frame = Frame::Request(RequestFrame {
-            id: serde_json::from_value(case["message"]["id"].clone()).unwrap(),
+            id: fixture_request_id(&case["message"]["id"]),
             method: Method::ItemToolCall,
             params: Some(case["message"]["params"].clone()),
             fields: Default::default(),
@@ -775,7 +791,7 @@ async fn provider_callbacks_utility_invalid_and_deleted() {
     );
     let refresh = Frame::UnknownMethod(studio_runtime_providers::UnknownMethodFrame {
         method: "account/chatgptAuthTokens/refresh".into(),
-        fields: serde_json::from_value(json!({"id":1,"params":{}})).unwrap(),
+        fields: [("id".into(), json!(1)), ("params".into(), json!({}))].into(),
     });
     assert!(matches!(
         reply(
@@ -966,7 +982,11 @@ async fn provider_callbacks_python_durable_answers() {
         } else {
             Frame::UnknownMethod(studio_runtime_providers::UnknownMethodFrame {
                 method: method.into(),
-                fields: serde_json::from_value(json!({"id":id,"params":case["params"]})).unwrap(),
+                fields: [
+                    ("id".into(), json!(1000 + index as u64)),
+                    ("params".into(), case["params"].clone()),
+                ]
+                .into(),
             })
         };
         let CallbackDecision::Pending(id) =
@@ -1010,7 +1030,7 @@ async fn provider_callbacks_python_dynamic_read_and_title() {
     for case in template().value["dynamic"].as_array().unwrap() {
         let frame = request(
             Method::ItemToolCall,
-            serde_json::from_value(case["message"]["id"].clone()).unwrap(),
+            fixture_request_id(&case["message"]["id"]),
             case["message"]["params"].clone(),
         );
         let result = reply(

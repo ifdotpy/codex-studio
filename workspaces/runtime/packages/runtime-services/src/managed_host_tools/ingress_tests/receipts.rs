@@ -1,10 +1,8 @@
-use super::claim_settlement::request_row;
+use super::claim_settlement::{request_row, request_with_admission};
 use super::*;
 use studio_runtime_schema::persistence::{REQUEST_RESULT_TTL_MS, RequestIdentityError};
 use studio_runtime_store::ToolResultRecord;
-use studio_runtime_store::request_results::{
-    AdmittedRequest, RequestResultError, RequestResults, ResultEnvelope,
-};
+use studio_runtime_store::request_results::{RequestResultError, RequestResults, ResultEnvelope};
 
 fn assert_v7(value: &str) {
     assert_eq!(uuid::Uuid::parse_str(value).unwrap().get_version_num(), 7);
@@ -24,17 +22,17 @@ async fn callback_studio_ids_are_v7_and_distinct_from_rpc_labels() {
     let first = dispatch_with_managed_tools(store.clone(), &context, &frame, 20.0, ports.clone())
         .await
         .unwrap();
-    let task = request_row(&store, rpc_label);
-    let task_id = task["id"].as_str().unwrap();
+    let task = request_with_admission(&store, rpc_label);
+    let task_id = task.fields["id"].as_str().unwrap();
     assert_v7(task_id);
-    assert_eq!(task["callId"], rpc_label);
-    assert_eq!(task["rpcId"], format!("rpc-{rpc_label}"));
+    assert_eq!(task.fields["callId"], rpc_label);
+    assert_eq!(task.fields["rpcId"], format!("rpc-{rpc_label}"));
     assert_ne!(task_id, rpc_label);
     assert!(
-        task.get("result").is_none(),
+        task.fields.get("result").is_none(),
         "completed tool body belongs to request_results"
     );
-    let token: AdmittedRequest = serde_json::from_value(task["admitted"].clone()).unwrap();
+    let token = &task.admitted;
     let saved = RequestResults::replay(
         &store.test_reader().unwrap(),
         token.id(),
@@ -88,8 +86,7 @@ async fn seeded_token_settles_one_exact_typed_result_without_inline_copy() {
         })
         .await
         .unwrap();
-    let token: AdmittedRequest =
-        serde_json::from_value(request_row(&store, "seeded-result")["admitted"].clone()).unwrap();
+    let token = request_with_admission(&store, "seeded-result").admitted;
     let stored = RequestResults::replay(
         &store.test_reader().unwrap(),
         token.id(),
@@ -225,9 +222,9 @@ async fn expired_tool_result_refuses_a_new_rpc_alias_without_dispatch() {
     dispatch_with_managed_tools(store.clone(), &context, &first, 20.0, ports.clone())
         .await
         .unwrap();
-    let task = request_row(&store, "expiry-original-rpc");
-    let id = task["id"].as_str().unwrap().to_owned();
-    let token: AdmittedRequest = serde_json::from_value(task["admitted"].clone()).unwrap();
+    let task = request_with_admission(&store, "expiry-original-rpc");
+    let id = task.fields["id"].as_str().unwrap().to_owned();
+    let token = task.admitted;
     store
         .transaction_with::<_, StoreError>(move |tx| {
             tx.execute(
