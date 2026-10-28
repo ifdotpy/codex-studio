@@ -30,6 +30,64 @@ use rusqlite::Connection;
 const AGENT: &str = "agent";
 const TURN: &str = "turn-1";
 
+fn wire_stage_round_trip(stage: &str) {
+    let mut db = database();
+    if matches!(stage, "reserved" | "held") {
+        claim(&mut db, "wire").expect("claim");
+    } else {
+        submit(&mut db, "wire");
+    }
+    let id = receipt_id(AGENT, "wire");
+    let raw: String = db
+        .query_row(
+            "SELECT payload FROM runtime_outbox WHERE id=?1",
+            [&id],
+            |row| row.get(0),
+        )
+        .expect("payload");
+    let mut value: Value = serde_json::from_str(&raw).expect("stored JSON");
+    value["stage"] = json!(stage);
+    let legacy = value.to_string();
+    let payload = serde_json::from_str::<SteerWire>(&legacy)
+        .expect("wire")
+        .into_payload(serde_json::value::RawValue::from_string(legacy.clone()).unwrap())
+        .expect("stage");
+    let encoded = serde_json::to_string(&payload).expect("encoded");
+    assert_eq!(serde_json::from_str::<Value>(&encoded).unwrap(), value);
+}
+
+#[test]
+fn wire_reserved_round_trip() {
+    wire_stage_round_trip("reserved");
+}
+#[test]
+fn wire_submitted_round_trip() {
+    wire_stage_round_trip("submitted");
+}
+#[test]
+fn wire_unconfirmed_round_trip() {
+    wire_stage_round_trip("unconfirmed");
+}
+#[test]
+fn wire_held_round_trip() {
+    wire_stage_round_trip("held");
+}
+
+#[test]
+fn invalid_stage_fields_report_the_receipt_identity() {
+    let mut db = database();
+    submit(&mut db, "invalid-wire");
+    let id = receipt_id(AGENT, "invalid-wire");
+    db.execute(
+        "UPDATE runtime_outbox SET payload=json_remove(payload,'$.generation') WHERE id=?1",
+        [&id],
+    )
+    .unwrap();
+    assert!(
+        matches!(load(&db, &id), Err(StoreError::InvalidStoredObject { table, id: found }) if table == "runtime_outbox" && found == id)
+    );
+}
+
 #[test]
 fn stored_steer_round_trips_and_incomplete_submission_is_held() {
     let mut connection = database();
@@ -41,7 +99,10 @@ fn stored_steer_round_trips_and_incomplete_submission_is_held() {
             |row| row.get(0),
         )
         .expect("stored receipt");
-    let payload: SteerPayload = serde_json::from_str(&raw).expect("read stored receipt");
+    let payload = serde_json::from_str::<SteerWire>(&raw)
+        .expect("read stored receipt")
+        .into_payload(serde_json::value::RawValue::from_string(raw.clone()).unwrap())
+        .expect("valid stored receipt");
     let encoded = serde_json::to_string(&payload).expect("write stored receipt");
     assert_eq!(
         serde_json::from_str::<Value>(&raw).unwrap(),
@@ -49,11 +110,39 @@ fn stored_steer_round_trips_and_incomplete_submission_is_held() {
     );
     let incomplete = raw.replace("\"generation\":7", "\"generation\":null");
     assert_ne!(raw, incomplete);
-    assert!(serde_json::from_str::<SteerPayload>(&incomplete).is_err());
+    assert!(
+        serde_json::from_str::<SteerWire>(&incomplete)
+            .unwrap()
+            .into_payload(serde_json::value::RawValue::from_string(incomplete.clone()).unwrap())
+            .is_err()
+    );
     connection.execute(
         "UPDATE runtime_outbox SET status='unknown',payload=json_set(payload,'$.stage','held','$.generation',NULL) WHERE id=?1",
         [receipt_id(AGENT, "sample")],
     ).expect("hold incomplete evidence");
+    let id = receipt_id(AGENT, "sample");
+    let before: String = connection
+        .query_row(
+            "SELECT payload FROM runtime_outbox WHERE id=?1",
+            [&id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    settle(&mut connection, |tx| {
+        let held = load(tx, &id)?.expect("held receipt");
+        store(tx, &id, &held)
+    });
+    let after: String = connection
+        .query_row(
+            "SELECT payload FROM runtime_outbox WHERE id=?1",
+            [&id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        before, after,
+        "held evidence remains byte-for-byte unchanged"
+    );
     settle(&mut connection, |tx| {
         SchedulerRepository::abandon_steers(tx, "acct", 8)
     });
@@ -962,26 +1051,34 @@ fn frozen_projection_survives_response_loss_and_rejects_payload_changes() {
     let mut connection = database();
     submit(&mut connection, "frozen");
     let projection = json!({"operation":"frozen","compiled":{"text":"bounded evidence"}});
-    for _ in 0..2 {
-        settle(&mut connection, |tx| {
-            SchedulerRepository::freeze_steer_submission(tx, AGENT, "frozen", &projection)
-        });
-    }
-    let changed = with(&mut connection, |tx| {
-        SchedulerRepository::freeze_steer_submission(
-            tx,
-            AGENT,
-            "frozen",
-            &json!({"compiled":"changed"}),
-        )
+    let frozen = serde_json::value::to_raw_value(&projection).expect("projection JSON");
+    settle(&mut connection, |tx| {
+        assert!(
+            SchedulerRepository::freeze_steer_submission(tx, AGENT, "frozen", &frozen)?.is_none()
+        );
+        Ok(())
     });
-    assert!(changed.is_err(), "a retry cannot rewrite frozen content");
+    let changed =
+        serde_json::value::to_raw_value(&json!({"compiled":"changed"})).expect("changed JSON");
+    let previous = with(&mut connection, |tx| {
+        SchedulerRepository::freeze_steer_submission(tx, AGENT, "frozen", &changed)
+    })
+    .expect("frozen projection")
+    .expect("previous projection");
+    assert_eq!(
+        previous.get(),
+        frozen.get(),
+        "a retry cannot rewrite frozen content"
+    );
     settle(&mut connection, |tx| {
         SchedulerRepository::steer_response(tx, AGENT, "frozen", "unknown")
     });
     terminal(&mut connection, &[]);
     let ack = acknowledge(&mut connection).expect("late acknowledgement");
-    assert_eq!(ack.prepared_submission, Some(projection));
+    assert_eq!(
+        ack.prepared_submission.as_deref().map(|value| value.get()),
+        Some(frozen.get())
+    );
     assert_eq!(ack.event_ids, ["u1", "u2", "u4"]);
     assert_eq!(open_receipts(&connection), 0);
 }

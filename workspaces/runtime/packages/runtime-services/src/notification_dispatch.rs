@@ -3926,7 +3926,9 @@ mod tests {
             admission,
             steer_id: "steer".into(),
             event_ids: vec!["e1".into()],
-            prepared_submission: Some(json!({})),
+            prepared_submission: Some(
+                serde_json::value::RawValue::from_string("{}".into()).unwrap(),
+            ),
             events: vec![],
             submitted_at: 2.0,
         };

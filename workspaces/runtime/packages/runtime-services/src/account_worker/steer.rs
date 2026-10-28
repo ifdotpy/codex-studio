@@ -196,14 +196,50 @@ pub(super) fn submitted(
         return Ok(false);
     }
     preparation::persist_compilation(tx, &prepared.compiled)?;
-    SchedulerRepository::freeze_steer_submission(
+    let saved = SchedulerRepository::freeze_steer_submission(
         tx,
         &intent.agent_id,
         &intent.attempt_id,
-        &serde_json::to_value(context).map_err(StoreError::from)?,
+        &serde_json::value::to_raw_value(context).map_err(StoreError::from)?,
     )?;
+    if let Some(saved) = saved {
+        verify_frozen_context(saved.get(), context)?;
+    }
     store::save_account_submission(tx, context, request)?;
     Ok(true)
+}
+
+fn verify_frozen_context(raw: &str, context: &Pending) -> Result<(), WorkerError> {
+    let previous: Pending = serde_json::from_str(raw)
+        .map_err(|_| StoreError::RecordContract("steer submission context"))?;
+    if previous != *context {
+        return Err(StoreError::RecordContract("steer submission context").into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod frozen_context_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_sorted_keys_compare_as_typed_context() {
+        let legacy = json!({
+            "intent": {
+                "agent_id": "agent", "epoch": 1, "attempt_id": "steer",
+                "account_key": "default", "provider": "codex", "thread_id": "thread",
+                "cwd": null, "model": null, "events": [], "radio_authorized": false
+            },
+            "method": "turn/steer", "operation": "account:default:steer:turn/steer",
+            "thread": null, "compiled": null
+        })
+        .to_string();
+        let mut context: Pending = serde_json::from_str(&legacy).expect("legacy context");
+        assert!(verify_frozen_context(&legacy, &context).is_ok());
+        context.operation.push_str(":changed");
+        assert!(verify_frozen_context(&legacy, &context).is_err());
+        assert!(verify_frozen_context("{}", &context).is_err());
+    }
 }
 
 /// Apply a transport or reply outcome of a steer request. Returns the agent
@@ -290,7 +326,7 @@ pub(super) fn acknowledge(
     };
     let operation = operation(account, &ack.steer_id);
     let submission = if let Some(saved) = &ack.prepared_submission {
-        let context: Pending = serde_json::from_value(saved.clone())
+        let context: Pending = serde_json::from_str(saved.get())
             .map_err(|_| StoreError::RecordContract("steer submission context"))?;
         if let Some(compiled) = &context.compiled {
             let ids = ack

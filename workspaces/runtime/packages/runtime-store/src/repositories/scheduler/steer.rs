@@ -30,7 +30,7 @@ use crate::request_results::{Admission, AdmittedRequest, RequestResults};
 use studio_runtime_schema::DeliveryMoment;
 use studio_runtime_schema::persistence::{OutboxKind, OutboxStatus, OwnerKind, RequestIdentity};
 
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SteerPayload {
     agent: String,
@@ -44,10 +44,110 @@ struct SteerPayload {
     created: f64,
     root_request_id: String,
     admission: AdmittedRequest,
+    #[serde(skip)]
+    held_payload: Option<Box<serde_json::value::RawValue>>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SteerWire {
+    agent: String,
+    epoch: i64,
+    account_key: String,
+    thread_id: String,
+    turn_id: String,
+    events: Vec<String>,
+    stage: WireStage,
+    created: f64,
+    root_request_id: String,
+    admission: AdmittedRequest,
+    request_ticket: Option<Box<serde_json::value::RawValue>>,
+    generation: Option<Box<serde_json::value::RawValue>>,
+    submitted_at: Option<Box<serde_json::value::RawValue>>,
+    prepared_submission: Option<Box<serde_json::value::RawValue>>,
+    response: Option<Box<serde_json::value::RawValue>>,
+    interrupt_still_queued: Option<Box<serde_json::value::RawValue>>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum WireStage {
+    Reserved,
+    Submitted,
+    Unconfirmed,
+    Held,
+}
+
+impl TryFrom<&mut SteerWire> for SteerState {
+    type Error = ();
+
+    fn try_from(wire: &mut SteerWire) -> Result<Self, Self::Error> {
+        match wire.stage {
+            WireStage::Held => Ok(Self::Held),
+            WireStage::Reserved => {
+                if wire.request_ticket.is_some()
+                    || wire.generation.is_some()
+                    || wire.submitted_at.is_some()
+                    || wire.prepared_submission.is_some()
+                    || wire.response.is_some()
+                    || wire.interrupt_still_queued.is_some()
+                {
+                    return Err(());
+                }
+                Ok(Self::Reserved)
+            }
+            WireStage::Submitted | WireStage::Unconfirmed => {
+                let sent = SubmittedSteer {
+                    request_ticket: parse_wire(wire.request_ticket.take().ok_or(())?)?,
+                    generation: parse_wire(wire.generation.take().ok_or(())?)?,
+                    submitted_at: parse_wire(wire.submitted_at.take().ok_or(())?)?,
+                    prepared_submission: wire.prepared_submission.take(),
+                    response: wire.response.take().map(parse_wire).transpose()?,
+                    interrupt_still_queued: wire
+                        .interrupt_still_queued
+                        .take()
+                        .map(parse_wire)
+                        .transpose()?
+                        .unwrap_or(false),
+                };
+                Ok(match wire.stage {
+                    WireStage::Submitted => Self::Submitted(sent),
+                    WireStage::Unconfirmed => Self::Unconfirmed(sent),
+                    WireStage::Reserved | WireStage::Held => return Err(()),
+                })
+            }
+        }
+    }
+}
+
+fn parse_wire<T: serde::de::DeserializeOwned>(
+    raw: Box<serde_json::value::RawValue>,
+) -> Result<T, ()> {
+    serde_json::from_str(raw.get()).map_err(|_| ())
+}
+
+impl SteerWire {
+    fn into_payload(mut self, raw: Box<serde_json::value::RawValue>) -> Result<SteerPayload, ()> {
+        let stage = SteerState::try_from(&mut self)?;
+        let held_payload = matches!(stage, SteerState::Held).then_some(raw);
+        Ok(SteerPayload {
+            agent: self.agent,
+            epoch: self.epoch,
+            account_key: self.account_key,
+            thread_id: self.thread_id,
+            turn_id: self.turn_id,
+            events: self.events,
+            stage,
+            created: self.created,
+            root_request_id: self.root_request_id,
+            admission: self.admission,
+            held_payload,
+        })
+    }
 }
 
 // The compiler projection remains opaque until the pre-pivot metadata contracts are typed.
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize)]
 #[serde(tag = "stage", rename_all = "snake_case")]
 enum SteerState {
     Reserved,
@@ -63,7 +163,7 @@ pub(crate) struct SubmittedSteer {
     generation: u64,
     submitted_at: f64,
     #[serde(default)]
-    prepared_submission: Option<Value>,
+    prepared_submission: Option<Box<serde_json::value::RawValue>>,
     #[serde(default)]
     response: Option<String>,
     #[serde(default)]
@@ -124,7 +224,7 @@ pub struct ClaimedSteer {
 }
 
 /// Input proven delivered by the provider acknowledgement.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct AcknowledgedSteer {
     pub agent_id: String,
     pub admission: AdmittedRequest,
@@ -133,7 +233,7 @@ pub struct AcknowledgedSteer {
     pub event_ids: Vec<String>,
     /// Opaque compiler-owned projection frozen before transport, retained until
     /// acknowledgement even after the ordinary request reply is retired.
-    pub prepared_submission: Option<Value>,
+    pub prepared_submission: Option<Box<serde_json::value::RawValue>>,
     pub events: Vec<QueueEvent>,
     pub submitted_at: f64,
 }
@@ -145,22 +245,39 @@ fn receipt_id(agent: &str, steer: &str) -> String {
 fn invalid_receipt(id: &str) -> StoreError {
     invalid_object("runtime_outbox", id)
 }
+fn invalid_wire(id: &str) -> StoreError {
+    StoreError::InvalidStoredObject {
+        table: "runtime_outbox",
+        id: id.into(),
+    }
+}
 fn load(db: &Connection, id: &str) -> StoreResult<Option<SteerPayload>> {
-    Outbox::get::<SteerPayload>(db, id)
+    Outbox::get::<Box<serde_json::value::RawValue>>(db, id)
         .map_err(StoreError::from)?
         .map(|row| {
+            let payload: SteerWire =
+                serde_json::from_str(row.payload.get()).map_err(|_| invalid_wire(id))?;
+            let payload = payload
+                .into_payload(row.payload)
+                .map_err(|_| invalid_wire(id))?;
             if row.kind != OutboxKind::Steer
                 || row.owner_kind != OwnerKind::Agent
-                || row.owner_id != row.payload.agent
+                || row.owner_id != payload.agent
                 || row.signature != STEER_RECEIPT_SIGNATURE
             {
                 return Err(invalid_receipt(id));
             }
-            Ok(row.payload)
+            Ok(payload)
         })
         .transpose()
 }
 fn store(tx: &Transaction<'_>, id: &str, value: &SteerPayload) -> StoreResult<()> {
+    #[derive(serde::Serialize)]
+    #[serde(untagged)]
+    enum Stored<'a> {
+        Held(&'a serde_json::value::RawValue),
+        Active(&'a SteerPayload),
+    }
     let status = match value.stage {
         SteerState::Reserved => OutboxStatus::Pending,
         SteerState::Submitted(_) => OutboxStatus::Submitted,
@@ -181,7 +298,10 @@ fn store(tx: &Transaction<'_>, id: &str, value: &SteerPayload) -> StoreResult<()
             generation: None,
             ordinal: None,
             next_at: None,
-            payload: value.clone(),
+            payload: match &value.held_payload {
+                Some(raw) => Stored::Held(raw),
+                None => Stored::Active(value),
+            },
             created: (value.created * 1000.0) as i64,
         },
     )
@@ -192,13 +312,23 @@ fn delete(tx: &Transaction<'_>, id: &str) -> StoreResult<()> {
     Ok(())
 }
 fn receipts(tx: &Transaction<'_>, agent: &str) -> StoreResult<Vec<(String, SteerPayload)>> {
-    Ok(
-        Outbox::for_owner::<SteerPayload>(tx, OwnerKind::Agent, agent, OutboxKind::Steer)
-            .map_err(StoreError::from)?
-            .into_iter()
-            .map(|row| (row.id, row.payload))
-            .collect(),
+    Outbox::for_owner::<Box<serde_json::value::RawValue>>(
+        tx,
+        OwnerKind::Agent,
+        agent,
+        OutboxKind::Steer,
     )
+    .map_err(StoreError::from)?
+    .into_iter()
+    .map(|row| {
+        let wire: SteerWire =
+            serde_json::from_str(row.payload.get()).map_err(|_| invalid_wire(&row.id))?;
+        let payload = wire
+            .into_payload(row.payload)
+            .map_err(|_| invalid_wire(&row.id))?;
+        Ok((row.id, payload))
+    })
+    .collect()
 }
 fn receipt_events(id: &str, receipt: &SteerPayload) -> StoreResult<String> {
     if receipt.events.is_empty() {
@@ -466,6 +596,7 @@ impl SchedulerRepository {
                 created,
                 root_request_id: root.clone(),
                 admission: admission.clone(),
+                held_payload: None,
             },
         )?;
         Ok(Some(ClaimedSteer {
@@ -583,23 +714,22 @@ impl SchedulerRepository {
         tx: &Transaction<'_>,
         agent_id: &str,
         steer_id: &str,
-        submission: &Value,
-    ) -> StoreResult<()> {
+        submission: &serde_json::value::RawValue,
+    ) -> StoreResult<Option<Box<serde_json::value::RawValue>>> {
         let id = receipt_id(agent_id, steer_id);
         let mut receipt = load(tx, &id)?.ok_or_else(|| invalid_receipt(&id))?;
         let SteerState::Submitted(sent) = &mut receipt.stage else {
             return Err(invalid_receipt(&id));
         };
-        if !submission.is_object()
-            || sent
-                .prepared_submission
-                .as_ref()
-                .is_some_and(|saved| saved != submission)
-        {
+        if !submission.get().trim_start().starts_with('{') {
             return Err(invalid_receipt(&id));
         }
-        sent.prepared_submission = Some(submission.clone());
-        store(tx, &id, &receipt)
+        if let Some(saved) = &sent.prepared_submission {
+            return Ok(Some(saved.clone()));
+        }
+        sent.prepared_submission = Some(submission.to_owned());
+        store(tx, &id, &receipt)?;
+        Ok(None)
     }
 
     /// The transport proves it never wrote the request. Returns whether the
@@ -931,7 +1061,7 @@ impl SchedulerRepository {
             OutboxStatus::Unknown,
         ] {
             rows.extend(
-                Outbox::for_account::<SteerPayload>(
+                Outbox::for_account::<Box<serde_json::value::RawValue>>(
                     tx,
                     account,
                     OutboxKind::Steer,
@@ -942,7 +1072,12 @@ impl SchedulerRepository {
             );
         }
         for row in rows {
-            let (id, receipt) = (row.id, row.payload);
+            let id = row.id;
+            let wire: SteerWire =
+                serde_json::from_str(row.payload.get()).map_err(|_| invalid_wire(&id))?;
+            let receipt = wire
+                .into_payload(row.payload)
+                .map_err(|_| invalid_wire(&id))?;
             if receipt.account_key != account {
                 continue;
             }

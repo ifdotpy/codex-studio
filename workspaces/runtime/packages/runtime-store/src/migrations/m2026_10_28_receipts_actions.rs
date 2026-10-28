@@ -450,10 +450,8 @@ fn steer(tx: &Transaction<'_>, row: &SourceReceipt, mut value: Value, cutover: i
             .map_err(|_| invalid())?;
     value["rootRequestId"] = json!(RequestIdentity::issue_root());
     let incomplete = stage != SteerStage::Reserved
-        && <crate::repositories::scheduler::SubmittedSteer as serde::Deserialize>::deserialize(
-            &value,
-        )
-        .is_err();
+        && serde_json::from_str::<crate::repositories::scheduler::SubmittedSteer>(&row.result)
+            .is_err();
     if incomplete {
         value
             .as_object_mut()

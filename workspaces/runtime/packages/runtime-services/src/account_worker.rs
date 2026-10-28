@@ -943,7 +943,7 @@ pub async fn start_account_worker_with_publication_sink(
     })
 }
 
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 struct Pending {
     intent: TurnIntent,
     method: Method,
