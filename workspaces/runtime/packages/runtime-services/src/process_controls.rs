@@ -9,10 +9,11 @@ use studio_runtime_schema::process_controls::{
     ProcessActionResult, ProcessActionStatus, ProcessControlRequest, ProcessEntry, ProcessOutcome,
     ProcessReceipt, Request,
 };
-use studio_runtime_store::request_results::{Admission, AdmittedRequest, RequestResults};
+use studio_runtime_store::request_results::AdmittedRequest;
 use studio_runtime_store::{StoreError, Transaction};
 
 use crate::account_session_runtime::ConnectionScope;
+use crate::event_write::{CallerAdmission, RequestKey, begin_request};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -714,31 +715,30 @@ pub fn claim(
         response: None,
     };
     let root_request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
-    let identity = studio_runtime_schema::persistence::RequestIdentity::new(
-        "process-action",
-        &[
-            scope,
-            text(request, "accountKey", ""),
-            &request["epoch"].to_string(),
-        ],
-        &root_request_id,
-        &[id],
-    )
-    .map_err(studio_runtime_store::request_results::RequestResultError::from)
-    .map_err(StoreError::from)?;
-    let admitted = match RequestResults::admit(
+    let admitted = match begin_request::<ProcessActionResult>(
         tx,
-        &identity,
+        RequestKey::new(
+            "process-action",
+            &[
+                scope,
+                text(request, "accountKey", ""),
+                &request["epoch"].to_string(),
+            ],
+            &root_request_id,
+        )
+        .operation(&[id]),
         &signature,
         chrono::Utc::now().timestamp_millis(),
     )
     .map_err(StoreError::from)?
     {
-        Admission::Fresh(admitted) => admitted.derive_result("process-action", &[id], &signature),
-        Admission::Replay(_) => {
+        CallerAdmission::Fresh(admitted) => {
+            admitted.derive_result("process-action", &[id], &signature)
+        }
+        CallerAdmission::Replay(_) => {
             return Err(Error::Store(StoreError::RequestResult(
                 studio_runtime_store::request_results::RequestResultError::Conflict {
-                    id: identity.id().into(),
+                    id: root_request_id,
                 },
             )));
         }
@@ -845,6 +845,7 @@ fn input_receipt(connection: &Connection, query: &Value) -> Result<ProcessReceip
 mod claim_identity_tests {
     use super::*;
     use studio_runtime_schema::persistence::RequestIdentity;
+    use studio_runtime_store::request_results::RequestResults;
 
     #[test]
     fn process_claim_reuses_its_admitted_token_after_expiry_without_another_effect() {
