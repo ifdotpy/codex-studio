@@ -63,10 +63,10 @@ export default function ConversationWarnings({
   const highest = LEVELS.find(
     (level) =>
       errors.items.some((item) => item.level === level) ||
+      logs.some((item) => item.level === level) ||
       (level === "warning" &&
         (accountNotices.some((notice) => !isInfoNotice(notice)) ||
-          chatWarnings.length > 0)) ||
-      (level === "log" && logs.length > 0),
+          chatWarnings.length > 0)),
   );
   const hasWarning = highest !== undefined && highest !== "log";
   const noticeCount = accountNotices.length + chatWarnings.length;
