@@ -13,7 +13,7 @@ pub fn tick(
     let all_agents = agents(db)?;
     let mut effects = Vec::new();
     for mut room in rooms(db)? {
-        let before = room.materialize()?["radio"].clone();
+        let before = room.radio.clone();
         if let Some(active) = &room.radio.active
             && unsent_cancelled(db, active)?
         {
@@ -235,7 +235,7 @@ pub fn tick(
                 }
             }
         }
-        if room.materialize()?["radio"] != before {
+        if room.radio != before {
             room.radio.revision = room
                 .radio
                 .revision

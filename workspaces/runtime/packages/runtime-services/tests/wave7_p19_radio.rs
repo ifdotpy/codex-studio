@@ -391,7 +391,7 @@ async fn run(store: std::sync::Arc<RuntimeStore>, case: &Value) -> Result<Value,
                 fs::create_dir_all(path).expect("project directory");
                 let values: [Value; 2] = serde_json::from_value(case["drafts"].clone()).expect("Python drafts");
                 let drafts = values.map(|value| AgentRecord::from_value(value).expect("checked Python agent draft"));
-                radio_runtime::create_with(std::sync::Arc::clone(&store), &case["body"], Box::new(Creation(drafts))).await.map(|reply| json!(reply))
+                radio_runtime::create_with(std::sync::Arc::clone(&store), &case["body"], Box::new(Creation(drafts))).await.map(|reply| serde_json::from_str(&serde_json::to_string(&reply).expect("reply encodes")).expect("reply decodes"))
             }
         },
         "project-binding" => store.transaction_with(move |db| {
@@ -426,7 +426,7 @@ async fn run(store: std::sync::Arc<RuntimeStore>, case: &Value) -> Result<Value,
             )?;
             Ok(Value::Null)
         }).await,
-        _ => radio_runtime::manage(std::sync::Arc::clone(&store), &case["body"]).await.map(|reply| json!(reply)),
+        _ => radio_runtime::manage(std::sync::Arc::clone(&store), &case["body"]).await.map(|reply| serde_json::from_str(&serde_json::to_string(&reply).expect("reply encodes")).expect("reply decodes")),
     }
 }
 #[tokio::test]
