@@ -44,15 +44,14 @@ impl studio_runtime_services::account_session_runtime::AccountSessionPort for Re
                 ProviderResponse, SessionOutcome, SessionReceipt,
             };
             self.calls.lock().expect("calls").push(request.method);
-            let value = match request.method {
-                Method::ThreadRead => {
-                    json!({"thread":{"id":"11111111-1111-4111-8111-111111111111","status":{"type":"idle"},"path":self.path}})
-                }
-                Method::ThreadTurnsList => {
-                    json!({"data":[{"id":"turn-1","status":"completed","startedAt":1.0,"completedAt":10.0}]})
-                }
-                Method::ThreadFork => json!({"thread":{"id":"new-thread"}}),
-                _ => json!({"data":[],"nextCursor":null}),
+            let value = if request.method == Method::ThreadRead {
+                json!({"thread":{"id":"11111111-1111-4111-8111-111111111111","status":{"type":"idle"},"path":self.path}})
+            } else if request.method == Method::ThreadTurnsList {
+                json!({"data":[{"id":"turn-1","status":"completed","startedAt":1.0,"completedAt":10.0}]})
+            } else if request.method == Method::ThreadFork {
+                json!({"thread":{"id":"new-thread"}})
+            } else {
+                json!({"data":[],"nextCursor":null})
             };
             let scope = request.expected_scope.expect("scope");
             Ok(SessionReceipt {
