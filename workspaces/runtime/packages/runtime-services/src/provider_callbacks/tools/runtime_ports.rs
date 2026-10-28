@@ -559,10 +559,7 @@ impl super::runtime_dispatch::InterruptPort for ManagedInterruptAdapter {
             )
             .await
             {
-                Ok(value) => Ok(DispatchedOperation::Applied(OperationResult {
-                    value,
-                    signals: Vec::new(),
-                })),
+                Ok(value) => Ok(DispatchedOperation::Applied(OperationResult::reply(&value))),
                 Err(error) => Err(management_error(error)),
             }
         })

@@ -6,6 +6,18 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 use studio_runtime_providers::{RequestId, ResponseBody};
 use studio_runtime_store::{RuntimeStore, system_reads as records};
 
+fn raw_tool_result(
+    raw: &serde_json::value::RawValue,
+    success: bool,
+) -> Result<Value, CallbackError> {
+    let text = if raw.get().starts_with('"') {
+        serde_json::from_str::<String>(raw.get())?
+    } else {
+        raw.get().to_owned()
+    };
+    Ok(json!({"success":success,"contentItems":[{"type":"inputText","text":text}]}))
+}
+
 fn dispatch_gate_key(state_dir: &std::path::Path, id: &str) -> String {
     format!("{}:{id}", state_dir.display())
 }
@@ -530,19 +542,16 @@ fn claim_settlement(
 ) -> Box<ClaimFailure> {
     use crate::managed_host_tools::{DeliveryCertainty, DispatchedOperation, OperationResult};
     let operation = match certainty {
-        DeliveryCertainty::NotSent => DispatchedOperation::NotSent(OperationResult {
-            value: json!(error.to_string()),
-            signals: Vec::new(),
-        }),
+        DeliveryCertainty::NotSent => {
+            DispatchedOperation::NotSent(OperationResult::reply(&error.to_string()))
+        }
         #[cfg(test)]
-        DeliveryCertainty::Written => DispatchedOperation::Unknown(OperationResult {
-            value: json!(unknown_outcome(&call.name, &call.id, &error)),
-            signals: Vec::new(),
-        }),
-        DeliveryCertainty::Unknown => DispatchedOperation::Unknown(OperationResult {
-            value: json!(unknown_outcome(&call.name, &call.id, &error)),
-            signals: Vec::new(),
-        }),
+        DeliveryCertainty::Written => DispatchedOperation::Unknown(OperationResult::reply(
+            &unknown_outcome(&call.name, &call.id, &error),
+        )),
+        DeliveryCertainty::Unknown => DispatchedOperation::Unknown(OperationResult::reply(
+            &unknown_outcome(&call.name, &call.id, &error),
+        )),
     };
     Box::new(ClaimFailure { error, operation })
 }
@@ -808,14 +817,11 @@ impl Drop for ClaimGuard {
         };
         runtime.spawn(async move {
             let operation = crate::managed_host_tools::DispatchedOperation::Unknown(
-                crate::managed_host_tools::OperationResult {
-                    value: json!(unknown_outcome(
-                        &tool,
-                        &id,
-                        &"the callback ended before its result was recorded"
-                    )),
-                    signals: Vec::new(),
-                },
+                crate::managed_host_tools::OperationResult::reply(&unknown_outcome(
+                    &tool,
+                    &id,
+                    &"the callback ended before its result was recorded",
+                )),
             );
             record_settlement(&store, &id, &signature, now, operation).await;
         });
@@ -851,7 +857,17 @@ fn execute_once(
     let (mut value, signals) = match effect {
         Ok(staged) => {
             tx.execute_batch("RELEASE callback_service")?;
-            (tool_result(staged.value, true), staged.signals)
+            let mut value = raw_tool_result(&staged.value, true)?;
+            if (staged.handle || staged.output_ref)
+                && let Some(expires) = staged.output_expires_at
+            {
+                value["serverOutputExpiresAt"] = json!(expires);
+                tx.execute(
+                    "INSERT OR IGNORE INTO runtime_server_output_tools VALUES (?1,?2)",
+                    params![call.id, expires],
+                )?;
+            }
+            (value, staged.signals)
         }
         Err(CallbackError::InvalidResultSchema(message)) => {
             tx.execute_batch("ROLLBACK TO callback_service; RELEASE callback_service")?;
@@ -894,22 +910,6 @@ fn execute_once(
     Ok((value, signals))
 }
 
-/// Python `codex_server_exec.output_expiry`: the command expiry in a server
-/// receipt or an output-reference page.
-fn output_expiry(value: &Value) -> Option<f64> {
-    if let Some(expires) = value.get("outputExpiresAt").filter(|v| v.is_number())
-        && (value.get("handle").is_some() || value.get("outputRef").is_some())
-    {
-        return expires.as_f64();
-    }
-    ["value", "result"].into_iter().find_map(|field| {
-        value
-            .get(field)
-            .filter(|nested| nested.is_object())
-            .and_then(output_expiry)
-    })
-}
-
 fn finalize_dispatched(
     tx: &Transaction<'_>,
     id: &str,
@@ -930,9 +930,13 @@ fn finalize_dispatched(
         record["tool"].as_str(),
         Some("orchestration_servers" | "orchestration_read")
     )
-    .then(|| output_expiry(&result.value))
+    .then(|| {
+        (result.handle || result.output_ref)
+            .then_some(result.output_expires_at)
+            .flatten()
+    })
     .flatten();
-    let mut value = tool_result(result.value, success);
+    let mut value = raw_tool_result(&result.value, success)?;
     if let Some(expires) = output_expires {
         value["serverOutputExpiresAt"] = json!(expires);
         tx.execute(
@@ -967,6 +971,22 @@ mod local_failure_tests {
     use crate::managed_host_tools::DispatchedOperation;
     use serde_json::json;
 
+    #[test]
+    fn raw_tool_result_keeps_strings_and_json_payloads() {
+        let text = crate::managed_host_tools::OperationResult::reply(&"line\nquoted");
+        assert_eq!(
+            super::raw_tool_result(&text.value, true).unwrap()["contentItems"][0]["text"],
+            "line\nquoted"
+        );
+        let object = crate::managed_host_tools::OperationResult::reply(
+            &json!({"status":"queued","count":2}),
+        );
+        let result = super::raw_tool_result(&object.value, true).unwrap();
+        let decoded: serde_json::Value =
+            serde_json::from_str(result["contentItems"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(decoded, json!({"status":"queued","count":2}));
+    }
+
     fn call() -> ToolCall {
         ToolCall {
             name: "orchestration_search".into(),
@@ -987,12 +1007,8 @@ mod local_failure_tests {
         ))
         .settlement(&call());
         assert!(matches!(failure.operation, DispatchedOperation::Unknown(_)));
-        let text = failure
-            .operation
-            .result()
-            .value
-            .as_str()
-            .expect("unknown outcome text");
+        let value = failure.operation.result().test_value();
+        let text = value.as_str().expect("unknown outcome text");
         assert!(text.contains("outcome is unknown"), "{text}");
     }
 

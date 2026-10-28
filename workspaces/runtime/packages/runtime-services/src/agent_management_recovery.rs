@@ -262,18 +262,15 @@ pub(crate) fn decode_saved_recovery_receipt(value: Value) -> crate::recovery::Re
 fn result(receipt: crate::recovery::RecoveryReceipt) -> DispatchedOperation {
     use crate::recovery::RecoveryReceipt;
     match receipt {
-        RecoveryReceipt::Applied(value) => DispatchedOperation::Applied(OperationResult {
-            value,
-            signals: vec![],
-        }),
-        RecoveryReceipt::Rejected(value) => DispatchedOperation::Rejected(OperationResult {
-            value,
-            signals: vec![],
-        }),
-        RecoveryReceipt::Unknown(value) => DispatchedOperation::Unknown(OperationResult {
-            value,
-            signals: vec![],
-        }),
+        RecoveryReceipt::Applied(value) => {
+            DispatchedOperation::Applied(OperationResult::reply(&value))
+        }
+        RecoveryReceipt::Rejected(value) => {
+            DispatchedOperation::Rejected(OperationResult::reply(&value))
+        }
+        RecoveryReceipt::Unknown(value) => {
+            DispatchedOperation::Unknown(OperationResult::reply(&value))
+        }
     }
 }
 
@@ -1391,7 +1388,7 @@ mod tests {
                 super::execute(Arc::clone(&store), session.clone(), &actor, &args, id, 10.0)
                     .await
                     .expect("exact reply replays before identity validation");
-            assert_eq!(reply.result().value["status"], "checked");
+            assert_eq!(reply.result().test_value()["status"], "checked");
         }
         assert!(session.calls.lock().expect("calls").is_empty());
         assert!(session.recoveries.lock().expect("recoveries").is_empty());
@@ -1550,7 +1547,7 @@ mod tests {
         let checked = execute(store, session.clone(), &actor, &args(), "new-reset", 10.0)
             .await
             .expect("new reset");
-        assert_eq!(checked.result().value["status"], "released");
+        assert_eq!(checked.result().test_value()["status"], "released");
         assert_eq!(
             session.unsubscribes(),
             1,
@@ -1574,7 +1571,7 @@ mod tests {
         )
         .await
         .expect("unknown response");
-        assert_eq!(lost.result().value["status"], "unconfirmed");
+        assert_eq!(lost.result().test_value()["status"], "unconfirmed");
         let auth = session.recoveries.lock().expect("recoveries")[0].clone();
         finish_recovery(
             &store,
@@ -1588,7 +1585,7 @@ mod tests {
         let replay = execute(store, session.clone(), &actor, &args, "late-recovery", 11.0)
             .await
             .expect("durable late result");
-        assert_eq!(replay.result().value["status"], "checked");
+        assert_eq!(replay.result().test_value()["status"], "checked");
         assert_eq!(session.recoveries.lock().expect("recoveries").len(), 1);
         assert!(session.calls.lock().expect("native calls").is_empty());
     }
@@ -1614,7 +1611,7 @@ mod tests {
             )
             .await
             .expect("manual recovery");
-            assert_eq!(checked.result().value["status"], "unconfirmed");
+            assert_eq!(checked.result().test_value()["status"], "unconfirmed");
         }
         assert_eq!(session.recoveries.lock().expect("recoveries").len(), 1);
         assert!(session.calls.lock().expect("native calls").is_empty());
@@ -1646,15 +1643,15 @@ mod tests {
         )
         .await
         .expect("manual reset");
-        assert_eq!(first.result().value["status"], "released");
+        assert_eq!(first.result().test_value()["status"], "released");
         assert!(
-            first.result().value["loss"]
+            first.result().test_value()["loss"]
                 .as_str()
                 .expect("loss warning")
                 .contains("JavaScript")
         );
         assert!(
-            first.result().value["loss"]
+            first.result().test_value()["loss"]
                 .as_str()
                 .expect("loss warning")
                 .contains("MCP")
@@ -1675,7 +1672,7 @@ mod tests {
         )
         .await
         .expect("lost response replay");
-        assert_eq!(first.result().value, replay.result().value);
+        assert_eq!(first.result().test_value(), replay.result().test_value());
         assert_eq!(session.unsubscribes(), 1);
         let mut changed = args();
         changed["reason"] = json!("Changed request content");
@@ -1706,7 +1703,7 @@ mod tests {
             first,
             crate::managed_host_tools::DispatchedOperation::Unknown(_)
         ));
-        assert_eq!(first.result().value["status"], "unknown");
+        assert_eq!(first.result().test_value()["status"], "unknown");
         for request in ["unknown-1", "unknown-2"] {
             let result = execute(
                 Arc::clone(&store),
@@ -1718,7 +1715,7 @@ mod tests {
             )
             .await
             .expect("inspect uncertain release");
-            assert_eq!(result.result().value["status"], "unknown");
+            assert_eq!(result.result().test_value()["status"], "unknown");
         }
         assert_eq!(session.unsubscribes(), 1);
         assert_eq!(worker(&store).await["nativeRelease"]["resetPending"], true);
@@ -1738,7 +1735,9 @@ mod tests {
             10.0,
         )
         .await;
-        assert!(result.is_err() || result.expect("result").result().value["status"] == "blocked");
+        assert!(
+            result.is_err() || result.expect("result").result().test_value()["status"] == "blocked"
+        );
         assert_eq!(session.unsubscribes(), 0);
     }
 
@@ -1757,7 +1756,7 @@ mod tests {
         )
         .await
         .expect("refused reset");
-        assert_eq!(checked.result().value["status"], "blocked");
+        assert_eq!(checked.result().test_value()["status"], "blocked");
         assert_eq!(session.unsubscribes(), 0);
     }
 
@@ -1807,7 +1806,7 @@ mod tests {
         )
         .await
         .expect("unsubscribe result");
-        assert_eq!(checked.result().value["status"], "released");
+        assert_eq!(checked.result().test_value()["status"], "released");
         let current = worker(&store).await;
         assert_eq!(current["nativeRelease"]["resetPending"], false);
         assert_eq!(current["nativeRelease"]["closedAt"], 11.0);
@@ -1837,7 +1836,7 @@ mod tests {
             )
             .await
             .expect("blocked reset");
-            assert_eq!(result.result().value["status"], "blocked");
+            assert_eq!(result.result().test_value()["status"], "blocked");
             assert_eq!(session.unsubscribes(), 0);
         }
     }
@@ -1857,7 +1856,7 @@ mod tests {
         )
         .await
         .expect("confirmed closure");
-        assert_eq!(result.result().value["status"], "released");
+        assert_eq!(result.result().test_value()["status"], "released");
         let current = worker(&store).await;
         assert_eq!(current["nativeRelease"]["resetPending"], false);
         assert_eq!(current["nativeRelease"]["closedAt"], 10.0);

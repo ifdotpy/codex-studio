@@ -922,8 +922,8 @@ pub(crate) async fn spawn_agents(
             signals.push(crate::managed_host_tools::WakeSignal::new("worker-driver"));
         }
         Ok(crate::managed_host_tools::OperationResult {
-            value: json!({"requestId":request_id,"agents":children,"delivery":"Results wake you automatically. Finish your turn while waiting."}),
             signals,
+            ..crate::managed_host_tools::OperationResult::reply(&json!({"requestId":request_id,"agents":children,"delivery":"Results wake you automatically. Finish your turn while waiting."}))
         })
     }).await.map_err(Error::from)?;
     Ok(crate::managed_host_tools::DispatchedOperation::Applied(
@@ -1461,10 +1461,7 @@ pub(crate) async fn request_review(
             crate::managed_host_tools::Error::Invalid("This request id has different content")
         })?;
         return Ok(crate::managed_host_tools::DispatchedOperation::Applied(
-            crate::managed_host_tools::OperationResult {
-                value,
-                signals: Vec::new(),
-            },
+            crate::managed_host_tools::OperationResult::reply(&value),
         ));
     }
     let account_key = parent_value
@@ -1601,8 +1598,8 @@ pub(crate) async fn request_review(
         .map_err(Error::from)?;
     Ok(crate::managed_host_tools::DispatchedOperation::Applied(
         crate::managed_host_tools::OperationResult {
-            value,
             signals: vec![crate::managed_host_tools::WakeSignal::new("worker-driver")],
+            ..crate::managed_host_tools::OperationResult::reply(&value)
         },
     ))
 }

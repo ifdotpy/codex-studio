@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::managed_host_tools::{PostCommitPort, SendPort};
-use studio_runtime_schema::persistence::{RecipientDelivery, RequestIdentity};
+use studio_runtime_schema::persistence::RequestIdentity;
 use studio_runtime_store::RuntimeStore;
 use studio_runtime_store::request_results::{AdmittedRequest, RequestResults, ResultEnvelope};
 use studio_runtime_store::{StoreError, ToolResultRecord};
@@ -124,8 +124,8 @@ async fn message_delivers_between_user_grouped_leads() {
         tx.execute("INSERT INTO runtime_projects(id,record) VALUES('peer-project',?1)", [json!({"id":"peer-project","path":"/peer-project","peerTeams":[{"id":"peers","name":"Peers","members":[context.agent,lead]}]}).to_string()])?;
         let snapshot = super::super::super::storage::snapshot(tx, &context)?;
         let sent = messages::send(tx, &snapshot, &json!({"target":lead,"text":"hello"}), &RequestIdentity::issue_root(), request_time())?;
-        let deliveries: std::collections::BTreeMap<String, RecipientDelivery> = serde_json::from_value(sent["deliveries"].clone())?;
-        assert!(deliveries.contains_key(&lead));
+        let sent: Value = serde_json::from_str(sent.get())?;
+        assert!(sent["deliveries"].as_object().unwrap().contains_key(&lead));
         let payload: String = tx.query_row("SELECT payload FROM sync_entities WHERE collection='room' AND id=?1", [sent["room"].as_str().unwrap()], |row| row.get(0))?;
         let projection: Value = serde_json::from_str(&payload)?;
         assert_eq!(projection["value"]["peerTeamId"], "peers");
@@ -524,7 +524,7 @@ async fn try_send_args_with(
     let result = store
         .transaction_with(move |tx| ports.send(tx, &actor, &args, &id, request_time()))
         .await
-        .map(|result| result.value);
+        .map(|result| serde_json::from_str(result.value.get()).unwrap());
     (directory, store, result)
 }
 
@@ -584,12 +584,13 @@ async fn production_release_notifies_the_registry_after_a_committed_send() {
         })
         .await
         .unwrap();
+    let staged_value: Value = serde_json::from_str(staged.value.get()).unwrap();
     let event_count: i64 = store
         .test_reader()
         .unwrap()
         .query_row(
             "SELECT count(*) FROM runtime_events WHERE id=?1",
-            [staged.value["id"].as_str().unwrap()],
+            [staged_value["id"].as_str().unwrap()],
             |row| row.get(0),
         )
         .unwrap();
@@ -886,7 +887,8 @@ async fn an_ancestor_cancels_a_descendant_watch_and_others_are_refused_by_name()
     let cancelled = cancel_as(&store, &lead, "child-watch", "lead-cancels-child")
         .await
         .unwrap();
-    assert_eq!(cancelled.value["cancelRequested"], true);
+    let cancelled_value: Value = serde_json::from_str(cancelled.value.get()).unwrap();
+    assert_eq!(cancelled_value["cancelRequested"], true);
     let refused = cancel_as(&store, &child, "lead-watch", "child-cancels-lead").await;
     assert!(
         matches!(
@@ -1024,8 +1026,7 @@ async fn a_broadcast_names_a_member_that_cannot_be_checked_and_reaches_the_other
     let (_root, store, sent) = try_send_with(0, "broadcast", vec![member]).await;
     let sent = sent.expect("one bad member does not refuse the broadcast");
     let request_id = sent["id"].as_str().unwrap();
-    let sent_deliveries: std::collections::BTreeMap<String, RecipientDelivery> =
-        serde_json::from_value(sent["deliveries"].clone()).unwrap();
+    let sent_deliveries = sent["deliveries"].as_object().unwrap();
     assert!(sent_deliveries.contains_key(child), "{sent}");
     assert!(!sent_deliveries.contains_key(bad), "{sent}");
     assert_eq!(
@@ -1042,9 +1043,8 @@ async fn a_broadcast_names_a_member_that_cannot_be_checked_and_reaches_the_other
         )
         .unwrap();
     assert_eq!(
-        serde_json::from_str::<std::collections::BTreeMap<String, RecipientDelivery>>(&deliveries)
-            .unwrap(),
-        sent_deliveries
+        serde_json::from_str::<Value>(&deliveries).unwrap(),
+        sent["deliveries"]
     );
     let identity = RequestIdentity::new("agent_message", &[lead_id], request_id, &[]).unwrap();
     let signature = event_write::request_signature(
@@ -1213,6 +1213,7 @@ async fn radio_member_message_is_refused_only_during_its_shared_reply_turn() {
     let delivered = send(delivered_id.clone())
         .await
         .expect("a radio member may message privately outside its shared reply turn");
+    let delivered: Value = serde_json::from_str(delivered.get()).unwrap();
     assert_eq!(delivered["id"], delivered_id);
     let chat_count: i64 = store
         .test_reader()

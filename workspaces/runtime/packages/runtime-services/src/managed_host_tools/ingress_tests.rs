@@ -159,8 +159,8 @@ impl PortBundle {
         )?;
         self.staged.fetch_add(1, Ordering::SeqCst);
         Ok(OperationResult {
-            value,
             signals: vec![WakeSignal::new(kind)],
+            ..OperationResult::reply(&value)
         })
     }
 }
@@ -350,8 +350,8 @@ impl PostCommitPort for PortBundle {
             self.dispatched.fetch_add(1, Ordering::SeqCst);
             Ok(Some(
                 crate::managed_host_tools::DispatchedOperation::Applied(OperationResult {
-                    value: json!({"status":"dispatched"}),
                     signals: vec![WakeSignal::new("event-driver/test-dispatch")],
+                    ..OperationResult::reply(&json!({"status":"dispatched"}))
                 }),
             ))
         })
@@ -2672,7 +2672,8 @@ async fn managed_spawn_accepts_any_explicit_model_for_each_role() {
             )
             .await
             .unwrap_or_else(|error| panic!("{role} with {model}: {error:?}"));
-            let child_id = spawned.result().value["agents"][0]["id"].as_str().unwrap();
+            let receipt = spawned.result().test_value();
+            let child_id = receipt["agents"][0]["id"].as_str().unwrap();
             let child = studio_runtime_store::AgentRepository::get(
                 &store.test_reader().unwrap(),
                 &child_id.into(),
@@ -2693,7 +2694,7 @@ async fn managed_spawn_accepts_any_explicit_model_for_each_role() {
             )
             .await
             .unwrap();
-            assert_eq!(replayed.result().value["agents"][0]["id"], child_id);
+            assert_eq!(replayed.result().test_value()["agents"][0]["id"], child_id);
         }
     }
 }
@@ -2722,7 +2723,8 @@ async fn task_result_schema_spawn_assignment_contains_contract() {
     let spawned = crate::managed_child_create::spawn_agents(&store, &actor,
         &json!({"agents":[{"name":"Schema worker","prompt":"Read the task","workspace":"shared","task_id":"schema-task"}]}),
         "schema-spawn", 20.0, &CreationEnvironment).await.unwrap();
-    let child = spawned.result().value["agents"][0]["id"].as_str().unwrap();
+    let receipt = spawned.result().test_value();
+    let child = receipt["agents"][0]["id"].as_str().unwrap();
     let read = store.test_reader().unwrap();
     let text: String = read
         .query_row(
@@ -2858,11 +2860,18 @@ async fn managed_child_creation_preserves_spawn_and_review_contracts() {
     .await
     .unwrap();
     assert_eq!(
-        spawned.result().value["agents"].as_array().unwrap().len(),
+        spawned.result().test_value()["agents"]
+            .as_array()
+            .unwrap()
+            .len(),
         1
     );
-    assert_eq!(spawned.result().value["requestId"], "dispatcher-spawn-api");
-    let spawned_child_id = spawned.result().value["agents"][0]["id"].as_str().unwrap();
+    assert_eq!(
+        spawned.result().test_value()["requestId"],
+        "dispatcher-spawn-api"
+    );
+    let receipt = spawned.result().test_value();
+    let spawned_child_id = receipt["agents"][0]["id"].as_str().unwrap();
     let read = store.test_reader().unwrap();
     let spawned_child = studio_runtime_store::AgentRepository::get(
         &read,
@@ -2877,9 +2886,12 @@ async fn managed_child_creation_preserves_spawn_and_review_contracts() {
     assert_eq!(spawned_child["nativeEffort"], "low");
     assert_eq!(spawned_child["profileId"], "profile-reviewer");
     assert_eq!(spawned_child["profileInstructions"], "profile instructions");
-    assert_eq!(spawned.result().value["agents"][0]["baseRef"], "HEAD~1");
     assert_eq!(
-        spawned.result().value["agents"][0]["baseCommit"],
+        spawned.result().test_value()["agents"][0]["baseRef"],
+        "HEAD~1"
+    );
+    assert_eq!(
+        spawned.result().test_value()["agents"][0]["baseCommit"],
         base_commit
     );
     drop(read);
@@ -2895,7 +2907,8 @@ async fn managed_child_creation_preserves_spawn_and_review_contracts() {
     )
     .await
     .unwrap();
-    let fallback_id = fallback.result().value["agents"][0]["id"].as_str().unwrap();
+    let receipt = fallback.result().test_value();
+    let fallback_id = receipt["agents"][0]["id"].as_str().unwrap();
     let fallback_child = studio_runtime_store::AgentRepository::get(
         &store.test_reader().unwrap(),
         &studio_runtime_store::AgentId::from(fallback_id),
@@ -2918,9 +2931,8 @@ async fn managed_child_creation_preserves_spawn_and_review_contracts() {
     )
     .await
     .expect("a host worker may work in another existing folder");
-    let alternate_id = alternate.result().value["agents"][0]["id"]
-        .as_str()
-        .unwrap();
+    let receipt = alternate.result().test_value();
+    let alternate_id = receipt["agents"][0]["id"].as_str().unwrap();
     let alternate_child = studio_runtime_store::AgentRepository::get(
         &store.test_reader().unwrap(),
         &studio_runtime_store::AgentId::from(alternate_id),
@@ -2943,10 +2955,8 @@ async fn managed_child_creation_preserves_spawn_and_review_contracts() {
     )
     .await
     .expect("a worktree child may start in another repository folder");
-    let child_id = alternate_worktree.result().value["agents"][0]["id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    let receipt = alternate_worktree.result().test_value();
+    let child_id = receipt["agents"][0]["id"].as_str().unwrap().to_owned();
     let actual_child = studio_runtime_store::AgentRepository::get(
         &store.test_reader().unwrap(),
         &studio_runtime_store::AgentId::from(child_id.as_str()),
@@ -2970,10 +2980,8 @@ async fn managed_child_creation_preserves_spawn_and_review_contracts() {
     )
     .await
     .expect("a default worktree outside Git uses the shared folder");
-    let child_id = no_git.result().value["agents"][0]["id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    let receipt = no_git.result().test_value();
+    let child_id = receipt["agents"][0]["id"].as_str().unwrap().to_owned();
     let initial: String = store
         .test_reader()
         .unwrap()
@@ -3104,11 +3112,12 @@ async fn managed_child_creation_preserves_spawn_and_review_contracts() {
     .await
     .unwrap_or_else(|error| panic!("review API call: {error:?}"));
     assert_eq!(
-        reviewed.result().value["requestId"],
+        reviewed.result().test_value()["requestId"],
         "dispatcher-review-api"
     );
-    assert_eq!(reviewed.result().value["status"], "queued");
-    let child = reviewed.result().value["agents"][0]["id"].as_str().unwrap();
+    assert_eq!(reviewed.result().test_value()["status"], "queued");
+    let receipt = reviewed.result().test_value();
+    let child = receipt["agents"][0]["id"].as_str().unwrap();
     let read = store.test_reader().unwrap();
     let child = studio_runtime_store::AgentRepository::get(
         &read,
@@ -3370,7 +3379,8 @@ async fn spawn_past_the_running_limit_queues_and_past_the_team_size_refuses() {
         )
         .await
         .unwrap_or_else(|error| panic!("{provider} spawn within the team size: {error:?}"));
-        let children = spawned.result().value["agents"].as_array().unwrap();
+        let receipt = spawned.result().test_value();
+        let children = receipt["agents"].as_array().unwrap();
         assert_eq!(children.len(), 2, "{provider}");
         let first = children[0]["id"].as_str().unwrap().to_owned();
         store

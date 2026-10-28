@@ -55,18 +55,16 @@ impl crate::provider_callbacks::RuntimeChildCreationPort for ScriptedChildCreati
             self.entered.notify_one();
             match self.script {
                 SpawnScript::Refuse => Err(Error::Invalid("Supply 1 to 64 agents")),
-                SpawnScript::WrittenRejection => Ok(
-                    crate::managed_host_tools::DispatchedOperation::Rejected(OperationResult {
-                        value: json!({"reason":"provider rejected"}),
-                        signals: Vec::new(),
-                    }),
-                ),
-                SpawnScript::OpaqueApplied => Ok(
-                    crate::managed_host_tools::DispatchedOperation::Applied(OperationResult {
-                        value: json!({"outcome":"unknown"}),
-                        signals: Vec::new(),
-                    }),
-                ),
+                SpawnScript::WrittenRejection => {
+                    Ok(crate::managed_host_tools::DispatchedOperation::Rejected(
+                        OperationResult::reply(&json!({"reason":"provider rejected"})),
+                    ))
+                }
+                SpawnScript::OpaqueApplied => {
+                    Ok(crate::managed_host_tools::DispatchedOperation::Applied(
+                        OperationResult::reply(&json!({"outcome":"unknown"})),
+                    ))
+                }
                 SpawnScript::CatalogUnavailable => Err(Error::Unavailable(
                     crate::model_catalog::MODEL_CATALOG_DEPENDENCY,
                 )),
@@ -95,10 +93,10 @@ impl crate::provider_callbacks::RuntimeChildCreationPort for ScriptedChildCreati
                     self.release.notified().await;
                     Ok(crate::managed_host_tools::DispatchedOperation::Applied(
                         OperationResult {
-                            value: json!({"requestId":request_id,"agents":[]}),
                             signals: vec![crate::managed_host_tools::WakeSignal::new(
                                 "account-worker",
                             )],
+                            ..OperationResult::reply(&json!({"requestId":request_id,"agents":[]}))
                         },
                     ))
                 }

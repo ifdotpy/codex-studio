@@ -218,27 +218,77 @@ fn refuse<T>(message: impl Into<String>) -> Result<T, Step> {
 
 /// A written tool result that carries the paired receipt or local value.
 fn written(value: Value) -> DispatchedOperation {
-    DispatchedOperation::Applied(OperationResult {
-        value,
-        signals: Vec::new(),
-    })
+    let mut result = OperationResult::reply(&value);
+    if let Some(probe) = output_metadata(result.value.get()) {
+        result.output_expires_at = probe.output_expires_at;
+        result.handle = probe.handle;
+        result.output_ref = probe.output_ref;
+    }
+    DispatchedOperation::Applied(result)
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OutputProbe {
+    #[serde(default, deserialize_with = "numeric_expiry")]
+    output_expires_at: Option<f64>,
+    #[serde(default, deserialize_with = "present")]
+    handle: bool,
+    #[serde(default, deserialize_with = "present")]
+    output_ref: bool,
+    value: Option<Box<serde_json::value::RawValue>>,
+}
+
+fn present<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
+    serde::de::IgnoredAny::deserialize(deserializer).map(|_| true)
+}
+
+fn numeric_expiry<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<f64>, D::Error> {
+    let raw = Box::<serde_json::value::RawValue>::deserialize(deserializer)?;
+    Ok(serde_json::from_str(raw.get()).ok())
+}
+
+fn output_metadata(raw: &str) -> Option<OutputProbe> {
+    let probe: OutputProbe = serde_json::from_str(raw).ok()?;
+    if probe.output_expires_at.is_some() && (probe.handle || probe.output_ref) {
+        return Some(probe);
+    }
+    let nested = probe.value.as_ref()?;
+    let inner: OutputProbe = serde_json::from_str(nested.get()).ok()?;
+    (inner.output_expires_at.is_some() && (inner.handle || inner.output_ref)).then_some(inner)
+}
+
+#[cfg(test)]
+mod output_metadata_tests {
+    #[test]
+    fn expiry_is_carried_from_the_receipt_or_its_value() {
+        let top = super::output_metadata(r#"{"outputExpiresAt":12,"outputRef":null}"#).unwrap();
+        assert_eq!(top.output_expires_at, Some(12.0));
+        assert!(top.output_ref);
+        let nested = super::output_metadata(
+            r#"{"outcome":"applied","value":{"outputExpiresAt":34,"handle":"h"}}"#,
+        )
+        .unwrap();
+        assert_eq!(nested.output_expires_at, Some(34.0));
+        assert!(nested.handle);
+        assert!(super::output_metadata(r#"{"outputExpiresAt":"bad","handle":"h"}"#).is_none());
+        assert!(super::output_metadata(r#"{"outputExpiresAt":34}"#).is_none());
+    }
 }
 
 fn not_sent(message: String) -> DispatchedOperation {
-    DispatchedOperation::NotSent(OperationResult {
-        value: Value::String(message),
-        signals: Vec::new(),
-    })
+    DispatchedOperation::NotSent(OperationResult::reply(&message))
 }
 
 fn settle(step: Result<Value, Step>) -> Result<DispatchedOperation, Error> {
     match step {
         Ok(value) => Ok(written(value)),
         Err(Step::Refused(message)) => Ok(not_sent(message)),
-        Err(Step::Failed(message)) => Ok(DispatchedOperation::Unknown(OperationResult {
-            value: Value::String(message),
-            signals: Vec::new(),
-        })),
+        Err(Step::Failed(message)) => Ok(DispatchedOperation::Unknown(OperationResult::reply(
+            &message,
+        ))),
         Err(Step::Store(error)) => Err(Error::Store(error)),
     }
 }
@@ -263,7 +313,20 @@ fn field<'a>(value: &'a Value, key: &str) -> &'a str {
 
 /// The receipt that the tool returns for one delivered envelope (Python `deliver`).
 fn receipt(outcome: &ExchangeOutcome, key: &str) -> Value {
-    outcome.to_value(key)
+    match outcome {
+        ExchangeOutcome::Applied(reply) => {
+            // RawValue contains valid JSON from the paired transport.
+            let value: Value = serde_json::from_str(reply.value.get()).expect("valid raw reply");
+            json!({"requestId":key,"outcome":"applied","value":value})
+        }
+        ExchangeOutcome::NotApplied(error) => {
+            json!({"requestId":key,"outcome":"not_applied","error":error})
+        }
+        ExchangeOutcome::Unknown => json!({"requestId":key,"outcome":"unknown"}),
+        ExchangeOutcome::PreEffectWaiting => {
+            json!({"requestId":key,"outcome":"unknown","waitingFor":"The stop or parent update"})
+        }
+    }
 }
 
 impl ServerTools {

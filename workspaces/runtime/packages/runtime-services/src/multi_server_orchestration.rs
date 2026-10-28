@@ -1162,8 +1162,8 @@ impl RuntimeOrchestrationEffects {
                         crate::provider_callbacks::tools::services::messages::send_remote_worker(
                             tx, &worker_id, &args, &key, now,
                         )
+                        .map(|value| ExchangeOutcome::Applied(AppliedReply::new(value)))
                         .map_err(callback_error)
-                        .and_then(|value| applied(&value))
                     }
                     "move_send" => {
                         let target_id = args

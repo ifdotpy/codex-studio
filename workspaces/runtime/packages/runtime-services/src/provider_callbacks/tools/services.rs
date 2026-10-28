@@ -131,7 +131,6 @@ impl crate::managed_host_tools::SendPort for ProductionPorts {
                 }
             })?;
             return Ok(crate::managed_host_tools::OperationResult {
-                value: result.receipt,
                 signals: if result.event_inserted {
                     vec![crate::managed_host_tools::WakeSignal::new(
                         "account-worker/queued-event",
@@ -139,6 +138,7 @@ impl crate::managed_host_tools::SendPort for ProductionPorts {
                 } else {
                     Vec::new()
                 },
+                ..crate::managed_host_tools::OperationResult::reply(&result.receipt)
             });
         }
         // Runtime.dynamic routes non-descendants through chat_message, which
@@ -146,10 +146,7 @@ impl crate::managed_host_tools::SendPort for ProductionPorts {
         let chat_args = json!({"target":target,"text":args["text"],"delivery":args["delivery"]});
         let value =
             messages::send(tx, &snapshot, &chat_args, request_id, now).map_err(callback_refusal)?;
-        Ok(crate::managed_host_tools::OperationResult {
-            value,
-            signals: Vec::new(),
-        })
+        Ok(crate::managed_host_tools::OperationResult::raw(value))
     }
 }
 
@@ -324,10 +321,7 @@ impl crate::managed_host_tools::SearchPort for ProductionPorts {
             limit,
         )
         .map_err(search_error)?;
-        Ok(crate::managed_host_tools::OperationResult {
-            value,
-            signals: Vec::new(),
-        })
+        Ok(crate::managed_host_tools::OperationResult::reply(&value))
     }
 }
 impl crate::managed_host_tools::ContextPort for ProductionPorts {
@@ -359,10 +353,9 @@ impl crate::managed_host_tools::ContextPort for ProductionPorts {
             studio_runtime_store::python_json_compact(&content).as_bytes(),
         )[..24]
             .to_owned();
-        Ok(crate::managed_host_tools::OperationResult {
-            value: json!({"topic":topic,"version":version,"content":content}),
-            signals: Vec::new(),
-        })
+        Ok(crate::managed_host_tools::OperationResult::reply(
+            &json!({"topic":topic,"version":version,"content":content}),
+        ))
     }
 }
 impl crate::managed_host_tools::ComplaintPort for ProductionPorts {
@@ -417,7 +410,6 @@ impl crate::managed_host_tools::ComplaintPort for ProductionPorts {
         let should_wake = (args["action"] == "submit" && value["recipient"] == "lead")
             || (args["action"] == "respond" && value["author"] != actor["id"]);
         Ok(crate::managed_host_tools::OperationResult {
-            value,
             signals: if should_wake {
                 vec![crate::managed_host_tools::WakeSignal::new(
                     "event-driver/complaint-notification",
@@ -425,6 +417,7 @@ impl crate::managed_host_tools::ComplaintPort for ProductionPorts {
             } else {
                 Vec::new()
             },
+            ..crate::managed_host_tools::OperationResult::reply(&value)
         })
     }
 }
@@ -493,7 +486,10 @@ impl crate::managed_host_tools::WatchMonitorPort for ProductionPorts {
             .into_iter()
             .map(|_| crate::managed_host_tools::WakeSignal::new("monitor-driver"))
             .collect();
-        Ok(crate::managed_host_tools::OperationResult { value, signals })
+        Ok(crate::managed_host_tools::OperationResult {
+            signals,
+            ..crate::managed_host_tools::OperationResult::reply(&value)
+        })
     }
 }
 impl crate::managed_host_tools::ReviewPort for ProductionPorts {
@@ -552,10 +548,7 @@ impl crate::managed_host_tools::ReviewPort for ProductionPorts {
                 }
             },
         )?;
-        Ok(crate::managed_host_tools::OperationResult {
-            value,
-            signals: Vec::new(),
-        })
+        Ok(crate::managed_host_tools::OperationResult::reply(&value))
     }
 }
 
@@ -878,20 +871,47 @@ pub(super) fn execute(
                 CallbackError::Invalid("Monitor cancellation was refused")
             }
         })?;
-        return Ok(crate::managed_host_tools::Staged {
-            value,
+        return Ok(crate::managed_host_tools::OperationResult {
             signals: operation
                 .into_iter()
                 .map(|_| crate::managed_host_tools::WakeSignal::new("monitor-driver"))
                 .collect(),
-        });
+            ..crate::managed_host_tools::OperationResult::reply(&value)
+        }
+        .into());
     }
     if matches!(kind, ToolKind::MonitorInput) {
         return Err(CallbackError::Dependency("monitor-input-request-identity"));
     }
     if matches!(kind, ToolKind::AgentManage) {
         let (value, signals) = manage::execute(tx, snapshot, args, now)?;
-        return Ok(crate::managed_host_tools::Staged { value, signals });
+        return Ok(crate::managed_host_tools::OperationResult {
+            signals,
+            ..crate::managed_host_tools::OperationResult::raw(value)
+        }
+        .into());
+    }
+    if matches!(kind, ToolKind::Message) {
+        return Ok(
+            crate::managed_host_tools::OperationResult::raw(messages::send(
+                tx, snapshot, args, id, now,
+            )?)
+            .into(),
+        );
+    }
+    if matches!(kind, ToolKind::Read) {
+        let value = reads::read(
+            tx,
+            snapshot,
+            args,
+            now,
+            payloads.ok_or(CallbackError::Dependency("tool-request/prepared-payloads"))?,
+        )?;
+        let mut result = crate::managed_host_tools::OperationResult::reply(&value);
+        result.output_expires_at = value.get("outputExpiresAt").and_then(Value::as_f64);
+        result.handle = value.get("handle").is_some();
+        result.output_ref = value.get("outputRef").is_some();
+        return Ok(result.into());
     }
     match kind {
         ToolKind::Spawn
@@ -939,16 +959,10 @@ pub(super) fn execute(
             .ok_or(CallbackError::Dependency("tool-request/prepared-payloads"))?
             .execute(tx, &snapshot.context().agent, request_action(args)?, now)?),
         ToolKind::Task => work::execute(tx, snapshot, args, id),
-        ToolKind::Message => messages::send(tx, snapshot, args, id, now),
+        ToolKind::Message => Err(CallbackError::Invalid("Message dispatch was not handled")),
         ToolKind::ChatRead => reads::chat(tx, snapshot, args),
         ToolKind::Peers => messages::peers(tx, snapshot, args),
-        ToolKind::Read => reads::read(
-            tx,
-            snapshot,
-            args,
-            now,
-            payloads.ok_or(CallbackError::Dependency("tool-request/prepared-payloads"))?,
-        ),
+        ToolKind::Read => Err(CallbackError::Invalid("Read dispatch was not handled")),
         ToolKind::Status
         | ToolKind::Search
         | ToolKind::Context
@@ -1006,10 +1020,7 @@ pub(super) fn execute(
             "Unknown orchestration tool; use a tool from the session catalog",
         )),
     }?;
-    Ok(crate::managed_host_tools::Staged {
-        value,
-        signals: Vec::new(),
-    })
+    Ok(crate::managed_host_tools::OperationResult::reply(&value).into())
 }
 
 pub(super) fn managed_error(error: crate::managed_host_tools::Error) -> CallbackError {
