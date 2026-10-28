@@ -611,6 +611,9 @@ pub(super) fn replay_in_transaction(
     tx: &rusqlite::Transaction<'_>,
     call: &Call,
 ) -> Result<Result<Replay, PortError>, WorkerError> {
+    if authorize(tx, call)? {
+        return replay_recorded(tx, call);
+    }
     if call.admitted_request.is_none() {
         let identity = match call.identity() {
             Ok(identity) => identity,
@@ -631,10 +634,7 @@ pub(super) fn replay_in_transaction(
             }));
         }
     }
-    if !authorize(tx, call)? {
-        return Ok(Err(PortError::Identity));
-    }
-    replay_recorded(tx, call)
+    Ok(Err(PortError::Identity))
 }
 pub(super) enum Replay {
     Ready,
