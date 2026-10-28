@@ -7,7 +7,7 @@ use crate::account_session_runtime::{
 };
 use crate::account_worker::retained::RequestActor;
 use crate::workspace_operations::ProviderTicket;
-use rusqlite::{OptionalExtension, Transaction, params};
+use rusqlite::{OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -18,6 +18,11 @@ use std::{
 };
 use studio_runtime_providers::ProviderKind;
 use studio_runtime_providers::{Method, RequestId};
+use studio_runtime_schema::persistence::{OutboxKind, OutboxStatus, OwnerKind, RequestIdentity};
+use studio_runtime_store::outbox::{Outbox, OutboxRow};
+use studio_runtime_store::request_results::{
+    Admission as RequestAdmission, AdmittedRequest, RequestResults, ResultEnvelope,
+};
 use studio_runtime_store::{
     AgentRecord, AgentRepository, ContextRepairRepository, RuntimeStore, StoreError,
     python_json_with_separators,
@@ -58,6 +63,33 @@ pub enum NativeError {
     Sql(#[from] rusqlite::Error),
 }
 
+impl From<studio_runtime_store::request_results::RequestResultError> for NativeError {
+    fn from(error: studio_runtime_store::request_results::RequestResultError) -> Self {
+        use studio_runtime_store::request_results::RequestResultError;
+        match error {
+            RequestResultError::Sql(error) => Self::Sql(error),
+            RequestResultError::Json(error) => Self::Json(error),
+            RequestResultError::Conflict { .. } => Self::Conflict,
+            RequestResultError::Identity(error) => error.into(),
+        }
+    }
+}
+impl From<studio_runtime_schema::persistence::RequestIdentityError> for NativeError {
+    fn from(error: studio_runtime_schema::persistence::RequestIdentityError) -> Self {
+        Self::Store(StoreError::SchemaMismatch(error.to_string()))
+    }
+}
+impl From<studio_runtime_store::outbox::OutboxError> for NativeError {
+    fn from(error: studio_runtime_store::outbox::OutboxError) -> Self {
+        use studio_runtime_store::outbox::OutboxError;
+        match error {
+            OutboxError::Sql(error) => Self::Sql(error),
+            OutboxError::Json(error) => Self::Json(error),
+            OutboxError::Conflict(_) => Self::Conflict,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Action {
@@ -95,7 +127,7 @@ pub struct AdmissionReceipt {
     pub epoch: i64,
     pub attempt_id: String,
     pub accepted_at: f64,
-    pub status: String,
+    pub status: studio_runtime_schema::persistence::NativeActionAdmissionStatus,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -119,6 +151,68 @@ pub enum Outcome {
     },
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct NativeActionIntent {
+    admitted: AdmittedRequest,
+    receipt: AdmissionReceipt,
+    outcome: Outcome,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct CommandCancelIntent {
+    admitted: AdmittedRequest,
+    request: NativeRequest,
+}
+
+fn request_identity(namespace: &str, root: &str) -> Result<RequestIdentity> {
+    Ok(RequestIdentity::new(namespace, &[], root, &[])?)
+}
+
+fn admit(
+    tx: &Transaction<'_>,
+    namespace: &str,
+    root: &str,
+    signature: &str,
+    now_ms: i64,
+) -> Result<AdmittedRequest> {
+    match RequestResults::admit(tx, &request_identity(namespace, root)?, signature, now_ms)? {
+        RequestAdmission::Fresh(admitted) => Ok(admitted),
+        RequestAdmission::Replay(_) => Err(NativeError::Conflict),
+    }
+}
+
+fn saved_reply(
+    tx: &Transaction<'_>,
+    namespace: &str,
+    root: &str,
+) -> Result<Option<(String, Value)>> {
+    let canonical = request_identity(namespace, root).ok();
+    let imported_id = if namespace == "native-command" {
+        format!("native-command:{root}")
+    } else {
+        root.to_owned()
+    };
+    for id in
+        std::iter::once(imported_id.as_str()).chain(canonical.as_ref().map(RequestIdentity::id))
+    {
+        let signature: Option<String> = tx
+            .query_row(
+                "SELECT signature FROM request_results WHERE id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(signature) = signature {
+            let saved =
+                RequestResults::replay(tx, id, &signature, chrono::Utc::now().timestamp_millis())?
+                    .ok_or(NativeError::Changed)?;
+            let envelope: ResultEnvelope<Value> = serde_json::from_str(&saved.result)?;
+            return Ok(Some((signature, envelope.reply)));
+        }
+    }
+    Ok(None)
+}
+
 /// Checked once from Python-written agent and receipt records, including legacy
 /// pending rows. The stored attempt remains the authority for transport scope.
 pub struct Snapshot {
@@ -132,7 +226,8 @@ impl Snapshot {
         checked_agent(&agent)?;
         let receipt: AdmissionReceipt = decode(receipt, "receipt")?;
         let outcome = decode(outcome, "outcome")?;
-        if receipt.status != "accepted"
+        if receipt.status
+            != studio_runtime_schema::persistence::NativeActionAdmissionStatus::Accepted
             || !receipt.accepted_at.is_finite()
             || receipt.epoch < 0
             || receipt.request_id.is_empty()
@@ -296,6 +391,14 @@ pub fn reserve(
         }
     }
     gate.check(tx, &agent, request.action)?;
+    if let Some(episode) = AgentRepository::get(
+        tx,
+        &studio_runtime_store::AgentId::from(request.agent.as_str()),
+    )?
+    .and_then(|current| current.extra.get("idleCompactionEpisode").cloned())
+    {
+        agent["idleCompactionEpisode"] = episode;
+    }
     agent["status"] = json!("starting");
     agent["inFlight"] = json!(true);
     agent["turnEpoch"] = agent["epoch"].clone();
@@ -308,18 +411,92 @@ pub fn reserve(
         agent["nativeReview"]["status"] = json!("started");
         agent["nativeReview"]["startedAt"] = json!(now);
     }
-    tx.execute("INSERT INTO runtime_native_action_receipts(id,signature,receipt,outcome) VALUES(?1,?2,?3,?4)",
-        params![request.request_id,signature,receipt.to_string(),json!({"status":"pending"}).to_string()])?;
+    let now_ms = (now * 1000.0) as i64;
+    let admitted = admit(
+        tx,
+        "native-action",
+        &request.request_id,
+        &signature,
+        chrono::Utc::now().timestamp_millis(),
+    )?;
+    Outbox::put(
+        tx,
+        &OutboxRow {
+            id: request.request_id.clone(),
+            kind: OutboxKind::NativeAction,
+            owner_kind: OwnerKind::Agent,
+            owner_id: request.agent.clone(),
+            request_id: Some(admitted.id().into()),
+            signature,
+            status: OutboxStatus::Pending,
+            account: Some(checked.receipt.account_key.clone()),
+            stream_id: None,
+            generation: None,
+            ordinal: None,
+            next_at: Some(now_ms),
+            created: admitted.created(),
+            payload: NativeActionIntent {
+                admitted,
+                receipt: checked.receipt.clone(),
+                outcome: checked.outcome.clone(),
+            },
+        },
+    )?;
     AgentRepository::put(tx, &AgentRecord::from_value(agent.clone())?)?;
     Ok(Snapshot { agent, ..checked })
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct NativeRequest {
+    pub root_request_id: String,
+    pub admitted_request: Option<AdmittedRequest>,
     pub ticket: ProviderTicket,
     pub method: String,
     pub params: Value,
 }
+/// Reserve the exact provider obligation in the transaction changing its owner.
+/// A saved final token is reused without admitting another provider attempt.
+pub fn reserve_provider_intent(
+    tx: &Transaction<'_>,
+    owner: &AdmittedRequest,
+    mut request: NativeRequest,
+) -> Result<NativeRequest> {
+    if request.admitted_request.is_none() {
+        let method = Method::from_wire(&request.method).ok_or(NativeError::Invalid("method"))?;
+        let token = crate::account_worker::retained::reserve_provider_call(
+            tx,
+            owner,
+            crate::account_worker::retained::ProviderCallIntent {
+                root_request_id: request.root_request_id.clone(),
+                admitted_request: None,
+                scope: crate::account_session_runtime::ConnectionScope {
+                    account: request.ticket.account.clone(),
+                    connection: request.ticket.connection.clone(),
+                    generation: request.ticket.generation,
+                },
+                operation: request.ticket.operation.clone(),
+                actor: Some(RequestActor {
+                    agent: request.ticket.agent.clone(),
+                    epoch: i64::try_from(request.ticket.epoch).map_err(|_| NativeError::Changed)?,
+                }),
+                transfer: None,
+                deleted_actor_session: None,
+                method,
+                params: request.params.clone(),
+            },
+        )
+        .map_err(|error| {
+            if let crate::account_worker::WorkerError::Store(error) = error {
+                NativeError::Store(error)
+            } else {
+                NativeError::Store(StoreError::SchemaMismatch(error.to_string()))
+            }
+        })?;
+        request.admitted_request = Some(token);
+    }
+    Ok(request)
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Delivery {
     Written(Value),
@@ -365,8 +542,7 @@ pub fn claim(tx: &Transaction<'_>, id: &str, ticket: &ProviderTicket) -> Result<
     {
         return Err(NativeError::Changed);
     }
-    if r.request_id
-        .starts_with(crate::idle_compaction::REQUEST_PREFIX)
+    if snapshot.agent["idleCompactionEpisode"]["id"] == r.request_id
         && let Some(reason) =
             crate::idle_compaction::handoff_refusal(tx, &snapshot.agent, &r.request_id)?
     {
@@ -388,17 +564,27 @@ pub fn claim(tx: &Transaction<'_>, id: &str, ticket: &ProviderTicket) -> Result<
             "review/start"
         }
     };
-    if r.request_id
-        .starts_with(crate::idle_compaction::REQUEST_PREFIX)
-    {
+    if snapshot.agent["idleCompactionEpisode"]["id"] == r.request_id {
         params["requestId"] = json!(r.request_id);
         params["idleCompaction"] = snapshot.agent["idleCompactionEpisode"]["cache"].clone();
     }
     let request = NativeRequest {
+        root_request_id: ticket.request.clone(),
+        admitted_request: snapshot.agent["startAttempt"]
+            .get("providerRequest")
+            .cloned()
+            .map(|value| decode(value, "startAttempt.providerRequest"))
+            .transpose()?,
         ticket: ticket.clone(),
         method: method.into(),
         params,
     };
+    let owner = Outbox::get::<NativeActionIntent>(tx, id)?
+        .ok_or(NativeError::Changed)?
+        .payload
+        .admitted;
+    let request = reserve_provider_intent(tx, &owner, request)?;
+    snapshot.agent["startAttempt"]["providerRequest"] = json!(request.admitted_request);
     snapshot.agent["startAttempt"]["submitted"] = json!(true);
     snapshot.agent["startAttempt"]["accountKey"] = json!(ticket.account);
     snapshot.agent["startAttempt"]["threadId"] = json!(ticket.thread);
@@ -658,6 +844,8 @@ pub async fn execute_provider_prepared(
             Method::from_wire(&native_request.method).ok_or(NativeError::Invalid("method"))?;
         let provider = port
             .provider_request(ProviderRequest {
+                root_request_id: native_request.root_request_id.clone(),
+                admitted_request: native_request.admitted_request.clone(),
                 account: account.clone(),
                 operation: ticket.operation.clone(),
                 actor: Some(RequestActor {
@@ -737,6 +925,33 @@ pub fn fail_pending(tx: &Transaction<'_>, id: &str, error: &str) -> Result<()> {
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)]
 mod native_action_retry_tests {
+    #[test]
+    fn receipt_pivot_reads_completed_native_outcome_without_receipt_table() {
+        let mut db = rusqlite::Connection::open_in_memory().expect("database");
+        studio_runtime_store::receipt_schema::create(&db).expect("target schema");
+        db.execute_batch(
+            "CREATE TABLE runtime_orchestration_settings(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
+        )
+        .expect("policy");
+        let reply = serde_json::json!({"receipt":{"requestId":"old-action","agentId":"agent"},"outcome":{"status":"acknowledged","result":{"turnId":"original"}},"replayed":false,"result":{"turnId":"original"}});
+        let envelope = studio_runtime_store::request_results::ResultEnvelope {
+            actor: Some("agent".to_owned()),
+            reply,
+            references: Vec::<String>::new(),
+        };
+        db.execute(
+            "INSERT INTO request_results VALUES('old-action','signature',?1,?2)",
+            rusqlite::params![
+                serde_json::to_string(&envelope).expect("reply"),
+                chrono::Utc::now().timestamp_millis()
+            ],
+        )
+        .expect("migrated exact response");
+        let tx = db.transaction().expect("transaction");
+        assert!(
+            matches!(super::outcome(&tx, "old-action").expect("new owner"), Some(super::Outcome::Acknowledged { result: Some(ref result) }) if result["turnId"] == "original")
+        );
+    }
     use super::{NativeRequest, SessionReceipt, validate_provider_receipt};
     use crate::account_session_runtime::SessionOutcome as ReceiptOutcome;
     use crate::{account_session_runtime::ConnectionScope, workspace_operations::ProviderTicket};
@@ -775,6 +990,8 @@ mod native_action_retry_tests {
     #[test]
     fn correlated_worker_not_sent_receipt_is_validated_for_retry() {
         let request = NativeRequest {
+            root_request_id: studio_runtime_schema::persistence::RequestIdentity::issue_root(),
+            admitted_request: None,
             ticket: ProviderTicket {
                 operation: "attempt".into(),
                 agent: "agent".into(),
@@ -822,6 +1039,8 @@ pub fn settle_provider(
     let delivery = match &provider {
         Ok(receipt) => {
             let expected = NativeRequest {
+                root_request_id: ticket.request.clone(),
+                admitted_request: None,
                 ticket: ticket.clone(),
                 method: match load(tx, id)?.receipt.action {
                     Action::Compact => "thread/compact/start".into(),
@@ -893,6 +1112,12 @@ pub async fn update_action_settings(
                     return Err(NativeError::Changed);
                 }
                 let saved = agent["startAttempt"].get("modelSettings").cloned();
+                let final_token = saved
+                    .as_ref()
+                    .and_then(|saved| saved.get("providerRequest"))
+                    .cloned()
+                    .map(|value| decode(value, "modelSettings.providerRequest"))
+                    .transpose()?;
                 if let Some(saved) = saved {
                     if saved["operation"] != operation_for_tx
                         || saved["requestId"] != request_id_for_record
@@ -902,7 +1127,7 @@ pub async fn update_action_settings(
                         return Err(NativeError::Conflict);
                     }
                     match saved["status"].as_str() {
-                        Some("acknowledged") => return Ok(false),
+                        Some("acknowledged") => return Ok(None),
                         Some("not_sent") => {}
                         Some("submitted" | "unknown") => return Err(NativeError::Unknown),
                         Some("rejected") => return Err(NativeError::Invalid("settings/rejected")),
@@ -915,6 +1140,24 @@ pub async fn update_action_settings(
                         }
                     }
                 }
+                let owner = Outbox::get::<NativeActionIntent>(tx, &request_id)?
+                    .ok_or(NativeError::Changed)?
+                    .payload
+                    .admitted;
+                let prepared = reserve_provider_intent(
+                    tx,
+                    &owner,
+                    NativeRequest {
+                        root_request_id: request_id.clone(),
+                        admitted_request: final_token,
+                        ticket: ProviderTicket {
+                            operation: operation_for_tx.clone(),
+                            ..ticket_for_tx.clone()
+                        },
+                        method: "thread/settings/update".into(),
+                        params: params_snapshot.clone(),
+                    },
+                )?;
                 agent["startAttempt"]["modelSettings"] = json!({
                     "operation": operation_for_tx,
                     "requestId": request_id_for_record,
@@ -922,19 +1165,22 @@ pub async fn update_action_settings(
                     "method": "thread/settings/update",
                     "params": params_snapshot,
                     "status": "submitted",
+                    "providerRequest":prepared.admitted_request,
                 });
                 AgentRepository::put(tx, &AgentRecord::from_value(agent)?)?;
-                Ok(true)
+                Ok(Some(prepared))
             })
             .await?;
-        if !should_send {
+        let Some(settings_request) = should_send else {
             return Ok(());
-        }
+        };
 
         let method =
             Method::from_wire("thread/settings/update").ok_or(NativeError::Invalid("method"))?;
         let provider = port
             .provider_request(ProviderRequest {
+                root_request_id: settings_request.root_request_id.clone(),
+                admitted_request: settings_request.admitted_request.clone(),
                 account: settings_ticket.account.clone(),
                 operation: operation.clone(),
                 actor: Some(RequestActor {
@@ -950,6 +1196,8 @@ pub async fn update_action_settings(
             })
             .await;
         let expected = NativeRequest {
+            root_request_id: request.request_id.clone(),
+            admitted_request: None,
             ticket: settings_ticket.clone(),
             method: "thread/settings/update".into(),
             params: params.clone(),
@@ -1084,62 +1332,79 @@ fn agent(tx: &Transaction<'_>, id: &str) -> Result<Value> {
     Ok(value)
 }
 fn row(tx: &Transaction<'_>, id: &str) -> Result<Option<(String, Value, Value)>> {
-    if !crate::sync_policy::table_exists(tx, "runtime_native_action_receipts")? {
-        return Err(NativeError::Unavailable(
-            "store-bootstrap/native-action-schema",
-        ));
+    if let Some(saved) = Outbox::get::<NativeActionIntent>(tx, id)? {
+        if saved.kind != OutboxKind::NativeAction
+            || saved.owner_kind != OwnerKind::Agent
+            || saved.owner_id != saved.payload.receipt.agent_id
+        {
+            return Err(NativeError::Changed);
+        }
+        return Ok(Some((
+            saved.signature,
+            serde_json::to_value(saved.payload.receipt)?,
+            serde_json::to_value(saved.payload.outcome)?,
+        )));
     }
-    let row = tx
-        .query_row(
-            "SELECT signature,receipt,outcome FROM runtime_native_action_receipts WHERE id=?1",
-            [id],
-            |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                ))
-            },
-        )
-        .optional()?;
-    row.map(|(signature, r, o)| {
-        Ok((
-            signature,
-            serde_json::from_str(&r).map_err(|_| NativeError::InvalidStored {
-                table: "runtime_native_action_receipts",
-                id: id.to_owned(),
-                location: "receipt JSON".into(),
-            })?,
-            serde_json::from_str(&o).map_err(|_| NativeError::InvalidStored {
-                table: "runtime_native_action_receipts",
-                id: id.to_owned(),
-                location: "outcome JSON".into(),
-            })?,
-        ))
-    })
-    .transpose()
+    Ok(
+        saved_reply(tx, "native-action", id)?.map(|(signature, reply)| {
+            (
+                signature,
+                reply["receipt"].clone(),
+                reply["outcome"].clone(),
+            )
+        }),
+    )
 }
 fn load(tx: &Transaction<'_>, id: &str) -> Result<Snapshot> {
     let (_, receipt, outcome) = row(tx, id)?.ok_or(NativeError::Invalid("receipt.id"))?;
     let agent_id = receipt["agentId"]
         .as_str()
-        .ok_or_else(|| NativeError::InvalidStored {
-            table: "runtime_native_action_receipts",
-            id: id.to_owned(),
-            location: "receipt.agentId".into(),
-        })?
+        .ok_or(NativeError::Invalid("receipt.agentId"))?
         .to_owned();
     Snapshot::from_records(agent(tx, &agent_id)?, receipt, outcome)
-        .map_err(|error| located(error, "runtime_native_action_receipts", id))
+        .map_err(|error| located(error, "runtime_outbox", id))
 }
 fn write_outcome(tx: &Transaction<'_>, id: &str, outcome: &Outcome) -> Result<()> {
-    tx.execute(
-        "UPDATE runtime_native_action_receipts SET outcome=?1 WHERE id=?2",
-        params![
-            serde_json::to_string(outcome).map_err(|_| NativeError::Invalid("outcome"))?,
-            id
-        ],
-    )?;
+    let Some(mut row) = Outbox::get::<NativeActionIntent>(tx, id)? else {
+        return if row(tx, id)?.is_some_and(|(_, _, saved)| saved == json!(outcome)) {
+            Ok(())
+        } else {
+            Err(NativeError::Changed)
+        };
+    };
+    row.payload.outcome = outcome.clone();
+    match outcome {
+        Outcome::Pending { .. } => {
+            row.status = OutboxStatus::Pending;
+            row.next_at = Some(chrono::Utc::now().timestamp_millis());
+            Outbox::put(tx, &row)?;
+        }
+        Outcome::Unknown { .. } => {
+            row.status = OutboxStatus::Unknown;
+            row.next_at = None;
+            Outbox::put(tx, &row)?;
+        }
+        Outcome::Failed { .. } | Outcome::Acknowledged { .. } => {
+            let mut reply =
+                json!({"receipt":row.payload.receipt,"outcome":outcome,"replayed":false});
+            if let Outcome::Acknowledged {
+                result: Some(result),
+            } = outcome
+            {
+                reply["result"] = result.clone();
+            }
+            RequestResults::settle(
+                tx,
+                &row.payload.admitted,
+                &ResultEnvelope {
+                    actor: Some(row.owner_id.clone()),
+                    reply,
+                    references: vec![row.owner_id.clone()],
+                },
+            )?;
+            Outbox::delete_settled(tx, id, &row.signature)?;
+        }
+    }
     Ok(())
 }
 pub(crate) fn bounded(value: &Value, location: &'static str) -> Result<()> {
@@ -1288,22 +1553,35 @@ pub fn command_input(
     text: &str,
     admission: &impl CommandAdmission,
 ) -> Result<Value> {
-    use studio_runtime_store::EventWriteRepository;
     if key.is_empty() || key.len() > MAX_ID {
         return Err(NativeError::Invalid("command.requestId"));
     }
     let signature = json!({"task":snapshot.task["id"],"action":"input","text":text}).to_string();
-    let id = format!("native-command:{key}");
-    if let Some(receipt) = EventWriteRepository::receipt(tx, &id)? {
-        if receipt.signature != signature {
+    if let Some((saved, reply)) = saved_reply(tx, "native-command", key)? {
+        if saved != signature {
             return Err(NativeError::Conflict);
         }
-        return Ok(serde_json::from_str(&receipt.result)?);
+        return Ok(reply);
     }
+    let admitted = admit(
+        tx,
+        "native-command",
+        key,
+        &signature,
+        chrono::Utc::now().timestamp_millis(),
+    )?;
     snapshot.current(tx)?;
     let result = admission.enqueue(tx, &snapshot.agent, key, &snapshot.input(text)?)?;
     bounded(&result, "command.result")?;
-    EventWriteRepository::put_receipt(tx, &id, &signature, &result.to_string())?;
+    RequestResults::settle(
+        tx,
+        &admitted,
+        &ResultEnvelope {
+            actor: snapshot.agent["id"].as_str().map(str::to_owned),
+            reply: result.clone(),
+            references: vec![],
+        },
+    )?;
     Ok(result)
 }
 
@@ -1314,13 +1592,16 @@ pub enum CommandCancelClaim {
     Replay(Value),
 }
 
+fn same_native_request(left: &NativeRequest, right: &NativeRequest) -> bool {
+    left.ticket == right.ticket && left.method == right.method && left.params == right.params
+}
+
 pub fn command_cancel_claim(
     tx: &Transaction<'_>,
     snapshot: &CommandSnapshot,
     ticket: &ProviderTicket,
     list: &TransportReceipt,
 ) -> Result<CommandCancelClaim> {
-    use studio_runtime_store::EventWriteRepository;
     snapshot.current(tx)?;
     let mut list_ticket = ticket.clone();
     list_ticket.request = format!("{}:list", ticket.request);
@@ -1351,25 +1632,22 @@ pub fn command_cancel_claim(
         params: json!({"threadId":ticket.thread,"processId":snapshot.process}),
     };
     let signature = json!({"task":snapshot.task["id"],"action":"cancel"}).to_string();
-    if let Some(saved) = EventWriteRepository::receipt(tx, &id)? {
-        if saved.signature != signature {
+    if let Some((saved_signature, saved)) = saved_reply(tx, "native-command", &ticket.request)? {
+        if saved_signature != signature
+            || !same_native_request(
+                &decode::<NativeRequest>(saved["request"].clone(), "command.result")?,
+                &request,
+            )
+        {
             return Err(NativeError::Conflict);
         }
-        let saved_result: Value = serde_json::from_str(&saved.result)?;
-        let saved_request: NativeRequest =
-            decode(saved_result["request"].clone(), "command.receipt")?;
-        if saved_request != request {
+        return Ok(CommandCancelClaim::Replay(saved["result"].clone()));
+    }
+    if let Some(saved) = Outbox::get::<CommandCancelIntent>(tx, &id)? {
+        if saved.signature != signature || !same_native_request(&saved.payload.request, &request) {
             return Err(NativeError::Conflict);
         }
-        return match saved_result["status"].as_str() {
-            Some("acknowledged") => Ok(CommandCancelClaim::Replay(saved_result["result"].clone())),
-            Some("unknown") => Err(NativeError::Unknown),
-            _ => Err(NativeError::InvalidStored {
-                table: "runtime_operation_receipts",
-                id,
-                location: "cancel result".into(),
-            }),
-        };
+        return Err(NativeError::Unknown);
     }
     let Delivery::Written(page) = &list.delivery else {
         return Err(NativeError::Unknown);
@@ -1377,20 +1655,54 @@ pub fn command_cancel_claim(
     if !snapshot.listed(page)? {
         return Err(NativeError::Invalid("command.session"));
     }
-    EventWriteRepository::put_receipt(
+    let admitted = admit(
         tx,
-        &id,
+        "native-command",
+        &ticket.request,
         &signature,
-        &json!({"status":"unknown","request":request}).to_string(),
+        chrono::Utc::now().timestamp_millis(),
+    )?;
+    let request = reserve_provider_intent(tx, &admitted, request)?;
+    Outbox::put(
+        tx,
+        &OutboxRow {
+            id,
+            kind: OutboxKind::NativeAction,
+            owner_kind: OwnerKind::Task,
+            owner_id: ticket.operation.clone(),
+            request_id: Some(admitted.id().into()),
+            signature,
+            status: OutboxStatus::Unknown,
+            account: Some(ticket.account.clone()),
+            stream_id: None,
+            generation: Some(i64::try_from(ticket.generation).map_err(|_| NativeError::Changed)?),
+            ordinal: None,
+            next_at: None,
+            created: admitted.created(),
+            payload: CommandCancelIntent {
+                admitted,
+                request: request.clone(),
+            },
+        },
     )?;
     Ok(CommandCancelClaim::Send(request))
 }
 pub fn command_cancel_settle(tx: &Transaction<'_>, receipt: &TransportReceipt) -> Result<Value> {
-    use studio_runtime_store::EventWriteRepository;
     let id = format!("native-command:{}", receipt.ticket.request);
-    let saved = EventWriteRepository::receipt(tx, &id)?.ok_or(NativeError::Changed)?;
-    let value: Value = serde_json::from_str(&saved.result)?;
-    let request: NativeRequest = decode(value["request"].clone(), "command.receipt")?;
+    let saved = Outbox::get::<CommandCancelIntent>(tx, &id)?;
+    let Some(saved) = saved else {
+        let (_, saved) = saved_reply(tx, "native-command", &receipt.ticket.request)?
+            .ok_or(NativeError::Changed)?;
+        let request: NativeRequest = decode(saved["request"].clone(), "command.result")?;
+        return if request.ticket == receipt.ticket
+            && matches!(&receipt.delivery, Delivery::Written(result) if *result == saved["result"])
+        {
+            Ok(saved["result"].clone())
+        } else {
+            Err(NativeError::Conflict)
+        };
+    };
+    let request = &saved.payload.request;
     if request.ticket != receipt.ticket {
         return Err(NativeError::Changed);
     }
@@ -1401,19 +1713,15 @@ pub fn command_cancel_settle(tx: &Transaction<'_>, receipt: &TransportReceipt) -
         return Err(NativeError::Unknown);
     }
     bounded(result, "command.result")?;
-    if value["status"] == "acknowledged" {
-        return if value["result"] == *result {
-            Ok(result.clone())
-        } else {
-            Err(NativeError::Conflict)
-        };
-    }
-    tx.execute(
-        "UPDATE runtime_operation_receipts SET result=?1 WHERE id=?2",
-        params![
-            json!({"status":"acknowledged","request":request,"result":result}).to_string(),
-            id
-        ],
+    RequestResults::settle(
+        tx,
+        &saved.payload.admitted,
+        &ResultEnvelope {
+            actor: Some(request.ticket.agent.clone()),
+            reply: json!({"request":request,"result":result}),
+            references: vec![saved.owner_id.clone()],
+        },
     )?;
+    Outbox::delete_settled(tx, &id, &saved.signature)?;
     Ok(result.clone())
 }
