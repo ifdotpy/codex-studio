@@ -523,6 +523,9 @@ fn server(
                 body["action"].as_str(),
                 Some("add_location" | "remove_location")
             ) {
+                if body["payload"].get("signature").is_some() {
+                    return Err(unclassifiable(source, &row.id, &row.signature));
+                }
                 let checked = &body["payload"]["_projectAdmission"];
                 if checked["project"] != body["payload"]["project"]
                     || !checked["project"].is_string()
@@ -833,7 +836,7 @@ mod tests {
         let mut db = Connection::open_in_memory().expect("database");
         fixture(&mut db);
         let public = json!({"requestId":"shared","outcome":"applied","projectId":"project","value":{"serverId":"peer","path":"/original"}});
-        let body=json!({"requestId":"shared","action":"add_location","operation":["location"],"payload":{"project":"project","request":{"action":"add_location","project":"project","server":"peer","path":"/original"}}}).to_string();
+        let body=json!({"requestId":"shared","action":"add_location","operation":["location"],"payload":{"project":"project","signature":"original signature","request":{"action":"add_location","project":"project","server":"peer","path":"/original"}}}).to_string();
         let response = json!({"requestId":"shared","outcome":"applied","value":{"path":"/original"},"error":null});
         let signature = crate::sha256_hex(body.as_bytes());
         let tx = db.transaction().expect("transaction");
@@ -879,6 +882,12 @@ mod tests {
         assert_eq!(saved.reply.body.as_deref(), Some(body.as_str()));
         assert_eq!(saved.reply.server.as_deref(), Some("peer"));
         assert_eq!(saved.reply.response.request_id, "shared");
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM runtime_server_outbox", [], |r| r
+                .get::<_, i64>(0))
+                .expect("completed source removed"),
+            0
+        );
         migrate(&mut db);
     }
 
@@ -1025,6 +1034,29 @@ mod tests {
                 .expect("no synthetic marker replay"),
             0
         );
+    }
+
+    #[test]
+    fn receipts_remote_pending_signed_location_stops_without_changing_wire_evidence() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&mut db);
+        let body = json!({"requestId":"location","action":"add_location","payload":{"project":"project","signature":"old-signature","_projectAdmission":{"project":"project","seq":1,"workspace":"workspace","actor":null,"epoch":null}}}).to_string();
+        db.execute("INSERT INTO runtime_server_outbox(id,fingerprint,state,body) VALUES('location','fingerprint','running',?1)", [&body]).expect("old pending");
+        let tx = db.transaction().expect("transaction");
+        let checkpoint = MigrationCheckpoint::begin(&tx, ID, "runtime_server_outbox", CUTOVER)
+            .expect("checkpoint");
+        assert!(
+            matches!(Family.move_batch(&tx,"runtime_server_outbox",&checkpoint),Err(ReceiptMigrationError::Unclassifiable{table,key,signature}) if table=="runtime_server_outbox" && key=="location" && signature=="fingerprint")
+        );
+        tx.rollback().expect("rollback");
+        let saved: String = db
+            .query_row(
+                "SELECT body FROM runtime_server_outbox WHERE id='location'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("source remains");
+        assert_eq!(saved, body);
     }
 
     #[test]
