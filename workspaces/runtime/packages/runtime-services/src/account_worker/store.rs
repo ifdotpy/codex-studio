@@ -146,8 +146,8 @@ pub(crate) struct JournalSettlement {
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "family", content = "payload", rename_all = "snake_case")]
 pub(super) enum ProviderCall {
-    Account(AccountCall),
-    Retained(super::retained::storage::RetainedCall),
+    Account(Box<AccountCall>),
+    Retained(Box<super::retained::storage::RetainedCall>),
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -187,7 +187,7 @@ pub(super) fn account_submission(
         Some(OutboxRow {
             payload: ProviderCall::Account(call),
             ..
-        }) => Ok(Some(call)),
+        }) => Ok(Some(*call)),
         Some(_) => Err(invalid(operation)),
         None => Ok(None),
     }
@@ -230,12 +230,12 @@ pub(super) fn save_account_submission(
             generation: Some(request.generation as i64),
             ordinal: None,
             next_at: None,
-            payload: ProviderCall::Account(AccountCall {
+            payload: ProviderCall::Account(Box::new(AccountCall {
                 context: context.clone(),
                 request,
                 written: None,
                 restarted: false,
-            }),
+            })),
             created: (now() * 1000.0) as i64,
         },
     )
@@ -331,12 +331,7 @@ pub(crate) fn notification_acknowledged(
     identity: &ProviderDeliveryIdentity,
 ) -> studio_runtime_store::StoreResult<bool> {
     let scope = notification_scope(identity)?;
-    checkpoint(tx, scope, identity.generation)
-        .map(|cursor| identity.cursor <= cursor)
-        .map_err(|error| match error {
-            WorkerError::Store(error) => error,
-            _ => StoreError::RecordContract("notification checkpoint could not be read"),
-        })
+    checkpoint(tx, scope, identity.generation).map(|cursor| identity.cursor <= cursor)
 }
 
 pub fn get_notification(
@@ -2984,7 +2979,7 @@ pub(crate) fn checkpoint(
     tx: &rusqlite::Connection,
     journal_scope: &str,
     generation: u64,
-) -> Result<u64, WorkerError> {
+) -> Result<u64, StoreError> {
     if let Some((account, actor)) = journal_scope.rsplit_once(":vm:")
         && let Some(agent) = AgentRepository::get(tx, &AgentId::from(actor))?
         && account_key(&agent) == account
@@ -4281,12 +4276,12 @@ mod pending_thread_start_tests {
                 generation: Some(1),
                 ordinal: None,
                 next_at: None,
-                payload: ProviderCall::Account(AccountCall {
+                payload: ProviderCall::Account(Box::new(AccountCall {
                     context,
                     request: super::super::retained::storage::TransportRequest::from(&request),
                     written: None,
                     restarted: true,
-                }),
+                })),
                 created: 1,
             },
         )

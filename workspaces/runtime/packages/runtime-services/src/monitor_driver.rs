@@ -213,7 +213,10 @@ pub(crate) async fn input_http(
     let submitted = port.submit(&operation, &effect).await;
     let outcome = match &submitted {
         Submission::Written => None,
-        Submission::NotSent { reason: NotSentReason::Expired, .. } => Some(InputOutcome::Expired),
+        Submission::NotSent {
+            reason: NotSentReason::Expired,
+            ..
+        } => Some(InputOutcome::Expired),
         Submission::NotSent { error, .. } => Some(InputOutcome::Rejected(error.clone())),
         Submission::Unknown => Some(InputOutcome::Unknown(
             "Input outcome unknown; do not repeat it".into(),
@@ -246,7 +249,10 @@ pub async fn input(
     // callback calls settle_input after its reply is known.
     let outcome = match &result {
         Submission::Written => None,
-        Submission::NotSent { reason: NotSentReason::Expired, .. } => Some(InputOutcome::Expired),
+        Submission::NotSent {
+            reason: NotSentReason::Expired,
+            ..
+        } => Some(InputOutcome::Expired),
         Submission::NotSent { error, .. } => Some(InputOutcome::Rejected(error.clone())),
         Submission::Unknown => Some(InputOutcome::Unknown(
             "Input outcome unknown; do not repeat it".into(),

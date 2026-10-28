@@ -655,7 +655,9 @@ impl ReviewPreparation {
 pub(crate) mod tests {
     use super::*;
     use crate::account_session_runtime::SessionOutcome as ReceiptOutcome;
-    use crate::account_session_runtime::{AccountSessionFuture, SessionReceipt};
+    use crate::account_session_runtime::{
+        AccountSessionError, AccountSessionFuture, SessionReceipt,
+    };
     use std::sync::Mutex;
     use studio_runtime_providers::{RequestId, RequestTicket};
 

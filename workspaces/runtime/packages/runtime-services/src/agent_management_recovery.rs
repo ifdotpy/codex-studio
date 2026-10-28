@@ -13,7 +13,7 @@ use std::sync::Arc;
 use studio_runtime_providers::Method;
 use studio_runtime_schema::persistence::{
     NativeReleasePhase, OutboxKind, OutboxStatus, OwnerKind, RecoveryReceiptStatus,
-    ToolRequestOutcome,
+    RequestIdentity, ToolRequestOutcome,
 };
 use studio_runtime_store::outbox::{Outbox, OutboxRow};
 use studio_runtime_store::request_results::{AdmittedRequest, RequestResults, ResultEnvelope};
@@ -287,7 +287,7 @@ fn release_result(status: ReleaseStatus, reason: Option<&str>) -> crate::recover
     }
 }
 
-fn read_saved(
+fn read_pending(
     tx: &Transaction<'_>,
     id: &str,
     signature: &str,
@@ -300,17 +300,7 @@ fn read_saved(
         }
         return row.payload.reply.into_receipt().map(Some);
     }
-    RequestResults::replay(tx, id, signature, now_ms())
-        .map_err(studio_runtime_store::StoreError::from)?
-        .map(|receipt| {
-            if receipt.signature != signature {
-                return Err(Error::Invalid("This request id has different content"));
-            }
-            let envelope: ResultEnvelope<ManualReply> = serde_json::from_str(&receipt.result)
-                .map_err(|_| Error::Invalid("Invalid manual management receipt"))?;
-            envelope.reply.into_receipt()
-        })
-        .transpose()
+    Ok(None)
 }
 
 fn save(
@@ -417,14 +407,16 @@ pub(crate) async fn execute(
         let resolved = crate::provider_callbacks::tools::services::manage::resolved_args(tx, &actor, &args).map_err(|_| Error::Invalid("Unknown managed agent"))?;
         let target = resolved["agent_id"].as_str().ok_or(Error::Invalid("Supply agent_id"))?;
         let (lead, mut worker) = authorize(tx, &actor, target)?;
-        if let Some(saved) = read_saved(tx, &id, &sig)? { return Ok((None,saved)); }
+        if let Some(saved) = read_pending(tx, &id, &sig)? { return Ok((None,saved)); }
         let epoch=lead["epoch"].to_string();
-        let admission=match crate::event_write::begin_request::<ManualReply>(tx,crate::event_write::RequestKey::new("manual-management",&[lead["id"].as_str().ok_or(Error::Stale)?,&epoch],&root_request_id).raw(&id),&sig,now_ms()).map_err(studio_runtime_store::StoreError::from)? {
+        let authority = [lead["id"].as_str().ok_or(Error::Stale)?, &epoch];
+        if let Ok(identity) = RequestIdentity::new("manual-management", &authority, &root_request_id, &[])
+            && let Some(saved) = read_pending(tx, identity.id(), &sig)? { return Ok((None, saved)); }
+        let admission=match crate::event_write::begin_request::<ManualReply>(tx,crate::event_write::RequestKey::new("manual-management",&authority,&root_request_id).raw(&id),&sig,now_ms()).map_err(studio_runtime_store::StoreError::from)? {
             crate::event_write::CallerAdmission::Fresh(token)=>token,
             crate::event_write::CallerAdmission::Replay(reply)=>return Ok((None,reply.into_receipt()?)),
         };
         let id=admission.id().to_owned();
-        if let Some(saved)=read_saved(tx,&id,&sig)? {return Ok((None,saved))}
         let auth = AuthorizedRecoveryRequest { lead: stable(&lead), target: stable(&worker), request_id:id.clone(),signature:sig.clone(),root_request_id,admission };
         if recovery {
             let pending = json!({"status":"unconfirmed","next":"Inspect the worker. Do not replay input with an unknown outcome."});
@@ -646,7 +638,17 @@ pub(crate) async fn finish_recovery(
     let auth = auth.clone();
     store
         .transaction_with(move |tx| {
-            let saved = read_saved(tx, &auth.request_id, &auth.signature)?.ok_or(Error::Stale)?;
+            let saved = match read_pending(tx, &auth.request_id, &auth.signature)? {
+                Some(saved) => saved,
+                None => {
+                    let saved = RequestResults::admitted_result(tx, &auth.admission)
+                        .map_err(studio_runtime_store::StoreError::from)?
+                        .ok_or(Error::Stale)?;
+                    let saved: ResultEnvelope<ManualReply> = serde_json::from_str(&saved.result)
+                        .map_err(studio_runtime_store::StoreError::from)?;
+                    saved.reply.into_receipt()?
+                }
+            };
             // The account worker can finish after the callback caller disappears.
             // Its committed result, not a retry's transport state, remains the receipt.
             if saved.value()["manualRecoveryComplete"] == true {
@@ -1339,6 +1341,17 @@ mod tests {
                 Err(Error::Expired)
             ));
             let calls = session.calls.lock().expect("calls").len();
+            store
+                .transaction(|tx| {
+                    RequestResults::gc(
+                        tx,
+                        now_ms() + studio_runtime_schema::persistence::REQUEST_RESULT_TTL_MS + 1,
+                    )
+                    .map_err(studio_runtime_store::StoreError::from)?;
+                    Ok(())
+                })
+                .await
+                .expect("expire ingress without deleting the pending owner");
             execute(store, session.clone(), &actor, &args(), "expired", 11.0)
                 .await
                 .expect("retry reads unresolved owner");

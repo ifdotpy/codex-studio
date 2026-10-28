@@ -19,7 +19,16 @@ const FIRST_PASS_TEST_DEADLINE: std::time::Duration = std::time::Duration::from_
 
 struct ResetBrokerSession {
     port: RetainedSessionPort,
-    requests: Arc<Mutex<Vec<(String, Value)>>>,
+    requests: Arc<
+        Mutex<
+            Vec<(
+                String,
+                Value,
+                String,
+                Option<studio_runtime_store::request_results::AdmittedRequest>,
+            )>,
+        >,
+    >,
     lose_response: Arc<tokio::sync::Notify>,
 }
 
@@ -57,13 +66,15 @@ impl AccountSessionPort for ResetBrokerSession {
         request: ProviderRequest,
     ) -> crate::account_session_runtime::AccountSessionFuture<'_, SessionReceipt> {
         Box::pin(async move {
-            self.requests
-                .lock()
-                .unwrap()
-                .push((request.operation.clone(), request.params.clone()));
+            self.requests.lock().unwrap().push((
+                request.operation.clone(),
+                request.params.clone(),
+                request.root_request_id.clone(),
+                request.admitted_request.clone(),
+            ));
             let call = SessionRequest {
-                root_request_id: retained_root(&request.operation),
-                admitted_request: None,
+                root_request_id: request.root_request_id,
+                admitted_request: request.admitted_request,
                 scope: self.port.scope().clone(),
                 expected_scope: request.expected_scope,
                 operation: request.operation,
@@ -778,8 +789,8 @@ async fn reset_service_recovers_lost_response_through_retained_worker_once() {
     // The first broker operation remains Unknown. Recovery used a fresh transport
     // identity, and replaying or rebinding either identity cannot send another write.
     let old = SessionRequest {
-        root_request_id: retained_root(&recorded[0].0),
-        admitted_request: None,
+        root_request_id: recorded[0].2.clone(),
+        admitted_request: recorded[0].3.clone(),
         scope: port.scope().clone(),
         expected_scope: None,
         operation: recorded[0].0.clone(),
@@ -801,6 +812,8 @@ async fn reset_service_recovers_lost_response_through_retained_worker_once() {
         PortError::Invalid
     );
     let mut changed_body = SessionRequest {
+        root_request_id: recorded[1].2.clone(),
+        admitted_request: recorded[1].3.clone(),
         operation: recorded[1].0.clone(),
         params: recorded[1].1.clone(),
         ..old
@@ -924,9 +937,23 @@ async fn retained_reply_replays_without_resending_and_rejects_changed_payload() 
         assert_eq!(final_results,1,"the exact response owns committed ACK provenance");
         Ok(())
     }).await.unwrap();
+    state
+        .bridge
+        .store
+        .transaction(|tx| {
+            studio_runtime_store::receipt_migration_contract::seed_expired_before_ms(
+                tx,
+                chrono::Utc::now().timestamp_millis(),
+            )
+            .expect("advance only the fresh-admission watermark");
+            Ok(())
+        })
+        .await
+        .unwrap();
     assert_eq!(
         port.request(call.clone()).await.unwrap().result,
-        receipt.result
+        receipt.result,
+        "a retained reply uses its created TTL after the ingress watermark advances"
     );
     let mut altered = call;
     altered.params["limit"] = json!(2);
@@ -2986,7 +3013,7 @@ async fn monitor_completion_config_read_finishes_before_an_unrelated_journal_che
         .bridge
         .run(|store| async move {
             store
-                .transaction_with::<_, WorkerError>(|tx| store::checkpoint(tx, "default", 1))
+                .transaction_with::<_, WorkerError>(|tx| Ok(store::checkpoint(tx, "default", 1)?))
                 .await
         })
         .await

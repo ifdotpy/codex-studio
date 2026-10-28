@@ -45,7 +45,6 @@ struct SteerPayload {
     created: f64,
     root_request_id: String,
     admission: AdmittedRequest,
-    provider_admission: Option<AdmittedRequest>,
     #[serde(default)]
     request_ticket: Option<String>,
     #[serde(default)]
@@ -341,34 +340,6 @@ fn steer_target(
 }
 
 impl SchedulerRepository {
-    pub fn steer_provider_admission(
-        db: &Connection,
-        agent: &str,
-        steer: &str,
-    ) -> StoreResult<Option<AdmittedRequest>> {
-        Ok(load(db, &receipt_id(agent, steer))?.and_then(|receipt| receipt.provider_admission))
-    }
-    pub fn set_steer_provider_admission(
-        tx: &Transaction<'_>,
-        agent: &str,
-        steer: &str,
-        admitted: &AdmittedRequest,
-    ) -> StoreResult<()> {
-        let id = receipt_id(agent, steer);
-        let mut receipt = load(tx, &id)?.ok_or_else(|| invalid_receipt(&id))?;
-        if receipt
-            .provider_admission
-            .as_ref()
-            .is_some_and(|saved| saved != admitted)
-        {
-            return Err(invalid_receipt(&id));
-        }
-        receipt.provider_admission = Some(admitted.clone());
-        store(tx, &id, &receipt)
-    }
-    pub fn steer_root(db: &Connection, agent: &str, steer: &str) -> StoreResult<Option<String>> {
-        Ok(load(db, &receipt_id(agent, steer))?.map(|receipt| receipt.root_request_id))
-    }
     /// Read-only check whether `claim_steer` could reserve input now, so a busy
     /// turn's wake does not open a write transaction while its queue is blocked.
     pub fn steer_claimable(
@@ -458,7 +429,6 @@ impl SchedulerRepository {
                 created,
                 root_request_id: root.clone(),
                 admission: admission.clone(),
-                provider_admission: None,
                 request_ticket: None,
                 generation: None,
                 submitted_at: None,

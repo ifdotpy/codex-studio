@@ -53,7 +53,7 @@ impl Fixture {
                     &["location"],
                 )
                 .expect("fixture identity");
-                case["outbox"]["body"]["payload"]["resultId"] = json!(identity.id());
+                case["resultId"] = json!(identity.id());
                 case["requestRoot"] = json!(root);
             }
         }
@@ -101,7 +101,7 @@ impl Fixture {
                     project["registration"] = json!({"requestId":outbox["id"],"status":studio_runtime_schema::persistence::WorkEffectStatus::Unknown});
                     ProjectsRepository::put_project(tx,&project)?;
                     let identity = studio_runtime_schema::persistence::RequestIdentity::new("project-location", &["local-fixture","ui"], text(&case,"requestRoot"), &["location"]).expect("fixture identity");
-                    let admission = studio_runtime_store::request_results::RequestResults::admit(tx,&identity,text(&outbox["body"]["payload"],"signature"),identity.issued_ms()).expect("fixture admission");
+                    let admission = studio_runtime_store::request_results::RequestResults::admit(tx,&identity,&studio_runtime_store::sha256_hex(studio_runtime_schema::json_compat::python_json_compact(&outbox["body"]["payload"]["request"]).as_bytes()),identity.issued_ms()).expect("fixture admission");
                     let studio_runtime_store::request_results::Admission::Fresh(admitted) = admission else {panic!("fresh fixture")};
                     ProjectsRepository::put_location_request(tx,"/home-project",text(outbox,"id"),&admitted)?;
                 }
@@ -113,7 +113,7 @@ impl Fixture {
                 })).expect("tool actor record"))?;
                 tx.execute("INSERT INTO runtime_tool_requests(id,record) VALUES(?1,?2)",params![text(record,"id"),record.to_string()])?;
                 let parent:studio_runtime_store::request_results::AdmittedRequest=serde_json::from_value(record["admitted"].clone()).expect("owner token");
-                let location=parent.derive_result("project-location", &["location"], text(&outbox["body"]["payload"],"signature"));
+                let location=parent.derive_result("project-location", &["location"], &studio_runtime_store::sha256_hex(studio_runtime_schema::json_compat::python_json_compact(&outbox["body"]["payload"]["request"]).as_bytes()));
                 let receipt:project_locations::LocationResult=serde_json::from_value(outbox["result"].clone()).expect("typed receipt");
                 if receipt.outcome!=project_locations::LocationOutcome::Unknown {
                     studio_runtime_services::event_write::settle_request(tx,&location,Some(text(record,"agent")),&receipt).expect("location result");
@@ -238,16 +238,62 @@ async fn complete_location(
     local_server: &str,
     now: f64,
 ) -> Result<Value, project_locations::LocationError> {
-    project_locations::complete(
-        store,
-        key.to_owned(),
-        server.to_owned(),
-        envelope.clone(),
-        receipt.clone(),
-        local_server.to_owned(),
-        now,
+    let key = key.to_owned();
+    let server = server.to_owned();
+    let envelope = envelope.clone();
+    let receipt = receipt.clone();
+    let local_server = local_server.to_owned();
+    store
+        .transaction_with(move |tx| {
+            complete_location_in_fixture(tx, &key, &server, &envelope, &receipt, &local_server, now)
+        })
+        .await
+}
+fn complete_location_in_fixture(
+    tx: &studio_runtime_store::Transaction<'_>,
+    key: &str,
+    server: &str,
+    envelope: &Value,
+    receipt: &Value,
+    local_server: &str,
+    now: f64,
+) -> Result<Value, project_locations::LocationError> {
+    let raw = ProjectLocationsRepository::outbox(tx, key)?.ok_or(
+        project_locations::LocationError::Refused("Unknown location request"),
+    )?;
+    if raw["server"] != server || raw["body"] != *envelope {
+        return Err(project_locations::LocationError::Refused(
+            "Different location envelope",
+        ));
+    }
+    let reply =
+        project_locations::complete_snapshot_in_transaction(tx, &raw, receipt, local_server, now)?;
+    if receipt["outcome"] != "unknown" {
+        tx.execute("DELETE FROM runtime_server_outbox WHERE id=?1", [key])?;
+    }
+    Ok(reply)
+}
+fn saved_location(
+    store: &RuntimeStore,
+    case: &Value,
+    now: f64,
+) -> project_locations::LocationResult {
+    let db = store.test_reader().expect("reader");
+    let signature = studio_runtime_store::sha256_hex(
+        studio_runtime_schema::json_compat::python_json_compact(
+            &case["outbox"]["body"]["payload"]["request"],
+        )
+        .as_bytes(),
+    );
+    studio_runtime_services::event_write::replay_request::<project_locations::LocationResult>(
+        &db,
+        text(case, "resultId"),
+        &signature,
+        (now * 1000.0) as i64,
     )
-    .await
+    .expect("replay")
+    .expect("result")
+    .reply
 }
 
 #[tokio::test]
@@ -316,8 +362,13 @@ async fn python_location_and_move_corpus_through_consumers() {
                     project_locations::LocationResult,
                 >(
                     &db,
-                    text(&outbox["body"]["payload"], "resultId"),
-                    text(&outbox["body"]["payload"], "signature"),
+                    text(case, "resultId"),
+                    &studio_runtime_store::sha256_hex(
+                        studio_runtime_schema::json_compat::python_json_compact(
+                            &outbox["body"]["payload"]["request"],
+                        )
+                        .as_bytes(),
+                    ),
                     (now * 1000.0) as i64,
                 )
                 .expect("registration")
@@ -336,18 +387,8 @@ async fn python_location_and_move_corpus_through_consumers() {
                 drop(store);
                 let reopened = RuntimeStore::open(Some(&path)).await.expect("restart");
                 assert_eq!(
-                    complete_location(
-                        &reopened,
-                        key,
-                        "peer",
-                        &outbox["body"],
-                        &case["receipt"],
-                        local,
-                        now + 1.0
-                    )
-                    .await
-                    .expect("lost reply replay"),
-                    value
+                    json!(saved_location(&reopened, case, now + 1.0)),
+                    case["expected"]["registration"]
                 );
                 assert_eq!(snapshot(&reopened), committed, "replay writes nothing");
                 continue;
@@ -599,17 +640,10 @@ async fn location_commit_failpoints_reopen_and_apply_once() {
             let store = RuntimeStore::open(Some(&path))
                 .await
                 .expect("restart after committed transaction");
-            complete_location(
-                &store,
-                key,
-                "peer",
-                &outbox["body"],
-                &case["receipt"],
-                local,
-                now + 10.0,
-            )
-            .await
-            .expect("reply lost replay");
+            assert_eq!(
+                json!(saved_location(&store, case, now + 10.0)),
+                case["expected"]["registration"]
+            );
             assert_eq!(snapshot(&store), committed);
         }
     }
@@ -933,17 +967,28 @@ async fn location_process_loss_before_and_after_commit_is_recoverable() {
             );
         }
         let outbox = &case["outbox"];
-        complete_location(
-            &store,
-            text(outbox, "id"),
-            "peer",
-            &outbox["body"],
-            &case["receipt"],
-            text(&fixture.data, "local"),
-            fixture.data["now"].as_f64().expect("clock"),
-        )
-        .await
-        .expect("recover same request");
+        if committed {
+            assert_eq!(
+                json!(saved_location(
+                    &store,
+                    case,
+                    fixture.data["now"].as_f64().expect("clock")
+                )),
+                case["expected"]["registration"]
+            );
+        } else {
+            complete_location(
+                &store,
+                text(outbox, "id"),
+                "peer",
+                &outbox["body"],
+                &case["receipt"],
+                text(&fixture.data, "local"),
+                fixture.data["now"].as_f64().expect("clock"),
+            )
+            .await
+            .expect("recover same request");
+        }
         if committed {
             assert_eq!(
                 snapshot(&store),
@@ -981,7 +1026,7 @@ async fn relocation_process_stop_child() {
         .transaction_with(move |tx| {
             let case = &child_input["case"];
             let outbox = &case["outbox"];
-            project_locations::complete_in_transaction(
+            complete_location_in_fixture(
                 tx,
                 text(outbox, "id"),
                 "peer",

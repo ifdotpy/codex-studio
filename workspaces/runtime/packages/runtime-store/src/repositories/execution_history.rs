@@ -8,7 +8,6 @@ use studio_runtime_schema::persistence::{
     AttemptSubmission, ExecutionReceiptKind, ExecutionStatus, RequestIdentity,
 };
 
-#[derive(serde::Deserialize)]
 pub struct AttemptReceipt {
     pub input: Value,
     pub result: Value,
@@ -62,13 +61,13 @@ impl ExecutionHistoryRepository {
         db: &rusqlite::Connection,
         id: &str,
     ) -> StoreResult<Option<AdmittedRequest>> {
-        Self::vm_admission(db, id, VmAdmission::AuthBootstrap)
+        Self::admission_at(db, id, VmAdmission::AuthBootstrap.path())
     }
     pub fn vm_credential_refresh_admission(
         db: &rusqlite::Connection,
         id: &str,
     ) -> StoreResult<Option<AdmittedRequest>> {
-        Self::vm_admission(db, id, VmAdmission::CredentialRefresh)
+        Self::admission_at(db, id, VmAdmission::CredentialRefresh.path())
     }
     pub fn set_vm_auth_bootstrap_admission(
         tx: &Transaction<'_>,
@@ -86,14 +85,14 @@ impl ExecutionHistoryRepository {
     ) -> StoreResult<()> {
         Self::set_vm_admission(tx, id, VmAdmission::CredentialRefresh, source, admitted)
     }
-    fn vm_admission(
+    fn admission_at(
         db: &rusqlite::Connection,
         id: &str,
-        kind: VmAdmission,
+        path: &str,
     ) -> StoreResult<Option<AdmittedRequest>> {
         db.query_row(
             "SELECT json_extract(record,?1) FROM runtime_execution_attempts WHERE id=?2",
-            params![kind.path(), id],
+            params![path, id],
             |row| row.get::<_, Option<String>>(0),
         )
         .optional()?
@@ -111,7 +110,7 @@ impl ExecutionHistoryRepository {
         if Self::admission(tx, id)?.as_ref() != Some(source) {
             return Err(Self::invalid("runtime_execution_attempts", id));
         }
-        if let Some(saved) = Self::vm_admission(tx, id, kind)? {
+        if let Some(saved) = Self::admission_at(tx, id, kind.path())? {
             return if saved == *admitted {
                 Ok(())
             } else {
@@ -205,15 +204,7 @@ impl ExecutionHistoryRepository {
         Ok(Some((receipt.input == *input, receipt.result)))
     }
     pub fn admission(db: &rusqlite::Connection, id: &str) -> StoreResult<Option<AdmittedRequest>> {
-        db.query_row(
-            "SELECT json_extract(record,'$.admission') FROM runtime_execution_attempts WHERE id=?1",
-            [id],
-            |row| row.get::<_, Option<String>>(0),
-        )
-        .optional()?
-        .flatten()
-        .map(|raw| serde_json::from_str(&raw).map_err(StoreError::from))
-        .transpose()
+        Self::admission_at(db, id, "$.admission")
     }
     /// Read exact cached suboperation evidence; the execution record carries no response bodies.
     pub fn receipt(

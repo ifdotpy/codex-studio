@@ -220,25 +220,10 @@ impl TerminalsRepository {
             }
             return Ok(Some((saved.signature, saved.payload.reply)));
         }
-        let identity = RequestIdentity::new("terminal-action", &[], id, &[]).ok();
-        for key in std::iter::once(id).chain(identity.as_ref().map(RequestIdentity::id)) {
-            let signature: Option<String> = connection
-                .query_row(
-                    "SELECT signature FROM request_results WHERE id=?1",
-                    [key],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            if let Some(signature) = signature
-                && let Some(saved) = RequestResults::replay(connection, key, &signature, now_ms()?)
-                    .map_err(StoreError::from)?
-            {
-                let saved: ResultEnvelope<TerminalActionReply> =
-                    serde_json::from_str(&saved.result)?;
-                return Ok(Some((signature, saved.reply)));
-            }
-        }
-        Ok(None)
+        Ok(
+            RequestResults::read(connection, id, "terminal-action", &[], id, &[], now_ms()?)?
+                .map(|saved| (saved.signature, saved.reply)),
+        )
     }
 
     pub fn reserve_action(

@@ -37,7 +37,7 @@ pub(super) enum Committed {
     /// finishes the commit inline. Carries the launch lookup's result.
     Vm(
         Box<Commit>,
-        Result<Option<preparation::VmProviderLaunchRequest>, WorkerError>,
+        Box<Result<Option<preparation::VmProviderLaunchRequest>, WorkerError>>,
     ),
     /// The FULL submitted commit returned; only the write remains.
     Ready(Box<Ready>),
@@ -76,7 +76,7 @@ impl Commit {
                 // The worker completes the effect after the VM commit.
                 let mut commit = self;
                 commit.effect = None;
-                return Ok(Committed::Vm(Box::new(commit), launch));
+                return Ok(Committed::Vm(Box::new(commit), Box::new(launch)));
             }
         }
         let control = self.control.clone();

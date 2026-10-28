@@ -72,6 +72,7 @@ pub trait VmProviderLaunchResolver: Send + Sync {
     fn resolve(&self, request: VmProviderLaunchRequest) -> VmProviderLaunchFuture<'_>;
 
     /// Host-owned Codex refresh for a token callback emitted by a guest actor.
+    #[allow(clippy::too_many_arguments)]
     fn refresh_codex(
         &self,
         _account_key: String,

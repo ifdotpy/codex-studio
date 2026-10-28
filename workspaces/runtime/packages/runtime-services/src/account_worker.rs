@@ -2368,7 +2368,7 @@ impl Worker {
             // Boxed: the VM path stays out of this future, which every
             // submission polls on the worker's stack.
             submission::Committed::Vm(commit, launch) => {
-                Box::pin(self.committed_vm(*commit, launch)).await?
+                Box::pin(self.committed_vm(*commit, *launch)).await?
             }
         };
         match ready {

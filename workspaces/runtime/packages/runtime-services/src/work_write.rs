@@ -654,7 +654,7 @@ pub async fn begin_accepted_archive_attempt(
                 .to_owned();
             let mut record = work.into_value();
             let mut intent = record["archiveIntent"].clone();
-            if intent.intent_id != format!("{task_id}:{result_id}") {
+            if intent["intentId"] != format!("{task_id}:{result_id}") {
                 return Err(Error::Conflict("Archive intent changed").into());
             }
             if !matches!(intent["status"].as_str(), Some("pending" | "retryable")) {
@@ -722,7 +722,7 @@ fn accepted_archive_preflight(
             json!({"status":"kept","reason":"The accepted task result is missing"}),
         ));
     };
-    if intent["intentId"] != format!("{task_id}:{result_id}")
+    if intent.intent_id != format!("{task_id}:{result_id}")
         || work["owner"] != owner_id
         || work["rootId"] != root_id
     {
@@ -1539,6 +1539,8 @@ pub struct ReleaseFailedWorkResult {
 
 #[derive(Debug, Error)]
 pub enum WorkWriteError {
+    #[error("Request id expired")]
+    Expired,
     #[error(transparent)]
     Event(#[from] Error),
     #[error(transparent)]
@@ -2929,6 +2931,7 @@ fn submit(
         now,
     )
     .map_err(|error| match error {
+        crate::monitor_policy::MonitorError::Expired => WorkWriteError::Expired,
         crate::monitor_policy::MonitorError::Store(error) => WorkWriteError::Store(error),
         crate::monitor_policy::MonitorError::InvalidStored { .. }
         | crate::monitor_policy::MonitorError::InvalidResultReceipt(_)

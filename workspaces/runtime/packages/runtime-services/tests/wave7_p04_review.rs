@@ -1,13 +1,15 @@
 //! Review regressions: lifecycle races and actual queue/receipt restart boundaries.
 #![allow(clippy::unwrap_used)]
 use crate::callback_fixtures as fixture;
+use crate::wave7_p04_callback_runtime::{callback_body, callback_owner};
 use fixture::*;
 use futures_util::{FutureExt, poll};
 use serde_json::json;
 use std::sync::{Arc, mpsc};
 use studio_runtime_providers::{Frame, RequestId};
+use studio_runtime_schema::persistence::{OutboxStatus, ToolRequestStatus};
 use studio_runtime_services::{callback_runtime::*, provider_callbacks::*};
-use studio_runtime_store::RuntimeStore;
+use studio_runtime_store::{RuntimeStore, outbox::Outbox};
 
 #[tokio::test]
 async fn complaint_event_failure_returns_error_and_rolls_back_complaint() {
@@ -98,7 +100,7 @@ async fn resolved_before_admission_or_before_deletion_survives_restart() {
 }
 
 #[tokio::test]
-async fn python_admitted_resolution_keeps_its_signature_and_acked_proof_retires() {
+async fn python_admitted_resolution_keeps_its_signature_and_completed_origin_fence() {
     let (_root, store, context) = fixture().await;
     let frame = request(&context);
     let Frame::Request(request_frame) = &frame else {
@@ -111,6 +113,7 @@ async fn python_admitted_resolution_keeps_its_signature_and_acked_proof_retires(
     legacy["params"] = request_frame.params.clone().unwrap();
     legacy["status"] = json!("pending");
     card(&store, &legacy).await;
+    seed_admission(&store, &legacy).await;
 
     resolve(&store, &context, &RequestId::Number(42), 20.0)
         .await
@@ -127,8 +130,15 @@ async fn python_admitted_resolution_keeps_its_signature_and_acked_proof_retires(
     bind_journal(&store, &decision, &context, &RequestId::Number(42), 1)
         .await
         .unwrap();
-    assert_eq!(checkpoint(&store, &context, 0).await, 0);
-    assert_eq!(checkpoint(&store, &context, 1).await, 1);
+    let owner = callback_owner(&store, &context, &RequestId::Number(42));
+    assert_eq!(owner.status, ToolRequestStatus::Completed);
+    assert_eq!(owner.payload.journal_cursor, Some(1));
+    assert!(
+        Outbox::get::<CallbackResponse>(&store.test_reader().unwrap(), &owner.origin_key)
+            .unwrap()
+            .is_none()
+    );
+    assert!(callback_body(&store, &owner).is_none());
     assert!(matches!(
         dispatch(Arc::clone(&store), &context, &frame, 23.0)
             .await
@@ -339,9 +349,9 @@ async fn every_foreign_receipt_dimension_is_held_unknown() {
 async fn answer_and_cancellation_restart_at_each_real_store_queue_and_transport_boundary() {
     // 0 before admission, 1 admission, 2 bind, 3 answer/delete intent, 4 Submitted,
     // 5 actual mailbox acceptance, 6 native submission, 7 typed receipt received,
-    // 8 Written persisted, 9 ACK persisted, 10 payload retirement persisted.
+    // 8 Written, exact result, origin fingerprint and body retirement commit atomically.
     for cancel in [false, true] {
-        for boundary in 0..=10 {
+        for boundary in 0..=8 {
             let (root, mut store, context) = fixture().await;
             let frame = request(&context);
             let (native_tx, native_rx) = mpsc::channel();
@@ -438,14 +448,8 @@ async fn answer_and_cancellation_restart_at_each_real_store_queue_and_transport_
                         .await
                         .unwrap();
                 }
-                if boundary >= 9 {
-                    ack(&store, &context, 1).await;
-                }
-                if boundary >= 10 {
-                    assert_eq!(retire(&store, &context).await, 1);
-                }
             }
-            // Every branch stops here before the next boundary; no hidden bind/ACK.
+            // Every branch stops before the next actual boundary; Written has no separate cleanup phase.
             drop(store);
             store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
             let port = Arc::new(Port::default());
@@ -499,9 +503,21 @@ async fn answer_and_cancellation_restart_at_each_real_store_queue_and_transport_
                         true
                     );
                 }
-                if boundary == 9 {
-                    assert_eq!(retire(&store, &context).await, 1);
-                }
+            }
+            let owner = callback_owner(&store, &context, &RequestId::Number(42));
+            let response =
+                Outbox::get::<CallbackResponse>(&store.test_reader().unwrap(), &owner.origin_key)
+                    .unwrap();
+            if (4..8).contains(&boundary) {
+                assert_eq!(owner.status, ToolRequestStatus::Unknown);
+                let response = response.unwrap();
+                assert_eq!(response.status, OutboxStatus::Unknown);
+                assert_eq!(response.next_at, None);
+            } else {
+                assert_eq!(owner.status, ToolRequestStatus::Completed);
+                assert!(response.is_none());
+                assert!(owner.payload.frame_fingerprint.is_some());
+                assert!(callback_body(&store, &owner).is_some());
             }
             let native: Vec<_> = native_rx.try_iter().collect();
             assert_eq!(native.len(), usize::from(boundary >= 6));

@@ -84,6 +84,7 @@ impl LifecyclePorts for MonitorLifecyclePorts {
 
 fn lifecycle_monitor_error(error: MonitorError) -> ManagementError {
     match error {
+        MonitorError::Expired => ManagementError::Expired,
         MonitorError::Unavailable(dependency) => ManagementError::Unavailable(dependency),
         MonitorError::Store(error) => ManagementError::Store(error),
         MonitorError::InvalidStored { .. }
