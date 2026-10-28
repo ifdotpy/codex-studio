@@ -50,6 +50,8 @@ mod stopped_turns;
 pub(crate) mod store;
 pub use store::hold_invalid_agent_record;
 pub use store::{get_notification, put_notification};
+#[cfg(any(test, feature = "test-support"))]
+pub use store::attach_provider_stream_for_test;
 pub use studio_runtime_schema::persistence::ProviderScope;
 pub use studio_runtime_store::account_state::{ScopeError, current_provider_scope};
 mod submission;

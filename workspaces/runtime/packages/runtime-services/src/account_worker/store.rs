@@ -3057,8 +3057,8 @@ pub(super) async fn attach_provider_stream(
     }).await
 }
 
-#[cfg(test)]
-pub(crate) async fn attach_provider_stream_for_test(
+#[cfg(any(test, feature = "test-support"))]
+pub async fn attach_provider_stream_for_test(
     store: &RuntimeStore,
     account: &str,
     actor: Option<&str>,
