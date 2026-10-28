@@ -6825,7 +6825,7 @@ async fn a_new_backend_process_still_classifies_the_old_generation_as_a_restart(
 }
 
 #[tokio::test]
-async fn thread_request_lost_with_its_provider_retries_without_duplicate_input() {
+async fn thread_request_lost_with_its_provider_remains_held() {
     let state = State::new().await;
     let parent = adopt_parent(&state).await;
     let mut peer = Peer::new();
@@ -6835,8 +6835,7 @@ async fn thread_request_lost_with_its_provider_retries_without_duplicate_input()
     provider_exits(&peer, &mut worker).await;
 
     let record = state.record().await;
-    assert_eq!(record["status"], "queued");
-    assert!(record["startAttempt"].is_null());
+    assert_eq!(record["status"], "failed");
     assert_eq!(state.event_status("input").await, "pending");
     assert_eq!(child_stop_notices(&state, &parent).await, 0);
     assert!(
@@ -6847,19 +6846,17 @@ async fn thread_request_lost_with_its_provider_retries_without_duplicate_input()
     let mut next = Peer::identity("default", 2, None);
     let mut replacement = next.worker(state.bridge.clone()).await;
     state.wake(&replacement).await;
-    let start = next.write_turn_start().await;
-    next.accepted(&start).await;
-    assert_eq!(state.event_status("input").await, "delivered");
     worker_barrier(&replacement).await;
+    assert_eq!(state.event_status("input").await, "pending");
     assert!(
         next.writes.try_recv().is_err(),
-        "the input is submitted once"
+        "Unknown is never resent automatically"
     );
     replacement.shutdown().await.unwrap();
 }
 
 #[tokio::test]
-async fn thread_start_lost_before_turn_submission_retries_attempt_once() {
+async fn thread_start_lost_before_turn_submission_remains_held() {
     let state = State::new().await;
     let parent = adopt_parent(&state).await;
     let agent_id = state.agent.clone();
@@ -6887,24 +6884,18 @@ async fn thread_start_lost_before_turn_submission_retries_attempt_once() {
     provider_exits(&peer, &mut worker).await;
 
     let record = state.record().await;
-    assert_eq!(record["status"], "queued");
-    assert!(record["startAttempt"].is_null());
+    assert_eq!(record["status"], "failed");
     assert_eq!(state.event_status("input").await, "pending");
     assert_eq!(child_stop_notices(&state, &parent).await, 0);
 
     let mut next = Peer::identity("default", 2, None);
     let mut replacement = next.worker(state.bridge.clone()).await;
     state.wake(&replacement).await;
-    let thread_start = next.write("thread/start").await;
-    next.reply(&thread_start, json!({"thread":{"id":"fake-thread-0"}}))
-        .await;
-    let turn_start = next.write("turn/start").await;
-    next.accepted(&turn_start).await;
-    assert_eq!(state.event_status("input").await, "delivered");
     worker_barrier(&replacement).await;
+    assert_eq!(state.event_status("input").await, "pending");
     assert!(
         next.writes.try_recv().is_err(),
-        "the unsubmitted input is delivered once after thread creation"
+        "Unknown is never resent automatically"
     );
     replacement.shutdown().await.unwrap();
 }
