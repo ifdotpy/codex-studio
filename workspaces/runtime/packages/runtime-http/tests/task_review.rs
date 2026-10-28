@@ -194,6 +194,116 @@ fn projected(store: &RuntimeStore, collection: &str, id: &str) -> Value {
         .unwrap()
 }
 
+async fn archive_fixture(
+    owner: Option<&str>,
+    vm: bool,
+) -> (tempfile::TempDir, Arc<RuntimeStore>, axum::Router) {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
+    let owner = owner.map(str::to_owned);
+    store.transaction(move |tx| {
+        for agent in [
+            json!({"provider":"codex","id":"lead","rootId":"lead","epoch":1,"status":"running","autoWake":true,"isLead":true,"executionMode":if vm { "vm" } else { "host" }}),
+            json!({"provider":"codex","id":"worker","rootId":"lead","parentId":"lead","epoch":2,"status":"failed","autoWake":true,"executionMode":"vm"}),
+        ] { AgentRepository::put(tx, &AgentRecord::from_value(agent)?)?; }
+        let mut work = json!({"id":"archive-task","rootId":"lead","owner":owner,"status":"review","title":"archive-task","description":"","created":1.0,"updated":1.0,"version":2,"dependencies":[],"results":[{"id":"result-1","agent":"lead","text":"done","checks":"checked","revision":"state","files":[]}],"decisions":[],"createdBy":"lead"});
+        if vm { work["vmAccept"] = json!({"status":"completed","requestId":"layr-accept:result-1","taskId":"archive-task","owner":"worker","revision":"state","resultId":"result-1","created":1.0}); }
+        studio_runtime_store::WorkItemsRepository::put_work(tx, "archive-task", &work)?;
+        if vm { tx.execute_batch("CREATE TRIGGER fail_archive BEFORE UPDATE ON runtime_agents WHEN NEW.id='worker' AND json_type(NEW.record,'$.agentArchive')='object' BEGIN SELECT RAISE(ABORT, 'archive failure'); END;")?; }
+        Ok(())
+    }).await.unwrap();
+    let app = router(HttpState::new(
+        "fixture-token".into(),
+        "lead".into(),
+        store.root().to_string_lossy().into(),
+        49171,
+        None,
+        Some(store.clone()),
+        None,
+    ))
+    .unwrap();
+    (directory, store, app)
+}
+
+async fn accept_bytes(app: &axum::Router, id: &str) -> (u16, Vec<u8>) {
+    let body = json!({"action":"accept","agent":"lead","id":id,"task_id":"archive-task","version":2,"result":"verified"});
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/work")
+        .header("host", "127.0.0.1:49171")
+        .header("content-type", "application/json")
+        .header("x-canvas-token", "fixture-token")
+        .header(
+            studio_runtime_http::API_SCHEMA_HASH_HEADER,
+            studio_runtime_http::api_schema_hash(),
+        )
+        .extension(ConnectInfo(
+            "127.0.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
+        ))
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    let status = response.status().as_u16();
+    (
+        status,
+        to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+}
+
+#[tokio::test]
+async fn archive_http_skipped_first_reply_matches_replay_bytes() {
+    for owner in [Some("lead"), None] {
+        let (_directory, _store, app) = archive_fixture(owner, false).await;
+        let id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let (status, first) = accept_bytes(&app, &id).await;
+        assert_eq!(status, 200, "{}", String::from_utf8_lossy(&first));
+        let (status, replay) = accept_bytes(&app, &id).await;
+        assert_eq!(status, 200, "{}", String::from_utf8_lossy(&replay));
+        assert_eq!(first, replay, "owner={owner:?}");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&first).unwrap()["archive"]["status"],
+            "skipped"
+        );
+    }
+}
+
+#[tokio::test]
+async fn archive_http_unknown_preserves_admission_and_pending_reply() {
+    let (_directory, store, app) = archive_fixture(Some("worker"), true).await;
+    let id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    let (status, first) = accept_bytes(&app, &id).await;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&first));
+    let first: Value = serde_json::from_slice(&first).unwrap();
+    assert!(
+        first["archive"]["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.starts_with("The archive check failed:")),
+        "{first}"
+    );
+    assert_eq!(first["archivePending"], true);
+    let work = store
+        .test_read_transaction(|tx| {
+            Ok(
+                studio_runtime_store::WorkItemsRepository::work_record(tx, "archive-task")?
+                    .unwrap()
+                    .into_value(),
+            )
+        })
+        .unwrap();
+    assert_eq!(work["archiveIntent"]["status"], "unknown");
+    assert!(work["archiveIntent"]["publicAdmission"].is_object());
+    let (status, replay) = accept_bytes(&app, &id).await;
+    assert_ne!(
+        status,
+        200,
+        "uncertain operation must not replay a settled reply: {}",
+        String::from_utf8_lossy(&replay)
+    );
+}
+
 #[tokio::test]
 async fn legacy_work_is_available_in_the_first_sse_baseline_without_an_entity_pull() {
     let directory = tempfile::tempdir().unwrap();

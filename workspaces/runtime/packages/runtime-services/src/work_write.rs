@@ -323,7 +323,7 @@ pub async fn accepted_archive_tick(
                 current["archiveIntent"] = serde_json::to_value(&final_intent)
                     .map_err(studio_runtime_store::StoreError::from)?;
                 WorkItemsRepository::update_work(tx, &task_id_for_settlement, &current)?;
-                if receipt_status != WorkEffectStatus::Unknown
+                if archive_outcome_can_settle(receipt_status)
                     && let Some(root) = final_intent.public_request_id.as_deref()
                 {
                     let mut response = final_intent
@@ -343,6 +343,10 @@ pub async fn accepted_archive_tick(
         handled += 1;
     }
     Ok(handled)
+}
+
+pub fn archive_outcome_can_settle(status: WorkEffectStatus) -> bool {
+    status != WorkEffectStatus::Unknown
 }
 
 /// Schedule and retry archiving completed reviewers after their child result
@@ -1615,7 +1619,9 @@ fn work_receipt_in(
     } else {
         let identity =
             RequestIdentity::new("work", &[&agent.root_id.0], request_id, &[]).map_err(|_| {
-                Error::RequestResult(studio_runtime_store::request_results::RequestResultError::Expired)
+                Error::RequestResult(
+                    studio_runtime_store::request_results::RequestResultError::Expired,
+                )
             })?;
         event_write::replay_request::<WorkItemRecord>(connection, identity.id(), signature, now_ms)
             .map_err(Error::from)?
@@ -3877,7 +3883,6 @@ mod actor_tests {
             )
             .await
             .expect("pending proof");
-
     }
 
     #[test]

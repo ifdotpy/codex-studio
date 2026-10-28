@@ -706,9 +706,9 @@ async fn finalize_accepted_archive(
         }
         (work, preparation, _) => (work, preparation),
     };
-    let (work, outcome, retryable) = match result {
+    let (work, outcome, retryable, unknown) = match result {
         (work, AcceptedArchivePreparation::Finished(outcome, retryable)) => {
-            (work, outcome, retryable)
+            (work, outcome, retryable, false)
         }
         (
             work,
@@ -737,17 +737,20 @@ async fn finalize_accepted_archive(
                 now,
             )
             .await;
-            let outcome = match archived {
-                Ok(value) => value,
-                Err(error) => serde_json::json!({
-                    "status":"kept",
-                    "reason":format!("The archive check failed: {error}"),
-                }),
+            let (outcome, unknown) = match archived {
+                Ok(value) => (value, false),
+                Err(error) => (
+                    serde_json::json!({
+                        "status":"kept",
+                        "reason":format!("The archive check failed: {error}"),
+                    }),
+                    true,
+                ),
             };
             let retryable = outcome["status"] == "blocked"
                 || outcome["retryable"] == true
                 || outcome["cleanupPending"] == true;
-            (work, outcome, retryable)
+            (work, outcome, retryable, unknown)
         }
     };
     let mut work = work.into_value();
@@ -829,16 +832,15 @@ async fn finalize_accepted_archive(
                 let current_intent = current.value().get("archiveIntent").cloned();
                 let archive = work["archive"].clone();
                 work = current.into_value();
-                work["archive"] = archive;
+                if !unknown {
+                    work["archive"] = archive;
+                }
                 studio_runtime_store::WorkItemsRepository::update_work(tx, &work_id, &work)?;
                 let attempt_status = if retryable {
                     WorkEffectStatus::Retryable
                 } else if work["archive"]["status"] == "archived" {
                     WorkEffectStatus::Complete
-                } else if work["archive"]["reason"]
-                    .as_str()
-                    .is_some_and(|reason| reason.starts_with("The archive check failed:"))
-                {
+                } else if unknown {
                     WorkEffectStatus::Unknown
                 } else {
                     WorkEffectStatus::Terminal
@@ -875,16 +877,17 @@ async fn finalize_accepted_archive(
                     attempt_receipt["attempts"] = serde_json::json!(attempts);
                     attempt_receipt["nextAttemptAt"] =
                         serde_json::json!(updated + if retryable { delay as f64 } else { 60.0 });
-                    attempt_receipt["lastOutcome"] = work["archive"].clone();
+                    attempt_receipt["lastOutcome"] = outcome.clone();
                     attempt_receipt["updated"] = serde_json::json!(updated);
-                    if !retryable {
+                    if !retryable && !unknown {
                         attempt_receipt["outcome"] = work["archive"].clone();
                     }
                     work["archiveIntent"] = attempt_receipt;
                     studio_runtime_store::WorkItemsRepository::update_work(tx, &work_id, &work)?;
                 }
                 let mut event_inserted = false;
-                if outcome_status_is_terminal(&work)
+                if !unknown
+                    && outcome_status_is_terminal(&work)
                     && work["archive"]["status"] != "archived"
                     && let Some(owner_id) = work["owner"].as_str()
                     && owner_id != work["rootId"].as_str().unwrap_or_default()
@@ -926,12 +929,17 @@ async fn finalize_accepted_archive(
                     tx,
                     &WorkItemRecord::checked(work.clone())?,
                 )?;
-                response["archive"] = work["archive"].clone();
-                response["archivePending"] = Value::Bool(retryable);
+                response["archive"] = if unknown {
+                    outcome.clone()
+                } else {
+                    work["archive"].clone()
+                };
+                response["archivePending"] = Value::Bool(retryable || unknown);
                 if let Some(object) = response.as_object_mut() {
                     object.remove("archiveIntent");
                 }
-                if let Some(request_id) = request
+                if work_write::archive_outcome_can_settle(attempt_status)
+                    && let Some(request_id) = request
                     && work
                         .get("archiveIntent")
                         .and_then(|intent| intent.get("publicAdmission"))
