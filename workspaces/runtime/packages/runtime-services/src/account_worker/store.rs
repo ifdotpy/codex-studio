@@ -3049,16 +3049,21 @@ pub(super) async fn attach_provider_stream(
     let connection = connection.to_owned();
     store.transaction_with(move|tx| {
         if let Some(actor)=actor {
-            let mut agent=stored_agent(tx,&actor)?;
-            if account_key(&agent)!=account || agent.extra.get("executionMode").and_then(Value::as_str)!=Some("vm") {return Err(invalid(&actor));}
-            let state=agent.extra.entry("providerStream".into()).or_insert_with(||json!({}));
-            if let Some(previous)=state["generation"].as_u64() {
-                if previous>generation{return Err(invalid(&actor));}
-                if previous!=generation {super::retained::storage::checkpoint_covered(tx,&super::vm_journal_scope(&account,&actor),previous,state["ack"].as_u64().unwrap_or(0))?;state["ack"]=json!(0);}
+            let agent = stored_agent(tx, &actor)?;
+            if account_key(&agent) != account || agent.extra.get("executionMode").and_then(Value::as_str) != Some("vm") { return Err(invalid(&actor)); }
+            let previous = agent.extra.get("providerStream").and_then(|stream| stream["generation"].as_u64());
+            if previous.is_some_and(|old| old > generation) { return Err(invalid(&actor)); }
+            if let Some(previous) = previous && previous != generation {
+                let ack = agent.extra["providerStream"]["ack"].as_u64().unwrap_or(0);
+                super::retained::storage::checkpoint_covered(tx, &super::vm_journal_scope(&account, &actor), previous, ack)?;
             }
-            if state.get("ack").is_none(){state["ack"]=json!(0);}
-            state["generation"]=json!(generation);state["connection"]=json!(connection);
-            AgentRepository::put(tx,&agent)?;
+            // Settlement above can update this same source owner.
+            let mut agent = stored_agent(tx, &actor)?;
+            let state = agent.extra.entry("providerStream".into()).or_insert_with(|| json!({}));
+            if previous != Some(generation) || state.get("ack").is_none() { state["ack"] = json!(0); }
+            state["generation"] = json!(generation);
+            state["connection"] = json!(connection);
+            AgentRepository::put(tx, &agent)?;
         } else {
             studio_runtime_store::account_state::ensure_account(tx,&account)?;
             let (previous,ack):(Option<i64>,i64)=tx.query_row_cached("SELECT connection_generation,journal_ack FROM runtime_account_state WHERE account=?1",[&account],|row|Ok((row.get(0)?,row.get(1)?)))?;
