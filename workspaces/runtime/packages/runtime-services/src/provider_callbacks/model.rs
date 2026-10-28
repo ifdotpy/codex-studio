@@ -159,7 +159,6 @@ pub struct ReplyIdentity {
     pub context: CallbackContext,
     pub rpc_id: RequestId,
     /// Opaque prepared-body attempt; never reused after a proven NotSent.
-    #[serde(default)]
     pub attempt: String,
 }
 impl ReplyIdentity {

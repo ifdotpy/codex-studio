@@ -533,3 +533,70 @@ pub(super) fn reply_accounts(
 pub(super) fn has_reply_demand(db: &Connection, account: &str) -> Result<bool, WorkerError> {
     Ok(db.query_row(&format!("SELECT EXISTS(SELECT 1 {DEMAND} AND json_extract(record,'$.payload.accepted.account')=?3)"),params![ToolRequestKind::ProviderCallback,ToolRequestStatus::Running,account],|row|row.get(0))?)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use studio_runtime_process::{EventCursor, Generation};
+    use studio_runtime_providers::{Method, RequestFrame, RequestId};
+
+    fn request(cursor: u64, params: Value) -> JournalEntry {
+        JournalEntry {
+            received_at_ms: 1,
+            cursor: EventCursor(cursor),
+            generation: Generation(7),
+            payload: JournalPayload::Frame(Frame::Request(RequestFrame {
+                id: RequestId::String("opaque-rpc".into()),
+                method: Method::CurrentTimeRead,
+                params: Some(params),
+                fields: Default::default(),
+            })),
+        }
+    }
+    #[tokio::test]
+    async fn callback_task_reuses_logical_root_at_later_cursor_and_keeps_retired_fence() {
+        let directory = tempfile::tempdir().expect("state");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("store");
+        let roots = store
+            .transaction_with(|tx| {
+                let first = request(1, json!({}));
+                let second = request(2, json!({}));
+                accept(tx, "account", "account", None, &first)?;
+                accept(tx, "account", "account", None, &second)?;
+                let first = task(tx, &operation("account", 7, 1))?.expect("first obligation");
+                let second = task(tx, &operation("account", 7, 2))?.expect("second obligation");
+                assert_ne!(first.id, second.id);
+                assert_eq!(
+                    first.payload.root_request_id,
+                    second.payload.root_request_id
+                );
+                assert!(
+                    accept(
+                        tx,
+                        "account",
+                        "account",
+                        None,
+                        &request(1, json!({"changed":true}))
+                    )
+                    .is_err()
+                );
+                retire(tx, &first.origin_key)?;
+                accept(tx, "account", "account", None, &request(1, json!({})))?;
+                let retired = task(tx, &first.origin_key)?.expect("retained operation fence");
+                assert_eq!(retired.status, ToolRequestStatus::Completed);
+                assert!(retired.payload.accepted.frame.is_empty());
+                Ok::<_, WorkerError>(second.payload.root_request_id)
+            })
+            .await
+            .expect("transaction");
+        let pending = unsent(&store, "account", 7, 10)
+            .await
+            .expect("pending tasks");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].root_request_id, roots);
+        assert!(pending[0].source_admission.is_some());
+    }
+}
