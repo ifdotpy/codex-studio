@@ -1323,6 +1323,7 @@ fn notify_parent_with_step(
             ManagementError::Unavailable(crate::monitor_runtime::REMOTE_EVENTS_DEPENDENCY)
         }
         event_write::EventWriteError::Store(error) => ManagementError::Store(error),
+        event_write::EventWriteError::RequestResult(error) => ManagementError::Store(error.into()),
         event_write::EventWriteError::InvalidRequest(_)
         | event_write::EventWriteError::InvalidResultSchema(_)
         | event_write::EventWriteError::Conflict(_)
@@ -1564,6 +1565,7 @@ fn enqueue_turn_result(
     )
     .map_err(|error| match error {
         event_write::EventWriteError::Store(error) => error,
+        event_write::EventWriteError::RequestResult(error) => error.into(),
         other @ event_write::EventWriteError::InvalidRequest(_)
         | other @ event_write::EventWriteError::InvalidResultSchema(_)
         | other @ event_write::EventWriteError::Conflict(_)
