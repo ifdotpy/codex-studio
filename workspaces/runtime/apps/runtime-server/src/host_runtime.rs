@@ -2730,6 +2730,65 @@ mod voice_composition_tests {
     }
 
     #[tokio::test]
+    async fn pre_cutover_provider_retry_expires_before_signature_check_without_sending() {
+        use studio_runtime_schema::persistence::RequestIdentity;
+        use studio_runtime_store::request_results::RequestResults;
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
+        let old_root = uuid::Uuid::from_u128((1 << 80) | (7 << 76) | (2 << 62)).to_string();
+        let operation = format!("vm-codex-token-refresh:voice-account:{old_root}");
+        let identity = RequestIdentity::new(
+            "provider-call",
+            &["voice-account", "expired-agent", "3"],
+            &old_root,
+            &[&operation],
+        )
+        .unwrap();
+        store.transaction(move |tx| {
+            let cutover = RequestResults::expired_before_ms(tx).map_err(studio_runtime_store::StoreError::from)?;
+            assert!(cutover > identity.issued_ms(), "migration installs the admission watermark");
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('expired-agent',?1)", [json!({"id":"expired-agent","rootId":"expired-agent","epoch":3,"status":"idle","isLead":true,"provider":"codex","threadId":"voice-thread","accountKey":"voice-account"}).to_string()])?;
+            // A saved row with a different signature must not mask the expiry refusal.
+            tx.execute("INSERT INTO request_results(id,signature,result,created) VALUES(?1,'original-import-signature','{}',?2)", rusqlite::params![identity.id(),cutover])?;
+            Ok(())
+        }).await.unwrap();
+        let factory = Arc::new(VoiceFactory {
+            stop_writes: Arc::new(AtomicUsize::new(0)),
+        });
+        let (mut worker, session, _callbacks) =
+            start_voice_worker(directory.path(), Arc::clone(&store), Arc::clone(&factory)).await;
+        let scope = session.current_scope("voice-account").unwrap();
+        let result =
+            studio_runtime_services::account_session_runtime::AccountSessionPort::provider_request(
+                session.as_ref(),
+                ProviderRequest {
+                    root_request_id: old_root,
+                    admitted_request: None,
+                    account: "voice-account".into(),
+                    operation,
+                    actor: Some(
+                        studio_runtime_services::account_worker::retained::RequestActor {
+                            agent: "expired-agent".into(),
+                            epoch: 3,
+                        },
+                    ),
+                    expected_scope: Some(scope),
+                    deleted_actor_session: None,
+                    method: studio_runtime_providers::Method::ThreadRealtimeStop,
+                    params: json!({"threadId":"voice-thread"}),
+                    deadline: std::time::Instant::now() + std::time::Duration::from_secs(2),
+                },
+            )
+            .await;
+        assert!(matches!(
+            result,
+            Err(AccountSessionError::Refused("Request id expired"))
+        ));
+        assert_eq!(factory.stop_writes.load(Ordering::SeqCst), 0);
+        worker.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn composed_runtime_server_routes_voice_through_the_shared_account_session() {
         let directory = tempfile::tempdir().unwrap();
         let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
