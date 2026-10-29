@@ -4,7 +4,10 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap};
-use studio_client_domain::MAX_SAFE_INTEGER;
+use studio_client_domain::{
+    MAX_SAFE_INTEGER,
+    sync_entity::{EntityChange, MAX_ENTITY_SCOPE_BYTES},
+};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Document {
@@ -18,7 +21,7 @@ pub struct Document {
 // Local entity cache format, independent of the server's sync protocol version.
 const ENTITY_CACHE_VERSION: i64 = 4;
 // Largest local projection key, measured in UTF-8 bytes.
-const MAX_PROJECTION_SCOPE_BYTES: usize = 512;
+const MAX_PROJECTION_SCOPE_BYTES: usize = MAX_ENTITY_SCOPE_BYTES;
 
 pub fn initialize(connection: &Connection) -> rusqlite::Result<()> {
     let transaction = Transaction::new_unchecked(connection, TransactionBehavior::Immediate)?;
@@ -44,31 +47,6 @@ pub fn initialize(connection: &Connection) -> rusqlite::Result<()> {
     transaction.commit()
 }
 
-fn entity_scope(change: &Value) -> Result<String, String> {
-    let collection = change["collection"]
-        .as_str()
-        .ok_or("Missing entity collection.")?;
-    let id = change["id"].as_str().ok_or("Missing entity identity.")?;
-    let seq = change["seq"].as_u64().ok_or("Missing entity sequence.")?;
-    if collection.is_empty()
-        || collection.contains(':')
-        || id.is_empty()
-        || seq > MAX_SAFE_INTEGER as u64
-    {
-        return Err("Invalid entity identity or sequence.".into());
-    }
-    match change["op"].as_str() {
-        Some("upsert") if change["value"].is_object() => {}
-        Some("delete") if change.get("value").is_none() => {}
-        _ => return Err("Invalid entity change operation or value.".into()),
-    }
-    let scope = format!("entity:{collection}:{id}");
-    if scope.len() > MAX_PROJECTION_SCOPE_BYTES {
-        return Err("Invalid projection identity.".into());
-    }
-    Ok(scope)
-}
-
 fn get(connection: &Connection, workspace: &str, scope: &str) -> Result<Option<Value>, String> {
     let encoded: Option<String> = connection
         .query_row(
@@ -83,7 +61,7 @@ fn get(connection: &Connection, workspace: &str, scope: &str) -> Result<Option<V
         .transpose()
 }
 
-fn entities(connection: &Connection, workspace: &str) -> Result<Vec<Value>, String> {
+fn entities(connection: &Connection, workspace: &str) -> Result<Vec<EntityChange>, String> {
     let mut statement = connection
         .prepare("SELECT document FROM client_projections WHERE workspace=?1 AND scope LIKE 'entity:%' ORDER BY scope")
         .map_err(|e| e.to_string())?;
@@ -231,21 +209,14 @@ pub fn valid_workspace(workspace: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-fn entity_snapshot(rows: &[Value]) -> Value {
+fn entity_snapshot(rows: &[EntityChange]) -> Value {
     let mut collections: HashMap<String, BTreeMap<String, Value>> = HashMap::new();
     for doc in rows {
-        if doc["op"] == "delete" {
-            continue;
-        }
-        if let (Some(collection), Some(id), Some(value)) = (
-            doc["collection"].as_str(),
-            doc["id"].as_str(),
-            doc.get("value"),
-        ) {
+        if let Some(value) = doc.value() {
             collections
-                .entry(collection.into())
+                .entry(doc.collection().into())
                 .or_default()
-                .insert(id.into(), value.clone());
+                .insert(doc.id().into(), Value::Object(value.clone()));
         }
     }
     let list = |name: &str| {
@@ -257,7 +228,7 @@ fn entity_snapshot(rows: &[Value]) -> Value {
                 .collect(),
         )
     };
-    let agents = if rows.iter().any(|row| row["collection"] == "agentSummary") {
+    let agents = if rows.iter().any(|row| row.collection() == "agentSummary") {
         let summaries = collections.get("agentSummary").cloned().unwrap_or_default();
         Value::Array(
             summaries
@@ -356,9 +327,8 @@ fn apply_entities(
     workspace: &str,
     params: &Value,
 ) -> Result<Value, String> {
-    let changes = params["changes"]
-        .as_array()
-        .ok_or("Missing entity changes.")?;
+    let changes =
+        Vec::<EntityChange>::deserialize(&params["changes"]).map_err(|e| e.to_string())?;
     let transaction = Transaction::new_unchecked(connection, TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
     let previous = get(&transaction, workspace, "state")?.unwrap_or(Value::Null);
@@ -383,14 +353,14 @@ fn apply_entities(
             WHERE excluded.seq>client_projections.seq",
             )
             .map_err(|e| e.to_string())?;
-        for change in changes {
-            let scope = entity_scope(change)?;
+        for change in &changes {
+            let scope = change.scope();
             changed |= insert
                 .execute(params![
                     workspace,
                     scope,
-                    change.to_string(),
-                    change["seq"].as_u64().ok_or("Missing entity sequence.")? as i64
+                    serde_json::to_string(change).map_err(|e| e.to_string())?,
+                    change.seq() as i64
                 ])
                 .map_err(|e| e.to_string())?
                 != 0;
@@ -499,15 +469,21 @@ fn execute(connection: &Connection, request: &Request) -> Result<Value, String> 
         return apply_entities(connection, workspace, &request.params);
     }
     if request.method == "projection.putEntity" {
-        let change = &request.params["change"];
-        let scope = entity_scope(change)?;
-        let seq = change["seq"].as_u64().ok_or("Missing entity sequence.")?;
+        let change =
+            EntityChange::deserialize(&request.params["change"]).map_err(|e| e.to_string())?;
+        let scope = change.scope();
+        let seq = change.seq();
         let changed = connection
             .execute(
                 "INSERT INTO client_projections(workspace,scope,document,seq) VALUES(?1,?2,?3,?4)
             ON CONFLICT(workspace,scope) DO UPDATE SET document=excluded.document,seq=excluded.seq
             WHERE excluded.seq>client_projections.seq",
-                params![workspace, scope, change.to_string(), seq as i64],
+                params![
+                    workspace,
+                    scope,
+                    serde_json::to_string(&change).map_err(|e| e.to_string())?,
+                    seq as i64
+                ],
             )
             .map_err(|error| error.to_string())?;
         return Ok(Value::Bool(changed != 0));
@@ -519,7 +495,9 @@ fn execute(connection: &Connection, request: &Request) -> Result<Value, String> 
         return Err("Invalid projection identity.".into());
     }
     match request.method.as_str() {
-        "projection.entities" => Ok(Value::Array(entities(connection, workspace)?)),
+        "projection.entities" => {
+            serde_json::to_value(entities(connection, workspace)?).map_err(|e| e.to_string())
+        }
         "projection.get" => Ok(get(connection, workspace, scope)?.unwrap_or(Value::Null)),
         "projection.put" => {
             let document: Document = serde_json::from_value(request.params["document"].clone())
@@ -553,11 +531,11 @@ mod tests {
     use super::*;
     #[test]
     fn agent_summary_renders_without_detail_and_owns_list_fields() {
-        let summary = json!({"op":"upsert","collection":"agentSummary","id":"a","value":{"id":"a","name":"Current","status":"completed","lastCompletedTurn":"turn","readState":{"threadId":"thread","turnId":"turn","read":false,"revision":1}}});
+        let summary: EntityChange = serde_json::from_value(json!({"op":"upsert","collection":"agentSummary","id":"a","seq":0,"value":{"id":"a","name":"Current","status":"completed","lastCompletedTurn":"turn","readState":{"threadId":"thread","turnId":"turn","read":false,"revision":1}}})).expect("summary");
         let snapshot = entity_snapshot(std::slice::from_ref(&summary));
         assert_eq!(snapshot["threads"][0]["name"], "Current");
         assert!(snapshot["threads"][0].get("lastAnswer").is_none());
-        let detail = json!({"op":"upsert","collection":"agentDetail","id":"a","value":{"id":"a","lastAnswer":"Answer"}});
+        let detail: EntityChange = serde_json::from_value(json!({"op":"upsert","collection":"agentDetail","id":"a","seq":0,"value":{"id":"a","lastAnswer":"Answer"}})).expect("detail");
         let snapshot = entity_snapshot(&[summary, detail]);
         assert_eq!(snapshot["threads"][0]["lastAnswer"], "Answer");
         assert_eq!(snapshot["threads"][0]["name"], "Current");
@@ -617,7 +595,10 @@ mod tests {
         assert!(failed.error.is_some());
         drop(store);
         let store = crate::store::Store::open(&path).unwrap();
-        assert_eq!(entities(&store.connection, &workspace).unwrap(), vec![a]);
+        assert_eq!(
+            serde_json::to_value(entities(&store.connection, &workspace).unwrap()).unwrap(),
+            json!([a])
+        );
         assert_eq!(
             get(&store.connection, &workspace, "state").unwrap(),
             Some(original)
@@ -688,6 +669,30 @@ mod tests {
         assert!(entities(&store.connection, &workspace).unwrap().is_empty());
         let snapshot: Value = serde_json::from_str(reset["payload"].as_str().unwrap()).unwrap();
         assert_eq!(snapshot["runtime"]["tasks"], json!([]));
+    }
+
+    #[test]
+    fn unknown_collection_and_opaque_values_roundtrip_through_cache() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("client.sqlite3");
+        let workspace = "a".repeat(32);
+        let change = json!({"op":"upsert","collection":"future","id":"x:y","seq":3,"value":{"nested":[null,{"draft":{"text":"same","number":1.5}}]},"vendor":{"flag":true}});
+        {
+            let mut store = crate::store::Store::open(&path).unwrap();
+            let result = store.dispatch(Request {
+                id: "put".into(),
+                method: "projection.putEntity".into(),
+                params: json!({"workspace":workspace,"change":change}),
+            });
+            assert!(result.error.is_none(), "{:?}", result.error);
+        }
+        let mut store = crate::store::Store::open(&path).unwrap();
+        let result = store.dispatch(Request {
+            id: "get".into(),
+            method: "projection.get".into(),
+            params: json!({"workspace":workspace,"scope":"entity:future:x:y"}),
+        });
+        assert_eq!(result.result, Some(change));
     }
 
     #[test]

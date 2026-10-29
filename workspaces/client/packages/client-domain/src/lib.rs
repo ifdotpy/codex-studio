@@ -3,6 +3,7 @@ pub mod drafts;
 pub mod json_object;
 pub mod markdown;
 pub mod protocol;
+pub mod sync_entity;
 
 /// Largest integer a JavaScript number holds exactly (2^53 - 1).
 pub const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;

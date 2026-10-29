@@ -81,7 +81,7 @@ pub const MAX_SYNC_RESOURCE_COUNT: usize = 256;
 /// Changes per sync batch.
 pub const SYNC_BATCH_LIMIT: i64 = 100;
 /// Entities per sync entity page.
-pub const SYNC_ENTITY_PAGE_LIMIT: i64 = 500;
+pub use studio_client_domain::sync_entity::SYNC_ENTITY_PAGE_LIMIT;
 /// Maximum records in a complete state stream interval, in documents.
 pub const SYNC_ENTITY_STREAM_MAX_DOCUMENTS: i64 = 512;
 /// Maximum complete resources SSE event, including event/id/data lines, in UTF-8 bytes.

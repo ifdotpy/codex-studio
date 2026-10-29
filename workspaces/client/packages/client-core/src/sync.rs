@@ -5,8 +5,13 @@ use crate::{
     projections::Document,
     protocol::{CommandError, Request, Response},
 };
+use serde::{Deserialize, Deserializer};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, time::Duration};
+use studio_client_domain::{
+    json_object::JsonObject,
+    sync_entity::{EntityChange, SYNC_ENTITY_PAGE_LIMIT},
+};
 
 pub fn error(code: &str, message: impl ToString) -> CommandError {
     CommandError {
@@ -254,6 +259,64 @@ async fn pull_document(
     .map_err(|e| error("storage_error", e))
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EntityWorkspace {
+    workspace_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum EntityPull {
+    Reset {
+        #[serde(rename = "reset")]
+        _reset: TrueFlag,
+    },
+    Page {
+        documents: Vec<EntityChange>,
+        checkpoint: JsonObject<EntityCheckpoint>,
+        #[serde(rename = "maxSeq", default, deserialize_with = "optional_cursor")]
+        max_seq: Option<u64>,
+        #[serde(rename = "initialHigh", default, deserialize_with = "optional_cursor")]
+        initial_high: Option<u64>,
+    },
+}
+#[derive(Deserialize)]
+struct EntityCheckpoint {
+    seq: u64,
+}
+struct TrueFlag;
+impl<'de> Deserialize<'de> for TrueFlag {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        if bool::deserialize(deserializer)? {
+            Ok(Self)
+        } else {
+            Err(serde::de::Error::custom("not reset"))
+        }
+    }
+}
+fn optional_cursor<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<u64>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Cursor {
+        Number(u64),
+        Other(serde::de::IgnoredAny),
+    }
+    Ok(match Option::<Cursor>::deserialize(deserializer)? {
+        Some(Cursor::Number(value)) => Some(value),
+        _ => None,
+    })
+}
+
+fn entity_ready(marker: &Value) -> bool {
+    marker["payload"]
+        .as_str()
+        .and_then(|payload| serde_json::from_str::<String>(payload).ok())
+        .as_deref()
+        == Some("ready")
+        && marker["_deleted"] != true
+}
+
 async fn pull_entities(
     backend: &Backend,
     sender: &StoreSender,
@@ -282,11 +345,7 @@ async fn pull_entities(
     )
     .await
     .map_err(|e| error("storage_error", e))?;
-    let ready = ready_marker["payload"]
-        .as_str()
-        .and_then(|payload| serde_json::from_str::<Value>(payload).ok())
-        == Some(Value::String("ready".into()))
-        && ready_marker["_deleted"] != true;
+    let ready = entity_ready(&ready_marker);
     let mut replace = !ready;
     let mut after = if ready {
         cached["seq"].as_u64().unwrap_or(0)
@@ -299,7 +358,7 @@ async fn pull_entities(
         let mut query = vec![
             ("scope", "state:entities:v1".to_owned()),
             ("after", after.to_string()),
-            ("limit", "500".to_owned()),
+            ("limit", SYNC_ENTITY_PAGE_LIMIT.to_string()),
             ("reset", "1".to_owned()),
         ];
         if let Some(high) = initial_high {
@@ -317,50 +376,57 @@ async fn pull_entities(
             ),
         )
         .await?;
-        if result["workspaceId"] != workspace {
+        let JsonObject(server) =
+            JsonObject::<EntityWorkspace>::deserialize(&result).map_err(|_| {
+                error(
+                    "workspace_changed",
+                    "The server workspace changed during synchronization.",
+                )
+            })?;
+        if server.workspace_id != workspace {
             return Err(error(
                 "workspace_changed",
                 "The server workspace changed during synchronization.",
             ));
         }
-        if result["reset"] == true {
-            if initial_high.is_some() {
-                return Err(error(
-                    "invalid_projection",
-                    "The server reset a fresh entity pull.",
-                ));
+        let pull: EntityPull =
+            serde_json::from_value(result).map_err(|e| error("invalid_projection", e))?;
+        let (rows, checkpoint, max, bound) = match pull {
+            EntityPull::Reset { _reset: _ } => {
+                if initial_high.is_some() {
+                    return Err(error(
+                        "invalid_projection",
+                        "The server reset a fresh entity pull.",
+                    ));
+                }
+                replace = true;
+                after = 0;
+                initial_high = Some(0);
+                changes.clear();
+                continue;
             }
-            // Keep the old cache intact until every replacement page is fetched.
-            // Cancellation or a failed page leaves both entities and cursor intact.
-            replace = true;
-            after = 0;
-            initial_high = Some(0);
-            changes.clear();
-            continue;
-        }
-        let rows = result["documents"]
-            .as_array()
-            .ok_or_else(|| error("invalid_projection", "Missing entity projection documents."))?;
-        if rows.len() > 500 {
+            EntityPull::Page {
+                documents,
+                checkpoint,
+                max_seq,
+                initial_high,
+            } => (documents, checkpoint.0.seq, max_seq, initial_high),
+        };
+        if rows.len() > SYNC_ENTITY_PAGE_LIMIT as usize {
             return Err(error(
                 "invalid_projection",
                 "The server returned too many entity documents.",
             ));
         }
         if initial_high.is_some() {
-            initial_high = Some(result["initialHigh"].as_u64().ok_or_else(|| {
+            initial_high = Some(bound.ok_or_else(|| {
                 error(
                     "invalid_projection",
                     "The server returned no initial entity bound.",
                 )
             })?);
         }
-        let next = result["checkpoint"]["seq"].as_u64().ok_or_else(|| {
-            error(
-                "invalid_projection",
-                "The server returned an invalid entity checkpoint.",
-            )
-        })?;
+        let next = checkpoint;
         if next < after || (!rows.is_empty() && next == after) {
             return Err(error(
                 "invalid_projection",
@@ -368,14 +434,15 @@ async fn pull_entities(
             ));
         }
         after = next;
-        let max = result["maxSeq"].as_u64().ok_or_else(|| {
+        let max = max.ok_or_else(|| {
             error(
                 "invalid_projection",
                 "The server returned no entity sequence bound.",
             )
         })?;
-        changes.extend(rows.iter().cloned());
-        if rows.len() < 500 || after >= max {
+        let count = rows.len();
+        changes.extend(rows);
+        if count < SYNC_ENTITY_PAGE_LIMIT as usize || after >= max {
             break;
         }
     }
@@ -426,10 +493,12 @@ async fn apply_entities(
     if !crate::projections::valid_workspace(workspace) {
         return Err(error("invalid_workspace", "Invalid workspace identity."));
     }
+    let changes = Vec::<EntityChange>::deserialize(Value::Array(values.to_vec()))
+        .map_err(|e| error("storage_error", e))?;
     state(
         sender,
         "projection.applyEntities",
-        json!({"workspace":workspace,"changes":values}),
+        json!({"workspace":workspace,"changes":changes}),
     )
     .await
     .map_err(|e| error("storage_error", e))
@@ -478,6 +547,86 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
     use tokio::{io::AsyncWriteExt, net::TcpListener, sync::mpsc};
+    #[test]
+    fn entity_pull_consumed_fields_track_openapi_owner() {
+        let openapi: Value = serde_json::from_str(include_str!(
+            "../../../../runtime/packages/runtime-http/openapi.json"
+        ))
+        .unwrap();
+        let schemas = &openapi["components"]["schemas"];
+        let page = &schemas["SyncPullResponse"];
+        assert_eq!(page["properties"]["workspaceId"]["type"], "string");
+        assert_eq!(page["properties"]["documents"]["type"], "array");
+        assert!(
+            page["properties"]["documents"]["items"]["oneOf"]
+                .as_array()
+                .unwrap()
+                .contains(&json!({"$ref":"#/components/schemas/SyncEntity"}))
+        );
+        assert_eq!(
+            page["properties"]["checkpoint"]["$ref"],
+            "#/components/schemas/SyncCheckpoint"
+        );
+        assert_eq!(schemas["SyncCheckpoint"]["required"], json!(["seq"]));
+        assert_eq!(
+            schemas["SyncCheckpoint"]["properties"]["seq"]["type"],
+            "integer"
+        );
+        for field in ["maxSeq", "initialHigh"] {
+            assert_eq!(page["properties"][field]["anyOf"][0]["type"], "integer");
+            assert_eq!(
+                page["properties"][field]["anyOf"][0]["maximum"],
+                studio_client_domain::MAX_SAFE_INTEGER
+            );
+            assert_eq!(page["properties"][field]["anyOf"][1]["type"], "null");
+        }
+        assert_eq!(
+            schemas["SyncPullResetResponse"]["properties"]["workspaceId"]["type"],
+            "string"
+        );
+        assert_eq!(
+            schemas["SyncPullResetResponse"]["properties"]["reset"]["const"],
+            true
+        );
+    }
+
+    #[test]
+    fn entity_pull_requires_object_workspace_and_checkpoint() {
+        assert!(JsonObject::<EntityWorkspace>::deserialize(json!(["workspace"])).is_err());
+        assert!(
+            serde_json::from_value::<EntityPull>(
+                json!({"documents":[],"checkpoint":[1],"maxSeq":1})
+            )
+            .is_err()
+        );
+        assert!(serde_json::from_value::<EntityPull>(json!({"reset":true})).is_ok());
+        let page: EntityPull = serde_json::from_value(json!({"reset":"ignored","documents":[],"checkpoint":{"seq":0},"maxSeq":1,"initialHigh":[]})).unwrap();
+        assert!(matches!(
+            page,
+            EntityPull::Page {
+                max_seq: Some(1),
+                initial_high: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn ready_marker_requires_a_live_json_string() {
+        assert!(entity_ready(&json!({"payload":"\"ready\""})));
+        for marker in [
+            json!(null),
+            json!({}),
+            json!({"payload":true}),
+            json!({"payload":"true"}),
+            json!({"payload":"[\"ready\"]"}),
+            json!({"payload":"ready"}),
+            json!({"payload":"\"ready\"", "_deleted":true}),
+        ] {
+            assert!(!entity_ready(&marker), "{marker}");
+        }
+    }
+
     #[test]
     fn transcript_delta_merges_legacy_cache_without_retaining_item_revisions() {
         let base = json!({"payload":json!({"items":[{"id":"a","v":1},{"id":"b","v":2}],"itemRevisions":{"a":1,"b":1},"title":"old"}).to_string()});
@@ -684,6 +833,84 @@ mod tests {
             store.dispatch(get("transcript:kept")).result.unwrap()["seq"],
             5
         );
+    }
+
+    #[tokio::test]
+    async fn cancelled_fresh_replacement_keeps_old_entities_and_cursor() {
+        let workspace = "a".repeat(32);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let backend = Backend::new(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
+        let server_workspace = workspace.clone();
+        let (started, waiting) = tokio::sync::oneshot::channel();
+        let (release, released) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            for index in 0..3 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                crate::backend::tests::read_http(&mut stream).await;
+                if index == 2 {
+                    started.send(()).unwrap();
+                    let _ = released.await;
+                    break;
+                }
+                let body = if index == 0 {
+                    json!({"workspaceId":server_workspace,"chatState":true})
+                } else {
+                    json!({"workspaceId":server_workspace,"reset":true,"floor":8,"maxSeq":12})
+                }
+                .to_string();
+                stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).as_bytes()).await.unwrap();
+            }
+        });
+        let directory = tempfile::tempdir().unwrap();
+        let mut store =
+            crate::store::Store::open(&directory.path().join("client.sqlite3")).unwrap();
+        assert!(store.dispatch(Request { id:"seed".into(), method:"projection.putEntity".into(), params:json!({"workspace":workspace,"change":{"op":"upsert","collection":"task","id":"old","seq":5,"value":{"id":"old"}}}) }).error.is_none());
+        for (scope, payload) in [
+            ("state:entities:checkpoint", "{}"),
+            ("state:entities:ready", "\"ready\""),
+            ("state", "{}"),
+        ] {
+            assert!(store.dispatch(Request { id:"seed".into(), method:"projection.put".into(), params:json!({"workspace":workspace,"scope":scope,"document":{"id":scope,"seq":5,"payload":payload}}) }).error.is_none());
+        }
+        let (sender, mut receive) = mpsc::channel::<crate::delivery::StoreCommand>(32);
+        let worker = tokio::spawn(async move {
+            while let Some((request, reply)) = receive.recv().await {
+                drop(reply.send(store.dispatch(request)));
+            }
+        });
+        let pull_sender = sender.clone();
+        let pull_workspace = workspace.clone();
+        let pending =
+            tokio::spawn(
+                async move { pull(&backend, &pull_sender, &pull_workspace, "state").await },
+            );
+        waiting.await.unwrap();
+        pending.abort();
+        assert!(pending.await.unwrap_err().is_cancelled());
+        release.send(()).unwrap();
+        assert_eq!(
+            state(
+                &sender,
+                "projection.get",
+                json!({"workspace":workspace,"scope":"entity:task:old"})
+            )
+            .await
+            .unwrap()["seq"],
+            5
+        );
+        assert_eq!(
+            state(
+                &sender,
+                "projection.get",
+                json!({"workspace":workspace,"scope":"state:entities:checkpoint"})
+            )
+            .await
+            .unwrap()["seq"],
+            5
+        );
+        drop(sender);
+        worker.await.unwrap();
+        server.await.unwrap();
     }
 
     #[tokio::test]
