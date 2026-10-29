@@ -45,7 +45,6 @@ pub mod browser_policy;
 pub mod callback_runtime;
 pub mod capacity_retry;
 pub mod catalog_reads;
-mod saved_mount;
 pub mod change_notifications;
 pub mod checkpoints;
 mod child_permissions;
@@ -157,6 +156,7 @@ pub mod questions_write;
 pub mod queue_write;
 pub mod radio;
 pub mod radio_runtime;
+mod saved_mount;
 pub use radio_runtime::{
     Interrupt, InterruptOutcome, InterruptReceipt, InterruptTransport, NativeAcceptanceReceipt,
     RadioCreation, handoff_interrupt,
