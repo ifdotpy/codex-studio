@@ -947,7 +947,9 @@ mod tests {
                     Method::ThreadTurnsList => {
                         Some(ProviderResponse::Reply(match &self.scenario {
                             ReplyScenario::Listed(value) => value.clone(),
-                            _ => json!({"data":[{
+                            ReplyScenario::Ready
+                            | ReplyScenario::UnknownThread
+                            | ReplyScenario::NotSentTurn => json!({"data":[{
                                 "id":"title-turn", "status":"completed", "items":[{
                                     "type":"agentMessage", "phase":"final_answer", "text":"A Useful Title"
                                 }]
