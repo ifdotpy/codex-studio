@@ -148,6 +148,8 @@ default-filter = '''
     (package(=studio-runtime-services) & kind(test) & binary(=integration) & (test(recovery_record_typed_boundary_matches_schema) | test(pagination_requires_object_pages_and_valid_cursors) | test(profile_options_preserve_aliases_and_reject_invalid_shapes))) |
     (package(=studio-runtime-http) & kind(lib) & (test(acceptance_gate_typed_input_preserves_null_update_and_replay) | test(every_generated_resource_has_exactly_one_handler_and_data_contract))) |
     (package(=studio-runtime-services) & kind(lib) & (test(unclean_held_start_recovers_exact_input_through_worker_history) | test(manual_unclean_start_settles_exact_history_without_replay))) |
+    (package(=studio-runtime-services) & kind(lib) & (test(restart_queries_supervisor_for_saved_callback_attempt) | test(held_callback_queries_exact_attempt_then_settles_written) | test(supervisor_evidence_for_old_callback_attempt_cannot_settle_retry))) |
+    (package(=studio-runtime-services) & kind(lib) & test(unclean_held_start_recovers_exact_input_through_worker_history)) |
     (package(=studio-runtime-services) & kind(lib) & test(supervisor_written_is_fenced_to_the_original_provider_generation)) |
     (package(=studio-runtime-store) & kind(lib) & test(supervisor_status_tracks_outbox_operation_from_accept_to_write)) |
     (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(held_unclean_start_is_eligible_for_exact_history_only)) |
@@ -519,6 +521,8 @@ default-filter = '''
     (package(=studio-runtime-services) & kind(test) & binary(=integration) & (test(recovery_record_typed_boundary_matches_schema) | test(pagination_requires_object_pages_and_valid_cursors) | test(profile_options_preserve_aliases_and_reject_invalid_shapes))) |
     (package(=studio-runtime-http) & kind(lib) & (test(acceptance_gate_typed_input_preserves_null_update_and_replay) | test(every_generated_resource_has_exactly_one_handler_and_data_contract))) |
     (package(=studio-runtime-services) & kind(lib) & (test(unclean_held_start_recovers_exact_input_through_worker_history) | test(manual_unclean_start_settles_exact_history_without_replay))) |
+    (package(=studio-runtime-services) & kind(lib) & (test(restart_queries_supervisor_for_saved_callback_attempt) | test(held_callback_queries_exact_attempt_then_settles_written) | test(supervisor_evidence_for_old_callback_attempt_cannot_settle_retry))) |
+    (package(=studio-runtime-services) & kind(lib) & test(unclean_held_start_recovers_exact_input_through_worker_history)) |
     (package(=studio-runtime-services) & kind(lib) & test(supervisor_written_is_fenced_to_the_original_provider_generation)) |
     (package(=studio-runtime-store) & kind(lib) & test(supervisor_status_tracks_outbox_operation_from_accept_to_write)) |
     (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(held_unclean_start_is_eligible_for_exact_history_only)) |
