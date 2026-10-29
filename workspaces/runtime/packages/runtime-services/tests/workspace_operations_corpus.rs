@@ -95,7 +95,7 @@ fn complete_python_outputs_match_checked_snapshots() {
                 ) {
                     // Terminal recovery now preserves both inputs; the frozen legacy
                     // outputs interrupted the actor even for a terminal operation.
-                    assert_eq!(writes.operation, case["operations"][0], "{}", case["name"]);
+                    assert_eq!(json!(&writes.operation), case["operations"][0], "{}", case["name"]);
                     assert_eq!(writes.agent, case["actor"], "{}", case["name"]);
                     continue;
                 }
@@ -396,7 +396,7 @@ async fn failed_capture_and_restart_release_only_the_owned_reservation() {
     )
     .expect("op")
     .expect("exists");
-    assert_eq!(op["phase"], "failed");
+    assert_eq!(op.phase, studio_runtime_services::workspace_operations::OperationPhase::Failed);
 }
 
 #[tokio::test]
@@ -597,7 +597,7 @@ async fn restart_after_each_committed_capture_stage_never_repeats_git() {
             WorkspaceOperationsRepository::operation(&reopened.test_reader().expect("read"), &id)
                 .expect("operation")
                 .expect("exists");
-        assert_eq!(op["phase"], "failed");
+        assert_eq!(op.phase, studio_runtime_services::workspace_operations::OperationPhase::Failed);
     }
 }
 
@@ -657,7 +657,7 @@ async fn durable_provider_ticket_rejects_foreign_and_stale_receipts_and_replays_
             &f.store.test_reader().expect("read"),
             &expected.operation
         )
-        .expect("read"),
+        .expect("read").map(|record| json!(record)),
         Some(operation.clone())
     );
     f.patch("epoch", json!(2)).await;
@@ -671,7 +671,7 @@ async fn durable_provider_ticket_rejects_foreign_and_stale_receipts_and_replays_
             &f.store.test_reader().expect("read"),
             &expected.operation
         )
-        .expect("read"),
+        .expect("read").map(|record| json!(record)),
         Some(operation)
     );
     f.patch("epoch", json!(1)).await;

@@ -1200,14 +1200,17 @@ record_newtype!(
     key = PayloadId,
     query = None
 );
-record_newtype!(
-    WorkspaceOperationRecord,
-    String,
-    table = "runtime_workspace_operations",
-    schema = "PersistedWorkspaceOperationRecord",
-    key = PayloadId,
-    query = JsonAgent
-);
+pub use studio_runtime_schema::workspace_operation::WorkspaceOperationRecord;
+impl JsonRecord for WorkspaceOperationRecord {
+    type Id = String;
+    const TABLE: &'static str = "runtime_workspace_operations";
+    const SCHEMA: &'static str = "PersistedWorkspaceOperationRecord";
+    const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
+    const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
+    const TYPED_SHAPE: bool = true;
+    const DIRECT_TYPED_DECODE: bool = true;
+    fn record_key(&self) -> Option<&Self::Id> { Some(&self.id) }
+}
 pub use studio_runtime_schema::rule_record::RuleRecord;
 impl JsonRecord for RuleRecord {
     type Id = String;
@@ -1217,9 +1220,7 @@ impl JsonRecord for RuleRecord {
     const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
     const TYPED_SHAPE: bool = true;
     const DIRECT_TYPED_DECODE: bool = true;
-    fn record_key(&self) -> Option<&Self::Id> {
-        Some(self.id())
-    }
+    fn record_key(&self) -> Option<&Self::Id> { Some(self.id()) }
 }
 record_newtype!(
     TranscriptItemRecord,

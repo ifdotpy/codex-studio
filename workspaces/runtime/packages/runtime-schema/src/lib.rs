@@ -56,6 +56,7 @@ pub mod terminal_record;
 pub mod transcript_asset;
 pub mod usage;
 pub mod usage_limits;
+pub mod workspace_operation;
 
 pub use delivery::DeliveryMoment;
 pub use provider_kind::ProviderKind;

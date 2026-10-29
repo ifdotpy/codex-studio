@@ -5,6 +5,7 @@
 use std::collections::BTreeMap;
 use studio_runtime_store::path_identity::PathEvidence;
 
+use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
 use studio_runtime_store::{
     AgentId, AgentIndexedReads, AgentRecord, AgentRepository, Connection, StoreError, Transaction,
@@ -150,10 +151,11 @@ impl MessageAdmission for PreparedAdmission {
                 && blocker.get("operationId").is_none()
                 && let Some(record) = other_operation(tx, &id)?
             {
-                for key in ["phase", "created", "turnId"] {
-                    blocker[key] = record.get(key).cloned().unwrap_or(Value::Null);
+                blocker["phase"] = serde_json::json!(record.phase);
+                for key in ["created", "turnId"] {
+                    blocker[key] = record.extensions().get(key).cloned().unwrap_or(Value::Null);
                 }
-                blocker["operationId"] = record["id"].clone();
+                blocker["operationId"] = Value::String(record.id.clone());
             }
             blockers.push(blocker);
         }
@@ -272,35 +274,20 @@ fn provision_destination(
 fn other_operation(
     tx: &Transaction<'_>,
     agent_id: &str,
-) -> Result<Option<Value>, CoordinationError> {
-    const ACTIVE_PHASES: [&str; 6] = [
-        "provider_pending",
-        "provider_ready",
-        "local_mutation",
-        "recovery_required",
-        "capture_pending",
-        "capture_running",
-    ];
-    let mut query = tx.prepare(
-        "SELECT id,record FROM runtime_workspace_operations \
-         WHERE json_extract(record,'$.agent')=?1 ORDER BY rowid",
-    )?;
-    let rows = query.query_map([agent_id], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-    })?;
-    for row in rows {
-        let (id, raw) = row?;
-        let value: Value = serde_json::from_str(&raw).map_err(StoreError::from)?;
-        if value
-            .get("phase")
-            .and_then(Value::as_str)
-            .is_some_and(|phase| ACTIVE_PHASES.contains(&phase))
-        {
-            return studio_runtime_store::workspace_operations::WorkspaceOperationsRepository::operation(tx, &id)
-                .map_err(CoordinationError::from);
+) -> Result<Option<studio_runtime_store::WorkspaceOperationRecord>, CoordinationError> {
+    let id: Option<String> = tx.query_row(
+        "SELECT id FROM runtime_workspace_operations WHERE json_extract(record,'$.agent')=?1 AND json_extract(record,'$.phase') IN ('provider_pending','provider_ready','local_mutation','recovery_required','capture_pending','capture_running') ORDER BY rowid LIMIT 1",
+        [agent_id], |row| row.get(0),
+    ).optional()?;
+    match id {
+        Some(id) => {
+            studio_runtime_store::workspace_operations::WorkspaceOperationsRepository::operation(
+                tx, &id,
+            )
+            .map_err(CoordinationError::from)
         }
+        None => Ok(None),
     }
-    Ok(None)
 }
 
 #[cfg(test)]

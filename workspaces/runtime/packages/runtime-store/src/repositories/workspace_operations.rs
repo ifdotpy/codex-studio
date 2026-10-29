@@ -30,19 +30,17 @@ impl WorkspaceOperationsRepository {
             .optional()?
             .is_some())
     }
-    pub fn operation(connection: &Connection, id: &str) -> StoreResult<Option<Value>> {
-        Ok(Table::<WorkspaceOperationRecord>::new(connection)
-            .get(&id.to_owned())?
-            .map(WorkspaceOperationRecord::into_value))
+    pub fn operation(connection: &Connection, id: &str) -> StoreResult<Option<WorkspaceOperationRecord>> {
+        Table::<WorkspaceOperationRecord>::new(connection).get(&id.to_owned())
     }
-    pub fn active_operations(connection: &Connection) -> StoreResult<Vec<Value>> {
+    pub fn active_operations(connection: &Connection) -> StoreResult<Vec<WorkspaceOperationRecord>> {
         let table = Table::<WorkspaceOperationRecord>::new(connection);
         let mut query = connection.prepare_cached("SELECT id,record FROM runtime_workspace_operations WHERE json_extract(record,'$.phase') IS NULL OR json_extract(record,'$.phase') NOT IN ('completed','failed') ORDER BY id")?;
         query
             .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
             .map(|r| {
                 let (id, raw) = r?;
-                Ok(table.decode_stored(&id, &raw)?.into_value())
+                table.decode_stored(&id, &raw)
             })
             .collect()
     }
@@ -79,20 +77,17 @@ impl WorkspaceOperationsRepository {
         a.record["checkpointError"] = Value::String(error.into());
         AgentRepository::put(tx, &AgentRecord::from_value(a.record)?)
     }
-    pub fn put_operation(tx: &Transaction<'_>, operation: &Value) -> StoreResult<()> {
-        let record = WorkspaceOperationRecord::from_value(operation.clone())?;
-        if !Table::new(tx).update(&record)? {
-            return Err(StoreError::InvalidStoredObject {
-                table: "runtime_workspace_operations",
-                id: record.id().clone(),
-            });
+    pub fn put_operation(tx: &Transaction<'_>, operation: &WorkspaceOperationRecord) -> StoreResult<()> {
+        let changed = tx.execute("UPDATE runtime_workspace_operations SET record=?1 WHERE id=?2", params![serde_json::to_string(operation)?, operation.id])?;
+        if changed == 0 {
+            return Err(StoreError::InvalidStoredObject { table: "runtime_workspace_operations", id: operation.id.clone() });
         }
         Ok(())
     }
     /// Read, decide and apply on this same writer transaction; no external effects.
     pub fn apply_recovery(
         tx: &Transaction<'_>,
-        operation: &Value,
+        operation: &WorkspaceOperationRecord,
         agent: &Value,
     ) -> StoreResult<()> {
         Self::put_operation(tx, operation)?;
@@ -104,6 +99,21 @@ impl WorkspaceOperationsRepository {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn stored_operation_roundtrips_nullable_and_opaque_evidence() {
+        let mut db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE runtime_workspace_operations(id TEXT PRIMARY KEY,record TEXT NOT NULL)").unwrap();
+        let raw = json!({"id":"op","agent":"agent","kind":"branch","phase":"provider_pending","source":null,"provider":{"vendor":[null,3]},"result":null,"signature":null,"restartHold":null,"vendor":{"opaque":true}});
+        db.execute("INSERT INTO runtime_workspace_operations VALUES('op',?1)", [raw.to_string()]).unwrap();
+        let tx = db.transaction().unwrap();
+        let record = WorkspaceOperationsRepository::operation(&tx, "op").unwrap().unwrap();
+        WorkspaceOperationsRepository::put_operation(&tx, &record).unwrap();
+        let saved: String = tx.query_row("SELECT record FROM runtime_workspace_operations WHERE id='op'", [], |r| r.get(0)).unwrap();
+        let saved: Value = serde_json::from_str(&saved).unwrap();
+        assert_eq!(saved, raw);
+        assert!(saved.get("unknownField").is_none());
+    }
 
     #[test]
     fn operation_identity_and_writes_are_checked() {
@@ -146,17 +156,15 @@ mod tests {
         db.execute("DELETE FROM runtime_workspace_operations WHERE id='b'", [])
             .unwrap();
         let tx = db.transaction().unwrap();
+        let typed: WorkspaceOperationRecord = serde::Deserialize::deserialize(&operation).unwrap();
         assert!(
-            WorkspaceOperationsRepository::apply_recovery(&tx, &operation, &json!({"id":"agent"}))
+            WorkspaceOperationsRepository::apply_recovery(&tx, &typed, &json!({"id":"agent"}))
                 .is_err()
         );
-        let invalid = json!({"id":"a","phase":17});
-        assert!(WorkspaceOperationsRepository::put_operation(&tx, &invalid).is_err());
+        assert!(<WorkspaceOperationRecord as serde::Deserialize>::deserialize(json!({"id":"a","phase":17})).is_err());
         let valid = json!({"id":"a","agent":"agent","kind":"capture","phase":"completed"});
-        WorkspaceOperationsRepository::put_operation(&tx, &valid).unwrap();
-        assert_eq!(
-            WorkspaceOperationsRepository::operation(&tx, "a").unwrap(),
-            Some(valid)
-        );
+        let typed: WorkspaceOperationRecord = serde::Deserialize::deserialize(&valid).unwrap();
+        WorkspaceOperationsRepository::put_operation(&tx, &typed).unwrap();
+        assert_eq!(json!(WorkspaceOperationsRepository::operation(&tx, "a").unwrap().unwrap()), valid);
     }
 }
