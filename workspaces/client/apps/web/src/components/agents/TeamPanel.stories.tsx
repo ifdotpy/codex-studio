@@ -1,7 +1,9 @@
 import {
+  AccountStatus,
   AgentRole,
   AgentSource,
   AgentStatus,
+  ProviderKind,
   RequestStatus,
 } from "../../generated/api";
 import { useState } from "react";
@@ -451,8 +453,8 @@ const rowAccounts = [
       ...account,
       home: "/storybook",
       source: "storybook",
-      provider: "codex",
-      status: "ready",
+      provider: ProviderKind.codex,
+      status: AccountStatus.ready,
     }) as Account,
 );
 const rowTask =
