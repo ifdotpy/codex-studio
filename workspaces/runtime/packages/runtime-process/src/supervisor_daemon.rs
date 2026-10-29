@@ -454,15 +454,8 @@ impl Supervisor {
         )?;
         let events = rows
             .into_iter()
-            .map(|row| {
-                Ok(SupervisorEventV2 {
-                    sequence: crate::EventCursor(row.sequence),
-                    generation: crate::Generation(row.generation),
-                    kind: serde_json::from_value(json!(row.kind))?,
-                    payload: row.payload,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
+            .map(SupervisorEventV2::from)
+            .collect::<Vec<_>>();
         let exit_sequence = child.durable_exit_sequence()?;
         let terminal = exit_delivered(
             request.cursor.0,

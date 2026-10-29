@@ -12,7 +12,8 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 use studio_runtime_providers::supervisor_protocol::{
-    HANDLE_LIMIT, HandleSnapshot, NativeId, ReceiptSnapshot, Refusal, WriteDecision,
+    EVENT_KIND_EXIT, EVENT_KIND_STDERR, EVENT_KIND_STDOUT, EventKind, HANDLE_LIMIT, HandleSnapshot,
+    NativeId, ReceiptSnapshot, Refusal, WriteDecision,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -95,16 +96,98 @@ pub struct StoredHandle {
 #[derive(Debug)]
 pub struct StoredEvent {
     pub sequence: u64,
-    pub kind: String,
+    pub kind: JournalEventKind,
     pub payload: Box<serde_json::value::RawValue>,
     pub generation: u64,
 }
 
+/// Journal rows allow only known kinds; protocol ingress also permits future kinds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JournalEventKind {
+    Stdout,
+    Stderr,
+    Exit,
+}
+
+impl JournalEventKind {
+    fn parse(value: &str) -> Result<Self> {
+        match EventKind::parse(value) {
+            EventKind::Stdout => Ok(Self::Stdout),
+            EventKind::Stderr => Ok(Self::Stderr),
+            EventKind::Exit => Ok(Self::Exit),
+            EventKind::Unknown(_) => Err(Refusal("Invalid supervisor event kind").into()),
+        }
+    }
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Stdout => EVENT_KIND_STDOUT,
+            Self::Stderr => EVENT_KIND_STDERR,
+            Self::Exit => EVENT_KIND_EXIT,
+        }
+    }
+}
+
+impl From<JournalEventKind> for EventKind {
+    fn from(value: JournalEventKind) -> Self {
+        match value {
+            JournalEventKind::Stdout => Self::Stdout,
+            JournalEventKind::Stderr => Self::Stderr,
+            JournalEventKind::Exit => Self::Exit,
+        }
+    }
+}
+
+impl StoredEvent {
+    fn from_columns(sequence: i64, kind: &str, payload: String, generation: i64) -> Result<Self> {
+        let sequence =
+            u64::try_from(sequence).map_err(|_| Refusal("Invalid supervisor event sequence"))?;
+        let generation = u64::try_from(generation)
+            .map_err(|_| Refusal("Invalid supervisor event generation"))?;
+        Self::new(
+            sequence,
+            JournalEventKind::parse(kind)?,
+            payload,
+            generation,
+        )
+    }
+    fn new(
+        sequence: u64,
+        kind: JournalEventKind,
+        payload: String,
+        generation: u64,
+    ) -> Result<Self> {
+        Ok(Self {
+            sequence,
+            kind,
+            // RawValue validates JSON syntax without requiring numbers to fit f64.
+            payload: serde_json::value::RawValue::from_string(payload)?,
+            generation,
+        })
+    }
+    fn into_legacy(self) -> Value {
+        json!({"sequence":self.sequence,"kind":EventKind::from(self.kind),"payload":self.payload.get(),"generation":self.generation})
+    }
+}
+
 fn snapshot(db: &Connection, handle: &str) -> Result<HandleSnapshot> {
-    let raw = db.query_row("SELECT sequence,acknowledged,rpc_sequence,generation FROM handles WHERE id=?", [handle], |row| {
-        Ok(json!({"sequence":row.get::<_,i64>(0)?,"acknowledged":row.get::<_,i64>(1)?,"rpc_sequence":row.get::<_,i64>(2)?,"generation":row.get::<_,i64>(3)?}))
-    })?;
-    Ok(HandleSnapshot::from_record(raw)?)
+    let (sequence, acknowledged, rpc_sequence, generation) = db.query_row(
+        "SELECT sequence,acknowledged,rpc_sequence,generation FROM handles WHERE id=?",
+        [handle],
+        |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        },
+    )?;
+    Ok(HandleSnapshot::from_columns(
+        sequence,
+        acknowledged,
+        rpc_sequence,
+        generation,
+    )?)
 }
 /// Read `operations.native_id` exactly as stored. The column is declared INTEGER, but the
 /// Python supervisor also stores text ids there (see [`NativeId`]).
@@ -130,9 +213,17 @@ fn receipt(db: &Connection, handle: &str, operation: &str) -> Result<Option<Rece
     let raw = db.query_row("SELECT digest,native_id,generation,response,response_sequence FROM operations WHERE handle=? AND operation_id=?", params![handle,operation], |row| {
         Ok((row.get::<_,String>(0)?,stored_native_id(row.get_ref(1)?),row.get::<_,Option<i64>>(2)?,row.get::<_,Option<String>>(3)?,row.get::<_,Option<i64>>(4)?))
     }).optional()?;
-    raw.map(|(digest, native_id, generation, response, response_sequence)| {
-        Ok(ReceiptSnapshot::from_record(json!({"digest":digest,"native_id":native_id?,"generation":generation,"response":response,"response_sequence":response_sequence}))?)
-    })
+    raw.map(
+        |(digest, native_id, generation, response, response_sequence)| {
+            Ok(ReceiptSnapshot::from_columns(
+                digest,
+                native_id?,
+                generation,
+                response,
+                response_sequence,
+            )?)
+        },
+    )
     .transpose()
 }
 fn buffered_sizes(db: &Connection) -> Result<HashMap<String, u64>> {
@@ -199,8 +290,16 @@ impl SupervisorJournal {
             receipt(&db, &handle, &operation)?;
         }
         let mut statement = db.prepare("SELECT sequence,kind,payload,generation FROM events")?;
-        for row in statement.query_map([], |r| Ok(json!({"sequence":r.get::<_,i64>(0)?,"kind":r.get::<_,String>(1)?,"payload":r.get::<_,String>(2)?,"generation":r.get::<_,i64>(3)?})))? {
-            validate_event(&row?)?;
+        for row in statement.query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, i64>(3)?,
+            ))
+        })? {
+            let (sequence, kind, payload, generation) = row?;
+            StoredEvent::from_columns(sequence, &kind, payload, generation)?;
         }
         Ok(())
     }
@@ -400,10 +499,11 @@ impl SupervisorJournal {
             if state.generation() != generation { return Ok((AppendResult::Obsolete, None)); }
             if state.sequence() == sequence { return Ok((AppendResult::Saved, None)); }
             if state.sequence()+1 != sequence { return Err(Refusal("Supervisor output sequence changed before its receipt").into()); }
+            let kind = JournalEventKind::parse(kind)?;
             if buffered.get(handle).copied().unwrap_or_default().saturating_add(raw.len() as u64) > HANDLE_LIMIT { return Ok((AppendResult::Full, None)); }
             tx.execute("UPDATE handles SET sequence=? WHERE id=?",params![sql(sequence)?,handle])?;
-            tx.execute("INSERT INTO events(handle,sequence,kind,payload,size,generation) VALUES (?,?,?,?,?,?)",params![handle,sql(sequence)?,kind,raw,sql(raw.len() as u64)?,sql(generation)?])?;
-            if kind == "stdout" {
+            tx.execute("INSERT INTO events(handle,sequence,kind,payload,size,generation) VALUES (?,?,?,?,?,?)",params![handle,sql(sequence)?,kind.as_str(),raw,sql(raw.len() as u64)?,sql(generation)?])?;
+            if kind == JournalEventKind::Stdout {
                 if payload.get("id").and_then(Value::as_u64) == Some(1) && payload.get("result").is_some() {
                     tx.execute("UPDATE handles SET init_result=? WHERE id=?",params![python_json(&payload["result"]),handle])?;
                 }
@@ -441,10 +541,23 @@ impl SupervisorJournal {
         let state = snapshot(&db, handle)?;
         state.cursor(cursor, false)?;
         let mut stmt = db.prepare("SELECT sequence,kind,payload,generation FROM events WHERE handle=? AND sequence>? ORDER BY sequence LIMIT ?")?;
-        let events = stmt.query_map(params![handle,sql(cursor)?,if one {1} else {-1}], |r| Ok(json!({"sequence":r.get::<_,i64>(0)?,"kind":r.get::<_,String>(1)?,"payload":r.get::<_,String>(2)?,"generation":r.get::<_,i64>(3)?})))?.collect::<std::result::Result<Vec<_>,_>>()?;
-        for event in &events {
-            validate_event(event)?;
-        }
+        let events = stmt
+            .query_map(
+                params![handle, sql(cursor)?, if one { 1 } else { -1 }],
+                |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, i64>(3)?,
+                    ))
+                },
+            )?
+            .map(|row| {
+                let (sequence, kind, payload, generation) = row?;
+                Ok(StoredEvent::from_columns(sequence, &kind, payload, generation)?.into_legacy())
+            })
+            .collect::<Result<Vec<_>>>()?;
         Ok(json!({"events":events,"sequence":state.sequence(),"acknowledged":state.acknowledged()}))
     }
 
@@ -479,9 +592,7 @@ impl SupervisorJournal {
         let mut selected = Vec::new();
         let mut frame_usage = 256usize;
         for (sequence, kind, payload_bytes, event_generation) in candidates {
-            if !matches!(kind.as_str(), "stdout" | "stderr" | "exit") {
-                return Err(Refusal("Invalid supervisor event kind").into());
-            }
+            let kind = JournalEventKind::parse(&kind)?;
             let payload_bytes = usize::try_from(payload_bytes)
                 .map_err(|_| Refusal("Invalid supervisor event payload size"))?;
             // Reserve room for all event metadata and the enclosing RPC frame.
@@ -509,13 +620,7 @@ impl SupervisorJournal {
                     params![handle, sql(sequence)?],
                     |row| row.get::<_, String>(0),
                 )?;
-                let payload = serde_json::value::RawValue::from_string(payload)?;
-                Ok(StoredEvent {
-                    sequence,
-                    kind,
-                    payload,
-                    generation,
-                })
+                StoredEvent::new(sequence, kind, payload, generation)
             })
             .collect()
     }
@@ -614,20 +719,6 @@ fn sql(value: u64) -> Result<i64> {
     i64::try_from(value).map_err(|_| Refusal("Supervisor integer exceeds SQLite range").into())
 }
 
-fn validate_event(event: &Value) -> Result<()> {
-    if event["sequence"].as_u64().is_none()
-        || event["generation"].as_u64().is_none()
-        || !matches!(event["kind"].as_str(), Some("stdout" | "stderr" | "exit"))
-    {
-        return Err(Refusal("Invalid supervisor events record").into());
-    }
-    let raw = event["payload"]
-        .as_str()
-        .ok_or(Refusal("Invalid supervisor events payload"))?;
-    serde_json::from_str::<Value>(raw)?;
-    Ok(())
-}
-
 pub(crate) fn prepare_schema(db: &Transaction<'_>) -> crate::StoreResult<()> {
     db.execute_batch(SUPERVISOR_SCHEMA)?;
     db.execute_batch("CREATE INDEX IF NOT EXISTS operations_monitor_native ON operations(handle,generation,native_id) WHERE substr(operation_id,1,8)='monitor:'")?;
@@ -637,6 +728,121 @@ pub(crate) fn prepare_schema(db: &Transaction<'_>) -> crate::StoreResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn append_refuses_unknown_kind_without_advancing_the_journal() {
+        let root = tempfile::tempdir().unwrap();
+        let journal = SupervisorJournal::open(root.path()).unwrap();
+        journal.reserve("raw", "signature", 1.0).unwrap();
+        let generation = journal
+            .opened("raw", "signature", 41, "start", None)
+            .unwrap();
+        assert!(
+            journal
+                .append("raw", generation, 1, "future", &json!({}))
+                .is_err()
+        );
+        assert_eq!(
+            journal.handle("raw").unwrap().unwrap().snapshot.sequence(),
+            0
+        );
+        assert_eq!(
+            journal
+                .lock()
+                .unwrap()
+                .query_row("SELECT count(*) FROM events", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            journal
+                .append("raw", generation, 1, "stdout", &json!({}))
+                .unwrap(),
+            AppendResult::Saved
+        );
+        assert_eq!(
+            journal
+                .append("raw", generation, 1, "future", &json!({}))
+                .unwrap(),
+            AppendResult::Saved
+        );
+        assert_eq!(
+            journal
+                .append("raw", generation + 1, 2, "future", &json!({}))
+                .unwrap(),
+            AppendResult::Obsolete
+        );
+    }
+
+    #[test]
+    fn journal_reads_raw_valid_json_without_number_normalization() {
+        let root = tempfile::tempdir().unwrap();
+        let journal = SupervisorJournal::open(root.path()).unwrap();
+        journal.reserve("raw", "signature", 1.0).unwrap();
+        let generation = journal
+            .opened("raw", "signature", 41, "start", None)
+            .unwrap();
+        let raw = "{ \"huge\" : 1e400, \"text\" : \"\\u0061\" }";
+        {
+            let db = journal.lock().unwrap();
+            db.execute("UPDATE handles SET sequence=2 WHERE id='raw'", [])
+                .unwrap();
+            db.execute("INSERT INTO events(handle,sequence,kind,payload,size,generation) VALUES('raw',2,'exit','null',4,?1)", [generation as i64]).unwrap();
+            db.execute("INSERT INTO events(handle,sequence,kind,payload,size,generation) VALUES('raw',1,'stdout',?1,?2,?3)", params![raw,raw.len() as i64,generation as i64]).unwrap();
+        }
+        drop(journal);
+        let journal = SupervisorJournal::open(root.path()).unwrap();
+        let legacy = journal.events("raw", 0, false).unwrap();
+        assert_eq!(legacy["events"][0]["payload"], raw);
+        assert_eq!(legacy["events"][0]["sequence"], 1);
+        assert_eq!(legacy["events"][1]["sequence"], 2);
+        assert_eq!(
+            journal.events("raw", 0, true).unwrap()["events"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        let events = journal.events_v2("raw", 0, generation, 10, 4096).unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.sequence)
+                .collect::<Vec<_>>(),
+            [1, 2]
+        );
+        assert_eq!(events[0].payload.get(), raw);
+    }
+
+    #[test]
+    fn malformed_journal_events_are_refused_on_read_and_startup() {
+        for (sequence, kind, payload, generation) in [
+            (1, "future", "{}", 1),
+            (1, "stdout", "{bad", 1),
+            (1, "stdout", "{}", -1),
+            (-1, "stdout", "{}", 1),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let journal = SupervisorJournal::open(root.path()).unwrap();
+            journal.reserve("raw", "signature", 1.0).unwrap();
+            journal
+                .opened("raw", "signature", 41, "start", None)
+                .unwrap();
+            {
+                let db = journal.lock().unwrap();
+                db.execute("UPDATE handles SET sequence=1 WHERE id='raw'", [])
+                    .unwrap();
+                db.execute("INSERT INTO events(handle,sequence,kind,payload,size,generation) VALUES('raw',?1,?2,?3,?4,?5)", params![sequence,kind,payload,payload.len() as i64,generation]).unwrap();
+            }
+            if sequence > 0 {
+                assert!(journal.events("raw", 0, false).is_err());
+                assert!(journal.events_v2("raw", 0, 1, 10, 4096).is_err());
+            }
+            drop(journal);
+            assert!(SupervisorJournal::open(root.path()).is_err());
+        }
+    }
 
     #[test]
     fn journal_epoch_names_one_handle_row_of_one_journal() {
