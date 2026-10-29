@@ -112,7 +112,7 @@ struct TranscriptObject {
 }
 #[derive(Deserialize)]
 struct TranscriptItem {
-    #[serde(default)]
+    // Missing and null identities both leave the item unidentified.
     id: Option<TranscriptField<String>>,
     #[serde(flatten)]
     fields: serde_json::Map<String, Value>,
@@ -682,6 +682,17 @@ mod tests {
     }
 
     #[test]
+    fn transcript_identity_treats_absent_null_and_non_strings_as_unidentified() {
+        for input in [r#"{}"#, r#"{"id":null}"#, r#"{"id":false}"#] {
+            let JsonObject(item): JsonObject<TranscriptItem> = serde_json::from_str(input).unwrap();
+            assert!(item.identified().is_none(), "{input}");
+        }
+        let JsonObject(item): JsonObject<TranscriptItem> =
+            serde_json::from_str(r#"{"id":"ok"}"#).unwrap();
+        assert_eq!(item.identified().unwrap().0, "ok");
+    }
+
+    #[test]
     fn entity_pull_requires_object_workspace_and_checkpoint() {
         assert!(JsonObject::<EntityWorkspace>::deserialize(json!(["workspace"])).is_err());
         assert!(
@@ -691,7 +702,7 @@ mod tests {
             .is_err()
         );
         assert!(serde_json::from_value::<EntityPull>(json!({"reset":true})).is_ok());
-        let page: EntityPull = serde_json::from_value(json!({"reset":"ignored","documents":[],"checkpoint":{"seq":0},"maxSeq":1,"initialHigh":[]})).unwrap();
+        let page: EntityPull = serde_json::from_str(r#"{"reset":"ignored","documents":[],"checkpoint":{"seq":0},"maxSeq":1,"initialHigh":[]}"#).unwrap();
         assert!(matches!(
             page,
             EntityPull::Page {

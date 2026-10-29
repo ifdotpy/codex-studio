@@ -620,11 +620,11 @@ mod tests {
     use super::*;
     #[test]
     fn agent_summary_renders_without_detail_and_owns_list_fields() {
-        let summary: EntityChange = serde_json::from_value(json!({"op":"upsert","collection":"agentSummary","id":"a","seq":0,"value":{"id":"a","name":"Current","status":"completed","lastCompletedTurn":"turn","readState":{"threadId":"thread","turnId":"turn","read":false,"revision":1}}})).expect("summary");
+        let summary: EntityChange = serde_json::from_str(r#"{"op":"upsert","collection":"agentSummary","id":"a","seq":0,"value":{"id":"a","name":"Current","status":"completed","lastCompletedTurn":"turn","readState":{"threadId":"thread","turnId":"turn","read":false,"revision":1}}}"#).expect("summary");
         let snapshot = entity_snapshot(std::slice::from_ref(&summary));
         assert_eq!(snapshot["threads"][0]["name"], "Current");
         assert!(snapshot["threads"][0].get("lastAnswer").is_none());
-        let detail: EntityChange = serde_json::from_value(json!({"op":"upsert","collection":"agentDetail","id":"a","seq":0,"value":{"id":"a","lastAnswer":"Answer"}})).expect("detail");
+        let detail: EntityChange = serde_json::from_str(r#"{"op":"upsert","collection":"agentDetail","id":"a","seq":0,"value":{"id":"a","lastAnswer":"Answer"}}"#).expect("detail");
         let snapshot = entity_snapshot(&[summary, detail]);
         assert_eq!(snapshot["threads"][0]["lastAnswer"], "Answer");
         assert_eq!(snapshot["threads"][0]["name"], "Current");
