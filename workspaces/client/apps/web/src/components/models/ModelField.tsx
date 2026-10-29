@@ -7,7 +7,7 @@ import {
   type ModelOption,
 } from "./modelOption";
 import "./model-field.css";
-import { useModelWhitelist, whitelistedModelOptions } from "./modelWhitelist";
+import { useModelChoices, enabledModelOptions } from "./modelChoices";
 
 type Props = {
   label: string;
@@ -30,8 +30,8 @@ export function ModelField({
   disabled,
   retainCurrent = true,
 }: Props) {
-  const allowed = useModelWhitelist();
-  const options = whitelistedModelOptions(
+  const allowed = useModelChoices();
+  const options = enabledModelOptions(
     allOptions,
     value,
     allowed,

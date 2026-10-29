@@ -452,7 +452,7 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
       }
       await page.evaluate(() => {
         window.pickerReset!();
-        window.whitelist(["codex:gpt-6-astra", "claude:claude-sonnet-5-5"]);
+        window.whitelist({ "claude:claude-opus-5-5": "blacklisted" });
       });
       await page
         .getByRole("button", { name: "Main agent settings", exact: true })
@@ -466,7 +466,7 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         .poll(() => page.evaluate(() => window.agent.workerDefaults!.model))
         .toBe("claude-sonnet-5-5");
       await expect(page.getByRole("option", { name: /Opus/ })).toHaveCount(0);
-      await page.evaluate(() => window.whitelist(null));
+      await page.evaluate(() => window.whitelist({}));
       assert.deepEqual(errors, []);
     }
     await writeFile(

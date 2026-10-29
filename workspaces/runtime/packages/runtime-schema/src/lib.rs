@@ -757,6 +757,7 @@ fn prepare_schemas() -> SchemaResult<CompiledSchemas> {
         "ExecutionLedger",
         "PeerTeamEntityDto",
         "PreferenceField",
+        "ModelChoices",
         "ProjectEntityDto",
         "ProjectMutationRecord",
         "RequestEntityDto",

@@ -14729,6 +14729,19 @@ export interface components {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /**
+     * @description A user's explicit model picker choice. Pickers offer every model that is
+     *     not blacklisted, so a model new to the catalog starts untouched and enabled.
+     * @enum {string}
+     */
+    ModelChoice: "untouched" | "whitelisted" | "blacklisted";
+    /**
+     * @description Server preference value keyed by provider-qualified model identity; an
+     *     absent key is untouched. The schema is the server validator.
+     */
+    ModelChoices: {
+      [key: string]: components["schemas"]["ModelChoice"];
+    };
+    /**
      * ModelEntityDto
      * @description A complete provider model row scoped to its account; catalogPosition preserves provider order.
      */
@@ -39631,6 +39644,12 @@ export const MigrationTarget = {
   supervisor: "supervisor",
 } as const;
 export type MigrationTarget = components["schemas"]["MigrationTarget"];
+export const ModelChoice = {
+  untouched: "untouched",
+  whitelisted: "whitelisted",
+  blacklisted: "blacklisted",
+} as const;
+export type ModelChoice = components["schemas"]["ModelChoice"];
 export const MonitorInputKind = { monitor_input: "monitor_input" } as const;
 export type MonitorInputKind = components["schemas"]["MonitorInputKind"];
 export const MonitorInputStatus = {

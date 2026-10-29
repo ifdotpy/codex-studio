@@ -24,7 +24,11 @@ import {
   type PreferenceFields,
   type PreferenceScope,
 } from "./uiPreferenceMerge";
+import { RETIRED_MODEL_WHITELIST_KEY } from "../generated/sharedValues.ts";
 const userStorage = () => globalThis.localStorage;
+const retiredModelWhitelistField = JSON.stringify([
+  RETIRED_MODEL_WHITELIST_KEY,
+]);
 let applying = false;
 const listeners = new Set<() => void>();
 function cache(storage: Storage, scope: PreferenceScope): PreferenceFields {
@@ -53,7 +57,8 @@ function cache(storage: Storage, scope: PreferenceScope): PreferenceFields {
     const fields = prunePreferenceFields(valid);
     const validFields = Object.fromEntries(
       Object.entries(fields).filter(([name, field]) => {
-        if (scope !== "user") return true;
+        // The server rejects every push that still carries the retired field.
+        if (scope !== "user") return name !== retiredModelWhitelistField;
         let parts: unknown;
         try {
           parts = JSON.parse(name);
