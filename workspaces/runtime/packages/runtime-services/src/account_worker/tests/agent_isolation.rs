@@ -25,7 +25,7 @@ async fn second_agent(state: &State, id: &str, thread: &str, input: &str) {
                 let mut row = AgentRepository::get(tx, &AgentId::from(first.as_str()))?.unwrap();
                 row.id = AgentId::from(id_row.as_str());
                 row.root_id = AgentId::from(id_row.as_str());
-                row.thread_id = Some(thread.to_string());
+                row.thread_id = Some(thread);
                 AgentRepository::put(tx, &row)?;
                 Ok::<_, WorkerError>(())
             })

@@ -585,7 +585,7 @@ impl CompletionWriter for RestartInputCompletion {
                     agent: settled_agent.value(),
                     method: "turn/completed".into(),
                     params: json!({
-                        "threadId":settled_agent.thread_id.clone().map(Value::String).unwrap_or(Value::Null),
+                        "threadId":settled_agent.thread_id.map(Value::String).unwrap_or(Value::Null),
                         "turnId":turn_id,
                         "turn":turn
                     }),
