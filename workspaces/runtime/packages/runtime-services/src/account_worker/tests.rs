@@ -3150,22 +3150,33 @@ async fn shutdown_releases_account_while_store_operation_is_blocked() {
 
 #[tokio::test]
 async fn accepted_turn_reattaches_and_keeps_notification_effects() {
+    eprintln!("reattach: creating fixture");
     let state = State::new().await;
     let mut peer = Peer::new();
+    eprintln!("reattach: waiting for initial worker readiness");
     let mut worker = peer.worker(state.bridge.clone()).await;
+    eprintln!("reattach: waiting for initial turn start");
     let start = state.start(&mut peer, &worker).await;
     peer.accepted(&start).await;
+    eprintln!("reattach: waiting for initial worker shutdown");
     worker.shutdown().await.unwrap();
     let mut peer = Peer::new();
     peer.cursor = 2;
+    eprintln!("reattach: waiting for replacement worker readiness");
     let mut worker = peer.worker(state.bridge.clone()).await;
+    eprintln!("reattach: waiting for item acknowledgment");
     let cursor = peer.frame(json!({"method":"item/completed","params":{"threadId":"fake-thread-0","turnId":"turn","item":{"id":"reattached","type":"agentMessage","text":"after restart"}}})).await;
     peer.acknowledged(cursor).await;
+    eprintln!("reattach: waiting for item count");
     let count = state.bridge.run(move |store| async move { Ok(store.test_reader()?.query_row("SELECT COUNT(*) FROM runtime_items WHERE json_extract(record,'$.text')='after restart'", [], |r|r.get::<_,i64>(0))?) }).await.unwrap();
     assert_eq!(count, 1);
+    eprintln!("reattach: waiting for turn acknowledgment");
     peer.completed().await;
+    eprintln!("reattach: waiting for final record");
     assert_eq!(state.record().await["status"], "completed");
+    eprintln!("reattach: waiting for replacement worker shutdown");
     worker.shutdown().await.unwrap();
+    eprintln!("reattach: replacement worker stopped");
 }
 
 #[tokio::test]
