@@ -82,6 +82,7 @@ export default {
       "src/servers/navigation.test.ts",
       "src/servers/frameBridge.test.ts",
       "src/servers/summary.test.ts",
+      "src/servers/schemaRecovery.test.ts",
       "src/components/accountDeleteRequests.test.ts",
       "src/components/Accounts.identity.test.ts",
       "src/components/StudioSettingsTabs.test.ts",

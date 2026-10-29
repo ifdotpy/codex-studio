@@ -59,6 +59,7 @@ import ProjectServerCards from "../components/ProjectServerCards";
 import { projectServerChoices, type LocationProject } from "./projectLocations";
 import { projectChatCommand } from "./projectChatCommand";
 import { fetchServerSummary, summaryFailure } from "./summary";
+import { recoverMatchingServers } from "./schemaRecovery";
 import {
   localServer,
   readServers,
@@ -350,6 +351,9 @@ function MultiServerShell({
     [],
   );
   const serviceInstances = useRef(new Map<string, ServerServices>());
+  // A remote scope that latched an API schema mismatch is recreated when the server matches again.
+  const [revived, setRevived] = useState<Record<string, number>>({});
+  const revivedSeen = useRef<Record<string, number>>({});
   const services = useMemo(
     () =>
       new Map(
@@ -357,17 +361,41 @@ function MultiServerShell({
           const previous = serviceInstances.current.get(server.id);
           const instance =
             previous &&
+            (revived[server.id] || 0) ===
+              (revivedSeen.current[server.id] || 0) &&
             previous.owner.origin === server.origin &&
             previous.owner.credentialId === server.credentialId
               ? previous
               : server.id === "local" && localServices
                 ? localServices
                 : createServerServices(server);
+          revivedSeen.current[server.id] = revived[server.id] || 0;
           return [server.id, instance] as const;
         }),
       ),
-    [servers, localServices],
+    [servers, localServices, revived],
   );
+  const reviveMatching = useCallback(() => {
+    void recoverMatchingServers(
+      serversRef.current.filter((server) => server.id !== "local"),
+      (id) => !!serviceInstances.current.get(id)?.api.isApiSchemaMismatch(),
+      (server) => fetchServerSummary(server, AbortSignal.timeout(10000)),
+    ).then((ids) => {
+      if (ids.length)
+        setRevived((old) => ({
+          ...old,
+          ...Object.fromEntries(ids.map((id) => [id, (old[id] || 0) + 1])),
+        }));
+    });
+  }, []);
+  useEffect(() => {
+    window.addEventListener("focus", reviveMatching);
+    return () => window.removeEventListener("focus", reviveMatching);
+  }, [reviveMatching]);
+  useEffect(() => {
+    if (manager && (managerTab === "servers" || managerTab === "accounts"))
+      reviveMatching();
+  }, [manager, managerTab, reviveMatching]);
   const screenOwners = useRef(
     new Map<string, { service: ServerServices; channel: ScreenChannel }>(),
   );
@@ -1021,6 +1049,7 @@ function MultiServerShell({
                 server.id,
                 server.origin,
                 server.credentialId,
+                revived[server.id] || 0,
               ])}
               services={service}
             >
