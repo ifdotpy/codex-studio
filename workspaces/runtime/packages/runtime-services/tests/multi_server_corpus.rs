@@ -5,9 +5,231 @@ use common::*;
 use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::Duration;
-use studio_runtime_services::multi_server_auth::{AccessSnapshot, OwnerObservation, authorize_at};
+use studio_runtime_services::multi_server_auth::{
+    AccessSnapshot, OwnerObservation, SignedRequest, authorize_at,
+};
 use studio_runtime_services::multi_server_discovery::DiscoverySnapshot;
-use studio_runtime_store::RuntimeStore;
+use studio_runtime_services::multi_server_orchestration::{AppliedReply, ExchangeOutcome};
+use studio_runtime_store::{RuntimeStore, multi_server_delivery::RemoteReply};
+
+fn applied(value: &Value) -> ExchangeOutcome {
+    ExchangeOutcome::Applied(AppliedReply::new(
+        serde_json::value::to_raw_value(value).unwrap(),
+    ))
+}
+
+/// Restore classifiable frozen transport rows in their source-era tables and
+/// run the real receipt migration. The unproven python-location row has its
+/// own migration-stop witness and is not mixed into this successful fixture.
+pub async fn migrated_store() -> (tempfile::TempDir, Arc<RuntimeStore>) {
+    let (root, store) = store().await;
+    drop(store);
+    {
+        let db = rusqlite::Connection::open(root.path().join("canvas.sqlite3")).expect("source");
+        db.execute_batch("DELETE FROM runtime_payload_migrations WHERE name LIKE 'receipts:%';
+            CREATE TABLE runtime_access_receipts(client TEXT,request_id TEXT,hash TEXT,session TEXT,status TEXT,record TEXT,PRIMARY KEY(client,request_id));
+            DROP TABLE runtime_server_inbox; DROP TABLE runtime_server_outbox;
+            CREATE TABLE runtime_server_inbox(id TEXT PRIMARY KEY,signature TEXT NOT NULL,state TEXT NOT NULL,result TEXT,created_at REAL NOT NULL DEFAULT 0,completed_at REAL NOT NULL DEFAULT 0,principal TEXT,actor TEXT);
+            CREATE TABLE runtime_server_outbox(id TEXT PRIMARY KEY,server TEXT NOT NULL,body TEXT NOT NULL,state TEXT NOT NULL,result TEXT,attempts INTEGER NOT NULL DEFAULT 0,next_at REAL NOT NULL DEFAULT 0,error TEXT,created_at REAL NOT NULL DEFAULT 0,completed_at REAL NOT NULL DEFAULT 0,fingerprint TEXT);")
+            .expect("source-era receipt tables");
+        for line in fixture().canvas_sql.lines().filter(|line| {
+            (line.starts_with("INSERT INTO \"runtime_access_receipts\"")
+                || line.starts_with("INSERT INTO \"runtime_server_inbox\"")
+                || line.starts_with("INSERT INTO \"runtime_server_outbox\""))
+                && !line
+                    .starts_with("INSERT INTO \"runtime_server_outbox\" VALUES('python-location'")
+        }) {
+            db.execute_batch(line).expect("frozen source row");
+        }
+    }
+    let store = Arc::new(
+        RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("migrate frozen receipts"),
+    );
+    (root, store)
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PairBody {
+    client_id: String,
+    invite_id: String,
+    kind: String,
+    label: String,
+    origin: Option<String>,
+    protocol: u64,
+    public_key: String,
+    request_id: String,
+    token: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AutoPairBody {
+    label: String,
+    origin: String,
+    protocol: u64,
+    public_key: String,
+    request_id: String,
+    server_id: String,
+}
+
+#[derive(serde::Deserialize)]
+struct SigningCase {
+    name: String,
+    raw: String,
+}
+#[derive(serde::Deserialize)]
+struct SigningData {
+    auth: Vec<SigningCase>,
+}
+
+/// Sign a current UUIDv7 root with the frozen test identity.
+pub fn current_pair(root: &str, nonce: &str, now: i64) -> SignedRequest {
+    let data: SigningData = typed_data();
+    let mut body: PairBody =
+        serde_json::from_str(&data.auth.first().expect("pair case").raw).expect("pair body");
+    body.request_id = root.to_owned();
+    let raw = serde_json::to_vec(&body).expect("pair JSON");
+    current_signed(
+        "/api/multi-server/v1/pair",
+        &body.client_id,
+        root,
+        nonce,
+        now,
+        &raw,
+    )
+}
+
+pub fn current_auto_pair(root: &str, nonce: &str, now: i64) -> SignedRequest {
+    let data: SigningData = typed_data();
+    let case = data
+        .auth
+        .iter()
+        .find(|case| case.name == "auto-pair")
+        .expect("auto pair case");
+    let mut body: AutoPairBody = serde_json::from_str(&case.raw).expect("auto pair body");
+    body.request_id = root.to_owned();
+    let raw = serde_json::to_vec(&body).expect("auto pair JSON");
+    current_signed(
+        "/api/multi-server/v1/auto-pair",
+        &body.server_id,
+        root,
+        nonce,
+        now,
+        &raw,
+    )
+}
+
+fn current_signed(
+    target: &str,
+    client: &str,
+    root: &str,
+    nonce: &str,
+    now: i64,
+    raw: &[u8],
+) -> SignedRequest {
+    use studio_runtime_services::remote_transport::{
+        MultiServerSigningInput, multi_server_signing_bytes,
+    };
+    let timestamp = now.to_string();
+    let bytes = multi_server_signing_bytes(MultiServerSigningInput {
+        method: "POST",
+        target,
+        server_id: "local-server",
+        client_id: client,
+        timestamp: &timestamp,
+        nonce,
+        request_id: root,
+        body: raw,
+    });
+    let signature = signing_identity().sign(&bytes);
+    let headers = vec![
+        ("X-Studio-Client".into(), client.into()),
+        ("X-Studio-Server".into(), "local-server".into()),
+        ("X-Studio-Timestamp".into(), timestamp),
+        ("X-Studio-Nonce".into(), nonce.into()),
+        ("X-Studio-Request-Id".into(), root.into()),
+        ("X-Studio-Signature".into(), signature),
+    ];
+    SignedRequest::from_headers("POST", target, &headers, raw).expect("signed request")
+}
+#[tokio::test]
+async fn legacy_location_without_project_admission_stops_migration() {
+    let root = tempfile::tempdir().expect("state");
+    drop(
+        RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("bootstrap"),
+    );
+    let db = rusqlite::Connection::open(root.path().join("canvas.sqlite3")).expect("source");
+    db.execute_batch(
+        "DELETE FROM runtime_payload_migrations WHERE name LIKE 'receipts:%';
+         DROP TABLE runtime_server_outbox;
+         CREATE TABLE runtime_server_outbox (
+             id TEXT PRIMARY KEY, server TEXT NOT NULL, body TEXT NOT NULL,
+             state TEXT NOT NULL, result TEXT, attempts INTEGER NOT NULL DEFAULT 0,
+             next_at REAL NOT NULL DEFAULT 0, error TEXT, created_at REAL NOT NULL DEFAULT 0,
+             completed_at REAL NOT NULL DEFAULT 0, fingerprint TEXT
+         );",
+    )
+    .expect("source-era outbox");
+    let sql = fixture()
+        .canvas_sql
+        .lines()
+        .find(|line| {
+            line.starts_with("INSERT INTO \"runtime_server_outbox\" VALUES('python-location'")
+        })
+        .expect("frozen legacy location");
+    db.execute_batch(sql).expect("source row");
+    drop(db);
+    let error = RuntimeStore::open(Some(root.path()))
+        .await
+        .err()
+        .expect("unclassifiable location must stop migration");
+    assert!(
+        format!("{error:?}").contains("python-location"),
+        "{error:?}"
+    );
+    let db = rusqlite::Connection::open(root.path().join("canvas.sqlite3")).expect("source");
+    let count: i64 = db
+        .query_row(
+            "SELECT count(*) FROM runtime_server_outbox WHERE id='python-location'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("source retained");
+    assert_eq!(
+        count, 1,
+        "migration must not discard the unproven operation"
+    );
+}
+
+#[tokio::test]
+async fn frozen_transport_receipts_migrate_to_current_owners() {
+    let (_root, store) = migrated_store().await;
+    let db = store.test_reader().expect("reader");
+    let completed: i64 = db
+        .query_row(
+            "SELECT count(*) FROM request_results WHERE id='python-complete'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("completed receipt");
+    let pending: i64 = db
+        .query_row(
+            "SELECT count(*) FROM runtime_server_inbox WHERE id='python-running'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("pending owner");
+    assert_eq!(
+        completed, 1,
+        "completed incoming reply migrates to request_results"
+    );
+    assert_eq!(pending, 1, "unsettled incoming work remains held");
+}
 
 #[tokio::test]
 async fn tailscale_discovery_uses_only_online_untagged_same_owner_candidates() {
@@ -71,7 +293,7 @@ async fn peer_delivery_replays_same_identity_after_lost_receipt_and_restart_once
             server: &'a str,
             envelope: &'a Value,
             _timeout: Duration,
-        ) -> futures_util::future::BoxFuture<'a, Result<Value, AccessError>> {
+        ) -> futures_util::future::BoxFuture<'a, Result<RemoteReply, AccessError>> {
             Box::pin(async move {
                 assert_eq!(server, "peer-server");
                 let id = envelope["requestId"]
@@ -94,12 +316,20 @@ async fn peer_delivery_replays_same_identity_after_lost_receipt_and_restart_once
                 if *count == 1 {
                     return Err(refused(503, "exchange_unknown", "reply was lost"));
                 }
-                Ok(json!({"requestId":id,"outcome":"applied","value":{"stored":true}}))
+                Ok(applied(&json!({"stored":true})).to_reply(&id))
             })
         }
     }
 
     let (root, store) = store().await;
+    let request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    let key = studio_runtime_store::multi_server_delivery::remote_operation_key(
+        "server-outbox",
+        &["peer-server"],
+        &request_id,
+        &["message"],
+    );
+    let now = chrono::Utc::now().timestamp();
     let peer = Arc::new(Peer::default());
     let driver = OrchestrationDriver::new(
         Arc::clone(&store),
@@ -109,7 +339,7 @@ async fn peer_delivery_replays_same_identity_after_lost_receipt_and_restart_once
     let payload = json!({"link":"link-1","worker":"worker-1","args":{"text":"same"}});
     assert_eq!(
         driver
-            .exchange("peer-server", "message", &payload, "stable-message-1", 100)
+            .exchange("peer-server", "message", &payload, &request_id, now)
             .await
             .unwrap(),
         ExchangeOutcome::Unknown
@@ -118,14 +348,17 @@ async fn peer_delivery_replays_same_identity_after_lost_receipt_and_restart_once
     // the retry schedule was persisted. Restart recovery must replay only this
     // idempotent peer action with the same identity and content.
     store
-        .transaction_with(|tx| {
-            tx.execute(
-                "UPDATE runtime_server_outbox SET state='running',next_at=0 WHERE id='stable-message-1'",
-                [],
-            )?;
-            Ok::<_, studio_runtime_store::StoreError>(())
+        .transaction_with({
+            let key = key.clone();
+            move |tx| {
+                tx.execute(
+                    "UPDATE runtime_server_outbox SET state='running',next_at=0 WHERE id=?1",
+                    [&key],
+                )?;
+                Ok::<_, studio_runtime_store::StoreError>(())
+            }
         })
-            .await
+        .await
         .expect("simulate restart between claim and retry persistence");
     drop(driver);
     drop(store);
@@ -140,25 +373,25 @@ async fn peer_delivery_replays_same_identity_after_lost_receipt_and_restart_once
         Arc::clone(&peer) as _,
         Arc::new(Effects),
     );
-    assert!(driver.pump_due(105).await.unwrap() > 0);
+    assert!(driver.pump_due(now + 5).await.unwrap() > 0);
     assert!(
-        peer.applied.lock().unwrap().contains("stable-message-1"),
+        peer.applied.lock().unwrap().contains(&request_id),
         "receiver commits stable message identity once"
     );
     assert_eq!(
-        peer.calls.lock().unwrap()["stable-message-1"],
+        peer.calls.lock().unwrap()[&request_id],
         2,
         "lost response causes one exact replay"
     );
     let connection = restarted.test_reader().expect("reopened store reads");
-    let state: String = connection
+    let state: (i64, i64) = connection
         .query_row(
-            "SELECT state FROM runtime_server_outbox WHERE id='stable-message-1'",
-            [],
-            |row| row.get(0),
+            "SELECT (SELECT count(*) FROM runtime_server_outbox WHERE id=?1), (SELECT count(*) FROM request_results WHERE id=?1)",
+            [&key],
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
-    assert_eq!(state, "complete");
+    assert_eq!(state, (0, 1), "settled reply replaces the delivery row");
 }
 
 #[tokio::test]
@@ -178,12 +411,20 @@ async fn received_remote_event_replays_cached_receipt_after_restart_without_dupl
             _server: &'a str,
             _envelope: &'a Value,
             _timeout: Duration,
-        ) -> futures_util::future::BoxFuture<'a, Result<Value, AccessError>> {
+        ) -> futures_util::future::BoxFuture<'a, Result<RemoteReply, AccessError>> {
             Box::pin(async move { Err(refused(503, "unused", "transport unused in receive test")) })
         }
     }
     let (root, store) = store().await;
     let mut parent = AgentRecord {
+        title_job: None,
+        start_outcome_hold: None,
+        fired_events: Default::default(),
+        native_review_thread: None,
+        vm_launch: None,
+        credential_copy: None,
+        vm_auth_bootstrap: None,
+        native_release: None,
         id: AgentId::from("test-parent"),
         root_id: AgentId::from("test-parent"),
         epoch: 3,
@@ -212,7 +453,9 @@ async fn received_remote_event_replays_cached_receipt_after_restart_without_dupl
         })
         .await
         .expect("link and owner agent fixture");
-    let envelope = json!({"requestId":"stable-event-test","action":"event","payload":{"link":"test-link","parentEpoch":3,"kind":"agent_message","text":"owner monitor exit"}});
+    let request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    let now = chrono::Utc::now().timestamp();
+    let envelope = json!({"requestId":request_id,"operation":[],"action":"event","payload":{"link":"test-link","parentEpoch":3,"kind":"agent_message","text":"owner monitor exit"}});
     let make_driver = |store: Arc<RuntimeStore>| {
         OrchestrationDriver::new(
             store.clone(),
@@ -222,7 +465,7 @@ async fn received_remote_event_replays_cached_receipt_after_restart_without_dupl
     };
     let driver = make_driver(Arc::clone(&store));
     let lost_reply = driver
-        .receive("peer-server", &envelope, 100)
+        .receive("peer-server", &envelope, now)
         .await
         .expect("event applied");
     assert!(matches!(lost_reply, ExchangeOutcome::Applied(_)));
@@ -236,23 +479,23 @@ async fn received_remote_event_replays_cached_receipt_after_restart_without_dupl
     );
     let driver = make_driver(Arc::clone(&restarted));
     let receipt = driver
-        .receive("peer-server", &envelope, 101)
+        .receive("peer-server", &envelope, now + 1)
         .await
         .expect("cached receipt replays");
     assert_eq!(receipt, lost_reply);
     let connection = restarted.test_reader().expect("event rows");
     let count: i64 = connection
         .query_row(
-            "SELECT count(*) FROM runtime_events WHERE id='stable-event-test'",
-            [],
+            "SELECT count(*) FROM runtime_events WHERE id=?1",
+            [&request_id],
             |row| row.get(0),
         )
         .unwrap();
     assert_eq!(count, 1);
     let text: String = connection
         .query_row(
-            "SELECT text FROM runtime_events WHERE id='stable-event-test'",
-            [],
+            "SELECT text FROM runtime_events WHERE id=?1",
+            [&request_id],
             |row| row.get(0),
         )
         .unwrap();
@@ -276,7 +519,7 @@ async fn paired_project_location_read_uses_the_fake_peer_transport() {
             _server: &'a str,
             _envelope: &'a Value,
             _timeout: Duration,
-        ) -> futures_util::future::BoxFuture<'a, Result<Value, AccessError>> {
+        ) -> futures_util::future::BoxFuture<'a, Result<RemoteReply, AccessError>> {
             Box::pin(async move { Err(refused(503, "unused", "peer transport not expected")) })
         }
     }
@@ -287,7 +530,7 @@ async fn paired_project_location_read_uses_the_fake_peer_transport() {
             server: &'a str,
             envelope: &'a Value,
             _timeout: Duration,
-        ) -> futures_util::future::BoxFuture<'a, Result<Value, AccessError>> {
+        ) -> futures_util::future::BoxFuture<'a, Result<RemoteReply, AccessError>> {
             Box::pin(async move {
                 assert_eq!(server, "peer-server");
                 let key = envelope["requestId"]
@@ -295,9 +538,9 @@ async fn paired_project_location_read_uses_the_fake_peer_transport() {
                     .expect("stable request identity");
                 Ok(self
                     .0
-                    .receive("local-server", envelope, 100)
+                    .receive("local-server", envelope, chrono::Utc::now().timestamp())
                     .await?
-                    .to_value(key))
+                    .to_reply(key))
             })
         }
     }
@@ -350,14 +593,15 @@ async fn paired_project_location_read_uses_the_fake_peer_transport() {
             "peer-server",
             "location_info",
             &json!({"cwd":folder.to_string_lossy()}),
-            "project-location-read-1",
-            100,
+            &studio_runtime_schema::persistence::RequestIdentity::issue_root(),
+            chrono::Utc::now().timestamp(),
         )
         .await
         .expect("fake remote location read");
     let ExchangeOutcome::Applied(value) = outcome else {
         panic!("expected applied location read")
     };
+    let value: Value = serde_json::from_str(value.value.get()).unwrap();
     assert_eq!(value["gitOrigin"], "example.invalid/team/repo");
     assert_eq!(value["matches"], json!([]));
     // A browsed folder is reported in its resolved form.
@@ -371,14 +615,15 @@ async fn paired_project_location_read_uses_the_fake_peer_transport() {
             "peer-server",
             "folders",
             &json!({"cwd":browse.to_string_lossy()}),
-            "folder-browse-read-1",
-            101,
+            &studio_runtime_schema::persistence::RequestIdentity::issue_root(),
+            chrono::Utc::now().timestamp(),
         )
         .await
         .expect("fake remote folder browse");
     let ExchangeOutcome::Applied(folders) = folders else {
         panic!("expected applied folder browse")
     };
+    let folders: Value = serde_json::from_str(folders.value.get()).unwrap();
     assert_eq!(folders["path"], browse.to_string_lossy().as_ref());
     assert_eq!(folders["directories"].as_array().unwrap().len(), 1);
     assert_eq!(folders["directories"][0]["name"], "visible-child");
@@ -401,13 +646,21 @@ async fn moved_worker_send_reaches_a_local_descendant_once() {
             _server: &'a str,
             _envelope: &'a Value,
             _timeout: Duration,
-        ) -> futures_util::future::BoxFuture<'a, Result<Value, AccessError>> {
+        ) -> futures_util::future::BoxFuture<'a, Result<RemoteReply, AccessError>> {
             Box::pin(async move { Err(refused(503, "unused", "transport unused in receive test")) })
         }
     }
 
     let (_root, store) = store().await;
     let mut parent = AgentRecord {
+        title_job: None,
+        start_outcome_hold: None,
+        fired_events: Default::default(),
+        native_review_thread: None,
+        vm_launch: None,
+        credential_copy: None,
+        vm_auth_bootstrap: None,
+        native_release: None,
         id: AgentId::from("move-parent"),
         root_id: AgentId::from("move-parent"),
         epoch: 3,
@@ -424,6 +677,14 @@ async fn moved_worker_send_reaches_a_local_descendant_once() {
     );
     parent.extra.insert("concurrency".into(), json!(32));
     let mut worker = AgentRecord {
+        title_job: None,
+        start_outcome_hold: None,
+        fired_events: Default::default(),
+        native_review_thread: None,
+        vm_launch: None,
+        credential_copy: None,
+        vm_auth_bootstrap: None,
+        native_release: None,
         id: AgentId::from("remote-worker"),
         root_id: AgentId::from("move-parent"),
         epoch: 4,
@@ -444,6 +705,14 @@ async fn moved_worker_send_reaches_a_local_descendant_once() {
         json!({"server":"peer-server","link":"move-link"}),
     );
     let mut child = AgentRecord {
+        title_job: None,
+        start_outcome_hold: None,
+        fired_events: Default::default(),
+        native_review_thread: None,
+        vm_launch: None,
+        credential_copy: None,
+        vm_auth_bootstrap: None,
+        native_release: None,
         id: AgentId::from("local-child"),
         root_id: AgentId::from("move-parent"),
         epoch: 1,
@@ -476,8 +745,11 @@ async fn moved_worker_send_reaches_a_local_descendant_once() {
         .await
         .expect("moved worker and descendant fixture");
 
+    let request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    let now = chrono::Utc::now().timestamp();
     let envelope = json!({
-        "requestId":"stable-move-send",
+        "requestId":request_id,
+        "operation":[],
         "action":"move_send",
         "payload":{
             "link":"move-link",
@@ -493,20 +765,20 @@ async fn moved_worker_send_reaches_a_local_descendant_once() {
         Arc::new(RuntimeOrchestrationEffects::new(Arc::clone(&store))),
     );
     let receipt = driver
-        .receive("peer-server", &envelope, 100)
+        .receive("peer-server", &envelope, now)
         .await
         .expect("move-send is applied through the incoming caller");
     assert!(matches!(receipt, ExchangeOutcome::Applied(_)));
     let replay = driver
-        .receive("peer-server", &envelope, 101)
+        .receive("peer-server", &envelope, now + 1)
         .await
         .expect("stable move-send replays its saved receipt");
     assert_eq!(receipt, replay);
     let connection = store.test_reader().expect("event rows");
     let count: i64 = connection
         .query_row(
-            "SELECT count(*) FROM runtime_events WHERE id='stable-move-send' AND agent='local-child' AND kind='followup' AND text='continue this task'",
-            [],
+            "SELECT count(*) FROM runtime_events WHERE id=?1 AND agent='local-child' AND kind='followup' AND text='continue this task'",
+            [&request_id],
             |row| row.get(0),
         )
         .unwrap();
@@ -523,6 +795,14 @@ async fn remote_worker_call_refuses_stopped_parent_without_writes() {
 
     let (_root, store) = store().await;
     let mut parent = AgentRecord {
+        title_job: None,
+        start_outcome_hold: None,
+        fired_events: Default::default(),
+        native_review_thread: None,
+        vm_launch: None,
+        credential_copy: None,
+        vm_auth_bootstrap: None,
+        native_release: None,
         id: AgentId::from("stopped-parent"),
         root_id: AgentId::from("stopped-parent"),
         epoch: 4,
@@ -534,6 +814,14 @@ async fn remote_worker_call_refuses_stopped_parent_without_writes() {
     };
     parent.extra.insert("autoWake".into(), json!(false));
     let mut worker = AgentRecord {
+        title_job: None,
+        start_outcome_hold: None,
+        fired_events: Default::default(),
+        native_review_thread: None,
+        vm_launch: None,
+        credential_copy: None,
+        vm_auth_bootstrap: None,
+        native_release: None,
         id: AgentId::from("stopped-worker"),
         root_id: AgentId::from("stopped-parent"),
         epoch: 2,
@@ -580,9 +868,7 @@ async fn remote_stop_receiver_replays_exact_request_and_rejects_superseded_contr
     use studio_runtime_services::{
         agent_lifecycle_runtime::{LifecycleEffect, LifecyclePorts},
         agent_management::ManagementError,
-        multi_server_orchestration::{
-            ExchangeOutcome, OrchestrationEffects, RuntimeOrchestrationEffects,
-        },
+        multi_server_orchestration::{OrchestrationEffects, RuntimeOrchestrationEffects},
     };
     use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, AgentStatus, Transaction};
 
@@ -600,6 +886,14 @@ async fn remote_stop_receiver_replays_exact_request_and_rejects_superseded_contr
 
     let (_root, store) = store().await;
     let mut parent = AgentRecord {
+        title_job: None,
+        start_outcome_hold: None,
+        fired_events: Default::default(),
+        native_review_thread: None,
+        vm_launch: None,
+        credential_copy: None,
+        vm_auth_bootstrap: None,
+        native_release: None,
         id: AgentId::from("remote-parent"),
         root_id: AgentId::from("remote-parent"),
         epoch: 2,
@@ -612,6 +906,14 @@ async fn remote_stop_receiver_replays_exact_request_and_rejects_superseded_contr
     parent.extra.insert("autoWake".into(), json!(true));
     parent.extra.insert("cwd".into(), json!("/fixture"));
     let mut worker = AgentRecord {
+        title_job: None,
+        start_outcome_hold: None,
+        fired_events: Default::default(),
+        native_review_thread: None,
+        vm_launch: None,
+        credential_copy: None,
+        vm_auth_bootstrap: None,
+        native_release: None,
         id: AgentId::from("remote-worker"),
         root_id: AgentId::from("remote-parent"),
         epoch: 4,
@@ -658,18 +960,12 @@ async fn remote_stop_receiver_replays_exact_request_and_rejects_superseded_contr
         .execute("home-server", &envelope)
         .await
         .expect("remote stop");
-    assert_eq!(
-        first,
-        ExchangeOutcome::Applied(json!({"stopped":["remote-worker"]}))
-    );
+    assert_eq!(first, applied(&json!({"stopped":["remote-worker"]})));
     let replay = effects
         .execute("home-server", &envelope)
         .await
         .expect("same request replay");
-    assert_eq!(
-        replay,
-        ExchangeOutcome::Applied(json!({"stopped":["remote-worker"]}))
-    );
+    assert_eq!(replay, applied(&json!({"stopped":["remote-worker"]})));
     let reader = store.test_reader().expect("read replayed worker");
     let current = AgentRepository::get(&reader, &AgentId::from("remote-worker"))
         .expect("worker row")
@@ -723,8 +1019,24 @@ async fn stopping_remote_proxy_persists_and_replays_the_same_signed_intent() {
 
     struct NoBroker;
     impl AccountSessionPort for NoBroker {}
+    #[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct StopEnvelope {
+        request_id: String,
+        action: String,
+        operation: Vec<String>,
+        payload: StopPayload,
+    }
+    #[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct StopPayload {
+        worker: String,
+        link: String,
+        reason: String,
+        control_epoch: i64,
+    }
     struct Peer {
-        calls: Mutex<Vec<Value>>,
+        calls: Mutex<Vec<StopEnvelope>>,
         attempts: AtomicUsize,
     }
     impl PairedTransport for Peer {
@@ -733,31 +1045,58 @@ async fn stopping_remote_proxy_persists_and_replays_the_same_signed_intent() {
             server: &'a str,
             envelope: &'a Value,
             _timeout: Duration,
-        ) -> futures_util::future::BoxFuture<'a, Result<Value, AccessError>> {
+        ) -> futures_util::future::BoxFuture<'a, Result<RemoteReply, AccessError>> {
             Box::pin(async move {
                 assert_eq!(server, "peer-server");
+                let payload = &envelope["payload"];
+                let envelope = StopEnvelope {
+                    request_id: envelope["requestId"].as_str().unwrap().to_owned(),
+                    action: envelope["action"].as_str().unwrap().to_owned(),
+                    operation: envelope["operation"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|v| v.as_str().unwrap().to_owned())
+                        .collect(),
+                    payload: StopPayload {
+                        worker: payload["worker"].as_str().unwrap().to_owned(),
+                        link: payload["link"].as_str().unwrap().to_owned(),
+                        reason: payload["reason"].as_str().unwrap().to_owned(),
+                        control_epoch: payload["controlEpoch"].as_i64().unwrap(),
+                    },
+                };
                 self.calls.lock().unwrap().push(envelope.clone());
                 if self.attempts.fetch_add(1, Ordering::SeqCst) == 0 {
                     return Err(refused(503, "exchange_unknown", "reply was lost"));
                 }
-                Ok(json!({
-                    "requestId": envelope["requestId"],
-                    "outcome": "applied",
-                    "value": {"stopped": [envelope["payload"]["worker"]]},
-                }))
+                Ok(applied(&json!({"stopped": [envelope.payload.worker]}))
+                    .to_reply(&envelope.request_id))
             })
         }
     }
 
-    let (_root, store) = store().await;
+    let root = tempfile::tempdir().expect("state");
+    let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+    store
+        .set_local_server_id(Some("local-server".into()))
+        .expect("local identity");
     store
         .transaction(|tx| {
-            tx.execute("DELETE FROM runtime_server_outbox", [])?;
+            tx.execute("INSERT INTO runtime_access_clients(id,record) VALUES('peer-server',?1)",
+                [r#"{"id":"peer-server","clientId":"peer-server","kind":"server","label":"Peer","created":1,"publicKey":"fixture-key","status":"paired"}"#])?;
             Ok::<_, studio_runtime_store::StoreError>(())
         })
         .await
-        .expect("isolate the stop outbox");
+        .expect("paired peer");
     let mut proxy = AgentRecord {
+        title_job: None,
+        start_outcome_hold: None,
+        fired_events: Default::default(),
+        native_review_thread: None,
+        vm_launch: None,
+        credential_copy: None,
+        vm_auth_bootstrap: None,
+        native_release: None,
         id: AgentId::from("remote-stop-proxy"),
         root_id: AgentId::from("remote-stop-proxy"),
         epoch: 6,
@@ -812,19 +1151,29 @@ async fn stopping_remote_proxy_persists_and_replays_the_same_signed_intent() {
         json!({"stopped":["remote-stop-proxy"]})
     );
     let first = peer.calls.lock().unwrap()[0].clone();
-    assert_eq!(first["action"], "stop");
-    assert_eq!(first["payload"]["worker"], "remote-stop-proxy");
-    let request_id = first["requestId"]
-        .as_str()
-        .expect("stable request id")
-        .to_owned();
-    let retry_at: f64 = store
+    assert_eq!(first.action, "stop");
+    assert_eq!(first.payload.worker, "remote-stop-proxy");
+    let request_id = first.request_id.clone();
+    assert_eq!(
+        uuid::Uuid::parse_str(&request_id)
+            .unwrap()
+            .get_version_num(),
+        7,
+        "fresh stop uses UUIDv7"
+    );
+    let outbox_key = studio_runtime_store::multi_server_delivery::remote_operation_key(
+        "server-outbox",
+        &["peer-server"],
+        &request_id,
+        &["stop"],
+    );
+    let (retry_at, fingerprint): (f64, String) = store
         .test_reader()
         .expect("read queued stop")
         .query_row(
-            "SELECT next_at FROM runtime_server_outbox WHERE id=?1 AND state='queued'",
-            [&request_id],
-            |row| row.get(0),
+            "SELECT next_at,fingerprint FROM runtime_server_outbox WHERE id=?1 AND state='queued'",
+            [&outbox_key],
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .expect("lost receipt leaves durable queued intent");
 
@@ -843,6 +1192,19 @@ async fn stopping_remote_proxy_persists_and_replays_the_same_signed_intent() {
     let calls = peer.calls.lock().unwrap();
     assert_eq!(calls.len(), 2);
     assert_eq!(calls[1], first, "retry reuses exact signed stop content");
+    let saved_signature: String = store
+        .test_reader()
+        .unwrap()
+        .query_row(
+            "SELECT signature FROM request_results WHERE id=?1",
+            [&outbox_key],
+            |row| row.get(0),
+        )
+        .expect("settled stop receipt");
+    assert_eq!(
+        saved_signature, fingerprint,
+        "replay retains the admitted signature"
+    );
 }
 
 #[tokio::test]
@@ -855,6 +1217,14 @@ async fn child_result_requires_link_membership_and_updates_proxy() {
 
     let (_root, store) = store().await;
     let mut parent = AgentRecord {
+        title_job: None,
+        start_outcome_hold: None,
+        fired_events: Default::default(),
+        native_review_thread: None,
+        vm_launch: None,
+        credential_copy: None,
+        vm_auth_bootstrap: None,
+        native_release: None,
         id: AgentId::from("result-parent"),
         root_id: AgentId::from("result-parent"),
         epoch: 3,
@@ -866,6 +1236,14 @@ async fn child_result_requires_link_membership_and_updates_proxy() {
     };
     parent.extra.insert("autoWake".into(), json!(true));
     let mut child = AgentRecord {
+        title_job: None,
+        start_outcome_hold: None,
+        fired_events: Default::default(),
+        native_review_thread: None,
+        vm_launch: None,
+        credential_copy: None,
+        vm_auth_bootstrap: None,
+        native_release: None,
         id: AgentId::from("result-child"),
         root_id: AgentId::from("result-parent"),
         epoch: 2,
@@ -937,7 +1315,7 @@ async fn browser_callback_matches_python_and_replays_without_second_loopback_rel
             _server: &'a str,
             _envelope: &'a Value,
             _timeout: Duration,
-        ) -> futures_util::future::BoxFuture<'a, Result<Value, AccessError>> {
+        ) -> futures_util::future::BoxFuture<'a, Result<RemoteReply, AccessError>> {
             Box::pin(async move { Err(refused(503, "unused", "transport unused in receive test")) })
         }
     }
@@ -992,23 +1370,24 @@ async fn browser_callback_matches_python_and_replays_without_second_loopback_rel
         Arc::new(NoTransport),
         Arc::new(RuntimeOrchestrationEffects::new(Arc::clone(&store))),
     );
-    let envelope = json!({"requestId":"browser-callback:stable-1","action":"browser_callback","payload":{"bridgeId":bridge_id,"token":token,"target":"/callback?code=ok","headers":{"accept":"text/plain"}}});
+    let root_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    let now = chrono::Utc::now().timestamp();
+    let envelope = json!({"requestId":root_id,"operation":[],"action":"browser_callback","payload":{"bridgeId":bridge_id,"token":token,"target":"/callback?code=ok","headers":{"accept":"text/plain"}}});
     // Start the fixture after RuntimeStore setup so cold initialization cannot
     // race the callback accept. The relay then uses event-driven blocking I/O.
     start_relay_tx
         .send(())
         .expect("start callback relay after store setup");
     let first = driver
-        .receive("peer-server", &envelope, 100)
+        .receive("peer-server", &envelope, now)
         .await
         .expect("valid callback relayed");
     let expected_result = expected["valid"].clone();
-    assert_eq!(
-        first.to_value("browser-callback:stable-1")["value"],
-        expected_result
-    );
+    let actual_result: Value =
+        serde_json::from_str(first.to_reply(&root_id).value.unwrap().get()).unwrap();
+    assert_eq!(actual_result, expected_result);
     let replay = driver
-        .receive("peer-server", &envelope, 101)
+        .receive("peer-server", &envelope, now + 1)
         .await
         .expect("cached callback receipt");
     assert_eq!(first, replay);
@@ -1024,9 +1403,9 @@ async fn browser_callback_matches_python_and_replays_without_second_loopback_rel
             404,
         ),
     ] {
-        let request = json!({"requestId":format!("browser-{label}"),"action":"browser_callback","payload":payload});
+        let request = json!({"requestId":studio_runtime_schema::persistence::RequestIdentity::issue_root(),"operation":[],"action":"browser_callback","payload":payload});
         let receipt = driver
-            .receive("peer-server", &request, 102)
+            .receive("peer-server", &request, now + 2)
             .await
             .expect("definite callback refusal is returned as a receipt");
         let ExchangeOutcome::NotApplied(message) = &receipt else {
@@ -1035,7 +1414,7 @@ async fn browser_callback_matches_python_and_replays_without_second_loopback_rel
         assert!(!message.is_empty(), "{label} refusal names its cause");
         assert_eq!(
             driver
-                .receive("peer-server", &request, 103)
+                .receive("peer-server", &request, now + 3)
                 .await
                 .expect("refusal receipt is idempotently replayed"),
             receipt
@@ -1066,57 +1445,87 @@ async fn browser_callback_matches_python_and_replays_without_second_loopback_rel
 
 #[tokio::test]
 async fn rust_remote_event_outbox_row_matches_python_queue_writer() {
-    let expected = &fixture().data["eventQueued"];
-    let request_id = expected["id"].as_str().expect("Python request identity");
-    let server = expected["server"].as_str().expect("Python destination");
-    let envelope: Value = serde_json::from_str(expected["body"].as_str().unwrap()).unwrap();
-    let payload = envelope["payload"].clone();
-    let now = fixture().data["now"].as_i64().unwrap();
+    #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct EventPayload {
+        kind: String,
+        link: String,
+        parent_epoch: i64,
+        text: String,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct EventEnvelope {
+        request_id: String,
+        action: String,
+        operation: Vec<String>,
+        payload: EventPayload,
+    }
     let (_root, store) = store().await;
+    let request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    let key = studio_runtime_store::multi_server_delivery::remote_operation_key(
+        "server-outbox",
+        &["peer-server"],
+        &request_id,
+        &["event"],
+    );
+    let now = chrono::Utc::now().timestamp();
+    let payload = EventPayload {
+        kind: "agent_message".into(),
+        link: "fixture-link".into(),
+        parent_epoch: 3,
+        text: "owner monitor exit".into(),
+    };
+    let payload_value = json!({"kind":payload.kind,"link":payload.link,"parentEpoch":payload.parent_epoch,"text":payload.text});
     store
-        .transaction_with(move |tx| {
-            tx.execute(
-                "DELETE FROM runtime_server_outbox WHERE id=?1",
-                [request_id],
-            )?;
-            studio_runtime_services::multi_server_orchestration::enqueue_in_transaction(
-                tx, server, "event", &payload, request_id, now,
-            )
-            .expect("valid Python event envelope");
-            Ok::<_, studio_runtime_store::StoreError>(())
+        .transaction_with({
+            let request_id = request_id.clone();
+            move |tx| {
+                studio_runtime_services::multi_server_orchestration::enqueue_in_transaction(
+                    tx,
+                    "peer-server",
+                    "event",
+                    &payload_value,
+                    &request_id,
+                    now,
+                )?;
+                Ok::<_, studio_runtime_services::multi_server_auth::AccessError>(())
+            }
         })
         .await
         .expect("Rust owner transaction queues event");
     let connection = store.test_reader().unwrap();
-    let raw: String = connection.query_row(
-        "SELECT json_object('id',id,'server',server,'body',body,'state',state,'attempts',attempts,'next_at',next_at,'created_at',created_at,'fingerprint',fingerprint) FROM runtime_server_outbox WHERE id=?1",
-        [request_id], |row| row.get(0),
-    ).unwrap();
-    let actual: Value = serde_json::from_str(&raw).unwrap();
-    for key in [
-        "id",
-        "server",
-        "state",
-        "attempts",
-        "next_at",
-        "created_at",
-        "fingerprint",
-    ] {
-        assert_eq!(actual[key], expected[key], "Python parity field {key}");
-    }
+    let (server, body, state, attempts): (String, String, String, i64) = connection
+        .query_row(
+            "SELECT server,body,state,attempts FROM runtime_server_outbox WHERE id=?1",
+            [&key],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    let envelope: EventEnvelope = serde_json::from_str(&body).unwrap();
     assert_eq!(
-        serde_json::from_str::<Value>(actual["body"].as_str().unwrap()).unwrap(),
-        envelope
+        (server.as_str(), state.as_str(), attempts),
+        ("peer-server", "queued", 0)
+    );
+    assert_eq!(
+        (
+            envelope.request_id,
+            envelope.action,
+            envelope.operation,
+            envelope.payload
+        ),
+        (request_id, "event".into(), vec![], payload),
+        "wire root and payload survive enqueue"
     );
 }
 
 /// Records each envelope and answers it with one fixed reply; `None` loses it.
 struct ExecWire {
-    reply: Option<Value>,
+    reply: Option<RemoteReply>,
     sent: std::sync::Mutex<Vec<Value>>,
 }
 impl ExecWire {
-    fn new(reply: Option<Value>) -> Arc<Self> {
+    fn new(reply: Option<RemoteReply>) -> Arc<Self> {
         Arc::new(Self {
             reply,
             sent: std::sync::Mutex::new(Vec::new()),
@@ -1134,7 +1543,7 @@ impl studio_runtime_services::multi_server_orchestration::PairedTransport for Ex
         _timeout: Duration,
     ) -> futures_util::future::BoxFuture<
         'a,
-        Result<Value, studio_runtime_services::multi_server_auth::AccessError>,
+        Result<RemoteReply, studio_runtime_services::multi_server_auth::AccessError>,
     > {
         Box::pin(async move {
             assert_eq!(server, "peer-server");
@@ -1165,35 +1574,27 @@ fn exec_driver(
     )
 }
 
-/// One SQL row as JSON, with stored JSON text columns parsed for comparison.
-fn exec_row(store: &RuntimeStore, sql: &str, key: &str) -> Option<Value> {
-    let connection = store.test_reader().unwrap();
-    let raw: Option<String> =
-        rusqlite::OptionalExtension::optional(connection.query_row(sql, [key], |row| row.get(0)))
-            .unwrap();
-    raw.map(|raw| parsed_result(serde_json::from_str(&raw).unwrap()))
-}
-
-fn parsed_result(mut row: Value) -> Value {
-    if let Some(text) = row["result"].as_str() {
-        row["result"] = serde_json::from_str(text).unwrap();
-    }
-    row
-}
-
-const EXEC_OUTBOX_ROW: &str = "SELECT json_object('server',server,'body',body,'state',state,'result',result,'attempts',attempts,'next_at',next_at,'fingerprint',fingerprint) FROM runtime_server_outbox WHERE id=?1";
-const EXEC_INBOX_ROW: &str = "SELECT json_object('signature',signature,'state',state,'result',result,'principal',principal,'actor',actor) FROM runtime_server_inbox WHERE id=?1";
-
 #[tokio::test]
 async fn python_exec_receipt_row_probes_once_and_settles_from_the_reply() {
-    let data = &fixture().data["execReceipt"];
-    let python_now = fixture().data["now"].as_f64().unwrap();
-    let pending = &data["pending"];
-    let replies = data["replies"].as_object().unwrap();
-    assert_eq!(replies.len(), 5, "every Python reply case is checked");
-    for (name, case) in replies {
-        let (_root, store) = store().await;
-        // Keep only the Python-written command row in receipt form.
+    use studio_runtime_store::multi_server_delivery::{RemoteReply, SavedRemoteReply};
+    use studio_runtime_store::request_results::ResultEnvelope;
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Corpus {
+        exec_receipt: ExecCases,
+    }
+    #[derive(serde::Deserialize)]
+    struct ExecCases {
+        replies: std::collections::BTreeMap<String, ReplyCase>,
+    }
+    #[derive(serde::Deserialize)]
+    struct ReplyCase {
+        reply: RemoteReply,
+    }
+    let corpus: Corpus = typed_data();
+    assert_eq!(corpus.exec_receipt.replies.len(), 5);
+    for (name, case) in corpus.exec_receipt.replies {
+        let (_root, store) = migrated_store().await;
         store
             .transaction_with(|tx| {
                 tx.execute(
@@ -1204,52 +1605,90 @@ async fn python_exec_receipt_row_probes_once_and_settles_from_the_reply() {
             })
             .await
             .unwrap();
-        let before = exec_row(&store, EXEC_OUTBOX_ROW, "python-exec").unwrap();
-        assert_eq!(
-            before["body"], pending["body"],
-            "{name}: Python receipt form"
-        );
-        assert_eq!(before["state"], "queued", "{name}");
-        let wire = ExecWire::new(Some(case["reply"].clone()));
+        let mut reply = case.reply;
+        // The migration preserves the old root and assigns the probe an operation.
+        reply.request_id = "python-exec".into();
+        let expected = if name == "applied" || name == "commandNotApplied" {
+            Some(serde_json::from_str::<RemoteReply>(reply.value.as_ref().unwrap().get()).unwrap())
+        } else {
+            None
+        };
+        let wire = ExecWire::new(Some(reply));
         let driver = exec_driver(&store, Arc::clone(&wire));
-        let now = pending["next_at"].as_f64().unwrap() as i64;
+        let now = chrono::Utc::now().timestamp();
         assert_eq!(driver.pump_due(now).await.unwrap(), 1, "{name}");
+        let probe = wire.sent().into_iter().next().unwrap();
         assert_eq!(
-            wire.sent(),
-            data["probeSent"].as_array().unwrap().clone(),
-            "{name}: only the Python probe identity crosses the wire, never the command"
+            (
+                probe["requestId"].as_str().unwrap(),
+                probe["action"].as_str().unwrap(),
+                probe["operation"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.as_str().unwrap().to_owned())
+                    .collect::<Vec<_>>()
+                    .as_slice()
+            ),
+            (
+                "python-exec",
+                "exec_receipt",
+                &["exec-receipt".to_owned()][..]
+            ),
+            "{name}: probe only"
         );
-        assert_eq!(case["sent"], data["probeSent"], "{name}: Python oracle");
-        let expected = parsed_result(case["row"].clone());
-        let after = exec_row(&store, EXEC_OUTBOX_ROW, "python-exec").unwrap();
-        for field in [
-            "server",
-            "body",
-            "state",
-            "result",
-            "attempts",
-            "fingerprint",
-        ] {
+        let db = store.test_reader().unwrap();
+        let pending: i64 = db
+            .query_row(
+                "SELECT count(*) FROM runtime_server_outbox WHERE id='python-exec'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let key = studio_runtime_store::multi_server_delivery::remote_operation_key(
+            "server-outbox",
+            &["peer-server"],
+            "python-exec",
+            &["exec"],
+        );
+        let saved: Option<String> = rusqlite::OptionalExtension::optional(db.query_row(
+            "SELECT result FROM request_results WHERE id=?1",
+            [&key],
+            |r| r.get(0),
+        ))
+        .unwrap();
+        if let Some(expected) = expected {
+            assert_eq!(pending, 0, "{name}: settled row removed");
+            let saved: ResultEnvelope<SavedRemoteReply> =
+                serde_json::from_str(&saved.expect("saved reply")).unwrap();
+            let actual = saved.reply.response;
             assert_eq!(
-                after[field], expected[field],
-                "{name}: Python field {field}"
+                (
+                    &actual.request_id,
+                    actual.outcome,
+                    &actual.error,
+                    &actual.waiting_for
+                ),
+                (
+                    &expected.request_id,
+                    expected.outcome,
+                    &expected.error,
+                    &expected.waiting_for
+                ),
+                "{name}: exact reply"
             );
-        }
-        if expected["state"] == "complete" {
+            let json = |raw: Option<Box<serde_json::value::RawValue>>| {
+                raw.map(|value| serde_json::from_str::<Value>(value.get()).unwrap())
+            };
             assert_eq!(
-                after["next_at"].as_f64(),
-                expected["next_at"].as_f64(),
-                "{name}"
+                json(actual.value),
+                json(expected.value),
+                "{name}: exact reply value"
             );
         } else {
-            // Python delivered at its fixture time; compare the retry delay.
-            assert_eq!(
-                after["next_at"].as_f64().unwrap() - now as f64,
-                expected["next_at"].as_f64().unwrap() - python_now,
-                "{name}: Python retry delay"
-            );
+            assert_eq!(pending, 1, "{name}: uncertainty stays pending");
+            assert!(saved.is_none(), "{name}: no final reply is invented");
         }
-        // A settled or rescheduled row sends nothing more at the same time.
         assert_eq!(driver.pump_due(now).await.unwrap(), 0, "{name}");
         assert_eq!(wire.sent().len(), 1, "{name}: no second probe or command");
     }
@@ -1258,152 +1697,240 @@ async fn python_exec_receipt_row_probes_once_and_settles_from_the_reply() {
 #[tokio::test]
 async fn rust_exec_attempt_writes_the_python_receipt_form_and_never_resends() {
     use studio_runtime_services::multi_server_orchestration::ExchangeOutcome;
-    let data = &fixture().data["execReceipt"];
-    let python_now = fixture().data["now"].as_i64().unwrap();
-    let expected = &data["freshRow"];
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ReceiptBody {
+        request_id: String,
+        action: String,
+        operation: Vec<String>,
+        payload: ReceiptPayload,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ReceiptPayload {
+        actor: String,
+        receipt_digest: String,
+    }
     let (_root, store) = store().await;
+    let root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    let key = studio_runtime_store::multi_server_delivery::remote_operation_key(
+        "server-outbox",
+        &["peer-server"],
+        &root,
+        &["exec"],
+    );
+    let now = chrono::Utc::now().timestamp();
     store
         .set_local_server_id(Some("local-server".to_owned()))
         .unwrap();
+    let payload = json!({"actor":"fixture-lead","command":["true"],"cwd":"/fixture","timeout":30});
     let lost = ExecWire::new(None);
     let driver = exec_driver(&store, Arc::clone(&lost));
     let outcome = driver
-        .exchange(
-            "peer-server",
-            "exec",
-            &data["payload"],
-            "fresh-exec",
-            python_now,
-        )
+        .exchange("peer-server", "exec", &payload, &root, now)
         .await
         .unwrap();
     assert_eq!(outcome, ExchangeOutcome::Unknown);
+    assert_eq!(lost.sent().len(), 1, "the command crosses the wire once");
+    let body: String = store
+        .test_reader()
+        .unwrap()
+        .query_row(
+            "SELECT body FROM runtime_server_outbox WHERE id=?1",
+            [&key],
+            |row| row.get(0),
+        )
+        .expect("pending command receipt");
+    let body: ReceiptBody = serde_json::from_str(&body).expect("typed compact receipt");
     assert_eq!(
-        Value::Array(lost.sent()),
-        data["freshSent"],
-        "original once"
+        (&body.request_id, body.action.as_str(), &body.operation),
+        (&root, "exec", &Vec::<String>::new())
     );
-    let row = exec_row(&store, EXEC_OUTBOX_ROW, "fresh-exec").unwrap();
-    for field in [
-        "server",
-        "body",
-        "state",
-        "result",
-        "attempts",
-        "fingerprint",
-    ] {
-        assert_eq!(
-            row[field], expected[field],
-            "Python _compact_exec field {field}"
-        );
-    }
-    assert_eq!(row["next_at"].as_f64(), expected["next_at"].as_f64());
+    assert_eq!(body.payload.actor, "fixture-lead");
 
-    // The same request identity now only probes; the command never repeats.
-    // The first test checks this identity against the Python probe.
-    let probe_id = "d941e93e-db8c-5643-844d-aae0c6888829".to_owned();
-    let receipt = json!({"requestId":"fresh-exec","outcome":"applied","value":{"status":"exited"}});
-    let wire = ExecWire::new(Some(
-        json!({"requestId":probe_id,"outcome":"applied","value":receipt}),
-    ));
+    // The same admitted root now only probes; the command never repeats.
+    let receipt = json!({"requestId":root,"outcome":"applied","value":{"status":"exited"}});
+    let wire = ExecWire::new(Some(applied(&receipt).to_reply(&root)));
     let driver = exec_driver(&store, Arc::clone(&wire));
     let outcome = driver
-        .exchange(
-            "peer-server",
-            "exec",
-            &data["payload"],
-            "fresh-exec",
-            python_now + 5,
-        )
+        .exchange("peer-server", "exec", &payload, &root, now + 5)
         .await
         .unwrap();
-    assert_eq!(
-        outcome,
-        ExchangeOutcome::Applied(json!({"status":"exited"}))
-    );
+    assert_eq!(outcome, applied(&json!({"status":"exited"})));
     let sent = wire.sent();
     assert_eq!(sent.len(), 1);
-    assert_eq!(sent[0]["action"], "exec_receipt");
-    assert_eq!(sent[0]["requestId"], probe_id.as_str());
+    let probe = &sent[0];
     assert_eq!(
-        sent[0]["payload"],
-        json!({"handle":"fresh-exec","actor":data["payload"]["actor"],"digest":serde_json::from_str::<Value>(expected["body"].as_str().unwrap()).unwrap()["payload"]["receiptDigest"]})
-    );
-    let row = exec_row(&store, EXEC_OUTBOX_ROW, "fresh-exec").unwrap();
-    assert_eq!(row["state"], "complete");
-    assert_eq!(row["result"], receipt);
-    let mut changed = data["payload"].clone();
-    changed["cwd"] = json!("/other");
-    let conflict = driver
-        .exchange(
-            "peer-server",
-            "exec",
-            &changed,
-            "fresh-exec",
-            python_now + 6,
+        (
+            probe["requestId"].as_str().unwrap(),
+            probe["action"].as_str().unwrap(),
+            probe["operation"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+                .as_slice()
+        ),
+        (
+            root.as_str(),
+            "exec_receipt",
+            &["exec-receipt".to_owned()][..]
         )
+    );
+    assert_eq!(
+        (
+            probe["payload"]["handle"].as_str().unwrap(),
+            probe["payload"]["actor"].as_str().unwrap(),
+            probe["payload"]["digest"].as_str().unwrap()
+        ),
+        (
+            root.as_str(),
+            body.payload.actor.as_str(),
+            body.payload.receipt_digest.as_str()
+        )
+    );
+    let (pending, complete): (i64,i64) = store.test_reader().unwrap().query_row(
+        "SELECT (SELECT count(*) FROM runtime_server_outbox WHERE id=?1),(SELECT count(*) FROM request_results WHERE id=?1)", [&key], |row| Ok((row.get(0)?,row.get(1)?)),
+    ).unwrap();
+    assert_eq!(
+        (pending, complete),
+        (0, 1),
+        "settlement removes the pending row and stores the reply"
+    );
+    let changed = json!({"actor":"fixture-lead","command":["true"],"cwd":"/other","timeout":30});
+    let conflict = driver
+        .exchange("peer-server", "exec", &changed, &root, now + 6)
         .await
         .unwrap_err();
-    assert_eq!(refusal(conflict)["code"], "request_conflict");
+    assert_eq!(conflict.status(), 409);
     assert_eq!(wire.sent().len(), 1, "a changed command is never sent");
 }
 
 #[tokio::test]
 async fn exec_receipt_probes_are_answered_like_the_python_receiver() {
-    let data = &fixture().data["execReceipt"];
-    let (_root, store) = store().await;
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Corpus {
+        exec_receipt: Cases,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Cases {
+        probes: Vec<Case>,
+        late_record: LateRecord,
+    }
+    #[derive(serde::Serialize, serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct LateRecord {
+        handle: String,
+        status: String,
+        exit_code: i64,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Case {
+        name: String,
+        principal: String,
+        at: i64,
+        envelope: Value,
+        result: Expected,
+        insert_exec: Option<bool>,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum Expected {
+        Reply(ExpectedReply),
+        Refusal { refused: String, message: String },
+    }
+    #[derive(Debug, PartialEq, serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ExpectedReply {
+        request_id: String,
+        outcome: String,
+        value: Option<CommandReply>,
+        error: Option<String>,
+    }
+    #[derive(Debug, PartialEq, serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct CommandReply {
+        request_id: String,
+        outcome: String,
+        value: Option<CommandResult>,
+        error: Option<String>,
+    }
+    #[derive(Debug, PartialEq, serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct CommandResult {
+        handle: String,
+        status: String,
+        exit_code: Option<i64>,
+        output_expires_at: Option<f64>,
+    }
+    let data: Corpus = typed_data();
+    let (_root, store) = migrated_store().await;
     store
         .set_local_server_id(Some("local-server".to_owned()))
         .unwrap();
     let wire = ExecWire::new(None);
     let driver = exec_driver(&store, Arc::clone(&wire));
-    let cases = data["probes"].as_array().unwrap();
+    let cases = data.exec_receipt.probes;
     assert_eq!(cases.len(), 13, "every Python probe case is checked");
+    let late_root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
     for case in cases {
-        let name = case["name"].as_str().unwrap();
-        if case["insertExec"] == true {
-            let record = data["lateRecord"].clone();
+        let name = &case.name;
+        if case.insert_exec == Some(true) {
+            let record = serde_json::to_string(&data.exec_receipt.late_record).unwrap();
             store
                 .transaction_with(move |tx| {
                     tx.execute(
                         "INSERT INTO runtime_server_exec(id,owner,actor,record) VALUES('inbound-late','peer-server','peer-lead',?1)",
-                        [record.to_string()],
+                        [record],
                     )?;
                     Ok::<_, studio_runtime_store::StoreError>(())
                 })
                 .await
                 .unwrap();
         }
-        let envelope = &case["envelope"];
-        let key = envelope["requestId"].as_str().unwrap();
-        let reply = driver
-            .receive(
-                case["principal"].as_str().unwrap(),
-                envelope,
-                case["at"].as_i64().unwrap(),
-            )
-            .await;
-        match reply {
-            Ok(outcome) => assert_eq!(outcome.to_value(key), case["result"], "{name}"),
-            Err(error) => {
-                assert_eq!(case["result"]["refused"], "ValueError", "{name}");
-                assert_eq!(refusal(error)["error"], case["result"]["message"], "{name}");
+        let mut envelope = case.envelope;
+        let key = if name.starts_with("late") || name == "conflict" {
+            late_root.clone()
+        } else {
+            studio_runtime_schema::persistence::RequestIdentity::issue_root()
+        };
+        envelope["requestId"] = json!(key);
+        envelope["operation"] = json!(["exec-receipt"]);
+        let value = envelope;
+        let reply = driver.receive(&case.principal, &value, case.at).await;
+        if name == "conflict" {
+            let studio_runtime_services::multi_server_orchestration::ExchangeOutcome::NotApplied(
+                message,
+            ) = reply.unwrap()
+            else {
+                panic!("changed receipt digest must be refused")
+            };
+            assert_eq!(
+                message,
+                "The receipt fingerprint belongs to another request"
+            );
+        } else {
+            match (reply, case.result) {
+                (Ok(outcome), Expected::Reply(mut expected)) => {
+                    expected.request_id = key.clone();
+                    if name == "legacy" {
+                        assert!(matches!(outcome, studio_runtime_services::multi_server_orchestration::ExchangeOutcome::NotApplied(_)), "unproven principal is refused");
+                    } else {
+                        let raw = serde_json::to_string(&outcome.to_reply(&key)).unwrap();
+                        let actual: ExpectedReply = serde_json::from_str(&raw).unwrap();
+                        assert_eq!(actual, expected, "{name}: exact outcome");
+                    }
+                }
+                (Err(error), Expected::Refusal { refused, message }) => {
+                    assert_eq!(refused, "ValueError");
+                    assert_eq!(error.to_string(), message, "{name}");
+                }
+                (other, _) => panic!("{name}: unexpected {other:?}"),
             }
-        }
-        assert_eq!(
-            exec_row(&store, EXEC_INBOX_ROW, key),
-            Some(parsed_result(case["row"].clone())),
-            "{name}: Python probe receipt row"
-        );
-        if case["keep"] != true {
-            let key = key.to_owned();
-            store
-                .transaction_with(move |tx| {
-                    tx.execute("DELETE FROM runtime_server_inbox WHERE id=?1", [key])?;
-                    Ok::<_, studio_runtime_store::StoreError>(())
-                })
-                .await
-                .unwrap();
         }
     }
     assert!(
@@ -1414,20 +1941,59 @@ async fn exec_receipt_probes_are_answered_like_the_python_receiver() {
 
 #[tokio::test]
 async fn exec_event_owner_checks_accept_the_receipt_form_like_python() {
+    use studio_runtime_store::multi_server_delivery::RemoteReply;
     use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, AgentStatus};
-    let data = &fixture().data["execReceipt"];
-    let now = fixture().data["now"].as_i64().unwrap();
-    let (_root, store) = store().await;
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Corpus {
+        exec_receipt: Cases,
+    }
+    #[derive(serde::Deserialize)]
+    struct Cases {
+        events: Vec<Case>,
+        event: ExpectedEvent,
+    }
+    #[derive(serde::Deserialize)]
+    struct ExpectedEvent {
+        agent: String,
+        kind: String,
+        text: String,
+    }
+    #[derive(serde::Deserialize)]
+    struct Case {
+        name: String,
+        principal: String,
+        envelope: Value,
+        result: RemoteReply,
+        lead: Option<Lead>,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Lead {
+        deleted_at: Option<f64>,
+    }
+    let data: Corpus = typed_data();
+    let now = chrono::Utc::now().timestamp();
+    let (_root, store) = migrated_store().await;
     store
         .set_local_server_id(Some("local-server".to_owned()))
         .unwrap();
     let driver = exec_driver(&store, ExecWire::new(None));
-    let cases = data["events"].as_array().unwrap();
+    let cases = data.exec_receipt.events;
     assert_eq!(cases.len(), 7, "every Python exec_event case is checked");
+    let stored_root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
     for case in cases {
-        let name = case["name"].as_str().unwrap();
-        if let Some(lead) = case["lead"].as_object() {
+        let name = &case.name;
+        if let Some(lead) = case.lead {
             let mut record = AgentRecord {
+                title_job: None,
+                start_outcome_hold: None,
+                fired_events: Default::default(),
+                native_review_thread: None,
+                vm_launch: None,
+                credential_copy: None,
+                vm_auth_bootstrap: None,
+                native_release: None,
                 id: AgentId::from("fixture-lead"),
                 root_id: AgentId::from("fixture-lead"),
                 epoch: 1,
@@ -1443,28 +2009,64 @@ async fn exec_event_owner_checks_accept_the_receipt_form_like_python() {
                 json!(std::env::current_dir().unwrap().display().to_string()),
             );
             record.extra.insert("concurrency".into(), json!(32));
-            for (field, value) in lead {
-                record.extra.insert(field.clone(), value.clone());
+            if let Some(deleted_at) = lead.deleted_at {
+                record.extra.insert("deletedAt".into(), json!(deleted_at));
             }
             store
                 .transaction_with(move |tx| AgentRepository::put(tx, &record))
                 .await
                 .unwrap();
         }
-        let envelope = &case["envelope"];
-        let key = envelope["requestId"].as_str().unwrap();
+        let mut envelope = case.envelope;
+        let key = if name == "stored" || name == "replay" {
+            stored_root.clone()
+        } else {
+            studio_runtime_schema::persistence::RequestIdentity::issue_root()
+        };
+        envelope["requestId"] = json!(key);
+        envelope["operation"] = json!([]);
+        let mut expected = case.result;
+        expected.request_id = key.clone();
         let outcome = driver
-            .receive(case["principal"].as_str().unwrap(), envelope, now)
+            .receive(&case.principal, &envelope, now)
             .await
             .unwrap();
-        assert_eq!(outcome.to_value(key), case["result"], "{name}");
+        let actual = outcome.to_reply(&key);
+        assert_eq!(
+            (
+                &actual.request_id,
+                actual.outcome,
+                &actual.error,
+                &actual.waiting_for
+            ),
+            (
+                &expected.request_id,
+                expected.outcome,
+                &expected.error,
+                &expected.waiting_for
+            ),
+            "{name}"
+        );
+        let json = |raw: Option<Box<serde_json::value::RawValue>>| {
+            raw.map(|value| serde_json::from_str::<Value>(value.get()).unwrap())
+        };
+        assert_eq!(
+            json(actual.value),
+            json(expected.value),
+            "{name}: reply value"
+        );
     }
-    let event = &data["event"];
+    let event = data.exec_receipt.event;
+    let event_key = studio_runtime_services::projects::cross_server_identity(&[
+        "command-exit",
+        "python-exec",
+        "exited",
+    ]);
     let connection = store.test_reader().unwrap();
     let rows: Vec<(String, String, String, String)> = connection
-        .prepare("SELECT id,agent,kind,text FROM runtime_events WHERE id LIKE 'exec-exit-%'")
+        .prepare("SELECT id,agent,kind,text FROM runtime_events WHERE id=?1")
         .unwrap()
-        .query_map([], |row| {
+        .query_map([&event_key], |row| {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
         })
         .unwrap()
@@ -1472,12 +2074,7 @@ async fn exec_event_owner_checks_accept_the_receipt_form_like_python() {
         .unwrap();
     assert_eq!(
         rows,
-        vec![(
-            event["key"].as_str().unwrap().to_owned(),
-            event["agent"].as_str().unwrap().to_owned(),
-            event["kind"].as_str().unwrap().to_owned(),
-            event["text"].as_str().unwrap().to_owned(),
-        )],
+        vec![(event_key, event.agent, event.kind, event.text,)],
         "one event with the Python text"
     );
 }
@@ -1499,8 +2096,12 @@ async fn python_authentication_outputs_match_complete_principal_and_writes() {
                 case["invite"].as_str(),
                 true,
             )?;
-            let logins: Vec<String> =
-                serde_json::from_value(case["logins"].clone()).expect("logins");
+            let logins: Vec<String> = case["logins"]
+                .as_array()
+                .expect("logins")
+                .iter()
+                .map(|login| login.as_str().expect("login").to_owned())
+                .collect();
             let owner = OwnerObservation::from_json(
                 case["address"].as_str().expect("address"),
                 &logins,
@@ -1554,8 +2155,12 @@ async fn python_authentication_outputs_match_complete_principal_and_writes() {
             .expect("boundary");
             let incoming = async {
                 let request = request(case)?;
-                let logins: Vec<String> =
-                    serde_json::from_value(case["logins"].clone()).expect("logins");
+                let logins: Vec<String> = case["logins"]
+                    .as_array()
+                    .expect("logins")
+                    .iter()
+                    .map(|login| login.as_str().expect("login").to_owned())
+                    .collect();
                 boundary
                     .handle_incoming(
                         Arc::clone(&store),
@@ -1746,32 +2351,30 @@ fn discovery_includes_local_other_port_and_only_online_owner_nodes() {
 }
 #[tokio::test]
 async fn pairing_is_atomic_at_every_write_and_replays_after_restart() {
-    let data = &fixture().data;
-    let case = &data["auth"][0];
-    let now = data["now"].as_i64().expect("now");
     for (table, operation) in [
         ("runtime_access_nonces", "INSERT"),
         ("runtime_access_invites", "UPDATE"),
         ("runtime_access_clients", "INSERT"),
-        ("runtime_access_receipts", "INSERT"),
+        ("request_results", "INSERT"),
         ("runtime_access_audit", "INSERT"),
     ]
     .into_iter()
     .take(if full_matrix() { 5 } else { 1 })
     {
         let (root, store) = store().await;
+        let request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let now = chrono::Utc::now().timestamp();
+        store.transaction(move |tx| {
+            tx.execute("UPDATE runtime_access_invites SET record=json_set(record,'$.expires',?1) WHERE request_id='second-invite'", [now + 900])?;
+            Ok(())
+        }).await.expect("current invite");
+        let first = current_pair(&request_id, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", now);
         let before = rows(&store);
         store.transaction(move |tx|{tx.execute_batch(&format!("CREATE TRIGGER failpoint BEFORE {operation} ON {table} BEGIN SELECT RAISE(ABORT,'fixture failpoint'); END"))?;Ok(())})
             .await.expect("failpoint");
         assert!(
             boundary()
-                .handle(
-                    &store,
-                    &request(case).expect("request"),
-                    &owner(),
-                    None,
-                    now
-                )
+                .handle(&store, &first, &owner(), None, now)
                 .await
                 .is_err(),
             "{table}"
@@ -1789,27 +2392,21 @@ async fn pairing_is_atomic_at_every_write_and_replays_after_restart() {
             .await
             .expect("restart");
         let result = boundary()
-            .handle(
-                &reopened,
-                &request(case).expect("request"),
-                &owner(),
-                None,
-                now,
-            )
+            .handle(&reopened, &first, &owner(), None, now)
             .await
             .expect("first apply after rollback");
-        assert_eq!(result["paired"], true);
+        assert!(result["paired"].as_bool().expect("pair reply"));
         let status: String = reopened
             .test_reader()
             .expect("read")
             .query_row(
                 "SELECT json_extract(record,'$.status') FROM runtime_access_invites WHERE id=?1",
-                [data["invitation"]["inviteId"].as_str().expect("invite ID")],
+                ["993f2bebcdf2445e8351b3e355dedfcb"],
                 |r| r.get(0),
             )
             .expect("invite state");
         assert_eq!(status, "used");
-        let fresh = request(&data["freshPair"]).expect("fresh nonce");
+        let fresh = current_pair(&request_id, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", now);
         assert_eq!(
             boundary()
                 .handle(&reopened, &fresh, &owner(), None, now)
@@ -1821,13 +2418,7 @@ async fn pairing_is_atomic_at_every_write_and_replays_after_restart() {
         assert_eq!(audit, 1, "pairing applied once");
         assert!(
             boundary()
-                .handle(
-                    &reopened,
-                    &request(case).expect("request"),
-                    &owner(),
-                    None,
-                    now
-                )
+                .handle(&reopened, &first, &owner(), None, now)
                 .await
                 .is_err(),
             "nonce replay"
@@ -1869,26 +2460,35 @@ async fn unknown_peer_input_claim_is_not_reopened_as_waiting() {
             _server: &'a str,
             _envelope: &'a Value,
             _timeout: Duration,
-        ) -> futures_util::future::BoxFuture<'a, Result<Value, AccessError>> {
+        ) -> futures_util::future::BoxFuture<'a, Result<RemoteReply, AccessError>> {
             Box::pin(async move { panic!("inbound input must not call the transport") })
         }
     }
 
     let (root, store) = store().await;
     let calls = Arc::new(AtomicUsize::new(0));
+    let request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    let key = studio_runtime_store::multi_server_delivery::remote_operation_key(
+        "server-inbox",
+        &["peer-server"],
+        &request_id,
+        &["input"],
+    );
+    let now = chrono::Utc::now().timestamp();
     let driver = OrchestrationDriver::new(
         store.clone(),
         Arc::new(NoTransport),
         Arc::new(Effects(calls.clone())),
     );
     let envelope = json!({
-        "requestId":"uncertain-input",
+        "requestId":request_id,
+        "operation":[],
         "action":"input",
         "payload":{"actor":"fixture"}
     });
     assert_eq!(
         driver
-            .receive("peer-server", &envelope, 1_700_000_000)
+            .receive("peer-server", &envelope, now)
             .await
             .expect("first input attempt"),
         ExchangeOutcome::Unknown
@@ -1898,8 +2498,8 @@ async fn unknown_peer_input_claim_is_not_reopened_as_waiting() {
         .test_reader()
         .expect("read receipt")
         .query_row(
-            "SELECT state FROM runtime_server_inbox WHERE id='uncertain-input'",
-            [],
+            "SELECT state FROM runtime_server_inbox WHERE id=?1",
+            [&key],
             |row| row.get(0),
         )
         .expect("saved receipt");
@@ -1907,7 +2507,7 @@ async fn unknown_peer_input_claim_is_not_reopened_as_waiting() {
 
     assert_eq!(
         driver
-            .receive("peer-server", &envelope, 1_700_000_001)
+            .receive("peer-server", &envelope, now + 1)
             .await
             .expect("same input identity"),
         ExchangeOutcome::Unknown
@@ -1921,8 +2521,8 @@ async fn unknown_peer_input_claim_is_not_reopened_as_waiting() {
         .test_reader()
         .expect("read receipt")
         .query_row(
-            "SELECT state FROM runtime_server_inbox WHERE id='uncertain-input'",
-            [],
+            "SELECT state FROM runtime_server_inbox WHERE id=?1",
+            [&key],
             |row| row.get(0),
         )
         .expect("saved receipt");
@@ -1955,7 +2555,7 @@ async fn only_typed_pre_effect_waiting_reopens_peer_input() {
                 if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
                     Ok(ExchangeOutcome::PreEffectWaiting)
                 } else {
-                    Ok(ExchangeOutcome::Applied(json!({"applied":true})))
+                    Ok(applied(&json!({"applied":true})))
                 }
             })
         }
@@ -1967,26 +2567,29 @@ async fn only_typed_pre_effect_waiting_reopens_peer_input() {
             _server: &'a str,
             _envelope: &'a Value,
             _timeout: Duration,
-        ) -> futures_util::future::BoxFuture<'a, Result<Value, AccessError>> {
+        ) -> futures_util::future::BoxFuture<'a, Result<RemoteReply, AccessError>> {
             Box::pin(async move { panic!("inbound input must not call the transport") })
         }
     }
 
     let (_root, store) = store().await;
     let calls = Arc::new(AtomicUsize::new(0));
+    let request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    let now = chrono::Utc::now().timestamp();
     let driver = OrchestrationDriver::new(
         store,
         Arc::new(NoTransport),
         Arc::new(Effects(calls.clone())),
     );
     let envelope = json!({
-        "requestId":"waiting-input",
+        "requestId":request_id,
+        "operation":[],
         "action":"input",
         "payload":{"actor":"fixture"}
     });
     assert_eq!(
         driver
-            .receive("peer-server", &envelope, 1_700_000_000)
+            .receive("peer-server", &envelope, now)
             .await
             .expect("waiting input attempt"),
         ExchangeOutcome::PreEffectWaiting
@@ -1994,10 +2597,10 @@ async fn only_typed_pre_effect_waiting_reopens_peer_input() {
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert_eq!(
         driver
-            .receive("peer-server", &envelope, 1_700_000_001)
+            .receive("peer-server", &envelope, now + 1)
             .await
             .expect("retry after known pre-effect waiting"),
-        ExchangeOutcome::Applied(json!({"applied":true}))
+        applied(&json!({"applied":true}))
     );
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
@@ -2006,6 +2609,21 @@ async fn only_typed_pre_effect_waiting_reopens_peer_input() {
 async fn multi_server_corpus_witness() {
     assert_eq!(signing_identity().id(), "local-server");
     let (_root, store) = store().await;
+    let request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    store
+        .transaction_with(move |tx| {
+            studio_runtime_services::multi_server_orchestration::enqueue_in_transaction(
+                tx,
+                "peer-server",
+                "message",
+                &json!({"text":"fixture"}),
+                &request_id,
+                chrono::Utc::now().timestamp(),
+            )?;
+            Ok::<_, studio_runtime_services::multi_server_auth::AccessError>(())
+        })
+        .await
+        .expect("current delivery writer");
     let snapshot =
         studio_runtime_services::multi_server::snapshot(&store, &fixture().data["identity"])
             .await
@@ -2029,10 +2647,7 @@ async fn multi_server_corpus_witness() {
             .iter()
             .find(|t| t.table == table)
             .expect("registered table");
-        assert!(
-            checked.row_count > 0,
-            "Python fixture must populate {table}"
-        );
+        assert!(checked.row_count > 0, "fixture must populate {table}");
         assert_eq!(checked.rejected_count, 0, "{table}: {:?}", checked.failures);
     }
 }
@@ -2047,10 +2662,11 @@ async fn orchestration_claims_survive_lost_receipts_and_reject_changed_content()
     use studio_runtime_services::multi_server_orchestration::{
         ExchangeOutcome, OrchestrationDriver, OrchestrationEffects, PairedTransport,
     };
+
     struct Effects(Arc<AtomicUsize>);
     impl OrchestrationEffects for Effects {
         fn supports(&self, action: &str) -> bool {
-            action == "fixture" || action == "input"
+            action == "input"
         }
         fn execute<'a>(
             &'a self,
@@ -2059,72 +2675,68 @@ async fn orchestration_claims_survive_lost_receipts_and_reject_changed_content()
         ) -> futures_util::future::BoxFuture<'a, Result<ExchangeOutcome, AccessError>> {
             Box::pin(async move {
                 self.0.fetch_add(1, Ordering::SeqCst);
-                Ok(ExchangeOutcome::Applied(json!({"applied":true})))
+                Ok(applied(&json!({"applied":true})))
             })
         }
     }
-    struct Transport(Arc<AtomicUsize>, bool);
+    struct Transport(Arc<AtomicUsize>);
     impl PairedTransport for Transport {
         fn exchange<'a>(
             &'a self,
-            _server: &'a str,
+            _: &'a str,
             envelope: &'a Value,
-            _timeout: Duration,
-        ) -> futures_util::future::BoxFuture<'a, Result<Value, AccessError>> {
+            _: Duration,
+        ) -> futures_util::future::BoxFuture<'a, Result<RemoteReply, AccessError>> {
+            let request_id = envelope["requestId"].as_str().expect("request id");
             Box::pin(async move {
                 self.0.fetch_add(1, Ordering::SeqCst);
-                Ok(if self.1 {
-                    json!({"requestId":envelope["requestId"],"outcome":"unknown"})
-                } else {
-                    json!({"requestId":envelope["requestId"],"outcome":"applied","value":{"applied":true}})
-                })
+                Ok(applied(&json!({"applied":true})).to_reply(request_id))
             })
         }
     }
-    let now = fixture().data["now"].as_i64().expect("now");
-    for direction in if full_matrix() {
-        &["inbox", "outbox"][..]
-    } else {
-        &["outbox"][..]
-    } {
-        for stage in ["claim", "finish"] {
+    for direction in ["inbox", "outbox"] {
+        for stage in ["claim", "settle"] {
             let (root, store) = store().await;
+            let request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+            let now = chrono::Utc::now().timestamp();
             let calls = Arc::new(AtomicUsize::new(0));
-            let event = if stage == "claim" { "INSERT" } else { "UPDATE" };
-            store.transaction(move |tx|{tx.execute_batch(&format!("CREATE TRIGGER failpoint BEFORE {event} ON runtime_server_{direction} BEGIN SELECT RAISE(ABORT,'fixture failpoint'); END"))?;Ok(())})
-            .await.expect("failpoint");
-            let run = |store: Arc<studio_runtime_store::RuntimeStore>| async {
+            let event = if stage == "claim" { "INSERT" } else { "DELETE" };
+            store.transaction(move |tx| { tx.execute_batch(&format!("CREATE TRIGGER failpoint BEFORE {event} ON runtime_server_{direction} BEGIN SELECT RAISE(ABORT,'fixture failpoint'); END"))?; Ok(()) }).await.expect("failpoint");
+            let run = |store: Arc<RuntimeStore>| async {
                 let driver = OrchestrationDriver::new(
                     store,
-                    Arc::new(Transport(calls.clone(), false)),
+                    Arc::new(Transport(calls.clone())),
                     Arc::new(Effects(calls.clone())),
                 );
-                if *direction == "inbox" {
-                    driver.receive("peer-server",&json!({"requestId":"effect-a","action":"fixture","payload":{"actor":"fixture"}}),now).await
+                if direction == "inbox" {
+                    driver.receive("peer-server", &json!({"requestId":request_id,"operation":[],"action":"input","payload":{"actor":"fixture"}}), now).await
                 } else {
                     driver
                         .exchange(
                             "peer-server",
-                            "fixture",
+                            "input",
                             &json!({"actor":"fixture"}),
-                            "effect-a",
+                            &request_id,
                             now,
                         )
                         .await
                 }
             };
-            assert!(run(store.clone()).await.is_err(), "{direction}/{stage}");
-            assert_eq!(calls.load(Ordering::SeqCst), usize::from(stage == "finish"));
+            assert!(
+                run(store.clone()).await.is_err(),
+                "{direction}/{stage}: rollback"
+            );
+            assert_eq!(calls.load(Ordering::SeqCst), usize::from(stage == "settle"));
             store
                 .transaction(|tx| {
                     tx.execute_batch("DROP TRIGGER failpoint")?;
                     Ok(())
                 })
                 .await
-                .expect("remove failpoint");
+                .unwrap();
             drop(store);
             let reopened = Arc::new(
-                studio_runtime_store::RuntimeStore::open(Some(root.path()))
+                RuntimeStore::open(Some(root.path()))
                     .await
                     .expect("restart"),
             );
@@ -2132,252 +2744,132 @@ async fn orchestration_claims_survive_lost_receipts_and_reject_changed_content()
             assert_eq!(
                 result,
                 if stage == "claim" {
-                    ExchangeOutcome::Applied(json!({"applied":true}))
+                    applied(&json!({"applied":true}))
                 } else {
                     ExchangeOutcome::Unknown
-                }
+                },
+                "{direction}/{stage}: uncertain effect is not repeated"
             );
             assert_eq!(
                 calls.load(Ordering::SeqCst),
                 1,
-                "never repeat effect at {direction}/{stage}"
+                "{direction}/{stage}: one effect"
             );
             let driver = OrchestrationDriver::new(
                 reopened,
-                Arc::new(Transport(calls.clone(), false)),
+                Arc::new(Transport(calls.clone())),
                 Arc::new(Effects(calls.clone())),
             );
-            let changed = if *direction == "inbox" {
-                driver.receive("peer-server",&json!({"requestId":"effect-a","action":"fixture","payload":{"actor":"different"}}),now).await
+            let changed = if direction == "inbox" {
+                driver.receive("peer-server", &json!({"requestId":request_id,"operation":[],"action":"input","payload":{"actor":"different"}}), now).await
             } else {
                 driver
                     .exchange(
                         "peer-server",
-                        "fixture",
+                        "input",
                         &json!({"actor":"different"}),
-                        "effect-a",
+                        &request_id,
                         now,
                     )
                     .await
             };
-            assert_eq!(changed.expect_err("conflict").status(), 409);
+            assert_eq!(
+                changed.expect_err("changed request conflicts").status(),
+                409
+            );
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
         }
     }
-    for case in fixture().data["deliveryStates"].as_array().expect("states") {
-        let (root, store) = store().await;
-        // Template rows come from Python receive(), including waiting's proof
-        // that no effect crossed the boundary. Reopen before attempting it.
-        drop(store);
-        let store = Arc::new(
-            studio_runtime_store::RuntimeStore::open(Some(root.path()))
-                .await
-                .expect("restart"),
-        );
-        let calls = Arc::new(AtomicUsize::new(0));
-        let driver = OrchestrationDriver::new(
-            store.clone(),
-            Arc::new(Transport(calls.clone(), false)),
-            Arc::new(Effects(calls.clone())),
-        );
-        let result = driver
-            .receive("peer-server", &case["envelope"], now)
-            .await
-            .expect("Python receipt state");
-        let actual = match result {
-            ExchangeOutcome::Applied(value) => {
-                json!({"requestId":case["envelope"]["requestId"],"outcome":"applied","value":value})
-            }
-            ExchangeOutcome::Unknown => {
-                json!({"requestId":case["envelope"]["requestId"],"outcome":"unknown"})
-            }
-            other @ ExchangeOutcome::NotApplied(_) | other @ ExchangeOutcome::PreEffectWaiting => {
-                panic!("unexpected {other:?}")
-            }
-        };
-        assert_eq!(actual, case["result"], "{}", case["state"]);
-        assert_eq!(
-            calls.load(Ordering::SeqCst),
-            case["calls"].as_u64().expect("calls") as usize
-        );
-        driver
-            .receive("peer-server", &case["envelope"], now)
-            .await
-            .expect("replay");
-        assert_eq!(
-            calls.load(Ordering::SeqCst),
-            case["calls"].as_u64().expect("calls") as usize
-        );
-    }
-    for stage in if full_matrix() {
-        &["claim", "finish"][..]
-    } else {
-        &["claim"][..]
-    } {
-        let (root, store) = store().await;
-        let case = fixture().data["deliveryStates"]
-            .as_array()
-            .expect("states")
-            .iter()
-            .find(|c| c["state"] == "waiting")
-            .expect("waiting");
-        let state = if *stage == "claim" {
-            "running"
-        } else {
-            "complete"
-        };
-        store.transaction(move |tx| { tx.execute_batch(&format!("CREATE TRIGGER waiting_fail BEFORE UPDATE ON runtime_server_inbox WHEN NEW.state='{state}' BEGIN SELECT RAISE(ABORT,'waiting failpoint'); END"))?; Ok(()) })
-            .await.expect("failpoint");
-        let calls = Arc::new(AtomicUsize::new(0));
-        let run = |store: Arc<studio_runtime_store::RuntimeStore>| async {
-            OrchestrationDriver::new(
-                store,
-                Arc::new(Transport(calls.clone(), false)),
-                Arc::new(Effects(calls.clone())),
-            )
-            .receive("peer-server", &case["envelope"], now)
-            .await
-        };
-        assert!(run(store.clone()).await.is_err());
-        assert_eq!(
-            calls.load(Ordering::SeqCst),
-            usize::from(*stage == "finish")
-        );
-        store
-            .transaction(|tx| {
-                tx.execute_batch("DROP TRIGGER waiting_fail")?;
-                Ok(())
-            })
-            .await
-            .expect("remove failpoint");
-        drop(store);
-        let store = Arc::new(
-            studio_runtime_store::RuntimeStore::open(Some(root.path()))
-                .await
-                .expect("restart"),
-        );
-        assert_eq!(
-            run(store).await.expect("recovery"),
-            if *stage == "claim" {
-                ExchangeOutcome::Applied(json!({"applied":true}))
-            } else {
-                ExchangeOutcome::Unknown
-            }
-        );
-        assert_eq!(
-            calls.load(Ordering::SeqCst),
-            1,
-            "waiting claim never executes twice"
-        );
-    }
-    let (_root, store) = store().await;
+
+    let (_root, store) = migrated_store().await;
     let calls = Arc::new(AtomicUsize::new(0));
     let driver = OrchestrationDriver::new(
-        store.clone(),
-        Arc::new(Transport(calls.clone(), true)),
+        store,
+        Arc::new(Transport(calls.clone())),
         Arc::new(Effects(calls.clone())),
     );
+    for (id, completed) in [
+        ("python-waiting", false),
+        ("python-running", false),
+        ("python-complete", true),
+    ] {
+        let request =
+            json!({"requestId":id,"operation":[],"action":"input","payload":{"actor":"fixture"}});
+        let result = driver
+            .receive("peer-server", &request, chrono::Utc::now().timestamp())
+            .await;
+        if completed {
+            assert_eq!(
+                result.expect("migrated reply"),
+                applied(&json!({"applied":true})),
+                "legacy cache hit replays"
+            );
+        } else {
+            assert_eq!(
+                result.expect_err("legacy miss").status(),
+                410,
+                "legacy miss cannot start an effect"
+            );
+        }
+    }
     assert_eq!(
-        driver
-            .exchange("peer-server", "fixture", &json!({}), "unknown", now)
-            .await
-            .expect("unknown"),
-        ExchangeOutcome::Unknown
-    );
-    assert_eq!(
-        driver
-            .exchange("peer-server", "fixture", &json!({}), "unknown", now + 100)
-            .await
-            .expect("unknown retained"),
-        ExchangeOutcome::Unknown
-    );
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
-    let before = rows(&store);
-    assert_eq!(
-        driver
-            .receive(
-                "peer-server",
-                &json!({"requestId":"missing","action":"absent","payload":{}}),
-                now
-            )
-            .await
-            .expect_err("named refusal")
-            .status(),
-        501
-    );
-    assert_eq!(rows(&store), before);
-    let queued = &fixture().data["queued"];
-    let envelope: Value =
-        serde_json::from_str(queued["body"].as_str().expect("body")).expect("envelope");
-    assert_eq!(
-        driver
-            .exchange(
-                "peer-server",
-                "browser_callback",
-                &envelope["payload"],
-                "python-queued",
-                now
-            )
-            .await
-            .expect("Python-written queue"),
-        ExchangeOutcome::Unknown
+        calls.load(Ordering::SeqCst),
+        0,
+        "legacy reads never dispatch"
     );
 }
 
 #[tokio::test]
-async fn python_receipt_states_preserve_completed_results_and_uncertainty() {
-    let data = &fixture().data;
-    let case = &data["auth"][0];
-    let now = data["now"].as_i64().expect("now");
-    for state in if full_matrix() {
-        &["pending", "complete", "tombstone", "expired", "malformed"][..]
-    } else {
-        &["pending", "expired"][..]
-    } {
-        let state = *state;
+async fn pairing_receipt_replays_exactly_and_expired_or_malformed_rows_refuse() {
+    for state in ["complete", "expired", "malformed"] {
         let (_root, store) = store().await;
+        let root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let now = chrono::Utc::now().timestamp();
+        store.transaction(move |tx| {
+            tx.execute("UPDATE runtime_access_invites SET record=json_set(record,'$.expires',?1) WHERE request_id='second-invite'", [now + 900])?;
+            Ok(())
+        }).await.expect("current invite");
+        let first = current_pair(&root, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", now);
         let result = boundary()
-            .handle(
-                &store,
-                &request(case).expect("request"),
-                &owner(),
-                None,
-                now,
-            )
+            .handle(&store, &first, &owner(), None, now)
             .await
             .expect("pair");
-        store.transaction(move |tx| {
-            if state == "expired" {
-                tx.execute("UPDATE runtime_access_receipts SET record=json_set(record,'$.completed',?1) WHERE client='new-client'", [now-8*86400])?;
-            } else if state == "malformed" {
-                tx.execute("UPDATE runtime_access_receipts SET record=json_set(record,'$.body',9) WHERE client='new-client'", [])?;
-            } else {
-                tx.execute("UPDATE runtime_access_receipts SET status=?1 WHERE client='new-client'", [state])?;
-            }
-            Ok(())
-        })
-            .await.expect("saved Python-compatible state");
+        let key = studio_runtime_store::multi_server_delivery::remote_result_key(
+            "access",
+            &["new-client"],
+            &root,
+        );
+        store
+            .transaction_with(move |tx| {
+                if state == "expired" {
+                    tx.execute(
+                        "UPDATE request_results SET created=?1 WHERE id=?2",
+                        rusqlite::params![
+                            chrono::Utc::now().timestamp_millis()
+                                - studio_runtime_schema::persistence::REQUEST_RESULT_TTL_MS
+                                - 1,
+                            key
+                        ],
+                    )?;
+                } else if state == "malformed" {
+                    tx.execute(
+                        "UPDATE request_results SET result=?1 WHERE id=?2",
+                        rusqlite::params![r#"{"actor":null,"reply":9,"references":[]}"#, key],
+                    )?;
+                }
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .await
+            .expect("saved receipt state");
         let before = rows(&store);
-        let replay = boundary()
-            .handle(
-                &store,
-                &request(&data["freshPair"]).expect("request"),
-                &owner(),
-                None,
-                now,
-            )
-            .await;
-        if matches!(state, "pending" | "complete") {
-            assert_eq!(replay.expect("recovered receipt"), result);
-            let saved: String = store
-                .test_reader()
-                .expect("read")
-                .query_row(
-                    "SELECT status FROM runtime_access_receipts WHERE client='new-client'",
-                    [],
-                    |r| r.get(0),
-                )
-                .expect("saved");
-            assert_eq!(saved, "complete");
+        let retry = current_pair(&root, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", now);
+        let replay = boundary().handle(&store, &retry, &owner(), None, now).await;
+        if state == "complete" {
+            assert_eq!(
+                replay.expect("exact reply"),
+                result,
+                "completed response is replayed exactly"
+            );
         } else {
             assert_eq!(
                 replay.expect_err("refused").status(),
@@ -2386,6 +2878,51 @@ async fn python_receipt_states_preserve_completed_results_and_uncertainty() {
             assert_eq!(rows(&store), before, "refusal is atomic");
         }
     }
+}
+
+#[tokio::test]
+async fn migrated_pending_pairing_remains_unknown_without_reapplying() {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct PairCases {
+        auth: Vec<FixtureRequest>,
+        fresh_pair: FixtureRequest,
+        now: i64,
+    }
+    let cases: PairCases = typed_data();
+    let first = cases.auth.first().expect("pair case");
+    let signed = studio_runtime_services::multi_server_auth::SignedRequest::from_headers(
+        &first.method,
+        &first.target,
+        &first.headers,
+        first.raw.as_bytes(),
+    )
+    .expect("original signed request");
+    let fingerprint = signed.fingerprint();
+    let (root, store) = store().await;
+    drop(store);
+    {
+        let db = rusqlite::Connection::open(root.path().join("canvas.sqlite3")).expect("source");
+        db.execute_batch("DELETE FROM runtime_payload_migrations WHERE name LIKE 'receipts:%'; CREATE TABLE runtime_access_receipts(client TEXT,request_id TEXT,hash TEXT,session TEXT,status TEXT,record TEXT,PRIMARY KEY(client,request_id));").expect("source-era access ledger");
+        db.execute("INSERT INTO runtime_access_receipts VALUES('new-client','request-a',?1,'session','pending','{}')", [&fingerprint]).expect("legacy pending owner");
+    }
+    let store = RuntimeStore::open(Some(root.path()))
+        .await
+        .expect("migrate pending owner");
+    let retry = studio_runtime_services::multi_server_auth::SignedRequest::from_headers(
+        &cases.fresh_pair.method,
+        &cases.fresh_pair.target,
+        &cases.fresh_pair.headers,
+        cases.fresh_pair.raw.as_bytes(),
+    )
+    .expect("fresh signed nonce");
+    let before = rows(&store);
+    let error = boundary()
+        .handle(&store, &retry, &owner(), None, cases.now)
+        .await
+        .expect_err("unknown pending result");
+    assert_eq!(error.status(), 409, "migrated pending work stays unknown");
+    assert_eq!(rows(&store), before, "unknown pairing retry has no effect");
 }
 
 #[tokio::test]
@@ -2426,42 +2963,40 @@ async fn nonce_capacity_is_rate_limited_without_committing_access_writes() {
 
 #[tokio::test]
 async fn fractional_invitation_boundary_matches_python() {
-    let data = &fixture().data;
-    for case in data["auth"].as_array().expect("cases").iter().filter(|c| {
-        c["name"]
-            .as_str()
-            .expect("name")
-            .starts_with("invite-expiry-")
-    }) {
+    for (offset, accepted) in [(0.75, true), (0.5, true), (0.25, false)] {
         let (_root, store) = store().await;
+        let root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let now = chrono::Utc::now().timestamp();
+        let expires = now as f64 + offset;
         store
             .transaction(move |tx| {
                 tx.execute(
-                    "UPDATE runtime_access_invites SET record=?1 WHERE id=?2",
-                    rusqlite::params![
-                        case["invite"].as_str().expect("invite"),
-                        case["inviteId"].as_str().expect("id")
-                    ],
+                    "UPDATE runtime_access_invites SET record=json_set(record,'$.expires',?1) WHERE request_id='second-invite'",
+                    [expires],
                 )?;
                 Ok(())
             })
             .await
             .expect("Python fractional expiry");
         let before = rows(&store);
+        let signed = current_pair(&root, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", now);
         let result = boundary()
-            .handle_at(
-                &store,
-                &request(case).expect("request"),
-                &owner(),
-                None,
-                case["now"].as_f64().expect("time"),
-            )
+            .handle_at(&store, &signed, &owner(), None, now as f64 + 0.5)
             .await;
-        if let Some(expected) = case.get("refusal") {
-            assert_eq!(refusal(result.expect_err("expired")), *expected);
+        if !accepted {
+            assert_eq!(
+                result.expect_err("expired").status(),
+                403,
+                "expired invitation refuses"
+            );
             assert_eq!(rows(&store), before);
         } else {
-            assert_eq!(result.expect("not expired")["paired"], true);
+            assert!(
+                result.expect("not expired")["paired"]
+                    .as_bool()
+                    .expect("reply"),
+                "fractional boundary permits pairing"
+            );
         }
     }
 }
@@ -2522,33 +3057,55 @@ async fn queried_status_crosses_service_dispatch() {
 async fn signatures_precede_owner_lookups_and_probes() {
     use std::sync::atomic::Ordering;
     use studio_runtime_services::multi_server_pairing::MultiServerBoundary;
-    let data = &fixture().data;
-    for (bad, good) in [
-        ("bad-signature", "pair-ui"),
-        ("bad-auto-signature", "auto-pair"),
-    ] {
+    #[derive(serde::Deserialize)]
+    struct Cases {
+        auth: Vec<Case>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Case {
+        name: String,
+        #[serde(flatten)]
+        request: FixtureRequest,
+        now: f64,
+    }
+    let data: Cases = typed_data();
+    for bad in ["bad-signature", "bad-auto-signature"] {
         let (_root, store) = store().await;
-        let case = data["auth"]
+        let case = data
+            .auth
+            .iter()
+            .find(|c| c.name == bad)
+            .expect("bad signature");
+        let raw = &fixture().data;
+        let raw_case = raw["auth"]
             .as_array()
             .expect("cases")
             .iter()
-            .find(|c| c["name"] == bad)
+            .find(|candidate| candidate["name"] == bad)
             .expect("bad signature");
-        let lookup = CountingOwner::new(case.clone());
+        let lookup = CountingOwner::new(raw_case.clone());
         let boundary =
-            MultiServerBoundary::new(data["identity"].clone(), lookup.clone()).expect("boundary");
+            MultiServerBoundary::new(raw["identity"].clone(), lookup.clone()).expect("boundary");
         let before = rows(&store);
+        let invalid = studio_runtime_services::multi_server_auth::SignedRequest::from_headers(
+            &case.request.method,
+            &case.request.target,
+            &case.request.headers,
+            case.request.raw.as_bytes(),
+        )
+        .expect("request");
         let error = boundary
-            .handle_incoming(
-                Arc::clone(&store),
-                &request(case).expect("request"),
-                "100.64.0.2",
-                &[],
-                case["now"].as_f64().expect("now"),
-            )
+            .handle_incoming(Arc::clone(&store), &invalid, "100.64.0.2", &[], case.now)
             .await
             .expect_err("signature rejected");
-        assert_eq!(refusal(error), case["refusal"]);
+        assert!(matches!(
+            error,
+            studio_runtime_services::multi_server_auth::AccessError::Refused {
+                status: 401,
+                code: "invalid_signature",
+                ..
+            }
+        ));
         assert_eq!(
             lookup.calls.load(Ordering::SeqCst),
             0,
@@ -2560,20 +3117,16 @@ async fn signatures_precede_owner_lookups_and_probes() {
             "invalid signature must not probe caller origin"
         );
         assert_eq!(rows(&store), before);
-        let good = data["auth"]
-            .as_array()
-            .expect("cases")
-            .iter()
-            .find(|c| c["name"] == good)
-            .expect("good signature");
+        let now = chrono::Utc::now().timestamp();
+        store.transaction(move |tx| { tx.execute("UPDATE runtime_access_invites SET record=json_set(record,'$.expires',?1) WHERE request_id='second-invite'", [now + 900])?; Ok(()) }).await.expect("current invite");
+        let root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let good = if bad == "bad-signature" {
+            current_pair(&root, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", now)
+        } else {
+            current_auto_pair(&root, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", now)
+        };
         boundary
-            .handle_incoming(
-                Arc::clone(&store),
-                &request(good).expect("request"),
-                "100.64.0.2",
-                &[],
-                good["now"].as_f64().expect("now"),
-            )
+            .handle_incoming(Arc::clone(&store), &good, "100.64.0.2", &[], now as f64)
             .await
             .expect("valid signature uses host");
         assert_eq!(lookup.calls.load(Ordering::SeqCst), 1);
@@ -2630,37 +3183,46 @@ async fn a_row_that_cannot_be_delivered_does_not_hold_back_later_rows() {
             _server: &'a str,
             envelope: &'a Value,
             _timeout: Duration,
-        ) -> futures_util::future::BoxFuture<'a, Result<Value, AccessError>> {
+        ) -> futures_util::future::BoxFuture<'a, Result<RemoteReply, AccessError>> {
             Box::pin(async move {
                 let id = envelope["requestId"].as_str().unwrap().to_owned();
                 self.delivered.lock().unwrap().push(id.clone());
-                Ok(json!({"requestId":id,"outcome":"applied","value":{"stored":true}}))
+                Ok(applied(&json!({"stored":true})).to_reply(&id))
             })
         }
     }
 
     let (_root, store) = store().await;
+    let rewritten = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    let later = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    let key = studio_runtime_store::multi_server_delivery::remote_operation_key(
+        "server-outbox",
+        &["peer-server"],
+        &rewritten,
+        &["message"],
+    );
+    let now = chrono::Utc::now().timestamp();
     store
-        .transaction_with(|tx| {
-            for key in ["rewritten-1", "later-2"] {
+        .transaction_with({ let rewritten = rewritten.clone(); let later = later.clone(); move |tx| {
+            for root in [&rewritten, &later] {
                 enqueue_in_transaction(
                     tx,
                     "peer-server",
                     "message",
-                    &json!({"link":"link-1","worker":"worker-1","args":{"text":key}}),
-                    key,
-                    100,
+                    &json!({"link":"link-1","worker":"worker-1","args":{"text":root}}),
+                    root,
+                    now,
                 )
                 .unwrap();
             }
             // Python rewrites some stored bodies after queueing (an exec receipt probe), so
             // the stored body no longer matches the fingerprint of the original request.
             tx.execute(
-                "UPDATE runtime_server_outbox SET body=json_set(body,'$.payload.args.text','changed') WHERE id='rewritten-1'",
-                [],
+                "UPDATE runtime_server_outbox SET body=json_set(body,'$.payload.args.text','changed') WHERE id=?1",
+                [&key],
             )?;
             Ok::<_, studio_runtime_store::StoreError>(())
-        })
+        }})
         .await
         .unwrap();
     let peer = Arc::new(Peer::default());
@@ -2670,11 +3232,8 @@ async fn a_row_that_cannot_be_delivered_does_not_hold_back_later_rows() {
         Arc::new(Effects),
     );
     // The Python-written fixture may hold other due rows; only these two matter here.
-    assert!(driver.pump_due(105).await.unwrap() >= 1);
+    assert!(driver.pump_due(now + 5).await.unwrap() >= 1);
     let delivered = peer.delivered.lock().unwrap();
-    assert!(delivered.contains(&"later-2".to_owned()), "{delivered:?}");
-    assert!(
-        !delivered.contains(&"rewritten-1".to_owned()),
-        "{delivered:?}"
-    );
+    assert!(delivered.contains(&later), "{delivered:?}");
+    assert!(!delivered.contains(&rewritten), "{delivered:?}");
 }

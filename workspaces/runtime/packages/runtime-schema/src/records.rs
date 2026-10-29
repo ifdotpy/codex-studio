@@ -5,16 +5,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkStatus {
-    Ready,
-    Blocked,
-    Running,
-    Review,
-    Accepted,
-    Cancelled,
-}
+pub use crate::persistence::WorkStatus;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq, JsonSchema)]
 #[serde(rename_all = "snake_case")]

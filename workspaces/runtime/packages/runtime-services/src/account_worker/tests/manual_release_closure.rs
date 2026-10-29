@@ -46,7 +46,8 @@ async fn save_release(state: &State, worker: &AccountHandle, changes: Value) {
                             release[key] = value.clone();
                         }
                     }
-                    agent.extra.insert("nativeRelease".into(), release);
+                    agent.native_release =
+                        Some(serde_json::from_str(&release.to_string()).unwrap());
                     AgentRepository::put(tx, &agent)
                 })
                 .await?;

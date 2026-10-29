@@ -1,7 +1,7 @@
 import {
   ApiError,
   type ApiPostPath,
-  type PostBody,
+  type PostInput,
   type PostResult,
   type PostOptions,
 } from "../api";
@@ -238,7 +238,7 @@ export function createMergedSidebarServices(
       ...backend,
       async post<Path extends ApiPostPath>(
         path: Path,
-        body: PostBody<Path>,
+        body: PostInput<Path>,
         options?: PostOptions,
       ): Promise<PostResult<Path>> {
         if (!online(owner)) throw new Error("The sidebar server is offline.");
@@ -269,7 +269,7 @@ export function createMergedSidebarServices(
         if (key && !stored) backend.save(key, { path, visible: body, wire });
         let response: PostResult<Path>;
         try {
-          response = await backend.post(path, wire as PostBody<Path>, options);
+          response = await backend.post(path, wire as PostInput<Path>, options);
           if (key) backend.storage.removeItem(key);
         } catch (failure) {
           if (

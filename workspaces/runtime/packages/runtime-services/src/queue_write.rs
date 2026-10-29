@@ -6,20 +6,53 @@ use crate::event_write;
 use serde_json::{Value, json};
 use studio_runtime_schema::queue_command::QueueCommand;
 use studio_runtime_store::{
-    AgentId, AgentRecord, AgentRepository, AgentStatus, Connection, EventWriteRepository,
-    QueueWriteRepository, SchedulerRepository, StoreError, Transaction, WorkItemsRepository,
+    AgentId, AgentRecord, AgentRepository, AgentStatus, Connection, QueueWriteRepository,
+    SchedulerRepository, StoreError, Transaction, WorkItemsRepository,
 };
 use thiserror::Error;
+
+pub const QUEUE_REORDER_ENABLED: bool = true;
+pub const QUEUE_RECEIPTS_ENABLED: bool = true;
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+enum QueueMutationStatus {
+    #[serde(rename = "updated")]
+    Updated,
+}
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct QueueCapabilities {
+    pub reorder: bool,
+    pub receipts: bool,
+}
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct QueueReply {
+    status: QueueMutationStatus,
+    revision: String,
+    capabilities: QueueCapabilities,
+}
+
+#[cfg(test)]
+mod receipt_tests {
+    use super::QueueReply;
+
+    #[test]
+    fn stored_receipt_round_trips() {
+        let stored = r#"{"status":"updated","revision":"abc","capabilities":{"reorder":true,"receipts":true}}"#;
+        let reply: QueueReply = serde_json::from_str(stored).expect("stored receipt");
+        assert_eq!(serde_json::to_string(&reply).expect("receipt JSON"), stored);
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct QueueSnapshot {
     pub items: Vec<Value>,
     pub revision: String,
-    pub capabilities: Value,
 }
 
 #[derive(Debug, Error)]
 pub enum QueueWriteError {
+    #[error(transparent)]
+    RequestResult(#[from] studio_runtime_store::request_results::RequestResultError),
     #[error("invalid request: {0}")]
     InvalidRequest(&'static str),
     #[error("{0}")]
@@ -43,7 +76,7 @@ pub fn action(
     body: &QueueCommand,
     signature: &str,
     snapshot: impl Fn(&Transaction<'_>, &AgentRecord) -> Result<QueueSnapshot, QueueWriteError>,
-) -> Result<Value, QueueWriteError> {
+) -> Result<QueueReply, QueueWriteError> {
     let agent = AgentRepository::get(transaction, &AgentId::from(agent_id))?
         .ok_or(QueueWriteError::InvalidRequest("Invalid request"))?;
     if agent.id.0 != agent_id {
@@ -72,23 +105,20 @@ pub fn action(
             "Supply a request ID to change queue delivery",
         ));
     }
-    let receipt_id = request_id.map(|id| format!("queue:{agent_id}:{id}"));
-    if let Some(receipt_id) = receipt_id.as_deref() {
-        let receipt = EventWriteRepository::receipt(transaction, receipt_id)?;
-        if let Some(receipt) = receipt {
-            if receipt.signature != signature {
-                return Err(QueueWriteError::Conflict(
-                    "This request id has different content",
-                ));
-            }
-            let saved: Value = serde_json::from_str(&receipt.result)
-                .map_err(|_| invalid_stored("runtime_operation_receipts", receipt_id))?;
-            if !valid_receipt(&saved) {
-                return Err(invalid_stored("runtime_operation_receipts", receipt_id));
-            }
-            return Ok(saved);
-        }
-    }
+    let request_id = request_id.ok_or(QueueWriteError::InvalidRequest(
+        "Supply a stable UUIDv7 request id",
+    ))?;
+    let receipt_id = format!("queue:{agent_id}:{request_id}");
+    let now_ms = (unix_time()? * 1000.0) as i64;
+    let admitted = match event_write::begin_request::<QueueReply>(
+        transaction,
+        event_write::RequestKey::new("queue", &[agent_id], request_id).raw(&receipt_id),
+        signature,
+        now_ms,
+    )? {
+        event_write::CallerAdmission::Replay(reply) => return Ok(reply),
+        event_write::CallerAdmission::Fresh(admitted) => admitted,
+    };
 
     let current = snapshot(transaction, &agent)?;
     if !body.accepts_revision(&current.revision) {
@@ -189,6 +219,7 @@ pub fn action(
     if recover_failed {
         agent.status = AgentStatus::Queued;
         agent.extra.insert("error".into(), Value::Null);
+        agent.extra.remove("startAttempt");
     }
     if updated.items != current.items || recover_failed {
         let revision = match agent.extra.get("queueMutationRevision") {
@@ -211,18 +242,15 @@ pub fn action(
     } else {
         updated
     };
-    let result = json!({
-        "status": "updated",
-        "revision": final_snapshot.revision,
-        "capabilities": final_snapshot.capabilities,
-    });
-    if !valid_receipt(&result) {
-        return Err(QueueWriteError::InvalidRequest("Invalid queue receipt"));
-    }
-    if let Some(receipt_id) = receipt_id {
-        EventWriteRepository::put_receipt(transaction, &receipt_id, signature, &result.to_string())
-            .map_err(QueueWriteError::Store)?;
-    }
+    let result = QueueReply {
+        status: QueueMutationStatus::Updated,
+        revision: final_snapshot.revision,
+        capabilities: QueueCapabilities {
+            reorder: QUEUE_REORDER_ENABLED,
+            receipts: QUEUE_RECEIPTS_ENABLED,
+        },
+    };
+    event_write::settle_request(transaction, &admitted, Some(agent_id), &result)?;
     Ok(result)
 }
 
@@ -324,15 +352,6 @@ fn read_metadata(transaction: &Transaction<'_>, id: &str) -> Result<Value, Queue
     }
 }
 
-fn valid_receipt(value: &Value) -> bool {
-    value.get("status").and_then(Value::as_str) == Some("updated")
-        && value.get("revision").and_then(Value::as_str).is_some()
-        && value
-            .get("capabilities")
-            .and_then(Value::as_object)
-            .is_some()
-}
-
 fn unix_time() -> Result<f64, QueueWriteError> {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -427,11 +446,7 @@ pub fn queue_snapshot(
     };
     let bytes = serde_json::to_vec(&json!([agent.epoch, revision_number, items]))?;
     let revision = studio_runtime_store::sha256_hex(&bytes);
-    Ok(QueueSnapshot {
-        items,
-        revision,
-        capabilities: json!({"reorder":true,"receipts":true}),
-    })
+    Ok(QueueSnapshot { items, revision })
 }
 
 pub fn is_live(agent: &AgentRecord) -> bool {
@@ -457,6 +472,9 @@ pub fn publish_queue(
         Some(agent) => {
             let snapshot = queue_snapshot(transaction, &agent).map_err(|error| match error {
                 QueueWriteError::Store(error) => error,
+                QueueWriteError::RequestResult(error) => {
+                    StoreError::SchemaMismatch(error.to_string())
+                }
                 QueueWriteError::Json(error) => StoreError::Json(error),
                 QueueWriteError::InvalidRequest(_)
                 | QueueWriteError::Conflict(_)
@@ -467,7 +485,7 @@ pub fn publish_queue(
                 },
             })?;
             (
-                json!({"items":snapshot.items,"revision":snapshot.revision,"capabilities":snapshot.capabilities}),
+                json!({"items":snapshot.items,"revision":snapshot.revision,"capabilities":{"reorder":QUEUE_REORDER_ENABLED,"receipts":QUEUE_RECEIPTS_ENABLED}}),
                 false,
             )
         }

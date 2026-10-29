@@ -293,6 +293,10 @@ async fn serve_inner(state: HttpState, request: Request<Body>, next: Next) -> Re
     let effect_request_id = request_id.clone();
     let tracked_route = crate::middleware::diagnostic_route_parts(&state, &method, &path, None);
     let tracked_request_id = Some(request_id.clone());
+    enum IncomingReply {
+        Orchestration(studio_runtime_store::multi_server_delivery::RemoteReply),
+        Other(serde_json::Value),
+    }
     let effect = async move {
         if is_orchestration {
             let prepared = prepared_server.as_ref().ok_or_else(|| {
@@ -311,7 +315,7 @@ async fn serve_inner(state: HttpState, request: Request<Body>, next: Next) -> Re
             let outcome = driver
                 .receive(&principal, request.body(), now as i64)
                 .await?;
-            Ok(outcome.to_value(&request_id))
+            Ok(IncomingReply::Orchestration(outcome.to_reply(&request_id)))
         } else if is_name {
             let principal = boundary
                 .commit_prepared_server_request(
@@ -345,6 +349,7 @@ async fn serve_inner(state: HttpState, request: Request<Body>, next: Next) -> Re
                 .identity(Arc::clone(&store), public_origin.as_deref())
                 .await
                 .map_err(credential_error)
+                .map(IncomingReply::Other)
         } else if is_management_invite {
             let actor = boundary
                 .commit_prepared_server_request(
@@ -381,6 +386,7 @@ async fn serve_inner(state: HttpState, request: Request<Body>, next: Next) -> Re
             )
             .await
             .map_err(map_invite_error)
+            .map(IncomingReply::Other)
         } else {
             match prepared_access.as_ref() {
                 Some(prepared) => boundary.apply_prepared_incoming(&store, prepared).await,
@@ -390,10 +396,11 @@ async fn serve_inner(state: HttpState, request: Request<Body>, next: Next) -> Re
                         .await
                 }
             }
+            .map(IncomingReply::Other)
         }
     };
     let peer_link_advert = peer_link_advert.clone();
-    let finish = move |result: Result<serde_json::Value, AccessError>| {
+    let finish = move |result: Result<IncomingReply, AccessError>| {
         if updates_snapshot && result.is_ok() {
             // Publish after the durable write succeeds. Stable request IDs deduplicate retries.
             super::multi_server::publish_resource_change(
@@ -402,23 +409,25 @@ async fn serve_inner(state: HttpState, request: Request<Body>, next: Next) -> Re
             );
         }
         match result {
-            Ok(value) if is_orchestration => {
+            Ok(IncomingReply::Orchestration(value)) => {
                 let mut response = Json(value).into_response();
                 if advertise_link {
                     add_link_advert(&mut response, peer_link_advert.as_deref());
                 }
                 response
             }
-            Ok(value) => match validate_response(&method, is_name, is_management_invite, value) {
-                Ok(v) => {
-                    let mut response = Json(v).into_response();
-                    if advertise_link {
-                        add_link_advert(&mut response, peer_link_advert.as_deref());
+            Ok(IncomingReply::Other(value)) => {
+                match validate_response(&method, is_name, is_management_invite, value) {
+                    Ok(v) => {
+                        let mut response = Json(v).into_response();
+                        if advertise_link {
+                            add_link_advert(&mut response, peer_link_advert.as_deref());
+                        }
+                        response
                     }
-                    response
+                    Err(e) => e.into_response(),
                 }
-                Err(e) => e.into_response(),
-            },
+            }
             Err(e) => failure(e),
         }
     };

@@ -120,6 +120,8 @@ fn valid_read_scope(scope: &Value, account: &Value) -> bool {
 
 #[derive(Debug, Error)]
 pub enum TransferError {
+    #[error("Request id expired")]
+    Expired,
     #[error("invalid stored {object} at {pointer}")]
     Stored {
         object: &'static str,
@@ -733,95 +735,6 @@ impl Snapshot {
         op["members"][agent]["nativeMethod"] = json!(method);
         op["members"][agent]["nativeParams"] = params;
         Ok(self.decision(op, self.agents.clone(), vec![]))
-    }
-
-    /// Correct only legacy background or paginated history reads that retained
-    /// admission refused. History parameters and operation identity stay exact.
-    /// The driver must prove no native transport evidence exists before commit.
-    pub(crate) fn correct_unsubmitted_legacy_read(
-        &self,
-        agent: &str,
-        operation: &str,
-        next: &Value,
-    ) -> Result<Option<Decision>, TransferError> {
-        let member = &self.operation["members"][agent];
-        let thread = member["sourceThreadId"].as_str().unwrap_or_default();
-        let background = operation
-            == format!("transfer:{}:{agent}:background-before", self.identity.id)
-            && next["method"] == "thread/backgroundTerminals/list"
-            && valid_source_preflight_params(
-                "thread/backgroundTerminals/list",
-                thread,
-                &next["params"],
-            );
-        let page_prefix = format!("account-transfer:{}:{agent}:turns:", self.identity.id);
-        let paginated_history = operation.strip_prefix(&page_prefix).is_some_and(|page| {
-            page.parse::<u64>()
-                .is_ok_and(|value| value > 0 && value.to_string() == page)
-        }) && next["method"] == "thread/turns/list"
-            && !thread.is_empty()
-            && next["params"]["threadId"] == thread
-            && next["params"]["cursor"]
-                .as_str()
-                .is_some_and(|cursor| !cursor.is_empty())
-            && crate::account_worker::retained::valid_actorless_request_shape(
-                studio_runtime_providers::Method::ThreadTurnsList,
-                &next["params"],
-                operation,
-            );
-        if !self.pending()
-            || self.phase(agent)? != Phase::Reading
-            || !(background || paginated_history)
-            || next["operation"] != operation
-            || next["account"] != member["sourceAccountKey"]
-            || !valid_read_scope(&next["scope"], &member["sourceAccountKey"])
-            || member
-                .get("providerReadReceipts")
-                .and_then(|receipts| receipts.get(operation))
-                .is_some()
-        {
-            return Ok(None);
-        }
-        let Some(saved) = member
-            .get("providerReadIntents")
-            .and_then(|intents| intents.get(operation))
-        else {
-            return Ok(None);
-        };
-        let correction = member
-            .get("providerReadIntentCorrections")
-            .and_then(|corrections| corrections.get(operation));
-        let legacy = correction.unwrap_or(saved);
-        let mut expected_legacy = next.clone();
-        if background {
-            expected_legacy["params"] = json!({"threadId":thread});
-        }
-        expected_legacy["scope"] = legacy["scope"].clone();
-        if legacy != &expected_legacy
-            || !valid_read_scope(&legacy["scope"], &member["sourceAccountKey"])
-        {
-            return Ok(None);
-        }
-        if correction.is_some() {
-            let mut expected_saved = next.clone();
-            expected_saved["scope"] = saved["scope"].clone();
-            if saved != &expected_saved
-                || !valid_read_scope(&saved["scope"], &member["sourceAccountKey"])
-            {
-                return Ok(None);
-            }
-        }
-        // The driver proves that no retained transport record exists before
-        // this decision can commit. Preserve the exact old fingerprint.
-        let mut operation_record = self.operation.clone();
-        operation_record["members"][agent]["providerReadIntents"][operation] = next.clone();
-        operation_record["members"][agent]["providerReadIntentCorrections"][operation] =
-            legacy.clone();
-        Ok(Some(self.decision(
-            operation_record,
-            self.agents.clone(),
-            vec![],
-        )))
     }
 
     /// Replay an exact read or source-unsubscribe reply with its original scope.

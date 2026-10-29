@@ -603,10 +603,7 @@ fn repair_caches(state_dir: &Path, cwd: &Path) -> Result<()> {
     let overlays: Vec<Value> =
         serde_json::from_str(&run(state_dir, cwd, &["overlay", "list", "--json"])?)
             .map_err(|error| NativeLayrError::Refused(error.to_string()))?;
-    for overlay in overlays
-        .iter()
-        .filter(|overlay| overlay["folder"].is_string())
-    {
+    for overlay in overlays.iter().filter(|overlay| needs_repair(overlay)) {
         run(
             state_dir,
             cwd,
@@ -614,6 +611,35 @@ fn repair_caches(state_dir: &Path, cwd: &Path) -> Result<()> {
         )?;
     }
     Ok(())
+}
+
+/// A folder overlay needs a repair only when its folder is a plain folder again. A cache is
+/// already one, and an absent folder (for example a cache another line defined) has nothing to
+/// repair; repairing it fails and would end every turn save of the line.
+fn needs_repair(overlay: &Value) -> bool {
+    overlay["folder"].is_string() && !matches!(overlay["state"].as_str(), Some("cache" | "absent"))
+}
+
+#[cfg(test)]
+mod repair_tests {
+    use super::needs_repair;
+    use serde_json::json;
+
+    #[test]
+    fn only_a_plain_folder_overlay_is_repaired() {
+        assert!(needs_repair(
+            &json!({"folder": "target", "state": "plain folder"})
+        ));
+        assert!(!needs_repair(
+            &json!({"folder": "target", "state": "cache"})
+        ));
+        assert!(!needs_repair(
+            &json!({"folder": ".layr-retest", "state": "absent"})
+        ));
+        assert!(!needs_repair(
+            &json!({"name": "notes", "state": "plain folder"})
+        ));
+    }
 }
 
 pub fn save(state_dir: &Path, record: &Value, request_id: &str) -> Result<Value> {

@@ -10,7 +10,7 @@ pub(super) enum Status {
     Blocked,
     Stopping,
 }
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Active {
     pub(super) event_id: String,
@@ -22,7 +22,7 @@ pub(super) struct Active {
     #[serde(flatten)]
     pub(super) extra: Map<String, Value>,
 }
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize, PartialEq)]
 pub(super) struct Radio {
     #[serde(rename = "teamId")]
     pub(super) team_id: String,
@@ -36,37 +36,49 @@ pub(super) struct Radio {
     #[serde(flatten)]
     pub(super) extra: Map<String, Value>,
 }
+impl Radio {
+    pub(super) fn new(team_id: String, extra: Map<String, Value>) -> Self {
+        Self {
+            team_id,
+            revision: 0,
+            status: Status::Idle,
+            speaker: None,
+            next: Vec::new(),
+            active: None,
+            error: None,
+            seen: BTreeMap::new(),
+            extra,
+        }
+    }
+}
+#[derive(Deserialize, Serialize)]
 pub(super) struct Room {
-    pub(super) value: Value,
+    pub(super) id: String,
     pub(super) radio: Radio,
+    #[serde(flatten)]
+    pub(super) fields: Map<String, Value>,
 }
 impl Room {
-    pub(super) fn checked(value: Value) -> Result<Self, ProjectsError> {
-        let id = value.get("id").and_then(Value::as_str).unwrap_or_default();
-        let value = records::validate("runtime_rooms", id, value.clone())?;
-        let radio: Radio =
-            serde_json::from_value(value["radio"].clone()).map_err(|_| invalid(id))?;
-        if !id.starts_with("radio:") || radio.next.len() > 5 || radio.seen.len() > 2 {
+    pub(super) fn checked(id: &str, raw: &str) -> Result<Self, ProjectsError> {
+        records::decode("runtime_rooms", id, raw)?;
+        let room: Self = serde_json::from_str(raw).map_err(|_| invalid(id))?;
+        if !id.starts_with("radio:") || room.radio.next.len() > 5 || room.radio.seen.len() > 2 {
             return Err(invalid(id));
         }
-        Ok(Self { value, radio })
+        Ok(room)
     }
     pub(super) fn id(&self) -> &str {
-        self.value["id"].as_str().unwrap_or_default()
+        &self.id
     }
     pub(super) fn members(&self) -> Vec<String> {
-        self.value["members"]
-            .as_array()
+        self.fields
+            .get("members")
+            .and_then(Value::as_array)
             .into_iter()
             .flatten()
             .filter_map(Value::as_str)
             .map(str::to_owned)
             .collect()
-    }
-    pub(super) fn materialize(&self) -> Result<Value, ProjectsError> {
-        let mut value = self.value.clone();
-        value["radio"] = serde_json::to_value(&self.radio).map_err(|_| invalid(self.id()))?;
-        Ok(value)
     }
     pub(super) fn blocked(&mut self, text: &str) {
         self.radio.status = Status::Blocked;
@@ -81,16 +93,22 @@ pub(super) fn invalid(id: &str) -> ProjectsError {
     }
 }
 pub(super) fn rooms(db: &Connection) -> Result<Vec<Room>, ProjectsError> {
-    records::all(db, "runtime_rooms")?
-        .into_iter()
-        .filter(|row| {
-            row["id"]
-                .as_str()
-                .is_some_and(|id| id.starts_with("radio:"))
-                && row["radio"].is_object()
-        })
-        .map(Room::checked)
-        .collect()
+    if !records::exists(db, "runtime_rooms")? {
+        return Ok(Vec::new());
+    }
+    let mut stmt = db.prepare("SELECT id,record FROM runtime_rooms ORDER BY rowid")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut rooms = Vec::new();
+    for row in rows {
+        let (id, raw) = row?;
+        let value = records::decode("runtime_rooms", &id, &raw)?;
+        if id.starts_with("radio:") && value["radio"].is_object() {
+            rooms.push(Room::checked(&id, &raw)?);
+        }
+    }
+    Ok(rooms)
 }
 pub(super) fn agents(db: &Connection) -> Result<BTreeMap<String, Value>, ProjectsError> {
     records::all(db, "runtime_agents")?
@@ -110,7 +128,7 @@ pub(super) fn policy(
     prepared: &PreparedHost,
     recipient: &str,
 ) -> Result<RadioAuthorizationSnapshot, ProjectsError> {
-    let value = room.materialize()?;
+    let value = serde_json::to_string(room).map_err(studio_runtime_store::StoreError::from)?;
     let inputs = RadioAuthorizationRecords {
         recipient_id: if recipient.is_empty() {
             room.members()
@@ -120,7 +138,7 @@ pub(super) fn policy(
         } else {
             recipient.to_owned()
         },
-        rooms: BTreeMap::from([(room.id().to_owned(), value.to_string())]),
+        rooms: BTreeMap::from([(room.id().to_owned(), value)]),
         agents: agents(db)?
             .into_iter()
             .map(|(id, a)| (id, a.to_string()))
@@ -171,11 +189,70 @@ pub(super) fn save(
     prepared: &PreparedHost,
     now: f64,
 ) -> Result<(), ProjectsError> {
-    room.value = room.materialize()?;
-    room.value["updated"] = json!(now);
-    records::validate("runtime_rooms", room.id(), room.value.clone())?;
-    db.execute("INSERT INTO runtime_rooms(id,record) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET record=excluded.record",params![room.id(),room.value.to_string()])?;
-    publish_room(db, &room.value, prepared)
+    room.fields.insert("updated".to_owned(), json!(now));
+    let raw = serde_json::to_string(&*room).map_err(studio_runtime_store::StoreError::from)?;
+    records::decode("runtime_rooms", room.id(), &raw)?;
+    db.execute("INSERT INTO runtime_rooms(id,record) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET record=excluded.record",params![room.id(),raw])?;
+    let view = studio_runtime_store::projection_value(room);
+    publish_room(db, &view, prepared)
+}
+fn agent_projection(
+    value: &Value,
+) -> Result<crate::submit_gates::AgentAuthorityRow, ProjectsError> {
+    use crate::submit_gates::{AgentAuthorityRow, Deletion, StoredField};
+    let invalid = || ProjectsError::InvalidStored {
+        table: "runtime_agents",
+        id: value["id"].as_str().unwrap_or_default().to_owned(),
+    };
+    let string = |key: &str| match value.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(text)) => Ok(Some(text.clone())),
+        _ => Err(invalid()),
+    };
+    let deleted_at = match value.get("deletedAt") {
+        None | Some(Value::Null) => None,
+        Some(Value::Bool(value)) => Some(Deletion::Bool(*value)),
+        Some(Value::Number(value)) => Some(Deletion::Number(value.as_f64().ok_or_else(invalid)?)),
+        _ => return Err(invalid()),
+    };
+    let is_lead = match value.get("isLead") {
+        None | Some(Value::Null) => None,
+        Some(Value::Bool(value)) => Some(*value),
+        _ => return Err(invalid()),
+    };
+    let name = match value.get("name") {
+        None => StoredField::Missing,
+        Some(Value::Null) => StoredField::Null,
+        Some(Value::String(name)) => StoredField::Value(name.clone()),
+        _ => return Err(invalid()),
+    };
+    Ok(AgentAuthorityRow {
+        id: string("id")?,
+        root_id: string("rootId")?,
+        parent_id: string("parentId")?,
+        is_lead,
+        deleted_at,
+        cwd: string("cwd")?,
+        name,
+        shared_room_id: string("sharedRoomId")?,
+        execution_mode: string("executionMode")?,
+    })
+}
+fn team_projection(value: &Value) -> Result<crate::submit_gates::PeerTeamRow, ProjectsError> {
+    let invalid = || ProjectsError::InvalidStored {
+        table: "runtime_projects",
+        id: value["id"].as_str().unwrap_or_default().to_owned(),
+    };
+    Ok(crate::submit_gates::PeerTeamRow {
+        id: value["id"].as_str().ok_or_else(invalid)?.to_owned(),
+        name: value["name"].as_str().ok_or_else(invalid)?.to_owned(),
+        members: value["members"]
+            .as_array()
+            .ok_or_else(invalid)?
+            .iter()
+            .map(|v| v.as_str().map(str::to_owned).ok_or_else(invalid))
+            .collect::<Result<_, _>>()?,
+    })
 }
 pub(super) fn publish_room(
     db: &Transaction<'_>,
@@ -198,14 +275,12 @@ pub(super) fn publish_room(
     let last = db.query_row("SELECT seq,text,created,sender FROM runtime_chat_messages WHERE room=?1 ORDER BY seq DESC LIMIT 1",[id],|r| Ok(json!({"seq":r.get::<_,i64>(0)?,"text":r.get::<_,String>(1)?.chars().take(180).collect::<String>(),"created":r.get::<_,f64>(2)?,"sender":r.get::<_,String>(3)?}))).optional()?;
     let agents = all_agents
         .into_values()
-        .map(serde::Deserialize::deserialize)
-        .collect::<Result<_, _>>()
-        .map_err(studio_runtime_store::StoreError::from)?;
+        .map(|value| agent_projection(&value))
+        .collect::<Result<_, _>>()?;
     let teams = teams
         .into_iter()
-        .map(serde::Deserialize::deserialize)
-        .collect::<Result<_, _>>()
-        .map_err(studio_runtime_store::StoreError::from)?;
+        .map(|value| team_projection(&value))
+        .collect::<Result<_, _>>()?;
     let mut context = RoomViewContext::new(agents, teams);
     context.last_message = last;
     let view = room_entity_view(value, &context);
@@ -290,4 +365,32 @@ pub(super) fn unsent_cancelled(db: &Connection, active: &Active) -> Result<bool,
 pub(super) fn cancel_pending(db: &Transaction<'_>, active: &Active) -> Result<bool, ProjectsError> {
     db.execute("UPDATE runtime_events SET status='cancelled',error='Shared chat stopped' WHERE id=?1 AND status='pending'",[&active.event_id])?;
     unsent_cancelled(db, active)
+}
+
+#[cfg(test)]
+mod projection_tests {
+    use super::*;
+
+    #[test]
+    fn projection_rows_match_typed_decoding_and_reject_invalid_fields() {
+        for raw in [
+            r#"{"id":"a","name":null,"deletedAt":0,"cwd":"/p"}"#,
+            r#"{"id":"b","name":"B","isLead":true,"deletedAt":false}"#,
+        ] {
+            let value: Value = serde_json::from_str(raw).expect("projection JSON");
+            let expected: crate::submit_gates::AgentAuthorityRow =
+                serde_json::from_str(raw).expect("typed agent");
+            assert_eq!(
+                agent_projection(&value).expect("agent projection"),
+                expected
+            );
+        }
+        assert!(agent_projection(&json!({"id":"a","isLead":"yes"})).is_err());
+        let raw = r#"{"id":"t","name":"Team","members":["a","b"]}"#;
+        let value: Value = serde_json::from_str(raw).expect("projection JSON");
+        let expected: crate::submit_gates::PeerTeamRow =
+            serde_json::from_str(raw).expect("typed team");
+        assert_eq!(team_projection(&value).expect("team projection"), expected);
+        assert!(team_projection(&json!({"id":"t","name":"T","members":[null]})).is_err());
+    }
 }

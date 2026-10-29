@@ -3,6 +3,7 @@
 //! worker: write, reply, acknowledgement, turn end and restart. Scenarios the
 //! two providers share run once per provider through `per_provider!`.
 use super::*;
+use studio_runtime_schema::persistence::EventKind;
 
 const INPUT: &str = "steer-input";
 const TEXT: &str = "Please also check the tests";
@@ -195,7 +196,7 @@ async fn steer(state: &State, peer: &mut Peer, worker: &AccountHandle) -> Value 
         .run(move |store| async move {
             store
                 .transaction_with(move |tx| {
-                    assert!(store::receipt(tx, &operation, "submitted")?.is_some());
+                    assert!(store::account_submission(tx, &operation)?.is_some());
                     Ok::<_, WorkerError>(())
                 })
                 .await?;
@@ -427,15 +428,19 @@ async fn restart_recovery_unconfirms_a_written_steer_and_keeps_its_receipt() {
         .run(move |store| async move {
             store::recover(&store, "default", Generation(2), true).await?;
             Ok(store.test_reader()?.query_row(
-                "SELECT json_extract(result,'$.stage') FROM runtime_operation_receipts \
-                 WHERE signature='claude-steer'",
-                [],
-                |row| row.get::<_, String>(0),
+                "SELECT json_extract(payload,'$.stage') FROM runtime_outbox \
+                 WHERE account='default' AND kind=?1",
+                [OutboxKind::Steer],
+                |row| row.get::<_, studio_runtime_schema::persistence::SteerStage>(0),
             )?)
         })
         .await
         .unwrap();
-    assert_eq!(stage, "unconfirmed", "a late acknowledgement can repair it");
+    assert_eq!(
+        stage,
+        studio_runtime_schema::persistence::SteerStage::Unconfirmed,
+        "a late acknowledgement can repair it"
+    );
     let (status, _, error) = input(&state).await;
     assert_eq!(status, "failed");
     assert_eq!(
@@ -485,13 +490,13 @@ async fn mixed_inputs(state: &State) {
                 [json!({"id":"mixed-room","kind":"private","members":[agent,"mixed-child"]}).to_string()])?;
             tx.execute("UPDATE runtime_events SET created=50 WHERE id=?1", [INPUT])?;
             let rows = [
-                ("deferred", "user", "for the next turn".to_owned()),
-                ("available", "work_available", json!({"task":"task-1","title":"Review work"}).to_string()),
-                ("review", "work_review", json!({"task":"task-1","result":{"id":"result-1","text":"checks passed","checks":"cargo test","files":["src/lib.rs"]}}).to_string()),
-                ("child", "child_result", json!({"agent":"mixed-child","name":"Child","status":"completed","result":"child evidence ".repeat(2000)}).to_string()),
-                ("message", "agent_message", json!({"sender":"mixed-child","room":"mixed-room","text":"inspect the evidence","importance":"message"}).to_string()),
-                ("followup", "followup", "Child asks for another check".to_owned()),
-                ("decision", "work_decision", "Accepted with the reported checks".to_owned()),
+                ("deferred", EventKind::User, "for the next turn".to_owned()),
+                ("available", EventKind::WorkReady, json!({"task":"task-1","title":"Review work"}).to_string()),
+                ("review", EventKind::WorkReview, json!({"task":"task-1","result":{"id":"result-1","text":"checks passed","checks":"cargo test","files":["src/lib.rs"]}}).to_string()),
+                ("child", EventKind::ChildResult, json!({"agent":"mixed-child","name":"Child","status":"completed","result":"child evidence ".repeat(2000)}).to_string()),
+                ("message", EventKind::AgentMessage, json!({"sender":"mixed-child","room":"mixed-room","text":"inspect the evidence","importance":"message"}).to_string()),
+                ("followup", EventKind::Followup, "Child asks for another check".to_owned()),
+                ("decision", EventKind::WorkDecision, "Accepted with the reported checks".to_owned()),
             ];
             for (index, (id, kind, text)) in rows.into_iter().enumerate() {
                 tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES(?1,?2,?3,?4,'pending',?5,?6)",
@@ -534,17 +539,19 @@ async fn mixed_batch_is_compiled_acknowledged_once_and_deferred_input_waits(
     if provider == "claude" {
         assert_eq!(
             inputs.len(),
-            3,
-            "reports, task instructions, then Studio context"
+            4,
+            "work instructions, reports, task instructions, then Studio context"
         );
-        assert_eq!(inputs[0]["inputOrigin"], "studio_event");
-        assert_eq!(inputs[1]["inputOrigin"], "human");
-        assert_eq!(inputs[2]["inputOrigin"], "studio_event");
+        assert_eq!(inputs[0]["inputOrigin"], "human");
+        assert_eq!(inputs[1]["inputOrigin"], "studio_event");
+        assert_eq!(inputs[2]["inputOrigin"], "human");
+        assert_eq!(inputs[3]["inputOrigin"], "studio_event");
         for item in inputs {
             let text = item["text"].as_str().unwrap().trim_start();
             // This fixture stamps senderId on its followup. It retains task
             // authority, as do work decisions and the actual user message.
             let expected_origin = if text == TEXT
+                || text.starts_with("[Orchestration event: work_ready]\n")
                 || text.starts_with("[Orchestration event: followup]\n")
                 || text.starts_with("[Orchestration event: work_decision]\n")
             {
@@ -564,7 +571,7 @@ async fn mixed_batch_is_compiled_acknowledged_once_and_deferred_input_waits(
         .collect::<Vec<_>>()
         .join("\n\n");
     for kind in [
-        "work_available",
+        "work_ready",
         "work_review",
         "child_result",
         "agent_message",
@@ -603,7 +610,7 @@ async fn mixed_batch_is_compiled_acknowledged_once_and_deferred_input_waits(
                 store
                     .transaction_with(move |tx| {
                         assert!(
-                            store::receipt(tx, &operation, "submitted")?.is_none(),
+                            store::account_submission(tx, &operation)?.is_none(),
                             "ordinary request receipt was retired before input acknowledgement"
                         );
                         Ok::<_, WorkerError>(())
@@ -634,12 +641,12 @@ async fn mixed_batch_is_compiled_acknowledged_once_and_deferred_input_waits(
             )?;
             let record: Value = serde_json::from_str(&raw).unwrap();
             assert_eq!(record["inputs"].as_array().unwrap().len(), 7);
-            assert_eq!(record["inputs"][0]["kind"], "work_available");
+            assert_eq!(record["inputs"][0]["kind"], "work_ready");
             assert!(
                 record["text"]
                     .as_str()
                     .unwrap()
-                    .contains("[Orchestration event: work_available]")
+                    .contains("[Orchestration event: work_ready]")
             );
             assert!(record["text"].as_str().unwrap().contains("resultFile"));
             assert_eq!(record["inputs"][6]["id"], INPUT);

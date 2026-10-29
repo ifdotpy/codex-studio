@@ -4,7 +4,10 @@
 //! and a held answer that must not stop the intake of provider events.
 use super::*;
 use crate::account_worker::callback_record;
+use crate::tool_requests::{self, CallbackTask};
 use studio_runtime_providers::{DecodedJournalPayload, decode_journal_value};
+use studio_runtime_schema::persistence::ToolRequestStatus;
+use studio_runtime_store::outbox::Outbox;
 
 const GENERATION: u64 = 1;
 const SCOPE: &str = "default";
@@ -53,20 +56,128 @@ async fn journal(state: &State, entries: Vec<JournalEntry>) {
     .expect("journal batch commits");
 }
 
-/// Whether the record of `cursor` is accepted, submitted and unknown.
-fn phases(state: &State, generation: u64, cursor: u64) -> [bool; 3] {
-    let reader = state.bridge.store.test_reader().expect("reader");
-    let operation = callback_record::operation(SCOPE, generation, cursor);
-    ["accepted", "submitted", "unknown"].map(|phase| {
-        reader
-            .query_row(
-                "SELECT count(*) FROM runtime_operation_receipts WHERE id=?1",
-                [format!("account-worker:{operation}:{phase}")],
-                |row| row.get::<_, i64>(0),
+/// Read the exact current callback obligation, including completed identity fences.
+fn callback_task(
+    state: &State,
+    generation: u64,
+    cursor: u64,
+) -> CallbackTask<callback_record::CallbackObligation> {
+    let db = state.bridge.store.test_reader().expect("reader");
+    tool_requests::get_callback(&db, &callback_record::operation(SCOPE, generation, cursor))
+        .expect("callback task")
+        .expect("callback identity fence")
+}
+
+/// Prepare the canonical response outbox and the exact handoff metadata used by recovery.
+async fn saved_response(
+    state: &State,
+    operation: &str,
+    response: Value,
+) -> callback_record::SavedReply {
+    let operation = operation.to_owned();
+    state
+        .bridge
+        .store
+        .transaction_with(move |tx| {
+            let task: CallbackTask<callback_record::CallbackObligation> =
+                tool_requests::get_callback(tx, &operation)
+                    .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?
+                    .expect("accepted callback");
+            let raw: String = tx.query_row(
+                "SELECT record FROM runtime_tool_requests WHERE id=?1",
+                [&task.payload.root_request_id],
+                |row| row.get(0),
+            )?;
+            let owner: CallbackTask<crate::provider_callbacks::CallbackOwner> =
+                serde_json::from_str(&raw).expect("logical callback owner");
+            let mut canonical = response.clone();
+            canonical["id"] = match &task.payload.accepted.request_id {
+                studio_runtime_providers::RequestId::Number(id) => Value::from(*id),
+                studio_runtime_providers::RequestId::String(id) => Value::String(id.clone()),
+            };
+            let DecodedJournalPayload::Frame(frame) = decode_journal_value(
+                task.payload.accepted.cursor,
+                task.payload.accepted.generation,
+                &canonical,
             )
-            .expect("phase count")
-            == 1
-    })
+            .payload
+            else {
+                panic!("response frame")
+            };
+            let identity = crate::provider_callbacks::save_frame_response(
+                tx,
+                &owner.payload.identity.context,
+                &task.payload.accepted.frame()?,
+                &frame,
+            )
+            .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
+            assert_eq!(
+                crate::provider_callbacks::begin_frame(
+                    tx,
+                    &identity.context.stream_id,
+                    identity.context.generation,
+                    &identity.operation_id(),
+                    &frame
+                )
+                .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?,
+                crate::provider_callbacks::FrameAdmission::Send
+            );
+            let key =
+                crate::provider_callbacks::callback_origin_key(&identity.context, &identity.rpc_id);
+            let encoded = format!("{}\n", response);
+            let digest = studio_runtime_store::sha256_hex(encoded.as_bytes());
+            if response["id"] != canonical["id"] {
+                let mut row = Outbox::get::<crate::provider_callbacks::CallbackResponse>(tx, &key)
+                    .map_err(StoreError::from)?
+                    .expect("response outbox");
+                let DecodedJournalPayload::Frame(Frame::Response { id, .. }) =
+                    decode_journal_value(
+                        task.payload.accepted.cursor,
+                        task.payload.accepted.generation,
+                        &response,
+                    )
+                    .payload
+                else {
+                    panic!("corrupt response frame")
+                };
+                row.payload.identity.rpc_id = id;
+                row.payload.frame_fingerprint = Some(digest.clone());
+                Outbox::put(tx, &row).map_err(StoreError::from)?;
+            }
+            Ok::<_, WorkerError>(callback_record::SavedReply::for_test(
+                task.payload.accepted.generation,
+                key,
+                digest,
+            ))
+        })
+        .await
+        .expect("canonical saved response")
+}
+
+fn store_submitted(
+    tx: &studio_runtime_store::Transaction<'_>,
+    operation: &str,
+    saved: callback_record::SavedReply,
+) -> Result<(), WorkerError> {
+    let mut task: CallbackTask<callback_record::CallbackObligation> =
+        tool_requests::get_callback(tx, operation)
+            .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?
+            .expect("accepted callback");
+    task.status = ToolRequestStatus::Running;
+    task.payload.submitted = Some(saved);
+    tool_requests::put_callback(tx, &task)
+        .map_err(|error| WorkerError::PreparationRefused(error.to_string()))
+}
+
+async fn submit_response(state: &State, operation: &str, response: Value) {
+    let saved = saved_response(state, operation, response).await;
+    let operation = operation.to_owned();
+    state
+        .bridge
+        .store
+        .transaction_with(move |tx| store_submitted(tx, &operation, saved))
+        .await
+        .expect("committed handoff proof");
 }
 
 async fn checkpoint(state: &State, generation: u64) -> u64 {
@@ -82,6 +193,31 @@ async fn unsent(state: &State) -> Vec<callback_record::Accepted> {
     callback_record::unsent(&state.bridge.store, "default", GENERATION, 100)
         .await
         .expect("unsent records")
+}
+
+#[tokio::test]
+async fn callback_task_roundtrip_preserves_persisted_record() {
+    let state = State::new().await;
+    journal(&state, vec![entry(GENERATION, 1, &request("roundtrip"))]).await;
+    let operation = callback_record::operation(SCOPE, GENERATION, 1);
+    state.bridge.store.transaction_with(move |tx| {
+        let read_record = |tx: &studio_runtime_store::Transaction<'_>| -> Result<Value, WorkerError> {
+            let raw: String = tx.query_row(
+                "SELECT record FROM runtime_tool_requests WHERE origin_key=?1 AND kind='provider_callback'",
+                [&operation], |row| row.get(0),
+            )?;
+            serde_json::from_str(&raw).map_err(|error| WorkerError::PreparationRefused(error.to_string()))
+        };
+        let before = read_record(tx)?;
+        let task: CallbackTask<callback_record::CallbackObligation> =
+            tool_requests::get_callback(tx, &operation)
+                .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?
+                .expect("callback record");
+        tool_requests::put_callback(tx, &task)
+            .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
+        assert_eq!(read_record(tx)?, before);
+        Ok::<_, WorkerError>(())
+    }).await.unwrap();
 }
 
 /// A cancelled session retains the in-flight answer's final outcome outside
@@ -130,14 +266,20 @@ async fn shutdown_reads_the_final_callback_outcome_after_the_event_lane_closes()
                     result.is_ok(),
                     "written callback stops normally: {result:?}"
                 );
-                assert_eq!(phases(&state, GENERATION, cursor), [false, false, false]);
+                assert_eq!(
+                    callback_task(&state, GENERATION, cursor).status,
+                    ToolRequestStatus::Completed
+                );
             }
             WriteOutcome::Unknown => {
                 assert!(
                     matches!(result, Err(WorkerError::CallbackUnknown)),
                     "the final receipt must determine the error: {result:?}"
                 );
-                assert_eq!(phases(&state, GENERATION, cursor), [true, true, true]);
+                assert_eq!(
+                    callback_task(&state, GENERATION, cursor).status,
+                    ToolRequestStatus::Unknown
+                );
             }
             WriteOutcome::NotSent => unreachable!("only in-flight outcomes are tested"),
         }
@@ -164,56 +306,84 @@ async fn record_follows_the_answer_outcome_and_survives_journal_compaction() {
         ),
         (1, GENERATION, SCOPE)
     );
-    assert_eq!(record.request_id, json!("one"));
+    assert_eq!(
+        record.request_id,
+        studio_runtime_providers::RequestId::String("one".into())
+    );
     assert_eq!(record.method, "unknown/providerMethod");
     assert!(record.frame().is_ok());
     let store = &state.bridge.store;
     let operation = record.operation();
-    // Diagnostics in runtime-server read these ids by suffix.
-    let ids = state
-        .bridge
-        .store
-        .test_reader()
-        .unwrap()
-        .query_row(
-            "SELECT group_concat(id) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:callback:%'",
-            [],
-            |row| row.get::<_, String>(0),
+    let current = callback_task(&state, GENERATION, 1);
+    assert_eq!(current.origin_key, operation);
+    assert_eq!(current.status, ToolRequestStatus::Queued);
+    assert!(current.payload.submitted.is_none());
+    assert_eq!(
+        crate::provider_callbacks::pending_callback_count(
+            &state.bridge.store.test_reader().unwrap(),
+            "default"
         )
-        .unwrap();
-    assert_eq!(ids, format!("account-worker:{operation}:accepted"));
+        .unwrap(),
+        1
+    );
 
-    assert!(!callback_record::admit(store, &operation).await.unwrap());
-    assert_eq!(phases(&state, GENERATION, 1), [true, true, false]);
-    assert!(matches!(
-        callback_record::admit(store, &operation).await,
-        Err(WorkerError::CallbackUnknown)
-    ));
+    submit_response(
+        &state,
+        &operation,
+        json!({"id":"one","result":{"success":true}}),
+    )
+    .await;
+    assert_eq!(
+        callback_task(&state, GENERATION, 1).status,
+        ToolRequestStatus::Running
+    );
+    let recovery = unsent(&state).await;
+    assert_eq!(recovery.len(), 1);
     assert!(
-        unsent(&state).await.is_empty(),
-        "a submitted answer is not dispatched again"
+        recovery[0].submitted.is_some(),
+        "recovery carries the exact response rather than dispatching the business request"
+    );
+    assert!(
+        callback_task(&state, GENERATION, 1)
+            .payload
+            .submitted
+            .is_some()
     );
 
     callback_record::written(store, &operation, WriteOutcome::NotSent)
         .await
         .unwrap();
-    assert_eq!(phases(&state, GENERATION, 1), [true, false, false]);
+    assert_eq!(
+        callback_task(&state, GENERATION, 1).status,
+        ToolRequestStatus::Queued
+    );
     assert_eq!(
         unsent(&state).await.len(),
         1,
         "a send that never left may be sent again"
     );
 
-    assert!(!callback_record::admit(store, &operation).await.unwrap());
+    submit_response(
+        &state,
+        &operation,
+        json!({"id":"one","result":{"success":true}}),
+    )
+    .await;
     callback_record::written(store, &operation, WriteOutcome::Unknown)
         .await
         .unwrap();
-    assert_eq!(phases(&state, GENERATION, 1), [true, true, true]);
+    assert_eq!(
+        callback_task(&state, GENERATION, 1).status,
+        ToolRequestStatus::Unknown
+    );
     assert!(unsent(&state).await.is_empty());
-    assert!(matches!(
-        callback_record::admit(store, &operation).await,
-        Err(WorkerError::CallbackUnknown)
-    ));
+    assert!(
+        callback_task(&state, GENERATION, 1)
+            .payload
+            .submitted
+            .is_some(),
+        "unknown retains response provenance"
+    );
 
     // Later batches compact the journal over the uncertain record's cursor.
     journal(
@@ -225,70 +395,96 @@ async fn record_follows_the_answer_outcome_and_survives_journal_compaction() {
     .await;
     assert_eq!(checkpoint(&state, GENERATION).await, 39);
     assert_eq!(
-        phases(&state, GENERATION, 1),
-        [true, true, true],
+        callback_task(&state, GENERATION, 1).status,
+        ToolRequestStatus::Unknown,
         "compaction implies nothing about callbacks"
     );
     // The same entry journaled again changes nothing.
     journal(&state, vec![entry(GENERATION, 1, &request("one"))]).await;
-    assert_eq!(phases(&state, GENERATION, 1), [true, true, true]);
+    assert_eq!(
+        callback_task(&state, GENERATION, 1).status,
+        ToolRequestStatus::Unknown
+    );
 
     journal(&state, vec![entry(GENERATION, 40, &request("two"))]).await;
     let second = callback_record::operation(SCOPE, GENERATION, 40);
-    assert!(!callback_record::admit(store, &second).await.unwrap());
+    submit_response(
+        &state,
+        &second,
+        json!({"id":"two","result":{"success":true}}),
+    )
+    .await;
     callback_record::written(store, &second, WriteOutcome::Written)
         .await
         .unwrap();
     assert_eq!(
-        phases(&state, GENERATION, 40),
-        [false, false, false],
+        callback_task(&state, GENERATION, 40).status,
+        ToolRequestStatus::Completed,
         "a written answer retires its record"
     );
     assert!(
-        callback_record::admit(store, &second).await.unwrap(),
-        "no answer is owed once the record is retired"
+        unsent(&state)
+            .await
+            .iter()
+            .all(|request| request.cursor != 40),
+        "a completed callback never enters dispatch"
     );
 }
 
 #[tokio::test]
-async fn a_request_held_by_an_older_journal_is_adopted_on_replay() {
+async fn replay_keeps_pending_callback_and_completed_response_owners() {
     let state = State::new().await;
-    let held = entry(GENERATION, 1, &request("held"));
-    let written = entry(GENERATION, 2, &request("written"));
-    let legacy = |entry: &JournalEntry| {
-        let operation = store::journal_operation(SCOPE, GENERATION, entry.cursor.0);
-        let digest = store::journal_digest(entry, &operation).unwrap();
-        (operation, digest, entry.cursor.0)
-    };
-    let rows = [legacy(&held), legacy(&written)];
+    journal(
+        &state,
+        vec![
+            entry(GENERATION, 1, &request("held")),
+            entry(GENERATION, 2, &request("written")),
+        ],
+    )
+    .await;
+    let operation = callback_record::operation(SCOPE, GENERATION, 2);
+    let saved = saved_response(
+        &state,
+        &operation,
+        json!({"id":"written","result":{"success":true}}),
+    )
+    .await;
     state
         .bridge
         .store
-        .transaction_with(move |tx| -> Result<(), WorkerError> {
-            for (operation, digest, cursor) in rows {
-                store::replace(
-                    tx,
-                    &operation,
-                    "settled",
-                    json!({"cursor":cursor,"digest":digest,"ready":false,"committed":true}),
-                )?;
-            }
-            // The second request's answer was already written before the upgrade.
-            store::replace(tx, "callback:default:1:2", "written", json!(true))
-        })
+        .transaction_with(move |tx| store_submitted(tx, &operation, saved))
         .await
         .unwrap();
-    journal(&state, vec![held, written]).await;
+    callback_record::written(
+        &state.bridge.store,
+        &callback_record::operation(SCOPE, GENERATION, 2),
+        WriteOutcome::Written,
+    )
+    .await
+    .unwrap();
+    journal(
+        &state,
+        vec![
+            entry(GENERATION, 1, &request("held")),
+            entry(GENERATION, 2, &request("written")),
+        ],
+    )
+    .await;
     assert_eq!(checkpoint(&state, GENERATION).await, 2);
     assert_eq!(
-        phases(&state, GENERATION, 1),
-        [true, false, false],
+        callback_task(&state, GENERATION, 1).status,
+        ToolRequestStatus::Queued,
         "the unanswered request is owed"
     );
+    let written = callback_task(&state, GENERATION, 2);
     assert_eq!(
-        phases(&state, GENERATION, 2),
-        [false, false, false],
+        written.status,
+        ToolRequestStatus::Completed,
         "the written answer is not owed again"
+    );
+    assert!(
+        written.payload.accepted.frame.is_empty(),
+        "the completed owner is slim"
     );
 }
 
@@ -362,20 +558,29 @@ async fn a_request_redelivered_after_commit_is_answered_once() {
 
 /// Crash after the answer was submitted, before its write outcome was known.
 #[tokio::test]
-async fn a_submitted_answer_is_never_sent_again_after_restart() {
+async fn a_callback_with_missing_response_provenance_stays_held_after_restart() {
     let state = State::new().await;
     journal(&state, vec![entry(GENERATION, 1, &request("callback"))]).await;
     let operation = callback_record::operation(SCOPE, GENERATION, 1);
-    assert!(
-        !callback_record::admit(&state.bridge.store, &operation)
-            .await
-            .unwrap()
-    );
+    state
+        .bridge
+        .store
+        .transaction_with(move |tx| {
+            let mut task: CallbackTask<callback_record::CallbackObligation> =
+                tool_requests::get_callback(tx, &operation)
+                    .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?
+                    .unwrap();
+            task.status = ToolRequestStatus::Unknown;
+            tool_requests::put_callback(tx, &task)
+                .map_err(|error| WorkerError::PreparationRefused(error.to_string()))
+        })
+        .await
+        .unwrap();
     assert!(
         callback_reply_accounts(&state.bridge.store.test_reader().unwrap(), "", 10)
             .unwrap()
             .is_empty(),
-        "legacy uncertainty is not account recovery demand"
+        "missing response provenance is not recovery authority"
     );
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
@@ -386,8 +591,8 @@ async fn a_submitted_answer_is_never_sent_again_after_restart() {
         "an uncertain answer is not resent"
     );
     assert_eq!(
-        phases(&state, GENERATION, 1),
-        [true, true, false],
+        callback_task(&state, GENERATION, 1).status,
+        ToolRequestStatus::Unknown,
         "the uncertainty is kept"
     );
     worker.shutdown().await.unwrap();
@@ -400,13 +605,11 @@ async fn submitted_callback_recovery_sends_exact_saved_reply_without_dispatching
     let operation = callback_record::operation(SCOPE, GENERATION, 1);
     let response =
         json!({"id":"saved-spawn","result":{"existingChild":"already-created","success":true}});
-    let encoded = format!("{}\n", serde_json::to_string(&response).unwrap());
-    let saved = json!({"version":1,"handle":"account:default","generation":GENERATION,"pid":1,
-        "frame":encoded,"sha256":studio_runtime_store::sha256_hex(encoded.as_bytes())});
+    let saved = saved_response(&state, &operation, response.clone()).await;
     state
         .bridge
         .store
-        .transaction_with(move |tx| store::save(tx, &operation, "submitted", saved))
+        .transaction_with(move |tx| store_submitted(tx, &operation, saved))
         .await
         .unwrap();
     let reader = state.bridge.store.test_reader().unwrap();
@@ -438,7 +641,10 @@ async fn submitted_callback_recovery_sends_exact_saved_reply_without_dispatching
         .unwrap_or_else(|_| panic!("the receipt has an owner"));
     callbacks_retired(&state).await;
     worker_barrier(&worker).await;
-    assert_eq!(phases(&state, GENERATION, 1), [false, false, false]);
+    assert_eq!(
+        callback_task(&state, GENERATION, 1).status,
+        ToolRequestStatus::Completed
+    );
     assert!(
         peer.writes.try_recv().is_err(),
         "one callback response only"
@@ -466,26 +672,35 @@ async fn saved_callback_recovery_refuses_changed_identity_digest_and_direct_tran
         } else {
             "saved-answer"
         };
-        let encoded = format!("{}\n", json!({"id":id,"result":{"success":true}}));
-        let mut saved = json!({"version":1,"handle":"account:default","generation":GENERATION,"pid":1,
-            "frame":encoded,"sha256":studio_runtime_store::sha256_hex(encoded.as_bytes())});
-        match case {
-            "handle" => saved["handle"] = json!("account:other"),
-            "generation" => saved["generation"] = json!(GENERATION + 1),
-            "pid" | "recoverable-pid" => saved["pid"] = json!(2),
-            "digest" => saved["sha256"] = json!("incorrect"),
-            _ => {}
-        }
+        let mut saved = saved_response(
+            &state,
+            &operation,
+            json!({"id":id,"result":{"success":true}}),
+        )
+        .await;
+        saved.corrupt_for_test(case);
         state
             .bridge
             .store
             .transaction_with(move |tx| {
-                store::save(tx, &operation, "submitted", saved)?;
+                store_submitted(tx, &operation, saved)?;
                 if case == "unknown" {
-                    store::save(tx, &operation, "unknown", json!(true))?;
+                    let mut task: CallbackTask<callback_record::CallbackObligation> =
+                        tool_requests::get_callback(tx, &operation)
+                            .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?
+                            .unwrap();
+                    task.status = ToolRequestStatus::Unknown;
+                    tool_requests::put_callback(tx, &task)
+                        .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
                 }
                 if case == "recoverable-pid" {
-                    store::save(tx, &operation, "recoverable", json!(true))?;
+                    let mut task: CallbackTask<callback_record::CallbackObligation> =
+                        tool_requests::get_callback(tx, &operation)
+                            .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?
+                            .unwrap();
+                    task.payload.recovery_authorized = true;
+                    tool_requests::put_callback(tx, &task)
+                        .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
                 }
                 Ok::<_, WorkerError>(())
             })
@@ -503,8 +718,8 @@ async fn saved_callback_recovery_refuses_changed_identity_digest_and_direct_tran
             "{case} must not authorize a write"
         );
         assert_eq!(
-            phases(&state, GENERATION, 1),
-            [true, true, true],
+            callback_task(&state, GENERATION, 1).status,
+            ToolRequestStatus::Unknown,
             "{case} stays uncertain"
         );
         worker.shutdown().await.unwrap();
@@ -532,7 +747,10 @@ async fn duplicate_callback_receipt_keeps_uncertainty_and_never_repeats_the_answ
         matches!(result, Err(WorkerError::CallbackUnknown)),
         "accepted does not prove stdin written: {result:?}"
     );
-    assert_eq!(phases(&state, GENERATION, cursor), [true, true, true]);
+    assert_eq!(
+        callback_task(&state, GENERATION, cursor).status,
+        ToolRequestStatus::Unknown
+    );
     assert!(peer.writes.try_recv().is_err());
 }
 
@@ -557,7 +775,10 @@ async fn missing_callback_receipt_recovers_exact_saved_answer_once_after_same_ge
         matches!(result, Err(WorkerError::CallbackUnknown)),
         "missing receipt stays uncertain: {result:?}"
     );
-    assert_eq!(phases(&state, GENERATION, cursor), [true, true, false]);
+    assert_eq!(
+        callback_task(&state, GENERATION, cursor).status,
+        ToolRequestStatus::Running
+    );
     assert!(peer.writes.try_recv().is_err());
     let response = answer.value.clone();
     drop(answer);
@@ -576,7 +797,10 @@ async fn missing_callback_receipt_recovers_exact_saved_answer_once_after_same_ge
         .unwrap_or_else(|_| panic!("the resumed receipt has an owner"));
     callbacks_retired(&state).await;
     worker_barrier(&resumed).await;
-    assert_eq!(phases(&state, GENERATION, cursor), [false, false, false]);
+    assert_eq!(
+        callback_task(&state, GENERATION, cursor).status,
+        ToolRequestStatus::Completed
+    );
     assert!(retained.writes.try_recv().is_err());
     resumed.shutdown().await.unwrap();
 }
@@ -586,16 +810,16 @@ async fn a_second_lost_callback_receipt_stays_unknown_without_another_replay() {
     let state = State::new().await;
     journal(&state, vec![entry(GENERATION, 1, &request("second-loss"))]).await;
     let operation = callback_record::operation(SCOPE, GENERATION, 1);
-    let encoded = format!(
-        "{}\n",
-        json!({"id":"second-loss","result":{"success":true}})
-    );
-    let saved = json!({"version":1,"handle":"account:default","generation":GENERATION,"pid":1,
-        "frame":encoded,"sha256":studio_runtime_store::sha256_hex(encoded.as_bytes())});
+    let saved = saved_response(
+        &state,
+        &operation,
+        json!({"id":"second-loss","result":{"success":true}}),
+    )
+    .await;
     state
         .bridge
         .store
-        .transaction_with(move |tx| store::save(tx, &operation, "submitted", saved))
+        .transaction_with(move |tx| store_submitted(tx, &operation, saved))
         .await
         .unwrap();
     let mut peer = Peer::supervised();
@@ -610,7 +834,10 @@ async fn a_second_lost_callback_receipt_stays_unknown_without_another_replay() {
     let result = worker.completion().await;
     tokio::time::resume();
     assert!(matches!(result, Err(WorkerError::CallbackUnknown)));
-    assert_eq!(phases(&state, GENERATION, 1), [true, true, true]);
+    assert_eq!(
+        callback_task(&state, GENERATION, 1).status,
+        ToolRequestStatus::Unknown
+    );
     assert!(
         callback_reply_accounts(&state.bridge.store.test_reader().unwrap(), "", 10)
             .unwrap()
@@ -625,7 +852,10 @@ async fn a_second_lost_callback_receipt_stays_unknown_without_another_replay() {
         retained.writes.try_recv().is_err(),
         "the retry budget is durable"
     );
-    assert_eq!(phases(&state, GENERATION, 1), [true, true, true]);
+    assert_eq!(
+        callback_task(&state, GENERATION, 1).status,
+        ToolRequestStatus::Unknown
+    );
     resumed.shutdown().await.unwrap();
 }
 
@@ -645,7 +875,10 @@ async fn a_direct_callback_receipt_timeout_never_authorizes_replay() {
     let result = worker.completion().await;
     tokio::time::resume();
     assert!(matches!(result, Err(WorkerError::CallbackUnknown)));
-    assert_eq!(phases(&state, GENERATION, cursor), [true, true, true]);
+    assert_eq!(
+        callback_task(&state, GENERATION, cursor).status,
+        ToolRequestStatus::Unknown
+    );
     drop(answer);
     assert!(unsent(&state).await.is_empty());
 }
@@ -659,24 +892,36 @@ async fn a_late_not_sent_receipt_does_not_reopen_explicit_callback_uncertainty()
     )
     .await;
     let operation = callback_record::operation(SCOPE, GENERATION, 1);
-    assert!(
-        !callback_record::admit(&state.bridge.store, &operation)
-            .await
-            .unwrap()
-    );
+    submit_response(
+        &state,
+        &operation,
+        json!({"id":"late-not-sent","result":{"success":true}}),
+    )
+    .await;
     callback_record::written(&state.bridge.store, &operation, WriteOutcome::Unknown)
         .await
         .unwrap();
     callback_record::written(&state.bridge.store, &operation, WriteOutcome::NotSent)
         .await
         .unwrap();
-    assert_eq!(phases(&state, GENERATION, 1), [true, true, true]);
+    assert_eq!(
+        callback_task(&state, GENERATION, 1).status,
+        ToolRequestStatus::Unknown
+    );
     assert!(unsent(&state).await.is_empty());
-    // Older states can retain Unknown without their Submitted marker.
+    // Missing response provenance cannot reopen a held current task.
     state
         .bridge
         .store
-        .transaction_with(move |tx| store::delete_receipt(tx, &operation, "submitted"))
+        .transaction_with(move |tx| {
+            let mut task: CallbackTask<callback_record::CallbackObligation> =
+                tool_requests::get_callback(tx, &operation)
+                    .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?
+                    .unwrap();
+            task.payload.submitted = None;
+            tool_requests::put_callback(tx, &task)
+                .map_err(|error| WorkerError::PreparationRefused(error.to_string()))
+        })
         .await
         .unwrap();
     assert!(
@@ -687,6 +932,12 @@ async fn a_late_not_sent_receipt_does_not_reopen_explicit_callback_uncertainty()
 
 #[tokio::test]
 async fn managed_saved_callback_cannot_resume_a_stopped_changed_or_deleted_actor() {
+    let template = tempfile::tempdir().unwrap();
+    let template_store = RuntimeStore::open(Some(template.path())).await.unwrap();
+    template_store.flush_wal_for_shutdown().await.unwrap();
+    let databases = ["canvas.sqlite3", "analytics.sqlite3"]
+        .map(|name| std::fs::read(template.path().join(name)).unwrap());
+    drop(template_store);
     for case in [
         "stopped",
         "epoch",
@@ -704,7 +955,15 @@ async fn managed_saved_callback_cannot_resume_a_stopped_changed_or_deleted_actor
         "lazy",
     ] {
         for captured in [false, true] {
-            let state = State::new().await;
+            let root = test_root().join(format!("worker-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&root).unwrap();
+            for (name, bytes) in ["canvas.sqlite3", "analytics.sqlite3"]
+                .into_iter()
+                .zip(&databases)
+            {
+                std::fs::write(root.join(name), bytes).unwrap();
+            }
+            let state = State::new_with_root(root).await;
             let actor = state.agent.clone();
             let epoch = state.epoch;
             state.bridge.store.transaction(move |tx| {
@@ -716,26 +975,32 @@ async fn managed_saved_callback_cannot_resume_a_stopped_changed_or_deleted_actor
                 "threadId":"managed-thread","turnId":"managed-turn","callId":"saved-spawn","tool":"orchestration_spawn","arguments":{}}});
             journal(&state, vec![entry(GENERATION, 1, &call)]).await;
             let operation = callback_record::operation(SCOPE, GENERATION, 1);
-            let encoded = format!(
-                "{}\n",
-                json!({"id":"managed-reply","result":{"existingChild":"already-created","success":true}})
-            );
-            let mut saved = json!({"version":1,"handle":"account:default","generation":GENERATION,"pid":1,
-                "frame":encoded,"sha256":studio_runtime_store::sha256_hex(encoded.as_bytes())});
+            let mut saved = saved_response(&state,&operation,json!({"id":"managed-reply","result":{"existingChild":"already-created","success":true}})).await;
             if captured {
-                saved["authority"] = json!({"context":{"agent":state.agent,"account":"default","connection":"original-connection",
-                    "generation":GENERATION,"epoch":epoch,"thread":"managed-thread","turn":"managed-turn"},"provider":"claude","root":state.agent,
-                    "parent":null,"role":"implementer","isLead":true,"executionMode":null,"moving":false});
-                if case == "move-before" {
-                    saved["authority"]["moving"] = json!(true);
-                }
+                let context = crate::provider_callbacks::CallbackContext {
+                    agent: state.agent.clone(),
+                    account: "default".into(),
+                    connection: "original-connection".into(),
+                    stream_id: "default".into(),
+                    generation: GENERATION,
+                    epoch: epoch as u64,
+                    thread: "managed-thread".into(),
+                    turn: "managed-turn".into(),
+                };
+                saved.set_authority_for_test(
+                    super::super::callback::ManagedReplyAuthority::for_test(
+                        context,
+                        state.agent.clone(),
+                        case == "move-before",
+                    ),
+                );
             }
             let actor = state.agent.clone();
             state
                 .bridge
                 .store
                 .transaction_with(move |tx| {
-                    store::save(tx, &operation, "submitted", saved)?;
+                    store_submitted(tx, &operation, saved)?;
                     let mutation = match case {
                         "stopped" => {
                             "record=json_set(record,'$.status','paused','$.autoWake',json('false'))"
@@ -775,8 +1040,8 @@ async fn managed_saved_callback_cannot_resume_a_stopped_changed_or_deleted_actor
                 "{case}, captured={captured}: no reply or new turn"
             );
             assert_eq!(
-                phases(&state, GENERATION, 1),
-                [true, true, true],
+                callback_task(&state, GENERATION, 1).status,
+                ToolRequestStatus::Unknown,
                 "{case}, captured={captured}"
             );
             worker.shutdown().await.unwrap();
@@ -807,13 +1072,20 @@ async fn managed_callback_first_handoff_captures_the_current_actor_authority() {
     let submitted = state
         .bridge
         .store
-        .transaction_with(move |tx| store::receipt(tx, &operation, "submitted"))
+        .transaction_with(move |tx| {
+            let task: CallbackTask<callback_record::CallbackObligation> =
+                tool_requests::get_callback(tx, &operation)
+                    .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?
+                    .unwrap();
+            Ok::<_, WorkerError>(task.payload.submitted)
+        })
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(submitted["authority"]["context"]["agent"], actor["id"]);
-    assert_eq!(submitted["authority"]["context"]["epoch"], actor["epoch"]);
-    assert_eq!(submitted["authority"]["context"]["turn"], actor["turnId"]);
+    let context = submitted.authority_context_for_test();
+    assert_eq!(context.agent, actor["id"].as_str().unwrap());
+    assert_eq!(context.epoch, actor["epoch"].as_u64().unwrap());
+    assert_eq!(context.turn, actor["turnId"].as_str().unwrap());
     answer
         .receipt
         .send(CommandReceipt::Written {
@@ -823,7 +1095,10 @@ async fn managed_callback_first_handoff_captures_the_current_actor_authority() {
         .unwrap_or_else(|_| panic!("the first reply receipt has an owner"));
     callbacks_retired(&state).await;
     worker_barrier(&worker).await;
-    assert_eq!(phases(&state, GENERATION, cursor), [false, false, false]);
+    assert_eq!(
+        callback_task(&state, GENERATION, cursor).status,
+        ToolRequestStatus::Completed
+    );
     worker.shutdown().await.unwrap();
 }
 
@@ -833,12 +1108,18 @@ async fn a_request_of_an_ended_generation_is_retired_without_an_answer() {
     const ENDED: u64 = 5;
     let state = State::new().await;
     journal(&state, vec![entry(ENDED, 1, &request("callback"))]).await;
-    assert_eq!(phases(&state, ENDED, 1), [true, false, false]);
+    assert_eq!(
+        callback_task(&state, ENDED, 1).status,
+        ToolRequestStatus::Queued
+    );
     let mut peer = Peer::identity("default", ENDED + 1, None);
     let mut worker = peer.worker(state.bridge.clone()).await;
     worker_barrier(&worker).await;
     assert!(peer.writes.try_recv().is_err());
-    assert_eq!(phases(&state, ENDED, 1), [false, false, false]);
+    assert_eq!(
+        callback_task(&state, ENDED, 1).status,
+        ToolRequestStatus::Completed
+    );
     worker.shutdown().await.unwrap();
 }
 
@@ -930,7 +1211,10 @@ async fn an_unanswered_request_does_not_stop_events_or_new_work() {
     assert!(last > first + crate::provider_session_task::MAX_UNSETTLED as u64);
     acknowledged_through(&mut peer, &mut acked, last).await;
     assert!(answered.is_empty(), "the held request has no answer yet");
-    assert_eq!(phases(&state, GENERATION, first), [true, false, false]);
+    assert_eq!(
+        callback_task(&state, GENERATION, first).status,
+        ToolRequestStatus::Queued
+    );
 
     // Another turn and a new thread complete behind the unanswered request.
     state.wake(&worker).await;
@@ -1050,7 +1334,7 @@ async fn the_same_cursor_in_two_generations_is_two_records() {
     peer.frame(tool_call).await;
     let mut changes = state.commits();
     tokio::time::timeout(std::time::Duration::from_secs(60), async {
-        while phases(&state, 1, 1)[0] {
+        while callback_task(&state, 1, 1).status != ToolRequestStatus::Completed {
             changes.changed().await.expect("callback retirement commit");
         }
     })
@@ -1083,11 +1367,12 @@ async fn a_submitted_record_of_an_ended_generation_is_retired_unsent() {
     let mut worker = peer.worker(state.bridge.clone()).await;
     leave_record(&state, 5, 1, &request("old"), None).await;
     let operation = callback_record::operation(SCOPE, 5, 1);
-    assert!(
-        !callback_record::admit(&state.bridge.store, &operation)
-            .await
-            .unwrap()
-    );
+    submit_response(
+        &state,
+        &operation,
+        json!({"id":"old","result":{"success":true}}),
+    )
+    .await;
     peer.frame(request("current")).await;
     let answer = peer.next_write().await;
     assert_eq!(answer.value["id"], "current");
@@ -1100,7 +1385,10 @@ async fn a_submitted_record_of_an_ended_generation_is_retired_unsent() {
         .ok()
         .unwrap();
     callbacks_retired(&state).await;
-    assert_eq!(phases(&state, 5, 1), [false, false, false]);
+    assert_eq!(
+        callback_task(&state, 5, 1).status,
+        ToolRequestStatus::Completed
+    );
     assert!(
         peer.writes.try_recv().is_err(),
         "the ended generation's answer is not sent"
@@ -1161,26 +1449,25 @@ async fn a_vm_actor_record_waits_for_reattach_and_a_stale_epoch_retires() {
         .unwrap();
     worker_barrier(&worker).await;
     let scope = format!("default:vm:{actor}");
-    let phases_of = |cursor| {
-        let reader = state.bridge.store.test_reader().unwrap();
-        let id = format!(
-            "account-worker:{}:accepted",
-            callback_record::operation(&scope, GENERATION, cursor)
-        );
-        reader
-            .query_row(
-                "SELECT count(*) FROM runtime_operation_receipts WHERE id=?1",
-                [id],
-                |row| row.get::<_, i64>(0),
-            )
-            .unwrap()
+    let task_of = |cursor| {
+        let db = state.bridge.store.test_reader().unwrap();
+        tool_requests::get_callback::<callback_record::CallbackObligation>(
+            &db,
+            &callback_record::operation(&scope, GENERATION, cursor),
+        )
+        .unwrap()
+        .unwrap()
     };
     assert_eq!(
-        phases_of(1),
-        1,
-        "the record of the current epoch waits for its actor"
+        task_of(1).status,
+        ToolRequestStatus::Queued,
+        "the current epoch waits for its actor"
     );
-    assert_eq!(phases_of(2), 0, "the record of a stale epoch is retired");
+    assert_eq!(
+        task_of(2).status,
+        ToolRequestStatus::Completed,
+        "the stale epoch is retired"
+    );
     assert!(peer.writes.try_recv().is_err());
     worker.shutdown().await.unwrap();
 }

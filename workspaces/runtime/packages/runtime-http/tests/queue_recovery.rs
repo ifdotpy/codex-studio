@@ -85,11 +85,11 @@ async fn call(app: &axum::Router, body: Option<Value>) -> (u16, Value) {
 async fn promotion(app: &axum::Router) -> Value {
     let (status, queue) = call(app, None).await;
     assert_eq!(status, 200, "{queue}");
-    json!({"agent":ACTOR,"action":"send_now","message_id":USER,"request_id":"retry-original-input","expected_revision":queue["revision"]})
+    json!({"agent":ACTOR,"action":"send_now","message_id":USER,"request_id":studio_runtime_schema::persistence::RequestIdentity::issue_root(),"expected_revision":queue["revision"]})
 }
 fn snapshot(store: &RuntimeStore) -> Vec<Vec<String>> {
     let db = store.test_reader().unwrap();
-    ["SELECT record FROM runtime_agents ORDER BY id","SELECT json_array(id,agent,kind,text,status,created,epoch,turn_id,error) FROM runtime_events ORDER BY id","SELECT record FROM runtime_event_meta ORDER BY id","SELECT record FROM runtime_execution_attempts ORDER BY id","SELECT result FROM runtime_operation_receipts ORDER BY id"].into_iter().map(|sql|db.prepare(sql).unwrap().query_map([],|row|row.get(0)).unwrap().collect::<Result<Vec<String>,_>>().unwrap()).collect()
+    ["SELECT record FROM runtime_agents ORDER BY id","SELECT json_array(id,agent,kind,text,status,created,epoch,turn_id,error) FROM runtime_events ORDER BY id","SELECT record FROM runtime_event_meta ORDER BY id","SELECT record FROM runtime_execution_attempts ORDER BY id","SELECT result FROM request_results ORDER BY id"].into_iter().map(|sql|db.prepare(sql).unwrap().query_map([],|row|row.get(0)).unwrap().collect::<Result<Vec<String>,_>>().unwrap()).collect()
 }
 
 #[tokio::test]
@@ -144,10 +144,10 @@ async fn send_now_recovers_proven_unsent_failed_batch_and_replays_lost_http_succ
     let mut conflicting = body;
     conflicting["message_id"] = json!("original-0");
     let (status, result) = call(&app, Some(conflicting)).await;
-    assert_eq!(status, 400, "{result}");
+    assert_eq!(status, 409, "{result}");
     assert_eq!(
         result,
-        json!({"error":"This request id has different content"})
+        json!({"error":"This request ID has different content"})
     );
     assert_eq!(snapshot(&store), state);
     assert!(
@@ -180,7 +180,7 @@ async fn send_now_refuses_unproven_failed_batches_without_any_write() {
         "metadata",
         "extra-event",
         "uncertain-event",
-        "missing-receipt",
+        "missing-identity",
         "later-run",
     ] {
         let (_directory, store, app) = fixture().await;
@@ -207,8 +207,8 @@ async fn send_now_refuses_unproven_failed_batches_without_any_write() {
                     })?;
                     QueueWriteRepository::put_metadata(tx,"extra",&json!({"delivery":"current_turn","acceptedAt":6,"assets":[]}))?;
                 },
-                "missing-receipt"=>{tx.execute("UPDATE runtime_execution_attempts SET record=json_remove(record,'$.receipts') WHERE id=?1",[FIRST])?;},
-                "later-run"=>{tx.execute("INSERT INTO runtime_execution_runs SELECT 'later',agent,account,epoch,thread,turn,created+1,json_set(record,'$.id','later','$.status','unknown') FROM runtime_execution_runs LIMIT 1",[])?;},
+                "missing-identity"=>{tx.execute("UPDATE runtime_execution_attempts SET record=json_remove(record,'$.inputIdentity') WHERE id=?1",[FIRST])?;},
+                "later-run"=>{tx.execute("INSERT INTO runtime_execution_runs SELECT 'later',agent,account,epoch,thread,turn,created+1,json_set(record,'$.id','later','$.status','unknown') FROM runtime_execution_runs LIMIT 1",[])?;tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.activeExecution.runId','later') WHERE id=?1",[ACTOR])?;},
                 _=>unreachable!(),
             }Ok::<_,StoreError>(())
         }).await.unwrap();
@@ -236,6 +236,7 @@ async fn send_now_keeps_explicit_stop_and_other_start_owners_held() {
         ("nativeThreadBlock", json!({"threadId":"original-thread"})),
         ("startAttempt", json!({"id":"other","submitted":true})),
         ("startOutcomeHold", json!({"phase":"unknown"})),
+        ("nativeRelease", json!({"phase":"unknown","resetPending":true})),
     ] {
         let (_directory, store, app) = fixture().await;
         store

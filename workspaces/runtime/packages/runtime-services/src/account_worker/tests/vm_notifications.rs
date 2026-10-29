@@ -174,9 +174,9 @@ async fn vm_notifications_commit_real_account_streams_and_preserve_scoped_acks()
                     let text: String = tx.query_row("SELECT json_extract(record,'$.text') FROM runtime_items WHERE id=?1",
                         [format!("{actor}:answer")], |row| row.get(0))?;
                     assert_eq!(text, "VM answer");
-                    let cursor: String = tx.query_row("SELECT result FROM runtime_operation_receipts WHERE id=?1",
-                        [format!("account-worker:cursor:default:vm:{actor}:1:ack")], |row| row.get(0))?;
-                    assert_eq!(cursor, "6");
+                    let owner=AgentRepository::get(tx,&AgentId::from(actor.as_str()))?.expect("VM stream owner");
+                    assert_eq!(owner.extra["providerStream"]["generation"],1);
+                    assert_eq!(owner.extra["providerStream"]["ack"],6);
                 }
                 Ok::<_, StoreError>(())
             }).await?;
@@ -195,6 +195,29 @@ async fn vm_notifications_commit_real_account_streams_and_preserve_scoped_acks()
         );
         assert!(native.stops.is_empty());
     }
+}
+
+#[tokio::test]
+async fn vm_stream_persistence_preserves_agent_fields() {
+    let (state, _) = fixture("codex").await;
+    let actor = state.agent.clone();
+    state.bridge.run(move |store| async move {
+        store.transaction_with(move |tx| {
+            let before: String = tx.query_row("SELECT record FROM runtime_agents WHERE id=?1", [&actor], |r| r.get(0))?;
+            let mut streams = crate::notification_dispatch::NotificationStreamBuffer::default();
+            store::persist_streams(tx, "default", &mut streams)?;
+            let (after, raw): (String, String) = tx.query_row("SELECT record,json_extract(record,'$.providerStream.streams') FROM runtime_agents WHERE id=?1", [&actor], |r| Ok((r.get(0)?,r.get(1)?)))?;
+            let saved: store::AccountStreams = serde_json::from_str(&raw).expect("typed streams");
+            assert!(!saved.revision.is_empty());
+            let mut before: Value = serde_json::from_str(&before).expect("before record");
+            let mut after: Value = serde_json::from_str(&after).expect("after record");
+            before.as_object_mut().expect("object").remove("providerStream");
+            after.as_object_mut().expect("object").remove("providerStream");
+            assert_eq!(before, after);
+            Ok::<_, WorkerError>(())
+        }).await?;
+        Ok(())
+    }).await.expect("persist VM streams");
 }
 
 fn delta(actor: &str, text: &str) -> Frame {
@@ -217,7 +240,7 @@ fn running(tx: &rusqlite::Transaction<'_>, actor: &str, native: bool) -> Result<
     record.extra.insert("turnId".into(), json!("turn"));
     record.extra.insert("inFlight".into(), json!(true));
     if native {
-        record.extra.insert("executionMode".into(), json!("native"));
+        record.extra.insert("executionMode".into(), json!("host"));
     }
     AgentRepository::put(tx, &record)
 }
@@ -251,11 +274,12 @@ async fn vm_notification_scope_keeps_native_and_sibling_receipts_and_observation
                     &crate::notification_runtime_effects::RuntimeNotificationEffects).expect("distinct source admission");
                 let effects = serde_json::to_string(&dispatched.post_commit).expect("observations");
                 assert!(effects.contains(&expected_handle), "observation lost its journal namespace: {effects}");
-                let (metadata, _) = dispatched.stream_update.expect("stream update").persisted_text().expect("stream metadata");
+                let (metadata, _) = dispatched.stream_update.expect("stream update").persisted_parts().expect("stream metadata");
                 let metadata: Value = serde_json::from_str(&metadata).expect("metadata JSON");
                 assert_eq!(metadata["entries"][0]["key"]["account"], "default");
-                let hash = studio_runtime_store::sha256_hex(json!({"providerHandle":expected_handle,"generation":1,"cursor":7}).to_string().as_bytes());
-                assert!(EventWriteRepository::receipt(tx, &format!("provider-notification:{hash}"))?.is_some());
+                assert_eq!(metadata["entries"][0]["key"]["agent_id"],actor);
+                let scoped = ProviderDeliveryIdentity {provider_handle:expected_handle,generation:1,cursor:7};
+                assert!(store::get_notification(tx,&scoped)?.is_some());
                 let replay = dispatch_notification_with_effects(tx, actor, &context,
                     &NotificationStreamBuffer::default(), &authority, &frame, now(),
                     &crate::notification_runtime_effects::RuntimeNotificationEffects).expect("same source replay");
@@ -265,7 +289,7 @@ async fn vm_notification_scope_keeps_native_and_sibling_receipts_and_observation
                     &NotificationStreamBuffer::default(), &authority, &delta(actor, "changed payload"), now(),
                     &crate::notification_runtime_effects::RuntimeNotificationEffects).is_err());
             }
-            let count: i64 = tx.query_row("SELECT count(*) FROM runtime_operation_receipts WHERE id GLOB 'provider-notification:*'", [], |row| row.get(0))?;
+            let count: i64 = tx.query_row("SELECT count(*) FROM runtime_outbox WHERE account='default' AND kind=?1 AND generation=1 AND ordinal=7", [OutboxKind::JournalEntry], |row| row.get(0))?;
             assert_eq!(count, 3, "native and both VM cursors must not alias");
             Ok::<_, StoreError>(())
         }).await?;
@@ -300,8 +324,14 @@ async fn vm_notification_scope_refuses_wrong_actor_account_epoch_and_host_namesp
             }
             assert!(dispatch_notification(tx, &primary, &PublicationContext::default(),
                 &NotificationStreamBuffer::default(), &authority, &delta(&primary, "host scope cannot serve VM"), now()).is_err());
-            let count: i64 = tx.query_row("SELECT count(*) FROM runtime_operation_receipts WHERE id GLOB 'provider-notification:*' OR id GLOB 'account-worker:cursor:*'", [], |row| row.get(0))?;
+            let count: i64 = tx.query_row("SELECT count(*) FROM runtime_outbox WHERE account='default' AND kind IN (?1,?2)", (OutboxKind::JournalEntry,OutboxKind::StreamFlush), |row| row.get(0))?;
             assert_eq!(count, 0, "a refused scope cannot settle or advance a cursor");
+            assert_eq!(studio_runtime_store::account_state::provider_checkpoint(tx,"default",1)?,0);
+            for actor in [&primary,&sibling] {
+                let owner=AgentRepository::get(tx,&AgentId::from(actor.as_str()))?.expect("VM actor");
+                let ack=&owner.extra.get("providerStream").unwrap_or(&Value::Null)["ack"];
+                assert!(ack.is_null()||ack.as_u64()==Some(0),"a refused scope cannot advance the VM ACK");
+            }
             Ok::<_, StoreError>(())
         }).await?;
         Ok(())

@@ -49,6 +49,11 @@ mod steer;
 mod stopped_turns;
 pub(crate) mod store;
 pub use store::hold_invalid_agent_record;
+pub use store::{get_notification, put_notification};
+#[cfg(any(test, feature = "test-support"))]
+pub use store::attach_provider_stream_for_test;
+pub use studio_runtime_schema::persistence::ProviderScope;
+pub use studio_runtime_store::account_state::{ScopeError, current_provider_scope};
 mod submission;
 mod turn_preparation;
 mod vm_reattach;
@@ -166,6 +171,8 @@ impl std::fmt::Display for PreparationBlock {
 
 #[derive(Debug, thiserror::Error)]
 pub enum WorkerError {
+    #[error("Request id expired")]
+    Expired,
     #[error(transparent)]
     Recovery(#[from] crate::recovery::RecoveryError),
     #[error(transparent)]
@@ -202,12 +209,28 @@ pub enum WorkerError {
     CallbackUnknown,
 }
 
+fn vm_bootstrap_error(error: crate::linux_vm_provider::GuestProviderError) -> WorkerError {
+    use crate::linux_vm_provider::GuestProviderError as Error;
+    match error {
+        Error::Persistence(error) => WorkerError::Store(error),
+        Error::Outbox(error) => WorkerError::Store(error.into()),
+        Error::RequestResult(error) => WorkerError::Store(error.into()),
+        Error::Json(error) => WorkerError::Store(error.into()),
+        Error::Invalid
+        | Error::Unknown
+        | Error::Refused
+        | Error::InvalidResponse
+        | Error::Guest(_)
+        | Error::Task => WorkerError::CallbackUnknown,
+    }
+}
+
 fn vm_credential_maintenance_error(error: &WorkerError) -> Option<&'static str> {
     match error {
         WorkerError::PreparationPending(_) | WorkerError::PreparationAwaitsAgent(_) => {
             Some("pending")
         }
-        WorkerError::PreparationRefused(_) => Some("stale-or-unavailable"),
+        WorkerError::Expired | WorkerError::PreparationRefused(_) => Some("stale-or-unavailable"),
         WorkerError::Store(_)
         | WorkerError::Recovery(_)
         | WorkerError::Scheduler(_)
@@ -741,6 +764,20 @@ pub async fn start_account_worker_with_publication_sink(
     )
     .await?;
     let connection_id = uuid::Uuid::new_v4().to_string();
+    let stream_account = account.clone();
+    let stream_connection = connection_id.clone();
+    bridge
+        .worker_run("attach_stream", move |store| async move {
+            store::attach_provider_stream(
+                &store,
+                &stream_account,
+                None,
+                generation.0,
+                &stream_connection,
+            )
+            .await
+        })
+        .await?;
     let effect_account = account.clone();
     let (effects, callback_scan, streams) = bridge
         .worker_run("restore_effects_streams", move |store| async move {
@@ -892,7 +929,7 @@ pub async fn start_account_worker_with_publication_sink(
     })
 }
 
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 struct Pending {
     intent: TurnIntent,
     method: Method,
@@ -2323,7 +2360,7 @@ impl Worker {
             // Boxed: the VM path stays out of this future, which every
             // submission polls on the worker's stack.
             submission::Committed::Vm(commit, launch) => {
-                Box::pin(self.committed_vm(*commit, launch)).await?
+                Box::pin(self.committed_vm(*commit, *launch)).await?
             }
         };
         match ready {
@@ -2738,6 +2775,20 @@ impl Worker {
                 self.pending
                     .insert(request.ticket.id.clone(), Arc::new(context));
             }
+            let stream_account = self.account.clone();
+            let stream_actor = request.agent_id.clone();
+            let stream_connection = self.connection_id.clone();
+            self.db("vm_stream_attach", move |store| async move {
+                store::attach_provider_stream(
+                    &store,
+                    &stream_account,
+                    Some(&stream_actor),
+                    generation.0,
+                    &stream_connection,
+                )
+                .await
+            })
+            .await?;
             self.install_vm_session(request.clone(), session, resolved.bootstrap, false)?;
         }
         let mut status = self
@@ -2786,8 +2837,7 @@ impl Worker {
             .get(&request.agent_id)
             .and_then(|session| session.bootstrap.clone());
         if let Some(payload) = bootstrap {
-            self.bootstrap_vm_provider(&request.agent_id, request.epoch, payload)
-                .await?;
+            self.bootstrap_vm_provider(&request, payload).await?;
             if let Some(session) = self.vm_sessions.get_mut(&request.agent_id) {
                 session.bootstrap = None;
             }
@@ -3038,6 +3088,10 @@ impl Worker {
             return Ok(false);
         };
         let expected = preparation::VmProviderLaunchRequest {
+            root_request_id: session.launch_request.root_request_id.clone(),
+            source: session.launch_request.source.clone(),
+            final_effect: session.launch_request.final_effect.clone(),
+            attempt_id: session.launch_request.attempt_id.clone(),
             agent_id: id,
             epoch,
             generation,
@@ -3050,18 +3104,35 @@ impl Worker {
     }
     async fn bootstrap_vm_provider(
         &mut self,
-        agent_id: &str,
-        epoch: i64,
+        request: &preparation::VmProviderLaunchRequest,
         payload: Value,
     ) -> Result<(), WorkerError> {
+        let agent_id = request.agent_id.as_str();
+        let epoch = request.epoch;
         let signature = studio_runtime_store::sha256_hex(payload.to_string().as_bytes());
         let operation = format!("vm-auth-bootstrap:{agent_id}:{epoch}:{}", &signature[..24]);
         let admission_operation = operation.clone();
         let admission_signature = signature.clone();
+        let admission_agent = request.agent_id.clone();
+        let admission_root = request.root_request_id.clone();
+        let admission_attempt = request.attempt_id.clone();
+        let admission_source = request.source.clone();
         if self
             .db("vm_auth_bootstrap_admission", move |store| async move {
-                store::vm_bootstrap_admission(&store, &admission_operation, &admission_signature)
-                    .await
+                crate::linux_vm_provider::vm_bootstrap_admission(
+                    &store,
+                    &admission_agent,
+                    epoch,
+                    &admission_root,
+                    crate::linux_vm_provider::VmBootstrapSource {
+                        attempt_id: &admission_attempt,
+                        admission: &admission_source,
+                    },
+                    &admission_operation,
+                    &admission_signature,
+                )
+                .await
+                .map_err(vm_bootstrap_error)
             })
             .await?
         {
@@ -3099,9 +3170,25 @@ impl Worker {
             } => {
                 let settled_operation = operation.clone();
                 let settled_signature = signature.clone();
+                let settled_agent = request.agent_id.clone();
+                let settled_root = request.root_request_id.clone();
+                let settled_attempt = request.attempt_id.clone();
+                let settled_source = request.source.clone();
                 self.db("vm_auth_bootstrap_settled", move |store| async move {
-                    store::vm_bootstrap_settled(&store, &settled_operation, &settled_signature)
-                        .await
+                    crate::linux_vm_provider::vm_bootstrap_settled(
+                        &store,
+                        &settled_agent,
+                        epoch,
+                        &settled_root,
+                        crate::linux_vm_provider::VmBootstrapSource {
+                            attempt_id: &settled_attempt,
+                            admission: &settled_source,
+                        },
+                        &settled_operation,
+                        &settled_signature,
+                    )
+                    .await
+                    .map_err(vm_bootstrap_error)
                 })
                 .await
             }
@@ -3394,14 +3481,13 @@ impl Worker {
             {
                 self.callback_receipt_deadlines.remove(&operation_id.0);
                 let operation = operation_id.0.clone();
-                let written = *outcome == WriteOutcome::Written;
                 let write_outcome = *outcome;
                 let identity = operation.clone();
                 self.db_identified("callback_written", identity, move |store| async move {
                     callback_record::written(&store, &operation, write_outcome).await
                 })
                 .await?;
-                if !written {
+                if write_outcome == WriteOutcome::Unknown {
                     return Err(WorkerError::CallbackUnknown);
                 }
                 self.managed_callback_cursors.remove(&(
@@ -4131,7 +4217,7 @@ impl Worker {
             })
             .await?;
         self.callback_parked.clear();
-        for record in accepted {
+        for mut record in accepted {
             if free == 0 {
                 self.callback_scan = true;
                 break;
@@ -4208,9 +4294,9 @@ impl Worker {
                 }
                 continue;
             }
-            let frame = record.frame()?;
             self.managed_callback_cursors.insert(key);
-            self.start_callback(cursor, origin, frame, actor, epoch)?;
+            record.epoch = epoch;
+            self.start_callback(record)?;
             free -= 1;
         }
         Ok(())
@@ -4240,14 +4326,15 @@ impl Worker {
         Ok(!matches)
     }
     /// Run the handler of one accepted request, or queue its fixed answer.
-    fn start_callback(
-        &mut self,
-        cursor: studio_runtime_process::EventCursor,
-        origin: Generation,
-        frame: Frame,
-        actor: Option<String>,
-        actor_epoch: Option<i64>,
-    ) -> Result<(), WorkerError> {
+    fn start_callback(&mut self, record: callback_record::Accepted) -> Result<(), WorkerError> {
+        let cursor = studio_runtime_process::EventCursor(record.cursor);
+        let origin = Generation(record.generation);
+        let frame = record.frame()?;
+        let actor = record.actor;
+        let actor_epoch = record.epoch;
+        let source = record
+            .source_admission
+            .map(|token| (record.root_request_id, token));
         if let Frame::Request(request) = &frame
             && request.method.as_str() == "item/tool/call"
         {
@@ -4322,8 +4409,7 @@ impl Worker {
             let store = Arc::clone(&self.bridge.store);
             self.managed_callbacks.spawn(async move {
                 let handled =
-                    callback::native_response(&store, &account, generation, cursor.0, &frame, now)
-                        .await;
+                    callback::native_response(&store, &account, generation, &frame, now).await;
                 (cursor, origin, actor, actor_epoch, handled)
             });
         } else if callback::is_vm_codex_refresh_request(&frame) {
@@ -4338,6 +4424,7 @@ impl Worker {
                     generation,
                     &frame,
                     resolver,
+                    source,
                 )
                 .await;
                 (cursor, origin, actor, actor_epoch, response.into())
@@ -4936,12 +5023,6 @@ impl Worker {
     }
     async fn finish(&mut self, exit: SessionExit) -> Result<(), WorkerError> {
         self.closing = true;
-        while let Ok(event) = self.events.try_recv() {
-            self.event(event).await?;
-        }
-        for event in exit.undelivered {
-            self.event(event).await?;
-        }
         // A retained provider (a supervised process that outlives this worker)
         // keeps its generation open: the next worker attaches to it and
         // continues its turns, so this end is no provider disconnect.
@@ -4956,15 +5037,20 @@ impl Worker {
                 !(provider_retained && matches!(outcome, SessionOutcome::GenerationClosed { .. }))
             })
             .collect();
-        self.event(SessionEvent {
-            journal: None,
-            outcomes,
-        })
-        .await?;
+        let drain: Result<(), WorkerError> = async {
+            while let Ok(event) = self.events.try_recv() {
+                self.event(event).await?;
+            }
+            for event in exit.undelivered {
+                self.event(event).await?;
+            }
+            self.event(SessionEvent { journal: None, outcomes }).await?;
+            Ok(())
+        }.await;
         for (_, reply) in std::mem::take(&mut self.vm_notification_waiters) {
             let _sent = reply.send(Err(retained::PortError::Unknown));
         }
-        self.flush().await?;
+        let drain = if drain.is_ok() { self.flush().await } else { drain };
         let account = self.account.clone();
         let generation = self.generation.0;
         let (cleanup_error, recovery, provider_result) = match exit.adapter {
@@ -4976,17 +5062,32 @@ impl Worker {
             None => (None, None, None),
         };
         let identity = format!("account={account};generation={generation}");
-        self.db_identified("finish", identity, move |store| async move {
-            if let Some(recovery) = recovery {
-                store::save_recovery(&store, &account, &recovery).await?;
-            }
-            scheduler::lifecycle_transaction(&store, move |tx| {
-                store::disconnect_provider_generation(tx, &account, generation, provider_retained)
+        let disconnect = self
+            .db_identified("finish", identity, move |store| async move {
+                if let Some(recovery) = recovery {
+                    store::save_recovery(&store, &account, &recovery).await?;
+                }
+                scheduler::lifecycle_transaction(&store, move |tx| {
+                    store::disconnect_provider_generation(
+                        tx,
+                        &account,
+                        generation,
+                        provider_retained,
+                    )
+                })
+                .await?;
+                Ok(())
             })
-            .await?;
-            Ok(())
-        })
-        .await?;
+            .await;
+        match (drain, disconnect) {
+            (Err(drain), Err(disconnect)) => {
+                return Err(WorkerError::CleanupUnconfirmed(format!(
+                    "{disconnect}; earlier drain: {drain}"
+                )));
+            }
+            (Err(error), Ok(())) | (Ok(()), Err(error)) => return Err(error),
+            (Ok(()), Ok(())) => {}
+        }
         if let Some(error) = cleanup_error {
             return Err(WorkerError::CleanupUnconfirmed(error));
         }
@@ -5027,7 +5128,8 @@ fn invalid_agent_record_details(error: &WorkerError) -> Option<(&str, &str, &str
                 reason,
             },
         )) if scope == "runtime_agents" => Some((id.as_str(), pointer.as_str(), reason.as_str())),
-        WorkerError::Recovery(_)
+        WorkerError::Expired
+        | WorkerError::Recovery(_)
         | WorkerError::Store(_)
         | WorkerError::Scheduler(_)
         | WorkerError::Session(_)
@@ -5083,15 +5185,12 @@ pub fn commit_prepared_turn(
     }) {
         return Ok(false);
     }
-    let replay = studio_runtime_store::ExecutionHistoryRepository::attempt(tx, &intent.attempt_id)?
-        .is_some_and(|a| a["receipts"]["submission"].is_object());
-    let may_submit = replay
-        || SchedulerRepository::reconcile_obsolete_before_submit(
-            tx,
-            &intent.agent_id,
-            intent.epoch,
-            &intent.attempt_id,
-        )?;
+    let may_submit = SchedulerRepository::reconcile_obsolete_before_submit(
+        tx,
+        &intent.agent_id,
+        intent.epoch,
+        &intent.attempt_id,
+    )?;
     if !may_submit {
         return Ok(false);
     }
@@ -5108,6 +5207,11 @@ pub fn commit_prepared_turn(
     )? {
         return Ok(false);
     }
-    crate::notification_dispatch::record_start_submission(tx, &intent.agent_id, submission)?;
+    crate::notification_dispatch::record_start_submission(
+        tx,
+        &intent.agent_id,
+        &intent.attempt_id,
+        submission,
+    )?;
     Ok(true)
 }

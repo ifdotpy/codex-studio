@@ -5,7 +5,7 @@
 //! acknowledge it the same way.
 //! The running turn keeps its `startAttempt`, which still routes the turn's
 //! notifications and terminal outcome. Each steer owns one durable receipt in
-//! `runtime_operation_receipts`; its event rows move through these states:
+//! the runtime outbox; its event rows move through these states:
 //!
 //! | Receipt stage | Event status  | Meaning                                         |
 //! | ------------- | ------------- | ----------------------------------------------- |
@@ -25,7 +25,176 @@
 
 use super::*;
 use crate::CachedSql;
+use crate::outbox::{Outbox, OutboxRow};
+use crate::request_results::{Admission, AdmittedRequest, RequestResults};
 use studio_runtime_schema::DeliveryMoment;
+use studio_runtime_schema::persistence::{OutboxKind, OutboxStatus, OwnerKind, RequestIdentity};
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SteerPayload {
+    agent: String,
+    epoch: i64,
+    account_key: String,
+    thread_id: String,
+    turn_id: String,
+    events: Vec<String>,
+    #[serde(flatten)]
+    stage: SteerState,
+    created: f64,
+    root_request_id: String,
+    admission: AdmittedRequest,
+    #[serde(skip)]
+    held_payload: Option<Box<serde_json::value::RawValue>>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SteerWire {
+    agent: String,
+    epoch: i64,
+    account_key: String,
+    thread_id: String,
+    turn_id: String,
+    events: Vec<String>,
+    stage: WireStage,
+    created: f64,
+    root_request_id: String,
+    admission: AdmittedRequest,
+    request_ticket: Option<Box<serde_json::value::RawValue>>,
+    generation: Option<Box<serde_json::value::RawValue>>,
+    submitted_at: Option<Box<serde_json::value::RawValue>>,
+    prepared_submission: Option<Box<serde_json::value::RawValue>>,
+    response: Option<Box<serde_json::value::RawValue>>,
+    interrupt_still_queued: Option<Box<serde_json::value::RawValue>>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum WireStage {
+    Reserved,
+    Submitted,
+    Unconfirmed,
+    Held,
+}
+
+impl TryFrom<&mut SteerWire> for SteerState {
+    type Error = ();
+
+    fn try_from(wire: &mut SteerWire) -> Result<Self, Self::Error> {
+        match wire.stage {
+            WireStage::Held => Ok(Self::Held),
+            WireStage::Reserved => {
+                if wire.request_ticket.is_some()
+                    || wire.generation.is_some()
+                    || wire.submitted_at.is_some()
+                    || wire.prepared_submission.is_some()
+                    || wire.response.is_some()
+                    || wire.interrupt_still_queued.is_some()
+                {
+                    return Err(());
+                }
+                Ok(Self::Reserved)
+            }
+            WireStage::Submitted | WireStage::Unconfirmed => {
+                let sent = SubmittedSteer {
+                    request_ticket: parse_wire(&wire.request_ticket.take().ok_or(())?)?,
+                    generation: parse_wire(&wire.generation.take().ok_or(())?)?,
+                    submitted_at: parse_wire(&wire.submitted_at.take().ok_or(())?)?,
+                    prepared_submission: wire.prepared_submission.take(),
+                    response: wire
+                        .response
+                        .take()
+                        .map(|raw| parse_wire(&raw))
+                        .transpose()?,
+                    interrupt_still_queued: wire
+                        .interrupt_still_queued
+                        .take()
+                        .map(|raw| parse_wire(&raw))
+                        .transpose()?
+                        .unwrap_or(false),
+                };
+                Ok(match wire.stage {
+                    WireStage::Submitted => Self::Submitted(sent),
+                    WireStage::Unconfirmed => Self::Unconfirmed(sent),
+                    WireStage::Reserved | WireStage::Held => return Err(()),
+                })
+            }
+        }
+    }
+}
+
+fn parse_wire<T: serde::de::DeserializeOwned>(raw: &serde_json::value::RawValue) -> Result<T, ()> {
+    serde_json::from_str(raw.get()).map_err(|_| ())
+}
+
+impl SteerWire {
+    fn into_payload(mut self, raw: Box<serde_json::value::RawValue>) -> Result<SteerPayload, ()> {
+        let stage = SteerState::try_from(&mut self)?;
+        let held_payload = matches!(stage, SteerState::Held).then_some(raw);
+        Ok(SteerPayload {
+            agent: self.agent,
+            epoch: self.epoch,
+            account_key: self.account_key,
+            thread_id: self.thread_id,
+            turn_id: self.turn_id,
+            events: self.events,
+            stage,
+            created: self.created,
+            root_request_id: self.root_request_id,
+            admission: self.admission,
+            held_payload,
+        })
+    }
+}
+
+// The compiler projection remains opaque until the pre-pivot metadata contracts are typed.
+#[derive(Clone, serde::Serialize)]
+#[serde(tag = "stage", rename_all = "snake_case")]
+enum SteerState {
+    Reserved,
+    Submitted(SubmittedSteer),
+    Unconfirmed(SubmittedSteer),
+    Held,
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SubmittedSteer {
+    request_ticket: SteerTicket,
+    generation: u64,
+    submitted_at: f64,
+    #[serde(default)]
+    prepared_submission: Option<Box<serde_json::value::RawValue>>,
+    #[serde(default)]
+    response: Option<String>,
+    #[serde(default)]
+    interrupt_still_queued: bool,
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "String")]
+struct SteerTicket(String);
+
+impl TryFrom<String> for SteerTicket {
+    type Error = &'static str;
+    fn try_from(ticket: String) -> Result<Self, Self::Error> {
+        if ticket.is_empty() {
+            Err("empty steer ticket")
+        } else {
+            Ok(Self(ticket))
+        }
+    }
+}
+
+impl SteerState {
+    fn sent(&self) -> Option<&SubmittedSteer> {
+        match self {
+            Self::Submitted(sent) | Self::Unconfirmed(sent) => Some(sent),
+            Self::Reserved | Self::Held => None,
+        }
+    }
+}
 
 /// Prefix of the durable per-steer receipt: `claude-steer:{agent}:{steer}`.
 /// The name predates Codex steering; it is kept so stored receipts stay readable.
@@ -47,6 +216,8 @@ const STEER_AFTER_TURN_END_SECONDS: f64 = 5.0;
 #[derive(Clone, Debug, PartialEq)]
 pub struct ClaimedSteer {
     pub steer_id: String,
+    pub root_request_id: String,
+    pub admission: AdmittedRequest,
     pub agent: AgentRecord,
     pub thread_id: String,
     pub turn_id: String,
@@ -55,15 +226,16 @@ pub struct ClaimedSteer {
 }
 
 /// Input proven delivered by the provider acknowledgement.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct AcknowledgedSteer {
     pub agent_id: String,
+    pub admission: AdmittedRequest,
     pub steer_id: String,
     /// Original batch identity, including input withdrawn after uncertainty.
     pub event_ids: Vec<String>,
     /// Opaque compiler-owned projection frozen before transport, retained until
     /// acknowledgement even after the ordinary request reply is retired.
-    pub prepared_submission: Option<Value>,
+    pub prepared_submission: Option<Box<serde_json::value::RawValue>>,
     pub events: Vec<QueueEvent>,
     pub submitted_at: f64,
 }
@@ -73,60 +245,98 @@ fn receipt_id(agent: &str, steer: &str) -> String {
 }
 
 fn invalid_receipt(id: &str) -> StoreError {
-    invalid_object("runtime_operation_receipts", id)
+    invalid_object("runtime_outbox", id)
 }
-
-fn load(tx: &Transaction<'_>, id: &str) -> StoreResult<Option<Value>> {
-    tx.query_row_cached(
-        "SELECT result FROM runtime_operation_receipts WHERE id=?1 AND signature=?2",
-        params![id, STEER_RECEIPT_SIGNATURE],
-        |row| row.get::<_, String>(0),
-    )
-    .optional()?
-    .map(|raw| serde_json::from_str(&raw).map_err(|_| invalid_receipt(id)))
-    .transpose()
+fn invalid_wire(id: &str) -> StoreError {
+    StoreError::InvalidStoredObject {
+        table: "runtime_outbox",
+        id: id.into(),
+    }
 }
-
-fn store(tx: &Transaction<'_>, id: &str, value: &Value) -> StoreResult<()> {
-    tx.execute_cached(
-        "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3) \
-         ON CONFLICT(id) DO UPDATE SET signature=excluded.signature,result=excluded.result",
-        params![id, STEER_RECEIPT_SIGNATURE, value.to_string()],
-    )?;
-    Ok(())
-}
-
-fn delete(tx: &Transaction<'_>, id: &str) -> StoreResult<()> {
-    tx.execute_cached("DELETE FROM runtime_operation_receipts WHERE id=?1", [id])?;
-    Ok(())
-}
-
-/// Receipts whose id starts with `prefix`, in id order.
-fn receipts(tx: &Transaction<'_>, prefix: &str) -> StoreResult<Vec<(String, Value)>> {
-    let mut statement = tx.prepare_cached(
-        "SELECT id,result FROM runtime_operation_receipts \
-         WHERE id>=?1 AND id<?2 AND signature=?3 ORDER BY id",
-    )?;
-    let rows = statement
-        .query_map(
-            params![prefix, format!("{prefix}~"), STEER_RECEIPT_SIGNATURE],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-        )?
-        .collect::<Result<Vec<_>, _>>()?;
-    rows.into_iter()
-        .map(|(id, raw)| {
-            let value = serde_json::from_str(&raw).map_err(|_| invalid_receipt(&id))?;
-            Ok((id, value))
+fn load(db: &Connection, id: &str) -> StoreResult<Option<SteerPayload>> {
+    Outbox::get::<Box<serde_json::value::RawValue>>(db, id)
+        .map_err(StoreError::from)?
+        .map(|row| {
+            let payload: SteerWire =
+                serde_json::from_str(row.payload.get()).map_err(|_| invalid_wire(id))?;
+            let payload = payload
+                .into_payload(row.payload)
+                .map_err(|_| invalid_wire(id))?;
+            if row.kind != OutboxKind::Steer
+                || row.owner_kind != OwnerKind::Agent
+                || row.owner_id != payload.agent
+                || row.signature != STEER_RECEIPT_SIGNATURE
+            {
+                return Err(invalid_receipt(id));
+            }
+            Ok(payload)
         })
-        .collect()
+        .transpose()
 }
-
-fn receipt_events(id: &str, receipt: &Value) -> StoreResult<String> {
-    let events = receipt["events"]
-        .as_array()
-        .filter(|events| !events.is_empty() && events.iter().all(Value::is_string))
-        .ok_or_else(|| invalid_receipt(id))?;
-    Ok(Value::Array(events.clone()).to_string())
+fn store(tx: &Transaction<'_>, id: &str, value: &SteerPayload) -> StoreResult<()> {
+    #[derive(serde::Serialize)]
+    #[serde(untagged)]
+    enum Stored<'a> {
+        Held(&'a serde_json::value::RawValue),
+        Active(&'a SteerPayload),
+    }
+    let status = match value.stage {
+        SteerState::Reserved => OutboxStatus::Pending,
+        SteerState::Submitted(_) => OutboxStatus::Submitted,
+        SteerState::Unconfirmed(_) | SteerState::Held => OutboxStatus::Unknown,
+    };
+    Outbox::put(
+        tx,
+        &OutboxRow {
+            id: id.into(),
+            kind: OutboxKind::Steer,
+            owner_kind: OwnerKind::Agent,
+            owner_id: value.agent.clone(),
+            request_id: Some(value.admission.id().into()),
+            signature: STEER_RECEIPT_SIGNATURE.into(),
+            status,
+            account: Some(value.account_key.clone()),
+            stream_id: Some(value.thread_id.clone()),
+            generation: None,
+            ordinal: None,
+            next_at: None,
+            payload: match &value.held_payload {
+                Some(raw) => Stored::Held(raw),
+                None => Stored::Active(value),
+            },
+            created: (value.created * 1000.0) as i64,
+        },
+    )
+    .map_err(StoreError::from)
+}
+fn delete(tx: &Transaction<'_>, id: &str) -> StoreResult<()> {
+    Outbox::delete_settled(tx, id, STEER_RECEIPT_SIGNATURE).map_err(StoreError::from)?;
+    Ok(())
+}
+fn receipts(tx: &Transaction<'_>, agent: &str) -> StoreResult<Vec<(String, SteerPayload)>> {
+    Outbox::for_owner::<Box<serde_json::value::RawValue>>(
+        tx,
+        OwnerKind::Agent,
+        agent,
+        OutboxKind::Steer,
+    )
+    .map_err(StoreError::from)?
+    .into_iter()
+    .map(|row| {
+        let wire: SteerWire =
+            serde_json::from_str(row.payload.get()).map_err(|_| invalid_wire(&row.id))?;
+        let payload = wire
+            .into_payload(row.payload)
+            .map_err(|_| invalid_wire(&row.id))?;
+        Ok((row.id, payload))
+    })
+    .collect()
+}
+fn receipt_events(id: &str, receipt: &SteerPayload) -> StoreResult<String> {
+    if receipt.events.is_empty() {
+        return Err(invalid_receipt(id));
+    }
+    Ok(serde_json::to_string(&receipt.events)?)
 }
 
 /// The running turn and thread that may receive input, or `None`.
@@ -135,7 +345,7 @@ fn steer_turn(agent: &AgentRecord) -> Option<(String, String)> {
     let flag = |key: &str| agent.extra.get(key).is_some_and(truthy);
     let turn = text("turnId").filter(|turn| !turn.is_empty())?;
     let thread = text("threadId").filter(|thread| !thread.is_empty())?;
-    let attempt = agent.extra.get("startAttempt")?;
+    let attempt = agent.start_attempt().ok().flatten()?;
     let eligible = agent.status == AgentStatus::Running
         && agent.extra.get("autoWake") == Some(&json!(true))
         && agent.extra.get("inFlight") == Some(&json!(true))
@@ -144,11 +354,11 @@ fn steer_turn(agent: &AgentRecord) -> Option<(String, String)> {
         && text("executionMode") != Some("vm")
         && continuation_allowed(agent)
         && text("steerRejectedTurnId") != Some(turn)
-        && attempt["turnId"] == turn
-        && attempt["threadId"] == thread
-        && attempt["epoch"] == agent.epoch
-        && attempt["submitted"] == true
-        && attempt.get("action").is_none_or(|action| !truthy(action));
+        && attempt.turn_id.as_deref() == Some(turn)
+        && attempt.thread_id.as_deref() == Some(thread)
+        && attempt.epoch == Some(agent.epoch)
+        && attempt.submitted == Some(true)
+        && attempt.action.is_none();
     eligible.then(|| (turn.to_owned(), thread.to_owned()))
 }
 
@@ -212,13 +422,9 @@ fn pending_steer_events(
 /// When the turn already ended, the idle agent is queued again so the
 /// returned input starts the next turn; returns whether it was, so the caller
 /// wakes it after commit.
-fn release(tx: &Transaction<'_>, id: &str, receipt: &Value) -> StoreResult<bool> {
-    let agent_id = receipt["agent"]
-        .as_str()
-        .ok_or_else(|| invalid_receipt(id))?;
-    let epoch = receipt["epoch"]
-        .as_i64()
-        .ok_or_else(|| invalid_receipt(id))?;
+fn release(tx: &Transaction<'_>, id: &str, receipt: &SteerPayload) -> StoreResult<bool> {
+    let agent_id = receipt.agent.as_str();
+    let epoch = receipt.epoch;
     let agent = load_agent(tx, agent_id)?
         .filter(|agent| agent.epoch == epoch && !agent.extra.get("deletedAt").is_some_and(truthy));
     let returned = tx.execute_cached(
@@ -259,13 +465,9 @@ fn release(tx: &Transaction<'_>, id: &str, receipt: &Value) -> StoreResult<bool>
 }
 
 /// The turn ended or its transport closed without an acknowledgement.
-fn unconfirm(tx: &Transaction<'_>, id: &str, mut receipt: Value) -> StoreResult<()> {
-    let agent_id = receipt["agent"]
-        .as_str()
-        .ok_or_else(|| invalid_receipt(id))?;
-    let epoch = receipt["epoch"]
-        .as_i64()
-        .ok_or_else(|| invalid_receipt(id))?;
+fn unconfirm(tx: &Transaction<'_>, id: &str, mut receipt: SteerPayload) -> StoreResult<()> {
+    let agent_id = receipt.agent.as_str();
+    let epoch = receipt.epoch;
     tx.execute_cached(
         "UPDATE runtime_events SET status='failed',error=?1 \
          WHERE agent=?2 AND epoch=?3 AND status='dispatching' \
@@ -277,7 +479,9 @@ fn unconfirm(tx: &Transaction<'_>, id: &str, mut receipt: Value) -> StoreResult<
             receipt_events(id, &receipt)?
         ],
     )?;
-    receipt["stage"] = json!("unconfirmed");
+    if let SteerState::Submitted(sent) = receipt.stage {
+        receipt.stage = SteerState::Unconfirmed(sent);
+    }
     store(tx, id, &receipt)
 }
 
@@ -362,22 +566,45 @@ impl SchedulerRepository {
             .map(|event| event.id.0.clone())
             .collect::<Vec<_>>();
         mark_timing(tx, &json!(ids).to_string(), "dispatchPickedAt")?;
+        let root = RequestIdentity::issue_root();
+        let identity = RequestIdentity::new("execution-steer", &[agent_id], &root, &[steer_id])
+            .map_err(crate::request_results::RequestResultError::from)
+            .map_err(StoreError::from)?;
+        let signature =
+            json!({"agent":agent_id,"epoch":epoch,"thread":thread_id,"turn":turn_id,"events":ids})
+                .to_string();
+        let Admission::Fresh(admission) =
+            RequestResults::admit(tx, &identity, &signature, (timestamp() * 1000.0) as i64)
+                .map_err(StoreError::from)?
+        else {
+            return Err(invalid_receipt(steer_id));
+        };
         store(
             tx,
             &receipt_id(agent_id, steer_id),
-            &json!({
-                "agent": agent_id,
-                "epoch": epoch,
-                "accountKey": agent.extra.get("accountKey").cloned().unwrap_or(json!("default")),
-                "threadId": thread_id,
-                "turnId": turn_id,
-                "events": ids,
-                "stage": "reserved",
-                "created": created,
-            }),
+            &SteerPayload {
+                agent: agent_id.into(),
+                epoch,
+                account_key: agent
+                    .extra
+                    .get("accountKey")
+                    .and_then(Value::as_str)
+                    .unwrap_or("default")
+                    .into(),
+                thread_id: thread_id.clone(),
+                turn_id: turn_id.clone(),
+                events: ids,
+                stage: SteerState::Reserved,
+                created,
+                root_request_id: root.clone(),
+                admission: admission.clone(),
+                held_payload: None,
+            },
         )?;
         Ok(Some(ClaimedSteer {
             steer_id: steer_id.into(),
+            root_request_id: root,
+            admission,
             agent,
             thread_id,
             turn_id,
@@ -398,7 +625,7 @@ impl SchedulerRepository {
         let Some(receipt) = load(tx, &id)? else {
             return Ok(false);
         };
-        if receipt["stage"] != "reserved" {
+        if !matches!(receipt.stage, SteerState::Reserved) {
             return Ok(false);
         }
         let Some(agent) = load_agent(tx, agent_id)? else {
@@ -447,15 +674,15 @@ impl SchedulerRepository {
         let Some(mut receipt) = load(tx, &id)? else {
             return Ok(false);
         };
-        if receipt["stage"] != "reserved" {
+        if !matches!(receipt.stage, SteerState::Reserved) {
             return Ok(false);
         }
         let current = load_agent(tx, agent_id)?.is_some_and(|agent| {
-            agent.epoch == receipt["epoch"]
+            agent.epoch == receipt.epoch
                 && agent.extra.get("accountKey").unwrap_or(&json!("default"))
-                    == &receipt["accountKey"]
+                    == &json!(receipt.account_key)
                 && steer_turn(&agent).is_some_and(|(turn, thread)| {
-                    receipt["turnId"] == turn && receipt["threadId"] == thread
+                    receipt.turn_id == turn && receipt.thread_id == thread
                 })
         });
         if !current {
@@ -466,17 +693,18 @@ impl SchedulerRepository {
         let changed = tx.execute_cached(
             "UPDATE runtime_events SET status='dispatching' WHERE agent=?1 AND epoch=?2 \
              AND status='reserved' AND id IN (SELECT value FROM json_each(?3))",
-            params![agent_id, receipt["epoch"].as_i64(), events],
+            params![agent_id, receipt.epoch, events],
         )?;
-        require_membership(
-            changed,
-            receipt["events"].as_array().map_or(0, Vec::len),
-            agent_id,
-        )?;
-        receipt["stage"] = json!("submitted");
-        receipt["requestTicket"] = json!(ticket);
-        receipt["generation"] = json!(generation);
-        receipt["submittedAt"] = json!(timestamp());
+        require_membership(changed, receipt.events.len(), agent_id)?;
+        receipt.stage = SteerState::Submitted(SubmittedSteer {
+            request_ticket: SteerTicket::try_from(ticket.to_owned())
+                .map_err(|_| invalid_receipt(&id))?,
+            generation,
+            submitted_at: timestamp(),
+            prepared_submission: None,
+            response: None,
+            interrupt_still_queued: false,
+        });
         store(tx, &id, &receipt)?;
         Ok(true)
     }
@@ -488,20 +716,22 @@ impl SchedulerRepository {
         tx: &Transaction<'_>,
         agent_id: &str,
         steer_id: &str,
-        submission: &Value,
-    ) -> StoreResult<()> {
+        submission: &serde_json::value::RawValue,
+    ) -> StoreResult<Option<Box<serde_json::value::RawValue>>> {
         let id = receipt_id(agent_id, steer_id);
         let mut receipt = load(tx, &id)?.ok_or_else(|| invalid_receipt(&id))?;
-        if receipt["stage"] != "submitted"
-            || !submission.is_object()
-            || receipt
-                .get("preparedSubmission")
-                .is_some_and(|saved| saved != submission)
-        {
+        let SteerState::Submitted(sent) = &mut receipt.stage else {
+            return Err(invalid_receipt(&id));
+        };
+        if !submission.get().trim_start().starts_with('{') {
             return Err(invalid_receipt(&id));
         }
-        receipt["preparedSubmission"] = submission.clone();
-        store(tx, &id, &receipt)
+        if let Some(saved) = &sent.prepared_submission {
+            return Ok(Some(saved.clone()));
+        }
+        sent.prepared_submission = Some(submission.to_owned());
+        store(tx, &id, &receipt)?;
+        Ok(None)
     }
 
     /// The transport proves it never wrote the request. Returns whether the
@@ -532,12 +762,12 @@ impl SchedulerRepository {
         };
         let requeued = release(tx, &id, &receipt)?;
         if let Some(mut agent) = load_agent(tx, agent_id)?
-            && agent.epoch == receipt["epoch"]
-            && agent.extra.get("turnId") == Some(&receipt["turnId"])
+            && agent.epoch == receipt.epoch
+            && agent.extra.get("turnId").and_then(Value::as_str) == Some(receipt.turn_id.as_str())
         {
             agent
                 .extra
-                .insert("steerRejectedTurnId".into(), receipt["turnId"].clone());
+                .insert("steerRejectedTurnId".into(), json!(receipt.turn_id));
             publish_agent(tx, &agent)?;
         }
         Ok(requeued)
@@ -553,9 +783,9 @@ impl SchedulerRepository {
     ) -> StoreResult<()> {
         let id = receipt_id(agent_id, steer_id);
         if let Some(mut receipt) = load(tx, &id)?
-            && receipt["stage"] == "submitted"
+            && let SteerState::Submitted(sent) = &mut receipt.stage
         {
-            receipt["response"] = json!(response);
+            sent.response = Some(response.into());
             store(tx, &id, &receipt)?;
         }
         Ok(())
@@ -570,22 +800,20 @@ impl SchedulerRepository {
         thread_id: &str,
         turn_id: &str,
     ) -> StoreResult<Option<AcknowledgedSteer>> {
-        let found = receipts(tx, &receipt_id(agent_id, ""))?
-            .into_iter()
-            .find(|(_, receipt)| {
-                receipt["agent"] == agent_id
-                    && receipt["events"][0] == first_event
-                    && receipt["threadId"] == thread_id
-                    && receipt["turnId"] == turn_id
-                    && matches!(receipt["stage"].as_str(), Some("submitted" | "unconfirmed"))
-            });
-        let Some((id, receipt)) = found else {
+        let receipts = receipts(tx, agent_id)?;
+        let found = receipts.iter().find_map(|(id, receipt)| {
+            (receipt.agent == agent_id
+                && receipt.events[0] == first_event
+                && receipt.thread_id == thread_id
+                && receipt.turn_id == turn_id)
+                .then(|| receipt.stage.sent().map(|sent| (id, receipt, sent)))
+                .flatten()
+        });
+        let Some((id, receipt, sent)) = found else {
             return Ok(None);
         };
-        let epoch = receipt["epoch"]
-            .as_i64()
-            .ok_or_else(|| invalid_receipt(&id))?;
-        let events = receipt_events(&id, &receipt)?;
+        let epoch = receipt.epoch;
+        let events = receipt_events(id, receipt)?;
         let changed = tx.execute_cached(
             "UPDATE runtime_events SET status='delivered',turn_id=?1,error=NULL \
              WHERE agent=?2 AND epoch=?3 AND id IN (SELECT value FROM json_each(?4)) \
@@ -593,7 +821,7 @@ impl SchedulerRepository {
             params![turn_id, agent_id, epoch, events, STEER_UNCONFIRMED_ERROR],
         )?;
         // Input a user already changed after it became unconfirmed keeps that change.
-        delete(tx, &id)?;
+        delete(tx, id)?;
         if changed == 0 {
             return Ok(None);
         }
@@ -626,16 +854,15 @@ impl SchedulerRepository {
         Self::project_delivered_chat_events(tx, agent_id, epoch, turn_id, &delivered_ids)?;
         Ok(Some(AcknowledgedSteer {
             agent_id: agent_id.into(),
+            admission: receipt.admission.clone(),
             steer_id: id
                 .strip_prefix(&receipt_id(agent_id, ""))
-                .ok_or_else(|| invalid_receipt(&id))?
+                .ok_or_else(|| invalid_receipt(id))?
                 .to_owned(),
-            event_ids: serde_json::from_str(&events).map_err(|_| invalid_receipt(&id))?,
-            prepared_submission: receipt.get("preparedSubmission").cloned(),
+            event_ids: receipt.events.clone(),
+            prepared_submission: sent.prepared_submission.clone(),
             events: delivered,
-            submitted_at: receipt["submittedAt"]
-                .as_f64()
-                .unwrap_or(receipt["created"].as_f64().unwrap_or(0.0)),
+            submitted_at: sent.submitted_at,
         }))
     }
 
@@ -669,9 +896,9 @@ impl SchedulerRepository {
                 && let Some(events) = attempt["events"].as_array()
                 && let Some(first) = events.first()
             {
-                let status = if still_queued.contains(first) {
+                let status = if still_queued.contains(&json!(first)) {
                     Some("uncertain")
-                } else if cancelled.contains(first) {
+                } else if cancelled.contains(&json!(first)) {
                     Some("cancelled")
                 } else {
                     None
@@ -694,23 +921,32 @@ impl SchedulerRepository {
                 }
             }
         }
-        for (id, mut receipt) in receipts(tx, &receipt_id(agent_id, ""))? {
-            if receipt["agent"] != agent_id
-                || receipt["accountKey"] != account
-                || receipt["generation"].as_u64() != Some(generation)
-                || receipt["threadId"] != thread_id
-                || !matches!(receipt["stage"].as_str(), Some("submitted" | "unconfirmed"))
+        for (id, mut receipt) in receipts(tx, agent_id)? {
+            if receipt.agent != agent_id
+                || receipt.account_key != account
+                || receipt.thread_id != thread_id
             {
                 continue;
             }
-            let first = &receipt["events"][0];
-            let status = if still_queued.contains(first) {
+            let (SteerState::Submitted(sent) | SteerState::Unconfirmed(sent)) = &mut receipt.stage
+            else {
+                continue;
+            };
+            if sent.generation != generation {
+                continue;
+            }
+            let first = &receipt.events[0];
+            let status = if still_queued.contains(&json!(first)) {
                 "uncertain"
-            } else if cancelled.contains(first) {
+            } else if cancelled.contains(&json!(first)) {
                 "cancelled"
             } else {
                 continue;
             };
+            let event_ids = serde_json::to_string(&receipt.events)?;
+            if status != "cancelled" {
+                sent.interrupt_still_queued = true;
+            }
             tx.execute_cached(
                 "UPDATE runtime_events SET status=?1,error=?2 \
                  WHERE agent=?3 AND epoch=?4 AND id IN (SELECT value FROM json_each(?5)) \
@@ -723,24 +959,22 @@ impl SchedulerRepository {
                         STOP_QUEUED_ERROR
                     },
                     agent_id,
-                    receipt["epoch"].as_i64(),
-                    receipt_events(&id, &receipt)?,
+                    receipt.epoch,
+                    event_ids,
                     STEER_UNCONFIRMED_ERROR
                 ],
             )?;
-            let event_ids: Vec<String> = serde_json::from_str(&receipt_events(&id, &receipt)?)?;
             Self::project_chat_event_status(
                 tx,
                 agent_id,
-                receipt["epoch"].as_i64().unwrap_or(-1),
-                receipt["turnId"].as_str().unwrap_or_default(),
-                &event_ids,
+                receipt.epoch,
+                receipt.turn_id.as_str(),
+                &receipt.events,
                 status,
             )?;
             if status == "cancelled" {
                 delete(tx, &id)?;
             } else {
-                receipt["interruptStillQueued"] = json!(true);
                 store(tx, &id, &receipt)?;
             }
         }
@@ -764,16 +998,12 @@ impl SchedulerRepository {
         if !ended_at.is_finite() {
             return Ok(());
         }
-        for (id, receipt) in receipts(tx, &receipt_id(agent_id, ""))? {
-            let written_after_end = receipt["submittedAt"]
-                .as_f64()
-                .is_some_and(|at| at >= ended_at + STEER_AFTER_TURN_END_SECONDS);
-            if receipt["agent"] == agent_id
-                && receipt["turnId"] == turn_id
-                && matches!(receipt["stage"].as_str(), Some("submitted" | "unconfirmed"))
-                && receipt["interruptStillQueued"] != true
-                && written_after_end
-            {
+        for (id, receipt) in receipts(tx, agent_id)? {
+            let written_after_end = receipt.stage.sent().is_some_and(|sent| {
+                !sent.interrupt_still_queued
+                    && sent.submitted_at >= ended_at + STEER_AFTER_TURN_END_SECONDS
+            });
+            if receipt.agent == agent_id && receipt.turn_id == turn_id && written_after_end {
                 release(tx, &id, &receipt)?;
             }
         }
@@ -791,28 +1021,33 @@ impl SchedulerRepository {
         turn_id: &str,
         unapplied: &[&str],
     ) -> StoreResult<()> {
-        for (id, receipt) in receipts(tx, &receipt_id(agent_id, ""))? {
-            if receipt["agent"] != agent_id {
+        for (id, receipt) in receipts(tx, agent_id)? {
+            if receipt.agent != agent_id {
                 continue;
             }
-            if receipt["turnId"] != turn_id {
-                if receipt["stage"] == "unconfirmed" && receipt["interruptStillQueued"] != true {
+            if receipt.turn_id != turn_id {
+                if matches!(&receipt.stage, SteerState::Unconfirmed(sent) if !sent.interrupt_still_queued)
+                {
                     delete(tx, &id)?;
                 }
                 continue;
             }
-            let first = receipt["events"][0].as_str().unwrap_or_default();
-            match receipt["stage"].as_str() {
-                Some("reserved") => {
+            let first = receipt
+                .events
+                .first()
+                .map(String::as_str)
+                .unwrap_or_default();
+            match &receipt.stage {
+                SteerState::Reserved => {
                     release(tx, &id, &receipt)?;
                 }
-                Some("submitted") if unapplied.contains(&first) => {
+                SteerState::Submitted(_) if unapplied.contains(&first) => {
                     release(tx, &id, &receipt)?;
                 }
-                Some("submitted") if receipt["interruptStillQueued"] != true => {
+                SteerState::Submitted(sent) if !sent.interrupt_still_queued => {
                     unconfirm(tx, &id, receipt)?;
                 }
-                _ => {}
+                SteerState::Submitted(_) | SteerState::Unconfirmed(_) | SteerState::Held => {}
             }
         }
         Ok(())
@@ -821,18 +1056,41 @@ impl SchedulerRepository {
     /// A transport generation before `current` can no longer acknowledge input.
     /// Unsent reservations return to the queue; sent ones become unconfirmed.
     pub fn abandon_steers(tx: &Transaction<'_>, account: &str, current: u64) -> StoreResult<()> {
-        for (id, receipt) in receipts(tx, STEER_RECEIPT_PREFIX)? {
-            if receipt["accountKey"] != account {
+        let mut rows = Vec::new();
+        for status in [
+            OutboxStatus::Pending,
+            OutboxStatus::Submitted,
+            OutboxStatus::Unknown,
+        ] {
+            rows.extend(
+                Outbox::for_account::<Box<serde_json::value::RawValue>>(
+                    tx,
+                    account,
+                    OutboxKind::Steer,
+                    status,
+                    u32::MAX,
+                )
+                .map_err(StoreError::from)?,
+            );
+        }
+        for row in rows {
+            let id = row.id;
+            let wire: SteerWire =
+                serde_json::from_str(row.payload.get()).map_err(|_| invalid_wire(&id))?;
+            let receipt = wire
+                .into_payload(row.payload)
+                .map_err(|_| invalid_wire(&id))?;
+            if receipt.account_key != account {
                 continue;
             }
-            match receipt["stage"].as_str() {
-                Some("reserved") => {
+            match &receipt.stage {
+                SteerState::Reserved => {
                     release(tx, &id, &receipt)?;
                 }
-                Some("submitted") if receipt["generation"].as_u64().is_none_or(|g| g < current) => {
+                SteerState::Submitted(sent) if sent.generation < current => {
                     unconfirm(tx, &id, receipt)?
                 }
-                _ => {}
+                SteerState::Submitted(_) | SteerState::Unconfirmed(_) | SteerState::Held => {}
             }
         }
         Ok(())

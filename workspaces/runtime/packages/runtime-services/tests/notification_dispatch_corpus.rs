@@ -1,9 +1,17 @@
 //! Account limits belong to the durable account journal, not thread dispatch.
-use serde_json::{Value, json};
+use serde::Deserialize;
+use serde_json::json;
+use studio_runtime_schema::persistence::{OutboxKind, OwnerKind};
 use studio_runtime_services::notification_dispatch::{
-    NotificationStreamBuffer, ProviderDeliveryIdentity, PublicationContext, dispatch_notification,
+    DispatchOutcome, NotificationSettlement, NotificationStreamBuffer, ProviderDeliveryIdentity,
+    PublicationContext, dispatch_notification,
 };
-use studio_runtime_store::{AgentRecord, AgentRepository, RuntimeStore};
+use studio_runtime_store::{AgentRecord, AgentRepository, RuntimeStore, outbox::Outbox};
+
+#[derive(Deserialize)]
+struct JournalWitness {
+    notification: NotificationSettlement,
+}
 
 #[tokio::test]
 async fn live_limits_thread_dispatch_records_only_the_ignored_receipt() {
@@ -62,14 +70,21 @@ async fn live_limits_thread_dispatch_records_only_the_ignored_receipt() {
                     before
                 );
             }
-            let receipt: String = tx
-                .query_row("SELECT result FROM runtime_operation_receipts", [], |r| {
-                    r.get(0)
-                })
-                .expect("ignored delivery receipt");
+            let receipts = Outbox::for_owner::<JournalWitness>(
+                tx,
+                OwnerKind::Account,
+                "default",
+                OutboxKind::JournalEntry,
+            )
+            .expect("journal receipt");
+            assert_eq!(receipts.len(), 1);
+            assert_eq!(receipts[0].generation, Some(7));
+            assert_eq!(receipts[0].ordinal, Some(1));
             assert_eq!(
-                serde_json::from_str::<Value>(&receipt).expect("receipt JSON"),
-                json!({"status":"ignored","reason":"account-journal/limits-observation"})
+                receipts[0].payload.notification.outcome,
+                DispatchOutcome::Ignored {
+                    reason: "account-journal/limits-observation".into()
+                }
             );
             for table in ["runtime_events", "runtime_items"] {
                 assert_eq!(
@@ -79,12 +94,6 @@ async fn live_limits_thread_dispatch_records_only_the_ignored_receipt() {
                     0
                 );
             }
-            assert_eq!(
-                tx.query_row("SELECT count(*) FROM runtime_operation_receipts", [], |r| r
-                    .get::<_, i64>(0))
-                    .expect("row count"),
-                1
-            );
             Ok::<_, studio_runtime_services::notification_dispatch::NotificationDispatchError>(())
         })
         .await

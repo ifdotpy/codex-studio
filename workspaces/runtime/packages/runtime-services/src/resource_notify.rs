@@ -236,8 +236,8 @@ impl ResourceNotifications {
         let mut versions = Vec::new();
         for resource in resources {
             let key = resource.to_string();
-            let scope = ResourceScope::deserialize(resource)
-                .map_err(|_| ResourceNotifyError::Invalid)?;
+            let scope =
+                ResourceScope::deserialize(resource).map_err(|_| ResourceNotifyError::Invalid)?;
             let explicit = if matches!(scope.kind, ResourceKind::State) {
                 state.entity_reset_revision
             } else {
@@ -309,8 +309,8 @@ impl ResourceNotifications {
         let mut versions = Vec::new();
         for (resource, version) in view.resources.iter().zip(&view.versions) {
             let key = resource.to_string();
-            let scope = ResourceScope::deserialize(resource)
-                .map_err(|_| ResourceNotifyError::Invalid)?;
+            let scope =
+                ResourceScope::deserialize(resource).map_err(|_| ResourceNotifyError::Invalid)?;
             if scope.kind.is_entity() {
                 selected.push(resource.clone());
                 versions.push(*version);

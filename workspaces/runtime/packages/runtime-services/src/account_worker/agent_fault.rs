@@ -12,7 +12,7 @@
 //! errors that name no record or agent, stay fatal for the worker.
 use super::*;
 use rusqlite::OptionalExtension;
-use studio_runtime_store::{AgentStatus, CachedSql, EventWriteRepository};
+use studio_runtime_store::{AgentStatus, CachedSql};
 
 /// Savepoint around one agent's part of an account transaction.
 const AGENT_SCOPE_SAVEPOINT: &str = "account_worker_agent_scope";
@@ -121,6 +121,8 @@ pub(super) fn data_fault(error: &WorkerError) -> Option<(String, String)> {
             | StoreError::SchemaObjectMismatch { .. }
             | StoreError::Sqlite(_)
             | StoreError::CommitOutcomeUnknown(_)
+            | StoreError::RequestResult(_)
+            | StoreError::Outbox(_)
             | StoreError::Json(_)
             | StoreError::SchemaValidation(_)
             | StoreError::RecordContract(_)
@@ -140,6 +142,7 @@ pub(super) fn data_fault(error: &WorkerError) -> Option<(String, String)> {
         | WorkerError::Scheduler(_)
         | WorkerError::Session(_)
         | WorkerError::Notification(_)
+        | WorkerError::Expired
         | WorkerError::PreparationRefused(_)
         | WorkerError::StaleVmActor
         | WorkerError::PreparationPending(_)
@@ -348,10 +351,7 @@ pub(super) fn hold_agent(
             Ok(Some(agent)) => {
                 if agent.status == AgentStatus::Paused
                     || studio_runtime_store::truthy(agent.extra.get("nativeFailureHold"))
-                    || agent
-                        .extra
-                        .get("startOutcomeHold")
-                        .is_some_and(|hold| !hold.is_null())
+                    || agent.start_outcome_hold.is_some()
                 {
                     return Ok(HoldResult::AlreadyHeld);
                 }
@@ -391,13 +391,12 @@ pub(super) fn hold_agent(
                 pointer,
                 reason,
             }) if scope == "runtime_agents" && id == agent_id => {
-                let receipt_id = format!(
-                    "{}{agent_id}",
-                    studio_runtime_store::INVALID_AGENT_HOLD_RECEIPT_PREFIX
-                );
-                if EventWriteRepository::receipt(tx, &receipt_id)?.is_some_and(|receipt| {
-                    receipt.signature == studio_runtime_store::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE
-                }) {
+                let held: bool = tx.query_row(
+                    "SELECT hold_status!='clear' FROM runtime_agents WHERE id=?1",
+                    [agent_id],
+                    |row| row.get(0),
+                )?;
+                if held {
                     return Ok(HoldResult::AlreadyHeld);
                 }
                 let diagnostic = StoreError::InvalidSyncObjectField {

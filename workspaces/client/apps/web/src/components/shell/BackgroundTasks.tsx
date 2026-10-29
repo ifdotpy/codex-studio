@@ -45,6 +45,7 @@ import {
   errorText,
   type ApiPostPath,
   type PostBody,
+  type PostInput,
   type PostResult,
 } from "../../api";
 import type { paths } from "../../generated/api";
@@ -77,7 +78,7 @@ import {
 
 type BackgroundAction = <Path extends ApiPostPath>(
   path: Path,
-  body: PostBody<Path>,
+  body: PostInput<Path>,
 ) => Promise<boolean>;
 type TaskDetailResponse =
   paths["/api/task"]["get"]["responses"][200]["content"]["application/json"];
@@ -920,7 +921,7 @@ export function TaskDetail({
   }, [outputTail, follow]);
   const act: BackgroundAction = async <Path extends ApiPostPath>(
     path: Path,
-    body: PostBody<Path>,
+    body: PostInput<Path>,
   ) => {
     setPending(true);
     try {

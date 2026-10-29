@@ -559,10 +559,7 @@ impl super::runtime_dispatch::InterruptPort for ManagedInterruptAdapter {
             )
             .await
             {
-                Ok(value) => Ok(DispatchedOperation::Applied(OperationResult {
-                    value,
-                    signals: Vec::new(),
-                })),
+                Ok(value) => Ok(DispatchedOperation::Applied(OperationResult::reply(&value))),
                 Err(error) => Err(management_error(error)),
             }
         })
@@ -582,7 +579,7 @@ fn status_error(error: crate::managed_status_watch::StatusError) -> Error {
     }
 }
 
-fn rules_error(error: crate::managed_status_watch::RulesServiceError) -> Error {
+pub(super) fn rules_error(error: crate::managed_status_watch::RulesServiceError) -> Error {
     use crate::managed_status_watch::RulesServiceError as E;
     match error {
         E::Store(error) => Error::Store(error),
@@ -598,6 +595,7 @@ fn monitor_error(error: crate::monitor_policy::MonitorError) -> Error {
     use crate::monitor_policy::MonitorError as E;
     match error {
         E::Store(error) => Error::Store(error),
+        E::Expired => Error::Expired,
         E::Unavailable(name) => Error::Unavailable(name),
         E::InvalidStored { id, location } => Error::InvalidStored {
             table: "runtime_monitors",
@@ -624,6 +622,7 @@ fn management_error(error: crate::agent_management::ManagementError) -> Error {
     use crate::agent_management::ManagementError as E;
     match error {
         E::Store(error) => Error::Store(error),
+        E::Expired => Error::Expired,
         E::Unavailable(name) => Error::Unavailable(name),
         E::Invalid(_) | E::Stored { .. } => Error::Invalid("Agent stop was refused"),
     }

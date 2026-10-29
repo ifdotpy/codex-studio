@@ -1,6 +1,8 @@
 //! Federation protocol limits.
 
-pub use studio_runtime_schema::federation_limits::{MAX_QUEUE_BYTES, MAX_QUEUE_ROWS};
+pub use studio_runtime_schema::federation_limits::{
+    MAX_QUEUE_BYTES, MAX_QUEUE_ROWS, PROTOCOL_VERSION,
+};
 
 /// Longest federation message, in Unicode code points (the agent message limit).
 pub const MAX_MESSAGE_CODEPOINTS: usize = 12000;
@@ -16,8 +18,6 @@ pub const MAX_ROOM_RATE: u64 = 30;
 pub const INVITATION_TTL_SECONDS: u64 = 900;
 /// Deadline of one Tailscale command, in seconds.
 pub const TAILSCALE_COMMAND_TIMEOUT_SECONDS: u64 = 5;
-/// Version of the federation protocol.
-pub const PROTOCOL_VERSION: u64 = 1;
 /// Largest federation HTTP request body, in bytes (256 KiB).
 pub const FEDERATION_BODY_LIMIT: usize = 262144;
 /// Federation HTTP endpoints, which take `FEDERATION_BODY_LIMIT`.

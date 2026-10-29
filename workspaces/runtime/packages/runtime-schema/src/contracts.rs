@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use serde_json::Value;
+use strum::VariantNames;
 
 use crate::{
     DeliveryMoment, agent_limits, api_schema, delivery, multi_server_protocol,
@@ -30,6 +31,48 @@ const NODE_ENVIRONMENT: &str = "CODEX_NODE";
 pub struct Rendered {
     pub path: String,
     pub text: String,
+}
+
+/// Schema-only view of runtime-store::request_results::AdmittedRequest. The
+/// store's fast owner parity witness checks its derived serde field contract;
+/// generation cannot import the store without introducing a dependency cycle.
+pub fn admitted_request_schema() -> Value {
+    serde_json::json!({"title":"AdmittedRequest","type":"object","additionalProperties":false,"properties":{"id":{"type":"string"},"signature":{"type":"string"},"created":{"type":"integer","format":"int64"}},"required":["id","signature","created"]})
+}
+
+fn persistence_ts(root: &Path) -> Result<String, String> {
+    let mut text = format!("// {HEADER}\n");
+    ts_constants(
+        &mut text,
+        &[
+            (
+                "REQUEST_RESULT_TTL_MS",
+                crate::persistence::REQUEST_RESULT_TTL_MS.to_string(),
+            ),
+            (
+                "REQUEST_ID_FUTURE_SKEW_MS",
+                crate::persistence::REQUEST_ID_FUTURE_SKEW_MS.to_string(),
+            ),
+        ],
+    );
+    for (name, variants) in crate::persistence::ENUM_CONTRACTS {
+        writeln!(text, "export const {name}Values = [").expect("String write");
+        for wire in *variants {
+            writeln!(text, "  {},", json_string(wire)).expect("String write");
+        }
+        writeln!(
+            text,
+            "] as const;\nexport type {name} = (typeof {name}Values)[number];"
+        )
+        .expect("String write");
+    }
+    text.push_str("export type { RecipientDelivery } from \"./rustOwned\";\n");
+    run_node(
+        root,
+        "node_modules/oxfmt/bin/oxfmt",
+        "--stdin-filepath=workspaces/client/apps/web/src/generated/persistence.ts",
+        &text,
+    )
 }
 
 fn json_string(value: &str) -> String {
@@ -93,20 +136,12 @@ fn shared_values_ts() -> String {
             ),
             ("MAX_SAFE_INTEGER", values::MAX_SAFE_INTEGER.to_string()),
             (
-                "MODEL_WHITELIST_PREFERENCE_KEY",
-                json_string(values::MODEL_WHITELIST_PREFERENCE_KEY),
+                "MODEL_CHOICES_PREFERENCE_KEY",
+                json_string(values::MODEL_CHOICES_PREFERENCE_KEY),
             ),
             (
-                "MODEL_WHITELIST_MAX_KEYS",
-                values::MODEL_WHITELIST_MAX_KEYS.to_string(),
-            ),
-            (
-                "MODEL_WHITELIST_KEY_MAX_CODEPOINTS",
-                values::MODEL_WHITELIST_KEY_MAX_CODEPOINTS.to_string(),
-            ),
-            (
-                "MODEL_WHITELIST_KEY_PATTERN",
-                json_string(values::MODEL_WHITELIST_KEY_PATTERN),
+                "RETIRED_MODEL_WHITELIST_KEY",
+                json_string(values::RETIRED_MODEL_WHITELIST_KEY),
             ),
             (
                 "SYNC_TERMINAL_STREAM_MAX_CHARS",
@@ -1146,6 +1181,36 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             serde_json::json!({"$ref":format!("#/components/schemas/{owner}")});
     }
     crate::records::refresh_openapi(&mut openapi)?;
+    crate::multi_server_protocol::refresh_openapi(&mut openapi);
+    let native_command = &mut openapi["components"]["schemas"]["NativeCommandRequest"];
+    native_command["properties"]["request_id"] = serde_json::json!({
+        "type":"string", "format":"uuid",
+        "description":"UUIDv7 mutation root, retained across command retries."
+    });
+    if let Some(required) = native_command["required"].as_array_mut()
+        && !required.iter().any(|field| field == "request_id")
+    {
+        required.push(serde_json::json!("request_id"));
+    }
+    let mut delivery_generator = schemars::generate::SchemaSettings::draft2020_12()
+        .with(|settings| settings.definitions_path = "/components/schemas".into())
+        .into_generator();
+    delivery_generator.subschema_for::<crate::persistence::RecipientDelivery>();
+    for (name, schema) in delivery_generator.take_definitions(true) {
+        openapi["components"]["schemas"][name] = schema;
+    }
+    for path in [
+        "/components/schemas/ChatMessage/properties/deliveries/additionalProperties",
+        "/components/schemas/MessageRecord/properties/deliveries/additionalProperties",
+        "/components/schemas/studio_api__work__models__MessageReceipt/properties/deliveries/anyOf/0/additionalProperties",
+    ] {
+        *openapi
+            .pointer_mut(path)
+            .ok_or_else(|| format!("missing recipient delivery map {path}"))? =
+            serde_json::json!({"$ref":"#/components/schemas/RecipientDelivery"});
+    }
+    openapi["components"]["schemas"]["AdmittedRequest"] = admitted_request_schema();
+    openapi["components"]["schemas"]["ServerOperationRequest"]["properties"]["action"] = serde_json::json!({"type":"string","enum":crate::persistence::ServerOperationKind::VARIANTS});
     crate::task_command::apply_api_contract(&mut openapi);
     for (name, schema) in crate::studio_errors::schemas()? {
         openapi["components"]["schemas"][name] = schema;
@@ -1243,6 +1308,10 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
     crate::task_command::apply_tool_contract("orchestration_task", &mut task_tool);
     let scopes = crate::sync_protocol::entity_scopes_from_document(&openapi)?;
     let mut rendered = vec![
+        Rendered {
+            path: web("persistence.ts"),
+            text: persistence_ts(root)?,
+        },
         Rendered {
             path: web("workspaceModes.ts"),
             text: workspace_modes_ts(),
@@ -1358,6 +1427,105 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             text: linux_vm_swift(),
         },
     ];
+    for (file, field, variants) in [
+        (
+            "persisted-tool-request-record",
+            "stage",
+            crate::persistence::ToolRequestStatus::VARIANTS,
+        ),
+        (
+            "persisted-tool-request-record",
+            "outcome",
+            crate::persistence::ToolRequestOutcome::VARIANTS,
+        ),
+        (
+            "persisted-execution-run-record",
+            "status",
+            crate::persistence::ExecutionStatus::VARIANTS,
+        ),
+    ] {
+        let path =
+            format!("workspaces/runtime/packages/runtime-schema/src/schemas/{file}.schema.json");
+        // A document can have several enum leaves owned by this module.
+        let prior = rendered.iter().position(|rendered| rendered.path == path);
+        let mut schema = if let Some(index) = prior {
+            serde_json::from_str(&rendered[index].text).map_err(|error| error.to_string())?
+        } else {
+            read_json(root, &path)?
+        };
+        schema["properties"][field]["enum"] = serde_json::json!(variants);
+        let text = run_node(
+            root,
+            "node_modules/oxfmt/bin/oxfmt",
+            &format!("--stdin-filepath={path}"),
+            &serde_json::to_string_pretty(&schema).map_err(|error| error.to_string())?,
+        )?;
+        if let Some(index) = prior {
+            rendered[index].text = text;
+        } else {
+            rendered.push(Rendered { path, text });
+        }
+    }
+    for file in ["persisted-federation-inbox", "persisted-federation-outbox"] {
+        let path =
+            format!("workspaces/runtime/packages/runtime-schema/src/schemas/{file}.schema.json");
+        let mut schema = read_json(root, &path)?;
+        schema["properties"]
+            .as_object_mut()
+            .ok_or("federation properties")?
+            .remove("receipt");
+        if let Some(required) = schema["required"].as_array_mut() {
+            required.retain(|field| field != "receipt");
+        }
+        schema["properties"]["requestId"] = serde_json::json!({"type":"string","format":"uuid"});
+        if let Some(required) = schema["required"].as_array_mut()
+            && !required.iter().any(|field| field == "requestId")
+        {
+            required.push(serde_json::json!("requestId"));
+        }
+        if file == "persisted-federation-outbox" {
+            schema["properties"]["kind"]["enum"] =
+                serde_json::json!(crate::persistence::FederationMessageKind::VARIANTS);
+            schema["properties"]["status"]["enum"] =
+                serde_json::json!(crate::persistence::FederationDeliveryState::VARIANTS);
+            schema["properties"]["requestId"] =
+                serde_json::json!({"type":"string","format":"uuid"});
+            schema["properties"]["admission"] = serde_json::json!({"$ref":format!("{}#/components/schemas/AdmittedRequest",crate::OPENAPI_URI)});
+            for field in ["requestId", "admission"] {
+                let required = schema["required"]
+                    .as_array_mut()
+                    .ok_or("federation required fields")?;
+                if !required.iter().any(|value| value == field) {
+                    required.push(serde_json::json!(field));
+                }
+            }
+        } else {
+            schema["properties"]["kind"]["anyOf"][0]["enum"] =
+                serde_json::json!(crate::persistence::FederationMessageKind::VARIANTS);
+            schema["properties"]["ack"]["enum"] =
+                serde_json::json!(crate::persistence::FederationAckState::VARIANTS);
+        }
+        let text = run_node(
+            root,
+            "node_modules/oxfmt/bin/oxfmt",
+            &format!("--stdin-filepath={path}"),
+            &serde_json::to_string_pretty(&schema).map_err(|error| error.to_string())?,
+        )?;
+        rendered.push(Rendered { path, text });
+    }
+    let path =
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-chat-message.schema.json";
+    let mut messages = read_json(root, path)?;
+    messages["properties"]["deliveries"]["additionalProperties"] = serde_json::json!({"$ref":format!("{}#/components/schemas/RecipientDelivery",crate::OPENAPI_URI)});
+    rendered.push(Rendered {
+        path: path.into(),
+        text: run_node(
+            root,
+            "node_modules/oxfmt/bin/oxfmt",
+            &format!("--stdin-filepath={path}"),
+            &serde_json::to_string_pretty(&messages).map_err(|error| error.to_string())?,
+        )?,
+    });
     let monitor_path = crate::studio_errors::MONITOR_RECORD_SCHEMA_PATH;
     let mut monitor = read_json(root, monitor_path)?;
     monitor["properties"]["status"]["anyOf"][0] =
@@ -1527,6 +1695,7 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             .with(|settings| settings.definitions_path = "/components/schemas".into())
             .into_generator();
         generator.subschema_for::<crate::supervisor_contract::HealthResult>();
+        generator.subschema_for::<crate::persistence::RecipientDelivery>();
         generator.subschema_for::<crate::provider_diagnostics::StdinTimingDiagnostic>();
         generator.subschema_for::<crate::provider_diagnostics::ReplyTimingDiagnostic>();
         generator.subschema_for::<studio_client_domain::protocol::Request>();

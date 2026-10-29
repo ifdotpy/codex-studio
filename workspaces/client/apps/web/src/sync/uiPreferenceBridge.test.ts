@@ -1,9 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { syncPost } from "../api";
-import { createHash, webcrypto } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { canonicalPreferenceJson } from "./uiPreferenceMerge";
 
 const mocks = vi.hoisted(() => ({
   acknowledge: vi.fn(),
@@ -60,20 +57,7 @@ afterEach(() => {
 });
 
 describe("UI preference projection bridge", () => {
-  it("syncs HTTP preference edits without subtle and retains the exact retry identity", async () => {
-    vi.stubGlobal("crypto", {
-      getRandomValues: webcrypto.getRandomValues.bind(webcrypto),
-    });
-    vi.stubGlobal(
-      "fetch",
-      async () =>
-        new Response(
-          readFileSync(
-            new URL("../wasm/generated/client_bg.wasm", import.meta.url),
-          ),
-          { headers: { "Content-Type": "application/wasm" } },
-        ),
-    );
+  it("retries HTTP preference edits with the same payload", async () => {
     const fields = { local: { value: "Привет 🦀", timestamp: 2, writer: "w" } };
     mocks.read.mockImplementation((scope) => (scope === "user" ? fields : {}));
     mocks.syncPost.mockRejectedValueOnce(new TypeError("Lost response"));
@@ -85,13 +69,9 @@ describe("UI preference projection bridge", () => {
       expect(mocks.acknowledge).not.toHaveBeenCalled();
       bridge.retryPendingWrites();
       await vi.waitFor(() => expect(mocks.syncPost).toHaveBeenCalledTimes(2));
-      const digest = createHash("sha256")
-        .update(canonicalPreferenceJson({ scope: "user", fields }))
-        .digest("hex");
       expect(mocks.syncPost.mock.calls[0]).toEqual([
         "/api/sync/preferences",
         { scope: "user", fields },
-        { requestId: `ui-preferences:${digest}` },
       ]);
       expect(mocks.syncPost.mock.calls[1]).toEqual(
         mocks.syncPost.mock.calls[0],
@@ -156,7 +136,7 @@ describe("UI preference projection bridge", () => {
     expect(mocks.syncPost).toHaveBeenCalledOnce();
     assert.ok(mocks.syncPost.mock.calls[0] != null);
     expect(mocks.syncPost.mock.calls[0][0]).toBe("/api/sync/preferences");
-    expect(mocks.syncPost.mock.calls[0][2]).toHaveProperty("requestId");
+    expect(mocks.syncPost.mock.calls[0]).toHaveLength(2);
     expect(mocks.transportWrite).toHaveBeenCalledOnce();
     expect(mocks.sessionRead).not.toHaveBeenCalled();
     expect(fetch).not.toHaveBeenCalled();

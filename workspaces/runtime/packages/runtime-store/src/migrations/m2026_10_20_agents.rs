@@ -18,6 +18,9 @@ pub(super) fn preflight(db: &rusqlite::Connection) -> StoreResult<()> {
             && !crate::agent_columns::AGENT_COLUMNS
                 .iter()
                 .any(|column| column.name == name)
+            && !crate::schema::receipt_owner_columns()
+                .iter()
+                .any(|(table, column, _)| *table == "runtime_agents" && *column == name)
         {
             return Err(crate::StoreError::RecordContract(
                 "unsupported agent source column",

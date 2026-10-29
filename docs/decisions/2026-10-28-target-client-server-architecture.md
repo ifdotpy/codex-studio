@@ -133,7 +133,10 @@ enum ApprovalState {
 - An automatic answer by policy (full access mode) is also a row, created as `Answered`
   with `by: Policy`. Today it leaves no record.
 - The Claude timeout in full access mode (10 min today, in the bridge) moves to the
-  server as a `Closed { reason: Expired }` with a decline effect.
+  server as a `Closed { reason: Expired }` with a decline effect. The timer is a row with
+  `fire_at` (a Temporal durable timer), so it survives a restart.
+- After a server restart, a `Pending` approval whose provider process still runs (with
+  the supervisor) is attached to that process again. It does not expire.
 - All approvals stay in history. Today `deleted` hides a row; it becomes a hidden flag,
   not a state.
 
@@ -185,19 +188,41 @@ enum Grant { Full, Observe }                // Observe: read commands only
 the agent tools (`managed_host_tools`), and peer servers (orchestration) use it. Checks,
 idempotency, and states are therefore the same for all callers.
 
-A command is an API concept, not a table. Its result lives in the row of the entity that
-it changes:
+Every write command is recorded in one table, `request_results`, without a copy of the
+response ([#587](https://github.com/ifdotpy/layr-studio/issues/587)). State lives only in
+the entity tables.
 
-- **A command that creates a row** (message, spawn, upload): the client id is the row id,
-  and the row keeps the hash of the body. The row is the receipt. The same id with a
-  different body is a conflict.
-- **A command that changes state** is idempotent by its target: `interrupt` names a turn,
-  `configure` carries the expected revision, `delete` does nothing when the row is gone.
-  It needs no receipt.
-- **A separate record** stays only for the cases that have no main row (section 3 of the
-  [schema overview](../audits/db-schema-2026-10-28.md)).
-- A lost outcome is a state of the row (for example `Delivery::Unknown`). It never runs
-  again by itself. Exactly-once applies only to the write to the provider.
+```sql
+CREATE TABLE request_results (
+  id        TEXT PRIMARY KEY,  -- client request id
+  signature TEXT NOT NULL,     -- canonical body hash; same id with another body = conflict
+  status    TEXT NOT NULL,     -- applied | rejected (generated trigger check)
+  ref_kind  TEXT,              -- closed enum of entity kinds
+  ref_id    TEXT,              -- the row that the command created or changed
+  ref_rev   INTEGER,           -- the revision of that row after the command
+  created   INTEGER NOT NULL
+);
+```
+
+- **Every write command gets replay protection by default** through this one code path.
+  A new command needs no rule of its own.
+- **A create command** uses the request id as the row id, and the row keeps the body hash.
+  The row is the receipt, so it needs no `request_results` row.
+- **The response of a write command** has one form, on the first run and on a replay:
+  `{status, ref_kind, ref_id, rev, rows}`. `rows` are the referenced rows with their
+  `seq`, read when the response is built. They are not stored. On a replay they can be
+  newer than after the first run; the client keeps the row with the higher `seq`, as for
+  stream rows. The reference and `rev` are exact; `rows` only save a wait for the stream.
+- **Reads are not recorded.** A repeated read is safe. The tool call and its full result
+  stay in the conversation as an Item.
+- **`Unknown` is not a status here.** A lost outcome belongs to external I/O, so it is a
+  state of the outbox entry and of the entity row (for example `Delivery::Unknown`). It
+  never runs again by itself. Exactly-once applies only to the write to the provider.
+- **Per-client watermark** (Replicache `lastMutationID`, Kafka idempotent producer). Each
+  client (device, agent, peer) numbers its commands. The server keeps the highest applied
+  number for each client. `request_results` keeps a recent window of 30 days. A command
+  older than the window and at or below the watermark is rejected as too old. It never
+  runs as a new command.
 
 Command rules:
 
@@ -237,6 +262,15 @@ event store:
      while the answer is unclear. `discard` returns a message text to the composer.
    - Without the supervisor (Windows), provider processes end with the server. Their
      `Sending` entries become `Unknown` unless the target answers.
+   - **After an unclean stop** (OS crash, power loss), the last commits can be lost,
+     because writes use `synchronous=NORMAL` with a flush every 15 s
+     ([decision](2026-10-24-sqlite-normal-with-periodic-flush.md)). A `Sending` entry can
+     return as `Queued`. So after an unclean stop the worker treats every `Queued` entry
+     as `Sending` and applies the rule above before any send.
+   - **The supervisor is the only target for provider effects.** The server outbox and
+     the supervisor journal do not each decide. The supervisor answers
+     `status(op_id) -> Unknown | Accepted | Written`, with the outbox id as `op_id`
+     (the Jupyter `msg_id` pattern), and the server asks it on restart.
 
 5. **Raw provider frames go to rotating log files**, not to tables. They help debugging
    and replay. They are not a source of state.
@@ -291,9 +325,9 @@ No fixed timer and no queue that a person waits for:
 
 1. **The UI does not wait for the server.** The client makes the command id, so the UI
    shows the expected result at once (a queued message, a stop, an answer) as a pending
-   layer keyed by that id. The row from the stream replaces it. The command response
-   returns the changed rows and their `seq`, so the client does not wait for a stream
-   frame either.
+   layer keyed by that id. The layer is removed when the client has a row whose `seq`
+   is at or above the `seq` in the command response. The response carries the changed
+   rows (see One command path), so the client does not wait for a stream frame either.
 2. **Effects start right after the commit** (see Command execution). The outbox protects
    against a crash. It is not a queue on the normal path.
 3. **The writer writes only domain rows, and commands go first.** Analytics, process
@@ -312,8 +346,9 @@ No fixed timer and no queue that a person waits for:
 7. **Snapshots are copy-on-write.** A rewind uses the checkpoint taken after the turn. A
    new layr snapshot covers only the files that changed after it.
 
-Kept on purpose: the fsync before a write to the provider (a few ms, it protects against
-a repeated send), and the separate Claude bridge process (the SDK is JavaScript only).
+Kept on purpose: the separate Claude bridge process (the SDK is JavaScript only). Commits
+are not synced one by one (`synchronous=NORMAL`); the restart rules in Command execution
+cover the commits lost in an unclean stop.
 
 ### Device identity
 
@@ -325,12 +360,21 @@ a repeated send), and the separate Claude bridge process (the SDK is JavaScript 
 - A revocation is made on any server and reaches the others through the same list. A
   server that was offline applies it when it connects again. Until then it still trusts
   the revoked key.
+- A revocation is final (the SSH certificate authority pattern). No merge can bring a
+  revoked key back. A device that must return pairs again and gets a new key.
 
 ### Contract version
 
 At each connection, the frontend and each peer compare the hash of the contract (the
-existing `api-schema` hash), in the first frame of the subscription. When the hashes differ, the server refuses the connection
-and shows "update needed". It never decodes data in a form that it does not know.
+existing `api-schema` hash), in the first frame of the subscription.
+
+- **Frontend:** the hash must be equal. When it differs, the server refuses the
+  connection and shows "update needed".
+- **Peer servers:** each server accepts the current and the previous contract version.
+  During an update of one server, the others keep working with it. A field can be
+  removed only one release after the last reader stopped using it.
+
+A server never decodes data in a form that it does not know.
 
 ### Frontend cache
 
@@ -389,6 +433,12 @@ is one file for backups and layr snapshots. The problems are in its use:
 - An alert when a write transaction exceeds a set duration.
 - Command writes go before background writes (see Latency).
 - `canvas.sqlite3` has about 4 GB of free pages. Reclaim them after the copies are removed.
+- **Backup.** No backup code exists today (no `VACUUM INTO` and no backup API in the
+  runtime). Target: WAL shipping to a paired server (the Litestream pattern), with a
+  generation id and a restore check. The peer link already exists.
+- **Online migrations.** A large table moves in batches with a high-water mark and a time
+  limit for each batch (the gh-ost pattern). The writer keeps serving commands between
+  batches. A migration can stop and resume.
 
 ### Types
 
@@ -456,9 +506,9 @@ BEGIN SELECT RAISE(ABORT, 'invalid delivery state'); END;
 | ------------------------------ | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
 | Conversation                   | Provider file, `runtime_items`, transcript rows and cached pages in `sync_entities`                                  | `runtime_items`                                               | The provider file stays as the provider's own cache. Transcript pages are built at read time |
 | Entity state for sync          | Main tables and their copies in `sync_entities`                                                                      | The main tables, with a `seq` column                          | Tombstones for deletes                                                                       |
-| Large text                     | Inside item records and agent JSON                                                                                   | `blobs/`, addressed by hash and compressed                    | Rows keep the hash and the size                                                              |
+| Large text                     | Inside item records and agent JSON; the full text of a cut item in `runtime_item_fulltext`                           | `blobs/`, addressed by hash and compressed                    | Rows keep the hash and the size                                                              |
 | Server projections on a client | Client SQLite in `client-core`, RxDB in the web client                                                               | The server                                                    | A remote frontend keeps only the thin cache                                                  |
-| Command results                | About 10 receipt tables (`runtime_operation_receipts` has 2.83M rows for 3,378 chats)                                | The row of the changed entity                                 | A separate record only where no main row exists                                              |
+| Command results                | About 10 receipt tables (`runtime_operation_receipts` has 2.83M rows for 3,378 chats)                                | The row of the changed entity                                 | One `request_results` table with a reference, no response copy                               |
 | Outgoing requests              | 4 outboxes (`runtime_server_outbox`, `runtime_federation_outbox`, `runtime_access_outbound`, `runtime_server_fetch`) | One outbox with `kind` and `target`                           | The same request id and exact body on each retry                                             |
 | Signatures and nonces          | 2 schemes and 2 nonce tables                                                                                         | `studio-multi-server-v1`, with federation as a principal kind | Separate trust lists stay                                                                    |
 | Device keys                    | One key for each pair of device and server                                                                           | One key for each device, in the shared trust list             | Revocation spreads through the list                                                          |
@@ -486,6 +536,9 @@ BEGIN SELECT RAISE(ABORT, 'invalid delivery state'); END;
 - Blob order: write the blob, fsync, then write the row. Blob collection uses mark and sweep with a delay.
 - Move client drafts, uploads, and recordings to the server before the client store is deleted.
 - Move a receipt table in one transaction. Keep the old table read-only until it is empty.
+- A cut item keeps its full text in `runtime_item_fulltext` today (on 2026-10-29: 257 of
+  the latest 2,559 MCP tool call items, about 148 KB each). Move it to a blob before any
+  receipt copy or fulltext row is deleted.
 
 ## Risks
 

@@ -65,10 +65,51 @@ async fn messages(
     let result = store
         .read_async("runtime-http/routes/messages", move |connection| {
             let value = coordination::history(connection, &room).map_err(coordination_error)?;
-            super::generated_json::<Vec<crate::generated::MessageRecord>>(value)
+            Ok::<_, ApiError>(value.into_iter().map(message_record).collect())
         })
         .await?;
     Ok(Json(result))
+}
+
+fn message_record(message: coordination::ValidatedMessage) -> crate::generated::MessageRecord {
+    use crate::generated::DeliveryStatus as Target;
+    use studio_runtime_schema::persistence::DeliveryStatus as Source;
+    let deliveries = message
+        .deliveries
+        .into_iter()
+        .map(|(id, delivery)| {
+            let status = match delivery.status {
+                Source::Queued => Target::Queued,
+                Source::StoredOnly => Target::StoredOnly,
+                Source::Accepted => Target::Accepted,
+                Source::Sent => Target::Sent,
+                Source::Cancelled => Target::Cancelled,
+                Source::Pending => Target::Pending,
+                Source::Delivered => Target::Delivered,
+                Source::Failed => Target::Failed,
+                Source::Uncertain => Target::Uncertain,
+            };
+            (
+                id,
+                crate::generated::RecipientDelivery {
+                    status,
+                    error: Some(delivery.error),
+                },
+            )
+        })
+        .collect();
+    crate::generated::MessageRecord {
+        id: message.id,
+        room: message.room,
+        author: message.author,
+        text: message.text,
+        at: crate::generated::MessageRecordAt::Number(message.at),
+        deliveries: crate::generated::MessageRecordDeliveries {
+            additional_properties: deliveries,
+        },
+        error: None,
+        status: None,
+    }
 }
 
 async fn create_chat(
@@ -179,7 +220,7 @@ pub(super) async fn post_message(
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|_| ApiError::internal())?
             .as_secs_f64();
-        let mut result = studio_runtime_services::federation_delivery::user_message(
+        let result = studio_runtime_services::federation_delivery::user_message(
             Arc::clone(&store),
             &body.room,
             &body.text,
@@ -189,9 +230,9 @@ pub(super) async fn post_message(
         )
         .await
         .map_err(federation_error)?;
-        result["id"] = Value::String(body.id.clone());
-        let result =
-            super::generated_json::<crate::generated::StudioApiWorkModelsMessageReceipt>(result)?;
+        let mut result: crate::generated::StudioApiWorkModelsMessageReceipt =
+            serde_json::from_str(result.get()).map_err(|_| ApiError::internal())?;
+        result.id = body.id.clone();
         wake.notify_one();
         return Ok(Json(result));
     }
@@ -213,9 +254,10 @@ pub(super) async fn post_message(
         })
         .await
         .map_err(coordination_error)?;
-    let result = super::generated_json::<crate::generated::StudioApiWorkModelsMessageReceipt>(
-        posted.receipt.clone(),
-    )?;
+    let encoded = serde_json::to_vec(&posted.receipt).map_err(ApiError::json)?;
+    let result =
+        serde_json::from_slice::<crate::generated::StudioApiWorkModelsMessageReceipt>(&encoded)
+            .map_err(ApiError::json)?;
     posted.notify_committed(|| wake.notify_one());
     if remote_worker && let Some(driver) = &orchestration_driver {
         let now = studio_runtime_services::event_write::unix_time()
@@ -268,7 +310,8 @@ pub(super) async fn room_snapshot(
                 tx, &room, before, after, limit,
             )
             .map_err(coordination_error)?;
-            super::generated_json::<crate::generated::ChatRead>(value)
+            let encoded = serde_json::to_vec(&value).map_err(ApiError::json)?;
+            serde_json::from_slice::<crate::generated::ChatRead>(&encoded).map_err(ApiError::json)
         })
         .await
 }
@@ -331,6 +374,7 @@ fn default_connected() -> bool {
 
 fn coordination_error(error: CoordinationError) -> ApiError {
     match error {
+        CoordinationError::RequestResult(error) => error.into(),
         CoordinationError::RequiresDependency(dependency) => ApiError::dependency(dependency),
         CoordinationError::InvalidRequest(message) | CoordinationError::Conflict(message) => {
             ApiError::new(StatusCode::BAD_REQUEST, message)
@@ -348,6 +392,7 @@ fn federation_error(
 ) -> ApiError {
     use studio_runtime_services::federation_messaging::FederationMessageError as Error;
     match error {
+        Error::RequestResult(error) => error.into(),
         Error::Invalid(_) | Error::Forbidden(_) => {
             ApiError::new(StatusCode::BAD_REQUEST, "Federation room is unavailable")
         }

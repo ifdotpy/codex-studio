@@ -311,11 +311,9 @@ test("Models whitelist filters every execution role and preserves the current mo
       await phoneSettings
         .getByRole("tab", { name: "Models", exact: true })
         .click();
-      await expect(
-        phoneModels.getByText("All models selected, including new models.", {
-          exact: true,
-        }),
-      ).toBeVisible();
+      await expect(phoneModels.getByRole("checkbox")).toHaveCount(3);
+      for (const checkbox of await phoneModels.getByRole("checkbox").all())
+        await expect(checkbox).toBeChecked();
     } finally {
       await fresh.close();
     }

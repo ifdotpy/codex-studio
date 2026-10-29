@@ -51,6 +51,105 @@ enum Owner {
     Stop { ticket: String, terminals: String },
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredAdmissions {
+    admission: Option<Box<serde_json::value::RawValue>>,
+    terminals_admission: Option<Box<serde_json::value::RawValue>>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredStop {
+    start_attempt: StoredStopAttempt,
+}
+
+#[derive(serde::Deserialize)]
+struct StoredStopAttempt {
+    interrupt: StoredAdmissions,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredDisconnect {
+    disconnect_recovery: StoredDisconnectRecovery,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredDisconnectRecovery {
+    stop_interrupt: StoredAdmissions,
+}
+
+fn stored_admission(
+    raw: &str,
+    owner: &Owner,
+    field: &str,
+    agent: &str,
+) -> Result<studio_runtime_store::request_results::AdmittedRequest, studio_runtime_store::StoreError>
+{
+    let invalid = || studio_runtime_store::StoreError::InvalidStoredObject {
+        table: "runtime_agents",
+        id: agent.to_owned(),
+    };
+    let admissions = match owner {
+        Owner::Disconnect { .. } => {
+            serde_json::from_str::<StoredDisconnect>(raw)
+                .map_err(|_| invalid())?
+                .disconnect_recovery
+                .stop_interrupt
+        }
+        Owner::Stop { .. } => {
+            serde_json::from_str::<StoredStop>(raw)
+                .map_err(|_| invalid())?
+                .start_attempt
+                .interrupt
+        }
+    };
+    let saved = if field == "admission" {
+        admissions.admission
+    } else {
+        admissions.terminals_admission
+    }
+    .ok_or_else(invalid)?;
+    serde_json::from_str(saved.get()).map_err(|_| invalid())
+}
+
+#[cfg(test)]
+mod stored_admission_tests {
+    use super::*;
+
+    #[test]
+    fn reads_exact_saved_tokens_and_rejects_invalid_evidence() {
+        let stop = Owner::Stop {
+            ticket: "interrupt".into(),
+            terminals: "terminals".into(),
+        };
+        let disconnect = Owner::Disconnect {
+            signature: "scope".into(),
+        };
+        let stop_record = r#"{"startAttempt":{"interrupt":{"rootRequestId":"root","admission":{"id":"interrupt-id","signature":"interrupt-sig","created":123},"terminalsAdmission":{"id":"cleanup-id","signature":"cleanup-sig","created":124}}}}"#;
+        let disconnect_record = r#"{"disconnectRecovery":{"stopInterrupt":{"admission":{"id":"interrupt-id","signature":"interrupt-sig","created":123},"terminalsAdmission":{"id":"cleanup-id","signature":"cleanup-sig","created":124}}}}"#;
+        for (raw, owner) in [(stop_record, &stop), (disconnect_record, &disconnect)] {
+            let admission = stored_admission(raw, owner, "admission", "agent").expect("admission");
+            assert_eq!(
+                (admission.id(), admission.signature(), admission.created()),
+                ("interrupt-id", "interrupt-sig", 123)
+            );
+            let cleanup =
+                stored_admission(raw, owner, "terminalsAdmission", "agent").expect("cleanup");
+            assert_eq!(
+                (cleanup.id(), cleanup.signature(), cleanup.created()),
+                ("cleanup-id", "cleanup-sig", 124)
+            );
+            let malformed = raw.replace("\"created\":123", "\"created\":123,\"unexpected\":true");
+            assert!(
+                matches!(stored_admission(&malformed, owner, "admission", "agent"), Err(studio_runtime_store::StoreError::InvalidStoredObject { table: "runtime_agents", id }) if id == "agent")
+            );
+        }
+    }
+}
+
 impl StoppedTurn {
     fn interrupt_operation(&self) -> String {
         match &self.owner {
@@ -90,6 +189,7 @@ pub(super) async fn end_account(
             break;
         }
         let (interrupt, response) = request(
+            &store,
             session,
             scope,
             &turn,
@@ -103,6 +203,7 @@ pub(super) async fn end_account(
             && let Some(method) = turn.terminals
         {
             let (cleaned, _) = request(
+                &store,
                 session,
                 scope,
                 &turn,
@@ -166,6 +267,7 @@ impl Outcome {
 /// ledger replay a lost reply instead of sending the request again. Returns
 /// the provider's interrupt receipt with the outcome, or null.
 async fn request(
+    store: &RuntimeStore,
     session: &RetainedSessionPort,
     scope: &ConnectionScope,
     turn: &StoppedTurn,
@@ -173,22 +275,114 @@ async fn request(
     method: Method,
     params: Value,
 ) -> (Outcome, Value) {
-    let receipt = session
-        .request(SessionRequest {
-            scope: scope.clone(),
-            expected_scope: Some(scope.clone()),
-            operation,
-            actor: Some(RequestActor {
-                agent: turn.agent.clone(),
-                epoch: turn.epoch,
-            }),
-            transfer: None,
-            deleted_actor_session: None,
-            method,
-            params,
-            deadline: std::time::Instant::now() + REQUEST_TIMEOUT,
+    let mut request = SessionRequest {
+        root_request_id: String::new(),
+        admitted_request: None,
+        scope: scope.clone(),
+        expected_scope: Some(scope.clone()),
+        operation,
+        actor: Some(RequestActor {
+            agent: turn.agent.clone(),
+            epoch: turn.epoch,
+        }),
+        transfer: None,
+        deleted_actor_session: None,
+        method,
+        params,
+        deadline: std::time::Instant::now() + REQUEST_TIMEOUT,
+    };
+    let actor = turn.clone();
+    let mut intent = super::retained::ProviderCallIntent::from(&request);
+    let reserved = store
+        .transaction_with(move |tx| {
+            let (mut agent, raw) = studio_runtime_store::Table::<AgentRecord>::new(tx)
+                .get_with_raw(&AgentId::from(actor.agent.as_str()))?
+                .ok_or(super::WorkerError::CallbackUnknown)?;
+            if !owner_matches(&agent, &actor, intent.scope.generation) {
+                return Err(super::WorkerError::CallbackUnknown);
+            }
+            let attempt_id = match &actor.owner {
+                Owner::Disconnect { .. } => agent
+                    .extra
+                    .get("disconnectRecovery")
+                    .and_then(|r| r.pointer("/startAttempt/id")),
+                Owner::Stop { .. } => agent.extra.get("startAttempt").and_then(|a| a.get("id")),
+            }
+            .and_then(Value::as_str)
+            .ok_or(super::WorkerError::CallbackUnknown)?
+            .to_owned();
+            let (execution_root, source) = super::store::execution_admission(tx, &attempt_id)?;
+            let field = if intent.operation == actor.interrupt_operation() {
+                "admission"
+            } else {
+                "terminalsAdmission"
+            };
+            let pointer = match &actor.owner {
+                Owner::Disconnect { .. } => &mut agent
+                    .extra
+                    .get_mut("disconnectRecovery")
+                    .ok_or(super::WorkerError::CallbackUnknown)?["stopInterrupt"],
+                Owner::Stop { .. } => &mut agent
+                    .extra
+                    .get_mut("startAttempt")
+                    .ok_or(super::WorkerError::CallbackUnknown)?["interrupt"],
+            };
+            let root = match &actor.owner {
+                Owner::Disconnect { .. } => execution_root,
+                Owner::Stop { .. } => pointer
+                    .get("rootRequestId")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| studio_runtime_store::StoreError::InvalidStoredObject {
+                        table: "runtime_agents",
+                        id: actor.agent.clone(),
+                    })?
+                    .to_owned(),
+            };
+            let admitted = if pointer.get(field).is_some() {
+                stored_admission(&raw, &actor.owner, field, &actor.agent)?
+            } else {
+                intent.root_request_id = root.clone();
+                let key = studio_runtime_schema::provider_call_contract::transport_key(
+                    &intent.scope.account,
+                    &intent.operation,
+                );
+                let existing = studio_runtime_store::outbox::Outbox::get::<
+                    super::store::ProviderCall,
+                >(tx, &key)
+                .map_err(studio_runtime_store::StoreError::from)?;
+                let admitted = if let Some(row) = existing {
+                    match row.payload {
+                        super::store::ProviderCall::Retained(call)
+                            if call.call.root_request_id == root =>
+                        {
+                            call.admitted
+                        }
+                        super::store::ProviderCall::Retained(_) => {
+                            return Err(super::WorkerError::CallbackUnknown);
+                        }
+                        super::store::ProviderCall::Account(_) => {
+                            return Err(super::WorkerError::CallbackUnknown);
+                        }
+                    }
+                } else {
+                    super::retained::reserve_provider_call(tx, &source, intent)?
+                };
+                if pointer.is_null() {
+                    *pointer = json!({});
+                }
+                pointer[field] = studio_runtime_store::projection_value(&admitted);
+                admitted
+            };
+            AgentRepository::put(tx, &agent)?;
+            Ok((root, admitted))
         })
         .await;
+    let Ok((root_request_id, admitted_request)) = reserved else {
+        return (Outcome::Unknown, Value::Null);
+    };
+    request.root_request_id = root_request_id;
+    request.admitted_request = Some(admitted_request);
+    let receipt = session.request(request).await;
     match receipt {
         Ok(receipt) => match receipt.result {
             RequestResult::Reply(reply) => (Outcome::Accepted, reply),
@@ -198,8 +392,8 @@ async fn request(
             RequestResult::NotSent => (Outcome::NotSent, Value::Null),
             RequestResult::Unknown => (Outcome::Unknown, Value::Null),
         },
-        Err(super::retained::PortError::Unknown) => (Outcome::Unknown, Value::Null),
-        Err(_) => (Outcome::NotSent, Value::Null),
+        Err(super::retained::PortError::NotSent) => (Outcome::NotSent, Value::Null),
+        Err(_) => (Outcome::Unknown, Value::Null),
     }
 }
 
@@ -277,8 +471,8 @@ fn unsettled_stop(agent: &AgentRecord, generation: u64) -> Option<StoppedTurn> {
         .filter(|turn| !turn.is_empty())?;
     let epoch = agent.epoch.checked_sub(1)?;
     let receipt = extra.get("disconnectRecovery").unwrap_or(&Value::Null);
-    let ended_by_receipt =
-        receipt["turnId"].as_str() == Some(turn) && receipt["stopInterrupt"].is_object();
+    let ended_by_receipt = receipt["turnId"].as_str() == Some(turn)
+        && receipt["stopInterrupt"].get("outcome").is_some();
     if ended_by_receipt
         || !matches!(interrupt["outcome"].as_str(), Some("unknown" | "unsent"))
         || interrupt["generation"].as_u64() != Some(generation)
@@ -350,7 +544,14 @@ fn record(
     let Some(mut agent) = AgentRepository::get(tx, &AgentId::from(turn.agent.as_str()))? else {
         return Ok(false);
     };
-    if ended_turn(&agent, generation).is_none_or(|current| current.owner != turn.owner) {
+    if agent
+        .extra
+        .get("accountKey")
+        .and_then(Value::as_str)
+        .unwrap_or("default")
+        != account
+        || !owner_matches(&agent, turn, generation)
+    {
         return Ok(false);
     }
     if let Owner::Stop { ticket, .. } = &turn.owner {
@@ -369,11 +570,106 @@ fn record(
     let Some(receipt) = agent.extra.get_mut("disconnectRecovery") else {
         return Ok(false);
     };
-    receipt["stopInterrupt"] = json!({
-        "operation":turn.interrupt_operation(),
-        "generation":generation,
-        "outcome":outcome,
-    });
+    if receipt["stopInterrupt"].is_null() {
+        receipt["stopInterrupt"] = json!({});
+    }
+    receipt["stopInterrupt"]["operation"] = json!(turn.interrupt_operation());
+    receipt["stopInterrupt"]["generation"] = json!(generation);
+    receipt["stopInterrupt"]["outcome"] = json!(outcome);
     AgentRepository::put(tx, &agent)?;
     Ok(true)
+}
+
+fn owner_matches(agent: &AgentRecord, turn: &StoppedTurn, generation: u64) -> bool {
+    if turn.epoch.checked_add(1) != Some(agent.epoch) {
+        return false;
+    }
+    let value = match turn.owner {
+        Owner::Disconnect { .. } => agent.extra.get("disconnectRecovery"),
+        Owner::Stop { .. } => agent.extra.get("startAttempt"),
+    }
+    .unwrap_or(&Value::Null);
+    match &turn.owner {
+        Owner::Disconnect { signature } => {
+            value["epoch"].as_i64() == Some(turn.epoch)
+                && value["threadId"] == turn.thread
+                && value["turnId"] == turn.turn
+                && value["startAttempt"]["connectionGeneration"].as_u64() == Some(generation)
+                && *signature
+                    == studio_runtime_store::sha256_hex(
+                        json!([agent.id.0, turn.epoch, generation, turn.thread, turn.turn])
+                            .to_string()
+                            .as_bytes(),
+                    )
+        }
+        Owner::Stop { ticket, .. } => {
+            value["epoch"].as_i64() == Some(turn.epoch)
+                && value["connectionGeneration"].as_u64() == Some(generation)
+                && value["interrupt"]["requestTicket"] == *ticket
+                && value["interrupt"]["threadId"] == turn.thread
+                && value["interrupt"]["turnId"] == turn.turn
+        }
+    }
+}
+
+/// Persist a stopped turn's exact late completion before its transport row retires.
+pub(in crate::account_worker) fn settle_stopped_turn(
+    tx: &studio_runtime_store::Transaction<'_>,
+    call: &super::retained::ProviderCallIntent,
+    result: &RequestResult,
+) -> studio_runtime_store::StoreResult<bool> {
+    if call.method != Method::TurnInterrupt {
+        return Ok(true);
+    }
+    let Some(actor) = &call.actor else {
+        return Ok(true);
+    };
+    let Some(agent) = AgentRepository::get(tx, &AgentId::from(actor.agent.as_str()))? else {
+        return Ok(true);
+    };
+    let (Some(thread), Some(turn)) = (
+        call.params["threadId"].as_str(),
+        call.params["turnId"].as_str(),
+    ) else {
+        return Ok(false);
+    };
+    let owner = if let Some(signature) = call.operation.strip_prefix(INTERRUPT_OPERATION_PREFIX) {
+        Owner::Disconnect {
+            signature: signature.to_owned(),
+        }
+    } else if agent
+        .extra
+        .get("startAttempt")
+        .is_some_and(|attempt| attempt["interrupt"]["requestTicket"] == call.operation)
+    {
+        Owner::Stop {
+            ticket: call.operation.clone(),
+            terminals: crate::lifecycle_effects::stop_terminals_operation(&call.operation)
+                .unwrap_or_default(),
+        }
+    } else {
+        return Ok(true);
+    };
+    let turn = StoppedTurn {
+        agent: actor.agent.clone(),
+        epoch: actor.epoch,
+        thread: thread.to_owned(),
+        turn: turn.to_owned(),
+        terminals: None,
+        owner,
+    };
+    let (outcome, response) = match result {
+        RequestResult::Reply(reply) => (Outcome::Accepted, reply),
+        RequestResult::Rejected(error) => (Outcome::Rejected, &error["data"]["interruptReceipt"]),
+        RequestResult::Unknown => return Ok(false),
+        RequestResult::NotSent => return Ok(true),
+    };
+    record(
+        tx,
+        &turn,
+        &call.scope.account,
+        call.scope.generation,
+        outcome.as_str(),
+        response,
+    )
 }

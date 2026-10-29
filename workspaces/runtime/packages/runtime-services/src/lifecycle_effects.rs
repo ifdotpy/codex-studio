@@ -14,7 +14,7 @@
 //! `release_failed_work` in `codex_work.py:1313-1355`.
 
 use crate::account_session_runtime::SessionOutcome as ReceiptOutcome;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -41,8 +41,6 @@ use crate::{
     },
     sync_policy, work_write,
 };
-
-const VOICE_STOP_SIGNATURE: &str = "lifecycle.voice-stop.v1";
 
 /// Recovery shares stop/delete's canonical parent notification and failed-work
 /// release owners. These writes run inside RecoveryStore's transaction.
@@ -103,8 +101,6 @@ impl crate::recovery_store::RecoveryDelivery for ProductionRecoveryDelivery {
 
 const INTERRUPT_TIMEOUT: Duration = Duration::from_secs(10);
 const VOICE_DELETE_RETRY_ATTEMPTS: usize = 8;
-// Ordinary voice stops can remain in flight until their 30-second deadline.
-const VOICE_DELETE_HELD_WAIT: Duration = Duration::from_secs(35);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum InterruptWriteResult {
@@ -117,6 +113,7 @@ enum InterruptWriteResult {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InterruptRequest {
     pub ticket: String,
+    pub root_request_id: String,
     pub agent: String,
     pub epoch: i64,
     pub thread: String,
@@ -324,6 +321,17 @@ impl ProductionLifecyclePorts {
                 "account-worker/agent-interrupt",
             ));
         }
+        let root_request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let mut owner = AgentRepository::get(tx, &AgentId::from(agent))?
+            .ok_or(ManagementError::Invalid("Missing interrupt owner"))?;
+        owner
+            .extra
+            .get_mut("startAttempt")
+            .and_then(|attempt| attempt.get_mut("interrupt"))
+            .and_then(Value::as_object_mut)
+            .ok_or(ManagementError::Invalid("Missing interrupt intent"))?
+            .insert("rootRequestId".into(), json!(root_request_id));
+        AgentRepository::put(tx, &owner)?;
         let terminals = studio_runtime_providers::ProviderKind::of_field(before.get("provider"))
             .ok()
             .and_then(studio_runtime_providers::stop_terminals_method)
@@ -333,6 +341,7 @@ impl ProductionLifecyclePorts {
             });
         let request = InterruptRequest {
             ticket,
+            root_request_id,
             agent: agent.to_owned(),
             epoch: request_epoch,
             thread: thread.to_owned(),
@@ -448,6 +457,14 @@ impl ProductionLifecyclePorts {
     }
 
     async fn dispatch_remote_stops(&self) -> Result<(), ManagementError> {
+        #[derive(serde::Deserialize, serde::Serialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct RemoteOperation {
+            request_id: String,
+            operation: Vec<String>,
+            action: studio_runtime_schema::persistence::ServerOperationKind,
+            payload: Box<serde_json::value::RawValue>,
+        }
         let pending = self
             .store
             .read_async("runtime-services/lifecycle_effects", |tx| {
@@ -466,38 +483,27 @@ impl ProductionLifecyclePorts {
                     .map_err(studio_runtime_store::StoreError::from)
             })
             .await?;
-        if pending.is_empty() {
-            return Ok(());
-        }
-        let effects = Arc::new(RuntimeOrchestrationEffects::new(Arc::clone(&self.store)));
         let driver = OrchestrationDriver::new(
             Arc::clone(&self.store),
             Arc::clone(&self.remote_transport),
-            effects,
+            Arc::new(RuntimeOrchestrationEffects::new(Arc::clone(&self.store))),
         );
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_secs() as i64)
             .unwrap_or_default();
-        for (request_id, server, body) in pending {
-            let Ok(envelope) = serde_json::from_str::<Value>(&body) else {
-                eprintln!("stored cross-server stop intent is invalid: {request_id}");
+        for (id, server, body) in pending {
+            let Ok(envelope) = serde_json::from_str::<RemoteOperation>(&body) else {
+                eprintln!("stored cross-server stop intent is invalid: {id}");
                 continue;
             };
-            if envelope.get("action").and_then(Value::as_str) != Some("stop") {
+            if envelope.action != studio_runtime_schema::persistence::ServerOperationKind::Stop {
                 continue;
             }
-            let Some(payload) = envelope.get("payload") else {
-                eprintln!("stored cross-server stop intent is incomplete: {request_id}");
-                continue;
-            };
-            // The signed driver preserves the exact request identity. A lost
-            // reply stays pending and is replayed only under the same identity.
-            if let Err(error) = driver
-                .exchange(&server, "stop", payload, &request_id, now)
-                .await
-            {
-                eprintln!("cross-server stop remains queued ({request_id}): {error}");
+            let request = serde_json::to_value(&envelope)
+                .map_err(|_| ManagementError::Invalid("Invalid cross-server stop intent"))?;
+            if let Err(error) = driver.exchange_operation(&server, &request, now).await {
+                eprintln!("cross-server stop remains queued ({id}): {error}");
             }
         }
         Ok(())
@@ -513,7 +519,7 @@ impl ProductionLifecyclePorts {
                         tx,
                     )?
                 {
-                    let record: Value = serde_json::from_str(&raw)
+                    let record: AgentRecord = serde_json::from_str(&raw)
                         .map_err(studio_runtime_store::StoreError::from)?;
                     if needs_deleted_settlement(&record) {
                         pending.push(id);
@@ -579,6 +585,8 @@ async fn request_stop_work(
     let receipt = port
         .provider_request(ProviderRequest {
             account: request.scope.account.clone(),
+            root_request_id: request.root_request_id.clone(),
+            admitted_request: None,
             operation: operation.to_owned(),
             actor: Some(RequestActor {
                 agent: request.agent.clone(),
@@ -654,8 +662,8 @@ impl LifecyclePorts for ProductionLifecyclePorts {
         agent_id: &str,
     ) -> Result<(), ManagementError> {
         let intent = crate::voice::provider::stage_delete_sessions(tx, agent_id)
-            .map_err(|_| ManagementError::Invalid("Invalid voice deletion intent"))?;
-        if !intent.sessions.is_empty() && self.voice_provider.is_none() {
+            .map_err(voice_effect_error)?;
+        if !intent.is_empty() && self.voice_provider.is_none() {
             return Err(ManagementError::Unavailable("voice-driver/agent-stop"));
         }
         Ok(())
@@ -686,12 +694,16 @@ impl LifecyclePorts for ProductionLifecyclePorts {
                 .await?;
                 measure_runtime_stage_async(
                     "ports.committed.dispatch_deleted_voice",
-                    self.dispatch_deleted_voice_sessions(),
+                    self.dispatch_voice_stops(
+                        studio_runtime_schema::persistence::OutboxKind::VoiceDelete,
+                    ),
                 )
                 .await?;
                 measure_runtime_stage_async(
                     "ports.committed.dispatch_active_voice",
-                    self.dispatch_active_voice_stops(),
+                    self.dispatch_voice_stops(
+                        studio_runtime_schema::persistence::OutboxKind::VoiceStop,
+                    ),
                 )
                 .await?;
                 measure_runtime_stage_async(
@@ -726,26 +738,8 @@ impl ProductionLifecyclePorts {
             .get("epoch")
             .and_then(Value::as_i64)
             .ok_or(ManagementError::Invalid("Invalid voice stop epoch"))?;
-        let id = format!("agent-voice-stop:{agent_id}:{epoch}");
-        let result = json!({"agent":agent_id,"epoch":epoch,"status":"pending"});
-        tx.execute(
-            "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3) ON CONFLICT(id) DO NOTHING",
-            rusqlite::params![id, VOICE_STOP_SIGNATURE, result.to_string()],
-        )
-        .map_err(studio_runtime_store::StoreError::from)?;
-        let stored_signature: String = tx
-            .query_row(
-                "SELECT signature FROM runtime_operation_receipts WHERE id=?1",
-                [&id],
-                |row| row.get(0),
-            )
-            .map_err(studio_runtime_store::StoreError::from)?;
-        if stored_signature != VOICE_STOP_SIGNATURE {
-            return Err(ManagementError::Invalid(
-                "Voice stop intent identity collision",
-            ));
-        }
-        Ok(())
+        crate::voice::provider::stage_voice_stop_sessions(tx, agent_id, epoch)
+            .map_err(voice_effect_error)
     }
 
     fn stage_remote_stop(
@@ -796,101 +790,22 @@ impl ProductionLifecyclePorts {
 }
 
 impl ProductionLifecyclePorts {
-    async fn dispatch_active_voice_stops(&self) -> Result<(), ManagementError> {
-        let intents = self
-            .store
-            .read_async("runtime-services/lifecycle_effects", |tx| {
-                let mut statement = tx.prepare(
-                    "SELECT id,json_extract(result,'$.agent') FROM runtime_operation_receipts \
-                 WHERE signature=?1 AND json_extract(result,'$.status')='pending' ORDER BY id",
-                )?;
-                let rows = statement.query_map([VOICE_STOP_SIGNATURE], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                })?;
-                rows.collect::<Result<Vec<_>, _>>()
-                    .map_err(studio_runtime_store::StoreError::from)
-            })
-            .await?;
-        if intents.is_empty() {
-            return Ok(());
-        }
-        let provider = self
-            .voice_provider
-            .clone()
-            .ok_or(ManagementError::Unavailable("voice-driver/agent-stop"))?;
-        let handle = tokio::runtime::Handle::try_current()
-            .map_err(|_| ManagementError::Unavailable("voice-driver/agent-stop"))?;
-        for (intent_id, agent_id) in intents {
-            let dispatch_key = intent_id.clone();
-            let already_dispatching = !self
-                .voice_dispatching
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(dispatch_key.clone());
-            if already_dispatching {
-                continue;
-            }
-            let store = Arc::clone(&self.store);
-            let provider = Arc::clone(&provider);
-            let dispatching = Arc::clone(&self.voice_dispatching);
-            let completion_store = Arc::clone(&store);
-            let completion_intent = intent_id.clone();
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|duration| duration.as_secs_f64())
-                .unwrap_or_default();
-            handle.spawn(async move {
-                if let Err(error) = crate::voice::provider::end_active_for_agent(
-                    store,
-                    provider,
-                    agent_id.clone(),
-                    now,
-                )
-                .await
-                {
-                    eprintln!("voice sessions remain stopped-pending for {agent_id}: {error}");
-                } else if let Err(error) = completion_store
-                    .transaction(move |tx| {
-                        tx.execute(
-                            "DELETE FROM runtime_operation_receipts WHERE id=?1 AND signature=?2 \
-                         AND json_extract(result,'$.status')='pending'",
-                            rusqlite::params![completion_intent, VOICE_STOP_SIGNATURE],
-                        )?;
-                        Ok(())
-                    })
-                    .await
-                {
-                    eprintln!("voice stop intent remains pending for {agent_id}: {error}");
-                }
-                dispatching
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .remove(&dispatch_key);
-            });
-        }
-        Ok(())
-    }
-
-    async fn dispatch_deleted_voice_sessions(&self) -> Result<(), ManagementError> {
-        let intents = crate::voice::provider::pending_delete_intents(&self.store)
+    async fn dispatch_voice_stops(
+        &self,
+        kind: studio_runtime_schema::persistence::OutboxKind,
+    ) -> Result<(), ManagementError> {
+        let intents = crate::voice::provider::pending_voice_intents(&self.store, kind)
             .await
-            .map_err(|_| ManagementError::Invalid("Invalid voice deletion intent"))?;
+            .map_err(voice_effect_error)?;
         if intents.is_empty() {
             return Ok(());
         }
         let Some(provider) = self.voice_provider.clone() else {
-            return if intents.iter().all(|intent| intent.sessions.is_empty()) {
-                Ok(())
-            } else {
-                Err(ManagementError::Unavailable("voice-driver/agent-stop"))
-            };
+            return Err(ManagementError::Unavailable("voice-driver/agent-stop"));
         };
         let handle = tokio::runtime::Handle::try_current()
             .map_err(|_| ManagementError::Unavailable("voice-driver/agent-stop"))?;
         for intent in intents {
-            if intent.sessions.is_empty() && intent.held_uncertain.is_empty() {
-                continue;
-            }
             let already_dispatching = !self
                 .voice_dispatching
                 .lock()
@@ -903,76 +818,46 @@ impl ProductionLifecyclePorts {
             let store = Arc::clone(&self.store);
             let dispatching = Arc::clone(&self.voice_dispatching);
             handle.spawn(async move {
-                let held_deadline = tokio::time::Instant::now() + VOICE_DELETE_HELD_WAIT;
-                let mut session_attempts = HashMap::<String, usize>::new();
-                let mut poll_attempt = 0;
-                loop {
-                    let pending = match crate::voice::provider::pending_delete_intents(&store).await
+                let attempts =
+                    if kind == studio_runtime_schema::persistence::OutboxKind::VoiceDelete {
+                        VOICE_DELETE_RETRY_ATTEMPTS
+                    } else {
+                        1
+                    };
+                for attempt in 0..attempts {
+                    let pending = match crate::voice::provider::pending_voice_intent(
+                        &store,
+                        intent.id.clone(),
+                    )
+                    .await
                     {
-                        Ok(intents) => intents
-                            .into_iter()
-                            .find(|pending| pending.id == intent.id)
-                            .filter(|pending| {
-                                !pending.sessions.is_empty() || !pending.held_uncertain.is_empty()
-                            }),
+                        Ok(Some(pending)) => pending,
+                        Ok(_) => break,
                         Err(error) => {
-                            eprintln!("deleted voice sessions remain pending: {error}");
-                            if tokio::time::Instant::now() >= held_deadline {
-                                break;
-                            }
-                            tokio::time::sleep(voice_delete_retry_delay(poll_attempt)).await;
-                            poll_attempt += 1;
-                            continue;
-                        }
-                    };
-                    let Some(pending) = pending else {
-                        break;
-                    };
-                    let dispatchable: Vec<_> = pending
-                        .sessions
-                        .into_iter()
-                        .filter(|session| {
-                            session_attempts
-                                .get(&session.session_id)
-                                .copied()
-                                .unwrap_or_default()
-                                < VOICE_DELETE_RETRY_ATTEMPTS
-                        })
-                        .collect();
-                    if dispatchable.is_empty() {
-                        if pending.held_uncertain.is_empty()
-                            || tokio::time::Instant::now() >= held_deadline
-                        {
+                            eprintln!("voice sessions remain pending: {error}");
                             break;
                         }
-                        tokio::time::sleep(voice_delete_retry_delay(poll_attempt)).await;
-                        poll_attempt += 1;
-                        continue;
-                    }
-                    let backoff_attempt = dispatchable
-                        .iter()
-                        .filter_map(|session| session_attempts.get(&session.session_id).copied())
-                        .max()
-                        .unwrap_or_default();
+                    };
                     let now = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|duration| duration.as_secs_f64())
-                        .unwrap_or(0.0);
-                    if let Err(error) = crate::voice::provider::end_deleted_sessions_tracked(
+                        .unwrap_or_default();
+                    if let Err(error) = crate::voice::provider::end_voice_sessions_tracked(
                         Arc::clone(&store),
                         Arc::clone(&provider),
                         pending.id,
-                        dispatchable.clone(),
+                        kind,
+                        pending.session,
                         now,
                     )
                     .await
                     {
-                        eprintln!("deleted voice sessions remain pending: {error}");
+                        eprintln!("voice sessions remain pending: {error}");
+                        break;
                     }
-                    for session in dispatchable {
-                        *session_attempts.entry(session.session_id).or_default() += 1;
+                    if attempt + 1 < attempts {
+                        tokio::time::sleep(voice_delete_retry_delay(attempt)).await;
                     }
-                    tokio::time::sleep(voice_delete_retry_delay(backoff_attempt)).await;
                 }
                 dispatching
                     .lock()
@@ -986,6 +871,34 @@ impl ProductionLifecyclePorts {
 
 fn voice_delete_retry_delay(attempt: usize) -> Duration {
     Duration::from_millis(100_u64.saturating_mul(1_u64 << attempt.min(4)))
+}
+
+fn voice_effect_error(error: crate::voice::provider::VoiceProviderError) -> ManagementError {
+    use crate::voice::provider::VoiceProviderError;
+    match error {
+        VoiceProviderError::Expired => ManagementError::Expired,
+        VoiceProviderError::Store(error) => ManagementError::Store(error),
+        VoiceProviderError::Outbox(error) => ManagementError::Store(error.into()),
+        VoiceProviderError::RequestResult(error) => ManagementError::Store(error.into()),
+        VoiceProviderError::Provider(error) => {
+            if let crate::account_worker::WorkerError::Store(error) = *error {
+                ManagementError::Store(error)
+            } else {
+                ManagementError::Unavailable("account-worker/voice-stop")
+            }
+        }
+        VoiceProviderError::ContextUnavailable
+        | VoiceProviderError::AdapterUnavailable
+        | VoiceProviderError::RequiresDependency(_)
+        | VoiceProviderError::NotSent
+        | VoiceProviderError::Unknown
+        | VoiceProviderError::Rejected => ManagementError::Unavailable("voice-driver/agent-stop"),
+        VoiceProviderError::ContextChanged
+        | VoiceProviderError::Operation
+        | VoiceProviderError::Policy(_)
+        | VoiceProviderError::Voice(_)
+        | VoiceProviderError::Monitor(_) => ManagementError::Invalid("Invalid voice effect intent"),
+    }
 }
 
 fn cancel_resume(tx: &Transaction<'_>, effect: &LifecycleEffect) -> Result<(), ManagementError> {
@@ -1323,6 +1236,7 @@ fn notify_parent_with_step(
             ManagementError::Unavailable(crate::monitor_runtime::REMOTE_EVENTS_DEPENDENCY)
         }
         event_write::EventWriteError::Store(error) => ManagementError::Store(error),
+        event_write::EventWriteError::RequestResult(error) => ManagementError::Store(error.into()),
         event_write::EventWriteError::InvalidRequest(_)
         | event_write::EventWriteError::InvalidResultSchema(_)
         | event_write::EventWriteError::Conflict(_)
@@ -1564,6 +1478,7 @@ fn enqueue_turn_result(
     )
     .map_err(|error| match error {
         event_write::EventWriteError::Store(error) => error,
+        event_write::EventWriteError::RequestResult(error) => error.into(),
         other @ event_write::EventWriteError::InvalidRequest(_)
         | other @ event_write::EventWriteError::InvalidResultSchema(_)
         | other @ event_write::EventWriteError::Conflict(_)
@@ -1608,9 +1523,7 @@ fn finalize_deleted(tx: &Transaction<'_>, id: &str) -> Result<(), ManagementErro
     if !studio_runtime_store::truthy(agent.extra.get("deletedAt")) {
         return Ok(());
     }
-    let agent_value =
-        serde_json::to_value(&agent).map_err(studio_runtime_store::StoreError::from)?;
-    if !needs_deleted_settlement(&agent_value) {
+    if !needs_deleted_settlement(&agent) {
         return Ok(());
     }
     agent.status = studio_runtime_store::AgentStatus::Paused;
@@ -1627,17 +1540,18 @@ fn finalize_deleted(tx: &Transaction<'_>, id: &str) -> Result<(), ManagementErro
     Ok(())
 }
 
-fn needs_deleted_settlement(agent: &Value) -> bool {
-    studio_runtime_store::truthy(agent.get("deletedAt"))
-        && (studio_runtime_store::truthy(agent.get("inFlight"))
-            || studio_runtime_store::truthy(agent.get("turnId"))
-            || studio_runtime_store::truthy(agent.pointer("/startAttempt/activeAtReservation"))
-            || agent
-                .get("status")
-                .and_then(Value::as_str)
-                .is_some_and(|status| {
-                    studio_runtime_store::startup_recovery::ACTIVE_AGENT_STATUSES.contains(&status)
-                }))
+fn needs_deleted_settlement(agent: &AgentRecord) -> bool {
+    studio_runtime_store::truthy(agent.extra.get("deletedAt"))
+        && (studio_runtime_store::truthy(agent.extra.get("inFlight"))
+            || studio_runtime_store::truthy(agent.extra.get("turnId"))
+            || studio_runtime_store::truthy(
+                agent
+                    .extra
+                    .get("startAttempt")
+                    .and_then(|attempt| attempt.get("activeAtReservation")),
+            )
+            || studio_runtime_store::startup_recovery::ACTIVE_AGENT_STATUSES
+                .contains(&agent.status.as_str()))
 }
 
 fn required_str<'a>(
@@ -1659,7 +1573,6 @@ mod tests {
     #[test]
     fn deleted_voice_retry_is_bounded_and_caps_backoff() {
         assert_eq!(VOICE_DELETE_RETRY_ATTEMPTS, 8);
-        assert!(VOICE_DELETE_HELD_WAIT > Duration::from_secs(30));
         assert_eq!(voice_delete_retry_delay(0), Duration::from_millis(100));
         assert_eq!(voice_delete_retry_delay(4), Duration::from_millis(1_600));
         assert_eq!(voice_delete_retry_delay(7), Duration::from_millis(1_600));
@@ -1740,6 +1653,7 @@ mod tests {
 
     fn request() -> InterruptRequest {
         InterruptRequest {
+            root_request_id: studio_runtime_schema::persistence::RequestIdentity::issue_root(),
             ticket: "lifecycle-interrupt:request".into(),
             agent: "agent".into(),
             epoch: 4,

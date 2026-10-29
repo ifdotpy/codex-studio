@@ -111,6 +111,14 @@ impl AccountSessionPort for Port {
                     json!({"status":"backgrounded"})
                 }
                 "thread/backgroundTerminals/list" => {
+                    if self.behavior == "expired_after_claim" {
+                        self.store.transaction_with(|tx| {
+                            studio_runtime_store::request_results::RequestResults::gc(tx,
+                                (studio_runtime_services::event_write::unix_time().unwrap() * 1000.0) as i64
+                                    + 2 * studio_runtime_schema::persistence::REQUEST_RESULT_TTL_MS)?;
+                            Ok::<_, StoreError>(())
+                        }).await.unwrap();
+                    }
                     if let Some((cursor, page)) = self.pages.lock().unwrap().pop_front() {
                         assert_eq!(request.params["cursor"].as_str(), cursor);
                         return Ok(SessionReceipt {
@@ -150,6 +158,45 @@ impl AccountSessionPort for Port {
                     json!({"data":[{"itemId":if self.behavior=="wrong_pair" {"other"} else {"command"},"processId":"42"}],"nextCursor":null})
                 }
                 "thread/backgroundTerminals/terminate" => {
+                    if self.behavior == "expired_after_claim" {
+                        let token = request
+                            .admitted_request
+                            .as_ref()
+                            .expect("reserved final provider token");
+                        let connection = self.store.test_reader().unwrap();
+                        let floor = studio_runtime_store::request_results::RequestResults::expired_before_ms(&connection).unwrap();
+                        assert!(
+                            token.created() < floor,
+                            "send must continue its admitted owner beyond TTL"
+                        );
+                        assert!(
+                            studio_runtime_schema::persistence::RequestIdentity::new(
+                                "process-action",
+                                &[],
+                                &request.root_request_id,
+                                &[]
+                            )
+                            .unwrap()
+                            .validate(
+                                (studio_runtime_services::event_write::unix_time().unwrap()
+                                    * 1000.0) as i64,
+                                floor
+                            )
+                            .is_err()
+                        );
+                        assert!(
+                            studio_runtime_store::outbox::Outbox::get::<Value>(
+                                &connection,
+                                &studio_runtime_schema::provider_call_contract::transport_key(
+                                    "default",
+                                    &request.operation
+                                )
+                            )
+                            .unwrap()
+                            .is_some(),
+                            "reserve the exact effect before provider dispatch"
+                        );
+                    }
                     assert_eq!(
                         request.params,
                         json!({"threadId":"thread","processId":"42"})
@@ -348,15 +395,33 @@ async fn transferred_monitor_fixture(
     let monitor = case["before"].clone();
     let id = monitor["id"].as_str().unwrap().to_owned();
     let receipt_monitor = monitor.clone();
-    port.store.transaction(move|tx|{
-        tx.execute("DELETE FROM runtime_tasks",[])?;
-        let operation=format!("monitor:{}",receipt_monitor["id"].as_str().unwrap());
-        let key=format!("retained:default:{}",studio_runtime_store::sha256_hex(operation.as_bytes()));
-        let request=json!({"id":key,"generation":7,"method":"command/exec","operation":key,"thread":null,"lightweight":true,"deadline":60000,"remoteId":null});
-        let submitted=json!({"call":{"scope":{"account":"default","connection":"actual-uuid","generation":7},"operation":operation,"actor":{"agent":"owner","epoch":1},"transfer":null,"deleted_actor_session":null,"method":"command/exec","params":{"processId":receipt_monitor["id"],"cwd":receipt_monitor["cwd"],"command":["true"]}},"request":request});
-        for (phase,value) in [("submitted",submitted),("written",request)] {
-            tx.execute("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'fixture',?2)",(format!("account-worker:{key}:{phase}"),value.to_string()))?;
-        }
+    port.store.transaction(move |tx| {
+        use studio_runtime_schema::persistence::{RequestIdentity, OutboxKind, OutboxStatus, OwnerKind};
+        use studio_runtime_schema::provider_call_contract::{ProviderCallIntent, RetainedCall, TransportRequest, RequestActor};
+        use studio_runtime_services::event_write::{begin_request, CallerAdmission, RequestKey};
+        tx.execute("DELETE FROM runtime_tasks", [])?;
+        let operation = format!("monitor:{}", receipt_monitor["id"].as_str().unwrap());
+        let root = RequestIdentity::issue_root();
+        let call = ProviderCallIntent {
+            root_request_id: root.clone(), admitted_request: None,
+            scope: ConnectionScope { account:"default".into(), connection:"actual-uuid".into(), generation:7 },
+            operation: operation.clone(), actor: Some(RequestActor { agent:"owner".into(), epoch:1 }),
+            transfer: None, deleted_actor_session: None, method:studio_runtime_providers::Method::CommandExec,
+            params:json!({"processId":receipt_monitor["id"],"cwd":receipt_monitor["cwd"],"command":["true"]}),
+        };
+        let signature = call.fingerprint("default", call.method.as_str());
+        let admitted = match begin_request::<()>(tx, RequestKey::new("provider-call", &["default","owner","1"], &root).operation(&[&operation]), &signature, (studio_runtime_services::event_write::unix_time().unwrap()*1000.0) as i64)? {
+            CallerAdmission::Fresh(admitted) => admitted,
+            CallerAdmission::Replay(_) => panic!("fresh command"),
+        };
+        let key = studio_runtime_schema::provider_call_contract::transport_key("default", &operation);
+        let request = TransportRequest { id:studio_runtime_providers::RequestId::String(key.clone()), generation:7, method:call.method, operation:key.clone(), thread:None,lightweight:true,deadline:60000,unknown:false,remote_id:None };
+        let retained = RetainedCall { call, request:Some(request), admitted:admitted.clone(),written:true,outcome:None };
+        studio_runtime_store::outbox::Outbox::put(tx,&studio_runtime_store::outbox::OutboxRow {
+            id:key,kind:OutboxKind::ProviderCall,owner_kind:OwnerKind::Agent,owner_id:"owner".into(),request_id:Some(admitted.id().into()),signature,
+            status:OutboxStatus::Submitted,account:Some("default".into()),stream_id:Some("default".into()),generation:Some(7),ordinal:None,next_at:None,
+            payload:json!({"family":"retained","payload":retained}),created:admitted.created(),
+        })?;
         Ok(())
     }).await.unwrap();
     let runtime = Arc::new(MonitorRuntime::new(
@@ -395,7 +460,7 @@ async fn transferred_monitor_panel_keeps_source_controls_and_guarded_stop() {
             let (status, result) = call(&app, "POST", "/api/monitor/input", input).await;
             assert_eq!(status, 200, "{result}");
         }
-        let body = json!({"action":"stop_selected","requestId":"stop-transferred","agent":"owner","accountKey":"target","epoch":1,
+        let body = json!({"action":"stop_selected","requestId":studio_runtime_schema::persistence::RequestIdentity::issue_root(),"agent":"owner","accountKey":"target","epoch":1,
         "process":{"key":process["key"],"generation":process["generation"],"agent":"owner","accountKey":"target","epoch":1}});
         let (status, result) = call(&app, "POST", "/api/processes/action", body.clone()).await;
         assert_eq!(status, 200, "{result}");
@@ -443,9 +508,9 @@ async fn transferred_monitor_panel_refuses_unproven_or_changed_source_ownership(
         port.store.transaction(move|tx|{
             let key=format!("retained:default:{}",studio_runtime_store::sha256_hex(format!("monitor:{id}").as_bytes()));
             match case {
-                "missing_written"=>{tx.execute("DELETE FROM runtime_operation_receipts WHERE id=?1",[format!("account-worker:{key}:written")])?;},
-                "wrong_account"=>{tx.execute("UPDATE runtime_operation_receipts SET result=json_set(result,'$.call.scope.account','other') WHERE id=?1",[format!("account-worker:{key}:submitted")])?;},
-                "read_receipt"=>{tx.execute("UPDATE runtime_operation_receipts SET result=json_set(result,'$.call.method','thread/read') WHERE id=?1",[format!("account-worker:{key}:submitted")])?;},
+                "missing_written"=>{tx.execute("UPDATE runtime_outbox SET payload=json_set(payload,'$.payload.written',json('false')) WHERE id=?1",[&key])?;},
+                "wrong_account"=>{tx.execute("UPDATE runtime_outbox SET payload=json_set(payload,'$.payload.call.scope.account','other') WHERE id=?1",[&key])?;},
+                "read_receipt"=>{tx.execute("UPDATE runtime_outbox SET payload=json_set(payload,'$.payload.call.method','thread/read') WHERE id=?1",[&key])?;},
                 "wrong_epoch"=>{tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.epoch',2) WHERE id='owner'",[])?;},
                 "vm_owner"=>{tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.executionMode','vm') WHERE id='owner'",[])?;},
                 _=>{}
@@ -495,6 +560,9 @@ async fn transferred_monitor_panel_authenticates_target_and_keeps_an_unknown_sto
     assert_eq!(*port.calls.lock().unwrap(), vec!["command/exec/terminate"]);
 }
 async fn call(app: &axum::Router, method: &str, path: &str, body: Value) -> (u16, Value) {
+    call_body(app, method, path, body.to_string()).await
+}
+async fn call_body(app: &axum::Router, method: &str, path: &str, body: String) -> (u16, Value) {
     let request = Request::builder()
         .method(method)
         .uri(path)
@@ -503,7 +571,7 @@ async fn call(app: &axum::Router, method: &str, path: &str, body: Value) -> (u16
         .header("x-canvas-token", "fixture-token")
         .header(
             "x-studio-request-id",
-            studio_runtime_store::sha256_hex(body.to_string().as_bytes()),
+            studio_runtime_schema::persistence::RequestIdentity::issue_root(),
         )
         .header(
             studio_runtime_http::API_SCHEMA_HASH_HEADER,
@@ -515,13 +583,22 @@ async fn call(app: &axum::Router, method: &str, path: &str, body: Value) -> (u16
         .body(if method == "GET" {
             Body::empty()
         } else {
-            Body::from(body.to_string())
+            Body::from(body)
         })
         .unwrap();
     let response = app.clone().oneshot(request).await.unwrap();
     let status = response.status().as_u16();
     let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
     (status, serde_json::from_slice(&bytes).unwrap())
+}
+
+#[tokio::test]
+async fn process_action_rejects_duplicate_keys() {
+    let (_root, app, port) = fixture("success").await;
+    let body = r#"{"action":"stop_owned","requestId":"first","requestId":"second","agent":"owner","accountKey":"default","epoch":1,"processes":[{"key":"key","generation":"gen","agent":"owner","accountKey":"default","epoch":1}]}"#;
+    let (status, _) = call_body(&app, "POST", "/api/processes/action", body.into()).await;
+    assert_eq!(status, 400);
+    assert!(port.calls.lock().unwrap().is_empty());
 }
 async fn fixture(behavior: &'static str) -> (tempfile::TempDir, axum::Router, Arc<Port>) {
     let root = tempfile::tempdir().unwrap();
@@ -825,6 +902,7 @@ async fn process_stop_pagination_requires_valid_cursors_before_certifying_absenc
 async fn exact_process_stop_and_lost_reply_never_repeat_the_native_effect() {
     for (behavior, expected, stops) in [
         ("success", "stopped", 1),
+        ("expired_after_claim", "stopped", 1),
         ("lost_reply", "uncertain", 1),
         ("wrong_pair", "already_finished", 0),
         ("owner_changed", "uncertain", 0),
@@ -1041,6 +1119,17 @@ async fn process_receipt_and_replay_preserve_retained_result_payload() {
             tx.execute("UPDATE runtime_process_actions SET record=json_set(record,'$.result',json(?)) WHERE id='stop'", [stored.to_string()])?;
             Ok::<_, StoreError>(())
         }).await.unwrap();
+        if omit_processes {
+            retained["processes"] = json!([]);
+        }
+        // Null decodes as None and serializes as an absent optional field.
+        if explicit_null {
+            retained.as_object_mut().unwrap().remove("response");
+            retained["processes"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove("generation");
+        }
         let before = port.calls.lock().unwrap().clone();
         let (_, receipt) = call(
             &app,

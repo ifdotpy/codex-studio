@@ -1355,7 +1355,13 @@ async fn move_to_host(
             }
         })?;
     state.event_wake.notify_one();
-    super::generated_json(result).map(Json)
+    Ok(Json(generated::AgentMoveToHostResponse {
+        id: result.id,
+        cwd: result.cwd,
+        moved_agents: result.moved_agents,
+        execution_mode: generated::AgentMoveToHostResponseExecutionMode::Native,
+        workspace_mode: generated::AgentMoveToHostResponseWorkspaceMode::Shared,
+    }))
 }
 
 async fn conversation(
@@ -1848,6 +1854,7 @@ mod title_http_tests {
             requested: Mutex::new(Some(requested_tx)),
         }));
         let app = crate::router::router(state).expect("HTTP routes register");
+        let request_id = uuid::Uuid::now_v7().to_string();
         let request = Request::builder()
             .method("POST")
             .uri("/api/rename")
@@ -1866,7 +1873,7 @@ mod title_http_tests {
                 json!({
                     "id":"title-http-agent",
                     "name":null,
-                    "request_id":"title-http-request"
+                    "request_id":request_id
                 })
                 .to_string(),
             ))
@@ -1879,14 +1886,19 @@ mod title_http_tests {
                 .expect("rename response body"),
         )
         .expect("rename receipt JSON");
-        assert_eq!(receipt["status"], "pending");
+        assert_eq!(
+            receipt,
+            json!({
+                "id":"title-http-agent", "request_id":request_id, "status":"pending"
+            })
+        );
 
         let provider_request = tokio::time::timeout(Duration::from_secs(5), requested_rx)
             .await
             .expect("HTTP finisher reaches title provider")
             .expect("title provider request delivered");
         assert_eq!(provider_request.agent_id, "title-http-agent");
-        assert_eq!(provider_request.request_id, "title-http-request");
+        assert_eq!(provider_request.request_id, request_id);
         assert_eq!(provider_request.model, "gpt-6-mini");
 
         let changed = Arc::new(Notify::new());
@@ -2158,6 +2170,12 @@ async fn rename(
             )
             .await
             .map_err(|error| match error {
+                studio_runtime_services::title_generation::TitleError::RequestResult(error) => {
+                    error.into()
+                }
+                studio_runtime_services::title_generation::TitleError::Outbox(error) => {
+                    error.into()
+                }
                 studio_runtime_services::title_generation::TitleError::AgentNotFound => {
                     ApiError::new(StatusCode::NOT_FOUND, "Unknown managed agent")
                 }
@@ -2208,8 +2226,7 @@ async fn rename(
                 }
             }));
         }
-        let response =
-            Json(super::generated_json::<generated::RenameResponse>(receipt)?).into_response();
+        let response = Json(receipt).into_response();
         return Ok(response);
     }
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
@@ -2235,14 +2252,19 @@ async fn rename(
     if !result.replayed {
         state.event_wake.notify_one();
     }
-    let response = super::generated_json::<generated::RenameResponse>(result.response)
-        .map(Json)
-        .map_err(|_| ApiError::internal())?
-        .into_response();
-    Ok(response)
+    Ok(Json(result.response).into_response())
 }
 fn operation_error(error: OperationError) -> ApiError {
     use agents_create::MutationError;
+    let error = match error {
+        OperationError::Create(MutationError::Request(error)) => return error.into(),
+        error @ (OperationError::Invalid(_)
+        | OperationError::Forbidden(_)
+        | OperationError::Unavailable(_)
+        | OperationError::Create(_)
+        | OperationError::Store(_)
+        | OperationError::Internal) => error,
+    };
     // A stale revision is rejected before any write, so the client may drop the
     // request and refresh from the canonical value.
     if matches!(error, OperationError::Create(MutationError::Stale)) {

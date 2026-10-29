@@ -25,7 +25,7 @@ export type PickerScene =
 
 declare global {
   interface Window {
-    whitelist: (value: Parameters<typeof writeModelWhitelist>[0]) => void;
+    whitelist: (value: Parameters<typeof writeModelChoices>[0]) => void;
     // Renamed from calls: chat/chat-read-client-browser.fixture.tsx declares read-state writes.
     pickerCalls: PickerCall[];
     agent: Agent;
@@ -53,7 +53,7 @@ import "../../src/appearance.css";
 import { AccountTiles } from "../../src/components/AccountTiles.tsx";
 import ProjectAccount from "../../src/components/ProjectAccount.tsx";
 import SharedChatCreate from "../../src/components/SharedChatCreate.tsx";
-import { writeModelWhitelist } from "../../src/components/models/modelWhitelist.ts";
+import { writeModelChoices } from "../../src/components/models/modelChoices.ts";
 
 const accounts: Account[] = Array.from({ length: 7 }, (_, i) => ({
   id: "account-" + i,
@@ -125,7 +125,7 @@ const initial: Agent = {
   workerDefaults: { model: "gpt-6-luna", effort: "high", fastMode: false },
   reviewDefaults: { model: null, effort: null },
 };
-window.whitelist = (value) => writeModelWhitelist(value, "local");
+window.whitelist = (value) => writeModelChoices(value, "local");
 window.pickerCalls = [];
 const nativeFetch = window.fetch;
 window.fetch = async (input, options) => {

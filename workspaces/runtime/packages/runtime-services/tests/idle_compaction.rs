@@ -151,7 +151,7 @@ async fn fixture(path: &std::path::Path, mode: Mode) -> (Arc<RuntimeStore>, Epis
     let episode=store.transaction(move|tx| {
         OrchestrationSettingsRepository::set_idle_compaction(tx,&Settings { mode,min_tokens:200000 })?;
         let mut agent=json!({"id":"claude","rootId":"claude","epoch":1,"events":0,"provider":"claude","status":"idle","autoWake":true,"inFlight":false,"cwd":"/work","accountKey":"default","threadId":"thread","startAttempt":{"id":"previous"}});
-        idle::observe(tx,&mut agent,&json!({"requestId":"response","ttl":"1h","warm":true,"lastActivityAt":(idle::wall_now()-3240.0)*1000.0,"contextTokens":210000,"prefix":"prefix"}))?;
+        idle::observe(tx,&mut agent,&json!({"requestId":"response","ttl":"1h","warm":true,"lastActivityAt":(idle::wall_now()-3240.0)*1000.0,"contextTokens":210000,"prefix":"prefix"}), None)?;
         AgentRepository::put(tx,&AgentRecord::from_value(agent.clone()).unwrap())?;
         Episode::deserialize(&agent["idleCompactionEpisode"]).map_err(|error|StoreError::SchemaMismatch(error.to_string()))
     }).await.unwrap();
@@ -406,15 +406,19 @@ async fn idle_claude_dispatches_once_and_restart_does_not_repeat() {
         .test_reader()
         .unwrap()
         .query_row(
-            "SELECT outcome FROM runtime_native_action_receipts WHERE id=?1",
-            [episode.id],
+            "SELECT json_extract(result,'$.reply.outcome.status') FROM request_results WHERE id=?1",
+            [studio_runtime_schema::persistence::RequestIdentity::new(
+                "native-action",
+                &[],
+                &episode.id,
+                &[],
+            )
+            .unwrap()
+            .id()],
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(
-        serde_json::from_str::<Value>(&receipt).unwrap()["status"],
-        "acknowledged"
-    );
+    assert_eq!(receipt, "acknowledged");
 }
 
 #[tokio::test]
@@ -484,15 +488,12 @@ async fn active_and_queued_agents_never_reach_the_provider() {
             .test_reader()
             .unwrap()
             .query_row(
-                "SELECT result FROM runtime_operation_receipts WHERE id=?1",
+                "SELECT json_extract(record,'$.idleCompactionEpisode.outcome') FROM runtime_agents WHERE idle_episode_id=?1",
                 [episode.id],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(
-            serde_json::from_str::<Value>(&receipt).unwrap()["outcome"],
-            if queued { "queued_input" } else { "active" }
-        );
+        assert_eq!(receipt, if queued { "queued_input" } else { "active" });
     }
 }
 
@@ -521,15 +522,12 @@ async fn log_mode_has_a_durable_would_compact_receipt_and_sends_nothing() {
         .test_reader()
         .unwrap()
         .query_row(
-            "SELECT result FROM runtime_operation_receipts WHERE id=?1",
+            "SELECT json_extract(record,'$.idleCompactionEpisode.outcome') FROM runtime_agents WHERE idle_episode_id=?1",
             [episode.id],
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(
-        serde_json::from_str::<Value>(&receipt).unwrap()["outcome"],
-        "would_compact"
-    );
+    assert_eq!(receipt, "would_compact");
 }
 
 struct ChangeDuringPreparation(bool);
@@ -666,8 +664,8 @@ async fn compact_boundary_writes_the_notice_once_and_advances_the_roster_epoch()
         assert_eq!(agent["compactions"],1);
         let notices:i64=tx.query_row("SELECT count(*) FROM runtime_items WHERE json_extract(record,'$.idleCompaction')=1 AND json_extract(record,'$.text')=?1",[if deferred {idle::ON_RETURN_NOTICE} else {idle::NOTICE}],|row|row.get(0)).map_err(StoreError::from)?;
         assert_eq!(notices,1);
-        let receipt:String=tx.query_row("SELECT result FROM runtime_operation_receipts WHERE id=?1",[id],|row|row.get(0)).map_err(StoreError::from)?;
-        assert_eq!(serde_json::from_str::<Value>(&receipt).unwrap()["outcome"],"compacted");
+        let receipt:String=tx.query_row("SELECT json_extract(record,'$.idleCompactionEpisode.outcome') FROM runtime_agents WHERE idle_episode_id=?1",[id],|row|row.get(0)).map_err(StoreError::from)?;
+        assert_eq!(receipt,"compacted");
         Ok::<_,studio_runtime_services::notification_dispatch::NotificationDispatchError>(())
     }).await.unwrap();
     }

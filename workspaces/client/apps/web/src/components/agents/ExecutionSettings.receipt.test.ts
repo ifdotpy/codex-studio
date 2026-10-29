@@ -124,9 +124,9 @@ vi.mock("@mantine/hooks", async (load) => ({
   ...(await load<typeof import("@mantine/hooks")>()),
   useMediaQuery: () => false,
 }));
-vi.mock("../models/modelWhitelist", () => ({
-  useModelWhitelist: () => null,
-  isModelWhitelisted: () => true,
+vi.mock("../models/modelChoices", () => ({
+  useModelChoices: () => ({}),
+  isModelEnabled: () => true,
 }));
 vi.mock("./WorkerModelPicker", async (load) => ({
   ...(await load<typeof import("./WorkerModelPicker")>()),
@@ -1393,6 +1393,36 @@ for (const [first, opposite] of [
     );
   });
 }
+
+test("Claude starts a new request after a definite rejection", async () => {
+  const mutations: string[] = [];
+  h.post.mockImplementation(
+    async (_path: string, body: PostBody<"/api/claude/session">) => {
+      if (body.action === "settings") {
+        mutations.push(body.request_id);
+        throw new ApiError("Not applied", 400, { outcome: "not_applied" });
+      }
+      return { settings: { permissionMode: "default" }, turns: [], tasks: [] };
+    },
+  );
+  const element = createElement(ClaudeSettings, {
+    agent: { ...initial, provider: ProviderKind.claude },
+  });
+  const control = () =>
+    children(invoke(element)).find(
+      (node): node is ReactElement<SelectFixtureProps> =>
+        node.props.label === "Permission mode",
+    )!;
+  invoke(element);
+  for (const effect of h.effects.splice(0)) effect();
+  await vi.waitFor(() => expect(control().props.disabled).toBe(false));
+  for (let index = 0; index < 2; index++) {
+    control().props.onChange({ currentTarget: { value: "bypassPermissions" } });
+    await vi.waitFor(() => expect(mutations).toHaveLength(index + 1));
+    await vi.waitFor(() => expect(control().props.disabled).toBe(false));
+  }
+  expect(mutations[1]).not.toBe(mutations[0]);
+});
 
 test("a late Claude success preserves the newer unresolved permission request", async () => {
   let persisted: Extract<

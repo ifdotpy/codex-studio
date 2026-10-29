@@ -1,6 +1,6 @@
 //! Shared process panel with exact-owner checks and retained stop receipts.
 use super::{
-    extractors::{ApiJson, QueryParams},
+    extractors::{ApiRawJson, QueryParams},
     manifest::{OperationStatus, RouteGroup, get, post},
 };
 use crate::{error::ApiError, router::HttpState};
@@ -16,10 +16,12 @@ use studio_runtime_schema::shared_values::{
     NATIVE_TERMINAL_ITEMS_PER_PAGE, NATIVE_TERMINAL_MAX_PAGES,
 };
 use studio_runtime_services::account_session_runtime::{AccountSessionPort, ConnectionScope};
+use studio_runtime_services::native_actions::NativeRequest;
 use studio_runtime_services::workspace_operations::ProviderTicket;
 use studio_runtime_services::{
     monitor_runtime_wiring::MonitorRuntime, process_controls as controls,
 };
+use studio_runtime_store::request_results::AdmittedRequest;
 use studio_runtime_store::{AgentRecord, RuntimeStore};
 
 pub(crate) fn routes() -> RouteGroup {
@@ -39,6 +41,7 @@ pub(crate) fn routes() -> RouteGroup {
 }
 fn error(error: controls::Error) -> ApiError {
     match error {
+        controls::Error::Expired => ApiError::new(StatusCode::GONE, error.to_string()),
         controls::Error::Invalid(message) => ApiError::new(StatusCode::BAD_REQUEST, message),
         controls::Error::Store(error) => ApiError::stored(error),
     }
@@ -140,6 +143,7 @@ async fn held_response_proof(
         &operation,
         "thread/read",
         json!({"threadId":owner["threadId"],"includeTurns":false}),
+        ("", None),
     )
     .await
     .ok()?;
@@ -171,8 +175,8 @@ async fn receipt(
 async fn action(
     State(state): State<HttpState>,
     runtime: Option<Extension<Arc<MonitorRuntime>>>,
-    ApiJson(request): ApiJson<Request>,
-) -> Result<Json<Value>, ApiError> {
+    ApiRawJson(request): ApiRawJson<Request>,
+) -> Result<Json<ProcessActionResult>, ApiError> {
     execute(state, runtime.map(|Extension(r)| r), request)
         .await
         .map(Json)
@@ -182,7 +186,7 @@ async fn execute(
     state: HttpState,
     runtime: Option<Arc<MonitorRuntime>>,
     request: Request,
-) -> Result<Value, ApiError> {
+) -> Result<ProcessActionResult, ApiError> {
     let store = store(&state)?;
     // A lost response must reuse its saved action without another native read.
     let replay_request = request.clone();
@@ -225,16 +229,19 @@ async fn execute(
             record,
             targets,
             result,
-        } => (record, targets, result),
+        } => (*record, targets, result),
     };
+    let root_request_id = record.root_request_id.clone();
+    let admitted = record.admitted_request.clone();
     let scope = request.command().scope();
     match request.command() {
         ProcessControlRequest::BackgroundCommand { item_id, .. } => {
             let outcome = background_command(
                 &state,
-                &record["responseTarget"],
+                &record.response_target,
                 item_id,
                 &scope.request_id,
+                (&root_request_id, &admitted),
             )
             .await
             .unwrap_or_else(|_| ResponseOutcome::Uncertain {
@@ -253,9 +260,10 @@ async fn execute(
         ProcessControlRequest::StopResponse { .. } => {
             let outcome = stop_response(
                 &state,
-                &record["responseTarget"],
+                &record.response_target,
                 &scope.request_id,
                 proof.as_ref(),
+                (&root_request_id, &admitted),
             )
             .await
             .unwrap_or_else(|_| ResponseOutcome::Uncertain {
@@ -273,8 +281,20 @@ async fn execute(
         }
         ProcessControlRequest::StopSelected { .. } | ProcessControlRequest::StopOwned { .. } => {
             for target in targets {
-                let outcome = stop_process(&state, runtime.as_ref(), &target, &scope.request_id).await
-                    .unwrap_or_else(|_| ProcessOutcome::Uncertain { error: Some("The process stop outcome is unknown. Inspect its receipt before retrying".into()) });
+                let outcome = stop_process(
+                    &state,
+                    runtime.as_ref(),
+                    &target,
+                    &scope.request_id,
+                    (&root_request_id, &admitted),
+                )
+                .await
+                .unwrap_or_else(|_| ProcessOutcome::Uncertain {
+                    error: Some(
+                        "The process stop outcome is unknown. Inspect its receipt before retrying"
+                            .into(),
+                    ),
+                });
                 if let Some(entry) = result
                     .processes
                     .iter_mut()
@@ -303,14 +323,14 @@ async fn execute(
             };
         }
     }
-    record["phase"] = json!(if result.status == ProcessActionStatus::Uncertain {
-        "uncertain"
+    record.phase = if result.status == ProcessActionStatus::Uncertain {
+        studio_runtime_store::ProcessActionPhase::Uncertain
     } else {
-        "completed"
-    });
+        studio_runtime_store::ProcessActionPhase::Completed
+    };
     update_record(&mut record, &result);
     save(&store, record).await?;
-    Ok(json!(result))
+    Ok(result)
 }
 fn response_status(outcome: &ResponseOutcome) -> ProcessActionStatus {
     match outcome {
@@ -322,11 +342,17 @@ fn response_status(outcome: &ResponseOutcome) -> ProcessActionStatus {
         | ResponseOutcome::Failed { .. } => ProcessActionStatus::Completed,
     }
 }
-fn update_record(record: &mut Value, result: &ProcessActionResult) {
-    record["processes"] = json!(result.processes);
-    record["result"] = json!(result);
+fn update_record(
+    record: &mut studio_runtime_store::ProcessActionRecord,
+    result: &ProcessActionResult,
+) {
+    record.processes = result.processes.clone();
+    record.result = result.clone();
 }
-async fn save(store: &RuntimeStore, record: Value) -> Result<(), ApiError> {
+async fn save(
+    store: &RuntimeStore,
+    record: studio_runtime_store::ProcessActionRecord,
+) -> Result<(), ApiError> {
     store
         .transaction_with(move |tx| controls::save(tx, &record))
         .await
@@ -381,11 +407,46 @@ async fn bind(
     };
     Ok((port, scope, ticket))
 }
+// Reserve the exact provider suboperation from its persisted process owner.
+async fn dispatch(
+    state: &HttpState,
+    port: &Arc<dyn AccountSessionPort>,
+    scope: &ConnectionScope,
+    owner: &AdmittedRequest,
+    request: NativeRequest,
+) -> Result<Value, ApiError> {
+    let operation = request.ticket.request.clone();
+    let reserved_operation = operation.clone();
+    let owner = owner.clone();
+    let request = store(state)?
+        .transaction_with_error(move |tx| {
+            studio_runtime_services::native_actions::reserve_provider_intent(
+                tx,
+                &owner,
+                &reserved_operation,
+                request,
+            )
+            .map_err(super::catalog_agent::native_command_error)
+        })
+        .await?;
+    super::catalog_agent::provider_call(
+        port,
+        scope,
+        &request.ticket,
+        &operation,
+        &request.method,
+        request.params,
+        (&request.root_request_id, request.admitted_request.as_ref()),
+    )
+    .await
+}
+
 async fn stop_process(
     state: &HttpState,
     runtime: Option<&Arc<MonitorRuntime>>,
     process: &Value,
     request_id: &str,
+    request_identity: (&str, &AdmittedRequest),
 ) -> Result<ProcessOutcome, ApiError> {
     if process["source"] == "monitor" {
         let Some(runtime) = runtime else {
@@ -453,6 +514,7 @@ async fn stop_process(
                 "thread/backgroundTerminals/list"
             },
             params.clone(),
+            ("", None),
         )
         .await?;
         let items = result[if claude { "tasks" } else { "data" }]
@@ -491,20 +553,26 @@ async fn stop_process(
             error: "The native process connection changed before stop".into(),
         });
     }
-    let result = super::catalog_agent::provider_call(
+    let result = dispatch(
+        state,
         &port,
         &scope,
-        &ticket,
-        &operation,
-        if claude {
-            "claude/stopTask"
-        } else {
-            "thread/backgroundTerminals/terminate"
-        },
-        if claude {
-            json!({"threadId":ticket.thread,"taskId":task})
-        } else {
-            json!({"threadId":ticket.thread,"processId":pid})
+        request_identity.1,
+        NativeRequest {
+            root_request_id: request_identity.0.to_owned(),
+            admitted_request: None,
+            ticket: ticket.clone(),
+            method: if claude {
+                "claude/stopTask"
+            } else {
+                "thread/backgroundTerminals/terminate"
+            }
+            .to_owned(),
+            params: if claude {
+                json!({"threadId":ticket.thread,"taskId":task})
+            } else {
+                json!({"threadId":ticket.thread,"processId":pid})
+            },
         },
     )
     .await?;
@@ -524,6 +592,7 @@ async fn stop_process(
         &format!("{operation}:after"),
         "claude/state",
         json!({"threadId":ticket.thread}),
+        ("", None),
     )
     .await?;
     let tasks = after["tasks"]
@@ -540,6 +609,7 @@ async fn stop_response(
     target: &Value,
     request_id: &str,
     proof: Option<&controls::HeldResponseProof>,
+    request_identity: (&str, &AdmittedRequest),
 ) -> Result<ResponseOutcome, ApiError> {
     let expected = target.clone();
     let request_id = request_id.to_owned();
@@ -588,13 +658,18 @@ async fn stop_response(
     if claude {
         params["stopBackgroundTasks"] = json!(false);
     }
-    super::catalog_agent::provider_call(
+    dispatch(
+        state,
         &port,
         &scope,
-        &ticket,
-        &ticket.request,
-        "turn/interrupt",
-        params,
+        request_identity.1,
+        NativeRequest {
+            root_request_id: request_identity.0.to_owned(),
+            admitted_request: None,
+            ticket,
+            method: "turn/interrupt".to_owned(),
+            params,
+        },
     )
     .await?;
     Ok(ResponseOutcome::Requested)
@@ -604,6 +679,7 @@ async fn background_command(
     target: &Value,
     item_id: &str,
     request_id: &str,
+    request_identity: (&str, &AdmittedRequest),
 ) -> Result<ResponseOutcome, ApiError> {
     let expected = target.clone();
     let request_id = request_id.to_owned();
@@ -650,15 +726,11 @@ async fn background_command(
             error: "This provider cannot move a running command to the background".into(),
         });
     }
-    let result = match super::catalog_agent::provider_call(
-        &port,
-        &scope,
-        &ticket,
-        &ticket.request,
-        "thread/commandExecution/background",
-        json!({"threadId":target["threadId"],"turnId":target["turnId"],"itemId":item_id}),
-    )
-    .await
+    let result = match dispatch(state, &port, &scope, request_identity.1, NativeRequest {
+        root_request_id: request_identity.0.to_owned(), admitted_request: None,
+        ticket, method: "thread/commandExecution/background".to_owned(),
+        params: json!({"threadId":target["threadId"],"turnId":target["turnId"],"itemId":item_id}),
+    }).await
     {
         Ok(result) => result,
         // A rejected or unsent request did not move the command.

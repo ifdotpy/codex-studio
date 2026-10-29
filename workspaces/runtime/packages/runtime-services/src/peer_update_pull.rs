@@ -19,7 +19,9 @@ use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::watch;
 
-use studio_runtime_schema::desktop::{PeerUpdateBuild, PeerUpdateEvent, PeerUpdatePending, PeerUpdateStatus};
+use studio_runtime_schema::desktop::{
+    PeerUpdateBuild, PeerUpdateEvent, PeerUpdatePending, PeerUpdateStatus,
+};
 use studio_runtime_store::RuntimeStore;
 
 use crate::atomic_file;
@@ -126,6 +128,31 @@ impl Step {
 fn failed(error: impl std::fmt::Display) -> Step {
     Step::Failed(error.to_string())
 }
+
+#[derive(serde::Serialize)]
+struct Empty {}
+
+#[derive(serde::Deserialize)]
+struct OfferReply {
+    build: Option<PeerUpdateBuild>,
+}
+#[derive(serde::Deserialize)]
+struct ExportReply {
+    preparing: Option<bool>,
+    export: Option<String>,
+    size: Option<u64>,
+    sha256: Option<String>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ChunkReply {
+    data: String,
+    offset: u64,
+    next_offset: u64,
+    sha256: String,
+}
+#[derive(serde::Deserialize)]
+struct ReleaseReply {}
 
 impl Puller {
     pub fn new(
@@ -270,12 +297,16 @@ impl Puller {
             }
             // An offline server, or an older one that refuses the action, offers nothing.
             let Ok(value) = self
-                .call(id, "update.offer", json!({}), SHORT_REQUEST)
+                .call::<OfferReply>(id, "update.offer", Empty {}, SHORT_REQUEST)
                 .await
             else {
                 continue;
             };
-            if let Some(build) = value.get("build").and_then(peer_updates::valid_build)
+            // Temporary bridge until peer updates move to the shared outbox and typed pipeline.
+            if let Some(build) = value
+                .build
+                .map(|build| studio_runtime_store::projection_value(&build))
+                .and_then(|build| peer_updates::valid_build(&build))
                 && built_at(&build) > built_at(local)
             {
                 found.push((build, id.to_owned()));
@@ -287,33 +318,38 @@ impl Puller {
 
     /// One request to a paired server. Every update.* action is a read, so each call
     /// gets its own request ID.
-    async fn call(
+    async fn call<R: serde::de::DeserializeOwned>(
         &self,
         server: &str,
         action: &str,
-        payload: Value,
+        payload: impl serde::Serialize,
         timeout: Duration,
-    ) -> Result<Value, Step> {
-        let key = uuid::Uuid::new_v4().hyphenated().to_string();
-        let envelope = json!({"requestId": key, "action": action, "payload": payload});
+    ) -> Result<R, Step> {
+        let key = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let envelope =
+            json!({"requestId": key, "operation": [], "action": action, "payload": payload});
         let receipt = self
             .transport
             .exchange(server, &envelope, timeout)
             .await
             .map_err(failed)?;
-        if receipt["requestId"] != key.as_str() {
+        use studio_runtime_schema::persistence::RemoteOutcome;
+        if receipt.request_id != key {
             return Err(Step::Failed(INVALID_RECEIPT.to_owned()));
         }
-        match receipt["outcome"].as_str() {
-            Some("applied") if receipt["value"].is_object() => Ok(receipt["value"].clone()),
-            Some("applied") => Err(Step::Failed(INVALID_RECEIPT.to_owned())),
-            Some("not_applied") => Err(Step::Refused(
-                receipt["error"]
-                    .as_str()
-                    .unwrap_or("The paired server refused the request")
-                    .to_owned(),
-            )),
-            _ => Err(Step::Failed("The paired server did not answer".to_owned())),
+        match receipt.outcome {
+            RemoteOutcome::Applied => receipt
+                .value
+                .and_then(|value| serde_json::from_str::<R>(value.get()).ok())
+                .ok_or_else(|| Step::Failed(INVALID_RECEIPT.to_owned())),
+            RemoteOutcome::NotApplied => {
+                Err(Step::Refused(receipt.error.unwrap_or_else(|| {
+                    "The paired server refused the request".to_owned()
+                })))
+            }
+            RemoteOutcome::Unknown => {
+                Err(Step::Failed("The paired server did not answer".to_owned()))
+            }
         }
     }
 
@@ -356,10 +392,10 @@ impl Puller {
         let result = self.download(server, build, &meta).await;
         // The peer removes an export that no puller releases after a day.
         drop(
-            self.call(
+            self.call::<ReleaseReply>(
                 server,
                 "update.release",
-                json!({"export": meta["export"]}),
+                json!({"export": meta.export}),
                 SHORT_REQUEST,
             )
             .await,
@@ -368,11 +404,11 @@ impl Puller {
     }
 
     /// Ask for the export until the peer has the archive ready.
-    async fn prepare_export(&self, server: &str, build: &Value) -> Result<Value, Step> {
+    async fn prepare_export(&self, server: &str, build: &Value) -> Result<ExportReply, Step> {
         let deadline = tokio::time::Instant::now() + EXPORT_PREPARE;
         loop {
             self.check_stop()?;
-            let meta = self
+            let meta: ExportReply = self
                 .call(
                     server,
                     "update.export",
@@ -380,7 +416,7 @@ impl Puller {
                     EXPORT_REQUEST,
                 )
                 .await?;
-            if meta["preparing"].as_bool() != Some(true) {
+            if meta.preparing != Some(true) {
                 return Ok(meta);
             }
             if tokio::time::Instant::now() >= deadline {
@@ -392,18 +428,25 @@ impl Puller {
         }
     }
 
-    async fn download(&self, server: &str, build: &Value, meta: &Value) -> Result<PathBuf, Step> {
+    async fn download(
+        &self,
+        server: &str,
+        build: &Value,
+        meta: &ExportReply,
+    ) -> Result<PathBuf, Step> {
         let invalid = || Step::Failed("Invalid update archive size or checksum".to_owned());
-        let export = meta["export"]
-            .as_str()
+        let export = meta
+            .export
+            .as_deref()
             .filter(|export| uuid::Uuid::parse_str(export).is_ok())
             .ok_or_else(|| Step::Failed("Invalid update export".to_owned()))?;
-        let size = meta["size"]
-            .as_u64()
+        let size = meta
+            .size
             .filter(|size| (1..=MAX_ARCHIVE_BYTES).contains(size))
             .ok_or_else(invalid)?;
-        let digest = meta["sha256"]
-            .as_str()
+        let digest = meta
+            .sha256
+            .as_deref()
             .filter(|digest| digest.len() == 64)
             .ok_or_else(invalid)?;
         let updates = self.root().join(UPDATES_DIR);
@@ -451,7 +494,7 @@ impl Puller {
         let mut offset = 0_u64;
         while offset < size {
             self.check_stop()?;
-            let chunk = self
+            let chunk: ChunkReply = self
                 .call(
                     server,
                     "update.chunk",
@@ -614,19 +657,19 @@ fn requirement(app: &Path, codesign: &Path) -> Result<String, Step> {
 }
 
 /// The bytes of one chunk answer, when it is the chunk that the request asked for.
-fn chunk_data(chunk: &Value, offset: u64, size: u64) -> Option<Vec<u8>> {
+fn chunk_data(chunk: &ChunkReply, offset: u64, size: u64) -> Option<Vec<u8>> {
     let data = base64::engine::general_purpose::STANDARD
-        .decode(chunk["data"].as_str()?)
+        .decode(&chunk.data)
         .ok()?;
     let next = offset.checked_add(data.len() as u64)?;
     let hash = data_encoding::HEXLOWER.encode(&Sha256::digest(&data));
     (!data.is_empty()
         && data.len() <= CHUNK_BYTES
-        && chunk["offset"].as_u64() == Some(offset)
-        && chunk["nextOffset"].as_u64() == Some(next)
+        && chunk.offset == offset
+        && chunk.next_offset == next
         && next <= size
-        && chunk["sha256"].as_str() == Some(hash.as_str()))
-    .then_some(data)
+        && chunk.sha256 == hash)
+        .then_some(data)
 }
 
 /// The staged update, or None. Its app must be the staged copy in this state directory.
@@ -656,7 +699,10 @@ pub fn status(root: &Path, installed: Option<&Path>) -> PeerUpdateStatus {
                 server: pending["from"].as_str()?.to_owned(),
             })
         }),
-        last_install: event(&read_json(&root.join(RECEIPT_FILE)).unwrap_or_default(), "from"),
+        last_install: event(
+            &read_json(&root.join(RECEIPT_FILE)).unwrap_or_default(),
+            "from",
+        ),
     }
 }
 
@@ -847,7 +893,10 @@ mod tests {
             _server: &'a str,
             envelope: &'a Value,
             _timeout: Duration,
-        ) -> BoxFuture<'a, Result<Value, AccessError>> {
+        ) -> BoxFuture<
+            'a,
+            Result<studio_runtime_store::multi_server_delivery::RemoteReply, AccessError>,
+        > {
             Box::pin(async move {
                 let action = envelope["action"].as_str().unwrap_or_default().to_owned();
                 let key = envelope["requestId"]
@@ -857,19 +906,26 @@ mod tests {
                 self.actions.lock().unwrap().push(action.clone());
                 let refusal = *self.offer_refusal.lock().unwrap();
                 if let (true, Some(reason)) = (action == "update.offer", refusal) {
-                    return Ok(ExchangeOutcome::NotApplied(reason.to_owned()).to_value(&key));
+                    return Ok(ExchangeOutcome::NotApplied(reason.to_owned()).to_reply(&key));
                 }
                 let mut receipt = self
                     .peer
-                    .receive("mac", envelope, NOW)
+                    .receive(
+                        "mac",
+                        envelope,
+                        crate::event_write::unix_time().unwrap() as i64,
+                    )
                     .await?
-                    .to_value(&key);
+                    .to_reply(&key);
                 if action == "update.chunk"
-                    && receipt["outcome"] == "applied"
+                    && receipt.outcome == studio_runtime_schema::persistence::RemoteOutcome::Applied
                     && self.corrupt_chunks.load(Ordering::SeqCst) > 0
                 {
                     self.corrupt_chunks.fetch_sub(1, Ordering::SeqCst);
-                    receipt["value"]["sha256"] = json!("0".repeat(64));
+                    let mut value: ChunkReply =
+                        serde_json::from_str(receipt.value.as_ref().unwrap().get()).unwrap();
+                    value.sha256 = "0".repeat(64);
+                    receipt.value = Some(serde_json::value::to_raw_value(&value).unwrap());
                 }
                 Ok(receipt)
             })
@@ -1312,25 +1368,33 @@ exit 0"#;
             .to_string(),
         )
         .unwrap();
-        let value = serde_json::from_str::<Value>(&serde_json::to_string(&status(root, Some(installed.as_path()))).unwrap()).unwrap();
+        let value = status(root, Some(installed.as_path()));
         assert_eq!(
             value,
-            json!({
-                "build": old_build(),
-                "checkedAt": NOW as f64,
-                "lastPull": {"at": NOW as f64, "server": "server", "build": new_build(),
-                             "outcome": "failed", "reason": "Invalid update archive chunk"},
-                "pending": {"build": new_build(), "server": "server"},
-                "lastInstall": {"at": (NOW - 100) as f64, "server": "server",
-                                "build": old_build(), "outcome": "installed", "reason": null},
-            })
+            serde_json::from_str::<PeerUpdateStatus>(
+                &json!({
+                    "build": old_build(),
+                    "checkedAt": NOW as f64,
+                    "lastPull": {"at": NOW as f64, "server": "server", "build": new_build(),
+                                 "outcome": "failed", "reason": "Invalid update archive chunk"},
+                    "pending": {"build": new_build(), "server": "server"},
+                    "lastInstall": {"at": (NOW - 100) as f64, "server": "server",
+                                    "build": old_build(), "outcome": "installed", "reason": null},
+                })
+                .to_string()
+            )
+            .unwrap()
         );
         // Without any file, the status has no build, pass or update.
-        let empty = serde_json::from_str::<Value>(&serde_json::to_string(&status(&root.join("empty"), None)).unwrap()).unwrap();
+        let empty = status(&root.join("empty"), None);
         assert_eq!(
             empty,
-            json!({"build": null, "checkedAt": null, "lastPull": null,
+            serde_json::from_str::<PeerUpdateStatus>(
+                &json!({"build": null, "checkedAt": null, "lastPull": null,
                    "pending": null, "lastInstall": null})
+                .to_string()
+            )
+            .unwrap()
         );
     }
 

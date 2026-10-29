@@ -15,11 +15,11 @@
 //!   [`SCHEDULE_OVERDUE_SECONDS`] after its due time, or an account transfer
 //!   that did not change for that long while a member waits for Studio or for
 //!   the owner.
+use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use studio_runtime_store::{
-    AgentId, AgentRecord, AgentRepository, EventWriteRepository, SchedulerRepository, StoreError,
-    Transaction,
+    AgentId, AgentRecord, AgentRepository, SchedulerRepository, StoreError, Transaction,
 };
 /// Unit: seconds without a provider event before a running turn is stalled.
 pub const SILENT_TURN_SECONDS: f64 = 600.0;
@@ -29,10 +29,6 @@ pub const PENDING_INPUT_SECONDS: f64 = 120.0;
 pub const SESSION_START_SECONDS: f64 = 120.0;
 /// Unit: seconds after its due time before a schedule is stuck.
 pub const SCHEDULE_OVERDUE_SECONDS: f64 = 900.0;
-/// Receipt-id prefix of the last start error of an account session.
-const SESSION_START_FAILURE_PREFIX: &str = "liveness:session-start-failure:";
-const RECEIPT_SIGNATURE: &str = "liveness";
-
 /// The invariant a finding breaks.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Code {
@@ -70,32 +66,44 @@ pub fn record_session_start_failure(
     reason: &str,
     now: f64,
 ) -> Result<(), StoreError> {
-    let key = format!("{SESSION_START_FAILURE_PREFIX}{account}");
-    let current = EventWriteRepository::receipt(tx, &key)?
-        .and_then(|receipt| serde_json::from_str::<Value>(&receipt.result).ok());
+    let current = session_start_failure(tx, account)?;
     if current
         .as_ref()
         .is_some_and(|value| value["reason"].as_str() == Some(reason))
     {
         return Ok(());
     }
-    EventWriteRepository::replace_receipt(
-        tx,
-        &key,
-        RECEIPT_SIGNATURE,
-        &json!({"reason":reason,"at":now}).to_string(),
+    studio_runtime_store::account_state::ensure_account(tx, account)?;
+    tx.execute(
+        "UPDATE runtime_account_state SET start_failure=?2 WHERE account=?1",
+        rusqlite::params![account, json!({"reason":reason,"at":now}).to_string()],
     )?;
     Ok(())
 }
 
 /// Forget the start error of `account` once its session runs.
 pub fn clear_session_start_failure(tx: &Transaction<'_>, account: &str) -> Result<(), StoreError> {
-    tx.prepare_cached("DELETE FROM runtime_operation_receipts WHERE id=?1 AND signature=?2")?
-        .execute(rusqlite::params![
-            format!("{SESSION_START_FAILURE_PREFIX}{account}"),
-            RECEIPT_SIGNATURE
-        ])?;
+    tx.execute(
+        "UPDATE runtime_account_state SET start_failure=NULL WHERE account=?1",
+        [account],
+    )?;
     Ok(())
+}
+
+fn session_start_failure(
+    db: &studio_runtime_store::Connection,
+    account: &str,
+) -> Result<Option<Value>, StoreError> {
+    let raw: Option<String> = db
+        .query_row(
+            "SELECT start_failure FROM runtime_account_state WHERE account=?1",
+            [account],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+    raw.map(|raw| serde_json::from_str(&raw).map_err(StoreError::from))
+        .transpose()
 }
 
 /// Unix seconds of the newest provider event of a running chat, from its
@@ -357,9 +365,7 @@ fn waiting_sessions(
             continue;
         };
         let since = waiting.iter().map(|w| w.2).fold(f64::INFINITY, f64::min);
-        let failure =
-            EventWriteRepository::receipt(tx, &format!("{SESSION_START_FAILURE_PREFIX}{account}"))?
-                .and_then(|receipt| serde_json::from_str::<Value>(&receipt.result).ok());
+        let failure = session_start_failure(tx, &account)?;
         let chats = match waiting.len() {
             1 => "1 chat waits for it.".to_owned(),
             count => format!("{count} chats wait for it."),

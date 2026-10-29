@@ -49,6 +49,8 @@ pub fn studio_vm_is_created(state_dir: &Path) -> bool {
 const INTENT_FILE: &str = "intent.json";
 const HEALTH_FILE: &str = "guest-health.json";
 const RESTARTS_FILE: &str = "watchdog.json";
+/// The key that signs in-place guest updates, in the VM state folder (32 random bytes in hex).
+const UPDATE_KEY_FILE: &str = "update-key";
 const SHARE_BRIDGE_FILE: &str = "share-bridge.json";
 const CONSOLE_FILE: &str = "console.log";
 const HELPER_LOG: &str = "helper.log";
@@ -407,6 +409,10 @@ pub struct VmRuntime {
     shares: Arc<dyn ShareMountTool>,
     /// One start at a time in this process; the client lock covers other processes.
     gate: tokio::sync::Mutex<()>,
+    /// The guest files of the installed build; the guest follows them (`update_guest`).
+    guest_payload: OnceLock<crate::linux_vm_update::GuestPayload>,
+    /// The guest has the files of the installed build, or needs the reboot path: no more attempts.
+    guest_settled: std::sync::atomic::AtomicBool,
 }
 
 /// The parts of a [`VmRuntime`].
@@ -443,6 +449,8 @@ impl VmRuntime {
             studio_root: parts.studio_root,
             shares: parts.shares,
             gate: tokio::sync::Mutex::new(()),
+            guest_payload: OnceLock::new(),
+            guest_settled: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -467,6 +475,13 @@ impl VmRuntime {
     pub fn attach_host_exec(&self, runtime: Arc<HostExecRuntime>) {
         if self.host_exec.set(runtime).is_err() {
             // The first attached runtime stays the owner of host commands.
+        }
+    }
+
+    /// Name the guest files of the installed build. Without them the guest is not updated.
+    pub fn attach_guest_payload(&self, payload: crate::linux_vm_update::GuestPayload) {
+        if self.guest_payload.set(payload).is_err() {
+            // The first attached payload stays.
         }
     }
 
@@ -1540,6 +1555,66 @@ impl VmRuntime {
                 eprintln!("linux-vm: the restart notice is not recorded");
             }
         }
+    }
+
+    /// Bring the guest to the files of the installed build (docs/linux-vm-workspaces.md,
+    /// "Guest updates"). It runs after each watchdog check, under `maintenance.lock`, so a
+    /// restart and a delivery wait for it. Returns `current`, `updated`, `deferred` (a
+    /// provider runs), `unsupported`, `failed`, `busy` (another operation holds the lock),
+    /// `stopped`, `no_key` or `none`. A step with an uncertain result is an error; the next
+    /// call plans again.
+    pub async fn update_guest(self: &Arc<Self>) -> Result<String, VmStartError> {
+        use std::sync::atomic::Ordering;
+        if self.guest_settled.load(Ordering::Relaxed) {
+            return Ok("current".into());
+        }
+        if self.guest_payload.get().is_none() {
+            return Ok("none".into());
+        }
+        let runtime = Arc::clone(self);
+        on_thread(move || runtime.update_guest_blocking()).await?
+    }
+
+    fn update_guest_blocking(&self) -> Result<String, VmStartError> {
+        use crate::linux_vm_update::{GuestUpdate, STATUS_POLL_SECONDS, update_guest};
+        let Some(payload) = self.guest_payload.get() else {
+            return Ok("none".into());
+        };
+        if Self::state_of(&self.status()?) != "running" {
+            return Ok("stopped".into());
+        }
+        let Some(_maintenance) = self.maintenance_lock()? else {
+            return Ok("busy".into());
+        };
+        let Some(key) = fs::read_to_string(self.state_dir.join(UPDATE_KEY_FILE))
+            .ok()
+            .map(|key| key.trim().to_owned())
+            .filter(|key| key.len() == 64 && key.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        else {
+            return Ok("no_key".into());
+        };
+        let operation = format!("{}", now() as u64);
+        let outcome = update_guest(
+            self.guest.as_ref(),
+            payload,
+            &key,
+            &operation,
+            Duration::from_secs(STATUS_POLL_SECONDS),
+        )
+        .map_err(|error| failed(format!("The guest update did not finish: {error:?}")))?;
+        let (name, settled) = match outcome {
+            GuestUpdate::Current => ("current", true),
+            GuestUpdate::Updated(_) => ("updated", true),
+            GuestUpdate::Unsupported(_) => ("unsupported", true),
+            GuestUpdate::Deferred => ("deferred", false),
+            GuestUpdate::Failed(reason) => {
+                eprintln!("linux-vm: the guest update stopped: {reason}");
+                ("failed", false)
+            }
+        };
+        self.guest_settled
+            .store(settled, std::sync::atomic::Ordering::Relaxed);
+        Ok(name.into())
     }
 
     /// One watchdog check (Python `Watchdog.check`): restart a failed guest

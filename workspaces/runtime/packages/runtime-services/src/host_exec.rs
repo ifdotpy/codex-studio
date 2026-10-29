@@ -440,10 +440,7 @@ fn settle(
     match outcome {
         Ok(Value::Object(mut result)) => {
             result.insert("output".into(), json!(output));
-            DispatchedOperation::Applied(OperationResult {
-                value: Value::Object(result),
-                signals: Vec::new(),
-            })
+            DispatchedOperation::Applied(OperationResult::reply(&result))
         }
         Ok(_) => unknown(with_note("The host command has no proven result.".into())),
         // Nothing reached the guest: a connection or request check failed first.
@@ -478,17 +475,11 @@ fn guest_error_text(error: &GuestError) -> String {
 }
 
 pub(crate) fn refused(message: String) -> DispatchedOperation {
-    DispatchedOperation::NotSent(OperationResult {
-        value: json!(message),
-        signals: Vec::new(),
-    })
+    DispatchedOperation::NotSent(OperationResult::reply(&message))
 }
 
 pub(crate) fn unknown(message: String) -> DispatchedOperation {
-    DispatchedOperation::Unknown(OperationResult {
-        value: json!(message),
-        signals: Vec::new(),
-    })
+    DispatchedOperation::Unknown(OperationResult::reply(&message))
 }
 
 #[cfg(test)]

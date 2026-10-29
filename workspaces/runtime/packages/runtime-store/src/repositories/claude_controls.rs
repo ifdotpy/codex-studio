@@ -4,6 +4,11 @@ use crate::{AgentId, AgentRecord, AgentRepository, StoreError, StoreResult, Tran
 use rusqlite::{OptionalExtension, params};
 use serde_json::Value;
 pub struct ClaudeControlRepository;
+impl From<StoreError> for studio_runtime_schema::claude_controls::ControlError {
+    fn from(_: StoreError) -> Self {
+        Self::Unavailable
+    }
+}
 impl ClaudeControlRepository {
     pub fn load(
         tx: &Transaction<'_>,
@@ -57,6 +62,18 @@ impl ClaudeControlRepository {
     }
     pub fn pending(tx: &Transaction<'_>, agent: &str) -> StoreResult<bool> {
         Ok(tx.query_row("SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND status IN ('pending','reserved','dispatching','uncertain'))",[agent],|r|r.get(0))?)
+    }
+    pub fn set_final(
+        tx: &Transaction<'_>,
+        id: &str,
+        outcome: &studio_runtime_schema::claude_controls::ControlOutcome,
+    ) -> StoreResult<()> {
+        let encoded = serde_json::to_string(outcome)?;
+        tx.execute(
+            "UPDATE runtime_workspace_operations SET record=json_set(record,'$.finalResponse',json(?1)) WHERE id=?2",
+            params![encoded, id],
+        )?;
+        Ok(())
     }
     pub fn apply(
         tx: &Transaction<'_>,

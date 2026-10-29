@@ -1,7 +1,5 @@
 //! A thread/resume reply that arrives after its deadline settled the attempt
-//! held must not end the account worker or send any request twice. The first
-//! unknown resume is retried once (see `unknown_thread_retry`), so the attempt
-//! is held at the deadline of that retry.
+//! held must not end the account worker or send any request twice.
 use super::*;
 
 /// Pass one 60 s reply deadline, then prove the worker consumed that outcome.
@@ -16,13 +14,12 @@ async fn pass_reply_deadline(peer: &mut Peer) {
     peer.acknowledged(cursor).await;
 }
 
-/// Pass the deadline of the first resume and of its single retry, so the
-/// attempt is held. Returns the retry, the request that the hold names.
-async fn hold_after_retry(peer: &mut Peer) -> Value {
+/// A timeout alone never authorizes another provider attempt.
+async fn hold_after_deadline(peer: &mut Peer) -> Value {
+    let request = peer.write("thread/resume").await;
     pass_reply_deadline(peer).await;
-    let retry = peer.write("thread/resume").await;
-    pass_reply_deadline(peer).await;
-    retry
+    assert!(peer.writes.try_recv().is_err(), "timeout must not retry");
+    request
 }
 
 #[tokio::test]
@@ -31,8 +28,7 @@ async fn late_thread_resume_reply_after_held_settlement_keeps_the_worker() {
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     state.wake(&worker).await;
-    peer.write("thread/resume").await;
-    let resume = hold_after_retry(&mut peer).await;
+    let resume = hold_after_deadline(&mut peer).await;
     let held = state.record().await;
     assert_eq!(
         held["error"], "Provider thread resume outcome is unknown; input remains pending.",
@@ -62,8 +58,7 @@ async fn saved_start_effect_of_a_held_attempt_does_not_end_the_restarted_worker(
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     state.wake(&worker).await;
-    peer.write("thread/resume").await;
-    let resume = hold_after_retry(&mut peer).await;
+    let resume = hold_after_deadline(&mut peer).await;
     worker.shutdown().await.unwrap();
 
     let operation = resume["id"].as_str().unwrap().to_owned();
@@ -72,13 +67,20 @@ async fn saved_start_effect_of_a_held_attempt_does_not_end_the_restarted_worker(
         .bridge
         .run(move |store| async move {
             scheduler::lifecycle_transaction_with(&store, move |tx| {
-                let saved = store::receipt(tx, &operation, "submitted")?
-                    .expect("the held thread request keeps its receipt");
-                let pending: Pending = serde_json::from_value(saved["context"].clone()).unwrap();
-                tx.execute(
-                    "DELETE FROM runtime_operation_receipts WHERE id LIKE ?1",
-                    [format!("account-worker:{operation}:%")],
+                let call =
+                    store::account_submission(tx, &operation)?.expect("held provider obligation");
+                let pending = call.context;
+                let removed = tx.execute(
+                    "DELETE FROM runtime_outbox WHERE id=?1 AND kind=?2",
+                    rusqlite::params![
+                        operation,
+                        studio_runtime_schema::persistence::OutboxKind::ProviderCall
+                    ],
                 )?;
+                assert_eq!(
+                    removed, 1,
+                    "only the stale account request obligation is removed"
+                );
                 store::persist_effect(tx, "default", &Effect::Submit(pending.intent))?;
                 let mut agent =
                     AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?.unwrap();

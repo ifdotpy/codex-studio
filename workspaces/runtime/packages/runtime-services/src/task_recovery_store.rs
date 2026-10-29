@@ -166,6 +166,31 @@ pub(crate) fn receipts_current(
         ))
 }
 type ReceiptState = (Vec<String>, Vec<(String, Value)>);
+fn receipt_error(error: crate::tool_requests::ToolRequestError, key: &str) -> RecoveryError {
+    use crate::tool_requests::ToolRequestError;
+    use studio_runtime_store::StoreError;
+    match error {
+        ToolRequestError::Store(
+            error @ (StoreError::InvalidStoredObject { .. }
+            | StoreError::InvalidStoredRecord { .. }
+            | StoreError::InvalidSyncObject { .. }
+            | StoreError::InvalidSyncObjectField { .. }),
+        ) => error.into(),
+        ToolRequestError::Store(StoreError::Json(_))
+        | ToolRequestError::RequestResult(
+            studio_runtime_store::request_results::RequestResultError::Json(_),
+        ) => StoreError::InvalidStoredObject {
+            table: "runtime_tool_requests",
+            id: key.into(),
+        }
+        .into(),
+        ToolRequestError::Store(error) => error.into(),
+        ToolRequestError::RequestResult(error) => RecoveryError::Store(error.into()),
+        ToolRequestError::InvalidRequest(message) => StoreError::RecordContract(message).into(),
+        ToolRequestError::RequiresDependency(name) => RecoveryError::Dependency(name),
+        ToolRequestError::Payload(_) => RecoveryError::EffectsUnavailable,
+    }
+}
 pub(crate) fn receipt_state(
     tx: &rusqlite::Connection,
     a: &Value,
@@ -174,47 +199,28 @@ pub(crate) fn receipt_state(
     if t["type"] != "dynamicToolCall" {
         return Ok((vec![], vec![]));
     }
-    let aliases: Vec<String> = tx.prepare_cached("SELECT request FROM runtime_tool_request_aliases WHERE agent=?1 AND alias=?2 ORDER BY request LIMIT 2")?
-        .query_map(rusqlite::params![a["id"].as_str(),t["itemId"].as_str()], |r| r.get(0))?.collect::<Result<_,_>>()?;
-    if aliases.len() > 1 {
-        return Ok((aliases, vec![]));
-    }
-    let account = a
-        .get("accountKey")
-        .and_then(Value::as_str)
-        .unwrap_or("default");
-    let prefix = if account == "default" {
-        String::new()
-    } else {
-        format!("{account}:")
+    let actor = a["id"].as_str().ok_or(RecoveryError::CommitFailed)?;
+    let call = t["itemId"].as_str().ok_or(RecoveryError::CommitFailed)?;
+    let Some(mut row) = crate::tool_requests::resolve(tx, actor, call)
+        .map_err(|error| receipt_error(error, call))?
+    else {
+        return Ok((vec![], vec![]));
     };
-    let key = aliases.first().cloned().unwrap_or_else(|| {
-        format!(
-            "{prefix}{}:{}",
-            a["threadId"].as_str().unwrap_or_default(),
-            t["itemId"].as_str().unwrap_or_default()
-        )
-    });
-    let row: Option<(String, String)> = tx
-        .query_row(
-            "SELECT id,record FROM runtime_tool_requests WHERE id=?1",
-            [key],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()?;
-    let rows = row
-        .map(|(key, raw)| {
-            serde_json::from_str(&raw)
-                .map_err(|_| studio_runtime_store::StoreError::InvalidStoredObject {
-                    table: "runtime_tool_requests",
-                    id: key.clone(),
-                })
-                .map(|v| (key, v))
-        })
-        .transpose()?
-        .into_iter()
-        .collect::<Vec<_>>();
-    Ok((aliases, rows))
+    if row["stage"] == "ambiguous" {
+        return Err(RecoveryError::CommitFailed);
+    }
+    let key = row["id"]
+        .as_str()
+        .ok_or(RecoveryError::CommitFailed)?
+        .to_owned();
+    if let Some(result) =
+        crate::tool_requests::saved_result(tx, &key).map_err(|error| receipt_error(error, &key))?
+    {
+        row["result"] = result;
+    } else if !row["finished"].is_null() {
+        return Err(RecoveryError::CommitFailed);
+    }
+    Ok((vec![key.clone()], vec![(key, row)]))
 }
 
 /// P06 supplies notification_dispatch::recover_task_in_transaction directly.
@@ -312,6 +318,7 @@ impl TaskCompletionWriter for RuntimeTaskCompletionWriter {
                     return Ok(false);
                 }
                 (write_task)(tx, agent, task, &item, current.at).map_err(|error| match error {
+                    crate::notification_dispatch::NotificationDispatchError::RequestResult(error) => RecoveryError::Store(error.into()),
                     crate::notification_dispatch::NotificationDispatchError::Store(error) => {
                         RecoveryError::Store(error)
                     }

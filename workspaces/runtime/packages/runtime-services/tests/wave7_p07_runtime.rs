@@ -191,8 +191,11 @@ async fn python_terminal_notification_count_decodes_without_changing_attempt_eve
 async fn connection_completion_matches_python_full_records_and_results() {
     let cases = corpus()["connection"].as_array().expect("cases");
     assert_eq!(cases.len(), 27);
+    let seed_root = fixture();
+    let template = crate::state_template::StateTemplate::migrate(seed_root.path()).await;
     for case in cases {
-        let root = fixture();
+        let root = tempfile::tempdir().expect("temporary state");
+        template.write(root.path());
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         seed(&store, &case["before"]).await;
         let result = apply(&store, &case["before"], terminal(case), false)
@@ -249,8 +252,11 @@ async fn connection_completion_matches_python_full_records_and_results() {
 async fn unresolved_operations_match_python_including_legacy_scope() {
     let cases = corpus()["unresolved"].as_array().expect("cases");
     assert_eq!(cases.len(), 36);
+    let seed_root = fixture();
+    let template = crate::state_template::StateTemplate::migrate(seed_root.path()).await;
     for case in cases {
-        let root = fixture();
+        let root = tempfile::tempdir().expect("temporary state");
+        template.write(root.path());
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         let before = corpus()["connection"][0]["before"].clone();
         seed(&store, &before).await;
@@ -880,7 +886,7 @@ async fn accepted_start_failpoints_never_deliver_input_without_its_attempt_recei
     for (table, operation) in [
         ("runtime_events", "UPDATE"),
         ("runtime_agents", "UPDATE"),
-        ("runtime_execution_attempts", "UPDATE"),
+        ("runtime_execution_attempts", "INSERT"),
         ("sync_entities", "INSERT"),
     ] {
         for timing in ["BEFORE", "AFTER"] {
@@ -953,26 +959,58 @@ async fn task_completion_rejects_changed_alias_or_operation_receipt() {
         let before = json!({"id":"agent","rootId":"agent","epoch":0,"status":"completed","accountKey":"default","provider":"codex","threadId":"thread","turnId":null,"inFlight":false});
         seed(&store, &before).await;
         let task = json!({"id":"agent:item","agent":"agent","itemId":"item","turnId":"turn","type":"dynamicToolCall","kind":"tool","status":"running","created":1.});
-        let receipt = json!({"id":"receipt","agent":"agent","accountKey":"default","threadId":"thread","turnId":"turn","callId":"item","finished":2.,"stage":"completed","outcome":"applied","result":{"success":true,"contentItems":[]}});
+        let root_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let identity = studio_runtime_schema::persistence::RequestIdentity::new(
+            "managed_tool",
+            &["agent"],
+            &root_id,
+            &["item"],
+        )
+        .expect("receipt identity");
+        let receipt = json!({"id":root_id,"kind":"managed_tool","aliases":["item"],"agent":"agent","accountKey":"default","threadId":"thread","turnId":"turn","callId":"item","finished":2.,"stage":"completed","outcome":"applied","result":{"success":true,"contentItems":[]}});
         let task_to_save = task.clone();
-        let receipt_to_save = receipt.to_string();
-        store.transaction(move |tx|{
-            TaskRepository::put(tx,&TaskRecord::from_value(task_to_save).expect("task"))?;
-            tx.execute("INSERT INTO runtime_tool_request_aliases(agent,alias,request) VALUES('agent','item','receipt')",[])?;
-            tx.execute("INSERT INTO runtime_tool_requests(id,record) VALUES('receipt',?1)",[receipt_to_save])?;
-            Ok(())
-        }).await.expect("seed");
+        let receipt_to_save = receipt.clone();
+        let saved_root = root_id.clone();
+        let receipt = store
+            .transaction_with(move |tx| {
+                TaskRepository::put(tx, &TaskRecord::from_value(task_to_save).expect("task"))?;
+                let studio_runtime_store::request_results::Admission::Fresh(admitted) =
+                    studio_runtime_store::request_results::RequestResults::admit(
+                        tx,
+                        &identity,
+                        "fixture-signature",
+                        chrono::Utc::now().timestamp_millis(),
+                    )
+                    .expect("admission")
+                else {
+                    panic!("fresh owner")
+                };
+                tx.execute(
+                    "INSERT INTO runtime_tool_requests(id,record) VALUES(?1,json_set(?2,'$.admitted',json(?3)))",
+                    rusqlite::params![saved_root, receipt_to_save.to_string(), serde_json::to_string(&admitted)?],
+                )?;
+                let stored: String = tx.query_row("SELECT record FROM runtime_tool_requests WHERE id=?1", [&saved_root], |row| row.get(0))?;
+                studio_runtime_services::tool_requests::settle_result(
+                    tx,
+                    &saved_root,
+                    &receipt_to_save["result"],
+                )
+                .expect("settle result");
+                Ok::<_, studio_runtime_store::StoreError>(serde_json::from_str::<Value>(&stored)?)
+            })
+            .await
+            .expect("seed");
         let snapshot = TaskRecoverySnapshot::from_records(
             before,
             task,
-            vec!["receipt".into()],
-            vec![("receipt".into(), receipt)],
+            vec![root_id.clone()],
+            vec![(root_id.clone(), receipt)],
         )
         .expect("snapshot");
         let change = change.to_owned();
         store.transaction(move |tx|{
-            if change=="alias" {tx.execute("UPDATE runtime_tool_request_aliases SET request='changed'",[])?;}
-            else {tx.execute("UPDATE runtime_tool_requests SET record=json_set(record,'$.result.success',json('false'))",[])?;}
+            if change=="alias" {tx.execute("UPDATE runtime_tool_requests SET record=json_set(record,'$.aliases',json('[\"changed\"]')) WHERE id=?1",[&root_id])?;}
+            else {tx.execute("UPDATE request_results SET result=json_set(result,'$.reply.success',json('false'))",[])?;}
             Ok(())
         }).await.expect("race");
         let write = |_: &Transaction<'_>,
@@ -1064,7 +1102,7 @@ async fn corrupt_scan_rows_keep_the_sql_table_and_identity() {
                 if bad_for_tx == "receipt" {
                     tx.execute(
                         "INSERT INTO runtime_tool_requests(id,record) VALUES('thread:item',?1)",
-                        [json!({"id":"thread:item","agent":"agent","callId":8}).to_string()],
+                        [json!({"id":"thread:item","kind":"managed_tool","aliases":["item"],"agent":"agent","callId":8}).to_string()],
                     )?;
                 }
                 Ok(())
@@ -1200,7 +1238,23 @@ async fn accepted_start_matches_real_python_agent_event_and_transcript_rows() {
     )
     .await
     .expect("accept");
-    assert_eq!(agent(&store), case["after"]);
+    let active = AgentRepository::get(&store.test_reader().expect("read"), &AgentId::from("agent"))
+        .expect("agent")
+        .expect("agent exists")
+        .active_execution()
+        .expect("typed active execution")
+        .expect("active execution");
+    let mut actual = agent(&store);
+    actual
+        .as_object_mut()
+        .expect("agent")
+        .remove("activeExecution")
+        .expect("active execution");
+    assert_eq!(
+        (active.attempt_id.as_deref(), active.run_id.as_deref()),
+        (Some("attempt"), Some("run:attempt"))
+    );
+    assert_eq!(actual, case["after"]);
     let rows: Vec<Value> = store.test_reader().expect("read").prepare("SELECT id,agent,kind,text,status,created,epoch,turn_id,error FROM runtime_events ORDER BY id").expect("query")
         .query_map([], |r| Ok(json!({"id":r.get::<_,String>(0)?,"agent":r.get::<_,String>(1)?,"kind":r.get::<_,String>(2)?,"text":r.get::<_,String>(3)?,"status":r.get::<_,String>(4)?,"created":r.get::<_,f64>(5)?,"epoch":r.get::<_,i64>(6)?,"turn_id":r.get::<_,Option<String>>(7)?,"error":r.get::<_,Option<String>>(8)?}))).expect("rows").collect::<Result<_,_>>().expect("events");
     assert_eq!(json!(rows), case["events"]);
@@ -1220,7 +1274,8 @@ async fn accepted_terminal_start_calls_canonical_messages_and_finishes_atomicall
             "runtime_execution_attempts",
             "runtime_execution_runs",
             "runtime_execution_inputs",
-            "runtime_operation_receipts",
+            "request_results",
+            "runtime_outbox",
             "runtime_completed_turns",
             "sync_entities",
             "sync_documents",

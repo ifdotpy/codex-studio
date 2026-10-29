@@ -60,37 +60,12 @@ pub async fn recover_on_startup(
             // Use the scheduler's canonical exact-batch validator. The general
             // event pass below owns only the claims left after that operation.
             if let Err(error) = SchedulerRepository::recover_unsubmitted(tx) {
-                match error {
-                    studio_runtime_store::StoreError::InvalidSyncObject { scope, id }
-                        if scope == "runtime_agents" =>
-                    {
-                        eprintln!(
-                            "startup scheduler reservation skipped row id={id}: invalid batch"
-                        );
-                    }
-                    error @ studio_runtime_store::StoreError::StateDirectory(_)
-                    | error @ studio_runtime_store::StoreError::AlreadyOwned
-                    | error @ studio_runtime_store::StoreError::MissingDatabase(_)
-                    | error @ studio_runtime_store::StoreError::Migration { .. }
-                    | error @ studio_runtime_store::StoreError::UnsafeStateDirectory
-                    | error @ studio_runtime_store::StoreError::SchemaMismatch(_)
-                    | error @ studio_runtime_store::StoreError::InvalidSyncObject { .. }
-                    | error @ studio_runtime_store::StoreError::InvalidSyncObjectField { .. }
-                    | error @ studio_runtime_store::StoreError::InvalidStoredRecord { .. }
-                    | error @ studio_runtime_store::StoreError::SchemaObjectMismatch { .. }
-                    | error @ studio_runtime_store::StoreError::Sqlite(_)
-                    | error @ studio_runtime_store::StoreError::CommitOutcomeUnknown(_)
-                    | error @ studio_runtime_store::StoreError::Json(_)
-                    | error @ studio_runtime_store::StoreError::InvalidStoredObject { .. }
-                    | error @ studio_runtime_store::StoreError::SchemaValidation(_)
-                    | error @ studio_runtime_store::StoreError::RecordContract(_)
-                    | error @ studio_runtime_store::StoreError::WriterPoisoned
-                    | error @ studio_runtime_store::StoreError::WriterActorInitialization(_)
-                    | error @ studio_runtime_store::StoreError::WriterActorControl(_)
-                    | error @ studio_runtime_store::StoreError::CommitActorOutcomeUnknown(_)
-                    | error @ studio_runtime_store::StoreError::ReadTaskFailed => {
-                        return Err(MonitorError::Store(error));
-                    }
+                if let studio_runtime_store::StoreError::InvalidSyncObject { scope, id } = &error
+                    && scope == "runtime_agents"
+                {
+                    eprintln!("startup scheduler reservation skipped row id={id}: invalid batch");
+                } else {
+                    return Err(MonitorError::Store(error));
                 }
             }
             let requests = recover_requests(tx)?;
@@ -326,6 +301,7 @@ pub(crate) fn startup_store_failure(error: &MonitorError) -> bool {
         | MonitorError::InvalidDeliveryIdentity(_)
         | MonitorError::InvalidOutputReceipt(_)
         | MonitorError::TaskFailed
+        | MonitorError::Expired
         | MonitorError::InputOutcomeUnknown
         | MonitorError::Refused(_)
         | MonitorError::Unavailable(_)
@@ -567,7 +543,12 @@ pub async fn reserve_input(
     store
         .transaction_with(move |tx| {
             let (snapshot, actor) = snapshot(tx, &id)?;
-            let decision = policy::begin_input(&snapshot, &operation, &attempt_id, &input, now)?;
+            let mut decision =
+                policy::begin_input(&snapshot, &operation, &attempt_id, &input, now)?;
+            initialize_input_identity(
+                &mut decision,
+                &studio_runtime_schema::persistence::RequestIdentity::issue_root(),
+            );
             let effect = decision
                 .effects
                 .first()
@@ -612,6 +593,136 @@ pub fn finish_in_transaction(
     let decision = policy::finish(&snapshot, operation, code, error, now)?;
     refuse_unavailable(&decision)?;
     apply(tx, &snapshot, &actor, &decision, now)
+}
+
+/// Preserve essential command completion before its provider obligation retires.
+/// The existing stream queue keeps this exit behind already committed output.
+/// False holds a relevant call whose exact completion proof is unavailable.
+pub fn settle_provider_call(
+    tx: &Transaction<'_>,
+    call: &crate::account_worker::retained::ProviderCallIntent,
+    result: &crate::account_worker::retained::RequestResult,
+) -> Result<bool, MonitorError> {
+    use crate::account_worker::retained::RequestResult;
+    use studio_runtime_schema::persistence::RequestIdentity;
+    if call.method != studio_runtime_providers::Method::CommandExec {
+        return Ok(true);
+    }
+    let Some(id) = call.params.get("processId").and_then(Value::as_str) else {
+        return Ok(true);
+    };
+    if call.operation != format!("monitor:{id}") {
+        return Ok(true);
+    }
+    let record = match MonitorsRepository::get(tx, id) {
+        Ok(record) => record,
+        Err(error) if malformed_monitor_owner(&error) => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    let Some(_record) = record else {
+        return Ok(true);
+    };
+    #[derive(Deserialize)]
+    struct StoredOperation {
+        operation: Operation,
+    }
+    let Some((_, raw)) =
+        Table::<studio_runtime_store::MonitorRecord>::new(tx).get_with_raw(&id.to_owned())?
+    else {
+        return Ok(false);
+    };
+    let Ok(StoredOperation { operation }) = serde_json::from_str(&raw) else {
+        return Ok(false);
+    };
+    let Some(actor) = &call.actor else {
+        return Ok(false);
+    };
+    let Some(token) = &call.admitted_request else {
+        return Ok(false);
+    };
+    if operation.agent != actor.agent
+        || operation.epoch != actor.epoch
+        || operation.account_key != call.scope.account
+        || operation.connection_id != call.scope.connection
+        || operation.evidence.provider_generation != Some(call.scope.generation)
+        || token.signature() != call.fingerprint(&call.scope.account, call.method.as_str())
+    {
+        return Ok(false);
+    }
+    if let Some(saved) = &operation.evidence.provider_request {
+        if saved != token {
+            return Ok(false);
+        }
+    } else {
+        let root = operation.evidence.root_request_id.as_deref();
+        if root != Some(call.root_request_id.as_str()) {
+            return Ok(false);
+        }
+        let epoch = actor.epoch.to_string();
+        let identity = RequestIdentity::new(
+            "provider-call",
+            &[&call.scope.account, &actor.agent, &epoch],
+            &call.root_request_id,
+            &[&call.operation],
+        );
+        if !identity.is_ok_and(|identity| identity.id() == token.id()) {
+            return Ok(false);
+        }
+    }
+    let (code, error) = match result {
+        RequestResult::Reply(value) => {
+            if !value.is_object() {
+                return Ok(false);
+            }
+            let code = match value.get("exitCode") {
+                None | Some(Value::Null) => None,
+                Some(value) => match value.as_i64() {
+                    Some(code) => Some(code),
+                    None => return Ok(false),
+                },
+            };
+            let error = match value.get("error") {
+                None | Some(Value::Null) => None,
+                Some(value) => match value.as_str() {
+                    Some(error) => Some(error.to_owned()),
+                    None => return Ok(false),
+                },
+            };
+            if code.is_none() && error.as_deref().is_none_or(str::is_empty) {
+                return Ok(false);
+            }
+            (code, error)
+        }
+        RequestResult::Rejected(value) => (None, Some(value.to_string())),
+        RequestResult::NotSent => return Ok(true),
+        RequestResult::Unknown => return Ok(false),
+    };
+    crate::monitor_event_queue::enqueue_exit_in_transaction(
+        tx,
+        id,
+        &operation,
+        &format!("provider-result:monitor:{id}"),
+        code,
+        error.as_deref(),
+        crate::event_write::unix_time()?,
+    )
+}
+
+fn malformed_monitor_owner(error: &studio_runtime_store::StoreError) -> bool {
+    use studio_runtime_store::StoreError;
+    matches!(
+        error,
+        StoreError::InvalidStoredRecord { .. }
+            | StoreError::InvalidStoredObject { .. }
+            | StoreError::InvalidSyncObject { .. }
+            | StoreError::InvalidSyncObjectField { .. }
+            | StoreError::Json(_)
+            | StoreError::SchemaValidation(_)
+            | StoreError::Sqlite(
+                rusqlite::Error::FromSqlConversionFailure(..)
+                    | rusqlite::Error::InvalidColumnType(..)
+            )
+    )
 }
 
 pub struct TickPage {
@@ -992,6 +1103,46 @@ pub struct PreparedStart {
     pub params: Value,
 }
 
+/// Persist the root before preparation can perform any provider operation.
+/// A committed operation always keeps its captured identity, including imports.
+pub async fn provider_root(store: &RuntimeStore, id: &str) -> Result<String, MonitorError> {
+    let id = id.to_owned();
+    store
+        .transaction_with(move |tx| {
+            let (snapshot, actor) = snapshot(tx, &id)?;
+            if let Some(operation) = snapshot.operation() {
+                return operation
+                    .evidence
+                    .root_request_id
+                    .clone()
+                    .ok_or(MonitorError::Refused(
+                        "Monitor provider request identity is unavailable",
+                    ));
+            }
+            if let Some(root) = snapshot.record().get("rootRequestId") {
+                return root
+                    .as_str()
+                    .map(str::to_owned)
+                    .ok_or(MonitorError::Refused(
+                        "Monitor provider request identity is invalid",
+                    ));
+            }
+            if !snapshot.active_owner() {
+                return Err(MonitorError::Refused("Monitor owner is no longer active"));
+            }
+            let root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+            let mut record = snapshot.record().clone();
+            record["rootRequestId"] = json!(root);
+            // The root is owner state; no delivery or status transition is implied.
+            let typed = studio_runtime_store::MonitorRecord::from_value(record)
+                .map_err(studio_runtime_store::StoreError::from)?;
+            studio_runtime_store::Table::new(tx).put(&typed)?;
+            drop(actor);
+            Ok(root)
+        })
+        .await
+}
+
 pub async fn reserve_start(
     store: &RuntimeStore,
     id: &str,
@@ -1029,6 +1180,67 @@ pub async fn reserve_start(
             Ok(effect)
         })
         .await
+}
+
+pub(crate) fn initialize_input_identity(decision: &mut Decision, root: &str) {
+    decision.record["inputAttempt"]["rootRequestId"] = json!(root);
+    if let Some(attempt) = decision.record["inputAttempt"].as_object_mut() {
+        attempt.remove("providerRequest");
+    }
+}
+
+/// Resolve a provider mutation from its current owner; a retry never allocates another root.
+pub async fn provider_request_identity(
+    store: &RuntimeStore,
+    id: &str,
+    probe_generation: Option<i64>,
+    operation: &Operation,
+    request_operation: &str,
+    method: studio_runtime_providers::Method,
+    params: &Value,
+) -> Result<
+    (
+        String,
+        Option<studio_runtime_store::request_results::AdmittedRequest>,
+    ),
+    MonitorError,
+> {
+    use studio_runtime_providers::Method;
+    let id = id.to_owned();
+    let operation = operation.clone();
+    let request_operation = request_operation.to_owned();
+    let params = params.clone();
+    store.transaction_with(move |tx| {
+        let (snapshot,_)=snapshot(tx,&id)?;
+        if snapshot.operation().is_some_and(|saved| saved!=&operation) {return Err(MonitorError::Refused("Monitor provider operation changed"));}
+        if probe_generation.is_none() && method==Method::CommandExec {
+            let root=operation.evidence.root_request_id.ok_or(MonitorError::Refused("Monitor provider request identity is unavailable"))?;
+            return Ok((root,operation.evidence.provider_request));
+        }
+        let mut record=snapshot.record().clone();
+        let identity = if let Some(generation)=probe_generation {
+            if record["stallProbeGeneration"].as_i64()!=Some(generation) {return Err(MonitorError::Refused("Monitor liveness generation changed"));}
+            if record["livenessProbe"]["generation"].as_i64()!=Some(generation) {
+                record["livenessProbe"]=json!({"generation":generation,"rootRequestId":studio_runtime_schema::persistence::RequestIdentity::issue_root()});
+                Table::new(tx).put(&studio_runtime_store::MonitorRecord::from_value(record.clone()).map_err(studio_runtime_store::StoreError::from)?)?;
+            }
+            record["livenessProbe"].clone()
+        } else if method==Method::CommandExecWrite || method==Method::CommandExecResize {
+            let ticket=policy::input_effect_ticket(&id,&request_operation).ok_or(MonitorError::Refused("Monitor input provider identity changed"))?;
+            let attempt=&record["inputAttempt"];
+            if attempt["id"]!=ticket || attempt["params"]!=params || attempt["method"]!=method.as_str() {return Err(MonitorError::Refused("Monitor input provider identity changed"));}
+            attempt.clone()
+        } else if method==Method::CommandExecTerminate {
+            json!({"rootRequestId":record["cancelRootRequestId"],"providerRequest":record["cancelProviderRequest"]})
+        } else {return Err(MonitorError::Refused("Monitor provider method has no mutation owner"));};
+        let root=identity["rootRequestId"].as_str().ok_or(MonitorError::Refused("Monitor provider request identity is unavailable"))?.to_owned();
+        let admitted = if identity.get("providerRequest").is_some_and(|value| !value.is_null()) {
+            let path = if probe_generation.is_some() { "$.livenessProbe.providerRequest" } else if method == Method::CommandExecTerminate { "$.cancelProviderRequest" } else { "$.inputAttempt.providerRequest" };
+            let raw: String = tx.query_row("SELECT record -> ?2 FROM runtime_monitors WHERE id=?1", rusqlite::params![id, path], |row| row.get(0)).map_err(studio_runtime_store::StoreError::from)?;
+            Some(serde_json::from_str(&raw).map_err(studio_runtime_store::StoreError::from)?)
+        } else { None };
+        Ok((root,admitted))
+    }).await
 }
 
 /// Unknown submission and backend restart share the same durable reconciliation.
@@ -1482,6 +1694,130 @@ pub fn bind_rule_in_transaction(
 mod recovery_selection_tests {
     use super::active_monitor_ids;
     use rusqlite::Connection;
+
+    #[test]
+    fn receipt_pivot_late_monitor_result_commits_exit_behind_output_without_replay_cache() {
+        use crate::account_worker::retained::{ProviderCallIntent, RequestResult};
+        use serde_json::json;
+        use studio_runtime_schema::persistence::{REQUEST_RESULT_TTL_MS, RequestIdentity};
+        use studio_runtime_store::request_results::{Admission, RequestResults, ResultEnvelope};
+        let mut db = Connection::open_in_memory().expect("database");
+        studio_runtime_store::receipt_schema::create(&db).expect("schema");
+        db.execute_batch("CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL);CREATE TABLE runtime_orchestration_settings(id TEXT PRIMARY KEY,record TEXT NOT NULL)").expect("owners");
+        let issued = REQUEST_RESULT_TTL_MS * 2;
+        let root =
+            uuid::Uuid::from_u128(((issued as u128) << 80) | (7 << 76) | (2 << 62)).to_string();
+        let mut call = ProviderCallIntent {
+            root_request_id: root.clone(),
+            admitted_request: None,
+            scope: crate::account_session_runtime::ConnectionScope {
+                account: "account".into(),
+                connection: "connection".into(),
+                generation: 7,
+            },
+            operation: "monitor:watch".into(),
+            actor: Some(crate::account_worker::retained::RequestActor {
+                agent: "agent".into(),
+                epoch: 3,
+            }),
+            transfer: None,
+            deleted_actor_session: None,
+            method: studio_runtime_providers::Method::CommandExec,
+            params: json!({"processId":"watch"}),
+        };
+        let identity = RequestIdentity::new(
+            "provider-call",
+            &["account", "agent", "3"],
+            &root,
+            &["monitor:watch"],
+        )
+        .expect("identity");
+        let signature = call.fingerprint("account", call.method.as_str());
+        let tx = db.transaction().expect("transaction");
+        let Admission::Fresh(token) =
+            RequestResults::admit(&tx, &identity, &signature, issued).expect("admission")
+        else {
+            panic!("fresh");
+        };
+        call.admitted_request = Some(token.clone());
+        let operation = json!({"agent":"agent","epoch":3,"accountKey":"account","connectionId":"connection","providerGeneration":7,"rootRequestId":root});
+        let record = json!({"id":"watch","agent":"agent","status":"running","operation":operation,"streamQueue":[{"cursor":"output:1","operation":operation,"offset":0,"byteLength":1,"deltaBase64":"YQ=="}]});
+        tx.execute(
+            "INSERT INTO runtime_monitors(id,record) VALUES('watch',?1)",
+            [record.to_string()],
+        )
+        .expect("owner and prior output");
+        RequestResults::gc(&tx, issued + REQUEST_RESULT_TTL_MS + 1).expect("expire root");
+        assert!(
+            !super::settle_provider_call(
+                &tx,
+                &call,
+                &RequestResult::Reply(json!({"processId":"watch"}))
+            )
+            .expect("invalid positive proof held")
+        );
+        let result = RequestResult::Reply(json!({"exitCode":0}));
+        assert!(super::settle_provider_call(&tx, &call, &result).expect("late exact result"));
+        assert!(super::settle_provider_call(&tx, &call, &result).expect("duplicate result"));
+        RequestResults::settle(
+            &tx,
+            &token,
+            &ResultEnvelope {
+                actor: Some("agent".into()),
+                reply: result,
+                references: vec![],
+            },
+        )
+        .expect("late response settlement allowed");
+        assert!(
+            RequestResults::replay(
+                &tx,
+                token.id(),
+                &signature,
+                issued + REQUEST_RESULT_TTL_MS + 1
+            )
+            .is_err(),
+            "transport replay already expired"
+        );
+        let saved = studio_runtime_store::MonitorsRepository::get(&tx, "watch")
+            .expect("read")
+            .expect("owner");
+        let queue = saved.value()["streamQueue"].as_array().expect("queue");
+        assert_eq!(queue.len(), 2);
+        assert_eq!(queue[0]["cursor"], "output:1");
+        assert_eq!(queue[1]["kind"], "exit");
+        assert_eq!(queue[1]["code"], 0);
+        call.scope.generation += 1;
+        assert!(
+            !super::settle_provider_call(&tx, &call, &RequestResult::Reply(json!({"exitCode":0})))
+                .expect("old generation cannot settle another owner")
+        );
+        tx.execute(
+            "UPDATE runtime_monitors SET record='{' WHERE id='watch'",
+            [],
+        )
+        .expect("malformed owner");
+        assert!(
+            !super::settle_provider_call(&tx, &call, &RequestResult::Reply(json!({"exitCode":0})))
+                .expect("invalid owner holds only its call")
+        );
+        assert_eq!(
+            tx.query_row(
+                "SELECT record FROM runtime_monitors WHERE id='watch'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .expect("raw owner preserved"),
+            "{"
+        );
+        tx.execute_batch("ALTER TABLE runtime_monitors RENAME COLUMN record TO broken")
+            .expect("SQL failure boundary");
+        assert!(
+            super::settle_provider_call(&tx, &call, &RequestResult::Reply(json!({"exitCode":0})))
+                .is_err(),
+            "SQL errors remain real transaction failures"
+        );
+    }
 
     #[test]
     fn startup_monitor_selection_keeps_only_active_statuses_in_id_order() {

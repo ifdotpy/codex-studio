@@ -133,6 +133,13 @@ fn binding(
     }
     Ok(Some(Binding {
         request: preparation::VmProviderLaunchRequest {
+            root_request_id: super::store::execution_admission(connection, &id)?.0,
+            source: super::store::execution_admission(connection, &id)?.1,
+            final_effect:
+                studio_runtime_store::ExecutionHistoryRepository::vm_credential_refresh_admission(
+                    connection, &id,
+                )?,
+            attempt_id: id.clone(),
             agent_id: actor.into(),
             epoch: record.epoch,
             generation,
@@ -278,6 +285,20 @@ impl Worker {
                 recovered: Vec::new(),
             },
         )
+        .await?;
+        let stream_account = self.account.clone();
+        let stream_actor = request.agent_id.clone();
+        let stream_connection = self.connection_id.clone();
+        self.db("vm_reattach_stream", move |store| async move {
+            super::store::attach_provider_stream(
+                &store,
+                &stream_account,
+                Some(&stream_actor),
+                generation.0,
+                &stream_connection,
+            )
+            .await
+        })
         .await?;
         self.install_vm_session(request, session, None, true)?;
         Ok(true)

@@ -1,5 +1,6 @@
 import { hiddenElectronArguments } from "./hidden-electron.ts";
 import assert from "node:assert/strict";
+import { requestId } from "studio-claude-bridge/request-id";
 import type { ElectronApplication } from "playwright-core";
 import { _electron as electron } from "playwright-core";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -12,6 +13,7 @@ import { fixture } from "../web/tests/servers/multi-server-fixture.ts";
 const root = path.dirname(fileURLToPath(import.meta.url));
 const folder = await mkdtemp(path.join(tmpdir(), "studio-native-frames-"));
 const remote = await fixture("Remote", true);
+const pairRequestId = requestId();
 let desktop: ElectronApplication | undefined;
 try {
   const executablePath = process.env.CODEX_FRAMES_EXECUTABLE;
@@ -64,19 +66,25 @@ try {
   );
   await page.waitForFunction(() => !!window.codexDesktop);
   await page.locator("body").click({ position: { x: 1, y: 1 }, force: true });
-  await page.evaluate(async (invitation) => {
-    const server = await window.codexDesktop!.serverCredentialAction!({
-      action: "pair",
-      origin: invitation.origin,
-      invitation,
-      requestId: crypto.randomUUID(),
-    });
-    localStorage.setItem("studio-paired-servers-v1", JSON.stringify([server]));
-    localStorage.setItem(
-      "studio-selected-server",
-      (server as import("./server-credentials.ts").PairReceipt).id,
-    );
-  }, remote.invitation);
+  await page.evaluate(
+    async ({ invitation, requestId }) => {
+      const server = await window.codexDesktop!.serverCredentialAction!({
+        action: "pair",
+        origin: invitation.origin,
+        invitation,
+        requestId,
+      });
+      localStorage.setItem(
+        "studio-paired-servers-v1",
+        JSON.stringify([server]),
+      );
+      localStorage.setItem(
+        "studio-selected-server",
+        (server as import("./server-credentials.ts").PairReceipt).id,
+      );
+    },
+    { invitation: remote.invitation, requestId: pairRequestId },
+  );
   await page.reload();
   const frame = page.frameLocator('iframe[title="Studio on Remote"]');
   await frame.getByRole("button", { name: "New chat", exact: true }).waitFor();

@@ -494,13 +494,10 @@ pub(super) async fn dispatch(
             )
             .await
             {
-                Ok(value) => written(value, Vec::new()),
+                Ok(value) => written(&value, Vec::new()),
                 // The bridge returns the earlier request of the same link, so a
                 // refusal, also after a lost reply, is safe to send again.
-                Err(message) => DispatchedOperation::NotSent(OperationResult {
-                    value: json!(message),
-                    signals: Vec::new(),
-                }),
+                Err(message) => DispatchedOperation::NotSent(OperationResult::reply(&message)),
             }
         }
         "orchestration_servers" => {
@@ -520,7 +517,7 @@ pub(super) async fn dispatch(
                     "model-directory/status-and-dispatch-capacity",
                 ))));
             };
-            written(port.status(store_ref, actor, args, now).await?, Vec::new())
+            written(&port.status(store_ref, actor, args, now).await?, Vec::new())
         }
         "orchestration_watch" => {
             let action = args["action"].as_str().unwrap_or("list");
@@ -545,7 +542,17 @@ pub(super) async fn dispatch(
                     .cancel_monitor(&monitor_id, actor_id, now)
                     .await?;
             }
-            written(result.value, Vec::new())
+            if action != "list" {
+                crate::managed_status_watch::acknowledge_rule_cancellations(
+                    store_ref,
+                    actor_id,
+                    u64::try_from(actor.record().epoch).map_err(|_| Error::Stale)?,
+                    request_id,
+                )
+                .await
+                .map_err(super::runtime_ports::rules_error)?;
+            }
+            written(&result.value, Vec::new())
         }
         "orchestration_spawn" | "orchestration_review" => {
             let Some(port) = ports.child_creation.as_ref() else {
@@ -595,7 +602,7 @@ pub(super) async fn dispatch(
                 ))));
             };
             written(
-                port.create(store_ref, actor, args, request_id, now).await?,
+                &port.create(store_ref, actor, args, request_id, now).await?,
                 Vec::new(),
             )
         }
@@ -626,7 +633,7 @@ pub(super) async fn dispatch(
                 Err(_) => Err(Error::Invalid("Invalid monitor input")),
             };
             match result {
-                Ok(value) => written(value, Vec::new()),
+                Ok(value) => written(&value, Vec::new()),
                 Err(error) => match input_attempt(store_ref, monitor_id, request_id).await {
                     Ok(Some(record)) => managed_input_receipt(&record, request_id)?,
                     Ok(None) => not_sent(error),
@@ -657,15 +664,12 @@ pub(super) async fn dispatch(
                     value["requestId"] = json!(request_id);
                     value["detail"] =
                         json!({"tool":"orchestration_task","action":"get","task_id":record["id"]});
-                    written(value, Vec::new())
+                    written(&value, Vec::new())
                 }
                 WorkActionOutcome::Refused(message) => {
-                    DispatchedOperation::NotSent(OperationResult {
-                        value: json!(message),
-                        signals: Vec::new(),
-                    })
+                    DispatchedOperation::NotSent(OperationResult::reply(&message))
                 }
-                WorkActionOutcome::Unknown(message) => unknown(json!(message), Vec::new()),
+                WorkActionOutcome::Unknown(message) => unknown(&json!(message), Vec::new()),
             }
         }
         crate::host_exec::TOOL => {
@@ -717,7 +721,7 @@ pub(super) async fn dispatch(
             )
             .await
             {
-                Ok(value) => written(value, Vec::new()),
+                Ok(value) => written(&value, Vec::new()),
                 Err(error) => not_sent(callback_refusal(
                     super::services::manage::management_error(error),
                 )),
@@ -866,13 +870,15 @@ async fn lifecycle_management(
         .await;
     let action = match checked {
         Ok(action) => action,
-        Err(error @ (Error::Store(_) | Error::Sqlite(_) | Error::Work(_))) => return Err(error),
+        Err(error @ (Error::Expired | Error::Store(_) | Error::Sqlite(_) | Error::Work(_))) => {
+            return Err(error);
+        }
         // These checks only read; a refusal proves that nothing was applied.
         Err(error) => return Ok(not_sent(error)),
     };
     let outcome = match action {
         LifecycleCommand::Single(action) => {
-            crate::agent_management_store::execute(store, &action, now).await
+            crate::agent_management_store::execute(store, &action, now, None).await
         }
         LifecycleCommand::Finished {
             actor,
@@ -894,7 +900,7 @@ async fn lifecycle_management(
         }),
     };
     match outcome {
-        Ok(value) => Ok(written(value, Vec::new())),
+        Ok(value) => Ok(written(&value, Vec::new())),
         // Every decision refusal precedes its single writer transaction.
         Err(crate::agent_management::ManagementError::Invalid(message)) => {
             Ok(not_sent(Error::Invalid(message)))
@@ -907,12 +913,14 @@ async fn lifecycle_management(
         )),
         // A store failure can follow the commit, for example in workspace cleanup.
         Err(crate::agent_management::ManagementError::Store(error)) => Err(Error::Store(error)),
+        Err(crate::agent_management::ManagementError::Expired) => Err(Error::Expired),
     }
 }
 
 fn callback_refusal(error: crate::provider_callbacks::CallbackError) -> Error {
     use crate::provider_callbacks::CallbackError as C;
     match error {
+        C::Expired => Error::Expired,
         C::Invalid(message) => Error::Invalid(message),
         C::Dependency(name) => Error::Unavailable(name),
         C::Store(error) => Error::Store(error),
@@ -945,19 +953,16 @@ async fn speak(
     })
     .await
     {
-        Ok(value) => written(value, Vec::new()),
+        Ok(value) => written(&value, Vec::new()),
         Err(V::Voice(crate::voice::VoiceError::InvalidRequest(message)))
         | Err(V::Voice(crate::voice::VoiceError::Conflict(message))) => {
             not_sent(Error::Invalid(message))
         }
         Err(V::RequiresDependency(name)) => not_sent(Error::Unavailable(name)),
         Err(error @ (V::Unknown | V::Store(_) | V::Voice(crate::voice::VoiceError::Store(_)))) => {
-            unknown(json!(error.to_string()), Vec::new())
+            unknown(&json!(error.to_string()), Vec::new())
         }
-        Err(error) => DispatchedOperation::Rejected(OperationResult {
-            value: json!(error.to_string()),
-            signals: Vec::new(),
-        }),
+        Err(error) => DispatchedOperation::Rejected(OperationResult::reply(&error.to_string())),
     }
 }
 
@@ -1042,10 +1047,7 @@ pub(crate) fn managed_input_receipt(
     let receipt = [&record["lastInputAttempt"], &record["inputAttempt"]]
         .into_iter()
         .find(|receipt| receipt.get("id").and_then(Value::as_str) == Some(request_id));
-    let result = |value| OperationResult {
-        value,
-        signals: Vec::new(),
-    };
+    let result = |value: Value| OperationResult::reply(&value);
     Ok(match receipt {
         Some(receipt) if receipt["status"] == "acknowledged" => DispatchedOperation::Applied(
             result(receipt.get("response").cloned().unwrap_or(Value::Null)),
@@ -1064,7 +1066,7 @@ pub(crate) fn managed_input_receipt(
 /// read-only check before the operation's first write proves it was not applied.
 fn refused_before_write(error: Error) -> Result<Option<DispatchedOperation>, Error> {
     match error {
-        Error::Store(_) | Error::Sqlite(_) | Error::Work(_) => Err(error),
+        Error::Expired | Error::Store(_) | Error::Sqlite(_) | Error::Work(_) => Err(error),
         error @ Error::Invalid(_)
         | error @ Error::Stale
         | error @ Error::InvalidStored { .. }
@@ -1083,7 +1085,10 @@ async fn child_creation_refusal(
     request_id: &str,
     error: Error,
 ) -> Result<DispatchedOperation, Error> {
-    if matches!(error, Error::Store(_) | Error::Sqlite(_) | Error::Work(_)) {
+    if matches!(
+        error,
+        Error::Expired | Error::Store(_) | Error::Sqlite(_) | Error::Work(_)
+    ) {
         return Err(error);
     }
     if tool == "orchestration_spawn" {
@@ -1113,7 +1118,8 @@ fn not_sent(error: Error) -> DispatchedOperation {
         Error::Unavailable(crate::model_catalog::MODEL_CATALOG_DEPENDENCY) => {
             json!(MODEL_CATALOG_RETRY)
         }
-        error @ Error::Invalid(_)
+        error @ Error::Expired
+        | error @ Error::Invalid(_)
         | error @ Error::Stale
         | error @ Error::InvalidStored { .. }
         | error @ Error::StoredAt(_)
@@ -1122,25 +1128,28 @@ fn not_sent(error: Error) -> DispatchedOperation {
         | error @ Error::Sqlite(_)
         | error @ Error::Work(_) => json!(error.to_string()),
     };
-    DispatchedOperation::NotSent(OperationResult {
-        value,
-        signals: Vec::new(),
-    })
+    DispatchedOperation::NotSent(OperationResult::reply(&value))
 }
 
 fn unknown_input() -> DispatchedOperation {
     unknown(
-        json!("Monitor input outcome unknown; do not repeat it"),
+        &json!("Monitor input outcome unknown; do not repeat it"),
         Vec::new(),
     )
 }
 
-fn unknown(value: Value, signals: Vec<WakeSignal>) -> DispatchedOperation {
-    DispatchedOperation::Unknown(OperationResult { value, signals })
+fn unknown(value: &Value, signals: Vec<WakeSignal>) -> DispatchedOperation {
+    DispatchedOperation::Unknown(OperationResult {
+        signals,
+        ..OperationResult::reply(value)
+    })
 }
 
-fn written(value: Value, signals: Vec<WakeSignal>) -> DispatchedOperation {
-    DispatchedOperation::Applied(OperationResult { value, signals })
+fn written(value: &Value, signals: Vec<WakeSignal>) -> DispatchedOperation {
+    DispatchedOperation::Applied(OperationResult {
+        signals,
+        ..OperationResult::reply(value)
+    })
 }
 
 #[cfg(test)]
@@ -1170,6 +1179,7 @@ mod tests {
         let actor = crate::managed_host_tools::Actor::from_record(&record.value(), "lead", 1)
             .expect("actor");
         let context = crate::provider_callbacks::CallbackContext {
+            stream_id: "default".into(),
             agent: "lead".into(),
             account: "default".into(),
             connection: "fixture".into(),
@@ -1204,7 +1214,7 @@ mod tests {
         .expect("maintenance report has an async owner");
         assert!(matches!(result, DispatchedOperation::Applied(_)));
         assert_eq!(
-            result.result().value,
+            result.result().test_value(),
             json!({"worktrees":[],"workspaces":[],"bases":[]})
         );
     }
@@ -1237,14 +1247,15 @@ mod tests {
             crate::model_catalog::MODEL_CATALOG_DEPENDENCY,
         ));
         assert!(matches!(refusal, DispatchedOperation::NotSent(_)));
-        let text = refusal.result().value.as_str().expect("refusal text");
+        let value = refusal.result().test_value();
+        let text = value.as_str().expect("refusal text");
         assert!(text.contains("temporarily unavailable"), "{text}");
         assert!(text.contains("new request_id"), "{text}");
         let other = super::not_sent(crate::managed_host_tools::Error::Unavailable(
             "agent-create/managed-environment",
         ));
         assert_eq!(
-            other.result().value,
+            other.result().test_value(),
             json!("Not implemented: requires agent-create/managed-environment")
         );
     }
@@ -1258,7 +1269,7 @@ mod tests {
         ));
         assert!(matches!(refusal, DispatchedOperation::NotSent(_)));
         assert_eq!(
-            refusal.result().value,
+            refusal.result().test_value(),
             json!("Invalid stored record at agents/a/cwd")
         );
         assert!(matches!(
@@ -1269,10 +1280,7 @@ mod tests {
 
     #[test]
     fn child_creation_payload_does_not_determine_delivery() {
-        let payload = OperationResult {
-            value: json!({"outcome":"unknown"}),
-            signals: Vec::new(),
-        };
+        let payload = OperationResult::reply(&json!({"outcome":"unknown"}));
         let applied = crate::managed_host_tools::DispatchedOperation::Applied(payload.clone());
         let unknown = crate::managed_host_tools::DispatchedOperation::Unknown(payload);
         assert!(matches!(applied, DispatchedOperation::Applied(_)));

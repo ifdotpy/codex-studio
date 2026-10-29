@@ -115,6 +115,13 @@ async fn fixture(
 ) {
     let root = tempfile::tempdir().unwrap();
     let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
+    store
+        .transaction(|tx| {
+            studio_runtime_store::receipt_schema::create(tx)?;
+            Ok(())
+        })
+        .await
+        .unwrap();
     let agent = json!({"id":"agent","rootId":"agent","epoch":2,"cwd":root.path(),"model":"model","role":"orchestrator","provider":provider,"accountKey":"account","threadId":"thread","status":"paused","autoWake":false});
     store
         .transaction(move |tx| {
@@ -151,8 +158,12 @@ async fn fixture(
     });
     (root, store, router(state).unwrap(), session)
 }
+thread_local! {
+    static REQUEST_ID: String = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+}
 fn body() -> Value {
-    json!({"id":"agent","name":"server","request_id":"f43c1885-f4fc-485b-bf99-8b4f31e7e7c4","session":{"account":"account","thread":"thread","epoch":2,"connection":"connection","generation":1}})
+    let request_id = REQUEST_ID.with(Clone::clone);
+    json!({"id":"agent","name":"server","request_id":request_id,"session":{"account":"account","thread":"thread","epoch":2,"connection":"connection","generation":1}})
 }
 async fn request(app: &axum::Router, path: &str, body: Option<Value>, token: bool) -> (u16, Value) {
     request_from(app, path, body, token, "http://127.0.0.1:49171").await
@@ -242,17 +253,33 @@ async fn mcp_reconnect_replays_lost_success_without_second_provider_call() {
     let first = request(&app, "/api/mcp/reconnect", Some(body()), true).await;
     assert_eq!(first.0, 200, "{first:?}");
     assert_eq!(first.1["status"], "completed");
-    let receipt = studio_runtime_store::EventWriteRepository::receipt(
-        &store.test_reader().unwrap(),
-        "mcp-reconnect:f43c1885-f4fc-485b-bf99-8b4f31e7e7c4",
+    let root = body()["request_id"].as_str().unwrap().to_owned();
+    let identity = studio_runtime_schema::persistence::RequestIdentity::new(
+        "mcp-reconnect",
+        &["agent"],
+        &root,
+        &["reconnect"],
+    )
+    .unwrap();
+    let db = store.test_reader().unwrap();
+    let signature = serde_json::to_value(
+        serde_json::from_value::<studio_runtime_http::generated::McpReconnectRequest>(body())
+            .unwrap(),
     )
     .unwrap()
-    .unwrap();
+    .to_string();
+    let saved_signature: String = db
+        .query_row(
+            "SELECT signature FROM request_results WHERE id=?1",
+            [identity.id()],
+            |row| row.get(0),
+        )
+        .unwrap();
     assert_eq!(
-        receipt.signature,
-        r#"{"id":"agent","name":"server","request_id":"f43c1885-f4fc-485b-bf99-8b4f31e7e7c4","session":{"account":"account","connection":"connection","epoch":2,"generation":1,"thread":"thread"}}"#,
-        "typed requests must preserve historical receipt signature bytes"
+        saved_signature, signature,
+        "canonical signature bytes remain exact"
     );
+    drop(db);
     assert_eq!(
         request(&app, "/api/mcp/reconnect", Some(body()), true).await,
         first
@@ -430,25 +457,78 @@ async fn mcp_reconnect_concurrent_replay_and_crash_receipt_never_resend() {
         completed
     );
     let mut pending = body();
-    pending["request_id"] = json!("c0981776-2200-48b2-b401-f21f711e5442");
-    // The process stopped after the durable claim, before a result was saved.
-    // Serialize the generated request, as the real caller does before admission.
+    let pending_root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    pending["request_id"] = json!(pending_root);
     let canonical: studio_runtime_http::generated::McpReconnectRequest =
         serde_json::from_value(pending.clone()).unwrap();
     let signature = serde_json::to_value(canonical).unwrap().to_string();
-    store
-        .transaction(move |tx| {
-            studio_runtime_store::EventWriteRepository::put_receipt(
-                tx,
-                "mcp-reconnect:c0981776-2200-48b2-b401-f21f711e5442",
-                &signature,
-                "{}",
-            )
-        })
-        .await
-        .unwrap();
+    store.transaction_with_error(move |tx| -> Result<(), studio_runtime_store::StoreError> {
+        use studio_runtime_services::event_write::{begin_request, CallerAdmission, RequestKey};
+        let request = match begin_request::<studio_runtime_http::generated::McpReconnectResponse>(tx, RequestKey::new("mcp-reconnect", &["agent"], &pending_root).operation(&["reconnect"]), &signature, (studio_runtime_services::event_write::unix_time().unwrap() * 1000.0) as i64)? {
+            CallerAdmission::Fresh(request) => request,
+            CallerAdmission::Replay(_) => panic!("fresh request"),
+        };
+        tx.execute("INSERT INTO runtime_outbox(id,kind,owner_kind,owner_id,request_id,signature,status,next_at,payload,created) VALUES(?1,'mcp_reconnect','agent','agent',?2,?3,'unknown',NULL,?4,?5)", rusqlite::params![format!("mcp-reconnect:{pending_root}"),request.id(),signature,json!({"request":request}).to_string(),request.created()])?;
+        Ok(())
+    }).await.unwrap();
     let replay = request(&app, "/api/mcp/reconnect", Some(pending), true).await;
     assert_eq!(replay.0, 200, "{replay:?}");
     assert_eq!(replay.1["status"], "unknown");
     assert_eq!(session.calls.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn mcp_reconnect_v4_miss_returns_expired_without_provider_send() {
+    let (_root, _store, app, session) = fixture("claude", false).await;
+    let mut expired = body();
+    expired["request_id"] = json!("f43c1885-f4fc-485b-bf99-8b4f31e7e7c4");
+    let result = request(&app, "/api/mcp/reconnect", Some(expired), true).await;
+    assert_eq!(result.0, 410, "{result:?}");
+    assert!(result.1["error"].as_str().unwrap().contains("expired"));
+    assert!(session.calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn mcp_reconnect_migrated_raw_v4_key_replays_after_authorization() {
+    let (_root, store, app, session) = fixture("claude", false).await;
+    let mut original = body();
+    original["request_id"] = json!("f43c1885-f4fc-485b-bf99-8b4f31e7e7c4");
+    let typed: studio_runtime_http::generated::McpReconnectRequest =
+        serde_json::from_value(original.clone()).unwrap();
+    let signature = serde_json::to_value(typed).unwrap().to_string();
+    let reply = json!({"status":"completed","message":"Saved original reconnect reply."});
+    let envelope = json!({"actor":"agent","reply":reply,"references":[]}).to_string();
+    store
+        .transaction(move |tx| {
+            tx.execute(
+                "INSERT INTO request_results(id,signature,result,created) VALUES(?1,?2,?3,?4)",
+                rusqlite::params![
+                    "mcp-reconnect:f43c1885-f4fc-485b-bf99-8b4f31e7e7c4",
+                    signature,
+                    envelope,
+                    (studio_runtime_services::event_write::unix_time().unwrap() * 1000.0) as i64
+                ],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        request(&app, "/api/mcp/reconnect", Some(original.clone()), false)
+            .await
+            .0,
+        403
+    );
+    assert_eq!(
+        request(&app, "/api/mcp/reconnect", Some(original.clone()), true).await,
+        (200, reply)
+    );
+    original["name"] = json!("different");
+    assert_eq!(
+        request(&app, "/api/mcp/reconnect", Some(original), true)
+            .await
+            .0,
+        409
+    );
+    assert!(session.calls.lock().unwrap().is_empty());
 }

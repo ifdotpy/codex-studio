@@ -125,7 +125,7 @@ mod tests {
              CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              INSERT INTO runtime_rules VALUES('r2','{\"id\":\"r2\",\"kind\":\"interval\"}');
              INSERT INTO runtime_rules VALUES('r1','{\"id\":\"r1\",\"kind\":\"interval\"}');
-             INSERT INTO runtime_agents VALUES('a1','{\"id\":\"a1\",\"provider\":\"codex\",\"rootId\":\"a1\",\"epoch\":0,\"status\":\"idle\"}');"),
+             INSERT INTO runtime_agents(id,record) VALUES('a1','{\"id\":\"a1\",\"provider\":\"codex\",\"rootId\":\"a1\",\"epoch\":0,\"status\":\"idle\"}');"),
         )
         .expect("declared tables create");
         db.execute_batch(crate::agent_volatile::agent_volatile_table_sql())

@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use rusqlite::OptionalExtension;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use studio_runtime_services::coordination::{self, PostManagedMessage};
@@ -11,6 +12,26 @@ use studio_runtime_store::RuntimeStore;
 
 /// Marker in the historical SQL and JSON, rebound to this fixture's real workspace.
 const WORKSPACE_MARKER: &str = "__INGRESS_WORKSPACE__";
+
+fn request_id() -> String {
+    studio_runtime_schema::persistence::RequestIdentity::issue_root()
+}
+
+fn normalize_id(value: &mut Value, id: &str) {
+    match value {
+        Value::String(text) if text == id => *text = "message".into(),
+        Value::Array(rows) => rows.iter_mut().for_each(|row| normalize_id(row, id)),
+        Value::Object(fields) => {
+            if let Some(value) = fields.remove(id) {
+                fields.insert("message".into(), value);
+            }
+            for value in fields.values_mut() {
+                normalize_id(value, id);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -68,6 +89,17 @@ impl Fixture {
             .expect("rebind seed hash");
         }
         drop(db);
+        Self::seed_identity(&root);
+        root
+    }
+    fn seed_copy(&self, name: &str, template: &crate::state_template::StateTemplate) -> PathBuf {
+        let root = self.root.path().join(name);
+        std::fs::create_dir(&root).expect("fixture directory");
+        template.write(&root);
+        Self::seed_identity(&root);
+        root
+    }
+    fn seed_identity(root: &Path) {
         let identity_root = root.join("multi-server");
         std::fs::create_dir(&identity_root).expect("identity directory");
         let identity = identity_root.join("identity.json");
@@ -84,7 +116,6 @@ impl Fixture {
             std::fs::set_permissions(&identity, std::fs::Permissions::from_mode(0o600))
                 .expect("private identity file");
         }
-        root
     }
     fn expected(&self, name: &str) -> Expected {
         let workspace =
@@ -102,7 +133,10 @@ impl Fixture {
                 .join(format!("{case}.sql")),
         )
         .expect("frozen live case configuration");
-        let sql = self.sql(&source);
+        let sql = self.sql(&source).replace(
+            "INSERT INTO \"runtime_agents\" VALUES",
+            "INSERT INTO \"runtime_agents\"(id,record) VALUES",
+        );
         store.transaction(move |tx| {
             tx.execute_batch(&sql)?;
             tx.execute("UPDATE sync_entities SET hash=sync_entity_hash(payload) WHERE payload IS NOT NULL", [])?;
@@ -114,6 +148,7 @@ impl Fixture {
 async fn send(
     store: &RuntimeStore,
     step: &Value,
+    request_id: &str,
 ) -> Result<coordination::PostMessageResult, coordination::CoordinationError> {
     let room = step.get("room").and_then(Value::as_str).unwrap_or("agent");
     let prepared = PreparedAdmission::read(&store.test_reader().expect("read"), room)
@@ -145,8 +180,9 @@ async fn send(
             .await?;
     }
     let step = step.clone();
+    let request_id = request_id.to_owned();
     store
-        .transaction_with_error(move |tx| post(tx, &step, &prepared))
+        .transaction_with_error(move |tx| post(tx, &step, &prepared, &request_id))
         .await
 }
 
@@ -154,6 +190,7 @@ fn post(
     tx: &studio_runtime_store::Transaction<'_>,
     step: &Value,
     prepared: &PreparedAdmission,
+    request_id: &str,
 ) -> Result<coordination::PostMessageResult, coordination::CoordinationError> {
     let assets = step
         .get("assets")
@@ -164,7 +201,7 @@ fn post(
         tx,
         PostManagedMessage {
             room: step.get("room").and_then(Value::as_str).unwrap_or("agent"),
-            id: "message",
+            id: request_id,
             text: step
                 .get("text")
                 .and_then(Value::as_str)
@@ -184,6 +221,8 @@ fn post(
 #[tokio::test]
 async fn python_send_and_receipt_corpus() {
     let fixture = Fixture::new();
+    let seed = fixture.seed("migrated-template");
+    let template = crate::state_template::StateTemplate::migrate(&seed).await;
     let cases: Vec<Value> =
         serde_json::from_str(include_str!("wave7_p03_message_ingress/cases.json")).expect("cases");
     for mut case in cases {
@@ -203,68 +242,138 @@ async fn python_send_and_receipt_corpus() {
             }
         }
         let name = case["name"].as_str().expect("case name");
-        let root = fixture.seed(name);
+        let root = fixture.seed_copy(name, &template);
         let expected = fixture.expected(name);
         let store = RuntimeStore::open(Some(&root))
             .await
             .unwrap_or_else(|error| panic!("{name}: frozen state opens: {error}"));
+        let request_id = request_id();
         fixture.configure(&store, name).await;
         let mut results = Vec::new();
         for step in case["steps"].as_array().expect("steps") {
             if let Some(status) = step.get("status") {
                 let status = status.as_str().map(str::to_owned);
                 let error = step.get("error").and_then(Value::as_str).map(str::to_owned);
+                let id = request_id.clone();
                 store
                     .transaction(move |tx| {
                         tx.execute(
-                            "UPDATE runtime_events SET status=?1,error=?2 WHERE id='message'",
-                            rusqlite::params![status, error],
+                            "UPDATE runtime_events SET status=?1,error=?2 WHERE id=?3",
+                            rusqlite::params![status, error, id],
                         )?;
                         Ok(())
                     })
                     .await
                     .expect("advance event");
             } else {
-                results.push(match send(&store, step).await {
-                    Ok(posted) => posted.receipt,
+                results.push(match send(&store, step, &request_id).await {
+                    Ok(posted) => serde_json::from_slice(
+                        &serde_json::to_vec(&posted.receipt).expect("receipt bytes"),
+                    )
+                    .expect("receipt JSON"),
+                    Err(coordination::CoordinationError::RequestResult(
+                        studio_runtime_store::request_results::RequestResultError::Conflict {
+                            ..
+                        },
+                    )) => json!({"error":"This message id has different content"}),
                     Err(error) => json!({"error":error.to_string()}),
                 });
             }
         }
+        let mut results = json!(results);
+        normalize_id(&mut results, &request_id);
+        let mut expected_results = case.get("rustResults").unwrap_or(&expected.results).clone();
+        if let Some(replies) = expected_results.as_array_mut()
+            && let Some(first) = replies.first().cloned()
+        {
+            for reply in replies.iter_mut().skip(1) {
+                if reply.get("id") == Some(&json!("message")) && reply.get("status").is_some() {
+                    *reply = first.clone();
+                }
+            }
+        }
         assert_eq!(
-            json!(results),
-            case.get("rustResults").unwrap_or(&expected.results).clone(),
+            results, expected_results,
             "{name}: complete send results (existing account-name redaction is explicit)"
         );
-        let receipts = store
+        let receipt_id = request_id.clone();
+        let mut receipts = store
             .transaction_with_error(move |tx| {
                 studio_runtime_services::coordination_reads::delivery_receipts(
                     tx,
                     "agent",
-                    &["message".into(), "missing".into(), "message".into()],
+                    &[receipt_id.clone(), "missing".into(), receipt_id],
                 )
             })
             .await
             .unwrap_or_else(|error| json!({"error":error.to_string()}));
+        normalize_id(&mut receipts, &request_id);
         assert_eq!(receipts, expected.receipts, "{name}: complete receipts");
         let actual = logical_state(&store);
+        let key = studio_runtime_schema::persistence::RequestIdentity::new(
+            "message",
+            &["agent", "user"],
+            &request_id,
+            &[],
+        )
+        .expect("message identity");
+        let saved: Option<(String, String)> = store
+            .test_reader()
+            .expect("reader")
+            .query_row(
+                "SELECT signature,result FROM request_results WHERE id=?1",
+                [key.id()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .expect("saved result");
+        let old = expected
+            .operation_receipts
+            .as_array()
+            .expect("legacy receipts");
+        assert_eq!(
+            usize::from(saved.is_some()),
+            old.len(),
+            "{name}: saved receipt count"
+        );
+        if let Some((signature, raw)) = saved {
+            let typed: studio_runtime_store::request_results::ResultEnvelope<
+                coordination::ManagedMessageReply,
+            > = serde_json::from_str(&raw).expect("stored managed reply decodes");
+            let original: Value = serde_json::from_str(&raw).expect("stored envelope");
+            let rewritten: Value =
+                serde_json::from_slice(&serde_json::to_vec(&typed).expect("typed bytes"))
+                    .expect("typed JSON");
+            assert_eq!(rewritten, original, "{name}: stored reply round trip");
+            assert_eq!(
+                signature,
+                studio_runtime_services::event_write::python_json(&old[0]["signature"]),
+                "{name}: exact signature"
+            );
+            let mut reply: Value =
+                serde_json::from_str::<Value>(&raw).expect("saved envelope")["reply"].clone();
+            normalize_id(&mut reply, &request_id);
+            assert_eq!(reply, old[0]["result"], "{name}: saved reply");
+        }
         for (table, rows) in &actual {
-            if table == "runtime_operation_receipts" {
-                assert_eq!(
-                    expected.state[table],
-                    json!([]),
-                    "Python has no auxiliary admission receipt"
-                );
-                assert_eq!(
-                    rows, &expected.operation_receipts,
-                    "{name}: complete auxiliary receipts"
-                );
-            } else {
-                let (mut rows, mut python) = (rows.clone(), expected.state[table].clone());
-                crate::removed_budget_fields::strip(&mut rows);
-                crate::removed_budget_fields::strip(&mut python);
-                assert_json(&rows, &python, &format!("{name}/{table}"));
+            let (mut rows, mut python) = (rows.clone(), expected.state[table].clone());
+            normalize_id(&mut rows, &request_id);
+            if table == "messages" {
+                for row in python.as_array_mut().expect("messages") {
+                    for status in row["deliveries"]
+                        .as_object_mut()
+                        .expect("deliveries")
+                        .values_mut()
+                    {
+                        if status.is_string() {
+                            *status = json!({"status":status,"error":null});
+                        }
+                    }
+                }
             }
+            crate::removed_budget_fields::strip(&mut rows);
+            crate::removed_budget_fields::strip(&mut python);
+            assert_json(&rows, &python, &format!("{name}/{table}"));
         }
     }
 }
@@ -347,10 +456,6 @@ fn logical_state(store: &RuntimeStore) -> BTreeMap<String, Value> {
         (
             "messages",
             "SELECT json_object('id',id,'room',room,'author',author,'text',text,'at','generated timestamp','deliveries',json(deliveries)) FROM messages ORDER BY rowid",
-        ),
-        (
-            "runtime_operation_receipts",
-            "SELECT json_object('id',id,'signature',json(signature),'result',json(result)) FROM runtime_operation_receipts ORDER BY rowid",
         ),
         (
             "sync_entities",
@@ -445,7 +550,7 @@ const WRITE_BOUNDARIES: &[(&str, &str)] = &[
     ("runtime_event_meta", "INSERT"),
     ("runtime_events", "INSERT"),
     ("runtime_event_meta", "UPDATE"),
-    ("runtime_operation_receipts", "INSERT"),
+    ("request_results", "INSERT"),
     ("messages", "INSERT"),
     ("sync_entities", "INSERT"),
     ("sync_entities", "UPDATE"),
@@ -480,7 +585,14 @@ async fn arm_statement(
     count
 }
 
-fn crash_child(root: &Path, table: &str, operation: &str, point: &str, occurrence: usize) {
+fn crash_child(
+    root: &Path,
+    table: &str,
+    operation: &str,
+    point: &str,
+    occurrence: usize,
+    request_id: &str,
+) {
     let status = Command::new(std::env::current_exe().expect("test binary"))
         .args([
             "--exact",
@@ -493,6 +605,7 @@ fn crash_child(root: &Path, table: &str, operation: &str, point: &str, occurrenc
         .env("P03_CRASH_OPERATION", operation)
         .env("P03_CRASH_POINT", point)
         .env("P03_CRASH_OCCURRENCE", occurrence.to_string())
+        .env("P03_REQUEST_ID", request_id)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .spawn()
@@ -516,6 +629,7 @@ async fn ingress_crash_child() {
         .await
         .expect("child store");
     let table = std::env::var("P03_CRASH_TABLE").expect("table");
+    let request_id = std::env::var("P03_REQUEST_ID").expect("request identity");
     let point = std::env::var("P03_CRASH_POINT").expect("point");
     if table != "handoff" {
         arm_statement(
@@ -529,7 +643,9 @@ async fn ingress_crash_child() {
                 .expect("number"),
         )
         .await;
-        send(&store, &json!({})).await.expect("send before crash");
+        send(&store, &json!({}), &request_id)
+            .await
+            .expect("send before crash");
         panic!("statement boundary was not reached");
     }
     let prepared = PreparedAdmission::read(&store.test_reader().expect("read"), "agent")
@@ -538,9 +654,10 @@ async fn ingress_crash_child() {
         .await
         .expect("prepare");
     let before_commit = point == "before_commit";
+    let post_id = request_id.clone();
     let posted = store
         .transaction_with_error(move |tx| {
-            let posted = post(tx, &json!({}), &prepared)?;
+            let posted = post(tx, &json!({}), &prepared, &post_id)?;
             if before_commit {
                 std::process::exit(73);
             }
@@ -556,7 +673,7 @@ async fn ingress_crash_child() {
     let wakes = std::cell::Cell::new(0);
     assert!(posted.event_inserted);
     posted.notify_committed(|| wakes.set(wakes.get() + 1));
-    let replay = send(&store, &json!({}))
+    let replay = send(&store, &json!({}), &request_id)
         .await
         .expect("committed replay before handoff");
     replay.notify_committed(|| wakes.set(wakes.get() + 1));
@@ -575,13 +692,14 @@ async fn each_write_occurrence_and_commit_wake_crash_recovers_exactly_once() {
     let mut reached = 0;
     for &(table, operation) in WRITE_BOUNDARIES {
         if std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_none()
-            && !["runtime_events", "runtime_operation_receipts"].contains(&table)
+            && !["runtime_events", "request_results"].contains(&table)
         {
             continue;
         }
         for point in ["BEFORE", "AFTER"] {
             let root = fixture.seed(&format!("count-{table}-{operation}-{point}"));
             let store = RuntimeStore::open(Some(&root)).await.expect("count store");
+            let request_id = request_id();
             fixture.configure(&store, "capacity").await;
             let count = arm_statement(&store, table, operation, point, usize::MAX).await;
             let prepared = PreparedAdmission::read(&store.test_reader().expect("read"), "agent")
@@ -591,9 +709,10 @@ async fn each_write_occurrence_and_commit_wake_crash_recovers_exactly_once() {
                 .expect("prepare");
             let before = snapshot(&store);
             let prepared = prepared.clone();
+            let post_id = request_id.clone();
             let result = store
                 .transaction_with_error(move |tx| {
-                    post(tx, &json!({}), &prepared)?;
+                    post(tx, &json!({}), &prepared, &post_id)?;
                     Err::<(), _>(coordination::CoordinationError::InvalidRequest(
                         "census rollback",
                     ))
@@ -610,7 +729,7 @@ async fn each_write_occurrence_and_commit_wake_crash_recovers_exactly_once() {
             assert!(occurrences > 0, "{table}/{operation}: real write");
             drop(store);
             for occurrence in 1..=occurrences {
-                crash_child(&root, table, operation, point, occurrence);
+                crash_child(&root, table, operation, point, occurrence, &request_id);
                 let recovered = RuntimeStore::open(Some(&root))
                     .await
                     .expect("recover abrupt exit");
@@ -624,7 +743,7 @@ async fn each_write_occurrence_and_commit_wake_crash_recovers_exactly_once() {
             }
             let store = RuntimeStore::open(Some(&root)).await.expect("retry store");
             assert!(
-                send(&store, &json!({}))
+                send(&store, &json!({}), &request_id)
                     .await
                     .expect("retry")
                     .event_inserted
@@ -635,7 +754,7 @@ async fn each_write_occurrence_and_commit_wake_crash_recovers_exactly_once() {
                 .await
                 .expect("lost-response restart");
             assert!(
-                !send(&store, &json!({}))
+                !send(&store, &json!({}), &request_id)
                     .await
                     .expect("replay")
                     .event_inserted
@@ -648,20 +767,23 @@ async fn each_write_occurrence_and_commit_wake_crash_recovers_exactly_once() {
         let store = RuntimeStore::open(Some(&root))
             .await
             .expect("before handoff");
+        let request_id = request_id();
         let before = snapshot(&store);
         drop(store);
-        crash_child(&root, "handoff", "", point, 0);
+        crash_child(&root, "handoff", "", point, 0, &request_id);
         let store = RuntimeStore::open(Some(&root))
             .await
             .expect("handoff restart");
         if point == "before_commit" {
             assert_eq!(snapshot(&store), before);
         }
-        let response = send(&store, &json!({})).await.expect("handoff retry");
+        let response = send(&store, &json!({}), &request_id)
+            .await
+            .expect("handoff retry");
         assert_eq!(response.event_inserted, point == "before_commit");
         let committed = snapshot(&store);
         assert!(
-            !send(&store, &json!({}))
+            !send(&store, &json!({}), &request_id)
                 .await
                 .expect("replay")
                 .event_inserted
@@ -671,8 +793,8 @@ async fn each_write_occurrence_and_commit_wake_crash_recovers_exactly_once() {
             .test_reader()
             .expect("read")
             .query_row(
-                "SELECT count(*) FROM runtime_events WHERE id='message'",
-                [],
+                "SELECT count(*) FROM runtime_events WHERE id=?1",
+                [&request_id],
                 |row| row.get(0),
             )
             .expect("event count");
@@ -688,6 +810,7 @@ async fn event_projection_failure_returns_error_and_rolls_back_message_admission
     let fixture = Fixture::new();
     let root = fixture.seed("projection-failure");
     let store = RuntimeStore::open(Some(&root)).await.expect("store");
+    let request_id = request_id();
     store
         .transaction(move |tx| {
             tx.execute_batch(
@@ -712,6 +835,7 @@ async fn event_projection_failure_returns_error_and_rolls_back_message_admission
                 tx,
                 &json!({"id":"projection-failure-message","room":"agent","text":"rollback"}),
                 &prepared,
+                &request_id,
             )
         })
         .await;
@@ -745,17 +869,19 @@ async fn injected_policy_denials_and_changed_workspace_snapshot_write_nothing() 
     }
     let root = fixture.seed("gates");
     let store = RuntimeStore::open(Some(&root)).await.expect("store");
+    let request_id = request_id();
     for policy in [Policy {
         workspace_denied: true,
     }] {
         let before = snapshot(&store);
+        let request_id = request_id.clone();
         let result = store
             .transaction_with_error(move |tx| {
                 coordination::post_message_with_admission(
                     tx,
                     PostManagedMessage {
                         room: "agent",
-                        id: "message",
+                        id: &request_id,
                         text: "input",
                         delivery: studio_runtime_schema::delivery::DeliveryMoment::CurrentTurn,
                         assets: &[],
@@ -784,7 +910,7 @@ async fn injected_policy_denials_and_changed_workspace_snapshot_write_nothing() 
                 tx,
                 PostManagedMessage {
                     room: "agent",
-                    id: "message",
+                    id: &request_id,
                     text: "input",
                     delivery: studio_runtime_schema::delivery::DeliveryMoment::CurrentTurn,
                     assets: &[],
@@ -807,6 +933,7 @@ async fn voice_delivery_prepares_workspace_admission() {
     for operation in ["unrelated", "checkpoint", "capture"] {
         let root = fixture.seed(operation);
         let store = std::sync::Arc::new(RuntimeStore::open(Some(&root)).await.expect("store"));
+        let request_id = request_id();
         let record = studio_runtime_store::VoiceRecord {
             sequence: 0,
             id: "spoken".into(),
@@ -849,12 +976,15 @@ async fn voice_delivery_prepares_workspace_admission() {
         let receipt = voice::submit(
             std::sync::Arc::clone(&store),
             "agent",
-            "voice-message",
+            &request_id,
             &[record_id],
             None,
         )
         .await
         .expect("accepted voice delivery");
+        let receipt: Value =
+            serde_json::from_slice(&serde_json::to_vec(&receipt).expect("receipt bytes"))
+                .expect("receipt JSON");
         assert_eq!(receipt["status"], "queued", "{operation}");
         assert_eq!(
             receipt.get("waitingFor").is_some(),
@@ -868,12 +998,16 @@ async fn corrupt_replay_and_workspace_operation_errors_name_the_row() {
     let fixture = Fixture::new();
     let root = fixture.seed("malformed");
     let store = RuntimeStore::open(Some(&root)).await.expect("store");
-    send(&store, &json!({})).await.expect("accepted");
+    let request_id = request_id();
+    send(&store, &json!({}), &request_id)
+        .await
+        .expect("accepted");
+    let corrupt_id = request_id.clone();
     store
         .transaction(move |tx| {
             tx.execute(
-                "UPDATE runtime_events SET status='corrupt' WHERE id='message'",
-                [],
+                "UPDATE runtime_events SET created='not-a-number' WHERE id=?1",
+                [&corrupt_id],
             )?;
             Ok(())
         })
@@ -881,16 +1015,26 @@ async fn corrupt_replay_and_workspace_operation_errors_name_the_row() {
         .expect("corrupt event");
     let before = snapshot(&store);
     assert!(
-        send(&store, &json!({}))
+        send(&store, &json!({}), &request_id)
             .await
-            .expect_err("invalid status")
+            .expect_err("invalid timestamp")
             .to_string()
-            .contains("runtime_events/message")
+            .contains(&format!("runtime_events/{request_id}"))
     );
     assert_eq!(snapshot(&store), before);
-    store.transaction(|tx| {
-        tx.execute("DELETE FROM runtime_events WHERE id='message'", [])?;
-        tx.execute("DELETE FROM runtime_operation_receipts WHERE id='message'", [])?;
+    let delete_id = request_id.clone();
+    let result_id = studio_runtime_schema::persistence::RequestIdentity::new(
+        "message",
+        &["agent", "user"],
+        &request_id,
+        &[],
+    )
+    .expect("identity")
+    .id()
+    .to_owned();
+    store.transaction(move |tx| {
+        tx.execute("DELETE FROM runtime_events WHERE id=?1", [&delete_id])?;
+        tx.execute("DELETE FROM request_results WHERE id=?1", [&result_id])?;
         tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.workspaceOperation','capture','$.workspaceReservationId','operation') WHERE id='agent'", [])?;
         tx.execute("DROP INDEX IF EXISTS runtime_workspace_operation_phase", [])?;
         tx.execute("DROP INDEX IF EXISTS runtime_workspace_operation_agent_phase", [])?;
@@ -899,7 +1043,7 @@ async fn corrupt_replay_and_workspace_operation_errors_name_the_row() {
     }).await.expect("corrupt operation");
     let before = snapshot(&store);
     assert!(
-        send(&store, &json!({}))
+        send(&store, &json!({}), &request_id)
             .await
             .expect_err("invalid operation JSON")
             .to_string()
@@ -915,6 +1059,7 @@ async fn late_operation_paths_use_the_prepared_canonical_relation() {
     for scenario in ["known_unrelated", "known_alias", "unknown_alias"] {
         let root = fixture.seed(scenario);
         let store = RuntimeStore::open(Some(&root)).await.expect("store");
+        let request_id = request_id();
         let mut other = AgentRepository::get(&store.test_reader().expect("read"), &"agent".into())
             .expect("get")
             .expect("agent");
@@ -955,7 +1100,7 @@ async fn late_operation_paths_use_the_prepared_canonical_relation() {
         let before = snapshot(&store);
         let prepared = prepared.clone();
         let result = store
-            .transaction_with_error(move |tx| post(tx, &json!({}), &prepared))
+            .transaction_with_error(move |tx| post(tx, &json!({}), &prepared, &request_id))
             .await;
         if scenario == "unknown_alias" {
             // A new cwd may alias this workspace: raw string inequality cannot
@@ -971,6 +1116,9 @@ async fn late_operation_paths_use_the_prepared_canonical_relation() {
             assert_eq!(snapshot(&store), before);
         } else {
             let receipt = result.expect("known relation permits admission").receipt;
+            let receipt: Value =
+                serde_json::from_slice(&serde_json::to_vec(&receipt).expect("receipt bytes"))
+                    .expect("receipt JSON");
             assert_eq!(receipt["status"], "queued");
             if scenario == "known_alias" {
                 assert_eq!(

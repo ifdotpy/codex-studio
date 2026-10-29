@@ -116,6 +116,8 @@ pub async fn push_drafts(
             | error @ StoreError::SchemaObjectMismatch { .. }
             | error @ StoreError::Sqlite(_)
             | error @ StoreError::CommitOutcomeUnknown(_)
+            | error @ StoreError::RequestResult(_)
+            | error @ StoreError::Outbox(_)
             | error @ StoreError::Json(_)
             | error @ StoreError::InvalidStoredObject { .. }
             | error @ StoreError::SchemaValidation(_)

@@ -61,12 +61,7 @@ async fn seed(store: &RuntimeStore, tables: Tables) {
                     rusqlite::params![terminal, start, end, text],
                 )?;
             }
-            for (id, signature, result) in tables.user_terminal_receipts {
-                tx.execute(
-                    "INSERT INTO user_terminal_receipts VALUES(?1,?2,?3)",
-                    rusqlite::params![id, signature, result],
-                )?;
-            }
+            assert!(tables.user_terminal_receipts.is_empty());
             for (terminal, sequence) in tables.user_terminal_event_cursor {
                 tx.execute(
                     "INSERT INTO user_terminal_event_cursor VALUES(?1,?2)",
@@ -123,10 +118,6 @@ fn assert_python_rows(store: &RuntimeStore, expected: &Tables) {
     let connection = store.test_reader().expect("read Rust state");
     for (table, rows) in [
         ("user_terminals", serde_json::json!(expected.user_terminals)),
-        (
-            "user_terminal_receipts",
-            serde_json::json!(expected.user_terminal_receipts),
-        ),
         (
             "user_terminal_output",
             serde_json::json!(expected.user_terminal_output),

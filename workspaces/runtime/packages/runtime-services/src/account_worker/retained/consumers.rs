@@ -63,14 +63,14 @@ impl ClaudeSessionPort for ClaudePort {
             {
                 return Err(ControlError::Conflict);
             }
-            let mut nonce = [0u8; 16];
-            getrandom::fill(&mut nonce).map_err(|_| ControlError::Unavailable)?;
-            let request = call
-                .identity
-                .scope
-                .request_id
-                .clone()
-                .unwrap_or_else(|| studio_runtime_store::sha256_hex(&nonce));
+            let request = call.identity.scope.request_id.clone().unwrap_or_default();
+            if ProviderReadMethod::from_request(call.identity.method, &params).is_none()
+                && uuid::Uuid::parse_str(&request)
+                    .ok()
+                    .is_none_or(|root| root.get_version_num() != 7)
+            {
+                return Err(ControlError::Changed);
+            }
             let operation = format!(
                 "claude-control:{}",
                 crate::event_write::request_signature(&json!([
@@ -107,6 +107,8 @@ impl ClaudeSessionPort for ClaudePort {
             let receipt = self
                 .port
                 .request(SessionRequest {
+                    root_request_id: request,
+                    admitted_request: None,
                     scope: self.port.scope().clone(),
                     expected_scope: None,
                     operation,
@@ -126,7 +128,7 @@ impl ClaudeSessionPort for ClaudePort {
                 .await
                 .map_err(|e| match e {
                     PortError::Identity => ControlError::Changed,
-                    PortError::Invalid => ControlError::Request,
+                    PortError::Invalid | PortError::Expired => ControlError::Request,
                     PortError::NotSent | PortError::Capacity => ControlError::NotSent,
                     PortError::ScopeMismatch | PortError::Unknown | PortError::Deadline => {
                         ControlError::Unknown
@@ -213,9 +215,11 @@ fn history_error(error: PortError) -> HistoryError {
         PortError::Identity => HistoryError::Identity,
         PortError::Deadline => HistoryError::Deadline,
         PortError::Capacity => HistoryError::Capacity,
-        PortError::ScopeMismatch | PortError::Invalid | PortError::NotSent | PortError::Unknown => {
-            HistoryError::Unavailable
-        }
+        PortError::ScopeMismatch
+        | PortError::Invalid
+        | PortError::Expired
+        | PortError::NotSent
+        | PortError::Unknown => HistoryError::Unavailable,
     }
 }
 impl crate::recovery_runtime::RetainedHistory for HistoryPort {
@@ -235,6 +239,8 @@ impl crate::recovery_runtime::RetainedHistory for HistoryPort {
             return Box::pin(async { Err(HistoryError::Unsupported) });
         };
         let request = self.port.request(SessionRequest {
+            root_request_id: String::new(),
+            admitted_request: None,
             scope: scope.clone(),
             expected_scope: None,
             actor: Some(self.actor.clone()),

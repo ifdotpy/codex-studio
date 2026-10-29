@@ -99,6 +99,11 @@ pub fn enqueue_output_with_scope_in_transaction(
         let original =
             crate::account_worker::retained::monitor_command_scope(tx, process_id, &operation)
                 .map_err(|error| match error {
+                    crate::account_worker::WorkerError::Expired => {
+                        NotificationDispatchError::RequestResult(
+                            studio_runtime_store::request_results::RequestResultError::Expired,
+                        )
+                    }
                     crate::account_worker::WorkerError::Store(error) => {
                         NotificationDispatchError::Store(error)
                     }
@@ -376,6 +381,76 @@ pub async fn enqueue_probe(
 
 /// Persist the definitive result after all previously journaled output deltas.
 /// The broker receipt makes this operation replayable after a crash.
+pub fn enqueue_exit_in_transaction(
+    tx: &Transaction<'_>,
+    id: &str,
+    operation: &Operation,
+    cursor: &str,
+    code: Option<i64>,
+    error: Option<&str>,
+    finished: f64,
+) -> Result<bool, MonitorError> {
+    let error = error.map(|value| {
+        let mut end = value.len().min(EXIT_RECEIPT_MAX_ERROR_BYTES);
+        while !value.is_char_boundary(end) {
+            end -= 1;
+        }
+        value[..end].to_owned()
+    });
+    let Some((record, raw)) = Table::<MonitorRecord>::new(tx).get_with_raw(&id.to_owned())? else {
+        return Err(MonitorError::Refused("Unknown command watch"));
+    };
+    #[derive(serde::Deserialize)]
+    struct StoredOperation {
+        operation: Operation,
+    }
+    let mut value = record.value().clone();
+    if !serde_json::from_str::<StoredOperation>(&raw)
+        .is_ok_and(|stored| stored.operation == *operation)
+    {
+        return Err(MonitorError::InvalidDeliveryIdentity(
+            "monitor operation changed",
+        ));
+    }
+    if value["streamAckCursor"].as_str() == Some(cursor) {
+        return Ok(true);
+    }
+    let queue = stream_queue(&mut value)?;
+    if let Some(existing) = queue.iter().find(|item| item["cursor"] == cursor) {
+        if existing["kind"] == "exit"
+            && existing["code"] == code.map_or(Value::Null, |v| json!(v))
+            && existing["error"] == error.as_ref().map_or(Value::Null, |v| json!(v))
+        {
+            return Ok(true);
+        }
+        return Err(MonitorError::InvalidDeliveryIdentity(
+            "conflicting monitor result",
+        ));
+    }
+    let queued_bytes = queue
+        .iter()
+        .filter_map(|item| item["byteLength"].as_u64())
+        .sum::<u64>();
+    let error_bytes = error.as_ref().map_or(0, |value| value.len()) as u64;
+    if queue.len() >= MAX_EVENTS
+        || queued_bytes.saturating_add(error_bytes) > STREAM_QUEUE_MAX_BYTES as u64
+    {
+        return Ok(false);
+    }
+    queue.push(json!({
+        "kind":"exit",
+        "cursor":cursor,
+        "code":code,
+        "error":error,
+        "finished":finished,
+        "byteLength":error_bytes,
+        "operation":operation,
+    }));
+    let record = MonitorRecord::from_value(value).map_err(StoreError::from)?;
+    Table::<MonitorRecord>::new(tx).put(&record)?;
+    Ok(true)
+}
+
 pub async fn enqueue_exit(
     store: &RuntimeStore,
     id: &str,
@@ -385,67 +460,25 @@ pub async fn enqueue_exit(
     error: Option<&str>,
     finished: f64,
 ) -> Result<(), MonitorError> {
-    let error = error.map(|value| {
-        let mut end = value.len().min(EXIT_RECEIPT_MAX_ERROR_BYTES);
-        while !value.is_char_boundary(end) {
-            end -= 1;
-        }
-        &value[..end]
-    });
     let id = id.to_owned();
     let operation = operation.clone();
     let cursor = cursor.to_owned();
     let error = error.map(str::to_owned);
     store
         .transaction_with(move |tx| {
-            let Some(record) = MonitorsRepository::get(tx, &id)? else {
-                return Err(MonitorError::Refused("Unknown command watch"));
-            };
-            let mut value = record.value().clone();
-            if value.get("operation")
-                != Some(&serde_json::to_value(&operation).unwrap_or(Value::Null))
-            {
-                return Err(MonitorError::InvalidDeliveryIdentity(
-                    "monitor operation changed",
-                ));
+            if enqueue_exit_in_transaction(
+                tx,
+                &id,
+                &operation,
+                &cursor,
+                code,
+                error.as_deref(),
+                finished,
+            )? {
+                Ok(())
+            } else {
+                Err(MonitorError::Refused("Monitor output queue is full"))
             }
-            if value["streamAckCursor"].as_str() == Some(cursor.as_str()) {
-                return Ok(());
-            }
-            let queue = stream_queue(&mut value)?;
-            if let Some(existing) = queue.iter().find(|item| item["cursor"] == cursor) {
-                if existing["kind"] == "exit"
-                    && existing["code"] == code.map_or(Value::Null, |v| json!(v))
-                    && existing["error"] == error.as_ref().map_or(Value::Null, |v| json!(v))
-                {
-                    return Ok(());
-                }
-                return Err(MonitorError::InvalidDeliveryIdentity(
-                    "conflicting monitor result",
-                ));
-            }
-            let queued_bytes = queue
-                .iter()
-                .filter_map(|item| item["byteLength"].as_u64())
-                .sum::<u64>();
-            let error_bytes = error.as_ref().map_or(0, |value| value.len()) as u64;
-            if queue.len() >= MAX_EVENTS
-                || queued_bytes.saturating_add(error_bytes) > STREAM_QUEUE_MAX_BYTES as u64
-            {
-                return Err(MonitorError::Refused("Monitor output queue is full"));
-            }
-            queue.push(json!({
-                "kind":"exit",
-                "cursor":cursor,
-                "code":code,
-                "error":error,
-                "finished":finished,
-                "byteLength":error_bytes,
-                "operation":operation,
-            }));
-            let record = MonitorRecord::from_value(value).map_err(StoreError::from)?;
-            Table::<MonitorRecord>::new(tx).put(&record)?;
-            Ok(())
         })
         .await
 }

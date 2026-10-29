@@ -2,23 +2,36 @@
 use super::{ToolRequestError, text};
 use serde_json::{Value, json};
 use studio_operations::*;
+use studio_runtime_schema::persistence::{ToolRequestOutcome as O, ToolRequestStatus as S};
 
 /// The single read boundary from persisted receipt pairs to operation lifecycle.
 pub(crate) fn classify(record: &Value) -> Result<OperationState, ToolRequestError> {
-    Ok(match (text(record, "stage"), text(record, "outcome")) {
-        ("queued", "pending") => OperationState::Reserved,
-        ("running", "pending") if record["cancelRequested"] == true => {
+    let invalid =
+        || studio_runtime_store::system_reads::invalid("runtime_tool_requests", text(record, "id"));
+    let status: S = record["stage"]
+        .as_str()
+        .ok_or_else(invalid)?
+        .parse()
+        .map_err(|_| invalid())?;
+    let outcome: O = record["outcome"]
+        .as_str()
+        .ok_or_else(invalid)?
+        .parse()
+        .map_err(|_| invalid())?;
+    Ok(match (status, outcome) {
+        (S::Queued, O::Pending) => OperationState::Reserved,
+        (S::Running, O::Pending) if record["cancelRequested"] == true => {
             OperationState::CancelRequested
         }
-        ("running", "pending") => OperationState::Dispatched,
-        ("cancelled", "not_applied") => OperationState::CancelledBeforeDispatch,
-        ("queued" | "running" | "interrupted" | "failed" | "unknown", "unknown") => {
+        (S::Running, O::Pending) => OperationState::Dispatched,
+        (S::Cancelled, O::NotApplied) => OperationState::CancelledBeforeDispatch,
+        (S::Queued | S::Running | S::Interrupted | S::Failed | S::Unknown, O::Unknown) => {
             OperationState::Unknown
         }
-        ("completed", "applied") => OperationState::Applied,
+        (S::Completed, O::Applied) => OperationState::Applied,
         // Historical handlers stored a completed delivery with a checked negative
         // outcome. Preserve that meaning without rewriting the durable receipt.
-        ("completed" | "failed", "not_applied") => OperationState::NotApplied,
+        (S::Completed | S::Failed, O::NotApplied) => OperationState::NotApplied,
         _ => {
             return Err(studio_runtime_store::system_reads::invalid(
                 "runtime_tool_requests",
@@ -94,14 +107,17 @@ fn operation(state: &State) -> Result<&Operation, ToolRequestError> {
 
 pub(crate) fn apply(record: &mut Value, state: &State) -> Result<bool, ToolRequestError> {
     let operation = operation(state)?;
+    if classify(record)? == operation.state {
+        return Ok(false);
+    }
     let (stage, outcome, cancel) = match operation.state {
-        OperationState::Reserved => ("queued", "pending", false),
-        OperationState::Dispatched => ("running", "pending", false),
-        OperationState::CancelRequested => ("running", "pending", true),
-        OperationState::CancelledBeforeDispatch => ("cancelled", "not_applied", true),
-        OperationState::NotApplied => ("failed", "not_applied", record["cancelRequested"] == true),
-        OperationState::Applied => ("completed", "applied", record["cancelRequested"] == true),
-        OperationState::Unknown => ("failed", "unknown", record["cancelRequested"] == true),
+        OperationState::Reserved => (S::Queued, O::Pending, false),
+        OperationState::Dispatched => (S::Running, O::Pending, false),
+        OperationState::CancelRequested => (S::Running, O::Pending, true),
+        OperationState::CancelledBeforeDispatch => (S::Cancelled, O::NotApplied, true),
+        OperationState::NotApplied => (S::Failed, O::NotApplied, record["cancelRequested"] == true),
+        OperationState::Applied => (S::Completed, O::Applied, record["cancelRequested"] == true),
+        OperationState::Unknown => (S::Failed, O::Unknown, record["cancelRequested"] == true),
     };
     record["stage"] = json!(stage);
     record["outcome"] = json!(outcome);

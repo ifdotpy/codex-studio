@@ -11,9 +11,8 @@ use studio_runtime_services::{
 };
 use studio_runtime_store::{RuntimeStore, StoreError};
 
-#[tokio::test]
 #[allow(clippy::disallowed_methods)]
-async fn python_turn_readers_survive_restart_with_identical_cursors_and_receipts() {
+async fn transcript_cases(group: usize) {
     let root = tempfile::tempdir().expect("isolated state");
     let mode = if std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some() {
         "full"
@@ -43,7 +42,24 @@ async fn python_turn_readers_survive_restart_with_identical_cursors_and_receipts
     );
     let mut fault_count = 0;
     let mut startup_refusals = 0;
-    for case in cases {
+    assert_eq!(
+        cases
+            .iter()
+            .filter(|case| case["phase"] == "malformed-turn")
+            .count(),
+        1,
+        "one malformed turn must be refused at startup"
+    );
+    let expected_refusals = cases
+        .iter()
+        .enumerate()
+        .filter(|(index, case)| index % 8 == group && case["phase"] == "malformed-turn")
+        .count();
+    for (_, case) in cases
+        .into_iter()
+        .enumerate()
+        .filter(|(index, _)| index % 8 == group)
+    {
         let name = case["path"].as_str().expect("snapshot name");
         let state = root.path().join(name);
         restore_snapshot(&fixtures.join(name), &state, root.path());
@@ -119,6 +135,7 @@ async fn python_turn_readers_survive_restart_with_identical_cursors_and_receipts
             startup_refusals += 1;
             continue;
         }
+        let orphan_replies = take_orphan_replies(&state);
         let fixture_sync_high = {
             let db = rusqlite::Connection::open(state.join("canvas.sqlite3"))
                 .expect("restored snapshot reader");
@@ -139,6 +156,7 @@ async fn python_turn_readers_survive_restart_with_identical_cursors_and_receipts
                     )
                 }),
         );
+        seed_transcript_replies(&store, orphan_replies).await;
         let db = store.test_reader().expect("migrated snapshot reader");
         let workspace_sequence: i64 = db
             .query_row(
@@ -435,7 +453,7 @@ async fn python_turn_readers_survive_restart_with_identical_cursors_and_receipts
                 transcript::pull_scope(Arc::clone(&store), "transcript:agent", "agent", after)
                     .await
                     .expect("pull");
-            assert_pull(&got, expected, fixture_sync_high);
+            assert_pull(&got, expected, fixture_sync_high, case["phase"] == "prune");
             let committed = sync_snapshot(&store);
             let replay =
                 transcript::pull_scope(Arc::clone(&store), "transcript:agent", "agent", after)
@@ -458,12 +476,112 @@ async fn python_turn_readers_survive_restart_with_identical_cursors_and_receipts
         }
     }
     assert_eq!(
-        startup_refusals, 1,
+        startup_refusals, expected_refusals,
         "only the malformed turn is refused at startup"
     );
     eprintln!("P13 injected write/commit boundaries: {fault_count}");
 }
-fn assert_pull(got: &Value, expected: &Value, fixture_sync_high: i64) {
+macro_rules! transcript_groups {
+    ($($name:ident: $group:expr),+ $(,)?) => {$ (
+        #[tokio::test]
+        async fn $name() { transcript_cases($group).await; }
+    )+};
+}
+transcript_groups! {
+    python_turn_readers_survive_restart_with_identical_cursors_and_receipts_0: 0,
+    python_turn_readers_survive_restart_with_identical_cursors_and_receipts_1: 1,
+    python_turn_readers_survive_restart_with_identical_cursors_and_receipts_2: 2,
+    python_turn_readers_survive_restart_with_identical_cursors_and_receipts_3: 3,
+    python_turn_readers_survive_restart_with_identical_cursors_and_receipts_4: 4,
+    python_turn_readers_survive_restart_with_identical_cursors_and_receipts_5: 5,
+    python_turn_readers_survive_restart_with_identical_cursors_and_receipts_6: 6,
+    python_turn_readers_survive_restart_with_identical_cursors_and_receipts_7: 7,
+}
+// The Python transcript-only captures contain replies with no tool owner. Move
+// those replies into current completed owners after the real migration has run.
+fn take_orphan_replies(state: &Path) -> Vec<(String, String, String)> {
+    let db = rusqlite::Connection::open(state.join("canvas.sqlite3")).expect("fixture database");
+    let mut statement = db.prepare("SELECT a.agent,a.alias,r.result FROM runtime_tool_request_aliases a JOIN runtime_tool_results r ON r.id=a.request LEFT JOIN runtime_tool_requests t ON t.id=a.request WHERE t.id IS NULL").expect("orphan replies");
+    let replies = statement
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .expect("query orphan replies")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("read orphan replies");
+    drop(statement);
+    db.execute("DELETE FROM runtime_tool_results WHERE id IN (SELECT a.request FROM runtime_tool_request_aliases a LEFT JOIN runtime_tool_requests t ON t.id=a.request WHERE t.id IS NULL)", []).expect("remove captured orphan result");
+    db.execute("DELETE FROM runtime_tool_request_aliases WHERE request NOT IN (SELECT id FROM runtime_tool_requests)", []).expect("remove captured orphan alias");
+    replies
+}
+
+async fn seed_transcript_replies(store: &RuntimeStore, replies: Vec<(String, String, String)>) {
+    use studio_runtime_schema::persistence::{
+        RequestIdentity, ToolRequestKind, ToolRequestOutcome, ToolRequestStatus,
+    };
+    use studio_runtime_store::request_results::{
+        Admission, AdmittedRequest, RequestResults, ResultEnvelope,
+    };
+    #[derive(serde::Serialize)]
+    struct Owner<'a> {
+        id: &'a str,
+        agent: &'a str,
+        kind: ToolRequestKind,
+        aliases: [&'a str; 1],
+        stage: ToolRequestStatus,
+        outcome: ToolRequestOutcome,
+        admitted: &'a AdmittedRequest,
+    }
+    store
+        .transaction(move |tx| {
+            for (agent, alias, raw) in replies {
+                let root = RequestIdentity::issue_root();
+                let identity =
+                    RequestIdentity::new("transcript-fixture", &[&agent], &root, &[&alias])
+                        .expect("fixture identity");
+                let Admission::Fresh(admitted) = RequestResults::admit(
+                    tx,
+                    &identity,
+                    "transcript-fixture",
+                    identity.issued_ms(),
+                )
+                .map_err(StoreError::from)?
+                else {
+                    panic!("new fixture identity");
+                };
+                let owner = Owner {
+                    id: identity.id(),
+                    agent: &agent,
+                    kind: ToolRequestKind::ManagedTool,
+                    aliases: [&alias],
+                    stage: ToolRequestStatus::Completed,
+                    outcome: ToolRequestOutcome::Applied,
+                    admitted: &admitted,
+                };
+                let raw_owner = serde_json::to_string(&owner)?;
+                tx.execute(
+                    "INSERT INTO runtime_tool_requests(id,record) VALUES(?1,?2)",
+                    rusqlite::params![identity.id(), raw_owner],
+                )?;
+                let result = studio_runtime_store::ToolResultRecord::from_value(
+                    serde_json::from_str(&raw)?,
+                )?;
+                RequestResults::settle(
+                    tx,
+                    &admitted,
+                    &ResultEnvelope {
+                        actor: Some(agent),
+                        reply: result,
+                        references: vec![],
+                    },
+                )
+                .map_err(StoreError::from)?;
+            }
+            Ok::<_, StoreError>(())
+        })
+        .await
+        .expect("seed current transcript receipts");
+}
+
+fn assert_pull(got: &Value, expected: &Value, fixture_sync_high: i64, migrated_execution: bool) {
     let decode = |v: &Value| {
         let mut v = v.clone();
         for doc in v["documents"].as_array_mut().expect("documents") {
@@ -492,6 +610,16 @@ fn assert_pull(got: &Value, expected: &Value, fixture_sync_high: i64) {
         .expect("checkpoint sequence");
     if checkpoint > fixture_sync_high {
         expected["checkpoint"]["seq"] = json!(checkpoint + 1);
+    }
+    if migrated_execution {
+        // m2026_10_28_receipts_execution.rs:168-189 moves activeExecution,
+        // advancing the transcript revision once after the workspace allocation.
+        assert_eq!(expected["checkpoint"]["seq"], fixture_sync_high);
+        expected["checkpoint"]["seq"] = json!(fixture_sync_high + 2);
+        let documents = expected["documents"].as_array_mut().expect("documents");
+        assert_eq!(documents.len(), 1);
+        assert_eq!(documents[0]["seq"], fixture_sync_high);
+        documents[0]["seq"] = json!(fixture_sync_high + 2);
     }
     assert_eq!(decode(got), expected);
 }

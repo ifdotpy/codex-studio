@@ -82,6 +82,7 @@ export default {
       "src/servers/navigation.test.ts",
       "src/servers/frameBridge.test.ts",
       "src/servers/summary.test.ts",
+      "src/servers/schemaRecovery.test.ts",
       "src/components/accountDeleteRequests.test.ts",
       "src/components/Accounts.identity.test.ts",
       "src/components/StudioSettingsTabs.test.ts",
@@ -147,8 +148,8 @@ export default {
       "src/components/readState.noRefetch.test.ts",
       "src/components/sidebarOrder.migration.test.ts",
       "src/components/ProjectServerCards.test.ts",
-      "src/components/models/modelWhitelist.test.ts",
-      "src/components/models/modelWhitelist.persistence.test.ts",
+      "src/components/models/modelChoices.test.ts",
+      "src/components/models/modelChoices.persistence.test.ts",
       // Read a stable baseline once and retain the full-disk notice across failed reads.
       "src/components/SupervisorRecoveryNotice.test.ts",
       "src/components/desktopNotices.test.ts",

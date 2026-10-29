@@ -78,7 +78,8 @@ fn database_snapshot(store: &studio_runtime_store::RuntimeStore) -> Value {
 }
 
 async fn call(app: &axum::Router, path: &str, body: Value) -> (u16, Value) {
-    call_with_identity(app, "POST", path, body, Some("http-input-fixture")).await
+    let id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    call_with_identity(app, "POST", path, body, Some(&id)).await
 }
 
 async fn call_with_identity(
@@ -144,15 +145,24 @@ async fn installed_runtime_drives_input_through_http() {
     ));
     let app = router(state).expect("router").layer(Extension(runtime));
     let body = json!({"id":case["before"]["id"],"text":"hello"});
+    let request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
     *port.unknown.lock().expect("unknown") = true;
-    let (status, result) = call(&app, "/api/monitor/input", body.clone()).await;
+    let (status, result) = call_with_identity(
+        &app,
+        "POST",
+        "/api/monitor/input",
+        body.clone(),
+        Some(&request_id),
+    )
+    .await;
     assert_eq!(
         status, 503,
         "unknown input result must be surfaced: {result}"
     );
     assert_eq!(port.submitted.lock().expect("submitted").len(), 1);
     let after_unknown = database_snapshot(&store);
-    let (status, retry) = call(&app, "/api/monitor/input", body).await;
+    let (status, retry) =
+        call_with_identity(&app, "POST", "/api/monitor/input", body, Some(&request_id)).await;
     assert_eq!(
         status, 503,
         "unknown input retry must stay refused: {retry}"
@@ -170,7 +180,7 @@ async fn installed_runtime_drives_input_through_http() {
     let agent = case["actor"]["id"].as_str().expect("actor id");
     let epoch = case["actor"]["epoch"].as_i64().expect("actor epoch");
     let path = format!(
-        "/api/processes/action?requestId=http-input-fixture&agent={agent}&accountKey=default&epoch={epoch}"
+        "/api/processes/action?requestId={request_id}&agent={agent}&accountKey=default&epoch={epoch}"
     );
     let (status, receipt) = call_with_identity(&app, "GET", &path, Value::Null, None).await;
     assert_eq!(status, 200, "{receipt}");
@@ -230,23 +240,16 @@ async fn acknowledged_monitor_input_returns_without_entity_envelope() {
 
     // Missing dimensions write stdin; a supplied dimension resizes using only
     // the missing dimension's default. Explicit null was refused above.
-    for (identity, dimension, size) in [
-        (
-            "http-resize-rows",
-            json!({"rows": 19}),
-            json!({"rows": 19, "cols": 80}),
-        ),
-        (
-            "http-resize-cols",
-            json!({"cols": 37}),
-            json!({"rows": 24, "cols": 37}),
-        ),
+    for (dimension, size) in [
+        (json!({"rows": 19}), json!({"rows": 19, "cols": 80})),
+        (json!({"cols": 37}), json!({"rows": 24, "cols": 37})),
     ] {
         let mut body = dimension;
         body["id"] = json!(id);
         // Each distinct input keeps its own request identity.
+        let identity = studio_runtime_schema::persistence::RequestIdentity::issue_root();
         let (status, response) =
-            call_with_identity(&app, "POST", "/api/monitor/input", body, Some(identity)).await;
+            call_with_identity(&app, "POST", "/api/monitor/input", body, Some(&identity)).await;
         assert_eq!(status, 200, "resize should succeed: {response}");
         let submitted = port.submitted.lock().expect("resize effects");
         let Some(studio_runtime_services::monitor_policy::Effect::Native {
@@ -259,10 +262,13 @@ async fn acknowledged_monitor_input_returns_without_entity_envelope() {
         assert_eq!(params, &json!({"processId": id, "size": size}));
     }
 
-    let (status, response) = call(
+    let request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    let (status, response) = call_with_identity(
         &app,
+        "POST",
         "/api/monitor/input",
         json!({"id":id,"text":"fixture input"}),
+        Some(&request_id),
     )
     .await;
 
@@ -310,21 +316,25 @@ async fn acknowledged_monitor_input_returns_without_entity_envelope() {
     assert!(saved.get("inputAttempt").is_none());
 
     // Discarding the first successful HTTP response must not repeat its stdin.
-    let (status, replay) = call(
+    let (status, replay) = call_with_identity(
         &app,
+        "POST",
         "/api/monitor/input",
         json!({"id":id,"text":"fixture input"}),
+        Some(&request_id),
     )
     .await;
     assert_eq!(status, 200, "{replay}");
-    assert_eq!(replay["requestId"], "http-input-fixture");
+    assert_eq!(replay["requestId"], request_id);
     assert_eq!(replay["status"], "acknowledged");
     // Two resizes and one stdin write; the replay adds no effect.
     assert_eq!(port.submitted.lock().expect("one input").len(), 3);
-    let (status, _) = call(
+    let (status, _) = call_with_identity(
         &app,
+        "POST",
         "/api/monitor/input",
         json!({"id":id,"text":"changed input"}),
+        Some(&request_id),
     )
     .await;
     assert_eq!(status, 400, "same identity cannot change content");
@@ -358,7 +368,7 @@ async fn acknowledged_monitor_input_returns_without_entity_envelope() {
         (owner, account, epoch + 1, false),
     ] {
         let path = format!(
-            "/api/processes/action?requestId=http-input-fixture&agent={agent}&accountKey={account}&epoch={epoch}"
+            "/api/processes/action?requestId={request_id}&agent={agent}&accountKey={account}&epoch={epoch}"
         );
         let (status, receipt) = call_with_identity(&app, "GET", &path, Value::Null, None).await;
         assert_eq!(status, 200, "{receipt}");
@@ -389,7 +399,7 @@ async fn acknowledged_monitor_input_returns_without_entity_envelope() {
         .await
         .expect("command exits immediately after input acknowledgement");
     let path = format!(
-        "/api/processes/action?requestId=http-input-fixture&agent={owner}&accountKey={account}&epoch={epoch}"
+        "/api/processes/action?requestId={request_id}&agent={owner}&accountKey={account}&epoch={epoch}"
     );
     let (status, receipt) = call_with_identity(&app, "GET", &path, Value::Null, None).await;
     assert_eq!(status, 200, "{receipt}");

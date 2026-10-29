@@ -8,7 +8,7 @@
 //! Diagnostics queue differences: Python's recovery executor, clock reply
 //! queue, and per-AppServer callback/tool queues do not exist as Rust queues.
 //! `recoveryPending` and `clock_replies` are therefore zero; callbacks are
-//! counted from unresolved durable callback receipts and tool requests from
+//! counted from unresolved callback tasks and tool requests from
 //! queued/running `runtime_tool_requests` rows.
 
 use std::{
@@ -100,7 +100,7 @@ fn supervisor_health_payload(
     status: studio_runtime_process::HealthResult,
     expected_state: &std::path::Path,
 ) -> Value {
-    if status.protocol != studio_runtime_process::SUPERVISOR_PROTOCOL_V2
+    if status.protocol != studio_runtime_process::SUPERVISOR_PROTOCOL_VERSION
         || expected_state.to_str() != Some(status.state_dir.as_str())
     {
         return json!({"error":"The supervisor identity is incompatible."});
@@ -241,25 +241,14 @@ fn account_queue_counts(
         studio_runtime_store::StartupRecoveryRepository::unsettled_tool_request_counts_by_account(
             connection,
         )?;
-    let mut statement = connection.prepare_cached(
-        "SELECT COUNT(*) FROM runtime_operation_receipts accepted
-         WHERE accepted.id>=?1 AND accepted.id<?2
-           AND substr(accepted.id,-9)=':accepted'
-           AND NOT EXISTS (SELECT 1 FROM runtime_operation_receipts unknown
-             WHERE unknown.id=substr(accepted.id,1,length(accepted.id)-9)||':unknown')",
-    )?;
     let counts = accounts
         .iter()
         .map(|account| {
-            let callbacks = statement.query_row(
-                [
-                    format!("account-worker:callback:{account}:"),
-                    format!("account-worker:callback:{account}:~"),
-                ],
-                |row| row.get::<_, i64>(0),
+            let callbacks = studio_runtime_services::provider_callbacks::pending_callback_count(
+                connection, account,
             )?;
             Ok((
-                callbacks.max(0) as u64,
+                callbacks as u64,
                 tool_requests.get(account).copied().unwrap_or_default(),
             ))
         })
@@ -293,6 +282,8 @@ async fn provider_read(
     }
     let receipt = session
         .provider_request(ProviderRequest {
+            root_request_id: String::new(),
+            admitted_request: None,
             account: scope.account.clone(),
             operation: operation.clone(),
             actor,
@@ -402,11 +393,12 @@ fn leased_session_binary(
 /// CLI or opens a second connection.
 pub struct ProviderTitleRequestPort {
     session: Arc<dyn AccountSessionPort>,
+    store: Arc<RuntimeStore>,
 }
 
 impl ProviderTitleRequestPort {
-    pub fn new(session: Arc<dyn AccountSessionPort>) -> Self {
-        Self { session }
+    pub fn new(session: Arc<dyn AccountSessionPort>, store: Arc<RuntimeStore>) -> Self {
+        Self { session, store }
     }
 }
 
@@ -452,7 +444,7 @@ impl TitleRequestPort for ProviderTitleRequestPort {
                 .shape_title_thread_params(&mut thread_params);
             let started = self
                 .call(
-                    &request.account_key,
+                    &request,
                     &start_operation,
                     Some(actor.clone()),
                     Method::ThreadStart,
@@ -507,7 +499,7 @@ impl TitleRequestPort for ProviderTitleRequestPort {
             let turn_operation = format!("{operation_root}:turn");
             let turn = self
                 .call(
-                    &request.account_key,
+                    &request,
                     &turn_operation,
                     Some(actor.clone()),
                     Method::TurnStart,
@@ -522,8 +514,9 @@ impl TitleRequestPort for ProviderTitleRequestPort {
             };
             match turn.certainty() {
                 RequestCertainty::NotSent => {
-                    // Keep the exact cwd for a retry that inspects ThreadStart.
-                    return title_receipt(&request, WriteOutcome::NotSent, None);
+                    // The thread was already created. Retrying the whole title
+                    // after this point could create another thread after replay expiry.
+                    return fallback();
                 }
                 RequestCertainty::Unknown => {
                     home.retain();
@@ -552,7 +545,7 @@ impl TitleRequestPort for ProviderTitleRequestPort {
                 let operation = format!("{operation_root}:poll:{poll}");
                 let listed = self
                     .call(
-                        &request.account_key,
+                        &request,
                         &operation,
                         Some(actor.clone()),
                         Method::ThreadTurnsList,
@@ -625,7 +618,7 @@ impl ProviderTitleRequestPort {
     #[allow(clippy::too_many_arguments)]
     async fn call(
         &self,
-        account: &str,
+        title: &TitleRequest,
         operation: &str,
         actor: Option<RequestActor>,
         method: Method,
@@ -634,9 +627,54 @@ impl ProviderTitleRequestPort {
         expected_scope: Option<&ConnectionScope>,
     ) -> Option<SessionReceipt> {
         let session = Arc::clone(&self.session);
-        let expected_account = account.to_owned();
+        let expected_account = title.account_key.clone();
         let expected_operation = operation.to_owned();
+        let scope = expected_scope
+            .cloned()
+            .or_else(|| session.current_scope(&expected_account))?;
+        let intent = studio_runtime_services::account_worker::retained::ProviderCallIntent {
+            root_request_id: title.root_request_id.clone(),
+            admitted_request: None,
+            scope: scope.clone(),
+            operation: expected_operation.clone(),
+            actor: actor.clone(),
+            transfer: None,
+            deleted_actor_session: None,
+            method,
+            params: params.clone(),
+        };
+        let title = title.clone();
+        let root_request_id = title.root_request_id.clone();
+        let admitted_request =
+            if studio_runtime_services::account_worker::retained::ProviderReadMethod::from_request(
+                method, &params,
+            )
+            .is_some()
+            {
+                None
+            } else {
+                Some(self
+            .store
+            .transaction_with(move |tx| {
+                studio_runtime_services::title_generation::validate_dispatch(tx, &title).map_err(
+                    |_| {
+                        studio_runtime_services::account_worker::WorkerError::PreparationRefused(
+                            "title/request-owner-changed".into(),
+                        )
+                    },
+                )?;
+                studio_runtime_services::account_worker::retained::reserve_provider_call(
+                    tx,
+                    &title.admitted_request,
+                    intent,
+                )
+            })
+            .await
+            .ok()?)
+            };
         let request = ProviderRequest {
+            root_request_id,
+            admitted_request,
             account: expected_account.clone(),
             operation: expected_operation.clone(),
             actor,
@@ -761,11 +799,65 @@ mod tests {
         ProviderResponse, RequestCertainty, SessionReceipt,
     };
     use studio_runtime_services::account_worker::retained::RequestActor;
-    use studio_runtime_services::title_generation::{TitleRequest, TitleRequestPort, WriteOutcome};
+    use studio_runtime_services::title_generation::{TitleResult, generate};
+
+    async fn run_title(
+        session: Arc<Session>,
+        provider: &str,
+        epoch: i64,
+    ) -> (tempfile::TempDir, String, TitleResult) {
+        let root = tempfile::tempdir().expect("title state");
+        let store = Arc::new(
+            studio_runtime_store::RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("store"),
+        );
+        let model = if provider == "claude" {
+            "claude-sonnet"
+        } else {
+            "gpt-mini"
+        };
+        let account = if provider == "claude" {
+            "claude-account"
+        } else {
+            "account-fixture"
+        };
+        let agent = json!({"id":"agent-fixture","rootId":"agent-fixture","isLead":true,"epoch":epoch,"status":"idle","name":"New chat","needsTitle":true,"provider":provider,"model":model,"accountKey":account});
+        store
+            .transaction(move |tx| {
+                tx.execute(
+                    "INSERT INTO runtime_agents(id,record) VALUES('agent-fixture',?1)",
+                    [agent.to_string()],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("agent");
+        let catalog = studio_runtime_schema::model_catalog::ModelCatalog::parse(json!({"data":[{"model":model,"supportedReasoningEfforts":[{"reasoningEffort":"low"}]}]})).expect("catalog");
+        let request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let port = ProviderTitleRequestPort::new(session, Arc::clone(&store));
+        let result = generate(
+            &store,
+            &port,
+            "agent-fixture",
+            &catalog,
+            &request_id,
+            SystemTime::now() + Duration::from_secs(10),
+        )
+        .await
+        .expect("title owner flow");
+        (root, request_id, result)
+    }
+
+    enum ReplyScenario {
+        Ready,
+        UnknownThread,
+        NotSentTurn,
+    }
 
     struct Session {
         requests: Mutex<Vec<ProviderRequest>>,
-        unknown_start: bool,
+        scenario: ReplyScenario,
     }
 
     impl AccountSessionPort for Session {
@@ -790,8 +882,14 @@ mod tests {
                 let operation = request.operation.clone();
                 let mut requests = self.requests.lock().expect("fixture request list");
                 requests.push(request.clone());
-                let certainty = if self.unknown_start && method == Method::ThreadStart {
+                let certainty = if matches!(self.scenario, ReplyScenario::UnknownThread)
+                    && method == Method::ThreadStart
+                {
                     RequestCertainty::Unknown
+                } else if matches!(self.scenario, ReplyScenario::NotSentTurn)
+                    && method == Method::TurnStart
+                {
+                    RequestCertainty::NotSent
                 } else {
                     RequestCertainty::Written
                 };
@@ -1002,24 +1100,33 @@ mod tests {
     async fn title_uses_the_retained_thread_turn_and_read_receipts() {
         let session = Arc::new(Session {
             requests: Mutex::new(Vec::new()),
-            unknown_start: false,
+            scenario: ReplyScenario::Ready,
         });
-        let port = ProviderTitleRequestPort::new(session.clone());
-        let request = TitleRequest {
-            request_id: "title-request-fixture".into(),
-            agent_id: "agent-fixture".into(),
-            epoch: 3,
-            account_key: "account-fixture".into(),
-            provider: Some("codex".into()),
-            model: "gpt-mini".into(),
-            effort: Some("low".into()),
-            prompt: "Write a title".into(),
-            deadline: SystemTime::now() + Duration::from_secs(10),
-        };
-        let receipt = port.request(request).await;
-        assert_eq!(receipt.outcome, WriteOutcome::Written);
-        assert_eq!(receipt.title.as_deref(), Some("A Useful Title"));
+        let (_root, _request_id, result) = run_title(Arc::clone(&session), "codex", 3).await;
+        assert_eq!(
+            result,
+            TitleResult::Applied {
+                title: "A Useful Title".into()
+            }
+        );
         let calls = session.requests.lock().expect("fixture request list");
+        let provider_root = &calls[0].root_request_id;
+        assert!(
+            studio_runtime_schema::persistence::RequestIdentity::new(
+                "title",
+                &[],
+                provider_root,
+                &[]
+            )
+            .is_ok()
+        );
+        assert!(
+            calls
+                .iter()
+                .all(|call| &call.root_request_id == provider_root
+                    && (call.admitted_request.is_some()
+                        == (call.method != Method::ThreadTurnsList)))
+        );
         assert_eq!(
             calls.iter().map(|call| call.method).collect::<Vec<_>>(),
             [
@@ -1056,23 +1163,10 @@ mod tests {
             super::TitleHome::new("title-request-unknown").expect("owned retained title fixture");
         let session = Arc::new(Session {
             requests: Mutex::new(Vec::new()),
-            unknown_start: true,
+            scenario: ReplyScenario::UnknownThread,
         });
-        let port = ProviderTitleRequestPort::new(session.clone());
-        let receipt = port
-            .request(TitleRequest {
-                request_id: "title-request-unknown".into(),
-                agent_id: "agent-fixture".into(),
-                epoch: 3,
-                account_key: "account-fixture".into(),
-                provider: Some("codex".into()),
-                model: "gpt-mini".into(),
-                effort: None,
-                prompt: "Write a title".into(),
-                deadline: SystemTime::now() + Duration::from_secs(10),
-            })
-            .await;
-        assert_eq!(receipt.outcome, WriteOutcome::Unknown);
+        let (_root, _request_id, result) = run_title(Arc::clone(&session), "codex", 3).await;
+        assert_eq!(result, TitleResult::HeldUnknown);
         let calls = session.requests.lock().expect("fixture request list");
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].method, Method::ThreadStart);
@@ -1086,36 +1180,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn title_with_written_thread_and_unsent_turn_remains_unknown() {
+        let session = Arc::new(Session {
+            requests: Mutex::new(Vec::new()),
+            scenario: ReplyScenario::NotSentTurn,
+        });
+        let (_root, _request_id, result) = run_title(Arc::clone(&session), "codex", 3).await;
+        assert_eq!(result, TitleResult::HeldUnknown);
+        let calls = session.requests.lock().expect("request list");
+        assert_eq!(
+            calls.iter().map(|call| call.method).collect::<Vec<_>>(),
+            [Method::ThreadStart, Method::TurnStart]
+        );
+    }
+
+    #[tokio::test]
     async fn claude_title_uses_stable_message_identity_on_retained_session() {
         let session = Arc::new(Session {
             requests: Mutex::new(Vec::new()),
-            unknown_start: false,
+            scenario: ReplyScenario::Ready,
         });
-        let port = ProviderTitleRequestPort::new(session.clone());
-        let receipt = port
-            .request(TitleRequest {
-                request_id: "claude-title-request".into(),
-                agent_id: "agent-fixture".into(),
-                epoch: 9,
-                account_key: "claude-account".into(),
-                provider: Some("claude".into()),
-                model: "claude-sonnet".into(),
-                effort: Some("low".into()),
-                prompt: "Write a title".into(),
-                deadline: SystemTime::now() + Duration::from_secs(10),
-            })
-            .await;
-        assert_eq!(receipt.outcome, WriteOutcome::Written);
+        let (_root, request_id, result) = run_title(Arc::clone(&session), "claude", 9).await;
+        assert_eq!(
+            result,
+            TitleResult::Applied {
+                title: "A Useful Title".into()
+            }
+        );
         let calls = session.requests.lock().expect("fixture request list");
         assert_eq!(calls[0].method, Method::ThreadStart);
         assert_eq!(calls[1].method, Method::TurnStart);
         assert_eq!(calls[0].params["ephemeral"], true);
         assert!(calls[0].params["cwd"].as_str().is_some());
         assert_eq!(calls[0].params["model"], "claude-sonnet");
-        // SHA-256 of `claude-title-request`: the identity must not change between releases.
         assert_eq!(
             calls[1].params["clientUserMessageId"],
-            "title:2eaab95462e7445c3b24d0010db46eebb6cfb82031b00f5180f483fa022f0089:turn"
+            format!("{}:turn", super::operation_root(&request_id))
         );
         assert_eq!(calls[1].params["model"], "claude-sonnet");
         assert_eq!(calls[2].method, Method::ThreadTurnsList);
@@ -1170,7 +1270,7 @@ mod tests {
 
     fn supervisor_health_status(state: &std::path::Path) -> studio_runtime_process::HealthResult {
         studio_runtime_process::HealthResult {
-            protocol: studio_runtime_process::SUPERVISOR_PROTOCOL_V2,
+            protocol: studio_runtime_process::SUPERVISOR_PROTOCOL_VERSION,
             state_dir: state.display().to_string(),
             handles: vec![
                 serde_json::from_value(json!({
@@ -1210,8 +1310,8 @@ mod tests {
         let state = fixture.path().join("state");
         let status = supervisor_health_status(&state);
         for protocol in [
-            studio_runtime_process::SUPERVISOR_PROTOCOL_V2 - 1,
-            studio_runtime_process::SUPERVISOR_PROTOCOL_V2 + 1,
+            studio_runtime_process::SUPERVISOR_PROTOCOL_VERSION - 1,
+            studio_runtime_process::SUPERVISOR_PROTOCOL_VERSION + 1,
         ] {
             let mut incompatible = status.clone();
             incompatible.protocol = protocol;
@@ -1248,12 +1348,12 @@ mod tests {
                     [serde_json::json!({"id":"agent-a","accountKey":"account-a","provider":studio_runtime_schema::ProviderKind::Codex}).to_string()],
                 )?;
                 tx.execute(
-                    "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'accepted','{}')",
-                    ["account-worker:callback:account-a:1:3:accepted"],
+                    "INSERT INTO runtime_tool_requests(id,record) VALUES('callback-a',?1)",
+                    [json!({"id":"callback-a","kind":studio_runtime_schema::persistence::ToolRequestKind::ProviderCallback,"status":studio_runtime_schema::persistence::ToolRequestStatus::Queued,"payload":{"accepted":{"account":"account-a"}}}).to_string()],
                 )?;
                 tx.execute(
                     "INSERT INTO runtime_tool_requests(id,record) VALUES('tool-a',?1)",
-                    [r#"{"id":"tool-a","agent":"agent-a","stage":"queued"}"#],
+                    [json!({"id":"tool-a","agent":"agent-a","kind":studio_runtime_schema::persistence::ToolRequestKind::ManagedTool,"status":studio_runtime_schema::persistence::ToolRequestStatus::Queued,"stage":"queued"}).to_string()],
                 )?;
                 Ok::<(), studio_runtime_store::StoreError>(())
             })

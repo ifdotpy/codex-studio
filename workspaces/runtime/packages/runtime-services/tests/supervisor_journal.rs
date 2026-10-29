@@ -219,7 +219,9 @@ fn supervisor_journal_receipts_replay_ack_and_restart() {
             )
             .is_err()
     );
-    journal.opened("fixture", "new", 456, "new-start").unwrap();
+    journal
+        .opened("fixture", "new", 456, "new-start", None)
+        .unwrap();
     assert_eq!(
         journal.operation_status("fixture", "monitor:one").unwrap(),
         json!({"accepted":false,"reason":"native_generation_changed"})
@@ -420,7 +422,9 @@ fn supervisor_journal_lifecycle_failpoints_preserve_all_rows() {
         let failed = match action {
             "reserve" => journal.reserve("new", "signature", 100.0).is_err(),
             "reserve-existing" => journal.reserve(handle, "new", 100.0).is_err(),
-            "opened" => journal.opened(handle, "new", 456, "new-start").is_err(),
+            "opened" => journal
+                .opened(handle, "new", 456, "new-start", None)
+                .is_err(),
             "close" => journal.close(handle, "closed", 100.0).is_err(),
             "close-unknown" => journal
                 .close_unknown(
@@ -555,7 +559,7 @@ fn supervisor_reopen_reservation_survives_crash_without_old_identity() {
     // A reservation is not a spawned generation. Only the opened receipt binds it.
     assert_eq!(
         journal
-            .opened("fixture", "new signature", 456, "new-start")
+            .opened("fixture", "new signature", 456, "new-start", None)
             .unwrap(),
         2
     );

@@ -6,7 +6,7 @@ use super::supervisor_identity::{
 };
 use crate::{
     NextBatchRequestEnvelope, NextBatchResult, SUPERVISOR_NEXT_BATCH_MAX_EVENTS,
-    SUPERVISOR_PROTOCOL_V2, SupervisorEventV2, SupervisorHandshakeV2,
+    SUPERVISOR_PROTOCOL_VERSION, SupervisorEventV2, SupervisorHandshakeV2,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -187,7 +187,7 @@ impl Supervisor {
                     handles.push(json!({"id":row.id,"pid":row.pid,"signature":row.signature,"startTime":row.start_time,"jobIdentity":null,"sequence":row.snapshot.sequence(),"acknowledged":row.snapshot.acknowledged(),"bufferedBytes":row.buffered,"backpressure":child.as_ref().is_some_and(|c|c.paused.load(Ordering::Acquire)),"stdoutReaderAlive":child.as_ref().is_some_and(|c|c.stdout_alive.load(Ordering::Acquire)),"stdoutReaderError":child.as_ref().map(|c|lock(&c.stdout_error).map(|e|e.clone())).transpose()?.flatten(),"persistenceErrors":child.as_ref().map(|c|lock(&c.errors).map(|e|e.clone())).transpose()?.unwrap_or_default()}));
                 }
                 Ok(
-                    json!({"protocol":SUPERVISOR_PROTOCOL_V2,"stateDir":self.root,"handles":handles,"journalLimitBytes":HANDLE_LIMIT,"outputLimitBytesPerHandle":HANDLE_LIMIT,"durability":"sqlite-full-sync-per-request","recovery":lock(&self.recovery)?.clone()}),
+                    json!({"protocol":SUPERVISOR_PROTOCOL_VERSION,"stateDir":self.root,"handles":handles,"journalLimitBytes":HANDLE_LIMIT,"outputLimitBytesPerHandle":HANDLE_LIMIT,"durability":"sqlite-full-sync-per-request","recovery":lock(&self.recovery)?.clone()}),
                 )
             }
             Command::FinishFallback => {
@@ -205,6 +205,7 @@ impl Supervisor {
             request @ Command::Open { .. } => {
                 let Command::Open {
                     handle,
+                    generation,
                     command,
                     env,
                     cwd,
@@ -275,11 +276,22 @@ impl Supervisor {
                             ));
                         }
                     }
+                    if let Some(generation) = generation
+                        && *generation <= saved.snapshot.generation()
+                    {
+                        return Err(Error::Refused("Account host generation is not newer"));
+                    }
                 }
                 if !self.reserve_child_slot() {
                     return Err(Error::Refused("Supervisor child capacity reached"));
                 }
                 let reserved = (|| {
+                    if handle.starts_with("account:") != generation.is_some() {
+                        return Err(Error::Refused("Account host generation is required"));
+                    }
+                    if generation.is_some_and(|value| value == 0 || value > i64::MAX as u64) {
+                        return Err(Error::Refused("Invalid account host generation"));
+                    }
                     free_space(&self.root, 1024 * 1024)?;
                     self.journal.reserve(handle, &signature, now()?)?;
                     OwnedChild::spawn(
@@ -938,7 +950,7 @@ fn connection_with_budget(supervisor: Arc<Supervisor>, mut socket: UnixStream, b
         let first_value = read_frame(&mut reader, Some(Instant::now() + budget), budget)?
             .ok_or(Error::Refused("Missing supervisor handshake"))?;
         let first: SupervisorHandshakeV2 = serde_json::from_value(first_value)?;
-        if first.protocol != SUPERVISOR_PROTOCOL_V2 {
+        if first.protocol != SUPERVISOR_PROTOCOL_VERSION {
             return Err(Error::Refused("Supervisor protocol mismatch"));
         }
         let capabilities = Arc::new(lock(&supervisor.ownership)?.attach(
@@ -949,7 +961,7 @@ fn connection_with_budget(supervisor: Arc<Supervisor>, mut socket: UnixStream, b
         admitted = Some(capabilities.clone());
         write_frame(
             &mut socket,
-            &json!({"ok":true,"protocol":SUPERVISOR_PROTOCOL_V2}),
+            &json!({"ok":true,"protocol":SUPERVISOR_PROTOCOL_VERSION}),
         )?;
         drop(reader);
         socket.set_read_timeout(None)?;

@@ -16,8 +16,10 @@ pub mod idle_compaction;
 pub mod json_compat;
 pub mod model_catalog;
 pub mod multi_server_protocol;
+pub mod persistence;
 pub mod pricing;
 pub mod process_controls;
+pub mod provider_call_contract;
 pub mod provider_diagnostics;
 pub mod provider_errors;
 pub mod provider_input;
@@ -757,6 +759,7 @@ fn prepare_schemas() -> SchemaResult<CompiledSchemas> {
         "ExecutionLedger",
         "PeerTeamEntityDto",
         "PreferenceField",
+        "ModelChoices",
         "ProjectEntityDto",
         "ProjectMutationRecord",
         "RequestEntityDto",
@@ -1105,6 +1108,28 @@ mod tests {
             deleted,
             owner.keys().copied().collect(),
             "SyncEntity deletes must consume the SyncEntityPayload owner"
+        );
+    }
+
+    #[test]
+    fn receipt_server_delivery_accepts_canonical_scoped_identity() {
+        let root = crate::persistence::RequestIdentity::issue_root();
+        let id = crate::persistence::RequestIdentity::new(
+            "server-outgoing",
+            &[&"peer".repeat(40)],
+            &root,
+            &["event", &"part".repeat(50)],
+        )
+        .expect("canonical identity");
+        assert!(id.id().len() > 200);
+        assert!(
+            validate(
+                "PersistedServerDelivery",
+                &serde_json::json!({
+                    "id": id.id(), "state": "queued"
+                })
+            )
+            .expect("schema")
         );
     }
 

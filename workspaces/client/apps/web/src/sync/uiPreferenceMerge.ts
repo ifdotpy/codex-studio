@@ -1,4 +1,4 @@
-import { MODEL_WHITELIST_PREFERENCE_KEY } from "../generated/sharedValues.ts";
+import { MODEL_CHOICES_PREFERENCE_KEY } from "../generated/sharedValues.ts";
 import type { components } from "../generated/api.ts";
 export type PreferenceField = components["schemas"]["PreferenceField"];
 export type PreferenceFields = Record<string, PreferenceField>;
@@ -19,7 +19,7 @@ export function preferenceScope(key: string): PreferenceScope | null {
     key.startsWith("codex-project-compact:") ||
     key.startsWith("studio-prompt-bookmarks:") ||
     key === "codex-worker-disclosures" ||
-    key === MODEL_WHITELIST_PREFERENCE_KEY
+    key === MODEL_CHOICES_PREFERENCE_KEY
   )
     return "server";
   return null;
@@ -122,7 +122,7 @@ export function prunePreferenceFields(
     if (
       key === "codex-studio-preferences-v1" ||
       key.startsWith("server-") ||
-      key === MODEL_WHITELIST_PREFERENCE_KEY
+      key === MODEL_CHOICES_PREFERENCE_KEY
     )
       protectedFields[name] = field;
     else items.push([name, field]);

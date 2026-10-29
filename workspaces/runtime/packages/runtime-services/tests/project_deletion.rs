@@ -148,19 +148,20 @@ async fn delete_with_ports(
         .expect("seq");
     let workspace = SyncDocumentsRepository::workspace_id(&reader).expect("workspace");
     drop(reader);
-    project_deletion::execute(
+    let reply = project_deletion::execute(
         store,
         project_deletion::Request {
             id,
-            request_id: "delete".into(),
+            request_id: studio_runtime_schema::persistence::RequestIdentity::issue_root(),
             expected_project_seq: seq,
             expected_workspace_id: workspace,
         },
-        2.,
+        studio_runtime_services::event_write::unix_time().expect("clock"),
         ports,
     )
     .await
-    .expect("delete")
+    .expect("delete");
+    serde_json::from_slice(&serde_json::to_vec(&reply).expect("serialize reply")).expect("reply")
 }
 fn creation(path: &str, bound: bool) -> agents_create::Creation {
     agents_create::Creation {
@@ -298,15 +299,21 @@ async fn project_deletion_receipt_survives_store_restart() {
         store,
         project_deletion::Request {
             id,
-            request_id: "delete".into(),
+            request_id: first["request_id"]
+                .as_str()
+                .expect("original request")
+                .to_owned(),
             expected_project_seq: seq,
             expected_workspace_id: workspace,
         },
-        99.,
+        studio_runtime_services::event_write::unix_time().expect("clock"),
         Arc::new(UnavailableLifecyclePorts),
     )
     .await
     .expect("replay after restart");
+    let result: Value =
+        serde_json::from_slice(&serde_json::to_vec(&result).expect("serialize reply"))
+            .expect("reply");
     assert_eq!(result, first);
 }
 
@@ -352,11 +359,17 @@ async fn project_deletion_location_reservation_rechecks_the_checked_lifetime() {
             _: &'a str,
             envelope: &'a Value,
             _: std::time::Duration,
-        ) -> futures_util::future::BoxFuture<'a, Result<Value, AccessError>> {
+        ) -> futures_util::future::BoxFuture<
+            'a,
+            Result<studio_runtime_store::multi_server_delivery::RemoteReply, AccessError>,
+        > {
             self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Box::pin(
-                async move { Ok(json!({"requestId":envelope["requestId"],"outcome":"unknown"})) },
-            )
+            Box::pin(async move {
+                Ok(
+                    studio_runtime_services::multi_server_orchestration::ExchangeOutcome::Unknown
+                        .to_reply(envelope["requestId"].as_str().expect("request ID")),
+                )
+            })
         }
     }
     let (_root, store, project) = setup().await;
@@ -534,6 +547,7 @@ async fn project_deletion_orders_archive_restore_with_its_writer() {
                 target: "archived".into(),
             },
             3.,
+            None,
         )
         .await;
         if deletion_first {
@@ -561,11 +575,17 @@ async fn project_deletion_refuses_fresh_markerless_location_reservations_but_rep
             _: &'a str,
             envelope: &'a Value,
             _: std::time::Duration,
-        ) -> futures_util::future::BoxFuture<'a, Result<Value, AccessError>> {
+        ) -> futures_util::future::BoxFuture<
+            'a,
+            Result<studio_runtime_store::multi_server_delivery::RemoteReply, AccessError>,
+        > {
             self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Box::pin(
-                async move { Ok(json!({"requestId":envelope["requestId"],"outcome":"unknown"})) },
-            )
+            Box::pin(async move {
+                Ok(
+                    studio_runtime_services::multi_server_orchestration::ExchangeOutcome::Unknown
+                        .to_reply(envelope["requestId"].as_str().expect("request ID")),
+                )
+            })
         }
     }
     let (_root, store, project) = setup().await;
@@ -601,7 +621,9 @@ async fn project_deletion_refuses_fresh_markerless_location_reservations_but_rep
     let envelope = json!({"requestId":"legacy","action":"add_location","payload":payload});
     let encoded = studio_runtime_services::remote_transport::canonical_json(&envelope)
         .expect("canonical envelope");
-    store.transaction(move|tx|{tx.execute("INSERT INTO runtime_server_outbox(id,server,body,state,created_at,next_at,attempts) VALUES('legacy','peer',?1,'queued',1,0,0)",[encoded])?;Ok(())}).await.expect("legacy reservation");
+    let fingerprint = studio_runtime_store::sha256_hex(encoded.as_bytes());
+    let saved_fingerprint = fingerprint.clone();
+    store.transaction(move|tx|{tx.execute("INSERT INTO runtime_server_outbox(id,server,body,state,created_at,next_at,attempts,fingerprint) VALUES('legacy','peer',?1,'queued',1,0,0,?2)",rusqlite::params![encoded,fingerprint])?;Ok(())}).await.expect("legacy reservation");
     let replay = payload.clone();
     store
         .transaction_with(move |tx| {
@@ -622,16 +644,42 @@ async fn project_deletion_refuses_fresh_markerless_location_reservations_but_rep
         0,
         "legacy uncertain writes retain their existing no-resend policy"
     );
+    let scoped = studio_runtime_store::multi_server_delivery::remote_operation_key(
+        "server-outbox",
+        &["peer"],
+        "legacy",
+        &["add_location"],
+    );
+    let token_json = format!(
+        "{{\"id\":{},\"signature\":\"{}\",\"created\":{}}}",
+        serde_json::to_string(&scoped).expect("scoped id"),
+        saved_fingerprint,
+        chrono::Utc::now().timestamp_millis(),
+    );
+    let token: studio_runtime_store::request_results::AdmittedRequest =
+        serde_json::from_str(&token_json).expect("legacy admission");
+    let saved = studio_runtime_store::multi_server_delivery::SavedRemoteReply {
+        principal: None,
+        server: Some("peer".into()),
+        actor: None,
+        body: None,
+        response: studio_runtime_store::multi_server_delivery::RemoteReply {
+            request_id: "legacy".into(),
+            outcome: studio_runtime_schema::persistence::RemoteOutcome::Applied,
+            value: Some(
+                serde_json::value::RawValue::from_string("{\"retained\":true}".into())
+                    .expect("reply"),
+            ),
+            error: None,
+            waiting_for: None,
+        },
+    };
     store
-        .transaction(|tx| {
-            tx.execute(
-                "UPDATE runtime_server_outbox SET state='complete',result=?1 WHERE id='legacy'",
-                [
-                    json!({"requestId":"legacy","outcome":"applied","value":{"retained":true}})
-                        .to_string(),
-                ],
-            )?;
-            Ok(())
+        .transaction_with(move |tx| {
+            studio_runtime_services::event_write::settle_request(tx, &token, None, &saved)
+                .expect("settle legacy receipt");
+            tx.execute("DELETE FROM runtime_server_outbox WHERE id='legacy'", [])?;
+            Ok::<_, studio_runtime_services::multi_server_transport::AccessError>(())
         })
         .await
         .expect("retained legacy receipt");
@@ -640,7 +688,7 @@ async fn project_deletion_refuses_fresh_markerless_location_reservations_but_rep
         .await
         .expect("legacy completed receipt replays without admission");
     assert!(
-        matches!(replayed,studio_runtime_services::multi_server_transport::ExchangeOutcome::Applied(ref value) if value["retained"]==true)
+        matches!(replayed,studio_runtime_services::multi_server_transport::ExchangeOutcome::Applied(ref value) if serde_json::from_str::<Value>(value.value.get()).expect("retained reply")["retained"]==true)
     );
     let mut changed = payload;
     changed["path"] = json!("/changed");

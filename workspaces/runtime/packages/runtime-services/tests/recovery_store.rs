@@ -1063,8 +1063,11 @@ impl studio_runtime_services::recovery_history::RecoveryReader for TaskReader {
 #[tokio::test]
 async fn task_absence_consumer_matches_python_lost_and_persists_named_hold() {
     use studio_runtime_services::{recovery_absence::*, task_recovery::*, task_recovery_store::*};
+    let seed = fixture();
+    let template = crate::state_template::StateTemplate::migrate(seed.path()).await;
     for case in frozen_cases(Corpus::Absence) {
-        let root = fixture();
+        let root = tempfile::tempdir().expect("isolated store");
+        template.write(root.path());
         let store = open_store(root.path()).await;
         seed_task(&store, &case).await;
         let observation: RecoveryObservation =

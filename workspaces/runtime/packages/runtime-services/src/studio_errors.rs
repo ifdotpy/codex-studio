@@ -25,7 +25,7 @@ use studio_runtime_schema::studio_errors::{
     Cause, Context, Diagnostics, MonitorOperationIdentity, MonitorRecoveryEvidence,
     MonitorRecoveryProof, MonitorRecoveryReason, MonitorStatus, StudioError, Target,
 };
-use studio_runtime_store::{EventWriteRepository, StoreError, StudioErrorSources, Transaction};
+use studio_runtime_store::{StoreError, StudioErrorSources, Transaction, error_incidents};
 
 /// Oldest work the list reads. Unit: seconds.
 pub const WINDOW_SECONDS: f64 = 7.0 * 24.0 * 60.0 * 60.0;
@@ -34,20 +34,12 @@ pub const WINDOW_SECONDS: f64 = 7.0 * 24.0 * 60.0 * 60.0;
 pub const STUCK_INPUT_SECONDS: f64 = 10.0 * 60.0;
 /// Most rows of one list.
 pub const MAX_ROWS: usize = 200;
-/// Receipt-id prefix of a dismissed row.
-const DISMISSED_PREFIX: &str = "studio-errors:dismissed:";
 /// Row-id prefix of the failures of one rule or command and kind. Dismissing
 /// such a row hides its failures up to that time; a later one returns.
 const MONITOR_GROUP_PREFIX: &str = "monitors:";
 /// Row-id prefix of one monitor, as stored by dismissals before grouping.
 const MONITOR_ROW_PREFIX: &str = "monitor:";
-const DISMISSED_SIGNATURE: &str = "studio-error-dismissal";
-
-/// Diagnostic receipts are separate from operation receipts and dismissal keys.
-const INCIDENT_PREFIX: &str = "studio-errors:incident:";
-const INCIDENT_SIGNATURE: &str = "studio-error-incident-v1";
-
-/// Record once by diagnostic identity. This receipt is never an operation result or retry authority.
+/// Record once by diagnostic identity, independently of request-result expiry.
 pub async fn record_incident(
     store: &studio_runtime_store::RuntimeStore,
     incident: StudioError,
@@ -60,26 +52,8 @@ pub async fn record_incident(
             id: incident.id,
         });
     }
-    let key = format!("{INCIDENT_PREFIX}{}", incident.id);
-    let mut retained = serde_json::to_value(&incident)?;
-    if let Some(object) = retained.as_object_mut() {
-        object.remove("level");
-    }
-    let encoded = serde_json::to_string(&retained)?;
     store
-        .transaction(move |tx| {
-            match EventWriteRepository::receipt(tx, &key)? {
-                Some(receipt) if receipt.signature != INCIDENT_SIGNATURE => {
-                    return Err(StoreError::InvalidStoredRecord {
-                        object: "studio-errors",
-                        id: key,
-                    });
-                }
-                Some(_) => {}
-                None => EventWriteRepository::put_receipt(tx, &key, INCIDENT_SIGNATURE, &encoded)?,
-            }
-            Ok(())
-        })
+        .transaction(move |tx| error_incidents::put(tx, &incident))
         .await
 }
 
@@ -180,23 +154,28 @@ fn monitor_evidence(record: &Value) -> Result<Cause, serde_json::Error> {
         .filter(|value| !value.is_null())
         .map(|value| {
             serde_json::from_value::<crate::monitor_policy::ReattachRecovery>(value.clone()).map(
-                |recovery| MonitorRecoveryEvidence {
-                    status: recovery.status,
-                    started_at: recovery.started_at,
-                    proof: recovery.proof.map(|proof| {
-                        match serde_json::from_value::<MonitorRecoveryReason>(Value::String(
-                            proof.clone(),
-                        )) {
-                            Ok(reason) => MonitorRecoveryProof::Recognized { reason },
-                            Err(_) => MonitorRecoveryProof::Unclassified {
-                                sha256: studio_runtime_store::sha256_hex(proof.as_bytes()),
-                            },
-                        }
-                    }),
+                |recovery| {
+                    recovery
+                        .started_at
+                        .map(|started_at| MonitorRecoveryEvidence {
+                            status: recovery.status,
+                            started_at,
+                            proof: recovery.proof.map(|proof| {
+                                match serde_json::from_value::<MonitorRecoveryReason>(
+                                    Value::String(proof.clone()),
+                                ) {
+                                    Ok(reason) => MonitorRecoveryProof::Recognized { reason },
+                                    Err(_) => MonitorRecoveryProof::Unclassified {
+                                        sha256: studio_runtime_store::sha256_hex(proof.as_bytes()),
+                                    },
+                                }
+                            }),
+                        })
                 },
             )
         })
-        .transpose()?;
+        .transpose()?
+        .flatten();
     Ok(Cause::Monitor {
         status,
         operation,
@@ -525,7 +504,9 @@ fn build(tx: &Transaction<'_>, now: f64) -> Result<(Vec<StudioError>, Baseline),
         };
         group.failures.retain(|failure| {
             succeeded_at.is_none_or(|success| failure.created >= success)
-                && dismissed_at.is_none_or(|dismissed| failure.at > dismissed)
+                && dismissed_at.is_none_or(|dismissed| {
+                    error_incidents::timestamp_ms(failure.at).is_ok_and(|at| at > dismissed)
+                })
         });
         group.failures.sort_by(|a, b| {
             a.at.total_cmp(&b.at)
@@ -717,14 +698,11 @@ fn build(tx: &Transaction<'_>, now: f64) -> Result<(Vec<StudioError>, Baseline),
         );
     }
 
-    let mut incidents = tx.prepare_cached(
-        "SELECT id,result FROM runtime_operation_receipts WHERE id>=?1 AND id<?2 AND signature=?3",
-    )?;
+    let mut incidents = tx.prepare_cached("SELECT id,payload FROM runtime_error_incidents WHERE created>=?1 AND payload!='null' ORDER BY created DESC,id LIMIT ?2")?;
     for record in incidents.query_map(
         rusqlite::params![
-            INCIDENT_PREFIX,
-            format!("{INCIDENT_PREFIX}~"),
-            INCIDENT_SIGNATURE
+            error_incidents::timestamp_ms(since.max(0.0))?,
+            MAX_ROWS as i64
         ],
         |row| {
             Ok((
@@ -734,19 +712,15 @@ fn build(tx: &Transaction<'_>, now: f64) -> Result<(Vec<StudioError>, Baseline),
         },
     )? {
         let (key, encoded) = record?;
-        let logical_id = key[INCIDENT_PREFIX.len()..].to_owned();
+        let logical_id = key.clone();
         let source = Cause::StoredRecord {
-            object: "runtime_operation_receipts".into(),
+            object: "runtime_error_incidents".into(),
             id: key.clone(),
-            pointer: Some("/result".into()),
+            pointer: Some("/payload".into()),
         };
         let decoded = match encoded {
             rusqlite::types::Value::Text(encoded) => {
-                match serde_json::from_str::<Value>(&encoded).and_then(|mut value| {
-                    // Retained incidents written before levels existed are both error kinds.
-                    if let Some(object) = value.as_object_mut() {
-                        object.entry("level").or_insert(json!("error"));
-                    }
+                match serde_json::from_str::<Value>(&encoded).and_then(|value| {
                     serde_json::from_value::<StudioError>(value).map(|mut incident| {
                         incident.level = incident.kind.level();
                         incident
@@ -762,7 +736,7 @@ fn build(tx: &Transaction<'_>, now: f64) -> Result<(Vec<StudioError>, Baseline),
             | rusqlite::types::Value::Blob(_) => Err(vec![
                 source.clone(),
                 Cause::SchemaViolation {
-                    pointer: "/result".into(),
+                    pointer: "/payload".into(),
                     keyword: "type".into(),
                 },
             ]),
@@ -772,7 +746,7 @@ fn build(tx: &Transaction<'_>, now: f64) -> Result<(Vec<StudioError>, Baseline),
             Err(causes) => {
                 push(
                     &mut rows,
-                    invalid_source(logical_id, "runtime_operation_receipts", &key, now, causes),
+                    invalid_source(logical_id, "runtime_error_incidents", &key, now, causes),
                 );
                 continue;
             }
@@ -793,13 +767,13 @@ fn build(tx: &Transaction<'_>, now: f64) -> Result<(Vec<StudioError>, Baseline),
                 &mut rows,
                 invalid_source(
                     logical_id,
-                    "runtime_operation_receipts",
+                    "runtime_error_incidents",
                     &key,
                     now,
                     vec![
                         source,
                         Cause::SchemaViolation {
-                            pointer: "/result".into(),
+                            pointer: "/payload".into(),
                             keyword: "contract".into(),
                         },
                     ],
@@ -953,11 +927,8 @@ fn may_change(tx: &Transaction<'_>, sources: &StudioErrorSources) -> Result<bool
         .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?
         .as_secs_f64();
     let since = now - WINDOW_SECONDS;
-    if sources
-        .receipts
-        .iter()
-        .any(|id| id.starts_with(DISMISSED_PREFIX) || id.starts_with(INCIDENT_PREFIX))
-        || (sources.receipts_removed && dismissed(tx)?.len() != dismissed_count)
+    if !sources.incidents.is_empty()
+        || (sources.incidents_removed && dismissed(tx)?.len() != dismissed_count)
     {
         return Ok(true);
     }
@@ -970,7 +941,7 @@ fn may_change(tx: &Transaction<'_>, sources: &StudioErrorSources) -> Result<bool
     // A deleted earlier member changes a group's count even when its final
     // monitor remains. Deletions carry no source ID to check individually.
     if (sources.rows_removed && monitor_groups)
-        || ((sources.rows_removed || sources.receipts_removed) && published_source_missing(tx)?)
+        || ((sources.rows_removed || sources.incidents_removed) && published_source_missing(tx)?)
     {
         return Ok(true);
     }
@@ -1104,7 +1075,7 @@ fn published_source_missing(tx: &Transaction<'_>) -> Result<bool, StoreError> {
              (e.id LIKE 'monitor:%' AND NOT EXISTS(SELECT 1 FROM runtime_monitors m WHERE m.id=substr(e.id,9))) OR \
              (e.id LIKE 'event:%' AND NOT EXISTS(SELECT 1 FROM runtime_events v WHERE v.id=substr(e.id,7))) OR \
              (e.id LIKE 'stored:runtime_agents:%' AND NOT EXISTS(SELECT 1 FROM runtime_agents a WHERE a.id=json_extract(e.payload,'$.value.diagnostics.context.id'))) OR \
-             ((e.id LIKE 'http:%' OR e.id LIKE 'recovery:%') AND NOT EXISTS(SELECT 1 FROM runtime_operation_receipts r WHERE r.id='studio-errors:incident:'||e.id)) OR \
+             ((e.id LIKE 'http:%' OR e.id LIKE 'recovery:%') AND NOT EXISTS(SELECT 1 FROM runtime_error_incidents r WHERE r.id=e.id AND r.payload!='null')) OR \
              (json_extract(e.payload,'$.value.action')!='details' AND NOT EXISTS(SELECT 1 FROM runtime_agents a WHERE a.id=json_extract(e.payload,'$.value.agentId')))))",
         )?
         .query_row([], |row| row.get(0))?)
@@ -1150,19 +1121,14 @@ fn last_rule_success(
 }
 
 /// Dismissed row ids, each with the Unix seconds of its latest dismissal.
-fn dismissed(tx: &Transaction<'_>) -> Result<std::collections::BTreeMap<String, f64>, StoreError> {
+fn dismissed(tx: &Transaction<'_>) -> Result<std::collections::BTreeMap<String, i64>, StoreError> {
     let mut statement = tx.prepare_cached(
-        "SELECT substr(id,?3),COALESCE(json_extract(result,'$.at'),0) FROM runtime_operation_receipts WHERE id>=?1 AND id<?2",
+        "SELECT id,dismissed_at FROM runtime_error_incidents WHERE dismissed_at IS NOT NULL",
     )?;
     let ids = statement
-        .query_map(
-            rusqlite::params![
-                DISMISSED_PREFIX,
-                format!("{DISMISSED_PREFIX}~"),
-                i64::try_from(DISMISSED_PREFIX.len() + 1).unwrap_or(i64::MAX)
-            ],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?)),
-        )?
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?
         .collect::<Result<_, _>>()?;
     Ok(ids)
 }
@@ -1170,14 +1136,7 @@ fn dismissed(tx: &Transaction<'_>) -> Result<std::collections::BTreeMap<String, 
 /// Hide row `id` from the list. Dismissing it again changes nothing, except
 /// for the row of a rule or command: that hides its failures up to `now`.
 pub fn dismiss(tx: &Transaction<'_>, id: &str, now: f64) -> Result<(), StoreError> {
-    let key = format!("{DISMISSED_PREFIX}{id}");
-    let value = json!({"at":now}).to_string();
-    if id.starts_with(MONITOR_GROUP_PREFIX) {
-        EventWriteRepository::replace_receipt(tx, &key, DISMISSED_SIGNATURE, &value)?;
-    } else if EventWriteRepository::receipt(tx, &key)?.is_none() {
-        EventWriteRepository::put_receipt(tx, &key, DISMISSED_SIGNATURE, &value)?;
-    }
-    Ok(())
+    error_incidents::dismiss(tx, id, now, id.starts_with(MONITOR_GROUP_PREFIX))
 }
 
 /// Dismiss only currently listed errors. The caller owns the encompassing transaction.
@@ -1254,9 +1213,26 @@ mod tests {
     }
 
     #[test]
+    fn monitor_evidence_omits_closed_recovery_without_start() {
+        let record = json!({"status":"lost","reattachRecovery":{"accountKey":"account","epoch":2,"status":"not_reattachable","proof":"legacy"}});
+        let encoded =
+            serde_json::to_value(monitor_evidence(&record).expect("legacy recovery")).unwrap();
+        assert!(encoded.get("recovery").is_none() || encoded["recovery"].is_null());
+    }
+
+    #[test]
     fn monitor_evidence_keeps_identity_and_correlates_private_unclassified_proof() {
         let proof = "password=proof-canary";
-        let record = json!({"status":"lost","operation":{"agent":"worker","epoch":7,"accountKey":"account","connectionId":"connection","credentials":"operation-canary"},"reattachRecovery":{"accountKey":"account","epoch":7,"status":"not_reattachable","startedAt":123.0,"proof":proof}});
+        let mut record = json!({"status":"lost","operation":{"agent":"worker","epoch":7,"accountKey":"account","connectionId":"connection","credentials":"operation-canary"},"reattachRecovery":{"accountKey":"account","epoch":7,"status":"not_reattachable","startedAt":123.0,"proof":proof}});
+        assert!(
+            monitor_evidence(&record).is_err(),
+            "unknown operation fields are refused"
+        );
+        record
+            .get_mut("operation")
+            .and_then(Value::as_object_mut)
+            .unwrap()
+            .remove("credentials");
         let evidence = monitor_evidence(&record).expect("known source owners");
         let encoded = serde_json::to_value(evidence).expect("safe evidence");
         assert_eq!(encoded["operation"]["connectionId"], "connection");

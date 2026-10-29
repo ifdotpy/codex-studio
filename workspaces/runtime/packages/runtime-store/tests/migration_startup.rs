@@ -250,7 +250,7 @@ async fn migration_startup_malformed_retired_sources_preserve_pending_analytics(
         let canvas = Connection::open(state.path().join("canvas.sqlite3")).expect("canvas");
         canvas.execute_batch(match table {
             "wait" => "DROP TABLE runtime_usage_resumes; CREATE TABLE runtime_usage_resumes(id TEXT PRIMARY KEY, agent TEXT NOT NULL,record TEXT NOT NULL); INSERT INTO runtime_usage_resumes(id,agent,record) VALUES('bad','a','not-json')",
-            "callback" => "DROP TABLE runtime_operation_receipts; CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL); INSERT INTO runtime_operation_receipts(id,signature,result) VALUES('bad','provider-callback','not-json')",
+            "callback" => "CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL); INSERT INTO runtime_operation_receipts(id,signature,result) VALUES('bad','provider-callback','not-json')",
             _ => unreachable!("fixture source"),
         }).expect("malformed source");
         let error = RuntimeStore::open(Some(state.path()))

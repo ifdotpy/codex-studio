@@ -760,7 +760,7 @@ test(
           json: {
             id: body.id,
             status: "queued",
-            deliveries: { [a.id]: "queued" },
+            deliveries: { [a.id]: { status: "queued" } },
           } satisfies Pick<
             PostResult<"/api/messages">,
             "id" | "status" | "deliveries"

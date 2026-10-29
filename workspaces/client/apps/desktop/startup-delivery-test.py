@@ -77,7 +77,7 @@ class StartupDeliveryTests(unittest.TestCase):
             db.execute('INSERT INTO handles VALUES(?,?,?,NULL)', ('account:fixture', 31, 4))
             db.commit()
         self.handles = {'account:fixture': [31, 4]}
-        self.health = {'protocol': 2, 'stateDir': str(self.state), 'recovery': {},
+        self.health = {'protocol': recovery.SUPERVISOR_PROTOCOL_VERSION, 'stateDir': str(self.state), 'recovery': {},
                        'handles': [{'id': 'account:fixture', 'pid': 31,
                                     'signature': 'c' * 64, 'startTime': 'fixture-child-start'}]}
         self.facts = {'pid': 11, 'uid': os.getuid(), 'birth': '100:123456',

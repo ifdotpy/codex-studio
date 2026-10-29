@@ -215,7 +215,7 @@ async fn stored(store: &RuntimeStore, id: &str) -> Value {
 #[tokio::test]
 async fn refuses_a_chat_with_an_active_turn() {
     let f = fixture("running", plenty, 0).await;
-    let error = move_to_host(&f.store, &f.host, "lead", "r1")
+    let error = move_to_host(&f.store, &f.host, "lead", request_id())
         .await
         .unwrap_err();
     assert!(
@@ -229,7 +229,7 @@ async fn refuses_a_chat_with_an_active_turn() {
 #[tokio::test]
 async fn refuses_when_the_disk_is_too_small_and_copies_nothing() {
     let f = fixture("idle", |_| Some(1000), 500).await;
-    let error = move_to_host(&f.store, &f.host, "lead", "r1")
+    let error = move_to_host(&f.store, &f.host, "lead", request_id())
         .await
         .unwrap_err();
     assert!(
@@ -245,7 +245,7 @@ async fn refuses_when_the_disk_is_too_small_and_copies_nothing() {
 async fn refuses_a_worker_line_that_main_does_not_hold() {
     let f = fixture("idle", plenty, 0).await;
     f.guest.contained.store(false, Ordering::SeqCst);
-    let error = move_to_host(&f.store, &f.host, "lead", "r1")
+    let error = move_to_host(&f.store, &f.host, "lead", request_id())
         .await
         .unwrap_err();
     assert!(
@@ -258,8 +258,10 @@ async fn refuses_a_worker_line_that_main_does_not_hold() {
 #[tokio::test]
 async fn copies_history_byte_for_byte_and_sets_the_host_fields() {
     let f = fixture("idle", plenty, 10).await;
-    let result = move_to_host(&f.store, &f.host, "lead", "r1").await.unwrap();
-    assert_eq!(result["movedAgents"], json!(["lead", "worker"]));
+    let result = move_to_host(&f.store, &f.host, "lead", request_id())
+        .await
+        .unwrap();
+    assert_eq!(result.moved_agents, ["lead", "worker"]);
     assert_eq!(*f.files.brought.lock().unwrap(), 1);
     let claude = f.root.join("claude/projects/-var-lib-layr/thread-1.jsonl");
     assert_eq!(std::fs::read(&claude).unwrap(), NATIVE);
@@ -297,7 +299,7 @@ async fn copies_history_byte_for_byte_and_sets_the_host_fields() {
 async fn a_corrupt_chunk_leaves_no_history_and_no_move() {
     let f = fixture("idle", plenty, 0).await;
     f.guest.corrupt.store(true, Ordering::SeqCst);
-    let error = move_to_host(&f.store, &f.host, "lead", "r1")
+    let error = move_to_host(&f.store, &f.host, "lead", request_id())
         .await
         .unwrap_err();
     assert!(matches!(error, MoveError::Failed(_)), "{error}");
@@ -312,13 +314,17 @@ async fn a_corrupt_chunk_leaves_no_history_and_no_move() {
 #[tokio::test]
 async fn a_repeat_with_the_same_request_is_idempotent() {
     let f = fixture("idle", plenty, 10).await;
-    let first = move_to_host(&f.store, &f.host, "lead", "r1").await.unwrap();
+    let first = move_to_host(&f.store, &f.host, "lead", request_id())
+        .await
+        .unwrap();
     let reads = f.guest.calls("layr.file.read");
-    let again = move_to_host(&f.store, &f.host, "lead", "r1").await.unwrap();
+    let again = move_to_host(&f.store, &f.host, "lead", request_id())
+        .await
+        .unwrap();
     assert_eq!(first, again);
     assert_eq!(f.guest.calls("layr.file.read"), reads);
     assert_eq!(*f.files.brought.lock().unwrap(), 1);
-    let other = move_to_host(&f.store, &f.host, "worker", "r1")
+    let other = move_to_host(&f.store, &f.host, "worker", request_id())
         .await
         .unwrap_err();
     assert!(matches!(other, MoveError::Refused(_)), "{other}");
@@ -338,8 +344,10 @@ async fn a_repeat_after_a_lost_response_does_not_copy_twice() {
     );
     first.unwrap();
     let reads = f.guest.calls("layr.file.read");
-    let result = move_to_host(&f.store, &f.host, "lead", "r2").await.unwrap();
-    assert_eq!(result["movedAgents"], json!(["lead", "worker"]));
+    let result = move_to_host(&f.store, &f.host, "lead", request_id())
+        .await
+        .unwrap();
+    assert_eq!(result.moved_agents, ["lead", "worker"]);
     assert_eq!(f.guest.calls("layr.file.read"), reads);
 }
 
@@ -358,7 +366,7 @@ async fn different_history_on_this_device_is_never_replaced() {
     let claude = f.root.join("claude/projects/-var-lib-layr");
     std::fs::create_dir_all(&claude).unwrap();
     std::fs::write(claude.join("thread-1.jsonl"), b"different\n").unwrap();
-    let error = move_to_host(&f.store, &f.host, "lead", "r1")
+    let error = move_to_host(&f.store, &f.host, "lead", request_id())
         .await
         .unwrap_err();
     assert!(
@@ -369,4 +377,9 @@ async fn different_history_on_this_device_is_never_replaced() {
         std::fs::read(claude.join("thread-1.jsonl")).unwrap(),
         b"different\n"
     );
+}
+
+fn request_id() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(studio_runtime_schema::persistence::RequestIdentity::issue_root)
 }

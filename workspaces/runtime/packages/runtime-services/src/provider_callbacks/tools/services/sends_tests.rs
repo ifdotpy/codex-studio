@@ -3,7 +3,42 @@
 
 use super::*;
 use crate::managed_host_tools::{PostCommitPort, SendPort};
+use studio_runtime_schema::persistence::RequestIdentity;
 use studio_runtime_store::RuntimeStore;
+use studio_runtime_store::request_results::{AdmittedRequest, RequestResults, ResultEnvelope};
+use studio_runtime_store::{StoreError, ToolResultRecord};
+
+fn request_time() -> f64 {
+    chrono::Utc::now().timestamp_millis() as f64 / 1000.0
+}
+
+fn admitted_request(tx: &Transaction<'_>, id: &str) -> Result<AdmittedRequest, StoreError> {
+    let raw: String = tx.query_row(
+        "SELECT json_extract(record,'$.admitted') FROM runtime_tool_requests WHERE id=?1",
+        [id],
+        |row| row.get(0),
+    )?;
+    Ok(serde_json::from_str(&raw)?)
+}
+
+fn replace_cached_result(tx: &Transaction<'_>, id: &str, result: Value) -> Result<(), StoreError> {
+    let token = admitted_request(tx, id)?;
+    let stored = RequestResults::replay(
+        tx,
+        token.id(),
+        token.signature(),
+        chrono::Utc::now().timestamp_millis(),
+    )
+    .map_err(StoreError::RequestResult)?
+    .unwrap();
+    let mut envelope: ResultEnvelope<ToolResultRecord> = serde_json::from_str(&stored.result)?;
+    envelope.reply = ToolResultRecord::from_value(result)?;
+    tx.execute(
+        "UPDATE request_results SET result=?1 WHERE id=?2",
+        params![serde_json::to_string(&envelope)?, token.id()],
+    )?;
+    Ok(())
+}
 
 thread_local! { static AGENT_SCANS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 thread_local! { static AGENT_ROWS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
@@ -49,6 +84,7 @@ async fn message_ignores_invalid_parent_project_outside_sender_cwd() {
     let worker = oracle["agents"][1].clone();
     let lead = oracle["agents"][0]["id"].as_str().unwrap().to_owned();
     let context = CallbackContext {
+        stream_id: "default".into(),
         agent: worker["id"].as_str().unwrap().into(),
         account: "default".into(),
         connection: "connection".into(),
@@ -62,7 +98,7 @@ async fn message_ignores_invalid_parent_project_outside_sender_cwd() {
         tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.cwd','/other-parent-project') WHERE id=?1", [&lead])?;
         tx.execute("INSERT INTO runtime_projects(id,record) VALUES('invalid-parent-project',?1)", [json!({"id":"invalid-parent-project","path":"/other-parent-project","peerTeams":"invalid"}).to_string()])?;
         let snapshot = super::super::super::storage::snapshot(tx, &context)?;
-        messages::send(tx, &snapshot, &json!({"target":"lead","text":"hello"}), "parent-project-witness", 20.0)?;
+        messages::send(tx, &snapshot, &json!({"target":"lead","text":"hello"}), &RequestIdentity::issue_root(), request_time())?;
         Ok::<_, CallbackError>(())
     }).await.unwrap();
 }
@@ -73,6 +109,7 @@ async fn message_delivers_between_user_grouped_leads() {
     let worker = oracle["agents"][1].clone();
     let lead = oracle["agents"][0]["id"].as_str().unwrap().to_owned();
     let context = CallbackContext {
+        stream_id: "default".into(),
         agent: worker["id"].as_str().unwrap().into(),
         account: "default".into(),
         connection: "connection".into(),
@@ -86,8 +123,9 @@ async fn message_delivers_between_user_grouped_leads() {
         tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.cwd','/peer-project') WHERE id=?1", [&lead])?;
         tx.execute("INSERT INTO runtime_projects(id,record) VALUES('peer-project',?1)", [json!({"id":"peer-project","path":"/peer-project","peerTeams":[{"id":"peers","name":"Peers","members":[context.agent,lead]}]}).to_string()])?;
         let snapshot = super::super::super::storage::snapshot(tx, &context)?;
-        let sent = messages::send(tx, &snapshot, &json!({"target":lead,"text":"hello"}), "peer-message-witness", 20.0)?;
-        assert!(sent["deliveries"].get(&lead).is_some());
+        let sent = messages::send(tx, &snapshot, &json!({"target":lead,"text":"hello"}), &RequestIdentity::issue_root(), request_time())?;
+        let sent: Value = serde_json::from_str(sent.get())?;
+        assert!(sent["deliveries"].as_object().unwrap().contains_key(&lead));
         let payload: String = tx.query_row("SELECT payload FROM sync_entities WHERE collection='room' AND id=?1", [sent["room"].as_str().unwrap()], |row| row.get(0))?;
         let projection: Value = serde_json::from_str(&payload)?;
         assert_eq!(projection["value"]["peerTeamId"], "peers");
@@ -110,6 +148,7 @@ async fn message_with_unrelated_invalid(table: &'static str, record: Value) {
         .await
         .unwrap();
     let context = CallbackContext {
+        stream_id: "default".into(),
         agent: worker["id"].as_str().unwrap().into(),
         account: "default".into(),
         connection: "connection".into(),
@@ -125,8 +164,8 @@ async fn message_with_unrelated_invalid(table: &'static str, record: Value) {
                 tx,
                 &snapshot,
                 &json!({"target":lead,"text":"hello"}),
-                "invalid-unrelated-witness",
-                20.0,
+                &RequestIdentity::issue_root(),
+                request_time(),
             )
         })
         .await
@@ -171,6 +210,7 @@ async fn count_message_agent_rows(unrelated: usize) -> usize {
         .await
         .unwrap();
     let context = CallbackContext {
+        stream_id: "default".into(),
         agent: worker["id"].as_str().unwrap().into(),
         account: "default".into(),
         connection: "connection".into(),
@@ -210,8 +250,8 @@ async fn count_message_agent_rows(unrelated: usize) -> usize {
                 ToolKind::Message,
                 "orchestration_message",
                 &json!({"target":prefix,"text":"hello"}),
-                "rows-witness",
-                20.0,
+                &RequestIdentity::issue_root(),
+                request_time(),
                 None,
                 &ports,
             );
@@ -234,6 +274,7 @@ async fn message_refuses_unknown_foreign_and_deleted_targets() {
     deleted["id"] = json!("deleted-target");
     deleted["deletedAt"] = json!(1);
     let context = CallbackContext {
+        stream_id: "default".into(),
         agent: worker["id"].as_str().unwrap().into(),
         account: "default".into(),
         connection: "connection".into(),
@@ -281,6 +322,7 @@ async fn same_team_target_is_resolved_before_message_validation_without_project_
     let worker = oracle["agents"][1].clone();
     let lead = oracle["agents"][0]["id"].as_str().unwrap().to_owned();
     let context = CallbackContext {
+        stream_id: "default".into(),
         agent: worker["id"].as_str().unwrap().into(),
         account: "default".into(),
         connection: "connection".into(),
@@ -327,6 +369,7 @@ async fn message_send_does_not_scan_agent_directory() {
     let worker = oracle["agents"][1].clone();
     let lead = oracle["agents"][0]["id"].as_str().unwrap().to_owned();
     let context = CallbackContext {
+        stream_id: "default".into(),
         agent: worker["id"].as_str().unwrap().into(),
         account: "default".into(),
         connection: "connection".into(),
@@ -347,8 +390,8 @@ async fn message_send_does_not_scan_agent_directory() {
                 tx,
                 &snapshot,
                 &json!({"target":lead,"text":"hello"}),
-                "scan-witness",
-                20.0,
+                &RequestIdentity::issue_root(),
+                request_time(),
             );
             tx.trace_v2(rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT, None);
             result?;
@@ -369,31 +412,25 @@ fn expectations() -> Value {
     .unwrap()
 }
 
-async fn send(
-    sender_index: usize,
-    target: &str,
-    id: &str,
-) -> (tempfile::TempDir, RuntimeStore, Value) {
-    let (directory, store, result) = try_send(sender_index, target, id).await;
+async fn send(sender_index: usize, target: &str) -> (tempfile::TempDir, RuntimeStore, Value) {
+    let (directory, store, result) = try_send(sender_index, target).await;
     (directory, store, result.unwrap())
 }
 
 async fn try_send(
     sender_index: usize,
     target: &str,
-    id: &str,
 ) -> (
     tempfile::TempDir,
     RuntimeStore,
     Result<Value, crate::managed_host_tools::Error>,
 ) {
-    try_send_with(sender_index, target, id, Vec::new()).await
+    try_send_with(sender_index, target, Vec::new()).await
 }
 
 async fn try_send_with(
     sender_index: usize,
     target: &str,
-    id: &str,
     extra_agents: Vec<Value>,
 ) -> (
     tempfile::TempDir,
@@ -403,7 +440,6 @@ async fn try_send_with(
     try_send_args_with(
         sender_index,
         json!({"agent_id":target,"text":"dispatch input"}),
-        id,
         extra_agents,
     )
     .await
@@ -412,19 +448,17 @@ async fn try_send_with(
 async fn try_send_args(
     sender_index: usize,
     args: Value,
-    id: &str,
 ) -> (
     tempfile::TempDir,
     RuntimeStore,
     Result<Value, crate::managed_host_tools::Error>,
 ) {
-    try_send_args_with(sender_index, args, id, Vec::new()).await
+    try_send_args_with(sender_index, args, Vec::new()).await
 }
 
 async fn try_send_args_with(
     sender_index: usize,
     args: Value,
-    id: &str,
     extra_agents: Vec<Value>,
 ) -> (
     tempfile::TempDir,
@@ -446,6 +480,7 @@ async fn try_send_args_with(
         .unwrap();
     let actor = oracle["agents"][sender_index].clone();
     let context = CallbackContext {
+        stream_id: "default".into(),
         agent: actor["id"].as_str().unwrap().into(),
         account: "default".into(),
         connection: "connection".into(),
@@ -485,12 +520,172 @@ async fn try_send_args_with(
         context.epoch,
     )
     .unwrap();
-    let id = id.to_owned();
+    let id = RequestIdentity::issue_root();
     let result = store
-        .transaction_with(move |tx| ports.send(tx, &actor, &args, &id, 20.0))
+        .transaction_with(move |tx| ports.send(tx, &actor, &args, &id, request_time()))
         .await
-        .map(|result| result.value);
+        .map(|result| serde_json::from_str(result.value.get()).unwrap());
     (directory, store, result)
+}
+
+#[tokio::test]
+async fn receipt_domain_opaque_send_replays_after_legacy_receipts() {
+    use crate::provider_callbacks::{
+        CallbackDecision, dispatch_with_managed_tools, managed_tool_ports,
+    };
+    use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId, ResponseBody};
+    let (directory, store, oracle) = frozen::state().await;
+    let actor = &oracle["agents"][0];
+    let context = CallbackContext {
+        stream_id: "default".into(),
+        agent: actor["id"].as_str().unwrap().into(),
+        account: "default".into(),
+        connection: "connection".into(),
+        generation: 7,
+        epoch: actor["epoch"].as_u64().unwrap(),
+        thread: actor["threadId"].as_str().unwrap().into(),
+        turn: actor["turnId"].as_str().unwrap().into(),
+    };
+    let target = oracle["agents"][1]["id"].as_str().unwrap();
+    let actor_id = context.agent.clone();
+    let old_args =
+        json!({"agent_id":target,"text":"legacy instruction","request_id":"legacy-opaque"});
+    let signature = studio_runtime_store::sha256_hex(
+        studio_runtime_store::python_json_compact(
+            &json!({"tool":"orchestration_send","arguments":old_args}),
+        )
+        .as_bytes(),
+    );
+    let old = json!({"id":"legacy-request","agent":context.agent,"threadId":context.thread,"turnId":context.turn,"callId":"old-call","tool":"orchestration_send","arguments":old_args,"signature":signature,"epoch":context.epoch,"accountKey":context.account,"connectionId":context.connection,"stage":"completed","outcome":"applied","created":1.0,"updated":1.0});
+    store.transaction(move |tx| {
+        tx.execute_batch("DELETE FROM runtime_tool_requests; DELETE FROM runtime_payload_migrations WHERE name LIKE 'receipts:%'; CREATE TABLE runtime_tool_results(id TEXT PRIMARY KEY,result TEXT NOT NULL); CREATE TABLE runtime_tool_request_aliases(agent TEXT,alias TEXT,request TEXT,PRIMARY KEY(agent,alias,request));")?;
+        tx.execute("INSERT INTO runtime_tool_requests(id,record) VALUES('legacy-request',?1)", [old.to_string()])?;
+        tx.execute("INSERT INTO runtime_tool_request_aliases VALUES(?1,'legacy-opaque','legacy-request')", [&actor_id])?;
+        tx.execute("INSERT INTO runtime_tool_results VALUES('legacy-request',?1)", [json!({"success":true,"contentItems":[{"type":"inputText","text":"legacy reply"}]}).to_string()])?;
+        tx.execute("INSERT INTO request_results(id,signature,result,created) VALUES('abc-1','old','{}',0)", [])?;
+        Ok(())
+    }).await.unwrap();
+    drop(store);
+    let store = Arc::new(
+        RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("migrate legacy database"),
+    );
+    let frame = |call: &str, request_id: &str, text: &str| {
+        Frame::Request(RequestFrame {
+            id: RequestId::String(format!("rpc-{call}")),
+            method: Method::ItemToolCall,
+            params: Some(
+                json!({"threadId":context.thread,"turnId":context.turn,"callId":call,"tool":"orchestration_send","arguments":{"agent_id":target,"text":text,"request_id":request_id}}),
+            ),
+            fields: Default::default(),
+        })
+    };
+    let first_frame = frame("send-one", "abc-1", "one instruction");
+    let ports = Arc::new(
+        managed_tool_ports(
+            &store,
+            &context,
+            &first_frame,
+            Arc::new(tokio::sync::Notify::new()),
+        )
+        .await
+        .unwrap(),
+    );
+    let CallbackDecision::Answer(old_reply) = dispatch_with_managed_tools(
+        Arc::clone(&store),
+        &context,
+        &frame("legacy-replay", "legacy-opaque", "legacy instruction"),
+        request_time(),
+        ports.clone(),
+    )
+    .await
+    .unwrap() else {
+        panic!("legacy reply")
+    };
+    let ResponseBody::Result(old_body) = old_reply.body else {
+        panic!("legacy result")
+    };
+    assert!(old_body.to_string().contains("legacy reply"));
+    let CallbackDecision::Answer(first) = dispatch_with_managed_tools(
+        Arc::clone(&store),
+        &context,
+        &first_frame,
+        request_time(),
+        ports.clone(),
+    )
+    .await
+    .unwrap() else {
+        panic!("send reply")
+    };
+    let ResponseBody::Result(body) = &first.body else {
+        panic!("result")
+    };
+    assert_eq!(body["success"], true, "{body}");
+    let CallbackDecision::Answer(replay) = dispatch_with_managed_tools(
+        Arc::clone(&store),
+        &context,
+        &frame("send-two", "abc-1", "one instruction"),
+        request_time(),
+        ports.clone(),
+    )
+    .await
+    .unwrap() else {
+        panic!("replay")
+    };
+    assert_eq!(first.body, replay.body);
+    assert!(
+        dispatch_with_managed_tools(
+            Arc::clone(&store),
+            &context,
+            &frame("send-conflict", "abc-1", "changed instruction"),
+            request_time(),
+            ports.clone(),
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(
+        store
+            .test_reader()
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM runtime_events WHERE text='one instruction'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
+    let third = frame("send-three", "abc-2", "concurrent instruction");
+    let fourth = frame("send-four", "abc-2", "concurrent instruction");
+    let (a, b) = tokio::join!(
+        dispatch_with_managed_tools(
+            Arc::clone(&store),
+            &context,
+            &third,
+            request_time(),
+            ports.clone()
+        ),
+        dispatch_with_managed_tools(Arc::clone(&store), &context, &fourth, request_time(), ports),
+    );
+    let (CallbackDecision::Answer(a), CallbackDecision::Answer(b)) = (a.unwrap(), b.unwrap())
+    else {
+        panic!("concurrent replies")
+    };
+    assert_eq!(a.body, b.body);
+    assert_eq!(
+        store
+            .test_reader()
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM runtime_events WHERE text='concurrent instruction'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
 }
 
 #[tokio::test]
@@ -498,6 +693,7 @@ async fn production_release_notifies_the_registry_after_a_committed_send() {
     let (_directory, store, oracle) = frozen::state().await;
     let actor = oracle["agents"][0].clone();
     let context = CallbackContext {
+        stream_id: "default".into(),
         agent: actor["id"].as_str().unwrap().into(),
         account: "default".into(),
         connection: "connection".into(),
@@ -538,16 +734,23 @@ async fn production_release_notifies_the_registry_after_a_committed_send() {
     let args = json!({"agent_id":child_id,"text":"wake after commit"});
     let staged = store
         .transaction_with(move |tx| {
-            ports_for_send.send(tx, &actor_for_send, &args, "wake-after-commit", 20.0)
+            ports_for_send.send(
+                tx,
+                &actor_for_send,
+                &args,
+                &RequestIdentity::issue_root(),
+                request_time(),
+            )
         })
         .await
         .unwrap();
+    let staged_value: Value = serde_json::from_str(staged.value.get()).unwrap();
     let event_count: i64 = store
         .test_reader()
         .unwrap()
         .query_row(
-            "SELECT count(*) FROM runtime_events WHERE id='wake-after-commit'",
-            [],
+            "SELECT count(*) FROM runtime_events WHERE id=?1",
+            [staged_value["id"].as_str().unwrap()],
             |row| row.get(0),
         )
         .unwrap();
@@ -562,6 +765,7 @@ async fn monitor_cancel_release_notifies_only_the_monitor_dispatcher() {
     let (_directory, store, oracle) = frozen::state().await;
     let actor = oracle["agents"][0].clone();
     let context = CallbackContext {
+        stream_id: "default".into(),
         agent: actor["id"].as_str().unwrap().into(),
         account: "default".into(),
         connection: "connection".into(),
@@ -669,13 +873,13 @@ async fn send_to_descendant_is_followup_input_while_parent_and_broadcast_are_cha
     let child = oracle["agents"][1]["id"].as_str().unwrap();
     let lead = oracle["agents"][0]["id"].as_str().unwrap();
 
-    let (_root, store, value) = send(0, child, "send-child").await;
+    let (_root, store, value) = send(0, child).await;
     assert_eq!(value["status"], "queued");
     let reader = store.test_reader().unwrap();
     let event: (String, String, String) = reader
         .query_row(
-            "SELECT agent,kind,text FROM runtime_events WHERE id='send-child'",
-            [],
+            "SELECT agent,kind,text FROM runtime_events WHERE id=?1",
+            [value["id"].as_str().unwrap()],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .unwrap();
@@ -685,7 +889,7 @@ async fn send_to_descendant_is_followup_input_while_parent_and_broadcast_are_cha
     );
     drop(reader);
 
-    let (_root, store, value) = send(1, lead, "send-parent").await;
+    let (_root, store, value) = send(1, lead).await;
     let mut member_ids = [lead, child];
     member_ids.sort_unstable();
     assert_eq!(
@@ -695,28 +899,28 @@ async fn send_to_descendant_is_followup_input_while_parent_and_broadcast_are_cha
     let reader = store.test_reader().unwrap();
     let event_count: i64 = reader
         .query_row(
-            "SELECT count(*) FROM runtime_events WHERE id='send-parent'",
-            [],
+            "SELECT count(*) FROM runtime_events WHERE id=?1",
+            [value["id"].as_str().unwrap()],
             |row| row.get(0),
         )
         .unwrap();
     let chat_count: i64 = reader
         .query_row(
-            "SELECT count(*) FROM runtime_chat_messages WHERE id='send-parent'",
-            [],
+            "SELECT count(*) FROM runtime_chat_messages WHERE id=?1",
+            [value["id"].as_str().unwrap()],
             |row| row.get(0),
         )
         .unwrap();
     assert_eq!((event_count, chat_count), (0, 1));
     drop(reader);
 
-    let (_root, store, value) = send(1, "broadcast", "send-broadcast").await;
+    let (_root, store, value) = send(1, "broadcast").await;
     assert!(value["room"].as_str().unwrap().starts_with("broadcast:"));
     let reader = store.test_reader().unwrap();
     let chat_count: i64 = reader
         .query_row(
-            "SELECT count(*) FROM runtime_chat_messages WHERE id='send-broadcast'",
-            [],
+            "SELECT count(*) FROM runtime_chat_messages WHERE id=?1",
+            [value["id"].as_str().unwrap()],
             |row| row.get(0),
         )
         .unwrap();
@@ -729,14 +933,13 @@ async fn send_preserves_explicit_next_turn_for_followup_and_chat() {
     let oracle = expectations();
     for (sender, target_index, event_prefix) in [(0, 1, ""), (1, 0, "chat:")] {
         let target = oracle["agents"][target_index]["id"].as_str().unwrap();
-        let id = format!("explicit-next-{sender}");
         let (_root, store, result) = try_send_args(
             sender,
             json!({"agent_id":target,"text":"wait for the active turn","delivery":DeliveryMoment::NextTurn}),
-            &id,
         )
         .await;
-        result.unwrap();
+        let result = result.unwrap();
+        let id = result["id"].as_str().unwrap().to_owned();
         let event_id = if event_prefix.is_empty() {
             id
         } else {
@@ -806,6 +1009,7 @@ async fn an_ancestor_cancels_a_descendant_watch_and_others_are_refused_by_name()
     ) -> Result<crate::managed_host_tools::OperationResult, crate::managed_host_tools::Error> {
         use crate::managed_host_tools::WatchMonitorPort;
         let context = CallbackContext {
+            stream_id: "default".into(),
             agent: caller["id"].as_str().unwrap().into(),
             account: "default".into(),
             connection: "connection".into(),
@@ -843,7 +1047,8 @@ async fn an_ancestor_cancels_a_descendant_watch_and_others_are_refused_by_name()
     let cancelled = cancel_as(&store, &lead, "child-watch", "lead-cancels-child")
         .await
         .unwrap();
-    assert_eq!(cancelled.value["cancelRequested"], true);
+    let cancelled_value: Value = serde_json::from_str(cancelled.value.get()).unwrap();
+    assert_eq!(cancelled_value["cancelRequested"], true);
     let refused = cancel_as(&store, &child, "lead-watch", "child-cancels-lead").await;
     assert!(
         matches!(
@@ -865,20 +1070,20 @@ async fn send_resolves_a_unique_visible_prefix_and_names_a_refused_id() {
     let oracle = expectations();
     let child = oracle["agents"][1]["id"].as_str().unwrap();
 
-    let (_root, store, value) = send(0, &child[..8], "send-child-prefix").await;
+    let (_root, store, value) = send(0, &child[..8]).await;
     assert_eq!(value["status"], "queued");
     let agent: String = store
         .test_reader()
         .unwrap()
         .query_row(
-            "SELECT agent FROM runtime_events WHERE id='send-child-prefix'",
-            [],
+            "SELECT agent FROM runtime_events WHERE id=?1",
+            [value["id"].as_str().unwrap()],
             |row| row.get(0),
         )
         .unwrap();
     assert_eq!(agent, child);
 
-    let (_root, _store, refused) = try_send(0, "0000000f", "send-unknown-prefix").await;
+    let (_root, _store, refused) = try_send(0, "0000000f").await;
     assert!(
         matches!(
             refused,
@@ -888,7 +1093,7 @@ async fn send_resolves_a_unique_visible_prefix_and_names_a_refused_id() {
         ),
         "{refused:?}"
     );
-    let (_root, _store, refused) = try_send(0, &child[..7], "send-short-prefix").await;
+    let (_root, _store, refused) = try_send(0, &child[..7]).await;
     assert!(
         matches!(
             refused,
@@ -928,15 +1133,11 @@ async fn an_unusual_record_of_another_team_does_not_refuse_sends() {
             foreign("bbbbbbbb-relative-cwd", "relative/cwd"),
         ]
     };
-    for (target, id) in [
-        (child, "send-child-full"),
-        (&child[..8], "send-child-prefix"),
-    ] {
-        let (_root, _store, sent) = try_send_with(0, target, id, others()).await;
+    for target in [child, &child[..8]] {
+        let (_root, _store, sent) = try_send_with(0, target, others()).await;
         assert_eq!(sent.unwrap()["status"], "queued", "{target}");
     }
-    let (_root, store, refused) =
-        try_send_with(0, "bbbbbbbb-relative-cwd", "send-hidden", others()).await;
+    let (_root, store, refused) = try_send_with(0, "bbbbbbbb-relative-cwd", others()).await;
     store
         .transaction(|tx| {
             let directory = crate::sync_entity_context::RoomDirectory::load(tx)?;
@@ -982,29 +1183,43 @@ async fn a_broadcast_names_a_member_that_cannot_be_checked_and_reaches_the_other
     member["isLead"] = json!(false);
     member["threadId"] = json!(format!("thread-{bad}"));
     member["cwd"] = json!("relative/cwd");
-    let (_root, store, sent) =
-        try_send_with(0, "broadcast", "send-broadcast-bad-member", vec![member]).await;
+    let (_root, store, sent) = try_send_with(0, "broadcast", vec![member]).await;
     let sent = sent.expect("one bad member does not refuse the broadcast");
-    assert!(sent["deliveries"].get(child).is_some(), "{sent}");
-    assert!(sent["deliveries"].get(bad).is_none(), "{sent}");
+    let request_id = sent["id"].as_str().unwrap();
+    let sent_deliveries = sent["deliveries"].as_object().unwrap();
+    assert!(sent_deliveries.contains_key(child), "{sent}");
+    assert!(!sent_deliveries.contains_key(bad), "{sent}");
     assert_eq!(
         sent["refused"][bad],
         json!(format!("Invalid stored record at agents/{bad}/cwd")),
         "{sent}"
     );
     let reader = store.test_reader().unwrap();
-    let (deliveries, receipt): (String, String) = reader
+    let deliveries: String = reader
         .query_row(
-            "SELECT m.deliveries,r.result FROM runtime_chat_messages m JOIN runtime_operation_receipts r ON r.id=m.id WHERE m.id='send-broadcast-bad-member'",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            "SELECT deliveries FROM runtime_chat_messages WHERE id=?1",
+            [&request_id],
+            |row| row.get(0),
         )
         .unwrap();
     assert_eq!(
         serde_json::from_str::<Value>(&deliveries).unwrap(),
         sent["deliveries"]
     );
-    assert_eq!(serde_json::from_str::<Value>(&receipt).unwrap(), sent);
+    let identity = RequestIdentity::new("agent_message", &[lead_id], request_id, &[]).unwrap();
+    let signature = event_write::request_signature(
+        &json!({"target":"broadcast","text":"dispatch input","delivery":null}),
+    );
+    let cached = RequestResults::replay(
+        &reader,
+        identity.id(),
+        &signature,
+        chrono::Utc::now().timestamp_millis(),
+    )
+    .unwrap()
+    .unwrap();
+    let reply: ResultEnvelope<Value> = serde_json::from_str(&cached.result).unwrap();
+    assert_eq!(reply.reply, sent);
     let bad_events: i64 = reader
         .query_row(
             "SELECT count(*) FROM runtime_events WHERE agent=?1",
@@ -1046,18 +1261,15 @@ async fn a_broadcast_with_no_member_that_can_be_checked_is_refused_by_location()
         })
         .collect::<Vec<_>>();
     assert!(!members.is_empty(), "the fixture team has a member");
-    let (_root, store, sent) =
-        try_send_with(0, "broadcast", "send-broadcast-no-member", broken).await;
+    let (_root, store, sent) = try_send_with(0, "broadcast", broken).await;
     let refusal = sent.expect_err("no member can be checked").to_string();
     assert!(members.contains(&refusal), "{refusal}");
     let messages: i64 = store
         .test_reader()
         .unwrap()
-        .query_row(
-            "SELECT count(*) FROM runtime_chat_messages WHERE id='send-broadcast-no-member'",
-            [],
-            |row| row.get(0),
-        )
+        .query_row("SELECT count(*) FROM runtime_chat_messages", [], |row| {
+            row.get(0)
+        })
         .unwrap();
     assert_eq!(messages, 0);
 }
@@ -1106,12 +1318,13 @@ async fn radio_member_message_is_refused_only_during_its_shared_reply_turn() {
         })
         .await
         .unwrap();
-    let send = |id: &'static str| {
+    let send = |id: String| {
         let lead = lead.clone();
         let worker = worker.clone();
         let store = &store;
         async move {
             let context = CallbackContext {
+                stream_id: "default".into(),
                 agent: worker["id"].as_str().unwrap().into(),
                 account: "default".into(),
                 connection: "connection".into(),
@@ -1127,14 +1340,15 @@ async fn radio_member_message_is_refused_only_during_its_shared_reply_turn() {
                         tx,
                         &snapshot,
                         &json!({"target":lead,"text":"private note"}),
-                        id,
-                        20.0,
+                        &id,
+                        request_time(),
                     )
                 })
                 .await
         }
     };
-    let refused = send("radio-guard-live").await;
+    let refused_id = RequestIdentity::issue_root();
+    let refused = send(refused_id.clone()).await;
     assert!(
         matches!(
             refused,
@@ -1155,16 +1369,18 @@ async fn radio_member_message_is_refused_only_during_its_shared_reply_turn() {
         })
         .await
         .unwrap();
-    let delivered = send("radio-guard-idle")
+    let delivered_id = RequestIdentity::issue_root();
+    let delivered = send(delivered_id.clone())
         .await
         .expect("a radio member may message privately outside its shared reply turn");
-    assert_eq!(delivered["id"], "radio-guard-idle");
+    let delivered: Value = serde_json::from_str(delivered.get()).unwrap();
+    assert_eq!(delivered["id"], delivered_id);
     let chat_count: i64 = store
         .test_reader()
         .unwrap()
         .query_row(
-            "SELECT count(*) FROM runtime_chat_messages WHERE id IN ('radio-guard-live','radio-guard-idle')",
-            [],
+            "SELECT count(*) FROM runtime_chat_messages WHERE id IN (?1,?2)",
+            [&refused_id, &delivered_id],
             |row| row.get(0),
         )
         .unwrap();
@@ -1186,6 +1402,7 @@ fn empty_runtime_ports() -> crate::provider_callbacks::tools::ManagedToolRuntime
 
 #[derive(Clone, Copy)]
 enum BlobRace {
+    Cached,
     Unchanged,
     ActorEpoch,
     ResultReference,
@@ -1210,6 +1427,7 @@ async fn callback_blob_case(race: BlobRace) {
     let store = Arc::new(store);
     let actor = &oracle["agents"][0];
     let context = CallbackContext {
+        stream_id: "default".into(),
         agent: actor["id"].as_str().unwrap().into(),
         account: "default".into(),
         connection: "connection".into(),
@@ -1236,6 +1454,22 @@ async fn callback_blob_case(race: BlobRace) {
     )
     .await
     .unwrap();
+    let origin = crate::provider_callbacks::storage::callback_origin_key(
+        &context,
+        &RequestId::String("saved".into()),
+    );
+    let saved_id = crate::tool_requests::get_callback::<
+        crate::provider_callbacks::storage::CallbackOwner,
+    >(&store.test_reader().unwrap(), &origin)
+    .unwrap()
+    .unwrap()
+    .payload
+    .tool_request
+    .unwrap();
+    assert_eq!(
+        uuid::Uuid::parse_str(&saved_id).unwrap().get_version_num(),
+        7
+    );
     if matches!(race, BlobRace::InvalidAction) {
         let reply = dispatch(
             Arc::clone(&store),
@@ -1270,31 +1504,37 @@ async fn callback_blob_case(race: BlobRace) {
         .join(&hash[..2])
         .join(&hash[2..4])
         .join(hash);
-    let recover = !matches!(
+    let seed_result = if matches!(
         race,
-        BlobRace::Unchanged
-            | BlobRace::ActorEpoch
-            | BlobRace::ResultReference
-            | BlobRace::Abandoned
-            | BlobRace::InlineExpiry
-    );
-    let inline_result = matches!(race, BlobRace::InlineExpiry).then(|| result.to_string());
+        BlobRace::RecoveryWrite | BlobRace::InlineExpiry | BlobRace::Cached
+    ) {
+        result.clone()
+    } else {
+        decision.record.clone()
+    };
+    let seed_id = saved_id.clone();
+    let pending_result = seed_result.clone();
     store.transaction(move |tx| {
-        tx.execute("UPDATE runtime_tool_results SET result=?1 WHERE id='thread-0:saved'", [decision.record.to_string()])?;
-        if let Some(result) = inline_result { tx.execute("UPDATE runtime_tool_requests SET record=json_set(record,'$.result',json(?1)) WHERE id='thread-0:saved'", [result])?; }
-        if recover {
-            tx.execute("UPDATE runtime_tool_requests SET record=json_remove(json_set(record,'$.stage','running','$.outcome','pending'),'$.result','$.finished') WHERE id='thread-0:saved'", [])?;
+        if matches!(race, BlobRace::InlineExpiry | BlobRace::Cached) {
+            replace_cached_result(tx, &seed_id, seed_result)?;
+        } else {
+            let token = admitted_request(tx, &seed_id)?;
+            tx.execute("DELETE FROM request_results WHERE id=?1", [token.id()])?;
+            tx.execute("UPDATE runtime_tool_requests SET record=json_remove(json_set(record,'$.stage','running','$.outcome','pending','$.result',json(?1)),'$.finished') WHERE id=?2", params![seed_result.to_string(), seed_id])?;
         }
         Ok(())
     }).await.unwrap();
-    if matches!(race, BlobRace::InlineExpiry) {
+    if matches!(race, BlobRace::InlineExpiry | BlobRace::Cached) {
+        if matches!(race, BlobRace::Cached) {
+            std::fs::remove_file(&blob_path).unwrap();
+        }
         let reply = dispatch(
             Arc::clone(&store),
             &context,
             &frame(
                 "read",
                 "orchestration_request",
-                json!({"action":"get","request_id":"thread-0:saved"}),
+                json!({"action":"get","request_id":saved_id}),
             ),
             11.0,
         )
@@ -1308,13 +1548,25 @@ async fn callback_blob_case(race: BlobRace) {
         };
         let record: Value =
             serde_json::from_str(body["contentItems"][0]["text"].as_str().unwrap()).unwrap();
-        assert!(
-            record["result"]["contentItems"][0]["text"]
-                .as_str()
-                .unwrap()
-                .contains("expired"),
-            "{record}"
-        );
+        assert!(body["success"] == true, "request read failed: {record}");
+        if matches!(race, BlobRace::Cached) {
+            assert_eq!(record["truncated"], true);
+            assert_eq!(record["summary"]["id"], saved_id);
+            assert_eq!(
+                crate::tool_requests::saved_result(&store.test_reader().unwrap(), &saved_id)
+                    .unwrap(),
+                Some(result),
+                "the exact completed body needs no blob file"
+            );
+        } else {
+            assert!(
+                record["result"]["contentItems"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("expired"),
+                "{record}"
+            );
+        }
         return;
     }
     match race {
@@ -1335,11 +1587,7 @@ async fn callback_blob_case(race: BlobRace) {
         let reply = dispatch(
             Arc::clone(&store),
             &context,
-            &frame(
-                "read",
-                "orchestration_read",
-                json!({"output_ref":"thread-0:saved"}),
-            ),
+            &frame("read", "orchestration_read", json!({"output_ref":saved_id})),
             11.0,
         )
         .await;
@@ -1347,7 +1595,7 @@ async fn callback_blob_case(race: BlobRace) {
         let row = records::get(
             &store.test_reader().unwrap(),
             "runtime_tool_requests",
-            "thread-0:saved",
+            &saved_id,
         )
         .unwrap()
         .unwrap();
@@ -1386,14 +1634,10 @@ async fn callback_blob_case(race: BlobRace) {
         frame(
             "read",
             "orchestration_request",
-            json!({"action":"get","request_id":"thread-0:saved"}),
+            json!({"action":"get","request_id":saved_id}),
         )
     } else {
-        frame(
-            "read",
-            "orchestration_read",
-            json!({"output_ref":"thread-0:saved"}),
-        )
+        frame("read", "orchestration_read", json!({"output_ref":saved_id}))
     };
     let read_store = Arc::clone(&store);
     let read_task = tokio::spawn(async move { dispatch(read_store, &context, &read, 11.0).await });
@@ -1402,21 +1646,22 @@ async fn callback_blob_case(race: BlobRace) {
         .unwrap()
         .unwrap();
     let writer_store = Arc::clone(&store);
+    let writer_id = saved_id.clone();
     let mut writer = tokio::spawn(async move {
         writer_store.transaction(move |tx| {
         match race {
             BlobRace::ActorEpoch => { tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.epoch',4,'$.turnEpoch',4) WHERE json_extract(record,'$.threadId')='thread-0'", [])?; }
-            BlobRace::ResultReference => { tx.execute("UPDATE runtime_tool_results SET result=?1 WHERE id='thread-0:saved'", [alternate.unwrap().to_string()])?; }
-            BlobRace::LateResult => { tx.execute("UPDATE runtime_tool_results SET result=?1 WHERE id='thread-0:saved'", [json!({"success":true,"contentItems":[{"type":"inputText","text":"late saved result"}]}).to_string()])?; }
+            BlobRace::ResultReference => { tx.execute("UPDATE runtime_tool_requests SET record=json_set(record,'$.result',json(?1)) WHERE id=?2", params![alternate.unwrap().to_string(), writer_id])?; }
+            BlobRace::LateResult => { tx.execute("UPDATE runtime_tool_requests SET record=json_set(record,'$.result',json(?1)) WHERE id=?2", params![json!({"success":true,"contentItems":[{"type":"inputText","text":"late saved result"}]}).to_string(), writer_id])?; }
             BlobRace::RecoveryWrite => {
-                let saved = records::get(tx, "runtime_tool_requests", "thread-0:saved")?.unwrap();
+                let saved = records::get(tx, "runtime_tool_requests", &writer_id)?.unwrap();
                 assert_eq!(saved["stage"], "running", "the blob write must precede recovery commit");
-                assert!(saved.get("result").is_none());
+                assert_eq!(saved["result"], pending_result, "the preexisting result is unchanged before recovery commit");
                 assert!(saved.get("_payloadBlobs").is_none());
             }
-            BlobRace::Unchanged | BlobRace::Abandoned | BlobRace::InlineExpiry | BlobRace::InvalidAction | BlobRace::Missing | BlobRace::Corrupt => { tx.execute("UPDATE runtime_tool_requests SET record=record WHERE id='thread-0:saved'", [])?; }
+            BlobRace::Unchanged | BlobRace::Abandoned | BlobRace::InlineExpiry | BlobRace::Cached | BlobRace::InvalidAction | BlobRace::Missing | BlobRace::Corrupt => { tx.execute("UPDATE runtime_tool_requests SET record=record WHERE id=?1", [&writer_id])?; }
             #[cfg(unix)]
-            BlobRace::Symlink => { tx.execute("UPDATE runtime_tool_requests SET record=record WHERE id='thread-0:saved'", [])?; }
+            BlobRace::Symlink => { tx.execute("UPDATE runtime_tool_requests SET record=record WHERE id=?1", [&writer_id])?; }
         }
         Ok(())
     }).await
@@ -1443,6 +1688,7 @@ async fn callback_blob_case(race: BlobRace) {
             | BlobRace::Abandoned
             | BlobRace::RecoveryWrite
             | BlobRace::InlineExpiry
+            | BlobRace::Cached
             | BlobRace::InvalidAction
             | BlobRace::Missing
             | BlobRace::Corrupt => assert!(
@@ -1458,19 +1704,22 @@ async fn callback_blob_case(race: BlobRace) {
     }
     let reader = store.test_reader().unwrap();
     if matches!(race, BlobRace::RecoveryWrite) {
-        let raw = records::get(&reader, "runtime_tool_requests", "thread-0:saved")
+        let raw = records::get(&reader, "runtime_tool_requests", &saved_id)
             .unwrap()
             .unwrap();
         assert_eq!(raw["stage"], "completed");
-        assert!(raw.get("_payloadBlobs").is_some());
-        let resolved = crate::payload_blobs::resolve_record(directory.path(), &raw).unwrap();
+        assert!(raw.get("result").is_none());
+        assert!(raw.get("_payloadBlobs").is_none());
         assert_eq!(
-            resolved["result"], result,
+            crate::tool_requests::saved_result(&reader, &saved_id)
+                .unwrap()
+                .unwrap(),
+            result,
             "referenced payload was durable at commit"
         );
     }
     if matches!(race, BlobRace::LateResult) {
-        let raw = records::get(&reader, "runtime_tool_requests", "thread-0:saved")
+        let raw = records::get(&reader, "runtime_tool_requests", &saved_id)
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -1478,7 +1727,7 @@ async fn callback_blob_case(race: BlobRace) {
             "stale preparation must not settle the target receipt"
         );
         assert_eq!(
-            records::get(&reader, "runtime_tool_results", "thread-0:saved")
+            crate::tool_requests::saved_result(&reader, &saved_id)
                 .unwrap()
                 .unwrap()["contentItems"][0]["text"],
             "late saved result"
@@ -1536,6 +1785,7 @@ async fn callback_panel_returns_the_retired_progress_notice() {
     let (directory, store, oracle) = frozen::state().await;
     let store = Arc::new(store);
     let context = CallbackContext {
+        stream_id: "default".into(),
         agent: oracle["agents"][0]["id"].as_str().unwrap().into(),
         account: "default".into(),
         connection: "connection".into(),
@@ -1596,6 +1846,11 @@ async fn callback_panel_returns_the_retired_progress_notice() {
             "{body}"
         );
     }
+}
+
+#[tokio::test]
+async fn callback_terminal_cached_result_needs_no_blob_file() {
+    callback_blob_case(BlobRace::Cached).await;
 }
 
 #[tokio::test]

@@ -170,8 +170,8 @@ pub struct Request {
 }
 impl<'de> Deserialize<'de> for Request {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let raw = Value::deserialize(deserializer)?;
-        Self::parse(raw).map_err(serde::de::Error::custom)
+        let raw = Box::<serde_json::value::RawValue>::deserialize(deserializer)?;
+        Self::parse(&raw).map_err(serde::de::Error::custom)
     }
 }
 impl Request {
@@ -181,9 +181,10 @@ impl Request {
     pub fn command(&self) -> &ProcessControlRequest {
         &self.command
     }
-    pub fn parse(raw: Value) -> Result<Self, String> {
+    pub fn parse(raw: &serde_json::value::RawValue) -> Result<Self, String> {
         let command: ProcessControlRequest =
-            serde_json::from_value(raw.clone()).map_err(|error| error.to_string())?;
+            serde_json::from_str(raw.get()).map_err(|error| error.to_string())?;
+        let raw = serde_json::from_str(raw.get()).map_err(|error| error.to_string())?;
         match &command {
             ProcessControlRequest::StopOwned { processes, .. } if processes.is_empty() => {
                 return Err("No owned process identities were supplied".into());
@@ -222,6 +223,12 @@ impl Request {
     }
 }
 
+#[cfg(test)]
+fn parse_fixture(value: &Value) -> Result<Request, String> {
+    let raw = serde_json::value::RawValue::from_string(value.to_string()).expect("fixture JSON");
+    Request::parse(&raw)
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum ProcessOutcome {
@@ -254,6 +261,8 @@ pub struct ProcessEntry {
     pub generation: Option<String>,
     #[serde(flatten)]
     pub outcome: ProcessOutcome,
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, Value>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -282,6 +291,8 @@ pub struct ProcessActionResult {
     pub processes: Vec<ProcessEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response: Option<ProcessResponse>,
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, Value>,
 }
 /// A response stop or background entry, or the receipt of HTTP monitor input.
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -312,12 +323,6 @@ pub struct MonitorInputResponse {
     pub status: MonitorInputStatus,
 }
 
-impl ProcessActionResult {
-    pub fn validate(value: &Value) -> Result<(), serde_json::Error> {
-        serde_json::from_value::<Self>(value.clone()).map(|_| ())
-    }
-}
-
 #[derive(Serialize, JsonSchema)]
 #[serde(untagged)]
 pub enum ProcessReceipt {
@@ -328,8 +333,7 @@ pub enum ProcessReceipt {
 pub struct FoundProcessReceipt {
     #[schemars(extend("const" = true))]
     found: bool,
-    #[schemars(with = "ProcessActionResult")]
-    result: Value,
+    pub result: ProcessActionResult,
 }
 #[derive(Serialize, JsonSchema)]
 pub struct MissingProcessReceipt {
@@ -338,14 +342,12 @@ pub struct MissingProcessReceipt {
     result: (),
 }
 impl ProcessReceipt {
-    /// Check the owned fields once; publish the retained payload without rewriting
-    /// historical nulls, omission, or opaque extension fields.
-    pub fn found(result: Value) -> Result<Self, serde_json::Error> {
-        ProcessActionResult::validate(&result)?;
-        Ok(Self::Found(FoundProcessReceipt {
+    /// Publish the typed result, including retained extension fields.
+    pub fn found(result: ProcessActionResult) -> Self {
+        Self::Found(FoundProcessReceipt {
             found: true,
             result,
-        }))
+        })
     }
     pub fn not_found() -> Self {
         Self::NotFound(MissingProcessReceipt {
@@ -377,6 +379,68 @@ pub(crate) fn schemas() -> Vec<(String, Value)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn result_processes_defaults_to_empty_and_rejects_null() {
+        let result: ProcessActionResult =
+            serde_json::from_str(r#"{"requestId":"request","status":"completed"}"#)
+                .expect("missing processes");
+        assert_eq!(
+            serde_json::to_value(result).unwrap()["processes"],
+            json!([])
+        );
+        assert!(
+            serde_json::from_str::<ProcessActionResult>(
+                r#"{"requestId":"request","status":"completed","processes":null}"#,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn found_receipt_exposes_typed_result_and_preserves_wire_fields() {
+        let result = json!({"requestId":"request", "status":"completed", "processes":[], "response": {
+            "kind":"monitor_input", "monitorId":"monitor", "status":"acknowledged"
+        }, "legacy":null});
+        let typed =
+            serde_json::from_str::<ProcessActionResult>(&result.to_string()).expect("valid result");
+        let receipt = ProcessReceipt::found(typed);
+        let ProcessReceipt::Found(found) = &receipt else {
+            panic!("expected found receipt")
+        };
+        assert_eq!(found.result.status, ProcessActionStatus::Completed);
+        assert!(matches!(
+            found.result.response,
+            Some(ProcessResponse::MonitorInput(MonitorInputResponse {
+                status: MonitorInputStatus::Acknowledged,
+                ..
+            }))
+        ));
+        assert_eq!(
+            serde_json::from_str::<Value>(
+                &serde_json::to_string(&receipt).expect("serialize receipt")
+            )
+            .expect("decode receipt"),
+            json!({"found":true,"result":result})
+        );
+        assert!(
+            serde_json::from_str::<ProcessActionResult>(
+                r#"{"requestId":"request","status":"invalid"}"#
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn process_entry_retains_opaque_extensions() {
+        let raw = r#"{"key":"key","agent":"agent","status":"stopped","nativeExtension":[null,"retained"]}"#;
+        let entry: ProcessEntry = serde_json::from_str(raw).expect("process entry");
+        let encoded = serde_json::to_string(&entry).expect("serialize entry");
+        assert_eq!(
+            serde_json::from_str::<Value>(&encoded).expect("JSON"),
+            serde_json::from_str::<Value>(raw).expect("fixture")
+        );
+    }
 
     #[test]
     fn schema_references_leave_literal_text_untouched() {
@@ -442,10 +506,7 @@ mod tests {
             raw.as_object_mut()
                 .expect("object")
                 .extend(fields.as_object().expect("fields").clone());
-            assert_eq!(
-                Request::parse(raw.clone()).expect("legacy request").raw,
-                raw
-            );
+            assert_eq!(parse_fixture(&raw).expect("legacy request").raw, raw);
             let required = match action {
                 "stop_selected" => "process",
                 "stop_owned" => "processes",
@@ -453,7 +514,7 @@ mod tests {
                 _ => unreachable!(),
             };
             raw.as_object_mut().expect("object").remove(required);
-            assert!(Request::parse(raw).is_err(), "{action} requires {required}");
+            assert!(parse_fixture(&raw).is_err(), "{action} requires {required}");
         }
     }
     #[test]
@@ -539,12 +600,12 @@ mod ingress_tests {
                 .expect("object")
                 .extend(fields.as_object().expect("fields").clone());
             assert!(validator.is_valid(&raw), "schema: {raw}");
-            assert!(Request::parse(raw.clone()).is_ok(), "serde: {raw}");
+            assert!(parse_fixture(&raw).is_ok(), "serde: {raw}");
             raw.as_object_mut()
                 .expect("object")
                 .extend(forbidden.as_object().expect("fields").clone());
             assert!(!validator.is_valid(&raw), "schema: {raw}");
-            assert!(Request::parse(raw.clone()).is_err(), "serde: {raw}");
+            assert!(parse_fixture(&raw).is_err(), "serde: {raw}");
         }
     }
 }

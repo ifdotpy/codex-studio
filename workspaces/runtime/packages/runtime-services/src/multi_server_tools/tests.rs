@@ -1,6 +1,21 @@
 #![allow(clippy::unwrap_used)]
 
 use super::*;
+
+#[test]
+fn export_request_keeps_canonical_wire_bytes() {
+    let request = ExportRequest {
+        cwd: Some("/workspace".into()),
+        branch: "main".into(),
+        known: vec!["abc".into(), "def".into()],
+    };
+    let bytes = serde_json::to_vec(&request).expect("export request");
+    let value: Value = serde_json::from_slice(&bytes).expect("wire payload");
+    assert_eq!(
+        canonical_json(&value).expect("canonical payload"),
+        r#"{"branch":"main","cwd":"/workspace","known":["abc","def"]}"#
+    );
+}
 use crate::multi_server_orchestration::{PairedTransport, RuntimeOrchestrationEffects};
 use crate::provider_callbacks::{
     CallbackContext, CallbackDecision, ManagedToolPortsConfig, ManagedToolRuntimePorts,
@@ -119,19 +134,99 @@ struct RecordingTransport {
     sent: Mutex<Vec<Value>>,
 }
 
+#[derive(Default)]
+struct LostExportReply {
+    sent: Mutex<Vec<Value>>,
+}
+impl PairedTransport for LostExportReply {
+    fn exchange<'a>(
+        &'a self,
+        _: &'a str,
+        envelope: &'a Value,
+        _: std::time::Duration,
+    ) -> BoxFuture<'a, Result<studio_runtime_store::multi_server_delivery::RemoteReply, AccessError>>
+    {
+        Box::pin(async move {
+            self.sent.lock().unwrap().push(envelope.clone());
+            Ok(ExchangeOutcome::Unknown
+                .to_reply(envelope["requestId"].as_str().expect("request ID")))
+        })
+    }
+}
+
+struct ResumeFetching {
+    store: Arc<RuntimeStore>,
+    tools: ServerTools,
+    input: Option<ExportRequest>,
+}
+impl MultiServerToolPort for ResumeFetching {
+    fn servers<'a>(
+        &'a self,
+        actor: &'a Actor,
+        args: &'a Value,
+        key: &'a str,
+        _: f64,
+    ) -> BoxFuture<'a, Result<DispatchedOperation, Error>> {
+        Box::pin(async move {
+            let key_owned = key.to_owned();
+            let actor_id = actor.record().id.0.clone();
+            let signature = request_signature(
+                &json!({"worker":args["agent_id"],"branch":args["branch"],"destination":super::resolve(field(args,"destination"))}),
+            );
+            let input = self.input.clone();
+            self.store.transaction_with(move|tx|->Result<(),Step>{
+                let token=task_admission(tx,&key_owned,&actor_id)?.derive_result("server-fetch",&[],&signature);
+                tx.execute("INSERT INTO runtime_server_fetch(id,server,signature,state,result,admission) VALUES(?1,?2,?3,?4,?5,?6)",params![key_owned,PEER,signature,ServerFetchState::Fetching,input.as_ref().map(serde_json::to_string).transpose().map_err(StoreError::from)?,serde_json::to_string(&token).map_err(StoreError::from)?])?;
+                Ok(())
+            }).await.map_err(|error|match error {Step::Store(error)=>Error::Store(error),Step::Refused(message)|Step::Failed(message)=>Error::StoredAt(message)})?;
+            let first = self.tools.fetch(actor, args, key, PEER).await;
+            if self.input.is_none() {
+                return settle(first);
+            }
+            assert_eq!(first.unwrap()["outcome"], "unknown");
+            let destination = Path::new(field(args, "destination"));
+            std::fs::write(destination.join("later.txt"), "new local reference").unwrap();
+            run_git(destination, &["add", "later.txt"]);
+            run_git(destination, &["commit", "-q", "-m", "change local refs"]);
+            assert_ne!(
+                run_git(destination, &["rev-parse", "HEAD"]),
+                self.input.as_ref().unwrap().known[0]
+            );
+            self.store
+                .transaction(|tx| {
+                    tx.execute("UPDATE runtime_server_outbox SET next_at=0", [])?;
+                    Ok(())
+                })
+                .await
+                .unwrap();
+            settle(self.tools.fetch(actor, args, key, PEER).await)
+        })
+    }
+    fn worker_call<'a>(
+        &'a self,
+        actor: &'a Actor,
+        action: &'a str,
+        args: &'a Value,
+        key: &'a str,
+    ) -> BoxFuture<'a, Result<DispatchedOperation, Error>> {
+        self.tools.worker_call(actor, action, args, key)
+    }
+}
+
 impl PairedTransport for RecordingTransport {
     fn exchange<'a>(
         &'a self,
         server: &'a str,
         envelope: &'a Value,
         _timeout: std::time::Duration,
-    ) -> BoxFuture<'a, Result<Value, AccessError>> {
+    ) -> BoxFuture<'a, Result<studio_runtime_store::multi_server_delivery::RemoteReply, AccessError>>
+    {
         Box::pin(async move {
             self.sent
                 .lock()
                 .unwrap()
                 .push(json!({"server": server, "envelope": envelope}));
-            Ok(reply(envelope))
+            Ok(serde_json::from_str(&reply(envelope).to_string()).expect("fixture reply"))
         })
     }
 }
@@ -201,6 +296,7 @@ fn context(actor: &Value) -> CallbackContext {
         agent: actor["id"].as_str().unwrap().to_owned(),
         account: "default".into(),
         connection: "connection".into(),
+        stream_id: "host".into(),
         generation: 7,
         epoch: actor["epoch"].as_u64().unwrap(),
         thread: actor["threadId"].as_str().unwrap().to_owned(),
@@ -210,7 +306,7 @@ fn context(actor: &Value) -> CallbackContext {
 
 fn frame(context: &CallbackContext, tool: &str, name: &str, call_id: &str, args: &Value) -> Frame {
     Frame::Request(RequestFrame {
-        id: RequestId::String(format!("rpc-{name}")),
+        id: RequestId::String(format!("rpc-{name}-{call_id}")),
         method: Method::ItemToolCall,
         params: Some(json!({
             "threadId": context.thread,
@@ -393,7 +489,7 @@ fn cases() -> Vec<Case> {
             name: "git",
             actor: "lead",
             tool: "orchestration_servers",
-            args: json!({"action": "git", "server": "peer-server", "cwd": "/peer/repo", "argv": ["status", "--porcelain=v1"], "request_id": "git-read-1"}),
+            args: json!({"action": "git", "server": "peer-server", "cwd": "/peer/repo", "argv": ["status", "--porcelain=v1"], "request_id": studio_runtime_schema::persistence::RequestIdentity::issue_root()}),
             success: true,
             sent: &["git"],
             expect: json!({"outcome": "applied", "value": {"exitCode": 0, "output": " M a.txt\n", "truncated": false}}),
@@ -423,7 +519,7 @@ fn cases() -> Vec<Case> {
             args: json!({"action": "receipt", "server": "peer-server", "request_id": "no-such-request"}),
             success: false,
             sent: &[],
-            expect: json!("Unknown remote request receipt"),
+            expect: json!("The request ID expired"),
         },
         Case {
             name: "exec",
@@ -700,6 +796,99 @@ fn resolve(
 }
 
 #[tokio::test]
+async fn managed_location_recovery_resolves_local_alias() {
+    let (_directory, store, seed) = seeded_store().await;
+    let local = store.local_server_id().unwrap().unwrap();
+    let driver = Arc::new(OrchestrationDriver::new(
+        store.clone(),
+        Arc::new(RecordingTransport::default()),
+        Arc::new(RuntimeOrchestrationEffects::new(store.clone())),
+    ));
+    let tools: Arc<dyn MultiServerToolPort> =
+        Arc::new(ServerTools::new(store.clone(), driver, false));
+    let project = seed["projectId"].as_str().unwrap();
+    let args = json!({"action":"add_location","project":project,"server":" local ","path":project});
+    let result = call_named_tool(
+        &store,
+        &seed["lead"],
+        "orchestration_servers",
+        "local-location",
+        "call-local-location",
+        &args,
+        Some(tools),
+        None,
+    )
+    .await;
+    let value = parsed(&result);
+    assert_eq!(value["outcome"], "applied");
+    let actor = seed["lead"]["id"].as_str().unwrap().to_owned();
+    let request = value["requestId"].as_str().unwrap().to_owned();
+    let receipt = store
+        .transaction_with(move |tx| {
+            crate::project_locations::tool_location_receipt(
+                tx,
+                &actor,
+                &request,
+                &local,
+                chrono::Utc::now().timestamp() as f64,
+            )
+        })
+        .await
+        .expect("recover local receipt")
+        .expect("location receipt");
+    assert_eq!(
+        receipt.outcome,
+        crate::project_locations::LocationOutcome::Applied
+    );
+}
+
+#[tokio::test]
+async fn managed_location_recovery_normalizes_original_arguments() {
+    let (_directory, store, seed) = seeded_store().await;
+    let transport = Arc::new(RecordingTransport::default());
+    let driver = Arc::new(OrchestrationDriver::new(
+        store.clone(),
+        transport,
+        Arc::new(RuntimeOrchestrationEffects::new(store.clone())),
+    ));
+    let tools: Arc<dyn MultiServerToolPort> =
+        Arc::new(ServerTools::new(store.clone(), driver, false));
+    let args = json!({"action":"add_location", "project":format!(" {} ",seed["projectId"].as_str().unwrap()), "server":" peer-server ", "path":" /peer/project "});
+    let result = call_named_tool(
+        &store,
+        &seed["lead"],
+        "orchestration_servers",
+        "whitespace-location",
+        "call-whitespace-location",
+        &args,
+        Some(tools),
+        None,
+    )
+    .await;
+    let value = parsed(&result);
+    assert_eq!(value["outcome"], "applied");
+    let actor = seed["lead"]["id"].as_str().unwrap().to_owned();
+    let request = value["requestId"].as_str().unwrap().to_owned();
+    let receipt = store
+        .transaction_with(move |tx| {
+            crate::project_locations::tool_location_receipt(
+                tx,
+                &actor,
+                &request,
+                PEER,
+                chrono::Utc::now().timestamp() as f64,
+            )
+        })
+        .await
+        .expect("recover normalized receipt")
+        .expect("location receipt");
+    assert_eq!(
+        receipt.outcome,
+        crate::project_locations::LocationOutcome::Applied
+    );
+}
+
+#[tokio::test]
 async fn servers_tool_sends_envelopes_keeps_receipts_and_project_locations() {
     let (_directory, store, seed) = seeded_store().await;
     for role in ["lead", "worker", "remote", "moved"] {
@@ -812,7 +1001,10 @@ async fn a_lost_reply_is_unknown_and_an_exact_retry_does_not_send_again_in_fligh
             _server: &'a str,
             _envelope: &'a Value,
             _timeout: std::time::Duration,
-        ) -> BoxFuture<'a, Result<Value, AccessError>> {
+        ) -> BoxFuture<
+            'a,
+            Result<studio_runtime_store::multi_server_delivery::RemoteReply, AccessError>,
+        > {
             Box::pin(async move {
                 *self.0.lock().unwrap() += 1;
                 Err(crate::multi_server_auth::refused(
@@ -833,7 +1025,7 @@ async fn a_lost_reply_is_unknown_and_an_exact_retry_does_not_send_again_in_fligh
     let tools: Arc<dyn MultiServerToolPort> =
         Arc::new(ServerTools::new(Arc::clone(&store), driver, false));
     let lead = &seed["lead"];
-    let args = json!({"action": "exec", "server": PEER, "cwd": "/peer/repo", "command": ["true"], "request_id":"lost-operation"});
+    let args = json!({"action": "exec", "server": PEER, "cwd": "/peer/repo", "command": ["true"], "request_id":studio_runtime_schema::persistence::RequestIdentity::issue_root()});
     let first = call_tool(
         &store,
         lead,
@@ -858,7 +1050,12 @@ async fn a_lost_reply_is_unknown_and_an_exact_retry_does_not_send_again_in_fligh
     assert_eq!(*transport.0.lock().unwrap(), 1);
     // The command row is now in receipt form: a new call with the same
     // request identity can only probe for the receipt.
-    let outbox = parsed(&first)["requestId"].as_str().unwrap().to_owned();
+    let outbox = remote_operation_key(
+        "server-outbox",
+        &[PEER],
+        parsed(&first)["requestId"].as_str().unwrap(),
+        &["exec"],
+    );
     let body: String = store
         .test_read_transaction(|tx| {
             Ok(tx.query_row(
@@ -890,7 +1087,8 @@ impl PairedTransport for LoopbackPeer {
         server: &'a str,
         envelope: &'a Value,
         _timeout: std::time::Duration,
-    ) -> BoxFuture<'a, Result<Value, AccessError>> {
+    ) -> BoxFuture<'a, Result<studio_runtime_store::multi_server_delivery::RemoteReply, AccessError>>
+    {
         Box::pin(async move {
             assert_eq!(server, PEER);
             self.sent
@@ -900,7 +1098,7 @@ impl PairedTransport for LoopbackPeer {
             let key = envelope["requestId"].as_str().unwrap().to_owned();
             let now = crate::event_write::unix_time().unwrap() as i64;
             let outcome = self.driver.receive(&self.principal, envelope, now).await?;
-            Ok(outcome.to_value(&key))
+            Ok(outcome.to_reply(&key))
         })
     }
 }
@@ -942,6 +1140,65 @@ async fn peer_store(home: &str) -> (tempfile::TempDir, Arc<RuntimeStore>) {
         .await
         .unwrap();
     (directory, store)
+}
+
+#[tokio::test]
+#[allow(clippy::disallowed_methods)]
+async fn fetching_reuses_original_export_inputs_and_missing_inputs_never_send() {
+    let (_directory, home, seed) = seeded_store().await;
+    let destination = PathBuf::from(seed["projectId"].as_str().unwrap());
+    run_git(&destination, &["init", "-q", "-b", "main"]);
+    std::fs::write(destination.join("base.txt"), "base").unwrap();
+    run_git(&destination, &["add", "base.txt"]);
+    run_git(&destination, &["commit", "-q", "-m", "base"]);
+    let original = ExportRequest {
+        cwd: Some("/remote/original".into()),
+        branch: "worker".into(),
+        known: vec![run_git(&destination, &["rev-parse", "HEAD"])],
+    };
+    let mut worker = seed["worker"].clone();
+    worker["remoteWorker"] = json!({"server":PEER});
+    worker["cwd"] = json!("/remote/changed");
+    let worker_id = worker["id"].clone();
+    home.transaction(move |tx| {
+        AgentRepository::put(
+            tx,
+            &studio_runtime_store::AgentRecord::from_value(worker).unwrap(),
+        )
+    })
+    .await
+    .unwrap();
+    let transport = Arc::new(LostExportReply::default());
+    let driver = Arc::new(OrchestrationDriver::new(
+        home.clone(),
+        transport.clone(),
+        Arc::new(RuntimeOrchestrationEffects::new(home.clone())),
+    ));
+    let args = json!({"action":"fetch","server":PEER,"agent_id":worker_id,"branch":"worker","destination":destination});
+    for (name, input) in [
+        ("fetch-resume", Some(original.clone())),
+        ("fetch-missing", None),
+    ] {
+        let tools: Arc<dyn MultiServerToolPort> = Arc::new(ResumeFetching {
+            store: home.clone(),
+            tools: ServerTools::new(home.clone(), driver.clone(), false),
+            input,
+        });
+        let result = call_tool(&home, &seed["lead"], name, name, &args, Some(tools)).await;
+        assert_eq!(parsed(&result)["outcome"], "unknown", "{result}");
+    }
+    let sent = transport.sent.lock().unwrap();
+    assert_eq!(sent.len(), 2, "missing persisted inputs never send");
+    for envelope in sent.iter() {
+        assert_eq!(
+            serde_json::from_value::<ExportRequest>(envelope["payload"].clone()).unwrap(),
+            original
+        );
+    }
+    assert_eq!(
+        sent[0]["requestId"], sent[1]["requestId"],
+        "lost-response retry keeps the root"
+    );
 }
 
 #[tokio::test]
@@ -1024,17 +1281,27 @@ async fn fetch_copies_a_remote_worker_branch_through_a_verified_bundle_once() {
         ["export", "chunk", "release"],
         "one export, one chunk, one release"
     );
-    // The peer keeps no chunk data in its receipt and released the bundle.
+    // The exact chunk reply survives release in the result cache, with no inbox row.
     let chunk_result: String = peer
         .test_read_transaction(|tx| {
             Ok(tx.query_row(
-                "SELECT result FROM runtime_server_inbox WHERE json_extract(result,'$.value.offset')=0 AND json_extract(result,'$.value.sha256') IS NOT NULL",
+                "SELECT result FROM request_results WHERE json_extract(result,'$.reply.response.value.offset')=0 AND json_extract(result,'$.reply.response.value.sha256') IS NOT NULL",
                 [],
                 |row| row.get(0),
             )?)
         })
         .unwrap();
-    assert!(!chunk_result.contains("\"data\""), "{chunk_result}");
+    assert!(chunk_result.contains("\"data\""), "{chunk_result}");
+    assert_eq!(
+        peer.test_reader()
+            .unwrap()
+            .query_row("SELECT count(*) FROM runtime_server_inbox", [], |row| row
+                .get::<_, i64>(
+                0
+            ))
+            .unwrap(),
+        0
+    );
     let exports = std::fs::read_dir(peer_directory.path().join(server_git::EXPORT_FOLDER))
         .unwrap()
         .count();
@@ -1103,13 +1370,16 @@ impl crate::voice_runtime::VoiceRequestPort for RecordingVoice {
     fn request<'a>(
         &'a self,
         _scope: crate::voice_runtime::VoiceConnectionScope,
-        operation_id: String,
+        operation_id: crate::voice_runtime::VoiceOperation,
         _method: crate::voice_runtime::Method,
         params: Value,
         _deadline: std::time::Instant,
     ) -> crate::voice_runtime::VoiceFuture<'a, crate::voice_runtime::VoiceRequestReceipt> {
         Box::pin(async move {
-            self.requests.lock().unwrap().push((operation_id, params));
+            self.requests
+                .lock()
+                .unwrap()
+                .push((operation_id.id, params));
             crate::voice_runtime::VoiceRequestReceipt {
                 certainty: crate::voice_runtime::VoiceWriteCertainty::Written,
             }
@@ -1134,11 +1404,22 @@ impl crate::voice_runtime::VoiceRequestPort for RecordingVoice {
 async fn ready_voice_session(store: &RuntimeStore, lead: &Value) {
     let lead_id = lead["id"].as_str().unwrap().to_owned();
     let thread = lead["threadId"].as_str().unwrap().to_owned();
+    crate::account_worker::store::attach_provider_stream_for_test(
+        store,
+        "default",
+        None,
+        7,
+        "connection",
+    )
+    .await
+    .unwrap();
     store
         .transaction_with(move |tx| -> Result<(), StoreError> {
+            let agent = studio_runtime_store::AgentRepository::get(tx, &studio_runtime_store::AgentId::from(lead_id.as_str()))?.unwrap();
+            let scope = studio_runtime_store::account_state::current_provider_scope(tx, &agent).expect("attached scope");
             tx.execute(
-                "INSERT INTO voice_sessions(id,agent,created,native_thread,account_key,connection_id,state) VALUES('voice-session',?1,1,?2,'default','connection','ready')",
-                [&lead_id, &thread],
+                "INSERT INTO voice_sessions(id,agent,created,native_thread,account_key,connection_id,provider_scope,state) VALUES('voice-session',?1,1,?2,'default','connection',?3,'ready')",
+                rusqlite::params![lead_id, thread, serde_json::to_string(&scope).unwrap()],
             )?;
             Ok(())
         })
@@ -1250,7 +1531,15 @@ async fn speak_plays_once_in_the_ready_voice_session() {
     .await;
     assert_eq!(first["success"], true, "{first}");
     let value = parsed(&first);
-    assert_eq!(value["record"]["id"], "speak:thread-0:call-speak");
+    let speech_id = value["record"]["id"]
+        .as_str()
+        .unwrap()
+        .strip_prefix("speak:")
+        .unwrap();
+    assert_eq!(
+        uuid::Uuid::parse_str(speech_id).unwrap().get_version_num(),
+        7
+    );
     assert_eq!(value["record"]["text"], "Build finished");
     assert_eq!(value["session"], "voice-session");
     assert_eq!(value["state"], "submitted");
@@ -1603,7 +1892,8 @@ async fn a_python_lead_runs_a_command_here_and_gets_one_exit_notice() {
     );
     let folder = tempfile::tempdir().unwrap();
     // Python `_exec_tool` on the paired server sends this envelope.
-    let envelope = json!({"requestId": "peer-exec-1", "action": "exec", "payload": {
+    let root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    let envelope = json!({"requestId": root, "operation":[], "action": "exec", "payload": {
         "actor": "peer-lead", "cwd": folder.path(), "command": ["sh", "-c", "printf remote"],
         "env": {}, "timeout": 5, "output_limit": 262144}});
     let now = crate::event_write::unix_time().unwrap() as i64;
@@ -1611,8 +1901,9 @@ async fn a_python_lead_runs_a_command_here_and_gets_one_exit_notice() {
     let ExchangeOutcome::Applied(value) = outcome else {
         panic!("{outcome:?}");
     };
-    assert_eq!(value["status"], "completed", "{value}");
-    assert_eq!(value["stdout"], "remote");
+    let decoded: Value = serde_json::from_str(value.value.get()).expect("command reply");
+    assert_eq!(decoded["status"], "completed", "{decoded}");
+    assert_eq!(decoded["stdout"], "remote");
     // A replay of the same envelope answers from the receipt.
     let replay = driver.receive(PEER, &envelope, now).await.unwrap();
     assert_eq!(replay, ExchangeOutcome::Applied(value.clone()));
@@ -1620,8 +1911,8 @@ async fn a_python_lead_runs_a_command_here_and_gets_one_exit_notice() {
     let foreign = driver
         .receive(
             PEER,
-            &json!({"requestId": "peer-read-1", "action": "exec_read",
-                "payload": {"actor": "another-lead", "handle": "peer-exec-1"}}),
+            &json!({"requestId": studio_runtime_schema::persistence::RequestIdentity::issue_root(), "operation":[], "action": "exec_read",
+                "payload": {"actor": "another-lead", "handle": root}}),
             now,
         )
         .await
@@ -1640,15 +1931,15 @@ async fn a_python_lead_runs_a_command_here_and_gets_one_exit_notice() {
         })
         .unwrap();
     let notice: Value = serde_json::from_str(&notice).unwrap();
-    assert_eq!(notice["requestId"], "b75e85fe-064e-5373-9c79-ff2454f3c4e1");
+    assert_eq!(notice["requestId"], root);
     assert_eq!(notice["payload"]["actor"], "peer-lead");
-    assert_eq!(notice["payload"]["handle"], "peer-exec-1");
+    assert_eq!(notice["payload"]["handle"], root);
     assert_eq!(notice["payload"]["record"]["exitCode"], 0);
     // Python reports a command that cannot start with `os.strerror`.
     let missing = driver
         .receive(
             PEER,
-            &json!({"requestId": "peer-exec-2", "action": "exec", "payload": {
+            &json!({"requestId": studio_runtime_schema::persistence::RequestIdentity::issue_root(), "operation":[], "action": "exec", "payload": {
                 "actor": "peer-lead", "cwd": folder.path(), "command": ["/nonexistent/command"],
                 "timeout": 5}}),
             now,
@@ -1658,6 +1949,7 @@ async fn a_python_lead_runs_a_command_here_and_gets_one_exit_notice() {
     let ExchangeOutcome::Applied(missing) = missing else {
         panic!("{missing:?}");
     };
+    let missing: Value = serde_json::from_str(missing.value.get()).expect("missing command reply");
     assert_eq!(missing["status"], "failed", "{missing}");
     assert_eq!(missing["error"], "No such file or directory");
 }

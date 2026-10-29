@@ -120,6 +120,9 @@ async fn branch(
     // Match Python's read-only request validation before requiring a live native
     // consumer. Invalid branch inputs must not depend on provider availability.
     port.ensure_session(&account).await.map_err(|error| {
+        if matches!(error, AccountSessionError::Expired) {
+            return super::account_login::session_error(error);
+        }
         ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
             format!("Could not ensure account session: {error}"),
@@ -253,6 +256,7 @@ async fn branch(
                     let record = json!({
                         "id":operation_id,"kind":"branch","agent":agent_id,
                         "phase":"provider_pending","signature":signature,
+                        "rootRequestId":studio_runtime_schema::persistence::RequestIdentity::issue_root(),
                         "source":source_stamp,"message_id":message_id,
                         "turn_id":selected.record["turnId"],
                         "previousStatus":source.get("status"),
@@ -307,6 +311,9 @@ async fn branch(
         .and_then(|op| op.get("provider"))
         .cloned();
     let scope = port.ensure_session(&account).await.map_err(|error| {
+        if matches!(error, AccountSessionError::Expired) {
+            return super::account_login::session_error(error);
+        }
         ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
             format!("Could not ensure account session: {error}"),
@@ -411,6 +418,30 @@ async fn branch(
                 .unwrap_or_else(|| json!({}));
         }
         let request = ProviderRequest {
+            root_request_id: operation
+                .as_ref()
+                .and_then(|owner| owner.get("rootRequestId"))
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    operation
+                        .as_ref()
+                        .and_then(|owner| owner.get("providerAdmission"))
+                        .map(|_| "")
+                })
+                .ok_or_else(|| {
+                    ApiError::new(
+                        StatusCode::CONFLICT,
+                        "The branch request identity is unavailable; inspect workspace recovery",
+                    )
+                })?
+                .to_owned(),
+            admitted_request: operation
+                .as_ref()
+                .and_then(|owner| owner.get("providerAdmission"))
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(ApiError::json)?,
             account: account.clone(),
             operation: format!("{operation_id}:fork"),
             actor: Some(RequestActor {
@@ -574,6 +605,8 @@ async fn provider_request(
     params: Value,
 ) -> Result<Value, ApiError> {
     let mut request = ProviderRequest {
+        root_request_id: String::new(),
+        admitted_request: None,
         account: account.to_owned(),
         operation,
         actor,
@@ -588,6 +621,7 @@ async fn provider_request(
         port.provider_request(initial_request)
             .await
             .map_err(|error| match error {
+                AccountSessionError::Expired => ApiError::new(StatusCode::GONE, error.to_string()),
                 AccountSessionError::Requires(name) => ApiError::dependency(name),
                 AccountSessionError::Unknown => unavailable(),
                 AccountSessionError::Refused(_)
@@ -599,6 +633,9 @@ async fn provider_request(
         // submitting the request. A NotSent receipt permits retrying, but the
         // operation identity and payload remain unchanged.
         request.expected_scope = Some(port.ensure_session(account).await.map_err(|error| {
+            if matches!(error, AccountSessionError::Expired) {
+                return super::account_login::session_error(error);
+            }
             ApiError::new(
                 StatusCode::SERVICE_UNAVAILABLE,
                 format!("Could not ensure account session: {error}"),
@@ -608,6 +645,7 @@ async fn provider_request(
             .provider_request(request)
             .await
             .map_err(|error| match error {
+                AccountSessionError::Expired => ApiError::new(StatusCode::GONE, error.to_string()),
                 AccountSessionError::Requires(name) => ApiError::dependency(name),
                 AccountSessionError::Unknown => unavailable(),
                 AccountSessionError::Refused(_)

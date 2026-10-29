@@ -142,12 +142,12 @@ impl MonitorPort for Port {
         snapshot: &'a MonitorSnapshot,
     ) -> futures_util::future::BoxFuture<'a, Result<ReattachOutcome, MonitorError>> {
         Box::pin(async move {
-            Ok(ReattachOutcome::Running(ReattachProof {
+            Ok(ReattachOutcome::Running(Box::new(ReattachProof {
                 operation: snapshot.operation().expect("operation").clone(),
                 operation_id: format!("monitor:{}", snapshot.id()),
                 native_id: Some(42),
                 current_connection: "restarted".into(),
-            }))
+            })))
         })
     }
     fn await_exit(&self, _: &MonitorSnapshot) -> Result<(), MonitorError> {

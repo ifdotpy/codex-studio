@@ -63,6 +63,9 @@ async fn retired_sqlite_upgrade_preserves_records_and_parent_writes() {
     for file in ["canvas.sqlite3", "analytics.sqlite3"] {
         let db = Connection::open(root.path().join(file)).expect("database");
         for entry in fixture[file]["sqlite_master"].as_array().expect("objects") {
+            if entry["table"] == "runtime_tool_results" {
+                continue;
+            }
             db.execute_batch(entry["sql"].as_str().expect("SQL"))
                 .expect("old object");
         }
@@ -95,7 +98,6 @@ async fn retired_sqlite_upgrade_preserves_records_and_parent_writes() {
     for (table, column) in [
         ("runtime_checkpoints", "record"),
         ("runtime_tool_requests", "record"),
-        ("runtime_tool_results", "result"),
     ] {
         canvas
             .execute(
@@ -349,7 +351,7 @@ async fn running_rust_supervisor_files_are_accepted_and_its_journal_is_kept() {
         .reserve("server-command:kept", "signature", 1.0)
         .expect("supervisor reserves a handle");
     journal
-        .opened("server-command:kept", "signature", 4242, "start")
+        .opened("server-command:kept", "signature", 4242, "start", None)
         .expect("supervisor records the child");
     fs::write(
         state.join("supervisor.lock"),
@@ -622,12 +624,12 @@ async fn scheduler_probes_use_bounded_indexes() {
     let db = store.test_reader().expect("reader");
     for (sql, index) in [
         (
-            "EXPLAIN QUERY PLAN SELECT json_extract(result,'$.taskId'),result FROM runtime_operation_receipts WHERE signature='accepted-archive-v1' AND json_extract(result,'$.status') IN ('pending','retryable','unknown') AND COALESCE(json_extract(result,'$.nextAttemptAt'),0)<=1 ORDER BY COALESCE(json_extract(result,'$.nextAttemptAt'),0),id LIMIT 20",
-            "runtime_accepted_archive_due",
+            "EXPLAIN QUERY PLAN SELECT id,json_extract(record,'$.archiveIntent') FROM runtime_work WHERE archive_status IN ('pending','retryable','unknown') AND archive_next_at<=1 ORDER BY archive_next_at,id LIMIT 20",
+            "runtime_work_archive_due",
         ),
         (
-            "EXPLAIN QUERY PLAN SELECT CAST(json_extract(result,'$.nextAttemptAt') AS REAL) FROM runtime_operation_receipts WHERE signature='accepted-archive-v1' AND json_extract(result,'$.status') IN ('pending','retryable','unknown') AND COALESCE(json_extract(result,'$.nextAttemptAt'),0)>1 AND json_type(result,'$.nextAttemptAt') IN ('integer','real') AND CAST(json_extract(result,'$.nextAttemptAt') AS REAL)>1 ORDER BY COALESCE(json_extract(result,'$.nextAttemptAt'),0),id LIMIT 1",
-            "runtime_accepted_archive_due",
+            "EXPLAIN QUERY PLAN SELECT archive_next_at FROM runtime_work WHERE archive_status IN ('pending','retryable','unknown') AND json_type(record,'$.archiveIntent.nextAttemptAt') IN ('integer','real') AND archive_next_at>1 ORDER BY archive_next_at,id LIMIT 1",
+            "runtime_work_archive_due",
         ),
         (
             "EXPLAIN QUERY PLAN SELECT EXISTS(SELECT 1 FROM runtime_agents WHERE legacy_unsettled=1)",
@@ -641,7 +643,7 @@ async fn scheduler_probes_use_bounded_indexes() {
             .collect::<Result<_, _>>()
             .expect("rows");
         assert!(plan.iter().any(|line| line.contains(index)), "{plan:?}");
-        if index == "runtime_accepted_archive_due" {
+        if index == "runtime_work_archive_due" {
             assert!(plan.iter().any(|line| line.contains("SEARCH")), "{plan:?}");
         }
         assert!(
@@ -652,7 +654,7 @@ async fn scheduler_probes_use_bounded_indexes() {
 }
 
 #[tokio::test]
-async fn scheduler_indexes_upgrade_and_rollback_with_retained_receipts() {
+async fn scheduler_indexes_recreated_on_reopen() {
     let root = temporary_state("scheduler-index-upgrade");
     drop(
         RuntimeStore::open(Some(root.path()))
@@ -660,45 +662,18 @@ async fn scheduler_indexes_upgrade_and_rollback_with_retained_receipts() {
             .expect("fresh store"),
     );
     let db = Connection::open(root.path().join("canvas.sqlite3")).expect("canvas");
-    let catalog = |db: &Connection| -> Vec<(String, String)> {
-        db.prepare("SELECT name,sql FROM sqlite_master WHERE name IN ('runtime_accepted_archive_due','runtime_agent_unsettled_legacy') ORDER BY name")
-            .expect("catalog").query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-            .expect("indexes").collect::<Result<_, _>>().expect("rows")
-    };
-    let fresh_indexes = catalog(&db);
-    db.execute_batch("DROP INDEX runtime_accepted_archive_due; DROP INDEX runtime_agent_unsettled_legacy; INSERT INTO runtime_operation_receipts VALUES('old','accepted-archive-v1','invalid');").expect("old state");
-    drop(db);
-    assert!(
-        RuntimeStore::open(Some(root.path())).await.is_err(),
-        "invalid indexed receipt blocks migration"
-    );
-    let db = Connection::open(root.path().join("canvas.sqlite3")).expect("canvas");
-    let count: i64 = db.query_row("SELECT count(*) FROM sqlite_master WHERE name IN ('runtime_accepted_archive_due','runtime_agent_unsettled_legacy')", [], |row| row.get(0)).expect("catalog");
-    assert_eq!(count, 0, "failed migration rolls back indexes");
-    let receipt: String = db
-        .query_row(
-            "SELECT result FROM runtime_operation_receipts WHERE id='old'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("receipt");
-    assert_eq!(receipt, "invalid");
-    db.execute(
-        "UPDATE runtime_operation_receipts SET result=?1 WHERE id='old'",
-        [r#"{"status":"pending","nextAttemptAt":42}"#],
+    db.execute_batch(
+        "DROP INDEX runtime_work_archive_due; DROP INDEX runtime_agent_unsettled_legacy;",
     )
-    .expect("repair fixture");
+    .expect("old state");
     drop(db);
     for _ in 0..2 {
         let store = RuntimeStore::open(Some(root.path()))
             .await
             .expect("upgrade and reopen");
         let db = store.test_reader().expect("reader");
-        let due: f64 = db.query_row("SELECT json_extract(result,'$.nextAttemptAt') FROM runtime_operation_receipts WHERE id='old'", [], |row| row.get(0)).expect("retained receipt");
-        assert_eq!(due, 42.0);
-        let count: i64 = db.query_row("SELECT count(*) FROM sqlite_master WHERE name IN ('runtime_accepted_archive_due','runtime_agent_unsettled_legacy')", [], |row| row.get(0)).expect("catalog");
+        let count: i64 = db.query_row("SELECT count(*) FROM sqlite_master WHERE name IN ('runtime_work_archive_due','runtime_agent_unsettled_legacy')", [], |row| row.get(0)).expect("catalog");
         assert_eq!(count, 2);
-        assert_eq!(catalog(&db), fresh_indexes, "fresh and migrated DDL agree");
     }
 }
 

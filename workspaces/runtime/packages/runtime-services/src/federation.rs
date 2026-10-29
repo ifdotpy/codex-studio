@@ -236,7 +236,7 @@ async fn accept_peer(
         .get("invitation")
         .filter(|value| value.is_object())
         .ok_or_else(|| FederationError::Refused("Invalid federation invitation".to_owned()))?;
-    let protocol = invitation["protocol"].as_u64();
+    let protocol = invitation["protocol"].as_i64();
     let invite_id = invitation["inviteId"].as_str().unwrap_or_default();
     let token = invitation["token"].as_str().unwrap_or_default();
     let state_id = invitation["stateId"].as_str().unwrap_or_default();

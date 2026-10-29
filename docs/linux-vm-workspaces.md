@@ -121,33 +121,47 @@ The frozen runtime references are not documentation that can be revised.
 
 ## Guest updates
 
-`upgrade-linux-vm-layr.py` updates the guest of an existing VM. Many VM agents can run at that
-time, so a change that the guest can take in place does not reboot the VM:
+The backend updates the guest of an existing VM to the files of the installed build
+(`runtime-services/src/linux_vm_update.rs`). Many VM agents can run at that time, so a change
+that the guest can take in place does not reboot the VM.
 
-The former Python backend command has been removed. See [testing](testing.md)
-for current Rust checks.
+When it runs:
 
-The root broker owns the rules (`vm-guest/guest_update.py`). The Mac
-(`codex_linux_vm_update.py`) asks it for a path with `update.plan`. The request has the SHA-256
-of each payload file in `/opt/codex-studio` and the payload record: the Codex, Claude and pnpm
-versions and the hash of the provision script. Provisioning writes that record to
-`/var/lib/codex-studio/guest-payload.json`. The broker answers with one path:
+- The watchdog tick (every 30 seconds) calls it before the VM check, so a new build reaches a
+  running VM within a minute of the backend start. A tick does nothing once the guest is
+  `current`. A source checkout never updates a VM: only a packaged build has `vm/guest`.
+- It waits while a provider is `running`, `starting` or `lost` in `provider.list`. The next tick
+  asks again. There is no prompt.
+- It holds `maintenance.lock` for the whole update, so the watchdog restart, `recover_backend.py`
+  and the delivery installer wait (`desktop_vm.py`, "startup delivery waits for VM maintenance").
+  Another holder of the lock makes the tick return `busy`; the next tick tries again.
+- A guest without `<vm-state>/update-key` (`no_key`) or without the update methods
+  (`unsupported`) needs the reboot path. The backend does not take it.
 
-- `current`: the guest has these files. The receipt is `complete` and nothing changes.
+The root broker owns the rules (`vm-guest/guest_update.py`). The host asks it with `update.plan`.
+The request has the SHA-256 of each guest file of the build (`vm/guest` Python, shell, unit and
+AppArmor files, the `vm/layr` and `vm/layr-desk` sources of their manifests, and the four
+`.agents/skills` files) and an empty payload record. Provisioning writes the real record to
+`/var/lib/codex-studio/guest-payload.json`, but the host does not provision, so the host does
+not read the "provider versions" reason of the plan. It reads the `changed` and `reboot` lists.
+Files outside the in-place folders (provider CLIs, `scripts/`, the Claude bridge) are not sent.
+The broker answers with one path:
+
+- `current`: the guest has these files. Nothing changes.
 - `in_place`: only files below `vm/guest/`, `vm/layr/`, `vm/layr-desk/` or `.agents/skills/`
   changed.
 - `reboot`: any other change, a different payload record, or a guest without the update key or
   the update methods (provisioned by an older Studio). The provider CLIs, the Claude bridge,
   the package manifests and `scripts/` (the process supervisor of the running providers) need
-  this path.
+  this path. The backend sends only in-place files, so it does not take this path.
 
 The in-place path:
 
-1. The Mac sends each changed file with `update.stage`, in parts of at most
+1. The host sends each changed file with `update.stage`, in parts of at most
    `GUEST_UPDATE_PART_BYTES` (1 MiB). Each part has its own exact request ID.
 2. `update.apply` writes the files. The studio user relays every request, so the broker
    accepts only a request that the update key signs (HMAC-SHA256 of the operation ID and the
-   whole manifest). The Mac keeps the key in `<vm-state>/update-key`. Provisioning writes it
+   whole manifest). The host keeps the key in `<vm-state>/update-key`. Provisioning writes it
    to `/etc/codex-studio/update-key`, for root only.
 3. The broker runs `install.sh` with `STUDIO_DEFER_RESTARTS=1`: owners, modes, units, and a
    layr build when its source changed. The install restarts nothing.
@@ -157,8 +171,8 @@ The in-place path:
    because the broker requires the daemon), the share bridge for `share_bridge.py`, and a
    changed unit file. A restart of the broker runs from a separate transient unit
    (`systemd-run`). The new broker process marks that restart complete.
-5. The Mac reads `update.status` until the stage is `complete`. A request that fails during
-   the restarts is read again. Then the Mac checks that `update.plan` says `current` and that
+5. The host reads `update.status` until the stage is `complete`. A request that fails during
+   the restarts is read again. Then the host checks that `update.plan` says `current` and that
    `layr.health` is `ready`.
 
 Running agents keep their turns. A restart of the guest service or of the broker does not end
@@ -168,25 +182,19 @@ request children finish.
 
 An operation that wrote files and did not finish its install or its restarts stays unfinished
 in the broker (`install_failed`, `restart_failed`, `writing`). The next plan and apply include
-its files, also in a new operation, so the work is not lost. The Mac keeps a failed operation
-in its receipt (stage `in-place`). Read `update.status` of that operation, then use a new
-operation ID.
+its files, also in a new operation, so the work is not lost.
 
-`--reboot` takes the reboot path also for a change that the guest can take in place. The
-reboot path is the earlier full path: it requires idle providers, makes a disk backup, stops
-the VM, writes a new provision seed and starts the VM.
+Each step has an exact request ID (`update-stage:` and `update-apply:` with the operation).
+The operation ID names the file set and the start time of the attempt. A step with a lost or
+uncertain result ends the attempt and is never sent again under that guess. The next tick
+plans again, and the broker's own list of unfinished files decides what to stage and apply.
+A `restart_failed` or `install_failed` stage ends the attempt as `failed`; the next tick plans
+again the same way.
 
-A `running`, `starting` or `lost` provider in `provider.list` stops the reboot path. An
-operator can approve one lost provider with `--approved-orphan <handle>`. The handle is
-`linux-worker:<agent UUID>` (owner `LINUX_VM_PROVIDER_HANDLE_PREFIX` in
-`runtime-schema/src/shared_values.rs`), or the
-UUID name of a provider directory without `native.json`. An approved row does not block when:
+The earlier reboot path (idle providers, disk backup, VM stop, new provision seed, VM start)
+was part of the removed Python tool. The Rust backend has no reboot path.
 
-- its reason is `native_process_lost`: the guest proved that the process is gone, so its
-  agent ID only names the former owner.
-- its reason is `outcome_unknown` and it has no agent ID.
-
-An approved row with any other reason still blocks, because the process can still run.
+A `running`, `starting` or `lost` provider in `provider.list` defers the update.
 
 ## x86_64 binaries
 
@@ -225,7 +233,7 @@ In the guest (`vm-guest/rosetta.py`):
 
 An existing VM gets the capability in two steps, in any order:
 
-1. A guest update (`upgrade-linux-vm-layr.py`). The change is below `vm/guest/`, so it takes
+1. A guest update (the backend does it for a new build). The change is below `vm/guest/`, so it takes
    the in-place path: it installs the unit and the amd64 runtime, without a reboot.
 2. A VM restart with the new helper (a Studio install, then a VM stop and start). Virtualization
    adds the device only when the VM starts. After the restart the unit mounts the share.
@@ -371,7 +379,7 @@ Limits:
 - One restart in 10 minutes, and at most 4 in 24 hours. A held restart shows
   `watchdog.held` (rule and time) in the status. The VM stays failed until the limits permit a
   restart or an operator restarts it.
-- No restart while `upgrade-linux-vm-layr.py` holds `maintenance.lock` (for the whole upgrade),
+- No restart while a guest update holds `maintenance.lock` (for the whole update),
   or while create, start or stop holds `client.lock`. An upgrade does not start during a restart.
 - The watchdog acts only on a live helper. It starts a stopped VM only when its last intent is a
   start from before the current Mac boot (`kern.boottime`): the Mac restarted under the VM. The

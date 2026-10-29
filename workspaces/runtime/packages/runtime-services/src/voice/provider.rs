@@ -18,7 +18,15 @@ use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use studio_runtime_providers::Method;
-use studio_runtime_store::{AgentId, AgentRepository, Connection, RuntimeStore, VoiceRepository};
+use studio_runtime_schema::persistence::{OutboxKind, RequestIdentity};
+#[cfg(test)]
+use studio_runtime_schema::persistence::{OutboxStatus, OwnerKind, VoiceStopOutcome};
+#[cfg(test)]
+use studio_runtime_store::outbox::Outbox;
+use studio_runtime_store::{
+    AgentId, AgentRepository, Connection, RuntimeStore, VoiceRepository,
+    request_results::{Admission, AdmittedRequest, RequestResults},
+};
 use thiserror::Error;
 
 use super::policy::{
@@ -149,52 +157,35 @@ pub async fn wait_for_start_setup(agent_id: &str, session_id: &str) {
 #[derive(Clone, Debug, PartialEq)]
 pub struct VoiceRpcCall {
     pub operation_id: String,
+    pub root_request_id: String,
+    pub admitted_request: Option<AdmittedRequest>,
     pub context: VoiceProviderContext,
     pub method: Method,
     pub params: Value,
     pub deadline: Instant,
 }
 
-/// Identity saved in an agent deletion intent before its voice rows are
-/// removed. Field names serialize to the lifecycle receipt's camelCase shape.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VoiceDeleteSession {
-    pub session_id: String,
-    pub agent_id: String,
-    pub epoch: i64,
-    pub account_key: String,
-    pub thread_id: String,
-    pub connection_id: String,
-    pub generation: u64,
-}
+pub use super::effects::{
+    VoiceDeleteIntent, VoiceDeleteSession, capture_delete_sessions, deleted_voice_sessions,
+    end_deleted_sessions_tracked, pending_delete_intents, settle_voice_stop, stage_delete_sessions,
+};
+pub(crate) use super::effects::{
+    end_voice_sessions_tracked, existing_stop, pending_voice_intent, pending_voice_intents,
+    stage_ordinary_stop, stage_voice_stop_sessions,
+};
 
-/// Durable post-commit voice-stop work staged by an agent deletion
-/// transaction. `id` is also the broker authorization receipt key.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct VoiceDeleteIntent {
-    pub id: String,
-    pub agent_id: String,
-    pub epoch: i64,
-    pub sessions: Vec<VoiceDeleteSession>,
-    pub held_uncertain: Vec<VoiceDeleteSession>,
-}
-
-const DELETE_VOICE_RECEIPT_SIGNATURE: &str = "voice-agent-delete-v1";
-/// SQL predicate over a delete-voice receipt row: nothing is held and every captured
-/// session ended in a final result (`written` or `rejected`), so no stop is owed or
-/// replayable. An intent with no sessions is settled. `unknown` and `not_sent` are not final.
-const DELETE_VOICE_SETTLED: &str = "signature='voice-agent-delete-v1' \
-    AND json_array_length(COALESCE(json_extract(result,'$.voiceEndHeldUncertain'),'[]'))=0 \
-    AND (SELECT COUNT(*) FROM json_each(result,'$.voiceEndResults') \
-         WHERE value IN ('written','rejected')) \
-        >= json_array_length(json_extract(result,'$.voiceEndSessions'))";
-
-async fn request(provider: &dyn VoiceProviderPort, call: VoiceRpcCall) -> VoiceRequestReceipt {
+pub(super) async fn request(
+    provider: &dyn VoiceProviderPort,
+    call: VoiceRpcCall,
+) -> VoiceRequestReceipt {
     provider
         .request(
             call.context,
-            call.operation_id,
+            super::runtime::VoiceOperation {
+                id: call.operation_id,
+                root_request_id: call.root_request_id,
+                admitted_request: call.admitted_request,
+            },
             call.method,
             call.params,
             call.deadline,
@@ -202,629 +193,42 @@ async fn request(provider: &dyn VoiceProviderPort, call: VoiceRpcCall) -> VoiceR
         .await
 }
 
-fn request_deadline() -> Instant {
+pub(super) fn request_deadline() -> Instant {
     Instant::now() + VOICE_REQUEST_TIMEOUT
 }
 
-/// Snapshot an agent's sessions on its current account/thread for the durable
-/// deletion intent. Call inside the deletion transaction, before voice rows
-/// are removed. This deliberately reads a tombstoned agent's persisted fields.
-pub fn capture_delete_sessions(
+pub(super) fn saved_scope(
     connection: &Connection,
-    agent_id: &str,
-) -> Result<Vec<VoiceDeleteSession>, VoiceProviderError> {
-    let agent = AgentRepository::get(connection, &AgentId::from(agent_id))?
-        .filter(|agent| agent.id.0 == agent_id)
-        .ok_or(VoiceProviderError::ContextUnavailable)?;
-    let thread_id = agent
-        .extra
-        .get("threadId")
-        .and_then(Value::as_str)
-        .filter(|thread| !thread.is_empty());
-    let Some(thread_id) = thread_id else {
-        return Ok(Vec::new());
-    };
-    let account_key = agent
-        .extra
-        .get("accountKey")
-        .and_then(Value::as_str)
-        .filter(|account| !account.is_empty())
-        .unwrap_or("default");
-    let mut statement = connection.prepare_cached(
-        "SELECT id,connection_id FROM voice_sessions \
-         WHERE agent=?1 AND ended IS NULL AND account_key=?2 AND native_thread=?3 \
-         AND connection_id IS NOT NULL ORDER BY created,id",
+    session: &str,
+) -> Result<studio_runtime_schema::persistence::CapturedScope, VoiceProviderError> {
+    let raw: Option<String> = connection.query_row(
+        "SELECT provider_scope FROM voice_sessions WHERE id=?1",
+        [session],
+        |row| row.get(0),
     )?;
-    let rows = statement.query_map(rusqlite::params![agent_id, account_key, thread_id], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-    })?;
-    rows.map(|row| {
-        let (session_id, connection_id) = row?;
-        Ok(VoiceDeleteSession {
-            session_id,
-            agent_id: agent_id.to_owned(),
-            epoch: agent.epoch,
-            account_key: account_key.to_owned(),
-            thread_id: thread_id.to_owned(),
-            generation: connection_generation(&connection_id),
-            connection_id,
-        })
-    })
-    .collect::<Result<Vec<_>, rusqlite::Error>>()
-    .map_err(VoiceProviderError::from)
+    match raw {
+        Some(raw) => Ok(studio_runtime_schema::persistence::CapturedScope::Known(
+            serde_json::from_str(&raw).map_err(|_| VoiceProviderError::ContextChanged)?,
+        )),
+        None => Ok(studio_runtime_schema::persistence::CapturedScope::Unproven),
+    }
 }
 
-fn capture_delete_voice_sessions(
+fn required_scope(
     connection: &Connection,
-    agent_id: &str,
-) -> Result<(Vec<VoiceDeleteSession>, Vec<VoiceDeleteSession>), VoiceProviderError> {
-    let sessions = capture_delete_sessions(connection, agent_id)?;
-    let mut dispatchable = Vec::with_capacity(sessions.len());
-    let mut held_uncertain = Vec::new();
-    for session in sessions {
-        match prior_voice_stop_result(connection, &session)? {
-            Some(PriorVoiceStopResult::Submitted | PriorVoiceStopResult::Unknown) => {
-                held_uncertain.push(session);
-            }
-            Some(PriorVoiceStopResult::Written) => {}
-            _ => dispatchable.push(session),
+    session: &str,
+) -> Result<studio_runtime_schema::persistence::ProviderScope, VoiceProviderError> {
+    match saved_scope(connection, session)? {
+        studio_runtime_schema::persistence::CapturedScope::Known(scope) => Ok(scope),
+        studio_runtime_schema::persistence::CapturedScope::Unproven => {
+            Err(VoiceProviderError::ContextUnavailable)
         }
     }
-    Ok((dispatchable, held_uncertain))
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum PriorVoiceStopResult {
-    Submitted,
-    Unknown,
-    NotSent,
-    Written,
-    Other,
-}
-
-fn prior_voice_stop_result(
-    connection: &Connection,
-    session: &VoiceDeleteSession,
-) -> Result<Option<PriorVoiceStopResult>, VoiceProviderError> {
-    let operation = format!("voice:stop:{}", session.session_id);
-    let prefix = format!(
-        "account-worker:retained:{}:{}",
-        session.account_key,
-        studio_runtime_store::sha256_hex(operation.as_bytes())
-    );
-    let settled_result: Option<Option<String>> = connection
-        .query_row(
-            "SELECT settled.result FROM runtime_operation_receipts submitted \
-         LEFT JOIN runtime_operation_receipts settled ON settled.id=?2 \
-         WHERE submitted.id=?1 \
-         AND json_extract(submitted.result,'$.call.operation')=?3 \
-         AND json_extract(submitted.result,'$.call.method')='thread/realtime/stop' \
-         AND json_extract(submitted.result,'$.call.actor.agent')=?4 \
-         AND json_extract(submitted.result,'$.call.actor.epoch')<=?5 \
-         AND json_extract(submitted.result,'$.call.scope.account')=?6 \
-         AND json_extract(submitted.result,'$.call.scope.connection')=?7 \
-         AND json_extract(submitted.result,'$.call.scope.generation')=?8 \
-         AND json_extract(submitted.result,'$.call.params.threadId')=?9 \
-         LIMIT 1",
-            rusqlite::params![
-                format!("{prefix}:submitted"),
-                format!("{prefix}:result"),
-                operation,
-                session.agent_id,
-                session.epoch,
-                session.account_key,
-                session.connection_id,
-                i64::try_from(session.generation)
-                    .map_err(|_| VoiceProviderError::ContextChanged)?,
-                session.thread_id,
-            ],
-            |row| row.get::<_, Option<String>>(0),
-        )
-        .optional()?;
-    let Some(settled_result) = settled_result else {
-        return Ok(None);
-    };
-    let Some(settled_result) = settled_result else {
-        return Ok(Some(PriorVoiceStopResult::Submitted));
-    };
-    let receipt: Value =
-        serde_json::from_str(&settled_result).map_err(|_| VoiceProviderError::ContextChanged)?;
-    let result = serde_json::from_value::<crate::account_worker::retained::RequestResult>(
-        receipt
-            .get("result")
-            .cloned()
-            .ok_or(VoiceProviderError::ContextChanged)?,
-    )
-    .map_err(|_| VoiceProviderError::ContextChanged)?;
-    Ok(Some(match result {
-        crate::account_worker::retained::RequestResult::Reply(_) => PriorVoiceStopResult::Written,
-        crate::account_worker::retained::RequestResult::NotSent => PriorVoiceStopResult::NotSent,
-        crate::account_worker::retained::RequestResult::Unknown => PriorVoiceStopResult::Unknown,
-        crate::account_worker::retained::RequestResult::Rejected(_) => PriorVoiceStopResult::Other,
-    }))
-}
-
-/// Stage post-commit provider stops in the same transaction that deletes an
-/// agent and its voice rows. The lifecycle transaction must call this before
-/// deleting voice sessions, commit the returned intent with the tombstone, then
-/// pass that intent to [`end_deleted_sessions`]. Existing receipts are replayed
-/// verbatim so a repeated delete cannot lose the original session identities.
-pub fn stage_delete_sessions(
-    transaction: &Connection,
-    agent_id: &str,
-) -> Result<VoiceDeleteIntent, VoiceProviderError> {
-    let agent = AgentRepository::get(transaction, &AgentId::from(agent_id))?
-        .filter(|agent| agent.id.0 == agent_id)
-        .ok_or(VoiceProviderError::ContextUnavailable)?;
-    let receipt_id = format!("agent-delete-voice:{agent_id}:{}", agent.epoch);
-    if let Some((signature, result)) = transaction
-        .query_row(
-            "SELECT signature,result FROM runtime_operation_receipts WHERE id=?1",
-            [&receipt_id],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-        )
-        .optional()?
-    {
-        let result: Value =
-            serde_json::from_str(&result).map_err(|_| VoiceProviderError::ContextChanged)?;
-        if signature != DELETE_VOICE_RECEIPT_SIGNATURE
-            || result.get("agent").and_then(Value::as_str) != Some(agent_id)
-            || result.get("epoch").and_then(Value::as_i64) != Some(agent.epoch)
-        {
-            return Err(VoiceProviderError::ContextChanged);
-        }
-        let sessions = serde_json::from_value(
-            result
-                .get("voiceEndSessions")
-                .cloned()
-                .ok_or(VoiceProviderError::ContextChanged)?,
-        )
-        .map_err(|_| VoiceProviderError::ContextChanged)?;
-        let held_uncertain: Vec<VoiceDeleteSession> = serde_json::from_value(
-            result
-                .get("voiceEndHeldUncertain")
-                .cloned()
-                .unwrap_or_else(|| json!([])),
-        )
-        .map_err(|_| VoiceProviderError::ContextChanged)?;
-        return Ok(VoiceDeleteIntent {
-            id: receipt_id,
-            agent_id: agent_id.to_owned(),
-            epoch: agent.epoch,
-            sessions,
-            held_uncertain,
-        });
-    }
-
-    let (sessions, held_uncertain) = capture_delete_voice_sessions(transaction, agent_id)?;
-    if sessions.is_empty() && held_uncertain.is_empty() {
-        // No stop is owed, so no receipt: an empty intent carries no recovery obligation.
-        return Ok(VoiceDeleteIntent {
-            id: receipt_id,
-            agent_id: agent_id.to_owned(),
-            epoch: agent.epoch,
-            sessions,
-            held_uncertain,
-        });
-    }
-    let result = json!({
-        "agent": agent_id,
-        "epoch": agent.epoch,
-        "voiceEndSessions": sessions,
-        "voiceEndHeldUncertain": held_uncertain,
-    });
-    transaction.execute(
-        "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3)",
-        rusqlite::params![
-            receipt_id,
-            DELETE_VOICE_RECEIPT_SIGNATURE,
-            result.to_string()
-        ],
-    )?;
-    Ok(VoiceDeleteIntent {
-        id: receipt_id,
-        agent_id: agent_id.to_owned(),
-        epoch: agent.epoch,
-        sessions,
-        held_uncertain,
-    })
-}
-
-/// Load durable agent-deletion voice-stop intents for post-commit delivery or
-/// restart recovery. The receipt identity and signature are checked before any
-/// provider request can be constructed.
-pub async fn pending_delete_intents(
-    store: &RuntimeStore,
-) -> Result<Vec<VoiceDeleteIntent>, VoiceProviderError> {
-    reconcile_proven_unsent_held_sessions(store).await?;
-    store
-        .read_async("runtime-services/voice/provider", move |connection| {
-            let mut statement = connection.prepare_cached(
-                "SELECT id,signature,result FROM runtime_operation_receipts \
-             WHERE id >= 'agent-delete-voice:' AND id < 'agent-delete-voice;' ORDER BY id",
-            )?;
-            let rows = statement.query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
-            })?;
-            let mut intents = Vec::new();
-            for row in rows {
-                let (id, signature, raw) = row?;
-                let result: Value =
-                    serde_json::from_str(&raw).map_err(|_| VoiceProviderError::ContextChanged)?;
-                let agent_id = result
-                    .get("agent")
-                    .and_then(Value::as_str)
-                    .filter(|agent| !agent.is_empty())
-                    .ok_or(VoiceProviderError::ContextChanged)?;
-                let epoch = result
-                    .get("epoch")
-                    .and_then(Value::as_i64)
-                    .filter(|epoch| *epoch >= 0)
-                    .ok_or(VoiceProviderError::ContextChanged)?;
-                if signature != DELETE_VOICE_RECEIPT_SIGNATURE
-                    || id != format!("agent-delete-voice:{agent_id}:{epoch}")
-                {
-                    return Err(VoiceProviderError::ContextChanged);
-                }
-                let sessions: Vec<VoiceDeleteSession> = serde_json::from_value(
-                    result
-                        .get("voiceEndSessions")
-                        .cloned()
-                        .ok_or(VoiceProviderError::ContextChanged)?,
-                )
-                .map_err(|_| VoiceProviderError::ContextChanged)?;
-                let held_uncertain: Vec<VoiceDeleteSession> = serde_json::from_value(
-                    result
-                        .get("voiceEndHeldUncertain")
-                        .cloned()
-                        .unwrap_or_else(|| json!([])),
-                )
-                .map_err(|_| VoiceProviderError::ContextChanged)?;
-                if held_uncertain
-                    .iter()
-                    .any(|session| session.agent_id != agent_id || session.epoch != epoch)
-                {
-                    return Err(VoiceProviderError::ContextChanged);
-                }
-                if sessions
-                    .iter()
-                    .any(|session| session.agent_id != agent_id || session.epoch != epoch)
-                {
-                    return Err(VoiceProviderError::ContextChanged);
-                }
-                let sessions = pending_voice_delete_sessions(
-                    sessions,
-                    result.get("voiceEndResults").and_then(Value::as_object),
-                )?;
-                intents.push(VoiceDeleteIntent {
-                    id,
-                    agent_id: agent_id.to_owned(),
-                    epoch,
-                    sessions,
-                    held_uncertain,
-                });
-            }
-            Ok(intents)
-        })
-        .await
-}
-
-/// If a held ordinary stop settles as proven NotSent after deletion, safely
-/// transfer that session to the deletion stop queue. Unknown and unsettled
-/// receipts remain held with their original identity; only proven non-delivery
-/// permits a new delete-stop identity.
-async fn reconcile_proven_unsent_held_sessions(
-    store: &RuntimeStore,
-) -> Result<(), VoiceProviderError> {
-    // Most passes find nothing held; only a held session needs a write transaction.
-    let any_held: bool = store
-        .read_async("runtime-services/voice/provider", |connection| {
-            connection.query_row(
-                "SELECT EXISTS(SELECT 1 FROM runtime_operation_receipts \
-                 WHERE id >= 'agent-delete-voice:' AND id < 'agent-delete-voice;' \
-                   AND json_array_length(COALESCE(json_extract(result,'$.voiceEndHeldUncertain'),'[]'))>0)",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(studio_runtime_store::StoreError::from)
-        })
-        .await?;
-    if !any_held {
-        return Ok(());
-    }
-    store
-        .transaction_with_error(move |tx| {
-            let mut statement = tx.prepare_cached(
-                "SELECT id,signature,result FROM runtime_operation_receipts \
-             WHERE id >= 'agent-delete-voice:' AND id < 'agent-delete-voice;' ORDER BY id",
-            )?;
-            let rows = statement.query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
-            })?;
-            let receipts = rows.collect::<Result<Vec<_>, _>>()?;
-            drop(statement);
-
-            for (id, signature, raw) in receipts {
-                if signature != DELETE_VOICE_RECEIPT_SIGNATURE {
-                    continue;
-                }
-                let mut result: Value =
-                    serde_json::from_str(&raw).map_err(|_| VoiceProviderError::ContextChanged)?;
-                let Some(held) = result
-                    .get("voiceEndHeldUncertain")
-                    .and_then(Value::as_array)
-                    .cloned()
-                else {
-                    continue;
-                };
-                if held.is_empty() {
-                    continue;
-                }
-                let held_len = held.len();
-                let mut remaining = Vec::with_capacity(held.len());
-                let mut sessions: Vec<VoiceDeleteSession> = serde_json::from_value(
-                    result
-                        .get("voiceEndSessions")
-                        .cloned()
-                        .ok_or(VoiceProviderError::ContextChanged)?,
-                )
-                .map_err(|_| VoiceProviderError::ContextChanged)?;
-                for value in held {
-                    let session: VoiceDeleteSession = serde_json::from_value(value.clone())
-                        .map_err(|_| VoiceProviderError::ContextChanged)?;
-                    match prior_voice_stop_result(tx, &session)? {
-                        Some(PriorVoiceStopResult::NotSent | PriorVoiceStopResult::Other) => {
-                            if !sessions
-                                .iter()
-                                .any(|queued| queued.session_id == session.session_id)
-                            {
-                                sessions.push(session);
-                            }
-                        }
-                        Some(PriorVoiceStopResult::Written) => {}
-                        _ => remaining.push(value),
-                    }
-                }
-                if remaining.len() != held_len {
-                    result["voiceEndSessions"] = serde_json::to_value(sessions)
-                        .map_err(|_| VoiceProviderError::ContextChanged)?;
-                    result["voiceEndHeldUncertain"] = Value::Array(remaining);
-                    tx.execute(
-                        "UPDATE runtime_operation_receipts SET result=?2 \
-                     WHERE id=?1 AND signature=?3",
-                        rusqlite::params![id, result.to_string(), DELETE_VOICE_RECEIPT_SIGNATURE],
-                    )?;
-                }
-            }
-            Ok(())
-        })
-        .await
-}
-
-fn pending_voice_delete_sessions(
-    sessions: Vec<VoiceDeleteSession>,
-    delivered: Option<&serde_json::Map<String, Value>>,
-) -> Result<Vec<VoiceDeleteSession>, VoiceProviderError> {
-    if let Some(delivered) = delivered {
-        for (session_id, status) in delivered {
-            if !sessions
-                .iter()
-                .any(|session| &session.session_id == session_id)
-                || !matches!(
-                    status.as_str(),
-                    Some("written" | "unknown" | "rejected" | "not_sent")
-                )
-            {
-                return Err(VoiceProviderError::ContextChanged);
-            }
-        }
-    }
-    Ok(sessions
-        .into_iter()
-        .filter(|session| {
-            matches!(
-                delivered
-                    .and_then(|results| results.get(&session.session_id))
-                    .and_then(Value::as_str),
-                None | Some("not_sent")
-            )
-        })
-        .collect())
-}
-
-/// Stop sessions captured by `capture_delete_sessions` after the deletion
-/// transaction commits. Stable operation identities let the broker replay a
-/// saved result and keep Unknown outcomes from being resent.
-pub async fn end_deleted_sessions(
-    provider: std::sync::Arc<dyn VoiceProviderPort>,
-    deletion_intent_id: String,
-    sessions: Vec<VoiceDeleteSession>,
-    now: f64,
-) -> Result<Vec<VoiceRequestReceipt>, VoiceProviderError> {
-    if !now.is_finite() || now < 0.0 {
-        return Err(policy::VoiceError::InvalidClock.into());
-    }
-    if sessions.is_empty() {
-        return Ok(Vec::new());
-    }
-    let first = &sessions[0];
-    if deletion_intent_id != format!("agent-delete-voice:{}:{}", first.agent_id, first.epoch)
-        || sessions.iter().any(|session| {
-            session.agent_id != first.agent_id
-                || session.epoch != first.epoch
-                || session.session_id.is_empty()
-                || session.thread_id.is_empty()
-                || session.account_key.is_empty()
-                || session.connection_id.is_empty()
-        })
-    {
-        return Err(VoiceProviderError::ContextChanged);
-    }
-    let mut receipts = Vec::with_capacity(sessions.len());
-    for session in sessions {
-        let context = VoiceProviderContext {
-            agent_id: session.agent_id,
-            epoch: session.epoch,
-            account_key: session.account_key,
-            thread_id: session.thread_id.clone(),
-            connection_id: session.connection_id,
-            generation: session.generation,
-        };
-        receipts.push(
-            request(
-                provider.as_ref(),
-                VoiceRpcCall {
-                    operation_id: format!("voice:delete-stop:{}", session.session_id),
-                    context,
-                    method: Method::ThreadRealtimeStop,
-                    params: json!({"threadId": session.thread_id}),
-                    deadline: request_deadline(),
-                },
-            )
-            .await,
-        );
-    }
-    Ok(receipts)
-}
-
-/// Deliver deletion stops while recording each receipt's certainty. Missing
-/// entries remain retryable after a crash; a proven NotSent can retry, while
-/// Written, Unknown, and Rejected are terminal for this operation identity.
-pub async fn end_deleted_sessions_tracked(
-    store: std::sync::Arc<RuntimeStore>,
-    provider: std::sync::Arc<dyn VoiceProviderPort>,
-    deletion_intent_id: String,
-    sessions: Vec<VoiceDeleteSession>,
-    now: f64,
-) -> Result<(), VoiceProviderError> {
-    for session in sessions {
-        let session_id = session.session_id.clone();
-        let receipts = end_deleted_sessions(
-            std::sync::Arc::clone(&provider),
-            deletion_intent_id.clone(),
-            vec![session],
-            now,
-        )
-        .await?;
-        let certainty = receipts
-            .first()
-            .map(|receipt| receipt.certainty)
-            .ok_or(VoiceProviderError::ContextChanged)?;
-        let status = match certainty {
-            VoiceWriteCertainty::Written => "written",
-            VoiceWriteCertainty::NotSent => "not_sent",
-            VoiceWriteCertainty::Unknown => "unknown",
-            VoiceWriteCertainty::Rejected => "rejected",
-        };
-        let session_id_for_update = session_id.clone();
-        let deletion_intent_for_update = deletion_intent_id.clone();
-        store
-            .transaction_with_error(move |tx| -> Result<(), VoiceProviderError> {
-                let mut result: Value = serde_json::from_str(&tx.query_row(
-                    "SELECT result FROM runtime_operation_receipts WHERE id=?1 AND signature=?2",
-                    rusqlite::params![deletion_intent_for_update, DELETE_VOICE_RECEIPT_SIGNATURE],
-                    |row| row.get::<_, String>(0),
-                )?)
-                .map_err(|_| VoiceProviderError::ContextChanged)?;
-                let results = result
-                    .as_object_mut()
-                    .ok_or(VoiceProviderError::ContextChanged)?
-                    .entry("voiceEndResults")
-                    .or_insert_with(|| json!({}))
-                    .as_object_mut()
-                    .ok_or(VoiceProviderError::ContextChanged)?;
-                results.insert(session_id_for_update, Value::String(status.to_owned()));
-                tx.execute(
-                    "UPDATE runtime_operation_receipts SET result=?2 WHERE id=?1 AND signature=?3",
-                    rusqlite::params![
-                        deletion_intent_for_update,
-                        result.to_string(),
-                        DELETE_VOICE_RECEIPT_SIGNATURE
-                    ],
-                )?;
-                settle_delete_receipt(tx, &deletion_intent_for_update)?;
-                Ok(())
-            })
-            .await?;
-    }
-    Ok(())
-}
-
-/// Removes one delete-voice receipt when its intent is settled.
-fn settle_delete_receipt(tx: &Connection, id: &str) -> Result<(), VoiceProviderError> {
-    tx.execute(
-        &format!("DELETE FROM runtime_operation_receipts WHERE id=?1 AND {DELETE_VOICE_SETTLED}"),
-        [id],
-    )?;
-    Ok(())
-}
-
-/// One-time startup cleanup of delete-voice receipts that are already settled, including
-/// the empty ones written before empty intents stopped getting a receipt.
-pub async fn purge_settled_delete_intents(
-    store: &RuntimeStore,
-) -> Result<usize, VoiceProviderError> {
-    store
-        .transaction_with_error(|tx| -> Result<usize, VoiceProviderError> {
-            Ok(tx.execute(
-                &format!(
-                    "DELETE FROM runtime_operation_receipts \
-                     WHERE id >= 'agent-delete-voice:' AND id < 'agent-delete-voice;' \
-                       AND {DELETE_VOICE_SETTLED}"
-                ),
-                [],
-            )?)
-        })
-        .await
-}
-
-/// Stop all current account/thread voice sessions for an agent. Use this for
-/// lifecycle stops that retain the voice rows; deletions use saved intents.
-pub async fn end_active_for_agent(
-    store: std::sync::Arc<RuntimeStore>,
-    provider: std::sync::Arc<dyn VoiceProviderPort>,
-    agent_id: String,
-    now: f64,
-) -> Result<Vec<Value>, VoiceProviderError> {
-    let store_for_read = store.clone();
-    let agent_for_read = agent_id.clone();
-    let sessions = store_for_read
-        .read_async("runtime-services/voice/provider", move |connection| {
-            capture_delete_sessions(connection, &agent_for_read)
-        })
-        .await?;
-    let mut ended = Vec::with_capacity(sessions.len());
-    for session in sessions {
-        ended.push(
-            end(
-                store.clone(),
-                provider.clone(),
-                agent_id.clone(),
-                session.session_id,
-                now,
-            )
-            .await?,
-        );
-    }
-    Ok(ended)
-}
-
-fn connection_generation(connection: &str) -> u64 {
-    // The retained account worker uses its generation as connection_id.
-    // Non-numeric Python-era ids cannot authorize a generation-bound write.
-    connection.parse().unwrap_or(0)
 }
 
 fn certainty_error(certainty: VoiceWriteCertainty) -> VoiceProviderError {
     match certainty {
+        VoiceWriteCertainty::Expired => VoiceProviderError::Expired,
         VoiceWriteCertainty::NotSent => VoiceProviderError::NotSent,
         VoiceWriteCertainty::Unknown => VoiceProviderError::Unknown,
         VoiceWriteCertainty::Rejected => VoiceProviderError::Rejected,
@@ -1060,12 +464,20 @@ async fn active_session_id(
 
 #[derive(Debug, Error)]
 pub enum VoiceProviderError {
+    #[error("Request id expired")]
+    Expired,
     #[error(transparent)]
     Policy(#[from] policy::VoiceError),
     #[error(transparent)]
     Voice(#[from] super::VoiceError),
     #[error(transparent)]
     Store(#[from] studio_runtime_store::StoreError),
+    #[error(transparent)]
+    Outbox(#[from] studio_runtime_store::outbox::OutboxError),
+    #[error(transparent)]
+    RequestResult(#[from] studio_runtime_store::request_results::RequestResultError),
+    #[error(transparent)]
+    Provider(Box<crate::account_worker::WorkerError>),
     #[error("voice provider context is unavailable")]
     ContextUnavailable,
     #[error("voice provider context changed")]
@@ -1113,22 +525,24 @@ pub async fn end(
     // The durable Stopping transition serializes duplicate end calls. Keep the
     // per-session guard out of the provider RPC wait.
     drop(dispatch);
-    let Some(context) = context else {
+    let Some((intent_id, session)) = context else {
         return Ok(value);
     };
-    let call = VoiceRpcCall {
-        operation_id: format!("voice:stop:{session_id}"),
-        context: context.clone(),
-        method: Method::ThreadRealtimeStop,
-        params: json!({"threadId": context.thread_id}),
-        deadline: request_deadline(),
-    };
-    let receipt = request(provider.as_ref(), call).await;
-    if receipt.certainty != VoiceWriteCertainty::Written {
-        let id = session_id.clone();
-        let certainty = receipt.certainty;
-        update_stop_failure(&store, &id, certainty, now).await?;
-        return Err(certainty_error(receipt.certainty));
+    let outcomes = end_voice_sessions_tracked(
+        store.clone(),
+        provider,
+        intent_id,
+        OutboxKind::VoiceStop,
+        session,
+        now,
+    )
+    .await?;
+    if let Some(certainty) = outcomes
+        .first()
+        .copied()
+        .filter(|certainty| *certainty != VoiceWriteCertainty::Written)
+    {
+        return Err(certainty_error(certainty));
     }
     load_session(&store, &agent_id, &session_id).await
 }
@@ -1255,7 +669,7 @@ async fn prepare_end(
     agent_id: &str,
     session_id: &str,
     now: f64,
-) -> Result<(Value, Option<VoiceProviderContext>), VoiceProviderError> {
+) -> Result<(Value, Option<(String, VoiceDeleteSession)>), VoiceProviderError> {
     let id = policy::SessionId::parse(session_id.to_owned())?;
     if !now.is_finite() || now < 0.0 {
         return Err(policy::VoiceError::InvalidClock.into());
@@ -1272,6 +686,9 @@ async fn prepare_end(
             return Ok((json!({"session_id":id.as_str(),"state":"ended","sdp":null,"error":null,"ended":now}), None));
         };
         let session = VoiceSession::from_row(row)?;
+        if existing_stop(transaction, &agent_id, id.as_str())? {
+            return Ok((session_value(&session),None));
+        }
         if session.ended().is_some()
             || matches!(session.state(), Some(
                 policy::VoiceSessionState::Ended
@@ -1284,7 +701,7 @@ async fn prepare_end(
         let (transition, context) = match (
             session.native_thread(), session.account_key(), session.connection_id(),
         ) {
-            (Some(thread), Some(account), Some(connection)) => {
+            (Some(thread), Some(account), Some(_connection)) => {
                 let current_thread = agent.extra.get("threadId").and_then(Value::as_str);
                 let current_account = agent.extra.get("accountKey").and_then(Value::as_str).unwrap_or("default");
                 if current_thread != Some(thread) || current_account != account {
@@ -1300,14 +717,7 @@ async fn prepare_end(
                         SessionSignal::StopRequested { start_dispatched: true },
                         now,
                     )?,
-                    Some(VoiceProviderContext {
-                        agent_id: agent_id.to_owned(),
-                        epoch: agent.epoch,
-                        account_key: account.to_owned(),
-                        thread_id: thread.to_owned(),
-                        connection_id: connection.to_owned(),
-                        generation: connection_generation(connection),
-                    }),
+                    Some(()),
                 )
             }
             _ => (
@@ -1320,7 +730,11 @@ async fn prepare_end(
             ),
         };
         update_session(transaction, &transition.session)?;
-        Ok((session_value(&transition.session), context))
+        let context = if context.is_some() {
+            stage_ordinary_stop(transaction, &agent_id, id.as_str())?.map(|intent| (intent.id, intent.session))
+        } else { None };
+        let current = load_row(transaction, id.as_str(), &agent_id)?.ok_or(VoiceProviderError::ContextUnavailable)?;
+        Ok((session_value(&VoiceSession::from_row(current)?), context))
     }).await
 }
 
@@ -1344,12 +758,14 @@ pub async fn speech(
     }
     let reservation =
         reserve_speech(&store, &agent_id, &session_id, &record_id, &receipt_id).await?;
-    let Some((context, text)) = reservation else {
+    let Some((context, text, root_request_id, admitted_request)) = reservation else {
         return stored_speech_receipt(&store, session_id, record_id, receipt_id).await;
     };
     let thread_id = context.thread_id.clone();
     let call = VoiceRpcCall {
         operation_id: format!("voice:speech:{receipt_id}"),
+        root_request_id,
+        admitted_request: Some(admitted_request),
         context,
         method: Method::ThreadRealtimeAppendSpeech,
         params: json!({"threadId": thread_id, "text": text}),
@@ -1357,6 +773,7 @@ pub async fn speech(
     };
     let outcome = request(provider.as_ref(), call).await;
     let state = match outcome.certainty {
+        VoiceWriteCertainty::Expired => ("failed", Some("Request id expired")),
         VoiceWriteCertainty::Written => ("submitted", None),
         VoiceWriteCertainty::NotSent => ("failed", Some("Request was not sent")),
         VoiceWriteCertainty::Unknown => ("unknown", Some("Request outcome is unknown")),
@@ -1581,6 +998,7 @@ pub async fn approve(
     let certainty = receipt.certainty;
     let id = request_id.clone();
     let state = match certainty {
+        VoiceWriteCertainty::Expired => "expired",
         VoiceWriteCertainty::Written => "accepted",
         VoiceWriteCertainty::NotSent => "not_sent",
         VoiceWriteCertainty::Unknown => "unknown",
@@ -1671,6 +1089,7 @@ async fn reserve_approval(
             if owner != &agent_id || old_speech != &speech_id || old_transcript != &transcript_id {
                 return Err(VoiceProviderError::ContextChanged);
             }
+            if status == "expired" { return Err(VoiceProviderError::Expired); }
             if status == "accepted" {
                 let value = result.as_ref().ok_or(VoiceProviderError::Operation)?;
                 return Ok(ApprovalDispatch::Replay(serde_json::from_str(value).map_err(|_| VoiceProviderError::Operation)?));
@@ -1766,13 +1185,15 @@ async fn reserve_approval(
         if session.account_key() != Some(account_key) {
             return Err(VoiceProviderError::ContextChanged);
         }
+        let scope = required_scope(transaction, &session_id)?;
+        if session.connection_id() != Some(scope.connection.as_str()) { return Err(VoiceProviderError::ContextChanged); }
         let context = VoiceProviderContext {
             agent_id: agent_id.to_owned(),
             epoch: actor.epoch,
             account_key: account_key.to_owned(),
             thread_id: thread_id.to_owned(),
             connection_id: session.connection_id().ok_or(VoiceProviderError::ContextUnavailable)?.to_owned(),
-            generation: connection_generation(session.connection_id().ok_or(VoiceProviderError::ContextUnavailable)?),
+            generation: scope.generation,
         };
         let request_account = current.get("accountKey").and_then(Value::as_str);
         let request_connection = current.get("connectionId").and_then(Value::as_str);
@@ -1840,7 +1261,7 @@ async fn reserve_speech(
     session_id: &str,
     record_id: &str,
     request_id: &str,
-) -> Result<Option<(VoiceProviderContext, String)>, VoiceProviderError> {
+) -> Result<Option<(VoiceProviderContext, String, String, AdmittedRequest)>, VoiceProviderError> {
     let agent_id = agent_id.to_owned();
     let session_id = session_id.to_owned();
     let record_id = record_id.to_owned();
@@ -1885,19 +1306,38 @@ async fn reserve_speech(
         {
             return Err(VoiceProviderError::ContextChanged);
         }
+        let scope = required_scope(transaction, &session_id)?;
+        if session.connection_id() != Some(scope.connection.as_str()) { return Err(VoiceProviderError::ContextChanged); }
         let context = VoiceProviderContext {
             agent_id: agent_id.to_owned(), epoch: agent.epoch,
             account_key: account_key.to_owned(),
             thread_id: thread_id.to_owned(),
             connection_id: session.connection_id().ok_or(VoiceProviderError::ContextUnavailable)?.to_owned(),
-            generation: connection_generation(session.connection_id().ok_or(VoiceProviderError::ContextUnavailable)?),
+            generation: scope.generation,
         };
+        let root = RequestIdentity::issue_root();
+        let identity = RequestIdentity::new("voice-speech", &[&agent_id], &root, &[&request_id])
+            .map_err(|_| VoiceProviderError::ContextChanged)?;
+        let owner = match RequestResults::admit(transaction, &identity, "voice-speech", identity.issued_ms())? {
+            Admission::Fresh(owner) => owner,
+            Admission::Replay(_) => return Err(VoiceProviderError::ContextChanged),
+        };
+        let intent = crate::account_worker::retained::ProviderCallIntent {
+            root_request_id: root.clone(), admitted_request: None,
+            scope: crate::account_session_runtime::ConnectionScope { account: context.account_key.clone(), connection: context.connection_id.clone(), generation: context.generation },
+            operation: format!("voice:speech:{request_id}"),
+            actor: Some(crate::account_worker::retained::RequestActor { agent: context.agent_id.clone(), epoch: context.epoch }),
+            transfer: None, deleted_actor_session: None, method: Method::ThreadRealtimeAppendSpeech,
+            params: json!({"threadId": context.thread_id, "text": record.text}),
+        };
+        let admitted = crate::account_worker::retained::reserve_provider_call(transaction, &owner, intent)
+            .map_err(|error| VoiceProviderError::Provider(Box::new(error)))?;
         let marker = format!("voice-content-sha256:{}|", studio_runtime_store::sha256_hex(record.text.as_bytes()));
         transaction.execute(
             "INSERT INTO voice_speech_requests(id,session,record_id,state,error) VALUES(?1,?2,?3,'pending',?4)",
             rusqlite::params![&request_id,&session_id,&record_id,marker],
         )?;
-        Ok(Some((context, record.text)))
+        Ok(Some((context, record.text, root, admitted)))
     }).await
 }
 
@@ -1915,31 +1355,6 @@ fn update_session(
             session.id().as_str()
         ],
     )?;
-    Ok(())
-}
-
-async fn update_stop_failure(
-    store: &RuntimeStore,
-    session_id: &str,
-    certainty: VoiceWriteCertainty,
-    now: f64,
-) -> Result<(), VoiceProviderError> {
-    let (state, ended) = match certainty {
-        VoiceWriteCertainty::NotSent => ("ended", Some(now)),
-        VoiceWriteCertainty::Unknown => ("unknown", None),
-        VoiceWriteCertainty::Rejected => ("unknown", None),
-        VoiceWriteCertainty::Written => ("ended", Some(now)),
-    };
-    let session_id = session_id.to_owned();
-    store
-        .transaction_with_error(move |transaction| -> Result<_, VoiceProviderError> {
-            transaction.execute(
-                "UPDATE voice_sessions SET state=?1,error=?2,ended=COALESCE(ended,?3) WHERE id=?4",
-                rusqlite::params![state, "Voice stop outcome is unresolved", ended, session_id],
-            )?;
-            Ok(())
-        })
-        .await?;
     Ok(())
 }
 
@@ -2365,6 +1780,7 @@ async fn complete_start(
     let call = start_call(context, &session_id, &offer);
     let receipt = request(provider.as_ref(), call).await;
     let failure = match receipt.certainty {
+        VoiceWriteCertainty::Expired => VoicePrepareFailure::Expired,
         VoiceWriteCertainty::Written => return Ok(()),
         VoiceWriteCertainty::NotSent => VoicePrepareFailure::NotSent,
         VoiceWriteCertainty::Unknown => VoicePrepareFailure::Unknown,
@@ -2523,8 +1939,22 @@ async fn attach_start_context(
             {
                 return Err(VoiceProviderError::ContextChanged);
             }
+            let scope =
+                studio_runtime_store::account_state::current_provider_scope(transaction, &agent)
+                    .map_err(|error| match error {
+                        studio_runtime_store::account_state::ScopeError::Unavailable => {
+                            VoiceProviderError::ContextUnavailable
+                        }
+                        studio_runtime_store::account_state::ScopeError::Store(error) => {
+                            VoiceProviderError::Store(error)
+                        }
+                    })?;
+            if scope.connection != context.connection_id || scope.generation != context.generation {
+                return Err(VoiceProviderError::ContextChanged);
+            }
+            let scope = serde_json::to_string(&scope).map_err(|_| VoiceProviderError::Operation)?;
             let updated = transaction.execute(
-                "UPDATE voice_sessions SET connection_id=?1 \
+                "UPDATE voice_sessions SET connection_id=?1,provider_scope=?6 \
              WHERE id=?2 AND agent=?3 AND native_thread=?4 AND account_key=?5 \
              AND state='connecting' AND ended IS NULL",
                 rusqlite::params![
@@ -2532,7 +1962,8 @@ async fn attach_start_context(
                     session_id,
                     agent_id,
                     context.thread_id,
-                    context.account_key
+                    context.account_key,
+                    scope
                 ],
             )?;
             if updated != 1 {
@@ -2551,16 +1982,21 @@ async fn set_start_failure(
     now: f64,
 ) -> Result<(), VoiceProviderError> {
     let state = match certainty {
-        VoicePrepareFailure::NotSent => "failed",
+        VoicePrepareFailure::Expired | VoicePrepareFailure::NotSent => "failed",
         VoicePrepareFailure::Unknown => "unknown",
         VoicePrepareFailure::Rejected => "failed",
+    };
+    let detail = if certainty == VoicePrepareFailure::Expired {
+        "Request id expired"
+    } else {
+        "Voice start outcome is unresolved"
     };
     let session_id = session_id.to_owned();
     store
         .transaction_with_error(move |transaction| -> Result<_, VoiceProviderError> {
             transaction.execute(
                 "UPDATE voice_sessions SET state=?1,error=?2,ended=COALESCE(ended,?3) WHERE id=?4",
-                rusqlite::params![state, "Voice start outcome is unresolved", now, session_id],
+                rusqlite::params![state, detail, now, session_id],
             )?;
             Ok(())
         })
@@ -2637,6 +2073,8 @@ fn session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<VoiceSessionRow
 fn start_call(context: VoiceProviderContext, session_id: &str, offer: &str) -> VoiceRpcCall {
     VoiceRpcCall {
         operation_id: format!("voice:start:{session_id}"),
+        root_request_id: session_id.to_owned(),
+        admitted_request: None,
         context: context.clone(),
         method: Method::ThreadRealtimeStart,
         params: json!({
@@ -2657,6 +2095,25 @@ mod tests {
     use super::*;
     use crate::voice::runtime::VoiceFuture;
     use std::sync::{Arc, Mutex};
+
+    #[tokio::test]
+    async fn voice_outbox_captures_deleted_owner_authority() {
+        let (_directory, store) = voice_outbox_fixture().await;
+        store
+            .transaction_with_error(|tx| -> Result<(), VoiceProviderError> {
+                stage_delete_sessions(tx, "agent")?;
+                tx.execute("DELETE FROM voice_sessions WHERE agent='agent'", [])?;
+                tx.execute("DELETE FROM runtime_agents WHERE id='agent'", [])?;
+                Ok(())
+            })
+            .await
+            .expect("stage deletion");
+        let reader = store.test_reader().expect("reader");
+        let sessions = deleted_voice_sessions(&reader, "agent", 2).expect("captured authority");
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].connection_id, "voice-connection");
+        assert_eq!(sessions[0].generation, 7);
+    }
 
     #[tokio::test]
     async fn start_failure_cannot_leave_a_connecting_ended_session() {
@@ -2680,6 +2137,496 @@ mod tests {
             )
             .expect("session");
         assert!(state != "connecting" || ended.is_none());
+    }
+
+    async fn voice_outbox_fixture() -> (tempfile::TempDir, Arc<RuntimeStore>) {
+        let directory = tempfile::tempdir().expect("voice fixture");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("store");
+        store.transaction(|tx| {
+            studio_runtime_store::receipt_schema::create(tx)?;
+            let agent=json!({"provider":"codex","id":"agent","rootId":"agent","epoch":2,"status":"idle","isLead":true,"threadId":"thread","accountKey":"account"});
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('agent',?1)",[agent.to_string()])?;
+            Ok(())
+        }).await.expect("seed voice");
+        crate::account_worker::store::attach_provider_stream_for_test(
+            &store,
+            "account",
+            None,
+            7,
+            "voice-connection",
+        )
+        .await
+        .expect("attach provider");
+        store.transaction(|tx| {
+            let agent = AgentRepository::get(tx, &AgentId::from("agent"))?.expect("agent");
+            let scope = studio_runtime_store::account_state::current_provider_scope(tx, &agent).expect("attached scope");
+            tx.execute("INSERT INTO voice_sessions(id,agent,created,native_thread,account_key,connection_id,provider_scope,state) VALUES('session','agent',1,'thread','account',?1,?2,'ready')", rusqlite::params![scope.connection,serde_json::to_string(&scope).expect("scope")])?;
+            Ok(())
+        }).await.expect("seed voice session");
+        (directory, Arc::new(store))
+    }
+
+    struct GatedStop {
+        calls: Mutex<Vec<VoiceRpcCall>>,
+        entered: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+        certainty: VoiceWriteCertainty,
+    }
+    impl GatedStop {
+        fn new(certainty: VoiceWriteCertainty) -> Self {
+            Self {
+                calls: Mutex::new(vec![]),
+                entered: tokio::sync::Notify::new(),
+                release: tokio::sync::Notify::new(),
+                certainty,
+            }
+        }
+    }
+    impl VoiceProviderPort for GatedStop {
+        fn prepare<'a>(
+            &'a self,
+            _: &'a str,
+            _: &'a str,
+            _: &'a str,
+            _: &'a str,
+            _: i64,
+        ) -> VoiceFuture<'a, Result<VoiceProviderContext, VoicePrepareFailure>> {
+            Box::pin(async { Err(VoicePrepareFailure::NotSent) })
+        }
+        fn request<'a>(
+            &'a self,
+            scope: VoiceProviderContext,
+            operation: super::super::runtime::VoiceOperation,
+            method: Method,
+            params: Value,
+            deadline: Instant,
+        ) -> VoiceFuture<'a, VoiceRequestReceipt> {
+            Box::pin(async move {
+                self.calls.lock().expect("calls").push(VoiceRpcCall {
+                    operation_id: operation.id,
+                    root_request_id: operation.root_request_id,
+                    admitted_request: operation.admitted_request,
+                    context: scope,
+                    method,
+                    params,
+                    deadline,
+                });
+                self.entered.notify_one();
+                self.release.notified().await;
+                VoiceRequestReceipt {
+                    certainty: self.certainty,
+                }
+            })
+        }
+        fn reply<'a>(
+            &'a self,
+            _: VoiceProviderContext,
+            _: String,
+            _: VoiceReply,
+            _: Instant,
+        ) -> VoiceFuture<'a, VoiceRequestReceipt> {
+            Box::pin(async {
+                VoiceRequestReceipt {
+                    certainty: VoiceWriteCertainty::NotSent,
+                }
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn voice_outbox_capture_ignores_null_state_sessions() {
+        let (_directory, store) = voice_outbox_fixture().await;
+        store.transaction_with_error(|tx| -> Result<(), VoiceProviderError> {
+            tx.execute("INSERT INTO voice_sessions(id,agent,created,native_thread,account_key,connection_id,state) VALUES('empty','agent',2,'thread','account','voice-connection',NULL)", [])?;
+            let captured = capture_delete_sessions(tx, "agent")?;
+            assert_eq!(captured.len(), 1);
+            assert_eq!(captured[0].session_id, "session");
+            Ok(())
+        }).await.expect("capture");
+    }
+    #[tokio::test]
+    async fn voice_outbox_capture_rejects_invalid_identity_fields() {
+        let (_directory, store) = voice_outbox_fixture().await;
+        store.transaction_with_error(|tx| -> Result<(), VoiceProviderError> {
+            tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.accountKey',NULL) WHERE id='agent'", [])?;
+            assert!(matches!(capture_delete_sessions(tx, "agent"), Err(VoiceProviderError::ContextUnavailable)));
+            tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.accountKey','account','$.threadId',NULL) WHERE id='agent'", [])?;
+            assert!(capture_delete_sessions(tx, "agent")?.is_empty());
+            Ok(())
+        }).await.expect("capture identities");
+    }
+    #[tokio::test]
+    async fn voice_outbox_late_not_sent_after_agent_removal_is_abandoned() {
+        use studio_runtime_store::request_results::{
+            AbandonedOutcome, AbandonedResult, ResultEnvelope,
+        };
+        let (_directory, store) = voice_outbox_fixture().await;
+        let provider = Arc::new(GatedStop::new(VoiceWriteCertainty::NotSent));
+        let task_store = store.clone();
+        let task_provider = provider.clone();
+        let running = tokio::spawn(async move {
+            end(
+                task_store,
+                task_provider,
+                "agent".into(),
+                "session".into(),
+                10.0,
+            )
+            .await
+        });
+        provider.entered.notified().await;
+        let id = store
+            .transaction_with_error(|tx| -> Result<String, VoiceProviderError> {
+                let row = Outbox::for_owner::<studio_runtime_store::VoiceEffect>(
+                    tx,
+                    OwnerKind::Agent,
+                    "agent",
+                    OutboxKind::VoiceStop,
+                )?
+                .remove(0);
+                assert!(stage_delete_sessions(tx, "agent")?.is_empty());
+                tx.execute("DELETE FROM voice_sessions WHERE agent='agent'", [])?;
+                tx.execute("DELETE FROM runtime_agents WHERE id='agent'", [])?;
+                Ok(row.id)
+            })
+            .await
+            .expect("delete owner");
+        provider.release.notify_one();
+        drop(running.await.expect("stop task"));
+        let reader = store.test_reader().expect("reader");
+        assert!(
+            Outbox::get::<studio_runtime_store::VoiceEffect>(&reader, &id)
+                .unwrap()
+                .is_none()
+        );
+        let raw: String = reader
+            .query_row(
+                "SELECT result FROM request_results WHERE id=?1",
+                [&id],
+                |row| row.get(0),
+            )
+            .expect("abandoned result");
+        let result: ResultEnvelope<AbandonedResult> =
+            serde_json::from_str(&raw).expect("typed result");
+        assert_eq!(
+            result.reply,
+            AbandonedResult::Abandoned {
+                outcome: AbandonedOutcome::Unknown
+            }
+        );
+        assert!(
+            Outbox::for_owner::<studio_runtime_store::VoiceEffect>(
+                &reader,
+                OwnerKind::Agent,
+                "agent",
+                OutboxKind::VoiceDelete
+            )
+            .unwrap()
+            .is_empty()
+        );
+        assert_eq!(provider.calls.lock().expect("calls").len(), 1);
+    }
+    #[tokio::test]
+    async fn voice_outbox_late_stop_proof_settles_deleted_owner_atomically() {
+        for certainty in [
+            VoiceWriteCertainty::NotSent,
+            VoiceWriteCertainty::Rejected,
+            VoiceWriteCertainty::Written,
+            VoiceWriteCertainty::Unknown,
+            VoiceWriteCertainty::Expired,
+        ] {
+            let (_directory, store) = voice_outbox_fixture().await;
+            let provider = Arc::new(GatedStop::new(certainty));
+            let task_store = store.clone();
+            let task_provider = provider.clone();
+            let running = tokio::spawn(async move {
+                end(
+                    task_store,
+                    task_provider,
+                    "agent".into(),
+                    "session".into(),
+                    10.0,
+                )
+                .await
+            });
+            provider.entered.notified().await;
+            store.transaction_with_error(|tx| -> Result<(), VoiceProviderError> {
+                tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.epoch',3,'$.deletedAt',1) WHERE id='agent'", [])?;
+                assert!(stage_delete_sessions(tx, "agent")?.is_empty());
+                tx.execute("DELETE FROM voice_sessions WHERE agent='agent'", [])?;
+                Ok(())
+            }).await.expect("retain uncertain stop");
+            provider.release.notify_one();
+            drop(running.await.expect("stop task"));
+            let reader = store.test_reader().expect("reader");
+            let stops = Outbox::for_owner::<studio_runtime_store::VoiceEffect>(
+                &reader,
+                OwnerKind::Agent,
+                "agent",
+                OutboxKind::VoiceStop,
+            )
+            .expect("stops");
+            let deletes = Outbox::for_owner::<studio_runtime_store::VoiceEffect>(
+                &reader,
+                OwnerKind::Agent,
+                "agent",
+                OutboxKind::VoiceDelete,
+            )
+            .expect("deletes");
+            match certainty {
+                VoiceWriteCertainty::NotSent | VoiceWriteCertainty::Rejected => {
+                    assert!(stops.is_empty());
+                    assert_eq!(deletes.len(), 1);
+                    assert_eq!(deletes[0].status, OutboxStatus::Pending);
+                    assert_eq!(deletes[0].payload.epoch, 3);
+                }
+                VoiceWriteCertainty::Written => {
+                    assert!(stops.is_empty());
+                    assert!(deletes.is_empty());
+                }
+                VoiceWriteCertainty::Unknown | VoiceWriteCertainty::Expired => {
+                    assert_eq!(stops.len(), 1);
+                    assert_eq!(stops[0].status, OutboxStatus::Unknown);
+                    assert!(deletes.is_empty());
+                }
+            }
+            assert_eq!(provider.calls.lock().expect("calls").len(), 1);
+        }
+    }
+    #[tokio::test]
+    async fn voice_outbox_unknown_accepts_only_exact_late_proof_after_expiry() {
+        use crate::account_worker::retained::{ProviderCallIntent, RequestActor, RequestResult};
+        let (_directory, store) = voice_outbox_fixture().await;
+        let provider = Arc::new(GatedStop::new(VoiceWriteCertainty::Unknown));
+        provider.release.notify_one();
+        assert!(matches!(
+            end(
+                store.clone(),
+                provider.clone(),
+                "agent".into(),
+                "session".into(),
+                10.0
+            )
+            .await,
+            Err(VoiceProviderError::Unknown)
+        ));
+        let call = provider.calls.lock().expect("calls")[0].clone();
+        let before = Outbox::for_owner::<studio_runtime_store::VoiceEffect>(
+            &store.test_reader().expect("reader"),
+            OwnerKind::Agent,
+            "agent",
+            OutboxKind::VoiceStop,
+        )
+        .expect("owner")
+        .remove(0);
+        assert_eq!(before.status, OutboxStatus::Unknown);
+        assert_eq!(before.next_at, None);
+        assert!(
+            pending_voice_intents(&store, OutboxKind::VoiceStop)
+                .await
+                .expect("pending")
+                .is_empty()
+        );
+        assert_eq!(
+            end(
+                store.clone(),
+                provider.clone(),
+                "agent".into(),
+                "session".into(),
+                11.0
+            )
+            .await
+            .expect("held retry")["state"],
+            "unknown"
+        );
+        assert_eq!(provider.calls.lock().expect("calls").len(), 1);
+        store.transaction_with_error(|tx| -> Result<(), VoiceProviderError> {
+            tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.epoch',3,'$.deletedAt',1) WHERE id='agent'", [])?;
+            stage_delete_sessions(tx, "agent")?;
+            tx.execute("DELETE FROM voice_sessions WHERE agent='agent'", [])?;
+            tx.execute("INSERT INTO runtime_orchestration_settings(id,record) VALUES('global',?1) ON CONFLICT(id) DO UPDATE SET record=json_set(record,'$.expired_before_ms',?2)",rusqlite::params![json!({"expired_before_ms":i64::MAX}).to_string(),i64::MAX])?;
+            Ok(())
+        }).await.expect("delete and expire");
+        let captured = ProviderCallIntent {
+            root_request_id: String::new(),
+            admitted_request: call.admitted_request,
+            scope: crate::account_session_runtime::ConnectionScope {
+                account: call.context.account_key,
+                connection: call.context.connection_id,
+                generation: call.context.generation,
+            },
+            operation: call.operation_id,
+            actor: Some(RequestActor {
+                agent: call.context.agent_id,
+                epoch: call.context.epoch,
+            }),
+            transfer: None,
+            deleted_actor_session: None,
+            method: call.method,
+            params: call.params,
+        };
+        let mut wrong = captured.clone();
+        wrong.scope.generation += 1;
+        store
+            .transaction_with_error(move |tx| {
+                settle_voice_stop(tx, &wrong, &RequestResult::NotSent)
+            })
+            .await
+            .expect("wrong proof ignored");
+        assert!(
+            pending_delete_intents(&store)
+                .await
+                .expect("held")
+                .is_empty()
+        );
+        store
+            .transaction_with_error(move |tx| {
+                settle_voice_stop(tx, &captured, &RequestResult::NotSent)
+            })
+            .await
+            .expect("exact proof");
+        let deletes = pending_delete_intents(&store).await.expect("safe transfer");
+        assert_eq!(deletes.len(), 1);
+        assert_eq!(provider.calls.lock().expect("calls").len(), 1);
+    }
+    #[tokio::test]
+    async fn voice_outbox_expiry_refuses_retry_without_a_fresh_root() {
+        let (_directory, store) = voice_outbox_fixture().await;
+        let provider = Arc::new(GatedStop::new(VoiceWriteCertainty::Expired));
+        provider.release.notify_one();
+        assert!(matches!(
+            end(
+                store.clone(),
+                provider.clone(),
+                "agent".into(),
+                "session".into(),
+                10.0
+            )
+            .await,
+            Err(VoiceProviderError::Expired)
+        ));
+        let before = Outbox::for_owner::<studio_runtime_store::VoiceEffect>(
+            &store.test_reader().expect("reader"),
+            OwnerKind::Agent,
+            "agent",
+            OutboxKind::VoiceStop,
+        )
+        .expect("owner")
+        .remove(0);
+        assert_eq!(before.status, OutboxStatus::Unknown);
+        assert!(matches!(
+            before.payload.authority,
+            studio_runtime_store::VoiceEffectAuthority::Admitted {
+                outcome: VoiceStopOutcome::Expired,
+                ..
+            }
+        ));
+        assert!(matches!(
+            end(
+                store.clone(),
+                provider.clone(),
+                "agent".into(),
+                "session".into(),
+                11.0
+            )
+            .await,
+            Err(VoiceProviderError::Expired)
+        ));
+        assert_eq!(provider.calls.lock().expect("calls").len(), 1);
+        let after = Outbox::get::<studio_runtime_store::VoiceEffect>(
+            &store.test_reader().expect("reader"),
+            &before.id,
+        )
+        .expect("same row");
+        assert_eq!(after, Some(before));
+    }
+    #[tokio::test]
+    async fn voice_outbox_claim_survives_crash_and_never_sends_twice() {
+        let (_directory, store) = voice_outbox_fixture().await;
+        let provider = Arc::new(GatedStop::new(VoiceWriteCertainty::Unknown));
+        let task_store = store.clone();
+        let task_provider = provider.clone();
+        let running = tokio::spawn(async move {
+            end(
+                task_store,
+                task_provider,
+                "agent".into(),
+                "session".into(),
+                10.0,
+            )
+            .await
+        });
+        provider.entered.notified().await;
+        running.abort();
+        drop(running.await);
+        let row = Outbox::for_owner::<studio_runtime_store::VoiceEffect>(
+            &store.test_reader().expect("reader"),
+            OwnerKind::Agent,
+            "agent",
+            OutboxKind::VoiceStop,
+        )
+        .expect("owner")
+        .remove(0);
+        assert_eq!(row.status, OutboxStatus::Unknown);
+        assert_eq!(row.next_at, None);
+        assert!(matches!(
+            row.payload.authority,
+            studio_runtime_store::VoiceEffectAuthority::Admitted {
+                outcome: VoiceStopOutcome::Submitted,
+                ..
+            }
+        ));
+        end(
+            store.clone(),
+            provider.clone(),
+            "agent".into(),
+            "session".into(),
+            11.0,
+        )
+        .await
+        .expect("held retry");
+        assert!(
+            pending_voice_intents(&store, OutboxKind::VoiceStop)
+                .await
+                .expect("pending")
+                .is_empty()
+        );
+        assert_eq!(provider.calls.lock().expect("calls").len(), 1);
+    }
+    #[test]
+    fn voice_outbox_pending_and_owner_queries_use_typed_indexes() {
+        let db = Connection::open_in_memory().expect("database");
+        studio_runtime_store::receipt_schema::create(&db).expect("schema");
+        for (sql, expected) in [
+            (
+                "EXPLAIN QUERY PLAN SELECT id FROM runtime_outbox WHERE kind='voice_delete' AND status='pending' AND next_at<=10 ORDER BY next_at,id LIMIT 500",
+                "runtime_outbox_pending",
+            ),
+            (
+                "EXPLAIN QUERY PLAN SELECT id FROM runtime_outbox WHERE owner_kind='agent' AND owner_id='agent' AND kind='voice_stop' ORDER BY id",
+                "runtime_outbox_owner",
+            ),
+        ] {
+            let details = db
+                .prepare(sql)
+                .expect("query plan")
+                .query_map([], |row| row.get::<_, String>(3))
+                .expect("plan rows")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("plan");
+            assert!(
+                details.iter().any(|detail| detail.contains(expected)),
+                "{details:?}"
+            );
+            assert!(
+                details
+                    .iter()
+                    .all(|detail| !detail.contains("request_results")
+                        && !detail.contains("runtime_operation_receipts"))
+            );
+        }
     }
 
     struct ScriptedProvider {
@@ -2710,7 +2657,7 @@ mod tests {
         fn request<'a>(
             &'a self,
             scope: VoiceProviderContext,
-            operation_id: String,
+            operation: super::super::runtime::VoiceOperation,
             method: Method,
             params: Value,
             deadline: Instant,
@@ -2721,7 +2668,9 @@ mod tests {
                     .expect("scripted calls lock")
                     .push(VoiceRpcCall {
                         context: scope,
-                        operation_id,
+                        operation_id: operation.id,
+                        root_request_id: operation.root_request_id,
+                        admitted_request: operation.admitted_request,
                         method,
                         params,
                         deadline,
@@ -2752,7 +2701,9 @@ mod tests {
                             connection_id: String::new(),
                             generation: 0,
                         },
-                        operation_id,
+                        operation_id: operation_id.clone(),
+                        root_request_id: operation_id,
+                        admitted_request: None,
                         method: Method::ItemCommandExecutionRequestApproval,
                         params: Value::Null,
                         deadline: Instant::now(),
@@ -2805,6 +2756,14 @@ mod tests {
         extra.insert("threadId".into(), json!("voice-thread"));
         extra.insert("isLead".into(), json!(true));
         let agent = AgentRecord {
+            title_job: None,
+            start_outcome_hold: None,
+            fired_events: Default::default(),
+            native_review_thread: None,
+            vm_launch: None,
+            credential_copy: None,
+            vm_auth_bootstrap: None,
+            native_release: None,
             id: AgentId::from("voice-agent"),
             root_id: AgentId::from("voice-agent"),
             epoch: 0,
@@ -2852,6 +2811,15 @@ mod tests {
         let provider = Arc::new(ScriptedProvider {
             calls: Mutex::new(vec![]),
         });
+        crate::account_worker::store::attach_provider_stream_for_test(
+            &store,
+            "default",
+            None,
+            1,
+            "scripted-connection",
+        )
+        .await
+        .expect("attach provider");
         let replay = start_admitted(
             Arc::clone(&store),
             Some(provider.clone()),
@@ -2902,33 +2870,25 @@ mod tests {
 
     #[test]
     fn completed_delete_stops_are_not_requeued_but_not_sent_stops_are() {
-        let sessions = ["written", "unknown", "rejected", "not-sent", "pending"]
-            .into_iter()
-            .map(|session_id| VoiceDeleteSession {
-                session_id: session_id.to_owned(),
-                agent_id: "agent".to_owned(),
-                epoch: 3,
-                account_key: "account".to_owned(),
-                thread_id: "thread".to_owned(),
-                connection_id: "connection".to_owned(),
-                generation: 1,
-            })
-            .collect::<Vec<_>>();
-        let delivered = serde_json::from_value::<serde_json::Map<String, Value>>(json!({
-            "written": "written",
-            "unknown": "unknown",
-            "rejected": "rejected",
-            "not-sent": "not_sent",
-        }))
-        .expect("valid delivery result map");
+        let sessions = ["written", "unknown", "rejected", "not-sent", "pending"];
+        let delivered = HashMap::from([
+            ("written".to_owned(), VoiceStopOutcome::Written),
+            ("unknown".to_owned(), VoiceStopOutcome::Unknown),
+            ("rejected".to_owned(), VoiceStopOutcome::Rejected),
+            ("not-sent".to_owned(), VoiceStopOutcome::NotSent),
+        ]);
 
-        let pending = pending_voice_delete_sessions(sessions, Some(&delivered))
-            .expect("valid saved outcomes");
+        let pending: Vec<_> = sessions
+            .iter()
+            .filter(|session_id| {
+                matches!(
+                    delivered.get(**session_id),
+                    None | Some(VoiceStopOutcome::NotSent)
+                )
+            })
+            .collect();
         assert_eq!(
-            pending
-                .iter()
-                .map(|session| session.session_id.as_str())
-                .collect::<Vec<_>>(),
+            pending.into_iter().copied().collect::<Vec<_>>(),
             ["not-sent", "pending"]
         );
     }

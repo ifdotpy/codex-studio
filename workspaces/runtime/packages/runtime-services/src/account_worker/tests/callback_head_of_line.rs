@@ -362,9 +362,8 @@ fn unknown_callback(state: &State) -> bool {
         .test_reader()
         .expect("reader")
         .query_row(
-            "SELECT count(*) FROM runtime_operation_receipts \
-             WHERE id LIKE 'account-worker:callback:%:unknown'",
-            [],
+            "SELECT count(*) FROM runtime_tool_requests WHERE kind=?1 AND status=?2 AND json_type(record,'$.payload.accepted')='object'",
+            rusqlite::params![studio_runtime_schema::persistence::ToolRequestKind::ProviderCallback,studio_runtime_schema::persistence::ToolRequestStatus::Unknown],
             |row| row.get::<_, i64>(0),
         )
         .expect("unknown callback count")

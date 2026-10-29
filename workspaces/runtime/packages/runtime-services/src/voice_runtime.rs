@@ -10,6 +10,14 @@ pub use studio_runtime_providers::Method;
 
 pub type VoiceFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
+/// The durable caller supplies the root once and retains it across retries.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VoiceOperation {
+    pub id: String,
+    pub root_request_id: String,
+    pub admitted_request: Option<studio_runtime_store::request_results::AdmittedRequest>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VoiceConnectionScope {
     pub agent_id: String,
@@ -22,6 +30,7 @@ pub struct VoiceConnectionScope {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum VoiceWriteCertainty {
+    Expired,
     Written,
     NotSent,
     Unknown,
@@ -30,6 +39,7 @@ pub enum VoiceWriteCertainty {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum VoicePrepareFailure {
+    Expired,
     NotSent,
     Unknown,
     Rejected,
@@ -38,6 +48,7 @@ pub enum VoicePrepareFailure {
 impl From<VoicePrepareFailure> for VoiceWriteCertainty {
     fn from(failure: VoicePrepareFailure) -> Self {
         match failure {
+            VoicePrepareFailure::Expired => Self::Expired,
             VoicePrepareFailure::NotSent => Self::NotSent,
             VoicePrepareFailure::Unknown => Self::Unknown,
             VoicePrepareFailure::Rejected => Self::Rejected,
@@ -50,7 +61,8 @@ pub struct VoiceRequestReceipt {
     pub certainty: VoiceWriteCertainty,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize)]
+#[serde(untagged)]
 pub enum VoiceRpcId {
     Number(i64),
     String(String),
@@ -86,7 +98,7 @@ pub trait VoiceRequestPort: Send + Sync {
     fn request<'a>(
         &'a self,
         scope: VoiceConnectionScope,
-        operation_id: String,
+        operation: VoiceOperation,
         method: Method,
         params: Value,
         deadline: Instant,

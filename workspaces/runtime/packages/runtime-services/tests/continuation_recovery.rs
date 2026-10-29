@@ -213,7 +213,7 @@ async fn changed_task_cancels_resume_and_notifies_parent_atomically() {
         a["isLead"]=json!(false);a["parentId"]=json!("parent");a["rootId"]=json!("parent");
         tx.execute("UPDATE runtime_agents SET record=?1 WHERE id='a'",[a.to_string()])?;
         let parent=json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"parent","rootId":"parent","epoch":1,"status":"waiting","autoWake":true});
-        tx.execute("INSERT INTO runtime_agents VALUES('parent',?1)",[parent.to_string()])?;
+        tx.execute("INSERT INTO runtime_agents(id,record) VALUES('parent',?1)",[parent.to_string()])?;
         let work=json!({"id":"new","rootId":"parent","owner":"a","status":"running"});tx.execute("INSERT INTO runtime_work VALUES('new',?1)",[work.to_string()])?;Ok(())
     }).await.expect("changed ownership fixture");
     let result = continuation_driver::drive(
@@ -357,7 +357,7 @@ async fn corrupt_continuation_rows_name_the_table_and_identity() {
         db.execute_batch(&studio_runtime_store::agent_columns::fixture_sql("CREATE TABLE runtime_agents(id TEXT,record TEXT); CREATE TABLE runtime_usage_resumes(id TEXT,agent TEXT,record TEXT); CREATE TABLE runtime_capacity_retries(id TEXT,agent TEXT,record TEXT);")).expect("tables");
         db.execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
             .expect("volatile agent table creates");
-        db.execute("INSERT INTO runtime_agents VALUES('a',?1)", [&agent])
+        db.execute("INSERT INTO runtime_agents(id,record) VALUES('a',?1)", [&agent])
             .expect("agent");
         db.execute(
             &format!("INSERT INTO {} VALUES(?1,'a',?2)", table.name()),

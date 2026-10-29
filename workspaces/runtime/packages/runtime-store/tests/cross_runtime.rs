@@ -138,7 +138,7 @@ async fn fixture_records_are_readable_and_writable_in_rust() {
                 QueueEventRepository::get(transaction, &QueueEventId::from("cross-event"))?
                     .expect("record fixture contains the event");
             event.text = json!({"rust": true}).to_string();
-            event.status = "running".to_owned();
+            event.status = "reserved".to_owned();
             QueueEventRepository::put(transaction, &event)?;
             for event_id in [
                 "numeric-created-precision",
@@ -155,7 +155,7 @@ async fn fixture_records_are_readable_and_writable_in_rust() {
                 let mut numeric_event =
                     QueueEventRepository::get(transaction, &QueueEventId::from(event_id))?
                         .expect("record fixture contains each adversarial numeric event");
-                numeric_event.status = "running".to_owned();
+                numeric_event.status = "reserved".to_owned();
                 QueueEventRepository::put(transaction, &numeric_event)?;
             }
             let mut agent =
@@ -228,7 +228,7 @@ async fn fixture_records_are_readable_and_writable_in_rust() {
     let event = QueueEventRepository::get(&reader, &QueueEventId::from("cross-event"))
         .expect("cross-runtime test operation succeeds")
         .expect("Rust-written event remains readable in Rust");
-    assert_eq!(event.status, "running");
+    assert_eq!(event.status, "reserved");
     assert_eq!(
         serde_json::from_str::<Value>(&event.text).expect("event text is JSON")["rust"],
         true

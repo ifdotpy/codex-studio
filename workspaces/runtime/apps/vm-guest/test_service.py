@@ -1151,7 +1151,7 @@ class SupervisorReasons(unittest.IsolatedAsyncioTestCase):
 
 class NativeEvidence(unittest.IsolatedAsyncioTestCase):
     async def test_operator_handshake_does_not_claim_backend_ownership(self):
-        from native import Native, SUPERVISOR_PROTOCOL_V2
+        from native import Native, SUPERVISOR_PROTOCOL_VERSION
 
         with tempfile.TemporaryDirectory() as temporary:
             native = Native(Path(temporary))
@@ -1159,7 +1159,7 @@ class NativeEvidence(unittest.IsolatedAsyncioTestCase):
                 with self.subTest(operator=operator):
                     reader = AsyncMock()
                     reader.readline.side_effect = [
-                        json.dumps({"ok": True, "protocol": SUPERVISOR_PROTOCOL_V2}).encode() + b"\n",
+                        json.dumps({"ok": True, "protocol": SUPERVISOR_PROTOCOL_VERSION}).encode() + b"\n",
                         json.dumps({"requestId": "request", "result": {}}).encode() + b"\n",
                     ]
                     writer = Mock(drain=AsyncMock())
@@ -1168,7 +1168,7 @@ class NativeEvidence(unittest.IsolatedAsyncioTestCase):
                         operation.return_value.hex = "request"
                         await native.call("health", operator=operator)
                     hello = json.loads(writer.write.call_args_list[0].args[0])
-                    expected = {"protocol": SUPERVISOR_PROTOCOL_V2, "stateDir": str(native.root), "operator": operator}
+                    expected = {"protocol": SUPERVISOR_PROTOCOL_VERSION, "stateDir": str(native.root), "operator": operator}
                     if not operator:
                         expected["backendId"] = native.backend
                     self.assertEqual(hello, expected)

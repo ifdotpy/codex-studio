@@ -36,6 +36,7 @@ pub(super) fn apply(
         return Ok(Some(DispatchOutcome::Written));
     }
     if method == "thread/idleCompaction/updated" {
+<<<<<<< head
         if let Some(request) = p["preparedSummary"]["requestId"].as_str() {
             if agent["idleCompactionEpisode"]["id"] == request
                 && crate::idle_compaction::settled(tx, request)?
@@ -46,6 +47,32 @@ pub(super) fn apply(
             return Ok(Some(DispatchOutcome::Written));
         }
         crate::idle_compaction::observe(tx, agent, &p["report"])?;
+||||||| base
+        crate::idle_compaction::observe(tx, agent, &p["report"])?;
+=======
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct StoredEpisode {
+            idle_compaction_episode: crate::idle_compaction::Episode,
+        }
+        let previous = if agent["provider"] == studio_runtime_providers::ProviderKind::Claude.key()
+            && agent.get("idleCompactionEpisode").is_some()
+        {
+            let raw =
+                studio_runtime_store::AgentRepository::get_raw(tx, &AgentId::from(id.as_str()))?
+                    .ok_or_else(|| {
+                        StoreError::SchemaMismatch("missing idle compaction agent".into())
+                    })?;
+            Some(
+                serde_json::from_str::<StoredEpisode>(&raw)
+                    .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?
+                    .idle_compaction_episode,
+            )
+        } else {
+            None
+        };
+        crate::idle_compaction::observe(tx, agent, &p["report"], previous.as_ref())?;
+>>>>>>> 81d416f9a5a81dc3ec79231be0997c8f8fdc4432
         persist_agent(tx, &id, agent)?;
         return Ok(Some(DispatchOutcome::Written));
     }
@@ -275,6 +302,7 @@ pub(super) fn apply(
                 put_task(tx, &task)?;
             }
             if decision.compacted {
+<<<<<<< head
                 let deferred = p["item"]["idleCompactionOnReturn"] == true
                     && p["item"]["idleCompactionRequestId"] == agent["idleCompactionEpisode"]["id"];
                 if let Some(request_id) = if deferred {
@@ -282,11 +310,19 @@ pub(super) fn apply(
                 } else {
                     agent["startAttempt"]["actionRequestId"].as_str()
                 } && request_id.starts_with(crate::idle_compaction::REQUEST_PREFIX)
+||||||| base
+                if let Some(request_id) = agent["startAttempt"]["actionRequestId"].as_str()
+                    && request_id.starts_with(crate::idle_compaction::REQUEST_PREFIX)
+=======
+                if let Some(request_id) = agent["startAttempt"]["actionRequestId"]
+                    .as_str()
+                    .map(str::to_owned)
+                    && agent["idleCompactionEpisode"]["id"].as_str() == Some(request_id.as_str())
+>>>>>>> 81d416f9a5a81dc3ec79231be0997c8f8fdc4432
                 {
-                    tx.execute_cached(
-                        "UPDATE runtime_operation_receipts SET result=json_set(result,'$.outcome','compacted','$.completedAt',?2) WHERE id=?1 AND signature='idle-compaction'",
-                        params![request_id, at],
-                    ).map_err(StoreError::from)?;
+                    agent["idleCompactionEpisode"]["outcome"] =
+                        json!(studio_runtime_schema::persistence::IdleEpisodeOutcome::Compacted);
+                    agent["idleCompactionEpisode"]["completedAt"] = json!(at);
                     write_item(
                         tx,
                         &id,
@@ -483,7 +519,6 @@ pub(super) fn flush_command(
     let id = format!("{agent_id}:{}", key.item);
     let Some((record, _)) = NotificationDispatchRepository::notification_item(tx, agent_id, &id)?
     else {
-        NotificationDispatchRepository::put_stream_base(tx, &super::stream_base_id(key), None)?;
         streams.discard(key);
         if close {
             streams.close(key);
@@ -503,7 +538,6 @@ pub(super) fn flush_command(
             .as_ref()
             .is_some_and(|task| task["kind"] == "command" && task["turnId"] == json!(key.turn))
     {
-        NotificationDispatchRepository::put_stream_base(tx, &super::stream_base_id(key), None)?;
         streams.discard(key);
         if close {
             streams.close(key);
@@ -515,12 +549,8 @@ pub(super) fn flush_command(
         .filter(Value::is_object);
     // The stored item holds the flushed output unless item/started replaced
     // it, which preserved the flushed output as the durable base first.
-    let previous = match super::durable_stream_base(tx, streams, key)? {
-        Some(base) if streams.has_pending(key) => {
-            NotificationDispatchRepository::put_stream_base(tx, &super::stream_base_id(key), None)?;
-            base
-        }
-        Some(base) => base,
+    let previous = match streams.base(key) {
+        Some(base) => base.to_owned(),
         None => command_base(saved.as_ref(), task.as_ref()),
     };
     let mut item = saved.unwrap_or_else(|| json!({"type":"commandExecution","id":key.item}));
@@ -559,7 +589,6 @@ pub(super) fn flush_command(
         }
     }
     if close {
-        NotificationDispatchRepository::put_stream_base(tx, &super::stream_base_id(key), None)?;
         streams.close(key);
     }
     Ok(())
@@ -583,13 +612,7 @@ pub(super) fn preserve_command_base(
         None
     };
     let previous = command_base(saved.as_ref(), task.as_ref().map(|task| task.value()));
-    if streams.preserve_base(key, super::sha256_hex(previous.as_bytes())) {
-        NotificationDispatchRepository::put_stream_base(
-            tx,
-            &super::stream_base_id(key),
-            Some(&previous),
-        )?;
-    }
+    streams.preserve_base(key, previous);
     Ok(())
 }
 

@@ -1,5 +1,5 @@
 import type { SidebarBackend } from "../components/sidebar/services";
-import type { ApiPostPath, PostBody, PostOptions, PostResult } from "../api";
+import type { ApiPostPath, PostInput, PostOptions, PostResult } from "../api";
 import {
   readPreferenceFields,
   receivePreferenceFields,
@@ -20,7 +20,7 @@ export function serverSidebarBackend(
     resources: services.resources,
     async post<Path extends ApiPostPath>(
       path: Path,
-      body: PostBody<Path>,
+      body: PostInput<Path>,
       options?: PostOptions,
     ): Promise<PostResult<Path>> {
       if (!online()) throw new Error("The sidebar server is offline.");

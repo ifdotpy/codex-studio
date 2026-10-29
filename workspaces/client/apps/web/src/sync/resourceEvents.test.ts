@@ -12,6 +12,7 @@ const { syncDatabase, appendAppLog } = vi.hoisted(() => ({
   appendAppLog: vi.fn(),
 }));
 vi.mock("../appLog", () => ({ appendAppLog }));
+vi.mock("../uuid", () => ({ randomUUID: () => crypto.randomUUID() }));
 vi.mock("../servers/eventSource", () => ({
   openServerEvents: (url: string) =>
     new (
