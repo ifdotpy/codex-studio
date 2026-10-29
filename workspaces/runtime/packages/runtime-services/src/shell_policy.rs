@@ -6,6 +6,7 @@ use crate::{
     shell_pressure::PressureSource,
 };
 use rusqlite::Connection;
+use serde::{Deserialize, Deserializer};
 use serde_json::{Value, json};
 use std::{
     sync::Arc,
@@ -17,6 +18,49 @@ use studio_runtime_store::{
     RuntimeStore, StoreError, Transaction,
 };
 use tokio::sync::watch;
+
+// The sweep deliberately reads the raw agent row, before volatile fields are
+// merged. Older rows admitted here can be incomplete or contain mistyped
+// optional fields, unlike the full AgentRecord used at the hand-off fence.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ShellPolicyAgent {
+    #[serde(default, deserialize_with = "string_or_missing")]
+    id: Option<String>,
+    #[serde(default, deserialize_with = "string_or_missing")]
+    root_id: Option<String>,
+    #[serde(default, deserialize_with = "string_or_missing")]
+    account_key: Option<String>,
+    #[serde(default, deserialize_with = "integer_or_missing")]
+    epoch: Option<i64>,
+    #[serde(default, deserialize_with = "string_or_missing")]
+    status: Option<String>,
+    #[serde(default, deserialize_with = "string_or_missing")]
+    turn_id: Option<String>,
+    #[serde(default, deserialize_with = "string_or_missing")]
+    execution_mode: Option<String>,
+    #[serde(default, deserialize_with = "true_only")]
+    in_flight: bool,
+    #[serde(default, deserialize_with = "true_only")]
+    auto_wake: bool,
+    thread_id: Option<Value>,
+    deleted_at: Option<Value>,
+    account_transfer_id: Option<Value>,
+    remote_worker: Option<Value>,
+    remote_anchor: Option<Value>,
+}
+
+fn string_or_missing<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    Value::deserialize(deserializer).map(|value| value.as_str().map(str::to_owned))
+}
+fn integer_or_missing<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<i64>, D::Error> {
+    Value::deserialize(deserializer).map(|value| value.as_i64())
+}
+fn true_only<'de, D: Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
+    Value::deserialize(deserializer).map(|value| value == Value::Bool(true))
+}
 
 /// Called by the journal's accepted turn transitions, in their transaction.
 pub(crate) fn note_activity(tx: &Transaction<'_>, id: &str, at: f64) -> Result<(), StoreError> {
@@ -32,25 +76,33 @@ pub(crate) fn note_activity(tx: &Transaction<'_>, id: &str, at: f64) -> Result<(
 /// Same guard is used at selection and immediately before provider hand-off.
 /// Queued input and any live descendant prevent cleanup.
 pub fn eligible(db: &Connection, agent: &Value) -> Result<bool, StoreError> {
-    if agent["inFlight"] == true
-        || agent["autoWake"] != true
-        || agent["turnId"].as_str().is_some_and(|id| !id.is_empty())
+    if !agent.is_object() {
+        return Ok(false);
+    }
+    let view = ShellPolicyAgent::deserialize(agent).map_err(StoreError::from)?;
+    eligible_view(db, &view)
+}
+
+fn eligible_view(db: &Connection, agent: &ShellPolicyAgent) -> Result<bool, StoreError> {
+    if agent.in_flight
+        || !agent.auto_wake
+        || agent.turn_id.as_deref().is_some_and(|id| !id.is_empty())
         || !matches!(
-            agent["status"].as_str(),
+            agent.status.as_deref(),
             Some("idle" | "completed" | "waiting_on_monitor")
         )
-        || studio_runtime_store::truthy(agent.get("deletedAt"))
-        || studio_runtime_store::truthy(agent.get("accountTransferId"))
-        || studio_runtime_store::truthy(agent.get("remoteWorker"))
-        || studio_runtime_store::truthy(agent.get("remoteAnchor"))
-        || agent["executionMode"] == "vm"
+        || studio_runtime_store::truthy(agent.deleted_at.as_ref())
+        || studio_runtime_store::truthy(agent.account_transfer_id.as_ref())
+        || studio_runtime_store::truthy(agent.remote_worker.as_ref())
+        || studio_runtime_store::truthy(agent.remote_anchor.as_ref())
+        || agent.execution_mode.as_deref() == Some("vm")
     {
         return Ok(false);
     }
-    let id = agent["id"].as_str().unwrap_or_default();
+    let id = agent.id.as_deref().unwrap_or_default();
     let blocked: bool = db.query_row(
         "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND kind!='shell_policy' AND status IN ('pending','reserved','dispatching','uncertain')) OR EXISTS(SELECT 1 FROM runtime_agents child WHERE json_extract(child.record,'$.rootId')=?2 AND child.id!=?1 AND COALESCE(json_extract(child.record,'$.deletedAt'),0)=0 AND (json_extract(child.record,'$.inFlight')=1 OR json_extract(child.record,'$.status') IN ('queued','starting','running','approval','compacting')))",
-        (id, agent["rootId"].as_str().unwrap_or(id)), |row| row.get(0))?;
+        (id, agent.root_id.as_deref().unwrap_or(id)), |row| row.get(0))?;
     Ok(!blocked)
 }
 
@@ -369,27 +421,31 @@ async fn sweep(
         if settings.quiet_threshold_ms == 0 && !critical { return Ok((settings,Vec::new())); }
         let mut statement = db.prepare("SELECT record FROM runtime_agents a WHERE json_extract(record,'$.provider')='claude' AND json_extract(record,'$.threadId') IS NOT NULL AND a.id IN (SELECT json_extract(record,'$.agent') FROM runtime_tasks WHERE json_extract(record,'$.status')='running' AND json_extract(record,'$.name')='local_bash') ORDER BY a.id")?;
         let agents = statement.query_map([], |row| row.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
-        let agents = agents.into_iter().map(|raw| serde_json::from_str::<Value>(&raw).map_err(StoreError::from)).collect::<Result<Vec<_>, _>>()?;
+        // Parse through a map so duplicate keys retain the historical last value.
+        let agents = agents.into_iter().map(|raw| {
+            let value: Value = serde_json::from_str(&raw)?;
+            ShellPolicyAgent::deserialize(value).map_err(StoreError::from)
+        }).collect::<Result<Vec<_>, _>>()?;
         Ok::<_, StoreError>((settings, agents))
     }).await?;
     // Calls are bounded and do not create or resume a provider session.
     for agent in agents {
-        let account = agent["accountKey"].as_str().unwrap_or("default");
+        let account = agent.account_key.as_deref().unwrap_or("default");
         let Some(scope) = port.current_scope(account) else {
             continue;
         };
-        let id = agent["id"].as_str().unwrap_or_default().to_owned();
-        let epoch = agent["epoch"].as_i64().unwrap_or(-1);
+        let id = agent.id.as_deref().unwrap_or_default().to_owned();
+        let epoch = agent.epoch.unwrap_or(-1);
         let account = account.to_owned();
         let policy = settings.clone();
         let request = store.transaction_with(move |tx| {
             use crate::account_worker::retained::{ProviderCallIntent, reserve_provider_call};
             use studio_runtime_schema::persistence::RequestIdentity;
             use studio_runtime_store::request_results::{Admission, RequestResults};
-            let allowed = eligible(tx, &agent)?;
+            let allowed = eligible_view(tx, &agent)?;
             let root_request_id = RequestIdentity::issue_root();
             let operation = format!("shell-policy:{id}:{root_request_id}");
-            let params = json!({"threadId":agent["threadId"],"settings":policy,"eligible":allowed,"critical":critical});
+            let params = json!({"threadId":agent.thread_id,"settings":policy,"eligible":allowed,"critical":critical});
             let identity = RequestIdentity::new("shell-policy", &[&id], &root_request_id, &[])
                 .map_err(studio_runtime_store::request_results::RequestResultError::from).map_err(StoreError::from)?;
             let owner = match RequestResults::admit(tx, &identity, &params.to_string(), chrono::Utc::now().timestamp_millis()).map_err(StoreError::from)? {
@@ -461,6 +517,255 @@ mod receipt_tests {
                 })
             })
         }
+    }
+
+    struct NoScope;
+    impl AccountSessionPort for NoScope {
+        fn current_scope(&self, _: &str) -> Option<ConnectionScope> {
+            None
+        }
+        fn provider_request<'a>(
+            &'a self,
+            _: ProviderRequest,
+        ) -> AccountSessionFuture<'a, SessionReceipt> {
+            panic!("a missing scope never submits")
+        }
+    }
+
+    struct WrongReceipt;
+    impl AccountSessionPort for WrongReceipt {
+        fn current_scope(&self, _: &str) -> Option<ConnectionScope> {
+            Some(ConnectionScope {
+                account: "default".into(),
+                connection: "connection".into(),
+                generation: 1,
+            })
+        }
+        fn provider_request<'a>(
+            &'a self,
+            request: ProviderRequest,
+        ) -> AccountSessionFuture<'a, SessionReceipt> {
+            Box::pin(async move {
+                let mut scope = request.expected_scope.unwrap();
+                scope.generation += 1;
+                Ok(SessionReceipt {
+                    scope,
+                    operation: request.operation,
+                    outcome: SessionOutcome::NoLiveAccountWorker,
+                    replayed: false,
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn mismatched_unsent_scope_does_not_discard_reservation() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
+        store.transaction_with(|tx| {
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)", ("agent", json!({"id":"agent","rootId":"agent","provider":"claude","threadId":"thread","epoch":1,"autoWake":true,"status":"idle"}).to_string()))?;
+            tx.execute("INSERT INTO runtime_tasks(id,record) VALUES(?1,?2)", ("task", json!({"id":"task","agent":"agent","status":"running","name":"local_bash"}).to_string()))?;
+            Ok::<_, StoreError>(())
+        }).await.unwrap();
+        sweep(&store, &WrongReceipt, true).await.unwrap();
+        let pending: i64 = store.read_async("shell-policy/test", |db| Ok::<_, StoreError>(db.query_row("SELECT count(*) FROM runtime_outbox WHERE kind='provider_call' AND status='pending'", [], |row| row.get(0))?)).await.unwrap();
+        assert_eq!(pending, 1);
+    }
+
+    #[tokio::test]
+    async fn absent_scope_skips_partial_agent_before_strict_admission() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
+        store.transaction_with(|tx| {
+            let partial = json!({"id":"agent","provider":"claude","threadId":"thread","status":"idle","autoWake":true});
+            assert!(AgentRecord::from_value(partial.clone()).is_err());
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)", ("agent", partial.to_string()))?;
+            tx.execute("INSERT INTO runtime_tasks(id,record) VALUES(?1,?2)", ("task", json!({"id":"task","agent":"agent","status":"running","name":"local_bash"}).to_string()))?;
+            Ok::<_, StoreError>(())
+        }).await.unwrap();
+        sweep(&store, &NoScope, true).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn absent_scope_partial_agent_does_not_stop_later_valid_agent() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
+        store.transaction_with(|tx| {
+            for (id, value) in [
+                ("a-partial", json!({"id":"a-partial","provider":"claude","threadId":"t","accountKey":"inactive","status":"idle","autoWake":true})),
+                ("z-valid", json!({"id":"z-valid","rootId":"z-valid","epoch":1,"provider":"claude","threadId":"t","accountKey":"default","status":"idle","autoWake":true})),
+            ] {
+                tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)", (id, value.to_string()))?;
+                tx.execute("INSERT INTO runtime_tasks(id,record) VALUES(?1,?2)", (format!("task-{id}"), json!({"id":format!("task-{id}"),"agent":id,"status":"running","name":"local_bash"}).to_string()))?;
+            }
+            Ok::<_, StoreError>(())
+        }).await.unwrap();
+        let capture = Capture::default();
+        sweep(&store, &capture, true).await.unwrap();
+        let requests = capture.0.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].0, "z-valid");
+    }
+
+    #[derive(Default)]
+    struct Capture(std::sync::Mutex<Vec<(String, i64, Value, ConnectionScope)>>);
+    impl AccountSessionPort for Capture {
+        fn current_scope(&self, account: &str) -> Option<ConnectionScope> {
+            (account == "default").then(|| ConnectionScope {
+                account: account.into(),
+                connection: "connection".into(),
+                generation: 1,
+            })
+        }
+        fn provider_request<'a>(
+            &'a self,
+            request: ProviderRequest,
+        ) -> AccountSessionFuture<'a, SessionReceipt> {
+            Box::pin(async move {
+                let actor = request.actor.as_ref().unwrap();
+                let scope = request.expected_scope.clone().unwrap();
+                self.0.lock().unwrap().push((
+                    actor.agent.clone(),
+                    actor.epoch,
+                    request.params.clone(),
+                    scope.clone(),
+                ));
+                Ok(SessionReceipt {
+                    scope,
+                    operation: request.operation,
+                    outcome: SessionOutcome::NoLiveAccountWorker,
+                    replayed: false,
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn malformed_partial_agent_is_refused_before_provider_dispatch() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
+        store.transaction_with(|tx| {
+            let partial = json!({"id":"agent","provider":"claude","threadId":["opaque"],"accountKey":7,"epoch":1.0,"autoWake":true,"status":"idle"});
+            assert!(AgentRecord::from_value(partial.clone()).is_err());
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)", ("agent", partial.to_string()))?;
+            tx.execute("INSERT INTO runtime_tasks(id,record) VALUES(?1,?2)", ("task", json!({"id":"task","agent":"agent","status":"running","name":"local_bash"}).to_string()))?;
+            Ok::<_, StoreError>(())
+        }).await.unwrap();
+        let capture = Capture::default();
+        assert!(sweep(&store, &capture, true).await.is_err());
+        let requests = capture.0.lock().unwrap();
+        assert!(requests.is_empty());
+    }
+
+    #[tokio::test]
+    async fn sweep_reserves_scoped_actor_then_discards_exact_unsent_receipt() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
+        store.transaction_with(|tx| {
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)", ("agent", json!({"id":"agent","rootId":"agent","provider":"claude","threadId":"thread","accountKey":"default","epoch":7,"autoWake":true,"status":"idle"}).to_string()))?;
+            tx.execute("INSERT INTO runtime_tasks(id,record) VALUES(?1,?2)", ("task", json!({"id":"task","agent":"agent","status":"running","name":"local_bash"}).to_string()))?;
+            Ok::<_, StoreError>(())
+        }).await.unwrap();
+        let capture = Capture::default();
+        sweep(&store, &capture, true).await.unwrap();
+        {
+            let requests = capture.0.lock().unwrap();
+            assert_eq!(requests.len(), 1);
+            assert_eq!((&requests[0].0, requests[0].1), (&"agent".to_owned(), 7));
+            assert_eq!(requests[0].2["threadId"], "thread");
+            assert_eq!(requests[0].2["eligible"], true);
+            assert_eq!(
+                (
+                    requests[0].3.account.as_str(),
+                    requests[0].3.connection.as_str(),
+                    requests[0].3.generation
+                ),
+                ("default", "connection", 1)
+            );
+        }
+        let pending: i64 = store.read_async("shell-policy/test", |db| Ok::<_, StoreError>(db.query_row("SELECT count(*) FROM runtime_outbox WHERE kind='provider_call' AND status='pending'", [], |row| row.get(0))?)).await.unwrap();
+        assert_eq!(pending, 0);
+    }
+
+    #[test]
+    fn partial_projection_keeps_legacy_defaults_and_truthiness() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE runtime_agents(id TEXT,record TEXT); CREATE TABLE runtime_events(agent TEXT,kind TEXT,status TEXT)").unwrap();
+        let base = json!({"autoWake":true,"status":"idle","threadId":null,"id":false,"rootId":7});
+        assert!(eligible(&db, &base).unwrap());
+        for (field, value) in [
+            ("inFlight", json!(true)),
+            ("deletedAt", json!([1])),
+            ("remoteWorker", json!("x")),
+            ("executionMode", json!("vm")),
+            ("turnId", json!("turn")),
+        ] {
+            let mut blocked = base.clone();
+            blocked[field] = value;
+            assert!(!eligible(&db, &blocked).unwrap(), "{field}");
+        }
+        let mut lenient = base;
+        lenient["turnId"] = json!(["not a string"]);
+        lenient["inFlight"] = json!(1);
+        assert!(eligible(&db, &lenient).unwrap());
+        let partial = json!({"id":"agent","provider":"claude","threadId":["opaque"],"accountKey":7,"epoch":1.0,"autoWake":true,"status":"idle"});
+        let view = ShellPolicyAgent::deserialize(partial).unwrap();
+        assert_eq!(view.account_key.as_deref().unwrap_or("default"), "default");
+        assert_eq!(view.epoch.unwrap_or(-1), -1);
+        assert_eq!(view.thread_id, Some(json!(["opaque"])));
+    }
+
+    #[test]
+    fn shell_projection_agrees_with_persisted_agent_owner_on_valid_fields() {
+        use studio_runtime_schema::{
+            json_object::JsonObject, records::agent_projection::AgentProjection,
+        };
+        let value = json!({"id":"a","rootId":"r","epoch":3,"status":"idle","accountKey":"default","threadId":"t","turnId":"","autoWake":true,"inFlight":false,"executionMode":"host","deletedAt":null,"accountTransferId":"transfer","remoteWorker":false,"remoteAnchor":null});
+        let JsonObject(owner) = JsonObject::<AgentProjection>::deserialize(value.clone()).unwrap();
+        let partial = ShellPolicyAgent::deserialize(value).unwrap();
+        assert_eq!(partial.id.as_deref(), Some(owner.id.as_str()));
+        assert_eq!(partial.root_id.as_deref(), Some(owner.root_id.as_str()));
+        assert_eq!(partial.epoch, Some(owner.epoch.as_i64()));
+        assert_eq!(partial.status.as_deref(), Some(owner.status.as_str()));
+        assert_eq!(
+            partial.account_key.as_deref(),
+            owner.account_key.value().map(String::as_str)
+        );
+        assert_eq!(
+            partial.turn_id.as_deref(),
+            owner.turn_id.value().map(String::as_str)
+        );
+        assert_eq!(
+            partial.execution_mode.as_deref(),
+            owner.execution_mode.value().map(String::as_str)
+        );
+        assert_eq!(
+            partial.auto_wake,
+            owner.auto_wake.value().copied().unwrap_or(false)
+        );
+        assert_eq!(
+            partial.in_flight,
+            owner.in_flight.value().copied().unwrap_or(false)
+        );
+        assert_eq!(
+            partial.thread_id.as_ref().and_then(Value::as_str),
+            owner.thread_id.value().map(String::as_str)
+        );
+        assert_eq!(
+            partial.account_transfer_id,
+            owner.extensions.get("accountTransferId").cloned()
+        );
+        assert_eq!(
+            partial.remote_worker,
+            owner.extensions.get("remoteWorker").cloned()
+        );
+        assert!(partial.remote_anchor.is_none());
+        assert!(partial.deleted_at.is_none());
+        assert!(matches!(
+            owner.deleted_at,
+            studio_runtime_schema::queue_command::Field::Null
+        ));
+        assert_eq!(owner.extensions.get("remoteAnchor"), Some(&Value::Null));
     }
 
     #[tokio::test]

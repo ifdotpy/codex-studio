@@ -395,21 +395,14 @@ pub async fn approvals(store: &RuntimeStore, agent_id: &str) -> Result<Value, Vo
         .await?;
     validate_agent(agent, agent_id)?;
     let mut requests = Vec::new();
-    for (row, raw) in rows {
-        let row_id = row.id().to_string();
-        let value: Value =
-            serde_json::from_str(&raw).map_err(|_| invalid("runtime_requests", &row_id))?;
-        if !value.is_object() || value.get("id").and_then(Value::as_str).is_none() {
-            return Err(invalid("runtime_requests", &row_id));
-        }
-        if value.get("agent").and_then(Value::as_str) == Some(agent_id)
-            && value.get("status").and_then(Value::as_str) == Some("pending")
-            && value
-                .get("method")
-                .and_then(Value::as_str)
+    for row in rows {
+        if row.agent() == Some(agent_id)
+            && row.status() == Some("pending")
+            && row
+                .method()
                 .is_some_and(|method| APPROVAL_METHODS.contains(&method))
         {
-            requests.push(value);
+            requests.push(row.into_value());
         }
     }
     Ok(json!({"requests": requests}))

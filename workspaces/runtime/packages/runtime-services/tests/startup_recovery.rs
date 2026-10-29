@@ -49,7 +49,7 @@ fn complete_rows(store: &RuntimeStore, id: &str) -> Value {
         .list()
         .expect("read requests")
         .into_iter()
-        .map(|request| request.value().clone())
+        .map(RequestRecord::into_value)
         .collect::<Vec<_>>();
     let events = fixtures::events(store);
     let projections = [
@@ -131,7 +131,7 @@ async fn startup_recovery_is_idempotent_and_preserves_only_retained_questions() 
         .list()
         .expect("list recovered requests")
         .into_iter()
-        .map(|request| (request.id().to_string(), request.value().clone()))
+        .map(|request| (request.id().to_string(), request.into_value()))
         .collect::<std::collections::BTreeMap<_, _>>();
     assert_eq!(requests["approval"]["status"], "expired");
     assert_eq!(requests["answering"]["status"], "uncertain");
@@ -446,6 +446,42 @@ async fn startup_remote_owned_monitor_is_recovered_without_aborting() {
             .expect("read remote monitor exit")
             .is_none()
     );
+}
+
+#[tokio::test]
+async fn malformed_request_isolated_without_blocking_other_recovery() {
+    let root = fixtures::tempdir();
+    let case = running(&fixtures::corpus(root.path()));
+    let store = fixtures::store(root.path(), "malformed-request-startup").await;
+    fixtures::seed(&store, &case).await;
+    store.transaction(|tx| {
+        tx.execute("INSERT INTO runtime_requests(id,record) VALUES('bad',?1)", [json!({"id":"bad","status":"answering","method":false}).to_string()])?;
+        add_request(tx, json!({"id":"good","status":"answering","method":"future/approval","opaque":{"x":[1,null]}}));
+        Ok(())
+    }).await.unwrap();
+    let report = monitor_runtime::recover_on_startup(&store, 2000.0)
+        .await
+        .unwrap();
+    assert_eq!(report.requests, 1);
+    let db = store.test_reader().unwrap();
+    let bad: String = db
+        .query_row(
+            "SELECT record FROM runtime_requests WHERE id='bad'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&bad).unwrap()["status"],
+        "answering"
+    );
+    let good = Table::<RequestRecord>::new(&db)
+        .get(&"good".into())
+        .unwrap()
+        .unwrap()
+        .into_value();
+    assert_eq!(good["status"], "uncertain");
+    assert_eq!(good["opaque"], json!({"x":[1,null]}));
 }
 
 #[tokio::test]

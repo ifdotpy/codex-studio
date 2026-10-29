@@ -302,7 +302,7 @@ async fn answered_approval_retires_card_and_replays_without_another_start() {
             tx.execute("UPDATE runtime_monitors SET record=json_remove(json_set(record,'$.status','approval'),'$.operation') WHERE id=?1", [&selected])?;
             let request = studio_runtime_store::RequestRecord::from_value(json!({"id":"approval","agent":"agent","method":"monitor/approve","status":"pending","params":{"monitorId":selected},"createdAt":2000.0}))?;
             studio_runtime_store::Table::new(tx).put(&request)?;
-            let view = studio_runtime_services::sync_views::project_persisted_record("request", request.value()).expect("pending view");
+            let view = studio_runtime_services::sync_views::project_persisted_record("request", &request.value()).expect("pending view");
             studio_runtime_store::SyncDocumentsRepository::put_entity(tx, "request", "approval", view, false)?;
             Ok(())
         }).await.expect("pending approval");

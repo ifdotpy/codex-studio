@@ -171,35 +171,21 @@ fn source_submission_identity(
     let Some((id, record)) = row else {
         return Ok(None);
     };
-    let typed = serde_json::from_str::<crate::ExecutionRunRecord>(&record).map_err(|_| {
-        crate::StoreError::InvalidStoredObject {
-            table: "runtime_execution_runs",
-            id: id.clone(),
-        }
-    })?;
-    if typed.id().as_ref() != id
-        || crate::Table::<crate::ExecutionRunRecord>::new(connection)
-            .validate(&typed)
-            .is_err()
-    {
-        return Err(crate::StoreError::InvalidStoredObject {
-            table: "runtime_execution_runs",
-            id,
-        });
-    }
-    let value = typed.value();
+    let typed =
+        crate::Table::<crate::ExecutionRunRecord>::new(connection).decode_stored(&id, &record)?;
+    let run = typed.run();
     if turn.is_none()
         && matches!(
-            value.get("status").and_then(serde_json::Value::as_str),
-            Some("completed" | "failed" | "interrupted" | "cancelled")
+            run.status,
+            studio_runtime_schema::persistence::ExecutionStatus::Completed
+                | studio_runtime_schema::persistence::ExecutionStatus::Failed
+                | studio_runtime_schema::persistence::ExecutionStatus::Interrupted
+                | studio_runtime_schema::persistence::ExecutionStatus::Cancelled
         )
     {
         return Ok(None);
     }
-    let attempt_id = value
-        .get("latestAttemptId")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_owned);
+    let attempt_id = run.latest_attempt_id.value().cloned();
     Ok(Some((id, attempt_id)))
 }
 
@@ -1043,6 +1029,48 @@ mod tests {
             json!(["run", "attempt"])
         );
         assert_eq!(work(&db, "t")["resultFailures"]["count"], 2);
+    }
+    #[test]
+    fn source_run_selection_preserves_identity_and_nullable_attempt_evidence() {
+        let db = fixture();
+        db.execute_batch("CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,agent TEXT,account TEXT,epoch INTEGER,thread TEXT,turn TEXT,created REAL,record TEXT);").unwrap();
+        let agent = crate::AgentRecord::deserialize(
+            json!({"id":"a","rootId":"a","epoch":2,"status":"idle"}),
+        )
+        .unwrap();
+        let raw = r#"{"id":"wrong","id":"run","agent":"a","accountKey":"default","epoch":2.0,"status":"running","created":1.0,"latestAttemptId":null,"firstAttemptId":{"opaque":[1]},"extra":9007199254740993}"#;
+        db.execute(
+            "INSERT INTO runtime_execution_runs VALUES('run','a','default',2,NULL,NULL,1.0,?1)",
+            [raw],
+        )
+        .unwrap();
+        assert_eq!(
+            super::source_submission_identity(&db, &agent).unwrap(),
+            Some(("run".into(), None))
+        );
+        db.execute(
+            "UPDATE runtime_execution_runs SET record=?1",
+            [raw.replace("\"id\":\"run\"", "\"id\":\"other\"")],
+        )
+        .unwrap();
+        assert!(
+            matches!(super::source_submission_identity(&db, &agent), Err(crate::StoreError::InvalidStoredObject {table:"runtime_execution_runs",id}) if id=="run")
+        );
+        db.execute(
+            "UPDATE runtime_execution_runs SET record=?1",
+            [raw.replace("\"running\"", "\"future\"")],
+        )
+        .unwrap();
+        assert!(super::source_submission_identity(&db, &agent).is_err());
+        db.execute(
+            "UPDATE runtime_execution_runs SET record=?1",
+            [raw.replace("\"running\"", "\"completed\"")],
+        )
+        .unwrap();
+        assert_eq!(
+            super::source_submission_identity(&db, &agent).unwrap(),
+            None
+        );
     }
     #[test]
     fn receipts_work_hydrates_old_counter_before_deleting_sources_and_reopens() {

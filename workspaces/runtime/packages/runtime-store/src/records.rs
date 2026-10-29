@@ -18,96 +18,6 @@ pub(crate) mod validation_counts {
     }
 }
 
-macro_rules! row_key_accessor {
-    ($name:ident, $id:ty, PayloadId) => {
-        impl $name {
-            pub fn id(&self) -> &$id {
-                // `from_value` caches the required payload ID before a record
-                // can enter a typed table operation.
-                self.row_key.as_ref().expect("payload-id record has no id")
-            }
-        }
-    };
-    ($name:ident, $id:ty, External) => {};
-}
-
-macro_rules! record_newtype {
-    ($name:ident, $id:ty, table = $table:literal, schema = $schema:literal,
-     key = $key:ident, query = $query:ident) => {
-        #[derive(Clone, Debug, PartialEq)]
-        pub struct $name {
-            row_key: Option<$id>,
-            value: Value,
-        }
-
-        impl $name {
-            pub fn from_value(value: Value) -> Result<Self, serde_json::Error> {
-                let row_key = match RecordKeyMode::$key {
-                    RecordKeyMode::PayloadId => Some(<$id>::from(record_id(&value)?)),
-                    RecordKeyMode::External => None,
-                };
-                Ok(Self { row_key, value })
-            }
-
-            pub fn value(&self) -> &Value {
-                &self.value
-            }
-
-            pub fn into_value(self) -> Value {
-                self.value
-            }
-
-            pub fn get(&self, key: &str) -> Option<&Value> {
-                self.value.get(key)
-            }
-
-            pub fn set(&mut self, key: impl Into<String>, value: Value) {
-                if let Some(object) = self.value.as_object_mut() {
-                    object.insert(key.into(), value);
-                }
-            }
-
-            pub fn remove(&mut self, key: &str) -> Option<Value> {
-                self.value.as_object_mut()?.remove(key)
-            }
-        }
-
-        row_key_accessor!($name, $id, $key);
-
-        impl Serialize for $name {
-            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-            where
-                S: serde::Serializer,
-            {
-                self.value.serialize(serializer)
-            }
-        }
-
-        impl<'de> Deserialize<'de> for $name {
-            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-            where
-                D: serde::Deserializer<'de>,
-            {
-                Self::from_value(Value::deserialize(deserializer)?)
-                    .map_err(serde::de::Error::custom)
-            }
-        }
-
-        impl JsonRecord for $name {
-            type Id = $id;
-
-            const TABLE: &'static str = $table;
-            const SCHEMA: &'static str = $schema;
-            const KEY_MODE: RecordKeyMode = RecordKeyMode::$key;
-            const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::$query;
-
-            fn record_key(&self) -> Option<&Self::Id> {
-                self.row_key.as_ref()
-            }
-        }
-    };
-}
-
 macro_rules! string_id {
     ($name:ident) => {
         #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
@@ -946,14 +856,57 @@ mod tool_result_typed_tests {
         assert!(table.get(&"r".into()).is_err());
     }
 }
-record_newtype!(
-    RequestRecord,
-    String,
-    table = "runtime_requests",
-    schema = "PersistedRequestRecord",
-    key = PayloadId,
-    query = JsonAgent
-);
+pub use studio_runtime_schema::request_record::RequestRecord;
+impl JsonRecord for RequestRecord {
+    type Id = String;
+    const TABLE: &'static str = "runtime_requests";
+    const SCHEMA: &'static str = "PersistedRequestRecord";
+    const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
+    const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::JsonAgent;
+    const TYPED_SHAPE: bool = true;
+    fn record_key(&self) -> Option<&String> {
+        Some(self.id())
+    }
+}
+#[cfg(test)]
+mod request_typed_tests {
+    use super::{RequestRecord, Table};
+    use serde_json::{Value, json};
+
+    #[test]
+    fn request_table_keeps_last_duplicate_and_checks_row_identity() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE runtime_requests(id TEXT PRIMARY KEY,record TEXT NOT NULL)")
+            .unwrap();
+        db.execute("INSERT INTO runtime_requests VALUES('r',?1)", [r#"{"id":"wrong","id":"r","status":false,"status":"future","method":"x","params":{"opaque":[1,null]}}"#]).unwrap();
+        let row = Table::<RequestRecord>::new(&db)
+            .get(&"r".into())
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.status(), Some("future"));
+        assert_eq!(row.into_value()["params"], json!({"opaque":[1,null]}));
+        db.execute(
+            "UPDATE runtime_requests SET record=?1",
+            [r#"{"id":"other","status":"pending"}"#],
+        )
+        .unwrap();
+        assert!(Table::<RequestRecord>::new(&db).get(&"r".into()).is_err());
+        db.execute(
+            "UPDATE runtime_requests SET record=?1",
+            [r#"{"id":"r","status":false}"#],
+        )
+        .unwrap();
+        assert!(Table::<RequestRecord>::new(&db).get(&"r".into()).is_err());
+        let unchanged: Value = serde_json::from_str(
+            &db.query_row("SELECT record FROM runtime_requests", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(unchanged["status"], false);
+    }
+}
 pub use studio_runtime_schema::complaint_record::ComplaintRecord;
 impl JsonRecord for ComplaintRecord {
     type Id = String;
@@ -1224,14 +1177,78 @@ impl JsonRecord for WorkItemRecord {
         Self::decode(row_id, encoded)
     }
 }
-record_newtype!(
-    ExecutionRunRecord,
-    String,
-    table = "runtime_execution_runs",
-    schema = "PersistedExecutionRunRecord",
-    key = PayloadId,
-    query = None
+/// The stored run uses the execution-history owner with unconstrained historical evidence.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct ExecutionRunRecord(
+    crate::ExecutionRun<Value, studio_runtime_schema::records::agent_projection::AgentCounter>,
 );
+impl<'de> Deserialize<'de> for ExecutionRunRecord {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let studio_runtime_schema::json_object::JsonObject(run) =
+            studio_runtime_schema::json_object::JsonObject::deserialize(deserializer)?;
+        Ok(Self(run))
+    }
+}
+impl ExecutionRunRecord {
+    pub fn from_value(value: Value) -> Result<Self, serde_json::Error> {
+        Self::deserialize(value)
+    }
+    pub fn run(
+        &self,
+    ) -> &crate::ExecutionRun<Value, studio_runtime_schema::records::agent_projection::AgentCounter>
+    {
+        &self.0
+    }
+}
+impl JsonRecord for ExecutionRunRecord {
+    type Id = String;
+    const TABLE: &'static str = "runtime_execution_runs";
+    const SCHEMA: &'static str = "PersistedExecutionRunRecord";
+    const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
+    const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
+    const TYPED_SHAPE: bool = true;
+    fn record_key(&self) -> Option<&Self::Id> {
+        Some(&self.0.id)
+    }
+}
+#[cfg(test)]
+mod execution_run_record_tests {
+    use super::{ExecutionRunRecord, Table};
+    use serde::Serialize;
+    use serde_json::{Value, json};
+
+    #[test]
+    fn execution_run_table_preserves_evidence_and_checks_physical_identity() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
+        )
+        .unwrap();
+        let raw = r#"{"id":"bad","id":"run","agent":"a","accountKey":"default","epoch":1.0,"created":1.0,"status":"running","latestAttemptId":null,"rootAttemptId":{"opaque":[1]},"extra":9007199254740993}"#;
+        db.execute("INSERT INTO runtime_execution_runs VALUES('run',?1)", [raw])
+            .unwrap();
+        let record = Table::<ExecutionRunRecord>::new(&db)
+            .get(&"run".into())
+            .unwrap()
+            .unwrap();
+        let value = record.serialize(serde_json::value::Serializer).unwrap();
+        let expected: Value = serde_json::from_str(raw).unwrap();
+        assert_eq!(value, expected);
+        assert_eq!(value["extra"], json!(9007199254740993_u64));
+        assert!(value.get("threadId").is_none());
+        db.execute(
+            "UPDATE runtime_execution_runs SET record=?1",
+            [raw.replace("\"id\":\"run\"", "\"id\":\"other\"")],
+        )
+        .unwrap();
+        assert!(
+            Table::<ExecutionRunRecord>::new(&db)
+                .get(&"run".into())
+                .is_err()
+        );
+    }
+}
 pub use studio_runtime_schema::workspace_operation::WorkspaceOperationRecord;
 impl JsonRecord for WorkspaceOperationRecord {
     type Id = String;
@@ -1294,14 +1311,18 @@ impl JsonRecord for EventMetadataRecord {
         None
     }
 }
-record_newtype!(
-    GraphAgentRecord,
-    String,
-    table = "graph_agents",
-    schema = "PersistedGraphAgentRecord",
-    key = PayloadId,
-    query = None
-);
+pub use studio_runtime_schema::graph_agent_record::GraphAgentRecord;
+impl JsonRecord for GraphAgentRecord {
+    type Id = String;
+    const TABLE: &'static str = "graph_agents";
+    const SCHEMA: &'static str = "PersistedGraphAgentRecord";
+    const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
+    const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
+    const TYPED_SHAPE: bool = true;
+    fn record_key(&self) -> Option<&Self::Id> {
+        Some(self.id())
+    }
+}
 
 impl WorkItemRecord {
     pub fn from_value(value: Value) -> Result<Self, serde_json::Error> {
@@ -1411,14 +1432,6 @@ impl WorkItemRecord {
     pub fn set_status(&mut self, status: WorkStatus) {
         self.0.set_status(status);
     }
-}
-
-fn record_id(value: &Value) -> Result<String, serde_json::Error> {
-    value
-        .get("id")
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-        .ok_or_else(|| serde::de::Error::custom("record id must be a string"))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2010,12 +2023,7 @@ pub(crate) fn parse_agent_value(row_id: &str, encoded: &str) -> StoreResult<Valu
     Ok(value)
 }
 
-pub(crate) fn validate_agent_value(row_id: &str, value: Value) -> StoreResult<Value> {
-    checked_agent_projection(row_id, &value)?;
-    Ok(value)
-}
-
-fn checked_agent_projection(
+pub(crate) fn checked_agent_projection(
     row_id: &str,
     value: &Value,
 ) -> StoreResult<studio_runtime_schema::records::agent_projection::AgentProjection> {
@@ -2559,7 +2567,7 @@ mod tests {
             "id":"request-1", "connectionId":null
         }))
         .expect("Python may persist a request without a connection identity");
-        assert_eq!(request.get("connectionId"), Some(&Value::Null));
+        assert_eq!(request.value().get("connectionId"), Some(&Value::Null));
     }
 
     #[test]

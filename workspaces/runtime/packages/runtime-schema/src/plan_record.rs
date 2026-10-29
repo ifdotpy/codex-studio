@@ -75,6 +75,9 @@ pub struct PlanRecord {
 }
 
 impl PlanRecord {
+    pub fn id(&self) -> &str {
+        &self.id
+    }
     pub fn from_value(value: Value) -> Result<Self, serde_json::Error> {
         serde_json::from_value(value)
     }

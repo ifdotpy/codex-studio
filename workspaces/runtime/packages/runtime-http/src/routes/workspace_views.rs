@@ -9,7 +9,8 @@ use studio_runtime_services::workspace_views::{
     reported_change_files, task_feed_response,
 };
 use studio_runtime_store::{
-    AgentRecord, CheckpointRecord, Connection, StoreError, StoredRecord, TranscriptRepository,
+    AgentRecord, AnnotationRecord, CheckpointRecord, ComplaintRecord, Connection, PlanRecord,
+    RequestRecord, RuleRecord, StoreError, TaskRecord, TranscriptRepository,
     WorkspaceViewsRepository,
 };
 
@@ -164,12 +165,7 @@ fn workspace_view(
     view: &str,
 ) -> Result<Value, ApiError> {
     let stored_agents = WorkspaceViewsRepository::agents(connection).map_err(ApiError::stored)?;
-    let agents = parse_records(
-        validators,
-        "AgentRecordResponse",
-        "runtime_agents",
-        stored_agents,
-    )?;
+    let agents = record_values(stored_agents)?;
     let root = studio_runtime_services::workspace_views::agent_root(&agents, agent_id).map_err(
         |error| match error {
             studio_runtime_services::workspace_views::AgentScopeError::MissingAgent => {
@@ -196,15 +192,9 @@ fn workspace_view(
         .collect::<Result<Vec<_>, _>>()?;
 
     if view == "annotations" {
-        let annotations = parse_records(
-            validators,
-            "AnnotationReceipt",
-            "runtime_annotations",
-            WorkspaceViewsRepository::records_for_agents(
-                connection,
-                "runtime_annotations",
-                "agent",
-                &ids,
+        let annotations = record_values(
+            WorkspaceViewsRepository::records_for_agents::<AnnotationRecord>(
+                connection, "agent", &ids,
             )
             .map_err(ApiError::stored)?,
         )?;
@@ -250,38 +240,25 @@ fn workspace_view(
         );
     }
 
-    let requests = parse_records(
-        validators,
-        "RequestRecordResponse",
-        "runtime_requests",
-        WorkspaceViewsRepository::records_for_agents(connection, "runtime_requests", "agent", &ids)
+    let requests = record_values(
+        WorkspaceViewsRepository::records_for_agents::<RequestRecord>(connection, "agent", &ids)
             .map_err(ApiError::stored)?,
     )?;
     let complaints = if root.is_some() {
-        parse_records(
-            validators,
-            "ComplaintRecordResponse",
-            "runtime_complaints",
-            WorkspaceViewsRepository::records_for_agents(
-                connection,
-                "runtime_complaints",
-                "leadId",
-                &ids,
+        record_values(
+            WorkspaceViewsRepository::records_for_agents::<ComplaintRecord>(
+                connection, "leadId", &ids,
             )
             .map_err(ApiError::stored)?,
         )?
     } else {
-        parse_records(
-            validators,
-            "ComplaintRecordResponse",
-            "runtime_complaints",
-            WorkspaceViewsRepository::records(connection, "runtime_complaints")
+        record_values(
+            WorkspaceViewsRepository::records::<ComplaintRecord>(connection)
                 .map_err(ApiError::stored)?,
         )?
     };
-    let rules = parse_open_records(
-        "runtime_rules",
-        WorkspaceViewsRepository::records_for_agents(connection, "runtime_rules", "agent", &ids)
+    let rules = record_values(
+        WorkspaceViewsRepository::records_for_agents::<RuleRecord>(connection, "agent", &ids)
             .map_err(ApiError::stored)?,
     )?;
     let tasks = project_task_records(
@@ -292,20 +269,11 @@ fn workspace_view(
     let monitors = WorkspaceViewsRepository::snapshot_monitors(connection, root.as_deref())
         .map_err(ApiError::stored)?
         .into_iter()
-        .map(|row| {
-            let id = row.id;
-            let raw = row
-                .record
-                .ok_or_else(|| invalid_stored("runtime_monitors", &id))?;
-            let monitor: Value =
-                serde_json::from_str(&raw).map_err(|_| invalid_stored("runtime_monitors", &id))?;
-            if monitor.get("id").and_then(Value::as_str) != Some(id.as_str()) {
-                return Err(invalid_stored("runtime_monitors", &id));
-            }
-            let projection = validators
-                .project_entity("monitor", &monitor)
-                .ok_or_else(|| invalid_stored("runtime_monitors", &id))?;
-            Ok(projection)
+        .map(|monitor| {
+            let id = monitor.id().to_owned();
+            validators
+                .project_entity("monitor", &monitor.into_value())
+                .ok_or_else(|| invalid_stored("runtime_monitors", &id))
         })
         .collect::<Result<Vec<_>, ApiError>>()?
         .into_iter()
@@ -340,52 +308,25 @@ fn workspace_view(
         );
     }
 
-    let annotations = parse_records(
-        validators,
-        "AnnotationReceipt",
-        "runtime_annotations",
-        WorkspaceViewsRepository::records_for_agents(
-            connection,
-            "runtime_annotations",
-            "agent",
-            &ids,
-        )
-        .map_err(ApiError::stored)?,
+    let annotations = record_values(
+        WorkspaceViewsRepository::records_for_agents::<AnnotationRecord>(connection, "agent", &ids)
+            .map_err(ApiError::stored)?,
     )?;
     let checkpoint_ids = agent_id
         .map(|id| vec![id.to_owned()])
         .unwrap_or_else(|| ids.clone());
-    let checkpoint_records = parse_open_records(
-        "runtime_checkpoints",
-        WorkspaceViewsRepository::records_for_agents(
-            connection,
-            "runtime_checkpoints",
-            "agent",
-            &checkpoint_ids,
-        )
-        .map_err(ApiError::stored)?,
-    )?;
+    let checkpoint_records = WorkspaceViewsRepository::records_for_agents::<CheckpointRecord>(
+        connection,
+        "agent",
+        &checkpoint_ids,
+    )
+    .map_err(ApiError::stored)?;
+    // Full views also admit the AgentRecord fields used by checkpoint reads.
     let agent_records = all_agents
         .into_iter()
         .map(|agent| {
-            let id = agent
-                .get("id")
-                .and_then(Value::as_str)
-                .ok_or_else(|| invalid_stored("runtime_agents", "unknown"))?
-                .to_owned();
+            let id = agent["id"].as_str().unwrap_or("unknown").to_owned();
             AgentRecord::from_value(agent).map_err(|_| invalid_stored("runtime_agents", &id))
-        })
-        .collect::<Result<Vec<_>, ApiError>>()?;
-    let checkpoint_records = checkpoint_records
-        .into_iter()
-        .map(|record| {
-            let id = record
-                .get("id")
-                .and_then(Value::as_str)
-                .ok_or_else(|| invalid_stored("runtime_checkpoints", "unknown"))?
-                .to_owned();
-            CheckpointRecord::from_value(record)
-                .map_err(|_| invalid_stored("runtime_checkpoints", &id))
         })
         .collect::<Result<Vec<_>, ApiError>>()?;
     let checkpoints = studio_runtime_services::questions_reads::checkpoint_list(
@@ -397,11 +338,8 @@ fn workspace_view(
         .as_array()
         .cloned()
         .ok_or_else(|| invalid_stored("runtime_checkpoints", "unknown"))?;
-    let plans = parse_records(
-        validators,
-        "PlanView",
-        "runtime_plans",
-        WorkspaceViewsRepository::records_for_agents(connection, "runtime_plans", "id", &ids)
+    let plans = record_values(
+        WorkspaceViewsRepository::records_for_agents::<PlanRecord>(connection, "id", &ids)
             .map_err(ApiError::stored)?,
     )?
     .into_iter()
@@ -424,65 +362,24 @@ fn workspace_view(
     )
 }
 
-fn parse_records(
-    _validators: &Registry,
-    _schema: &str,
-    table: &str,
-    records: Vec<StoredRecord>,
-) -> Result<Vec<Value>, ApiError> {
+fn record_values<T: serde::Serialize>(records: Vec<T>) -> Result<Vec<Value>, ApiError> {
     records
         .into_iter()
-        .map(|row| {
-            let raw = row.record.ok_or_else(|| invalid_stored(table, &row.id))?;
-            let value: Value =
-                serde_json::from_str(&raw).map_err(|_| invalid_stored(table, &row.id))?;
-            if !value.is_object()
-                || value.get("id").and_then(Value::as_str) != Some(row.id.as_str())
-            {
-                return Err(invalid_stored(table, &row.id));
-            }
-            Ok(value)
-        })
-        .collect()
-}
-
-fn parse_open_records(table: &str, records: Vec<StoredRecord>) -> Result<Vec<Value>, ApiError> {
-    records
-        .into_iter()
-        .map(|row| {
-            let raw = row.record.ok_or_else(|| invalid_stored(table, &row.id))?;
-            let value: Value =
-                serde_json::from_str(&raw).map_err(|_| invalid_stored(table, &row.id))?;
-            if !value.is_object()
-                || value.get("id").and_then(Value::as_str) != Some(row.id.as_str())
-            {
-                return Err(invalid_stored(table, &row.id));
-            }
-            Ok(value)
-        })
+        .map(|record| serde_json::to_value(record).map_err(|_| ApiError::internal()))
         .collect()
 }
 
 fn project_task_records(
     validators: &Registry,
-    records: Vec<StoredRecord>,
+    records: Vec<TaskRecord>,
 ) -> Result<Vec<Value>, ApiError> {
     records
         .into_iter()
-        .map(|row| {
-            let id = row.id;
-            let raw = row
-                .record
-                .ok_or_else(|| invalid_stored("runtime_tasks", &id))?;
-            let task: Value =
-                serde_json::from_str(&raw).map_err(|_| invalid_stored("runtime_tasks", &id))?;
-            if task.get("id").and_then(Value::as_str) != Some(id.as_str()) {
-                return Err(invalid_stored("runtime_tasks", &id));
-            }
-            let projection = validators
-                .project_entity("task", &task)
-                .ok_or_else(|| invalid_stored("runtime_tasks", &id))?;
-            Ok(projection)
+        .map(|task| {
+            let id = task.id().as_ref().to_owned();
+            validators
+                .project_entity("task", &task.into_value())
+                .ok_or_else(|| invalid_stored("runtime_tasks", &id))
         })
         .collect()
 }
@@ -567,16 +464,12 @@ async fn workspace_tasks(
     let before = parse_task_cursor(query.nonempty_str("before"), CursorKind::Before)
         .map_err(|_| invalid_cursor("before"))?;
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let validators = state.validators.clone();
     let result = store
         .read_async(
             "runtime-http/routes/workspace_views",
             move |connection| -> Result<Value, ApiError> {
                 // Each served row is decoded below; rows outside the page are not read.
-                let agents = parse_records(
-                    &validators,
-                    "AgentRecordResponse",
-                    "runtime_agents",
+                let agents = record_values(
                     WorkspaceViewsRepository::agents(connection).map_err(map_store_error)?,
                 )?;
                 let root =
@@ -730,6 +623,89 @@ mod tests {
             assert!(task.get("arguments").is_none());
             assert!(task.get("error").is_none());
         }
+    }
+
+    #[tokio::test]
+    async fn workspace_http_scopes_checked_checkpoints_and_rejects_selected_bad_identity() {
+        use axum::body::{Body, to_bytes};
+        use axum::extract::ConnectInfo;
+        use axum::http::Request;
+        use serde_json::{Value, json};
+        use std::sync::Arc;
+        use studio_runtime_store::{RuntimeStore, StoreError};
+        use tower::ServiceExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
+        store.transaction_with(|tx| {
+            for id in ["lead", "foreign"] {
+                tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)", (id, json!({"provider":"codex","id":id,"rootId":id,"epoch":0,"status":"idle"}).to_string()))?;
+            }
+            tx.execute("INSERT INTO runtime_checkpoints(id,record) VALUES('good',?1)", [json!({"id":"good","agent":"lead","created":1,"items":["private"],"future":{"kept":true}}).to_string()])?;
+            tx.execute("INSERT INTO runtime_checkpoints(id,record) VALUES('foreign',?1)", [json!({"id":"wrong","agent":"foreign","created":1}).to_string()])?;
+            Ok::<_, StoreError>(())
+        }).await.unwrap();
+        let state = crate::HttpState::new(
+            "fixture-token".into(),
+            "fixture".into(),
+            store.root().to_string_lossy().into(),
+            49171,
+            None,
+            Some(store.clone()),
+            None,
+        );
+        let app = crate::router(state).unwrap();
+        let request = || {
+            Request::builder()
+                .uri("/api/workspace?agent=lead")
+                .header("host", "127.0.0.1:49171")
+                .header("x-canvas-token", "fixture-token")
+                .header(crate::API_SCHEMA_HASH_HEADER, crate::api_schema_hash())
+                .extension(ConnectInfo(
+                    "127.0.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
+                ))
+                .body(Body::empty())
+                .unwrap()
+        };
+        let response = app.clone().oneshot(request()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(body["checkpoints"].as_array().unwrap().len(), 1);
+        assert_eq!(body["checkpoints"][0]["future"]["kept"], true);
+        assert!(body["checkpoints"][0].get("items").is_none());
+        store.transaction_with(|tx| {
+            tx.execute("UPDATE runtime_checkpoints SET record=json_set(record,'$.id','wrong') WHERE id='good'", [])?;
+            Ok::<_, StoreError>(())
+        }).await.unwrap();
+        assert_eq!(
+            app.clone().oneshot(request()).await.unwrap().status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        store.transaction_with(|tx| {
+            tx.execute("UPDATE runtime_checkpoints SET record=json_set(record,'$.id','good') WHERE id='good'", [])?;
+            tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.firedEvents',3) WHERE id='lead'", [])?;
+            Ok::<_, StoreError>(())
+        }).await.unwrap();
+        let annotations = Request::builder()
+            .uri("/api/workspace?agent=lead&view=annotations")
+            .header("host", "127.0.0.1:49171")
+            .header("x-canvas-token", "fixture-token")
+            .header(crate::API_SCHEMA_HASH_HEADER, crate::api_schema_hash())
+            .extension(ConnectInfo(
+                "127.0.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
+            ))
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(annotations).await.unwrap().status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            app.oneshot(request()).await.unwrap().status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
     }
 
     #[test]

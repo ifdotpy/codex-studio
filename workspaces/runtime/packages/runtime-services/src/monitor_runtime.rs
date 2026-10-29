@@ -109,25 +109,28 @@ fn recover_requests(tx: &Transaction<'_>) -> Result<usize, MonitorError> {
             }
             _ => continue,
         }
-        let request = match RequestRecord::from_value(value) {
-            Ok(request) => request,
-            Err(error) => {
-                eprintln!("startup request recovery skipped row id={id}: {error}");
-                continue;
-            }
+        let Some(payload_id) = value.get("id").and_then(Value::as_str).map(str::to_owned) else {
+            eprintln!("startup request recovery skipped row id={id}: record id must be a string");
+            continue;
         };
         tx.execute_batch("SAVEPOINT startup_request_recovery_row")
             .map_err(studio_runtime_store::StoreError::from)?;
         let apply = (|| {
+            let request = RequestRecord::from_value(value).map_err(|_| {
+                studio_runtime_store::StoreError::InvalidStoredObject {
+                    table: "runtime_requests",
+                    id: payload_id,
+                }
+            })?;
             Table::<RequestRecord>::new(tx).put(&request)?;
-            let view = crate::sync_views::project_persisted_record("request", request.value())
+            let view = crate::sync_views::project_persisted_record("request", &request.value())
                 .ok_or(MonitorError::Refused("Invalid request projection"))?;
             SyncDocumentsRepository::put_entity(
                 tx,
                 "request",
                 request.id(),
                 view,
-                request.value()["status"] != "pending",
+                request.status() != Some("pending"),
             )?;
             Ok::<(), MonitorError>(())
         })();
@@ -375,11 +378,11 @@ pub async fn answer_approval(
     let data = data.clone();
     store
         .transaction_with(move |tx| {
-            let Some(request) = Table::<RequestRecord>::new(tx).get(&request_id.to_owned())? else {
+            let Some(mut request) = Table::<RequestRecord>::new(tx).get(&request_id.to_owned())?
+            else {
                 return Ok(None);
             };
-            let mut request = request.value().clone();
-            if request.get("method").and_then(Value::as_str) != Some("monitor/approve") {
+            if request.method() != Some("monitor/approve") {
                 return Ok(None);
             }
             let decision = data
@@ -389,7 +392,8 @@ pub async fn answer_approval(
                 .ok_or(MonitorError::Refused("Invalid monitor approval decision"))?;
             let accepted = decision == "accept";
             let monitor_id = request
-                .pointer("/params/monitorId")
+                .extension("params")
+                .and_then(|params| params.get("monitorId"))
                 .and_then(Value::as_str)
                 .filter(|id| !id.is_empty())
                 .ok_or(MonitorError::InvalidStored {
@@ -398,12 +402,12 @@ pub async fn answer_approval(
                 })?;
             let (snapshot, actor) = snapshot(tx, monitor_id)?;
             event_write::refuse_remote(&actor)?;
-            if request.get("agent").and_then(Value::as_str) != Some(snapshot.agent()) {
+            if request.agent() != Some(snapshot.agent()) {
                 return Err(MonitorError::Refused("Monitor approval identity changed"));
             }
-            if request["status"] == "answered" {
+            if request.status() == Some("answered") {
                 let saved = request
-                    .get("answerDecision")
+                    .extension("answerDecision")
                     .and_then(Value::as_str)
                     .or_else(|| match snapshot.record()["status"].as_str() {
                         Some("starting" | "running" | "completed" | "failed") => Some("accept"),
@@ -423,7 +427,7 @@ pub async fn answer_approval(
                     accepted,
                 }));
             }
-            if request.get("status").and_then(Value::as_str) != Some("pending")
+            if request.status() != Some("pending")
                 || snapshot.record()["status"] != "approval"
                 || snapshot.record()["epoch"].as_i64() != Some(actor.epoch)
                 || actor.extra.get("autoWake") != Some(&json!(true))
@@ -481,15 +485,26 @@ pub async fn answer_approval(
             repository::put(tx, monitor)?;
             crate::agent_progress::publish_owner(tx, &actor.id.0)?;
             crate::sync_policy::publish_monitor_change(tx, Some(&snapshot), &after)?;
-            request["status"] = json!("answered");
-            request["answerDecision"] = json!(decision);
-            request["answerSignature"] = json!(event_write::request_signature(
-                &json!({"decision":decision})
-            ));
-            request["answeredBy"] = json!("user");
-            request["answeredAt"] = json!(now);
-            request["decision"] = json!(decision);
-            let request = RequestRecord::from_value(request.clone())
+            request.set_status("answered");
+            request
+                .set_extension("answerDecision", json!(decision))
+                .map_err(studio_runtime_store::StoreError::from)?;
+            request
+                .set_extension(
+                    "answerSignature",
+                    json!(event_write::request_signature(
+                        &json!({"decision":decision})
+                    )),
+                )
+                .map_err(studio_runtime_store::StoreError::from)?;
+            request
+                .set_extension("answeredBy", json!("user"))
+                .map_err(studio_runtime_store::StoreError::from)?;
+            request
+                .set_extension("answeredAt", json!(now))
+                .map_err(studio_runtime_store::StoreError::from)?;
+            request
+                .set_extension("decision", json!(decision))
                 .map_err(studio_runtime_store::StoreError::from)?;
             Table::<RequestRecord>::new(tx).put(&request)?;
             SyncDocumentsRepository::put_entity(tx, "request", &request_id, json!({}), true)?;
@@ -898,7 +913,7 @@ pub fn apply_with_rule(
             }
             Effect::ExpireApprovals => {
                 for mut request in repository::pending_approvals(tx, before.id())? {
-                    request.set("status", json!("expired"));
+                    request.set_status("expired");
                     Table::new(tx).put(&request)?;
                     SyncDocumentsRepository::put_entity(
                         tx,
@@ -1531,7 +1546,7 @@ pub fn create_in_transaction(
             "params":{"monitorId":id,"command":record["command"],"cwd":record["cwd"]}, "status":"pending", "createdAt":now
         })).map_err(studio_runtime_store::StoreError::from)?;
         Table::new(tx).put(&approval)?;
-        let view = crate::sync_views::project_persisted_record("request", approval.value())
+        let view = crate::sync_views::project_persisted_record("request", &approval.value())
             .ok_or_else(|| invalid(id, "request"))?;
         SyncDocumentsRepository::put_entity(tx, "request", approval.id(), view, false)?;
     }

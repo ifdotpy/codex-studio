@@ -167,7 +167,9 @@ pub use repositories::work_items::{StoredQueueEvent, StoredRecord, WorkItemsRepo
 pub use repositories::workspace_files::{StoredWorkspaceAsset, WorkspaceFilesRepository};
 pub use repositories::workspace_operations;
 pub use repositories::workspace_ready;
-pub use repositories::workspace_views::{WorkspaceTaskRow, WorkspaceViewsRepository};
+pub use repositories::workspace_views::{
+    WorkspaceRecord, WorkspaceTaskRow, WorkspaceViewsRepository,
+};
 
 const DATABASE_BUSY_TIMEOUT_MS: u32 = 15_000;
 /// A Rust repository-owned index whose SQL is shared by bootstrap and the

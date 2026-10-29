@@ -310,6 +310,31 @@ fn decode_frame(line: &[u8]) -> Result<Frame, CodecError> {
         .into_frame()
 }
 
+/// Decode a compatibility probe reply, retaining its historical permissive
+/// notification handling and last-duplicate JSON semantics.
+pub fn decode_probe_response(line: &[u8], expected: u64) -> Result<Option<Value>, CodecError> {
+    let value: Value = serde_json::from_slice(line)
+        .map_err(|error| CodecError::MalformedJson(error.to_string()))?;
+    if !value.is_object() {
+        return Err(CodecError::MalformedFrame("expected object"));
+    }
+    if value.get("method").is_some() {
+        return if value.get("id").is_some() {
+            Err(CodecError::MalformedFrame("unexpected incoming request"))
+        } else {
+            Ok(None)
+        };
+    }
+    let wire = WireObject::deserialize(value)
+        .map_err(|error| CodecError::MalformedJson(error.to_string()))?;
+    if wire.id != Some(RequestId::Number(expected)) || wire.error.is_some() {
+        return Err(CodecError::MalformedFrame("unexpected probe response"));
+    }
+    wire.result
+        .map(Some)
+        .ok_or(CodecError::MalformedFrame("missing probe result"))
+}
+
 /// One provider wire object. Serde splits the envelope from the extension
 /// members while it parses, so a frame is built from a single JSON tree with
 /// no member clones or removals.

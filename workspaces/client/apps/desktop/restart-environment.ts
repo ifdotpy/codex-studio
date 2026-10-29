@@ -18,6 +18,7 @@ const restartKeys = [
 const retiredRestartKeys = ["CODEX_AGENTS_PYTHON"];
 const environmentKeys = new Set([...restartKeys, "PATH"]);
 
+// SavedRecovery and EnabledRecovery in client-core own the shared fields; backend.test.ts checks parity.
 export type SavedEnvironment = {
   version?: unknown;
   stateDir?: unknown;
