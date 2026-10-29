@@ -93,11 +93,17 @@ fn apply(
 ) -> Result<()> {
     // Validate all resulting stored records with the same constructor used for reads.
     let proposed = d.record.as_ref().map(|record| record.value());
-    let mut validation = serde_json::json!({"agent":d.agent.as_ref().unwrap_or(&snapshot.agent),"record":proposed.as_ref().or(snapshot.record.as_ref()),"events":d.events,"ancestors":snapshot.ancestors,"claims":snapshot.claims});
+    let mut validation = serde_json::json!({"agent":d.agent.as_ref().map_or(&snapshot.agent, |agent| agent.value()),"record":proposed.as_ref().or(snapshot.record.as_ref()),"events":d.events,"ancestors":snapshot.ancestors,"claims":snapshot.claims});
     validation["metadata"] = serde_json::json!(d.metadata);
+    let agent = match d.agent.as_ref() {
+        Some(agent) => agent.checked(),
+        None => snapshot.current_agent_record(),
+    };
     let checked = match d.record.as_ref().and_then(|record| record.checked()) {
-        Some(record) => Snapshot::from_records_with_checked_record(validation, record)?,
-        None => Snapshot::from_records(validation)?,
+        Some(record) => {
+            Snapshot::from_records_with_checked_record_and_agent(validation, record, agent)?
+        }
+        None => Snapshot::from_records_with_agent(&validation, agent)?,
     };
     if d.record.is_some() {
         fault.at(Boundary::BeforeRecord)?;
@@ -154,7 +160,10 @@ fn apply(
             reason,
         } = effect
         {
-            let stopped = d.agent.as_ref().unwrap_or(&snapshot.agent);
+            let stopped = d
+                .agent
+                .as_ref()
+                .map_or(&snapshot.agent, |agent| agent.value());
             crate::lifecycle_effects::notify_continuation_hold(
                 tx,
                 &snapshot.agent,

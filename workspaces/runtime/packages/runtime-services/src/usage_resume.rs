@@ -1,8 +1,7 @@
 //! Durable usage/authentication continuation decisions; observations never invoke a provider.
 use crate::continuation::{
     ContinuationError, ContinuationUpdate as U, Decision, Effect, POLL_SECONDS, ProposedRecord,
-    Result, Snapshot, UsageDraft, WaitStatus, account, flag, now_checked, number, patch, present,
-    remove, text,
+    Result, Snapshot, UsageDraft, WaitStatus, account, flag, now_checked, number, present, text,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -323,8 +322,8 @@ fn resume(s: &Snapshot, mut r: ProposedRecord, auth: bool, now: f64) -> Decision
         .into(),
     });
     if let Some(a) = &mut d.agent {
-        remove(a, "nativeFailureHold");
-        patch(a, json!({"status":"queued","error":null}));
+        a.clear_hold();
+        a.queued();
     }
     d
 }
@@ -470,10 +469,7 @@ fn tick_before_observation(s: &Snapshot, now: f64) -> Result<Option<Decision>> {
             format!("Automatic resume stopped because account {key} is disabled for this chat.");
         let mut d = cancel(s, r, &reason, now);
         if let Some(a) = &mut d.agent {
-            patch(
-                a,
-                json!({"status":"failed","inFlight":false,"error":reason}),
-            );
+            a.failed(&reason);
         }
         d.hold(s.record_id().unwrap_or(""), "account-excluded", &reason);
         return Ok(Some(d));
@@ -575,7 +571,7 @@ pub fn set_enabled(s: &Snapshot, enabled: bool, now: f64) -> Result<Decision> {
     }
     let mut d = Decision::save(s, r, "usageResume", now);
     if let Some(a) = &mut d.agent {
-        a["usageResumeEnabled"] = json!(enabled);
+        a.usage_enabled(enabled);
     }
     Ok(d)
 }
@@ -683,13 +679,10 @@ pub fn record_failure(s: &Snapshot, failure: FailureObservation<'_>, now: f64) -
     let mut d = Decision::save(s, r, "usageResume", now);
     if let Some(a) = &mut d.agent {
         if is_auth {
-            a["authResumeAttempt"] = json!(failure.auth_attempt.saturating_add(1));
+            a.auth_attempt(failure.auth_attempt.saturating_add(1));
         }
         if let Some(reason) = &reason {
-            patch(
-                a,
-                json!({"status":"failed","inFlight":false,"error":reason}),
-            );
+            a.failed(reason);
         }
     }
     if let Some(reason) = reason {
@@ -728,15 +721,17 @@ pub fn completed_proof(s: &Snapshot, account_key: &str, now: f64) -> Result<Deci
         record.update(U::ProofAt(now));
         record.update(U::DueAt(Some(now)));
         if s.current("usageResume") {
-            let mut agent = s.agent.clone();
-            agent["usageResume"] = record.value();
+            let mut agent = crate::continuation::ProposedAgent::new(s);
+            agent.continuation("usageResume", record.value());
             decision.agent = Some(agent);
         }
         decision.record = Some(record);
     }
     if reset_attempt {
-        let agent = decision.agent.get_or_insert_with(|| s.agent.clone());
-        agent["authResumeAttempt"] = json!(0);
+        let agent = decision
+            .agent
+            .get_or_insert_with(|| crate::continuation::ProposedAgent::new(s));
+        agent.auth_attempt(0);
     }
     Ok(decision)
 }
