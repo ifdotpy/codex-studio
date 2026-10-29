@@ -348,25 +348,7 @@ pub async fn dispatch(
                     return Ok(files);
                 }
                 let sender = sender.ok_or("The native state service is unavailable.")?;
-                let (reply, receive) = tokio::sync::oneshot::channel();
-                sender
-                    .send((
-                        Request {
-                            id: format!("{}:files", request.id),
-                            method: "files.stage_many".into(),
-                            params: serde_json::json!({"files":files}),
-                        },
-                        reply,
-                    ))
-                    .await
-                    .map_err(|e| e.to_string())?;
-                let response = receive.await.map_err(|e| e.to_string())?;
-                response.result.ok_or_else(|| {
-                    response
-                        .error
-                        .map(|e| e.message)
-                        .unwrap_or("Missing file state response.".into())
-                })
+                stage_files(sender, &request.id, files).await
             } else {
                 Ok(value)
             }
@@ -382,6 +364,32 @@ pub async fn dispatch(
         Ok(value) => Response::success(request.id, value),
         Err(error) => Response::failure(request.id, "desktop_action", error),
     }
+}
+
+async fn stage_files(
+    sender: &crate::delivery::StoreSender,
+    id: &str,
+    files: Value,
+) -> Result<Value, String> {
+    let (reply, receive) = tokio::sync::oneshot::channel();
+    sender
+        .send(crate::delivery::StoreCommand::Request(
+            Request {
+                id: format!("{id}:files"),
+                method: "files.stage_many".into(),
+                params: serde_json::json!({"files":files}),
+            },
+            reply,
+        ))
+        .await
+        .map_err(|e| e.to_string())?;
+    let response = receive.await.map_err(|e| e.to_string())?;
+    response.result.ok_or_else(|| {
+        response
+            .error
+            .map(|e| e.message)
+            .unwrap_or("Missing file state response.".into())
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -694,6 +702,37 @@ mod mac {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn file_staging_sends_request_and_returns_reply_or_error() {
+        for fail in [false, true] {
+            let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+            let files = serde_json::json!([{"name":"a.txt","data":"YQ=="}]);
+            let expected = files.clone();
+            let worker = tokio::spawn(async move {
+                let Some(crate::delivery::StoreCommand::Request(request, reply)) =
+                    receiver.recv().await
+                else {
+                    panic!("request command")
+                };
+                assert_eq!(request.id, "picker:files");
+                assert_eq!(request.method, "files.stage_many");
+                assert_eq!(request.params, serde_json::json!({"files":expected}));
+                let response = if fail {
+                    Response::failure(request.id, "stage", "denied")
+                } else {
+                    Response::success(request.id, serde_json::json!(["staged"]))
+                };
+                reply.send(response).unwrap();
+            });
+            let result = stage_files(&sender, "picker", files).await;
+            if fail {
+                assert_eq!(result.unwrap_err(), "denied");
+            } else {
+                assert_eq!(result.unwrap(), serde_json::json!(["staged"]));
+            }
+            worker.await.unwrap();
+        }
+    }
     #[tokio::test]
     async fn sign_in_preparation_consumes_the_gesture_and_returns_only_an_opaque_intent() {
         let now = Instant::now();
