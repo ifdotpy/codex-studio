@@ -891,8 +891,9 @@ impl RetainedMonitorPort {
                 // never take over this deterministic monitor identity.
                 let saved = MonitorsRepository::get(tx, &check.monitor_id)?
                     .ok_or(MonitorError::Refused("Monitor record disappeared"))?;
-                if saved.get("ruleId").and_then(Value::as_str) != Some(&check.rule_id)
-                    || saved.get("command").and_then(Value::as_str) != Some(&check.command)
+                if saved.rule_id.value() != Some(&check.rule_id)
+                    || saved.command.as_ref().map(|command| command.as_str())
+                        != Some(check.command.as_str())
                 {
                     return Err(MonitorError::Refused(
                         "Rule monitor identity has different content",
@@ -1174,11 +1175,10 @@ impl RetainedMonitorPort {
                 let Some(record) = MonitorsRepository::get(tx, &monitor_id)? else {
                     return Ok(None);
                 };
-                if record.get("ruleId").and_then(Value::as_str) != Some(&rule_id)
-                    || record.get("status").and_then(Value::as_str) != Some("starting")
-                    || record
-                        .get("operation")
-                        .is_some_and(|operation| !operation.is_null())
+                if record.rule_id.value() != Some(&rule_id)
+                    || record.status()
+                        != Some(studio_runtime_schema::studio_errors::MonitorStatus::Starting)
+                    || record.operation.value().is_some()
                 {
                     return Ok(Some(false));
                 }
@@ -1404,7 +1404,7 @@ impl RuleMonitor for RetainedMonitorPort {
                         let Some(monitor) = MonitorsRepository::get(db, &monitor_id_owned)? else {
                             return Ok(None);
                         };
-                        let Some(agent) = monitor.get("agent").and_then(Value::as_str) else {
+                        let Some(agent) = monitor.agent() else {
                             return Err(RulesTickError::MonitorUnavailable);
                         };
                         Ok(Some(agent.to_owned()))
