@@ -794,6 +794,7 @@ function MultiServerShell({
           initialDetail={!!restoreAccountActionFocus.current}
           onChange={(tab) => {
             if (!isStudioSettingsTab(tab)) return;
+            if (tab !== "accounts") restoreAccountActionFocus.current = null;
             setManagerTab(tab);
             if (tab === "accounts" || tab === "servers") return;
             setManager(false);
@@ -806,10 +807,6 @@ function MultiServerShell({
               initialFocusIdentity={
                 restoreAccountActionFocus.current || undefined
               }
-              onInitialFocus={() => {
-                if (!restoreManagerAfterAccountDialog.current)
-                  restoreAccountActionFocus.current = null;
-              }}
               servicesFor={(id) => services.get(id)}
               servers={accountsServers}
               accountsByServer={accountsByServer}
