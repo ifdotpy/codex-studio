@@ -1355,7 +1355,13 @@ async fn move_to_host(
             }
         })?;
     state.event_wake.notify_one();
-    super::generated_json(result).map(Json)
+    Ok(Json(generated::AgentMoveToHostResponse {
+        id: result.id,
+        cwd: result.cwd,
+        moved_agents: result.moved_agents,
+        execution_mode: generated::AgentMoveToHostResponseExecutionMode::Native,
+        workspace_mode: generated::AgentMoveToHostResponseWorkspaceMode::Shared,
+    }))
 }
 
 async fn conversation(

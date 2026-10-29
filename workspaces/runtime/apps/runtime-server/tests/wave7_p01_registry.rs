@@ -991,7 +991,7 @@ async fn production_reconcile_admits_radio_queue_event_to_retained_worker() {
     if turn_write.is_err() {
         let db = fixture.store.test_reader().unwrap();
         let mut statement = db
-            .prepare("SELECT id,result FROM runtime_operation_receipts ORDER BY rowid DESC LIMIT 8")
+            .prepare("SELECT id,result FROM request_results ORDER BY rowid DESC LIMIT 8")
             .unwrap();
         let receipts = statement
             .query_map([], |row| {

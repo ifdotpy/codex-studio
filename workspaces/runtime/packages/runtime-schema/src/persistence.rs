@@ -218,6 +218,17 @@ pub fn enum_check<T: VariantNames>(column: &str) -> String {
     format!("CHECK(\"{}\" IN ({values}))", column.replace('"', "\"\""))
 }
 
+/// Exact reply retained for a completed move from a virtual machine.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct VmToHostReply {
+    pub id: String,
+    pub execution_mode: String,
+    pub workspace_mode: String,
+    pub cwd: String,
+    pub moved_agents: Vec<String>,
+}
+
 /// A collision-free tuple. The UUID root is explicit, never inferred from a key prefix.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RequestIdentity {

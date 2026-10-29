@@ -23,7 +23,8 @@ use crate::multi_server_orchestration::{ExchangeOutcome, OrchestrationDriver};
 
 /// The orchestration action that tells a paired server that this server's projects changed.
 /// The notice carries no data: the receiver reads the list with the `projects` action.
-pub const CHANGED_ACTION: &str = studio_runtime_schema::persistence::ServerOperationKind::ProjectsChanged.as_str();
+pub const CHANGED_ACTION: &str =
+    studio_runtime_schema::persistence::ServerOperationKind::ProjectsChanged.as_str();
 const ID_PREFIX: &str = "peer:";
 const LABEL_FALLBACK: &str = "Paired server";
 
@@ -69,12 +70,33 @@ impl PeerProjectsWake {
     }
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PeerProject {
+    id: Option<String>,
+    path: Option<String>,
+    name: Option<String>,
+    created: Option<f64>,
+    updated: Option<f64>,
+    #[serde(default)]
+    project_aliases: Vec<ProjectAlias>,
+}
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectAlias {
+    server_id: String,
+}
+#[derive(serde::Deserialize)]
+struct ProjectList {
+    items: Vec<PeerProject>,
+}
+
 /// Entities that mirror `items` of one paired server, skipping the projects that this server
 /// already lists under another identity (a project that has a location on both servers).
 fn mirrored(
     server: &str,
     label: &str,
-    items: &[Value],
+    items: &[PeerProject],
     local: &[Value],
     local_server: &str,
 ) -> BTreeMap<String, Value> {
@@ -87,23 +109,22 @@ fn mirrored(
     };
     let mut result = BTreeMap::new();
     for item in items {
-        let Some(id) = item["id"].as_str().filter(|id| !id.is_empty()) else {
+        let Some(id) = item.id.as_deref().filter(|id| !id.is_empty()) else {
             continue;
         };
-        let aliases_here = item["projectAliases"].as_array().is_some_and(|aliases| {
-            aliases
-                .iter()
-                .any(|alias| alias["serverId"] == local_server)
-        });
+        let aliases_here = item
+            .project_aliases
+            .iter()
+            .any(|alias| alias.server_id == local_server);
         if aliases_here || local.iter().any(|project| aliased(project, server, id)) {
             continue;
         }
         let record = json!({
             "id": entity_id(server, id),
-            "path": item["path"],
-            "name": item["name"],
-            "created": item["created"],
-            "updated": item["updated"],
+            "path": item.path,
+            "name": item.name,
+            "created": item.created,
+            "updated": item.updated,
             "homeServerId": server,
             "serverLabel": label,
         });
@@ -245,14 +266,8 @@ impl PeerProjects {
             .await
     }
 
-    fn request_id(action: &str, server: &str) -> Option<String> {
-        let now = crate::event_write::unix_time().ok()?;
-        Some(crate::projects::cross_server_identity(&[
-            "peer-projects",
-            action,
-            server,
-            &format!("{now:.6}"),
-        ]))
+    fn request_id(_action: &str, _server: &str) -> Option<String> {
+        Some(studio_runtime_schema::persistence::RequestIdentity::issue_root())
     }
 
     async fn notify(&self, server: &str) {
@@ -309,7 +324,7 @@ impl PeerProjects {
     }
 
     /// The `projects` list of a paired server, or `None` when it did not answer.
-    async fn read(&self, server: &str) -> Option<Vec<Value>> {
+    async fn read(&self, server: &str) -> Option<Vec<PeerProject>> {
         let key = Self::request_id("projects", server)?;
         let now = crate::event_write::unix_time().ok()? as i64;
         match self
@@ -317,7 +332,11 @@ impl PeerProjects {
             .exchange(server, "projects", &json!({}), &key, now)
             .await
         {
-            Ok(ExchangeOutcome::Applied(list)) => list["items"].as_array().cloned(),
+            Ok(ExchangeOutcome::Applied(list)) => {
+                serde_json::from_str::<ProjectList>(list.value.get())
+                    .ok()
+                    .map(|list| list.items)
+            }
             _ => None,
         }
     }
@@ -360,7 +379,10 @@ mod tests {
             _server: &'a str,
             envelope: &'a Value,
             _timeout: std::time::Duration,
-        ) -> BoxFuture<'a, Result<Value, AccessError>> {
+        ) -> BoxFuture<
+            'a,
+            Result<studio_runtime_store::multi_server_delivery::RemoteReply, AccessError>,
+        > {
             Box::pin(async move {
                 let key = envelope["requestId"].clone();
                 if *self.offline.lock().unwrap() {
@@ -370,15 +392,28 @@ mod tests {
                         message: "The paired delivery outcome is unknown",
                     });
                 }
-                match envelope["action"].as_str() {
-                    Some("projects") => Ok(json!({"requestId": key, "outcome": "applied",
-                        "value": {"items": self.items.lock().unwrap().clone()}})),
+                #[derive(serde::Serialize)]
+                struct Items<'a, T> {
+                    items: &'a [T],
+                }
+                let value = match envelope["action"].as_str() {
+                    Some("projects") => serde_json::value::to_raw_value(&Items {
+                        items: &self.items.lock().unwrap(),
+                    })
+                    .unwrap(),
                     Some(CHANGED_ACTION) => {
                         *self.notices.lock().unwrap() += 1;
-                        Ok(json!({"requestId": key, "outcome": "applied", "value": {}}))
+                        serde_json::value::RawValue::from_string("{}".to_owned()).unwrap()
                     }
                     _ => panic!("unexpected action"),
-                }
+                };
+                Ok(studio_runtime_store::multi_server_delivery::RemoteReply {
+                    request_id: key.as_str().unwrap().to_owned(),
+                    outcome: studio_runtime_schema::persistence::RemoteOutcome::Applied,
+                    value: Some(value),
+                    error: None,
+                    waiting_for: None,
+                })
             })
         }
     }

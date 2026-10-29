@@ -1933,7 +1933,9 @@ impl RuntimeOrchestrationEffects {
             if let Some(wake) = &self.projects_changed {
                 wake.peer_changed(principal);
             }
-            return Ok(ExchangeOutcome::Applied(json!({})));
+            return Ok(ExchangeOutcome::Applied(AppliedReply::new(
+                serde_json::value::to_raw_value(&json!({})).expect("empty reply"),
+            )));
         }
         if crate::peer_updates::ACTIONS.contains(&action) {
             return self.peer_update(principal, envelope).await;
