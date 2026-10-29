@@ -1690,7 +1690,10 @@ mod tests {
         let selected = studio_runtime_store::TranscriptItem {
             id: "message".into(),
             agent: "source".into(),
-            record: json!({"id":"message","turnId":"turn"}),
+            record: studio_runtime_store::TranscriptItemRecord::from_value(
+                json!({"id":"message","turnId":"turn"}),
+            )
+            .expect("selected transcript item"),
         };
         let provider = json!({"thread":{"id":"new-thread"}});
         let result = copy_branch_history(
