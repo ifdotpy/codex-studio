@@ -118,7 +118,7 @@ pub(crate) fn submit_agent_complaint(
             at,
         )
         .map_err(|_| stored("runtime_events", &complaint_id))?;
-        if inserted && lead.extra.get("autoWake") == Some(&json!(false)) {
+        if inserted && lead.auto_wake == Some(false) {
             tx.execute_cached("UPDATE runtime_event_meta SET record=json_set(record,'$.timing.fastSkipReason','autoWake') WHERE id=?1", [format!("complaint:{complaint_id}")]).map_err(studio_runtime_store::StoreError::from)?;
         }
     }

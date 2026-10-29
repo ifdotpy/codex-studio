@@ -44,7 +44,7 @@ async fn send_message(state: &State, id: &str, kind: &'static str) {
             scheduler::lifecycle_transaction_with(&store, move |tx| {
                 let mut agent =
                     AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?.unwrap();
-                agent.extra.insert("autoWake".into(), json!(true));
+                agent.auto_wake = Some(true);
                 agent.extra.insert("error".into(), Value::Null);
                 agent.extra.remove("nativeFailureHold");
                 AgentRepository::put(tx, &agent)?;
@@ -152,7 +152,7 @@ async fn unwritten_thread_receipt_after_restart(shape: Orphan) {
                     )?;
                     agent.extra.insert("startAttempt".into(), finished);
                     agent.status = studio_runtime_store::AgentStatus::Queued;
-                    agent.extra.insert("inFlight".into(), json!(false));
+                    agent.in_flight = Some(false);
                 }
                 AgentRepository::put(tx, &agent)?;
                 Ok::<_, WorkerError>(())
@@ -329,7 +329,7 @@ async fn unwritten_thread_start_continues_after_a_message() {
                 .transaction(move |tx| {
                     let mut agent =
                         AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?.unwrap();
-                    agent.extra.remove("threadId");
+                    agent.thread_id = None;
                     AgentRepository::put(tx, &agent)?;
                     Ok(())
                 })

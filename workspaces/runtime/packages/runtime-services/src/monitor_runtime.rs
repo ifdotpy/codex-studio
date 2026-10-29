@@ -429,7 +429,7 @@ pub async fn answer_approval(
             if request.get("status").and_then(Value::as_str) != Some("pending")
                 || snapshot.record()["status"] != "approval"
                 || snapshot.record()["epoch"].as_i64() != Some(actor.epoch)
-                || actor.extra.get("autoWake") != Some(&json!(true))
+                || actor.auto_wake != Some(true)
                 || event_write::truthy(actor.extra.get("deletedAt"))
             {
                 return Err(MonitorError::Refused("Command watch was stopped"));
@@ -1519,7 +1519,7 @@ pub fn create_in_transaction(
         }
         return Ok(previous.value().clone());
     }
-    if actor.epoch != epoch || actor.extra.get("autoWake") != Some(&json!(true)) {
+    if actor.epoch != epoch || actor.auto_wake != Some(true) {
         return Err(MonitorError::Refused(
             studio_runtime_schema::shared_values::MONITOR_OWNER_STOPPED_ERROR,
         ));
@@ -1573,11 +1573,7 @@ pub fn restart_in_transaction(
         uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, request_id.as_bytes()).to_string();
     let actor = event_write::checked_agent(tx, owner)?;
     if actor.epoch != epoch
-        || actor
-            .extra
-            .get("accountKey")
-            .and_then(Value::as_str)
-            .unwrap_or("default")
+        || actor.account_key.as_str()
             != body["accountKey"]
     {
         return Err(MonitorError::Refused("The monitor owner changed"));

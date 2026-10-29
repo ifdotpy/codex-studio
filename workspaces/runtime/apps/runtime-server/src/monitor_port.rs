@@ -3226,7 +3226,7 @@ mod tests {
             store
                 .transaction(|tx| {
                     let mut owner = AgentRepository::get(tx, &"owner".into())?.expect("owner");
-                    owner.extra.insert("accountKey".into(), json!("target"));
+                    owner.account_key = "target".into();
                     AgentRepository::put(tx, &owner)
                 })
                 .await

@@ -394,11 +394,7 @@ impl ExecutionHistoryRepository {
             )
             .optional()?
             .ok_or_else(|| Self::invalid("runtime_execution_runs", &run))?;
-        let account = agent
-            .extra
-            .get("accountKey")
-            .and_then(Value::as_str)
-            .unwrap_or("default");
+        let account = agent.account_key.as_str();
         Ok(
             (scope.0 == agent.id.0 && scope.1 == account && scope.2 == agent.epoch)
                 .then_some((run, attempt)),
@@ -468,15 +464,14 @@ impl ExecutionHistoryRepository {
         };
         let id = attempt["id"].as_str().ok_or_else(|| invalid(&agent.id.0))?;
         let submitted = super::scheduler::ValidatedAttempt::submission(agent)?;
-        let account = attempt
-            .get("accountKey")
-            .or_else(|| agent.extra.get("accountKey"))
-            .and_then(Value::as_str)
-            .unwrap_or("default");
+        let account = match attempt.get("accountKey") {
+            Some(value) => value.as_str().unwrap_or("default"),
+            None => agent.account_key.as_str(),
+        };
         let thread = attempt
             .get("threadId")
-            .or_else(|| agent.extra.get("threadId"))
             .cloned()
+            .or_else(|| agent.thread_id.clone().map(Value::String))
             .unwrap_or(Value::Null);
         let run: Option<Value> = tx.query_row(
             "SELECT r.id,r.record FROM runtime_execution_runs r WHERE r.id=(SELECT run FROM runtime_execution_attempts WHERE id=?1) OR (r.id IN (SELECT run FROM runtime_execution_inputs WHERE event=?2) AND r.agent=?3 AND r.account=?4 AND r.epoch=?5 AND r.turn IS NULL) ORDER BY (r.id=(SELECT run FROM runtime_execution_attempts WHERE id=?1)) DESC, r.created DESC LIMIT 1",
@@ -872,9 +867,7 @@ mod tests {
         assert!(!agent.extra.contains_key("activeExecution"));
         agent.epoch = 1;
         agent.extra.insert("activeExecution".into(), pointer);
-        agent
-            .extra
-            .insert("accountKey".into(), json!("another-account"));
+        agent.account_key = "another-account".to_string();
         ExecutionHistoryRepository::record_current(&tx, &mut agent).expect("account advances");
         assert!(!agent.extra.contains_key("activeExecution"));
         assert_eq!(

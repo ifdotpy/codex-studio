@@ -1334,6 +1334,13 @@ mod tests {
         );
         extra.insert("cwd".to_owned(), serde_json::json!(root));
         let agent = AgentRecord {
+            in_flight: None,
+        account_key: "default".into(),
+        thread_id: None,
+        turn_id: None,
+        auto_wake: None,
+        execution_mode: None,
+        turn_epoch: None,
             title_job: None,
             start_outcome_hold: None,
             fired_events: Default::default(),

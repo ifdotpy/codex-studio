@@ -35,7 +35,7 @@ pub fn assign_in_transaction(
         || !event_write::truthy(current_actor.extra.get("isLead"))
         || current_actor.extra.get("role").and_then(Value::as_str) == Some("reviewer")
         || current_actor.epoch != actor.epoch
-        || !event_write::truthy(current_actor.extra.get("autoWake"))
+        || current_actor.auto_wake != Some(true)
     {
         return Err(
             EventWriteError::InvalidRequest("Only the active lead can delegate a task").into(),

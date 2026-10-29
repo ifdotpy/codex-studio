@@ -17,7 +17,7 @@ async fn scenario_held_commit_does_not_hold_back_another_agent(
                 let mut row = AgentRepository::get(tx, &AgentId::from(first.as_str()))?.unwrap();
                 row.id = AgentId::from(copy.as_str());
                 row.root_id = AgentId::from(copy.as_str());
-                row.extra.insert("threadId".into(), json!("fake-thread-1"));
+                row.thread_id = Some("fake-thread-1".to_string());
                 AgentRepository::put(tx, &row)?;
                 Ok(())
             })
