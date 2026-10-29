@@ -643,27 +643,35 @@ pub(crate) fn search_work_in_transaction(
         ("runtime_complaints", "complaint", "title"),
         ("runtime_plans", "plan", "text"),
     ] {
-        for stored in WorkspaceViewsRepository::records(connection, table)? {
-            let Some(encoded) = stored.record else {
-                return Err(invalid_stored(table, &stored.id));
-            };
-            let record: Value =
-                serde_json::from_str(&encoded).map_err(|_| invalid_stored(table, &stored.id))?;
-            let schema = studio_runtime_schema::table_schema(table)
-                .ok_or_else(|| invalid_stored(table, &stored.id))?;
-            if studio_runtime_schema::first_error(schema, &record)
-                .map_err(|_| invalid_stored(table, &stored.id))?
-                .is_some()
-            {
-                return Err(invalid_stored(table, &stored.id));
-            }
+        let records = match table {
+            "runtime_work" => WorkspaceViewsRepository::search_records::<
+                studio_runtime_store::WorkItemRecord,
+            >(connection)?
+            .into_iter()
+            .map(|(id, record)| (id, record.into_value()))
+            .collect::<Vec<_>>(),
+            "runtime_complaints" => WorkspaceViewsRepository::search_records::<
+                studio_runtime_store::ComplaintRecord,
+            >(connection)?
+            .into_iter()
+            .map(|(id, record)| (id, record.into_value()))
+            .collect(),
+            "runtime_plans" => WorkspaceViewsRepository::search_records::<
+                studio_runtime_store::PlanRecord,
+            >(connection)?
+            .into_iter()
+            .map(|(id, record)| (id, record.into_value()))
+            .collect(),
+            _ => unreachable!("declared search tables"),
+        };
+        for (id, record) in records {
             let root = record
                 .get("rootId")
                 .filter(|value| truthy(Some(value)))
                 .or_else(|| record.get("leadId").filter(|value| truthy(Some(value))))
                 .or_else(|| record.get("id"))
                 .and_then(Value::as_str)
-                .ok_or_else(|| invalid_stored(table, &stored.id))?;
+                .ok_or_else(|| invalid_stored(table, &id))?;
             if !allowed.contains(root) || caller_root.is_some_and(|caller| caller != root) {
                 continue;
             }
@@ -679,8 +687,8 @@ pub(crate) fn search_work_in_transaction(
                 .take(500)
                 .collect::<String>();
             found.push(json!({
-                "id": stored.id, "agent": root, "type": kind, "kind": kind,
-                "excerpt": excerpt, "reference": stored.id, "text": excerpt
+                "id": id, "agent": root, "type": kind, "kind": kind,
+                "excerpt": excerpt, "reference": id, "text": excerpt
             }));
         }
     }

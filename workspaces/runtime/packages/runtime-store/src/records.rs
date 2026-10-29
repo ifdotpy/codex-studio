@@ -2023,12 +2023,7 @@ pub(crate) fn parse_agent_value(row_id: &str, encoded: &str) -> StoreResult<Valu
     Ok(value)
 }
 
-pub(crate) fn validate_agent_value(row_id: &str, value: Value) -> StoreResult<Value> {
-    checked_agent_projection(row_id, &value)?;
-    Ok(value)
-}
-
-fn checked_agent_projection(
+pub(crate) fn checked_agent_projection(
     row_id: &str,
     value: &Value,
 ) -> StoreResult<studio_runtime_schema::records::agent_projection::AgentProjection> {
