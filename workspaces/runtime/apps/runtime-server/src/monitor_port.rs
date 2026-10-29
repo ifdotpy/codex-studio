@@ -702,7 +702,7 @@ impl RetainedMonitorPort {
             .and_then(|value| value.number().as_u64())
             .ok_or(MonitorError::Refused("Monitor epoch is invalid"))?;
         if u64::try_from(actor.epoch).ok() != Some(epoch)
-            || actor.extra.get("autoWake") != Some(&Value::Bool(true))
+            || actor.auto_wake != Some(true)
             || actor
                 .extra
                 .get("deletedAt")
@@ -809,7 +809,7 @@ impl RetainedMonitorPort {
         let argv = monitor_command(
             command,
             &config,
-            actor.extra.get("executionMode") == Some(&json!("vm")),
+            actor.execution_mode == Some(studio_runtime_store::AgentExecutionMode::Vm),
         )
         .map_err(|_| MonitorError::Refused("Monitor command preparation was refused"))?;
         let mut params = json!({
@@ -1047,7 +1047,7 @@ impl RetainedMonitorPort {
         let command = monitor_command(
             &check.command,
             &config,
-            actor.extra.get("executionMode") == Some(&json!("vm")),
+            actor.execution_mode == Some(studio_runtime_store::AgentExecutionMode::Vm),
         )?;
         let mut params = json!({
             "command":command,
@@ -1904,7 +1904,7 @@ async fn run_probe(
     if !config.is_object() {
         return Err("Provider configuration is invalid; liveness command was not submitted".into());
     }
-    let guest = actor.extra.get("executionMode").and_then(Value::as_str) == Some("vm");
+    let guest = actor.execution_mode == Some(studio_runtime_store::AgentExecutionMode::Vm);
     let argv = monitor_command(command, &config, guest)?;
     let mut params = json!({
         "command":argv,
@@ -2054,8 +2054,7 @@ fn monitor_account<'a>(
         .get("accountKey")
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
-        .or_else(|| actor.extra.get("accountKey").and_then(Value::as_str))
-        .unwrap_or("default")
+        .unwrap_or(actor.account_key.as_str())
 }
 
 // Rule launch and existing probes intentionally use different precedence:
@@ -2126,7 +2125,7 @@ mod tests {
     #[test]
     fn monitor_account_fallback_matches_partial_json() {
         for monitor_account in [Value::Null, json!(""), json!("watch-account"), json!(2)] {
-            for actor_account in [Value::Null, json!(""), json!("owner-account"), json!(false)] {
+            for actor_account in [json!(""), json!("owner-account"), json!("default")] {
                 let mut raw_monitor = starting_watch(Path::new("/"), "watch");
                 raw_monitor["accountKey"] = monitor_account.clone();
                 let mut raw_actor = owner(Path::new("/"), true);

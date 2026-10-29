@@ -803,7 +803,7 @@ async fn settle_restore_failure(
                     agent
                         .extra
                         .insert("workspaceOperation".into(), json!("restore_recovery"));
-                    agent.extra.insert("status".into(), json!("interrupted"));
+                    agent.status = studio_runtime_store::AgentStatus::Interrupted;
                     agent.auto_wake = Some(false);
                     agent.extra.insert("error".into(), json!(message));
                 } else if agent

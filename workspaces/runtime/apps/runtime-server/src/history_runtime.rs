@@ -889,16 +889,10 @@ fn rollout_matches_thread(path: &Path, thread: &str) -> bool {
 }
 
 fn actor_matches_rollout(actor: &AgentRecord, account: &str, path: &Path) -> bool {
-    actor
-        .extra
-        .get("accountKey")
-        .and_then(Value::as_str)
-        .unwrap_or("default")
-        == account
+    actor.account_key == account
         && actor
-            .extra
-            .get("threadId")
-            .and_then(Value::as_str)
+            .thread_id
+            .as_deref()
             .is_some_and(|thread| rollout_matches_thread(path, thread))
 }
 
@@ -929,11 +923,7 @@ async fn read_roster_rows(
 fn is_retired(agent: &AgentRecord, settled: &BTreeMap<String, Value>) -> bool {
     let deleted_at = agent.extra.get("deletedAt").unwrap_or(&Value::Null);
     !deleted_at.is_null()
-        && (agent
-            .extra
-            .get("threadId")
-            .and_then(Value::as_str)
-            .is_none_or(str::is_empty)
+        && (agent.thread_id.as_deref().is_none_or(str::is_empty)
             || settled
                 .get(agent.id().as_ref())
                 .is_some_and(|value| value == deleted_at))
@@ -1033,9 +1023,8 @@ fn notify_all_agents(
 ) -> Result<(), HistoryError> {
     for actor in roster {
         if actor
-            .extra
-            .get("threadId")
-            .and_then(Value::as_str)
+            .thread_id
+            .as_deref()
             .is_some_and(|thread| !thread.is_empty())
         {
             runtime.collector.schedule.notify(actor.id().as_ref())?;
@@ -1050,16 +1039,10 @@ fn notify_account_agents(
     account: &str,
 ) -> Result<(), HistoryError> {
     for actor in roster.iter().filter(|actor| {
-        actor
-            .extra
-            .get("accountKey")
-            .and_then(Value::as_str)
-            .unwrap_or("default")
-            == account
+        actor.account_key == account
             && actor
-                .extra
-                .get("threadId")
-                .and_then(Value::as_str)
+                .thread_id
+                .as_deref()
                 .is_some_and(|thread| !thread.is_empty())
     }) {
         runtime.collector.schedule.notify(actor.id().as_ref())?;
@@ -1128,7 +1111,7 @@ mod tests {
         for value in [
             json!({"id":"a"}),
             json!({"id":"a", "threadId":""}),
-            json!({"id":"a", "threadId":"thread", "accountKey":null}),
+            json!({"id":"a", "threadId":"thread"}),
             json!({"id":"a", "threadId":"thread", "accountKey":"other", "deletedAt":{"at":1}}),
             json!({"id":"a", "threadId":"thread", "deletedAt":42}),
         ] {

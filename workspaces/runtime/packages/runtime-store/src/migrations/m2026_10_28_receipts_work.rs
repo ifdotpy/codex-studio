@@ -1035,7 +1035,7 @@ mod tests {
     fn source_run_selection_preserves_identity_and_nullable_attempt_evidence() {
         let db = fixture();
         db.execute_batch("CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,agent TEXT,account TEXT,epoch INTEGER,thread TEXT,turn TEXT,created REAL,record TEXT);").unwrap();
-        let agent = crate::AgentRecord::deserialize(
+        let agent = super::SourceAgent::deserialize(
             json!({"id":"a","rootId":"a","epoch":2,"status":"idle"}),
         )
         .unwrap();

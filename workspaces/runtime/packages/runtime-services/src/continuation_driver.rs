@@ -205,6 +205,25 @@ mod tests {
     use serde_json::json;
 
     #[tokio::test]
+    async fn failed_proposal_persists_cleared_in_flight() {
+        let root = tempfile::tempdir().unwrap();
+        let store = studio_runtime_store::RuntimeStore::open(Some(root.path()))
+            .await
+            .unwrap();
+        store.transaction_with_error(|tx| -> Result<()> {
+            let snapshot = Snapshot::from_records(json!({"agent":{"id":"a","rootId":"a","provider":"codex","epoch":1,"status":"running","inFlight":true}}))?;
+            studio_runtime_store::AgentRepository::put(tx, snapshot.agent_record())?;
+            let mut proposal = crate::continuation::ProposedAgent::new(&snapshot);
+            proposal.failed("excluded");
+            let decision = Decision { agent:Some(proposal), ..Decision::default() };
+            apply_in_transaction(tx, &snapshot, ContinuationTable::Usage, &decision, 1.0)?;
+            let saved = studio_runtime_store::AgentRepository::get(tx, &studio_runtime_store::AgentId::from("a"))?.unwrap();
+            assert_eq!(saved.in_flight, Some(false));
+            Ok(())
+        }).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn followup_uses_snapshot_agent_after_pending_settings_mutation() {
         let root = tempfile::tempdir().unwrap();
         let store = studio_runtime_store::RuntimeStore::open(Some(root.path()))

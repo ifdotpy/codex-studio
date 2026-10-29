@@ -768,7 +768,10 @@ impl ProposedAgent {
         if let Some(agent) = &mut self.identity {
             agent.set_status(studio_runtime_store::AgentStatus::Failed);
         }
-        self.set_extra("inFlight", json!(false));
+        self.evidence["inFlight"] = json!(false);
+        if let Some(agent) = &mut self.identity {
+            agent.in_flight = Some(false);
+        }
         self.set_extra("error", json!(reason));
     }
 }
