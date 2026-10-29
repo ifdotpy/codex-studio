@@ -795,7 +795,13 @@ pub fn evidence(state_dir: &Path, record: &Value, revision: &str) -> Result<Valu
             "Submit the full Layr state ID".into(),
         ));
     }
-    Ok(json!({"stateId":resolved,"projectId":record["layrProjectId"],"line":record["layrLine"]}))
+    Ok(json!(
+        studio_runtime_schema::layr_evidence::EvidenceResponse {
+            state_id: json!(resolved),
+            project_id: record["layrProjectId"].clone(),
+            line: record["layrLine"].clone(),
+        }
+    ))
 }
 
 pub fn merge(
