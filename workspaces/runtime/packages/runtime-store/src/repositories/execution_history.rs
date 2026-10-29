@@ -20,11 +20,11 @@ pub struct AttemptReceipt<I> {
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ExecutionRun<T = String> {
+pub struct ExecutionRun<T = String, E = serde_json::Number> {
     pub id: String,
     pub agent: String,
     pub account_key: String,
-    pub epoch: serde_json::Number,
+    pub epoch: E,
     pub created: serde_json::Number,
     #[serde(deserialize_with = "string_status")]
     pub status: ExecutionStatus,
@@ -838,6 +838,17 @@ mod tests {
             ("accountKey", json!([])),
             ("created", json!("1")),
             ("epoch", json!("1")),
+            ("epoch", json!(-1)),
+            ("epoch", json!(1.5)),
+            ("epoch", json!(1.0)),
+            (
+                "epoch",
+                json!(studio_runtime_schema::shared_values::MAX_SAFE_INTEGER),
+            ),
+            (
+                "epoch",
+                json!(studio_runtime_schema::shared_values::MAX_SAFE_INTEGER + 1),
+            ),
             ("status", json!("future")),
             ("threadId", json!(3)),
             ("turnId", json!({})),
@@ -851,7 +862,10 @@ mod tests {
             record[field] = value;
             let schema_valid =
                 studio_runtime_schema::validate("PersistedExecutionRunRecord", &record).unwrap();
-            let typed = JsonObject::<ExecutionRun<Value>>::deserialize(&record).is_ok();
+            let typed = JsonObject::<
+                ExecutionRun<Value, studio_runtime_schema::records::agent_projection::AgentCounter>,
+            >::deserialize(&record)
+            .is_ok();
             assert_eq!(typed, schema_valid, "{record}");
         }
     }
@@ -878,6 +892,10 @@ mod tests {
         assert!(decode("runtime_execution_runs", "run", raw).is_err());
         let null_raw = raw.replace(r#"{"future":true}"#, "null");
         assert!(decode("runtime_execution_runs", "run", &null_raw).is_ok());
+        let negative_epoch = null_raw.replace(r#""epoch":1"#, r#""epoch":-1"#);
+        assert!(decode("runtime_execution_runs", "run", &negative_epoch).is_ok());
+        let decimal_epoch = null_raw.replace(r#""epoch":1"#, r#""epoch":1.0"#);
+        assert!(decode("runtime_execution_runs", "run", &decimal_epoch).is_err());
     }
 
     #[test]

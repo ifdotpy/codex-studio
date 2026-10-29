@@ -108,7 +108,7 @@ impl WorkItemsRepository {
             )
             .optional()?;
         let raw = raw.ok_or_else(invalid)?;
-        let studio_runtime_schema::json_object::JsonObject(run): studio_runtime_schema::json_object::JsonObject<super::execution_history::ExecutionRun<Value>> =
+        let studio_runtime_schema::json_object::JsonObject(run): studio_runtime_schema::json_object::JsonObject<super::execution_history::ExecutionRun<Value, studio_runtime_schema::records::agent_projection::AgentCounter>> =
             serde_json::from_str(&raw).map_err(|_| {
                 // The older record owner reports malformed JSON or a missing ID at
                 // the agent pointer; schema errors are located at the run row.
@@ -120,16 +120,6 @@ impl WorkItemsRepository {
                     Err(_) => invalid(),
                 }
             })?;
-        if !run.epoch.as_f64().is_some_and(|epoch| {
-            epoch >= 0.0
-                && epoch <= studio_runtime_schema::shared_values::MAX_SAFE_INTEGER as f64
-                && epoch.fract() == 0.0
-        }) {
-            return Err(StoreError::InvalidStoredObject {
-                table: "runtime_execution_runs",
-                id: run.id.clone(),
-            });
-        }
         if run.id != id
             || run.agent != agent.id.0
             || !agent
@@ -138,7 +128,7 @@ impl WorkItemsRepository {
                 .map_or(run.account_key == "default", |value| {
                     *value == run.account_key
                 })
-            || run.epoch.as_i64() != Some(agent.epoch)
+            || run.epoch.as_number().as_i64() != Some(agent.epoch)
         {
             return Err(invalid());
         }

@@ -145,10 +145,14 @@ impl<'de> Deserialize<'de> for RootAgentEpoch {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(transparent)]
 pub struct AgentCounter(StoredJsonInteger);
 impl AgentCounter {
+    /// Original numeric spelling, retained for persisted wire compatibility.
+    pub fn as_number(&self) -> &Number {
+        self.0.number()
+    }
     /// Integer value after safe-range validation.
     pub fn as_i64(&self) -> i64 {
         // AgentCounter accepts only finite JSON numbers within the safe-integer range.
