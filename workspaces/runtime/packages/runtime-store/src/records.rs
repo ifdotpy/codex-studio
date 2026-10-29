@@ -661,7 +661,7 @@ impl JsonRecord for AgentRecord {
             .map(String::deserialize)
             .transpose()
             .map_err(decode)?
-            .unwrap_or_else(default_account_key);
+            .ok_or_else(|| invalid_agent_field(row_id, "accountKey", "record_decode", None))?;
         let thread_id = field(&mut fields, "threadId").map_err(decode)?;
         let turn_id = field(&mut fields, "turnId").map_err(decode)?;
         let title_job = field(&mut fields, "titleJob").map_err(decode)?;
