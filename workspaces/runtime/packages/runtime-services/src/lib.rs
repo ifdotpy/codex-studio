@@ -85,13 +85,13 @@ pub mod legacy_image_workspace;
 pub mod lifecycle_effects;
 pub mod limit_reset;
 pub mod linux_vm_guest;
-pub mod linux_vm_update;
 pub mod linux_vm_provider;
 #[cfg(unix)]
 pub mod linux_vm_runtime;
 pub mod linux_vm_settings;
 #[cfg(unix)]
 pub mod linux_vm_share;
+pub mod linux_vm_update;
 pub mod liveness;
 pub mod mac_sync;
 pub mod maintenance;
