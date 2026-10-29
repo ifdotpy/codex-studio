@@ -1152,49 +1152,73 @@ impl JsonRecord for UsageResumeRecord {
         None
     }
 }
-/// Checked operational fields plus the original extensible record. Retaining
-/// the original JSON preserves omission, nulls and historical extension fields.
+/// Historical public receipts validated these five fields and retained all other JSON.
 #[derive(Clone, Debug, PartialEq)]
-pub struct WorkItemRecord {
+pub struct LegacyWorkReply {
     value: Value,
     fields: WorkItemFields,
 }
-
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 struct WorkItemFields {
     id: TaskId,
     status: WorkStatus,
-    // WorkItem.dependencies owns the absent-field default. Present malformed
-    // values still fail deserialization, including null.
     #[serde(default)]
     dependencies: Vec<String>,
     owner: Option<String>,
-    // Omission retains the existing progress timestamp default. Present null
-    // or malformed timestamps cannot become a legitimate epoch-zero value.
     #[serde(default)]
     updated: f64,
 }
-
-impl Serialize for WorkItemRecord {
+impl Serialize for LegacyWorkReply {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         self.value.serialize(serializer)
     }
 }
-
-impl<'de> Deserialize<'de> for WorkItemRecord {
+impl<'de> Deserialize<'de> for LegacyWorkReply {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         Self::from_value(Value::deserialize(deserializer)?).map_err(serde::de::Error::custom)
     }
 }
+impl LegacyWorkReply {
+    pub fn id(&self) -> &TaskId {
+        &self.fields.id
+    }
+    pub fn get(&self, key: &str) -> Option<&Value> {
+        self.value.get(key)
+    }
+    pub fn from_value(value: Value) -> Result<Self, serde_json::Error> {
+        let fields = WorkItemFields::deserialize(&value)?;
+        Ok(Self { value, fields })
+    }
+    pub fn value(&self) -> &Value {
+        &self.value
+    }
+    pub fn into_value(self) -> Value {
+        self.value
+    }
+    pub fn set(&mut self, key: &str, value: Value) -> Result<(), serde_json::Error> {
+        let mut updated = self.value.clone();
+        updated[key] = value;
+        let updated = Self::from_value(updated)?;
+        if updated.fields.id != self.fields.id {
+            return Err(serde::de::Error::custom("work record id is immutable"));
+        }
+        *self = updated;
+        Ok(())
+    }
+}
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct WorkItemRecord(studio_runtime_schema::work_item_record::WorkItem);
 impl JsonRecord for WorkItemRecord {
     type Id = TaskId;
     const TABLE: &'static str = "runtime_work";
     const SCHEMA: &'static str = "PersistedWorkItemRecord";
     const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
     const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
+    const TYPED_SHAPE: bool = true;
     fn record_key(&self) -> Option<&Self::Id> {
-        Some(&self.fields.id)
+        Some(self.id())
     }
     fn decode_stored(_connection: &Connection, row_id: &str, encoded: &str) -> StoreResult<Self> {
         Self::decode(row_id, encoded)
@@ -1281,80 +1305,99 @@ record_newtype!(
 
 impl WorkItemRecord {
     pub fn from_value(value: Value) -> Result<Self, serde_json::Error> {
-        let fields = WorkItemFields::deserialize(&value)?;
-        Ok(Self { value, fields })
+        Self::deserialize(value)
     }
-
     pub fn checked(value: Value) -> StoreResult<Self> {
         let id = value
             .get("id")
             .and_then(Value::as_str)
             .unwrap_or("<unknown>")
             .to_owned();
-        Self::checked_at(value, &id)
+        Self::checked_at(&value, &id)
     }
-
-    fn checked_at(value: Value, row_id: &str) -> StoreResult<Self> {
+    fn checked_at(value: &Value, row_id: &str) -> StoreResult<Self> {
         #[cfg(test)]
         validation_counts::CHECKS.with(|count| count.set(count.get() + 1));
-        if let Some((pointer, reason)) = studio_runtime_schema::first_error(Self::SCHEMA, &value)
-            .map_err(crate::StoreError::SchemaValidation)?
-        {
-            return Err(crate::StoreError::InvalidSyncObjectField {
-                scope: Self::TABLE.into(),
-                id: row_id.to_owned(),
-                pointer,
-                reason,
-            });
+        match Self::deserialize(value) {
+            Ok(record) => Ok(record),
+            Err(error) => {
+                if let Some((pointer, reason)) =
+                    studio_runtime_schema::first_error(Self::SCHEMA, value)
+                        .map_err(crate::StoreError::SchemaValidation)?
+                {
+                    return Err(crate::StoreError::InvalidSyncObjectField {
+                        scope: Self::TABLE.into(),
+                        id: row_id.into(),
+                        pointer,
+                        reason,
+                    });
+                }
+                Err(crate::StoreError::InvalidSyncObjectField {
+                    scope: Self::TABLE.into(),
+                    id: row_id.into(),
+                    pointer: String::new(),
+                    reason: error.to_string(),
+                })
+            }
         }
-        Self::from_value(value).map_err(|error| crate::StoreError::InvalidSyncObjectField {
-            scope: Self::TABLE.into(),
-            id: row_id.to_owned(),
-            pointer: String::new(),
-            reason: error.to_string(),
-        })
     }
-
     pub fn decode(row_id: &str, encoded: &str) -> StoreResult<Self> {
         let invalid = || crate::StoreError::InvalidStoredObject {
             table: Self::TABLE,
-            id: row_id.to_owned(),
+            id: row_id.into(),
         };
-        let record = Self::checked_at(
-            serde_json::from_str(encoded).map_err(|_| invalid())?,
-            row_id,
-        )?;
+        let value = serde_json::from_str(encoded).map_err(|_| invalid())?;
+        let record = Self::checked_at(&value, row_id)?;
         if record.id().as_ref() != row_id {
             return Err(invalid());
         }
         Ok(record)
     }
-
     pub fn id(&self) -> &TaskId {
-        &self.fields.id
+        self.0.id()
     }
-    pub fn value(&self) -> &Value {
-        &self.value
+    pub fn value(&self) -> Value {
+        self.0.value()
     }
     pub fn into_value(self) -> Value {
-        self.value
+        self.0.into_value()
     }
     pub fn get(&self, key: &str) -> Option<&Value> {
-        self.value.get(key)
+        self.0.extra(key)
     }
     pub fn status(&self) -> WorkStatus {
-        self.fields.status
+        self.0.status()
     }
     pub fn dependencies(&self) -> &[String] {
-        &self.fields.dependencies
+        self.0.dependencies()
     }
     pub fn owner(&self) -> Option<&str> {
-        self.fields.owner.as_deref()
+        self.0.owner()
+    }
+    pub fn root_id(&self) -> Option<&str> {
+        self.0.root_id()
+    }
+    pub fn title(&self) -> Option<&str> {
+        self.0.title()
     }
     pub fn updated(&self) -> f64 {
-        self.fields.updated
+        self.0.updated()
     }
-
+    pub fn version(&self) -> Option<&serde_json::Number> {
+        self.0.version()
+    }
+    pub fn results(&self) -> Option<&[serde_json::Map<String, Value>]> {
+        self.0.results()
+    }
+    pub fn decisions(&self) -> Option<&[serde_json::Map<String, Value>]> {
+        self.0.decisions()
+    }
+    pub fn results_mut(&mut self) -> Option<&mut Vec<serde_json::Map<String, Value>>> {
+        self.0.results_mut()
+    }
+    pub fn decisions_mut(&mut self) -> Option<&mut Vec<serde_json::Map<String, Value>>> {
+        self.0.decisions_mut()
+    }
     pub fn blocked_by(&self, statuses: &BTreeMap<String, WorkStatus>) -> Vec<String> {
         self.dependencies()
             .iter()
@@ -1362,27 +1405,11 @@ impl WorkItemRecord {
             .cloned()
             .collect()
     }
-
     pub fn set(&mut self, key: impl Into<String>, value: Value) -> Result<(), serde_json::Error> {
-        let mut updated = self.value.clone();
-        updated[key.into()] = value;
-        let updated = Self::from_value(updated)?;
-        if updated.id() != self.id() {
-            return Err(<serde_json::Error as serde::de::Error>::custom(
-                "work record id is immutable",
-            ));
-        }
-        *self = updated;
-        Ok(())
+        self.0.set(key, value)
     }
-
-    pub fn title(&self) -> Option<&str> {
-        self.value.get("title").and_then(Value::as_str)
-    }
-
     pub fn set_status(&mut self, status: WorkStatus) {
-        self.value["status"] = serde_json::json!(status);
-        self.fields.status = status;
+        self.0.set_status(status);
     }
 }
 

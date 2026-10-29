@@ -1465,7 +1465,7 @@ async fn create_child(
             let work = studio_runtime_store::WorkItemsRepository::work_record(tx, task_id)?
                 .ok_or(OperationError::Invalid("Unknown task_id"))?;
             prompt.push_str(&studio_runtime_schema::task_results::assignment_text(
-                work.value(),
+                &work.value(),
             ));
         }
         let result = super::create_agent_with_identity(

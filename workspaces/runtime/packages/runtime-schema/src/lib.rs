@@ -60,6 +60,7 @@ pub mod transcript_record;
 pub mod usage;
 pub mod usage_limits;
 pub mod usage_resume_record;
+pub mod work_item_record;
 pub mod workspace_operation;
 
 pub use delivery::DeliveryMoment;

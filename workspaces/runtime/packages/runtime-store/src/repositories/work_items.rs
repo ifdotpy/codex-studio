@@ -174,13 +174,21 @@ impl WorkItemsRepository {
 
     pub fn update_work(connection: &Connection, id: &str, value: &Value) -> StoreResult<()> {
         let record = WorkItemRecord::checked(value.clone())?;
+        Self::update_checked_work(connection, id, &record)
+    }
+
+    pub fn update_checked_work(
+        connection: &Connection,
+        id: &str,
+        record: &WorkItemRecord,
+    ) -> StoreResult<()> {
         if record.id().as_ref() != id {
             return Err(StoreError::InvalidStoredObject {
                 table: WorkItemRecord::TABLE,
                 id: id.to_owned(),
             });
         }
-        Table::<WorkItemRecord>::new(connection).update(&record)?;
+        Table::<WorkItemRecord>::new(connection).update(record)?;
         Ok(())
     }
 
@@ -492,25 +500,59 @@ mod tests {
         WorkItemsRepository::put_work(&connection, "task", &raw).expect("insert");
         assert_eq!(
             WorkItemsRepository::work(&connection).expect("list")[0].value(),
-            &raw
+            raw
         );
         assert_eq!(
             WorkItemsRepository::work_record(&connection, "task")
                 .expect("get")
                 .expect("task")
                 .value(),
-            &raw
+            raw
         );
         assert_eq!(
             WorkItemsRepository::dependent_work(&connection, "lead", "parent").expect("dependents")
                 [0]
             .value(),
-            &raw
+            raw
         );
         connection.execute("UPDATE runtime_work SET record=json_set(record,'$.status','future') WHERE id='task'",[]).expect("corrupt status");
         assert!(WorkItemsRepository::work(&connection).is_err());
         assert!(WorkItemsRepository::work_record(&connection, "task").is_err());
         assert!(WorkItemsRepository::dependent_work(&connection, "lead", "parent").is_err());
+    }
+
+    #[test]
+    fn work_record_preserves_last_duplicate_and_checks_physical_identity() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch("CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL)")
+            .unwrap();
+        connection.execute("INSERT INTO runtime_work VALUES('task',?1)", [r#"{"id":"wrong","id":"task","status":"ready","owner":null,"version":1.0,"future":{"x":[9007199254740993]}}"#]).unwrap();
+        let record = WorkItemsRepository::work_record(&connection, "task")
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.owner(), None);
+        assert_eq!(record.version().unwrap().as_f64(), Some(1.0));
+        assert_eq!(
+            record.value()["future"]["x"][0],
+            json!(9007199254740993_u64)
+        );
+        let pointer = record.get("future").unwrap()["x"]
+            .as_array()
+            .unwrap()
+            .as_ptr();
+        let projected = record.into_value();
+        assert_eq!(
+            pointer,
+            projected["future"]["x"].as_array().unwrap().as_ptr()
+        );
+        connection
+            .execute(
+                "UPDATE runtime_work SET record=?1",
+                [r#"{"id":"other","status":"ready"}"#],
+            )
+            .unwrap();
+        assert!(WorkItemsRepository::work_record(&connection, "task").is_err());
     }
 
     #[test]

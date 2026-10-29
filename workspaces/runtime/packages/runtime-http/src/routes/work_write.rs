@@ -1727,10 +1727,10 @@ mod managed_work_port_tests {
                     studio_runtime_store::WorkItemsRepository::work_record(tx, &creator_task)?
                         .expect("created task exists");
                 record.set("createdBy", json!("worker"))?;
-                studio_runtime_store::WorkItemsRepository::update_work(
+                studio_runtime_store::WorkItemsRepository::update_checked_work(
                     tx,
                     &creator_task,
-                    record.value(),
+                    &record,
                 )
             })
             .await

@@ -26,7 +26,7 @@ pub fn work_list(root: &str, records: &[WorkItemRecord]) -> Value {
     let statuses = work_statuses(records);
     let items = records
         .iter()
-        .filter(|item| item.value()["rootId"] == root)
+        .filter(|item| item.root_id() == Some(root))
         .map(|item| work_item_view(item, &statuses))
         .collect::<Vec<_>>();
     json!({"items": items, "tasks": items})
@@ -40,7 +40,7 @@ pub fn work_statuses(records: &[WorkItemRecord]) -> BTreeMap<String, WorkStatus>
 }
 
 pub fn work_item_view(item: &WorkItemRecord, statuses: &BTreeMap<String, WorkStatus>) -> Value {
-    let mut view = item.value().clone();
+    let mut view = item.value();
     if let Some(fields) = view.as_object_mut() {
         for private in ["archiveIntent", "vmSubmit", "vmAccept", "resultFailures"] {
             fields.remove(private);
