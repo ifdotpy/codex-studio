@@ -176,7 +176,7 @@ impl OrchestrationSettingsRepository {
         Ok(())
     }
 
-    /// Claude idle compaction is off until the server setting enables it.
+    /// The stored Claude idle compaction setting; `Mode::Default` when none is stored.
     pub fn idle_compaction(
         connection: &Connection,
     ) -> StoreResult<studio_runtime_schema::idle_compaction::Settings> {
@@ -202,6 +202,14 @@ impl OrchestrationSettingsRepository {
             ));
         }
         Ok(settings)
+    }
+
+    /// The setting with the default mode resolved for a lead or a worker chat.
+    pub fn idle_compaction_for(
+        connection: &Connection,
+        agent: &serde_json::Value,
+    ) -> StoreResult<studio_runtime_schema::idle_compaction::Settings> {
+        Ok(Self::idle_compaction(connection)?.resolved(agent["isLead"] == true))
     }
 
     pub fn set_idle_compaction(

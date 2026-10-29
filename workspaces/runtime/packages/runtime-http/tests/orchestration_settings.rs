@@ -41,7 +41,7 @@ async fn call(app: &axum::Router, method: &str, body: Option<Value>) -> (u16, Va
 }
 
 fn settings(hold: Value, unload: Value) -> Value {
-    json!({ HOLD: hold, UNLOAD: unload, "idleCompaction":{"mode":"off","minTokens":150000}, "shellPolicy":{"quietThresholdMs":0,"pressureCleanup":true} })
+    json!({ HOLD: hold, UNLOAD: unload, "idleCompaction":{"mode":"default","minTokens":150000}, "shellPolicy":{"quietThresholdMs":0,"pressureCleanup":true} })
 }
 
 #[tokio::test]
@@ -119,7 +119,7 @@ async fn idle_compaction_modes_and_token_minimum_round_trip() {
         None,
     ))
     .unwrap();
-    for mode in ["off", "log", "compact", "compact_on_return"] {
+    for mode in ["default", "off", "log", "compact", "compact_on_return"] {
         let mut requested = settings(json!(10), json!(15));
         requested["idleCompaction"] = json!({"mode":mode,"minTokens":60000});
         let (status, body) = call(&app, "POST", Some(requested.clone())).await;

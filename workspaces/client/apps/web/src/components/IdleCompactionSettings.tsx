@@ -11,7 +11,7 @@ type Settings = NonNullable<
   GetResult<"/api/orchestration/settings">["settings"]["idleCompaction"]
 >;
 export const idleCompactionDefaults: Settings = {
-  mode: "off",
+  mode: "default",
   minTokens: IDLE_COMPACTION_DEFAULT_MIN_TOKENS,
 };
 
@@ -28,13 +28,17 @@ export function IdleCompactionSettings({
     <>
       <SettingsRow
         label="Claude idle compaction"
-        help="Compact an idle Claude conversation before its five-minute or one-hour cache expires. Compaction can start 30 seconds before unload. Compact on return prepares a summary. It keeps the history until the next input."
+        help="Compact an idle Claude conversation before its five-minute or one-hour cache expires. Compaction can start 30 seconds before unload. Compact on return prepares a summary. It keeps the history until the next input. By default, orchestrator chats use Compact on return and workers use Off. Compact on return costs one /compact request while idle, at the cached price. It saves an uncached full read when you return. The summary loses some early detail."
       >
         <NativeSelect
           aria-label="Claude idle compaction"
           value={value.mode}
           disabled={disabled}
           data={[
+            {
+              value: "default",
+              label: "Default (Compact on return for orchestrators)",
+            },
             { value: "off", label: "Off" },
             { value: "log", label: "Log only" },
             { value: "compact", label: "Compact" },

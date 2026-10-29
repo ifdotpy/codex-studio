@@ -85,7 +85,7 @@ pub fn observe(connection: &Connection, agent: &mut Value, raw: &Value) -> Resul
     if agent["provider"] != ProviderKind::Claude.key() {
         return Ok(());
     }
-    let cache: CacheReport = serde_json::from_value(raw.clone())
+    let cache: CacheReport = CacheReport::deserialize(raw)
         .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
     if cache.request_id.is_empty()
         || cache.prefix.is_empty()
@@ -100,7 +100,7 @@ pub fn observe(connection: &Connection, agent: &mut Value, raw: &Value) -> Resul
     if let Some(fields) = agent.as_object_mut() {
         fields.remove("idleSummaryPrepared");
     }
-    let settings = OrchestrationSettingsRepository::idle_compaction(connection)?;
+    let settings = OrchestrationSettingsRepository::idle_compaction_for(connection, agent)?;
     let lifetime = cache_seconds(&cache.ttl);
     if lifetime.is_none() || settings.mode == Mode::Off {
         if let Some(fields) = agent.as_object_mut() {
@@ -211,9 +211,8 @@ pub fn sync_unload_deadlines(
         .collect::<Result<Vec<_>, _>>()?;
     for (id, raw) in records {
         let mut agent: Value = serde_json::from_str(&raw)?;
-        let mut episode: Episode =
-            serde_json::from_value(agent["idleCompactionEpisode"].clone())
-                .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
+        let mut episode: Episode = Episode::deserialize(&agent["idleCompactionEpisode"])
+            .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
         if settled(connection, &episode.id)? {
             continue;
         }
@@ -372,7 +371,7 @@ pub fn handoff_refusal(
     agent: &Value,
     request: &str,
 ) -> Result<Option<&'static str>, StoreError> {
-    let episode: Episode = serde_json::from_value(agent["idleCompactionEpisode"].clone())
+    let episode: Episode = Episode::deserialize(&agent["idleCompactionEpisode"])
         .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
     if episode.id != request {
         return Ok(Some("newer_request"));
@@ -403,7 +402,7 @@ pub fn handoff_refusal(
     if reason.is_some() {
         return Ok(reason);
     }
-    let settings = OrchestrationSettingsRepository::idle_compaction(tx)?;
+    let settings = OrchestrationSettingsRepository::idle_compaction_for(tx, agent)?;
     Ok((settings.mode == Mode::Log).then_some("would_compact"))
 }
 
@@ -495,7 +494,8 @@ pub async fn fire(
                 return Ok(false);
             };
             let agent = agent.value();
-            let settings = OrchestrationSettingsRepository::idle_compaction(tx)?.with_environment();
+            let settings = OrchestrationSettingsRepository::idle_compaction_for(tx, &agent)?
+                .with_environment();
             let reason = check(tx, &candidate, &agent, &observation, now)?;
             if let Some(reason) = reason {
                 record(tx, &candidate, reason, now)?;

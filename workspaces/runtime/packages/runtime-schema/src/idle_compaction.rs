@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Mode {
+    /// No stored choice: `CompactOnReturn` for orchestrator chats (leads), `Off` for workers.
     #[default]
+    Default,
     Off,
     Log,
     Compact,
@@ -21,12 +23,24 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            mode: Mode::Off,
+            mode: Mode::Default,
             min_tokens: IDLE_COMPACTION_DEFAULT_MIN_TOKENS,
         }
     }
 }
 impl Settings {
+    /// The one owner of the per-chat default: replaces `Mode::Default` with the
+    /// concrete mode for a lead or a worker. An explicit mode is kept.
+    pub fn resolved(mut self, is_lead: bool) -> Self {
+        if self.mode == Mode::Default {
+            self.mode = if is_lead {
+                Mode::CompactOnReturn
+            } else {
+                Mode::Off
+            };
+        }
+        self
+    }
     pub fn valid(&self) -> bool {
         (IDLE_COMPACTION_MIN_TOKENS..=crate::shared_values::MAX_SAFE_INTEGER as u64)
             .contains(&self.min_tokens)
@@ -55,7 +69,20 @@ mod tests {
     use super::*;
     #[test]
     fn defaults_minimum_and_environment_override_match_the_claude_policy() {
-        assert_eq!(Settings::default().mode, Mode::Off);
+        assert_eq!(Settings::default().mode, Mode::Default);
+        assert_eq!(
+            Settings::default().resolved(true).mode,
+            Mode::CompactOnReturn
+        );
+        assert_eq!(Settings::default().resolved(false).mode, Mode::Off);
+        for mode in [Mode::Off, Mode::Log, Mode::Compact, Mode::CompactOnReturn] {
+            let explicit = Settings {
+                mode,
+                ..Settings::default()
+            };
+            assert_eq!(explicit.clone().resolved(true).mode, mode);
+            assert_eq!(explicit.resolved(false).mode, mode);
+        }
         assert_eq!(
             Settings::default().min_tokens,
             IDLE_COMPACTION_DEFAULT_MIN_TOKENS

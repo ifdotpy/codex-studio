@@ -27926,6 +27926,7 @@
           "mode": {
             "default": "off",
             "enum": [
+              "default",
               "off",
               "log",
               "compact",

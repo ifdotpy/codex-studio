@@ -13871,7 +13871,7 @@ export interface components {
        * @default off
        * @enum {string}
        */
-      mode: "off" | "log" | "compact" | "compact_on_return";
+      mode: "default" | "off" | "log" | "compact" | "compact_on_return";
     };
     /** IdRequest */
     IdRequest: {

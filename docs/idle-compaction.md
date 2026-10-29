@@ -5,7 +5,8 @@ Codex agents do not use this feature.
 
 Use **Settings > Agent orchestration > Claude idle compaction**:
 
-- **Off** is the default.
+- **Default** is the default. Orchestrator chats (leads) use **Compact on return**. Workers (implementers, reviewers, and other non-leads) use **Off**. A stored explicit mode applies to every chat and wins over this default.
+- **Off** never compacts.
 - **Log only** records `would_compact` and sends no compaction request.
 - **Compact** starts the existing native `/compact` turn.
 - **Compact on return** prepares a separate summary. The next input selects that summary after the source checks pass.
@@ -65,6 +66,15 @@ the same durable compaction admission settle. Queued input and active work retai
 priority. Studio does not use the remote-host environment gate.
 
 ### Compact on return
+
+**Compact on return** is on by default for orchestrator chats only. The
+`Settings::resolved` function in `runtime-schema/src/idle_compaction.rs` owns this default.
+A server with no stored setting gives a lead Compact on return and a worker Off.
+An explicit Off, Log only, Compact, or Compact on return applies to both.
+
+Cost: one `/compact` request while the chat is idle, at the cached price. Benefit:
+the return turn avoids an uncached full read of the context. The summary loses some
+early detail. The old session stays as a history branch.
 
 The additional **Compact on return** mode uses a separate native session:
 

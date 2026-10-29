@@ -11,9 +11,9 @@ import {
   IDLE_COMPACTION_MIN_TOKENS,
 } from "../generated/sharedValues";
 
-test("the Claude control defaults to off and shows all supported modes and the token bound", () => {
+test("the Claude control defaults to the lead and worker default and shows all supported modes and the token bound", () => {
   expect(idleCompactionDefaults).toEqual({
-    mode: "off",
+    mode: "default",
     minTokens: IDLE_COMPACTION_DEFAULT_MIN_TOKENS,
   });
   const html = renderToStaticMarkup(
@@ -27,7 +27,9 @@ test("the Claude control defaults to off and shows all supported modes and the t
       }),
     ),
   );
-  expect(html).toContain('value="off" selected');
+  expect(html).toContain('value="default" selected');
+  expect(html).toContain('value="off"');
+  expect(html).toContain("orchestrator chats use Compact on return");
   expect(html).toContain('value="log"');
   expect(html).toContain('value="compact"');
   expect(html).toContain(`aria-valuemin="${IDLE_COMPACTION_MIN_TOKENS}"`);

@@ -1485,7 +1485,8 @@ pub(super) fn submission_snapshot(
             .as_str()
             .is_some_and(|request| !request.is_empty())
         && record["idleSummaryPrepared"] == record["idleCompactionEpisode"]["id"]
-        && studio_runtime_store::OrchestrationSettingsRepository::idle_compaction(tx)?.mode
+        && studio_runtime_store::OrchestrationSettingsRepository::idle_compaction_for(tx, record)?
+            .mode
             == studio_runtime_schema::idle_compaction::Mode::CompactOnReturn;
     let restore = idle_summary_return || turn::needs_team_restore(&epoch, &delivered_manifests);
     let team_state = if restore {

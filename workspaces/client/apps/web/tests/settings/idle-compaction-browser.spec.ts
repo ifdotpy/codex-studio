@@ -22,7 +22,7 @@ test("Claude idle compaction settings and notice at 320 and 1200 pixels", async 
   let settings: components["schemas"]["OrchestrationSettings"] = {
     childResultCoalesceSeconds: 10,
     idleSessionUnloadMinutes: 15,
-    idleCompaction: { mode: "off", minTokens: 150000 },
+    idleCompaction: { mode: "default", minTokens: 150000 },
   };
   const saved: (typeof settings)[] = [];
   await page.route("**/api/orchestration/settings", async (route) => {

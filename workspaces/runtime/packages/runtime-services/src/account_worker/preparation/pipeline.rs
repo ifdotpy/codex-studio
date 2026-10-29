@@ -1927,12 +1927,17 @@ pub(crate) async fn prepare_ready(
     .map_err(|e| refusal(format!("thread-preparation/{e:?}")))?;
     apply_vm_reviewer_permissions(&mut params, vm_reviewer.as_ref());
     if snapshot.account.provider == studio_runtime_providers::ProviderKind::Claude {
+        let agent_id = intent.agent_id.clone();
         let mode = store
             .read_async(
                 "runtime-services/idle_compaction_input_mode",
-                |connection| {
-                    studio_runtime_store::OrchestrationSettingsRepository::idle_compaction(
-                        connection,
+                move |connection| {
+                    let agent =
+                        AgentRepository::get(connection, &AgentId::from(agent_id.as_str()))?
+                            .map(|agent| agent.value())
+                            .unwrap_or_default();
+                    studio_runtime_store::OrchestrationSettingsRepository::idle_compaction_for(
+                        connection, &agent,
                     )
                     .map(|settings| settings.mode)
                 },
@@ -2009,12 +2014,6 @@ pub(crate) fn commit(
     context: &Pending,
     guard: &CommitGuard,
 ) -> Result<(), WorkerError> {
-    if let Some(expected) = guard.idle_compaction_mode
-        && studio_runtime_store::OrchestrationSettingsRepository::idle_compaction(tx)?.mode
-            != expected
-    {
-        return Err(refusal("idle-compaction/mode-changed".into()));
-    }
     let record = stage("turn_submission.commit.preconditions", || {
         preconditions(
             tx,
@@ -2023,6 +2022,13 @@ pub(crate) fn commit(
             guard.prepared_host.as_ref(),
         )
     })?;
+    if let Some(expected) = guard.idle_compaction_mode
+        && studio_runtime_store::OrchestrationSettingsRepository::idle_compaction_for(tx, &record)?
+            .mode
+            != expected
+    {
+        return Err(refusal("idle-compaction/mode-changed".into()));
+    }
     let (identity, _) = catalog(&guard.resources, &context.intent)?;
     let mut frozen = guard
         .selection

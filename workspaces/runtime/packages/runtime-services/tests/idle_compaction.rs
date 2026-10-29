@@ -2,6 +2,7 @@
 
 #![allow(clippy::unwrap_used)]
 use rusqlite::Transaction;
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use studio_runtime_providers::{Method, RequestId, RequestTicket};
@@ -152,7 +153,7 @@ async fn fixture(path: &std::path::Path, mode: Mode) -> (Arc<RuntimeStore>, Epis
         let mut agent=json!({"id":"claude","rootId":"claude","epoch":1,"events":0,"provider":"claude","status":"idle","autoWake":true,"inFlight":false,"cwd":"/work","accountKey":"default","threadId":"thread","startAttempt":{"id":"previous"}});
         idle::observe(tx,&mut agent,&json!({"requestId":"response","ttl":"1h","warm":true,"lastActivityAt":(idle::wall_now()-3240.0)*1000.0,"contextTokens":210000,"prefix":"prefix"}))?;
         AgentRepository::put(tx,&AgentRecord::from_value(agent.clone()).unwrap())?;
-        serde_json::from_value(agent["idleCompactionEpisode"].clone()).map_err(|error|StoreError::SchemaMismatch(error.to_string()))
+        Episode::deserialize(&agent["idleCompactionEpisode"]).map_err(|error|StoreError::SchemaMismatch(error.to_string()))
     }).await.unwrap();
     (store, episode)
 }
@@ -218,8 +219,7 @@ async fn five_minute_sleep_episode_uses_actual_ttl_and_unload_deadline() {
                 &json!({"requestId":"short", "ttl":"5m", "warm":true,
             "lastActivityAt":100000.0,"contextTokens":150000,"prefix":"prefix"}),
             )?;
-            let episode: Episode =
-                serde_json::from_value(agent["idleCompactionEpisode"].clone()).unwrap();
+            let episode: Episode = Episode::deserialize(&agent["idleCompactionEpisode"]).unwrap();
             assert_eq!(episode.expires_at, 400.0);
             assert_eq!(episode.fire_at, 370.0);
             agent["idleCache"]["ttl"] = json!("5m");
@@ -260,8 +260,7 @@ async fn actual_unload_deadline_advances_one_episode_and_its_receipt_releases_un
             let agent = AgentRepository::get(tx, &AgentId::from("claude"))?
                 .unwrap()
                 .value();
-            let episode: Episode =
-                serde_json::from_value(agent["idleCompactionEpisode"].clone()).unwrap();
+            let episode: Episode = Episode::deserialize(&agent["idleCompactionEpisode"]).unwrap();
             assert!((episode.fire_at - (now + 90.0)).abs() < 0.001);
             assert!(!idle::pending_before_unload(
                 tx,
@@ -307,7 +306,7 @@ async fn actual_unload_deadline_advances_one_episode_and_its_receipt_releases_un
                 .unwrap()
                 .value();
             let immediate: Episode =
-                serde_json::from_value(immediate["idleCompactionEpisode"].clone()).unwrap();
+                Episode::deserialize(&immediate["idleCompactionEpisode"]).unwrap();
             assert_eq!(immediate.fire_at, now);
             Ok::<_, StoreError>(immediate)
         })
@@ -656,7 +655,7 @@ async fn compact_boundary_writes_the_notice_once_and_advances_the_roster_epoch()
         AgentRepository::put(tx,&AgentRecord::from_value(agent).unwrap())?;
         let mut value=json!({"method":"item/completed","params":{"threadId":"thread","turnId":"compact-turn","item":{"id":"compact-boundary","type":"contextCompaction","status":"completed"}}});
         if deferred { value["params"]["item"]["idleCompactionRequestId"]=json!(id);value["params"]["item"]["idleCompactionOnReturn"]=json!(true); }
-        let frame=match studio_runtime_providers::decode_journal_entry_borrowed(1, 1, format!("{value}\n").as_bytes()).payload { studio_runtime_providers::DecodedJournalPayload::Frame(frame) => frame, other => panic!("fixture must decode: {other:?}"), };
+        let frame=match studio_runtime_providers::decode_journal_entry_borrowed(1, 1, format!("{value}\n").as_bytes()).payload { studio_runtime_providers::DecodedJournalPayload::Frame(frame) => frame, other @ studio_runtime_providers::DecodedJournalPayload::RawStdout { .. } => panic!("fixture must decode: {other:?}"), };
         for _ in 0..2 {
             studio_runtime_services::notification_dispatch::dispatch_notification(tx,"claude",
                 &studio_runtime_services::notification_dispatch::PublicationContext::default(),
@@ -739,4 +738,51 @@ async fn cache_notification_replaces_the_timer_without_changing_token_accounting
         Ok::<_,studio_runtime_services::notification_dispatch::NotificationDispatchError>(())
     }).await.unwrap();
     assert!(idle::next(&store).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn default_mode_arms_leads_only_and_an_explicit_mode_wins() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
+    let armed = |lead: bool| {
+        let store = store.clone();
+        async move {
+            store.transaction(move |tx| {
+                let mut agent = json!({"id":"claude","rootId":"claude","epoch":1,"events":0,"provider":"claude","status":"idle","autoWake":true,"inFlight":false,"cwd":"/work","accountKey":"default","threadId":"thread","isLead":lead,"startAttempt":{"id":"previous"}});
+                idle::observe(tx,&mut agent,&json!({"requestId":"response","ttl":"1h","warm":true,"lastActivityAt":(idle::wall_now()-3240.0)*1000.0,"contextTokens":210000,"prefix":"prefix"}))?;
+                Ok(agent["idleCompactionEpisode"].is_object())
+            }).await.unwrap()
+        }
+    };
+    // No stored setting: the default applies.
+    assert!(armed(true).await, "a lead is armed by default");
+    assert!(!armed(false).await, "a worker is off by default");
+    // Explicit Off wins for a lead.
+    store
+        .transaction(|tx| {
+            OrchestrationSettingsRepository::set_idle_compaction(
+                tx,
+                &Settings {
+                    mode: Mode::Off,
+                    min_tokens: 200000,
+                },
+            )
+        })
+        .await
+        .unwrap();
+    assert!(!armed(true).await, "explicit Off stays Off for a lead");
+    // Explicit Compact wins for a worker.
+    store
+        .transaction(|tx| {
+            OrchestrationSettingsRepository::set_idle_compaction(
+                tx,
+                &Settings {
+                    mode: Mode::Compact,
+                    min_tokens: 200000,
+                },
+            )
+        })
+        .await
+        .unwrap();
+    assert!(armed(false).await, "explicit Compact arms a worker");
 }
