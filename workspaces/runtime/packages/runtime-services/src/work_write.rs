@@ -486,7 +486,7 @@ async fn run_accepted_archive(
                 Some(response) => response,
                 None => LegacyWorkReply::from_value(work_item_view(
                     tx,
-                    &WorkItemRecord::checked(current)?,
+                    &WorkItemRecord::checked(&current)?,
                 )?)
                 .map_err(studio_runtime_store::StoreError::from)?,
             };
@@ -2060,7 +2060,7 @@ fn write_internal(
         WorkWrite::Accept(input) => accept(tx, &agent, input, actor_id, request_id, signature),
     }?;
     if let Some(token) = admitted {
-        let typed = WorkItemRecord::checked(result.record.clone())?;
+        let typed = WorkItemRecord::checked(&result.record)?;
         if is_accept && result.record["archivePending"] == true {
             let mut work = WorkItemsRepository::work_record(tx, typed.id().as_ref())?
                 .ok_or(Error::InvalidRequest("Unknown work item"))?
@@ -2659,7 +2659,7 @@ fn advance_checked(record: &mut WorkItemRecord, now: f64) -> Result<(), Error> {
         raw["version"] = json!(next);
         raw["updated"] = json!(now);
         return Err(Error::Store(
-            WorkItemRecord::checked(raw).expect_err("invalid advance"),
+            WorkItemRecord::checked(&raw).expect_err("invalid advance"),
         ));
     }
     Ok(())
@@ -2781,7 +2781,7 @@ fn create(
     if let Some(schema) = input.result_schema {
         work["resultSchema"] = schema;
     }
-    let view = single_view(tx, &WorkItemRecord::checked(work.clone())?)?;
+    let view = single_view(tx, &WorkItemRecord::checked(&work)?)?;
     if !WorkItemsRepository::put_work(tx, &id, &work)? {
         return Err(Error::Conflict("Work item already exists"));
     }
@@ -2900,7 +2900,7 @@ fn mutate(
             {
                 event_write::assert_delegation(&root_agent(tx, agent)?)?;
             }
-            let view = single_view(tx, &WorkItemRecord::checked(work.clone())?)?;
+            let view = single_view(tx, &WorkItemRecord::checked(&work)?)?;
             let current_owner = work["owner"].as_str();
             let changed = current_owner != owner.as_deref();
             let ready = is_ready(&view);
@@ -2924,7 +2924,7 @@ fn mutate(
         WorkMutation::Cancel { reason, .. } => {
             let reason = text(&reason, false)?;
             if status == WorkStatus::Cancelled {
-                let view = single_view(tx, &WorkItemRecord::checked(work.clone())?)?;
+                let view = single_view(tx, &WorkItemRecord::checked(&work)?)?;
 
                 return Ok(WorkWriteResult {
                     record: view,
@@ -3012,7 +3012,7 @@ fn mutate(
             .ok_or_else(|| invalid("runtime_agents", &owner_id))?;
         wake |= queue_assignment(tx, &recipient, &work)?;
     }
-    let view = single_view(tx, &WorkItemRecord::checked(work.clone())?)?;
+    let view = single_view(tx, &WorkItemRecord::checked(&work)?)?;
 
     Ok(WorkWriteResult {
         record: view,
@@ -3383,7 +3383,7 @@ fn refuse_result(
             json!({"task":work["id"],"owner":owner.id.0,"version":work["version"],"refusal":refusal}).to_string(),
             event_write::unix_time()?)?;
     }
-    let mut record = single_view(tx, &WorkItemRecord::checked(current)?)?;
+    let mut record = single_view(tx, &WorkItemRecord::checked(&current)?)?;
     record["submissionRefusal"] = refusal;
     studio_runtime_store::entity_publication::mark_stale(
         "work",
@@ -4116,8 +4116,8 @@ mod actor_tests {
         let store = Arc::new(RuntimeStore::open(Some(dir.path())).await.expect("store"));
         let mut response = work("finished", Some("worker"), "accepted", json!([]));
         response["archivePending"] = json!(true);
-        let pending = studio_runtime_store::WorkItemRecord::checked(response.clone())
-            .expect("public response");
+        let pending =
+            studio_runtime_store::WorkItemRecord::checked(&response).expect("public response");
         store
             .transaction_with(move |tx| WorkItemsRepository::put_work(tx, "finished", &response))
             .await

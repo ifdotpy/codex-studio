@@ -585,7 +585,7 @@ async fn commit(
     if is_accept && result.record["status"] == "accepted" {
         let result = work_write::finalize_accepted_archive(
             store,
-            WorkItemRecord::checked(result.record).map_err(ApiError::stored)?,
+            WorkItemRecord::checked(&result.record).map_err(ApiError::stored)?,
         )
         .await
         .map_err(write_error)?;

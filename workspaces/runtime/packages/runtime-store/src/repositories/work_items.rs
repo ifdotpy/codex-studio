@@ -162,7 +162,7 @@ impl WorkItemsRepository {
     }
 
     pub fn put_work(connection: &Connection, id: &str, value: &Value) -> StoreResult<bool> {
-        let record = WorkItemRecord::checked(value.clone())?;
+        let record = WorkItemRecord::checked(value)?;
         if record.id().as_ref() != id {
             return Err(StoreError::InvalidStoredObject {
                 table: WorkItemRecord::TABLE,
@@ -173,7 +173,7 @@ impl WorkItemsRepository {
     }
 
     pub fn update_work(connection: &Connection, id: &str, value: &Value) -> StoreResult<()> {
-        let record = WorkItemRecord::checked(value.clone())?;
+        let record = WorkItemRecord::checked(value)?;
         Self::update_checked_work(connection, id, &record)
     }
 
@@ -214,6 +214,8 @@ impl WorkItemsRepository {
         let reason: String = reason.chars().take(500).collect();
         let mut released = Vec::with_capacity(rows.len());
         for (id, raw) in rows {
+            // Release historically repairs fields such as a negative version before
+            // the checked write, so this mutation boundary must retain raw input.
             let mut record: Value =
                 serde_json::from_str(&raw).map_err(|_| crate::StoreError::InvalidStoredObject {
                     table: "runtime_work",
@@ -285,7 +287,7 @@ impl WorkItemsRepository {
     }
 
     pub fn validate_work(_connection: &Connection, id: &str, value: &Value) -> StoreResult<()> {
-        let record = WorkItemRecord::checked(value.clone())?;
+        let record = WorkItemRecord::checked(value)?;
         if record.id().as_ref() != id {
             return Err(StoreError::InvalidStoredObject {
                 table: WorkItemRecord::TABLE,
@@ -553,6 +555,34 @@ mod tests {
             )
             .unwrap();
         assert!(WorkItemsRepository::work_record(&connection, "task").is_err());
+    }
+
+    #[test]
+    fn release_preserves_historical_negative_version_repair() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch("CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL)")
+            .unwrap();
+        let value = json!({"id":"task", "owner":"worker", "status":"running", "version":-1, "future":{"proof":true}});
+        connection
+            .execute(
+                "INSERT INTO runtime_work VALUES('task',?1)",
+                [value.to_string()],
+            )
+            .unwrap();
+        let released =
+            WorkItemsRepository::release_failed_work(&connection, "worker", "lost", 4.0).unwrap();
+        assert_eq!(released.len(), 1);
+        assert_eq!(released[0]["version"], 0);
+        assert_eq!(released[0]["owner"], serde_json::Value::Null);
+        assert_eq!(released[0]["future"], value["future"]);
+        assert_eq!(
+            WorkItemsRepository::work_record(&connection, "task")
+                .unwrap()
+                .unwrap()
+                .into_value(),
+            released[0]
+        );
     }
 
     #[test]

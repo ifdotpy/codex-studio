@@ -146,7 +146,7 @@ mod tests {
 
     #[test]
     fn work_public_projection_excludes_private_effect_authority() {
-        let record=studio_runtime_store::WorkItemRecord::checked(json!({"id":"work","rootId":"root","status":"accepted","dependencies":[],"title":"Title","archiveIntent":{"publicAdmission":{"id":"private"}},"vmSubmit":{"publicAdmission":{"id":"private"}},"vmAccept":{"publicAdmission":{"id":"private"}},"resultFailures":{"errors":[]}})).expect("owner");
+        let record=studio_runtime_store::WorkItemRecord::checked(&json!({"id":"work","rootId":"root","status":"accepted","dependencies":[],"title":"Title","archiveIntent":{"publicAdmission":{"id":"private"}},"vmSubmit":{"publicAdmission":{"id":"private"}},"vmAccept":{"publicAdmission":{"id":"private"}},"resultFailures":{"errors":[]}})).expect("owner");
         let view = super::work_item_view(&record, &std::collections::BTreeMap::new());
         assert_eq!(view["title"], "Title");
         assert!(!view.to_string().contains("private"));
@@ -178,7 +178,6 @@ mod tests {
                 .as_array()
                 .expect("work records are an array")
                 .iter()
-                .cloned()
                 .map(studio_runtime_store::WorkItemRecord::checked)
                 .collect::<Result<Vec<_>, _>>()
                 .expect("typed records"),

@@ -1307,13 +1307,13 @@ impl WorkItemRecord {
     pub fn from_value(value: Value) -> Result<Self, serde_json::Error> {
         Self::deserialize(value)
     }
-    pub fn checked(value: Value) -> StoreResult<Self> {
+    pub fn checked(value: &Value) -> StoreResult<Self> {
         let id = value
             .get("id")
             .and_then(Value::as_str)
             .unwrap_or("<unknown>")
             .to_owned();
-        Self::checked_at(&value, &id)
+        Self::checked_at(value, &id)
     }
     fn checked_at(value: &Value, row_id: &str) -> StoreResult<Self> {
         #[cfg(test)]
@@ -2508,8 +2508,8 @@ mod tests {
             json!([])
         );
         let raw = json!({"id":"work","status":"ready","owner":null,"futureField":{"proof":7}});
-        let record = WorkItemRecord::checked(raw.clone())
-            .expect("nullable owner and absent default dependencies");
+        let record =
+            WorkItemRecord::checked(&raw).expect("nullable owner and absent default dependencies");
         assert_eq!(record.status(), WorkStatus::Ready);
         assert_eq!(record.owner(), None);
         assert!(record.dependencies().is_empty());
