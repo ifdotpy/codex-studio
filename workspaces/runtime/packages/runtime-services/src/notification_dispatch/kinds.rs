@@ -36,6 +36,15 @@ pub(super) fn apply(
         return Ok(Some(DispatchOutcome::Written));
     }
     if method == "thread/idleCompaction/updated" {
+        if let Some(request) = p["preparedSummary"]["requestId"].as_str() {
+            if agent["idleCompactionEpisode"]["id"] == request
+                && crate::idle_compaction::settled(tx, request)?
+            {
+                agent["idleSummaryPrepared"] = json!(request);
+                persist_agent(tx, &id, agent)?;
+            }
+            return Ok(Some(DispatchOutcome::Written));
+        }
         #[derive(serde::Deserialize)]
         #[serde(rename_all = "camelCase")]
         struct StoredEpisode {
@@ -287,9 +296,14 @@ pub(super) fn apply(
                 put_task(tx, &task)?;
             }
             if decision.compacted {
-                if let Some(request_id) = agent["startAttempt"]["actionRequestId"]
-                    .as_str()
-                    .map(str::to_owned)
+                let deferred = p["item"]["idleCompactionOnReturn"] == true
+                    && p["item"]["idleCompactionRequestId"] == agent["idleCompactionEpisode"]["id"];
+                if let Some(request_id) = if deferred {
+                    p["item"]["idleCompactionRequestId"].as_str()
+                } else {
+                    agent["startAttempt"]["actionRequestId"].as_str()
+                }
+                .map(str::to_owned)
                     && agent["idleCompactionEpisode"]["id"].as_str() == Some(request_id.as_str())
                 {
                     agent["idleCompactionEpisode"]["outcome"] =
@@ -300,7 +314,11 @@ pub(super) fn apply(
                         &id,
                         &format!("{request_id}:notice"),
                         ("system", "Idle compaction"),
-                        crate::idle_compaction::NOTICE,
+                        if deferred {
+                            crate::idle_compaction::ON_RETURN_NOTICE
+                        } else {
+                            crate::idle_compaction::NOTICE
+                        },
                         json!({"idleCompaction":true}),
                         at,
                     )?;

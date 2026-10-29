@@ -15,6 +15,7 @@ import type { TurnStatus } from "./codex-generated/TurnStatus.ts";
 import type {
   Options,
   RewindFilesResult,
+  SDKCompactBoundaryMessage,
   SessionMessage,
   SessionStartHookInput,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -62,6 +63,18 @@ export interface TurnError {
       })
     | undefined;
 }
+export interface IdleSummaryReceipt {
+  requestId: string;
+  status: "preparing" | "ready" | "failed" | "discarded" | "applied";
+  sourceNativeId: string;
+  sourceFingerprint: string;
+  prefix: string;
+  cacheRequestId: string;
+  targetNativeId?: string | undefined;
+  targetFingerprint?: string | undefined;
+  metadata?: SDKCompactBoundaryMessage["compact_metadata"] | undefined;
+  noticePending?: boolean | undefined;
+}
 export interface Item {
   id?: string | undefined;
   type?: string | undefined;
@@ -80,6 +93,8 @@ export interface Item {
   outputFile?: string | undefined;
   stalled?: boolean | undefined;
   compactionMetadata?: unknown;
+  idleCompactionRequestId?: string | undefined;
+  idleCompactionOnReturn?: boolean | undefined;
   clientId?: string | undefined;
   elapsedSeconds?: number | undefined;
   phase?: string | undefined;
@@ -237,6 +252,8 @@ export interface Session {
   studioImageWorkspaceTempDir?: string | undefined;
   claudeVersion?: string | undefined;
   idleCache?: CacheReport | undefined;
+  // A prepared on-return summary. Its fork is a separate native session.
+  idleSummary?: IdleSummaryReceipt | undefined;
   contextWindow?: number | undefined;
   totalTokens?: number | undefined;
 }

@@ -10,6 +10,7 @@ use studio_runtime_store::Transaction;
 use studio_runtime_store::path_identity::CanonicalPath;
 
 pub(crate) struct CommitGuard {
+    idle_compaction_mode: Option<studio_runtime_schema::idle_compaction::Mode>,
     native_params: Option<Value>,
     selection: gates::ExecutionSelection,
     token: crate::workspace_ready::ReadyToken,
@@ -1857,6 +1858,7 @@ pub(crate) async fn prepare_ready(
         })
         .await?;
     let mut guard = CommitGuard {
+        idle_compaction_mode: None,
         native_params: None,
         selection,
         token,
@@ -1927,6 +1929,30 @@ pub(crate) async fn prepare_ready(
     )
     .map_err(|e| refusal(format!("thread-preparation/{e:?}")))?;
     apply_vm_reviewer_permissions(&mut params, vm_reviewer.as_ref());
+    if snapshot.account.provider == studio_runtime_providers::ProviderKind::Claude {
+        let agent_id = intent.agent_id.clone();
+        let mode = store
+            .read_async(
+                "runtime-services/idle_compaction_input_mode",
+                move |connection| {
+                    let agent =
+                        AgentRepository::get(connection, &AgentId::from(agent_id.as_str()))?
+                            .map(|agent| agent.value())
+                            .unwrap_or_default();
+                    studio_runtime_store::OrchestrationSettingsRepository::idle_compaction_for(
+                        connection, &agent,
+                    )
+                    .map(|settings| settings.mode)
+                },
+            )
+            .await?;
+        params.insert("idleCompactionMode".into(), json!(mode));
+        params.insert(
+            "idleSummaryRosterIncluded".into(),
+            json!(turn_snapshot.idle_summary_return),
+        );
+        guard.idle_compaction_mode = Some(mode);
+    }
     params.insert("input".into(), json!(compiled.provider_inputs));
     params.insert(
         "clientUserMessageId".into(),
@@ -1999,6 +2025,13 @@ pub(crate) fn commit(
             guard.prepared_host.as_ref(),
         )
     })?;
+    if let Some(expected) = guard.idle_compaction_mode
+        && studio_runtime_store::OrchestrationSettingsRepository::idle_compaction_for(tx, &record)?
+            .mode
+            != expected
+    {
+        return Err(refusal("idle-compaction/mode-changed".into()));
+    }
     let (identity, _) = catalog(&guard.resources, &context.intent)?;
     let mut frozen = guard
         .selection

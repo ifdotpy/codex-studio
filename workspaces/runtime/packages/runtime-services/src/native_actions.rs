@@ -649,6 +649,13 @@ pub fn claim(tx: &Transaction<'_>, id: &str, ticket: &ProviderTicket) -> Result<
     if intent.idle.is_some() {
         params["requestId"] = json!(r.request_id);
         params["idleCompaction"] = snapshot.agent["idleCompactionEpisode"]["cache"].clone();
+        params["idleCompaction"]["mode"] = json!(
+            studio_runtime_store::OrchestrationSettingsRepository::idle_compaction_for(
+                tx,
+                &snapshot.agent
+            )?
+            .mode
+        );
     }
     let request = NativeRequest {
         root_request_id: snapshot.agent["startAttempt"]["rootRequestId"]

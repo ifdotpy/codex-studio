@@ -731,9 +731,11 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
         values::MAX_SAFE_INTEGER,
     )?;
     let modes = serde_json::to_value([
+        crate::idle_compaction::Mode::Default,
         crate::idle_compaction::Mode::Off,
         crate::idle_compaction::Mode::Log,
         crate::idle_compaction::Mode::Compact,
+        crate::idle_compaction::Mode::CompactOnReturn,
     ])
     .map_err(|error| error.to_string())?;
     if openapi.pointer("/components/schemas/IdleCompactionSettings/properties/mode/enum")
