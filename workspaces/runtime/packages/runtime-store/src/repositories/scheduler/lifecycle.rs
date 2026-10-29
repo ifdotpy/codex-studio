@@ -53,12 +53,8 @@ impl SchedulerRepository {
                 },
             ));
             agent.status = AgentStatus::Interrupted;
-            agent
-                .extra
-                .insert("inFlight".into(), crate::projection_value(&false));
-            agent
-                .extra
-                .insert("autoWake".into(), crate::projection_value(&false));
+            agent.in_flight = Some(false);
+            agent.auto_wake = Some(false);
             agent.extra.insert(
                 "error".into(),
                 crate::projection_value(&Self::UNCLEAN_START_HOLD),

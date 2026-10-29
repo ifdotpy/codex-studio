@@ -752,7 +752,10 @@ impl JsonRecord for AgentRecord {
         let auto_wake = field(&mut fields, "autoWake").map_err(decode)?;
         let execution_mode = field(&mut fields, "executionMode").map_err(decode)?;
         let turn_epoch = field(&mut fields, "turnEpoch").map_err(decode)?;
-        let account_key = field(&mut fields, "accountKey")
+        let account_key = fields
+            .remove("accountKey")
+            .map(String::deserialize)
+            .transpose()
             .map_err(decode)?
             .unwrap_or_else(default_account_key);
         let thread_id = field(&mut fields, "threadId").map_err(decode)?;
@@ -3061,7 +3064,7 @@ mod agent_projection_tests {
             .unwrap();
         db.execute_batch(crate::agent_volatile::agent_volatile_table_sql())
             .unwrap();
-        let raw = json!({"id":"a","rootId":"r","epoch":1,"status":"idle", "accountKey":null,
+        let raw = json!({"id":"a","rootId":"r","epoch":1,"status":"idle", "accountKey":"default",
             "events":1.0,"agentArchive":{"at":1.5,"epoch":1.0},"future":{"x":[1,null]},
             "titleJob":{"legacy":true},"startOutcomeHold":{"stage":"held","reason":"pending"},"firedEvents":["one"]});
         db.execute(
@@ -3074,6 +3077,39 @@ mod agent_projection_tests {
             .unwrap()
             .unwrap();
         assert_eq!(record.into_value(), raw);
+    }
+
+    #[test]
+    fn stored_agent_account_key_defaults_only_when_missing() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+            .unwrap();
+        db.execute_batch(crate::agent_volatile::agent_volatile_table_sql())
+            .unwrap();
+        for (account, valid) in [
+            (None, true),
+            (Some(json!(null)), false),
+            (Some(json!(12)), false),
+            (Some(json!("custom")), true),
+        ] {
+            let mut raw = json!({"id":"a","rootId":"a","epoch":1,"status":"idle"});
+            if let Some(value) = account {
+                raw["accountKey"] = value;
+            }
+            db.execute(
+                "INSERT OR REPLACE INTO runtime_agents VALUES ('a', ?1)",
+                [raw.to_string()],
+            )
+            .unwrap();
+            let result = Table::<AgentRecord>::new(&db).get(&AgentId::from("a"));
+            assert_eq!(result.is_ok(), valid, "{raw}");
+            if valid {
+                assert_eq!(
+                    result.unwrap().unwrap().account_key,
+                    raw["accountKey"].as_str().unwrap_or("default")
+                );
+            }
+        }
     }
 
     #[test]
