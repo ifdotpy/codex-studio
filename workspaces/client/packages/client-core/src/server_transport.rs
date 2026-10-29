@@ -40,13 +40,44 @@ fn transport_diagnostic(method: &str, url: &reqwest::Url, status: u16, kind: &st
     );
 }
 
-// The producer owns the protocol version in runtime-schema. Keep the refusal
-// separate from an accepted receipt so it cannot install a credential.
+// These fields are the complete pairing ingress. Identity evidence remains JSON:
+// an existing draft can be retried with values that predate string validation.
+struct PairIngress {
+    code: Option<String>,
+    protocol: Option<u64>,
+    paired: Option<bool>,
+    server_id: Value,
+    client_id: Value,
+    origin: Value,
+    public_key: Value,
+    tailscale_user: Value,
+    label: Option<String>,
+}
+
+impl<'de> serde::Deserialize<'de> for PairIngress {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let mut fields =
+            <serde_json::Map<String, Value> as serde::Deserialize>::deserialize(deserializer)?;
+        let mut take = |name| fields.remove(name).unwrap_or(Value::Null);
+        Ok(Self {
+            code: take("code").as_str().map(str::to_owned),
+            protocol: take("protocol").as_u64(),
+            paired: take("paired").as_bool(),
+            server_id: take("serverId"),
+            client_id: take("clientId"),
+            origin: take("origin"),
+            public_key: take("publicKey"),
+            tailscale_user: take("tailscaleUser"),
+            label: take("label").as_str().map(str::to_owned),
+        })
+    }
+}
+
 struct PairReceipt {
     server_id: String,
     label: String,
-    public_key: Option<String>,
-    tailscale_user: Option<String>,
+    public_key: Value,
+    tailscale_user: Value,
 }
 
 enum PairReply {
@@ -61,39 +92,37 @@ fn pair_reply(
     draft: &Value,
     origin: &str,
 ) -> Result<PairReply, String> {
-    let value: Value = serde_json::from_slice(bytes)
+    // Parse JSON syntax independently from HTTP status; even a refusal with
+    // invalid JSON has always reported an invalid reply.
+    let raw: Box<serde_json::value::RawValue> = serde_json::from_slice(bytes)
         .map_err(|_| "Invalid pairing reply. Retry the same invitation.")?;
-    if status.as_u16() == 403 && value["code"] == "invite_unavailable" {
+    let ingress: Option<PairIngress> = serde_json::from_str(raw.get()).ok();
+    if status.as_u16() == 403
+        && ingress.as_ref().and_then(|reply| reply.code.as_deref()) == Some("invite_unavailable")
+    {
         return Ok(PairReply::InviteUnavailable);
     }
     if !status.is_success() {
         return Err("Pairing failed. Retry the same invitation.".into());
     }
-    if value["protocol"] != studio_runtime_schema::multi_server_protocol::ACCESS_PROTOCOL_VERSION
-        || value["paired"] != true
-        || value["serverId"] != invitation["serverId"]
-        || value["clientId"] != draft["clientId"]
-        || server_keys::origin(field(&value, "origin")?)? != origin
-        || value["publicKey"] != invitation["publicKey"]
-        || value["tailscaleUser"] != invitation["tailscaleUser"]
+    let receipt = ingress.ok_or("The pairing reply does not match the invitation.")?;
+    if receipt.protocol
+        != Some(studio_runtime_schema::multi_server_protocol::ACCESS_PROTOCOL_VERSION)
+        || receipt.paired != Some(true)
+        || receipt.server_id != invitation["serverId"]
+        || receipt.client_id != draft["clientId"]
+        || server_keys::origin(field(&json!({"origin": receipt.origin}), "origin")?)? != origin
+        || receipt.public_key != invitation["publicKey"]
+        || receipt.tailscale_user != invitation["tailscaleUser"]
     {
         return Err("The pairing reply does not match the invitation.".into());
     }
-    let server = field(&value, "serverId")?;
-    // The invitation normally supplies strings. Preserve null when a saved
-    // draft is retried with an invitation whose nullable fields are absent.
-    let nullable = |name: &str| -> Result<Option<String>, String> {
-        match &value[name] {
-            Value::Null => Ok(None),
-            Value::String(value) => Ok(Some(value.clone())),
-            _ => Err("The pairing reply does not match the invitation.".into()),
-        }
-    };
+    let server = field(&json!({"serverId": receipt.server_id}), "serverId")?.to_owned();
     Ok(PairReply::Accepted(PairReceipt {
-        server_id: server.to_owned(),
-        label: value["label"].as_str().unwrap_or(server).to_owned(),
-        public_key: nullable("publicKey")?,
-        tailscale_user: nullable("tailscaleUser")?,
+        label: receipt.label.unwrap_or_else(|| server.clone()),
+        server_id: server,
+        public_key: receipt.public_key,
+        tailscale_user: receipt.tailscale_user,
     }))
 }
 
@@ -537,8 +566,8 @@ impl RemoteClient {
             .as_object_mut()
             .expect("pairing draft is an object")
             .remove("body");
-        credential["targetPublicKey"] = json!(receipt.public_key);
-        credential["tailscaleUser"] = json!(receipt.tailscale_user);
+        credential["targetPublicKey"] = receipt.public_key;
+        credential["tailscaleUser"] = receipt.tailscale_user;
         state["servers"]
             .as_object_mut()
             .ok_or("Invalid server key store.")?
@@ -596,7 +625,7 @@ mod tests {
                 PairReply::Accepted(receipt) => {
                     assert_eq!(receipt.server_id, "server");
                     assert_eq!(receipt.label, "server");
-                    assert_eq!(receipt.public_key.as_deref(), Some("key"));
+                    assert_eq!(receipt.public_key, json!("key"));
                 }
                 PairReply::InviteUnavailable => panic!("unexpected refusal"),
             }
@@ -637,6 +666,31 @@ mod tests {
             .unwrap()
             .contains("Invalid pairing reply")
         );
+        assert_eq!(
+            pair_reply(b"[]", reqwest::StatusCode::OK, &invitation, &draft, origin)
+                .err()
+                .unwrap(),
+            "The pairing reply does not match the invitation."
+        );
+        assert_eq!(
+            pair_reply(
+                b"[]",
+                reqwest::StatusCode::FORBIDDEN,
+                &invitation,
+                &draft,
+                origin
+            )
+            .err()
+            .unwrap(),
+            "Pairing failed. Retry the same invitation."
+        );
+        let mut bad_origin = receipt.clone();
+        bad_origin["origin"] = Value::Null;
+        bad_origin["publicKey"] = json!("different");
+        assert_eq!(
+            parse(&bad_origin, reqwest::StatusCode::OK).err().unwrap(),
+            "Missing or invalid origin."
+        );
         let mut nullable = receipt;
         nullable["publicKey"] = Value::Null;
         nullable["tailscaleUser"] = Value::Null;
@@ -650,8 +704,8 @@ mod tests {
                 origin
             ),
             Ok(PairReply::Accepted(PairReceipt {
-                public_key: None,
-                tailscale_user: None,
+                public_key: Value::Null,
+                tailscale_user: Value::Null,
                 ..
             }))
         ));
@@ -741,7 +795,7 @@ mod tests {
                 } else {
                     body["clientId"].clone()
                 };
-                let reply = json!({"protocol":1,"paired":true,"serverId":"server","clientId":client_id,"origin":server_origin,"publicKey":"fixture","tailscaleUser":"user"}).to_string();
+                let reply = json!({"protocol":1,"paired":true,"serverId":"server","clientId":client_id,"origin":server_origin,"publicKey":{"historic":1},"tailscaleUser":["historic"]}).to_string();
                 write!(
                     stream,
                     "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -771,15 +825,26 @@ mod tests {
                 .contains("does not match")
         );
         let draft = vault.read().unwrap()["drafts"]["pair-request"].clone();
-        let result = client.dispatch("servers.pair", &params).await.unwrap();
+        let mut retry = params.clone();
+        retry["invitation"]["publicKey"] = json!({"historic":1});
+        retry["invitation"]["tailscaleUser"] = json!(["historic"]);
+        let result = client.dispatch("servers.pair", &retry).await.unwrap();
         assert_eq!(result["credentialId"], draft["clientId"]);
         assert_eq!(result["label"], "server");
         assert_eq!(
-            client.dispatch("servers.pair", &params).await.unwrap(),
+            client.dispatch("servers.pair", &retry).await.unwrap(),
             result
         );
         let state = vault.read().unwrap();
         assert_eq!(state["drafts"]["pair-request"]["receipt"], result);
+        assert_eq!(
+            state["servers"]["server"]["targetPublicKey"],
+            json!({"historic":1})
+        );
+        assert_eq!(
+            state["servers"]["server"]["tailscaleUser"],
+            json!(["historic"])
+        );
         assert!(state["drafts"]["pair-request"].get("privateKey").is_none());
         assert!(state["drafts"]["pair-request"].get("body").is_none());
         server.join().unwrap();
