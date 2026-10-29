@@ -1062,13 +1062,21 @@ mod tests {
 
     #[test]
     fn annotation_rejects_line_outside_safe_integer_range() {
-        for line in [-1, studio_runtime_schema::shared_values::MAX_SAFE_INTEGER + 1] {
+        for line in [
+            -1,
+            studio_runtime_schema::shared_values::MAX_SAFE_INTEGER + 1,
+        ] {
             let mut connection = database();
             let before = counts(&connection);
-            let result = with_transaction(&mut connection, |tx| annotate(tx, AnnotationWrite {
-                line,
-                ..annotation("bad-line")
-            }));
+            let result = with_transaction(&mut connection, |tx| {
+                annotate(
+                    tx,
+                    AnnotationWrite {
+                        line,
+                        ..annotation("bad-line")
+                    },
+                )
+            });
             assert!(result.is_err());
             assert_eq!(counts(&connection), before);
         }
