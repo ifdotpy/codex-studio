@@ -55,6 +55,46 @@ pub fn complaint_ids(text: &str) -> Option<Vec<String>> {
     complaint_entries(text)?.collect()
 }
 
+/// References used only for continuation prefetch; invalid siblings are ignored.
+#[derive(Default, Deserialize)]
+pub struct ContinuationReferences {
+    #[serde(default, deserialize_with = "continuation_task")]
+    pub task: Option<String>,
+    #[serde(default, deserialize_with = "continuation_complaints")]
+    pub complaints: Vec<String>,
+}
+
+fn continuation_task<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    Ok(Value::deserialize(deserializer)?
+        .as_str()
+        .map(str::to_owned))
+}
+
+fn continuation_complaints<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<String>, D::Error> {
+    let value = Value::deserialize(deserializer)?;
+    Ok(match value {
+        Value::Array(entries) => entries
+            .into_iter()
+            .filter_map(|entry| {
+                Object::<ComplaintEntry>::deserialize(entry)
+                    .ok()
+                    .map(|entry| entry.0.complaint_id)
+            })
+            .collect(),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) | Value::Object(_) => {
+            Vec::new()
+        }
+    })
+}
+
+pub fn continuation_references(text: &str) -> Option<ContinuationReferences> {
+    parse(text)
+}
+
 #[derive(Deserialize)]
 struct Progress {
     importance: String,

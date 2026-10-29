@@ -160,18 +160,14 @@ impl ContinuationRepository {
                 asset_ids.extend(ids.iter().filter_map(Value::as_str).map(str::to_owned));
             }
             metadata.insert(id.into(), meta.cloned().unwrap_or(Value::Null));
-            if let Ok(payload) = serde_json::from_str::<Value>(event["text"].as_str().unwrap_or(""))
+            if let Some(references) =
+                studio_runtime_schema::notification_text::continuation_references(
+                    event["text"].as_str().unwrap_or(""),
+                )
             {
-                if let Some(entries) = payload.get("complaints").and_then(Value::as_array) {
-                    complaint_ids.extend(
-                        entries
-                            .iter()
-                            .filter_map(|e| e.get("complaint_id").and_then(Value::as_str))
-                            .map(str::to_owned),
-                    );
-                }
-                if let Some(id) = payload.get("task").and_then(Value::as_str) {
-                    work_ids.insert(id.into());
+                complaint_ids.extend(references.complaints);
+                if let Some(id) = references.task {
+                    work_ids.insert(id);
                 }
             }
         }
@@ -282,5 +278,99 @@ impl crate::JsonRecord for CapacityContinuationRecord {
     const QUERY_SHAPE: crate::RecordQueryShape = crate::RecordQueryShape::PhysicalAgent;
     fn record_key(&self) -> Option<&String> {
         Some(&self.id)
+    }
+}
+
+#[cfg(test)]
+mod reference_tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_prefetches_independent_partial_notification_references() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Connection::open(dir.path().join("canvas.sqlite3")).unwrap();
+        db.execute_batch(&crate::agent_volatile::TABLE_SQL).unwrap();
+        db.execute_batch("CREATE TABLE runtime_agents(id TEXT,record TEXT);\
+            CREATE TABLE runtime_events(id TEXT,agent TEXT,kind TEXT,text TEXT,status TEXT,created REAL,epoch INTEGER,turn_id TEXT,error TEXT);\
+            CREATE TABLE runtime_event_meta(id TEXT,record TEXT);\
+            CREATE TABLE runtime_assets(id TEXT,record TEXT);\
+            CREATE TABLE runtime_complaints(id TEXT,record TEXT);\
+            CREATE TABLE runtime_work(id TEXT,record TEXT);").unwrap();
+        db.execute(
+            "INSERT INTO runtime_agents VALUES('a',?1)",
+            [r#"{"id":"a","epoch":1,"rootId":"root"}"#],
+        )
+        .unwrap();
+        for (id, text) in [
+            (
+                "one",
+                r#"{"task":"old","task":"t","complaints":[{"complaint_id":"c"},null,{}, {"complaint_id":""},{"complaint_id":4}]}"#,
+            ),
+            (
+                "two",
+                r#"{"task":null,"complaints":[{"complaint_id":"c"},{"complaint_id":"other","complaint_id":"d"}]}"#,
+            ),
+            (
+                "three",
+                r#"{"task":"ignored","complaints":[{"complaint_id":"bad"}],"extra":1e999}"#,
+            ),
+            ("four", "[1,2]"),
+            ("five", "{"),
+        ] {
+            db.execute(
+                "INSERT INTO runtime_events VALUES(?1,'a','message',?2,'pending',1,1,NULL,NULL)",
+                params![id, text],
+            )
+            .unwrap();
+        }
+        for (table, ids) in [
+            ("runtime_complaints", vec!["", "c", "d", "bad"]),
+            ("runtime_work", vec!["t", "ignored"]),
+        ] {
+            for id in ids {
+                db.execute(
+                    &format!("INSERT INTO {table} VALUES(?1,?2)"),
+                    params![id, json!({"id":id}).to_string()],
+                )
+                .unwrap();
+            }
+        }
+        let result =
+            ContinuationRepository::snapshot(&db, "a", ContinuationTable::Usage, None).unwrap();
+        assert_eq!(
+            result["complaints"],
+            json!({"":{"id":""},"c":{"id":"c"},"d":{"id":"d"}})
+        );
+        assert_eq!(result["work"], json!({"t":{"id":"t"}}));
+        assert_eq!(
+            result["events"][0]["text"],
+            r#"{"task":"old","task":"t","complaints":[{"complaint_id":"c"},null,{}, {"complaint_id":""},{"complaint_id":4}]}"#
+        );
+        assert_eq!(result["events"].as_array().unwrap().len(), 5);
+        db.execute(
+            "INSERT INTO runtime_event_meta VALUES('one',?1)",
+            [r#"{"assets":["asset"]}"#],
+        )
+        .unwrap();
+        db.execute("INSERT INTO runtime_assets VALUES('asset','{')", [])
+            .unwrap();
+        db.execute("UPDATE runtime_complaints SET record='{' WHERE id='c'", [])
+            .unwrap();
+        db.execute("UPDATE runtime_work SET record='{' WHERE id='t'", [])
+            .unwrap();
+        for (table, id, expected) in [
+            ("runtime_assets", "asset", "runtime_assets"),
+            ("runtime_complaints", "c", "runtime_complaints"),
+            ("runtime_work", "t", "runtime_work"),
+        ] {
+            assert!(
+                matches!(ContinuationRepository::snapshot(&db, "a", ContinuationTable::Usage, None), Err(StoreError::InvalidStoredObject { table, .. }) if table == expected)
+            );
+            db.execute(
+                &format!("UPDATE {table} SET record='{{}}' WHERE id=?1"),
+                [id],
+            )
+            .unwrap();
+        }
     }
 }
