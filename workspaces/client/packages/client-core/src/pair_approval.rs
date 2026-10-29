@@ -2,20 +2,30 @@
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct Approval {
     pub local_server_id: String,
     pub server_id: String,
     pub invite_request_id: String,
+    generation: Value,
+}
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ApprovalWire {
+    #[serde(default, deserialize_with = "optional_text")]
+    local_server_id: Option<String>,
+    #[serde(default, deserialize_with = "optional_text")]
+    server_id: Option<String>,
+    #[serde(default, deserialize_with = "optional_text")]
+    invite_request_id: Option<String>,
     #[serde(default)]
     generation: Value,
 }
 impl Approval {
     pub fn parse(params: &Value) -> Result<Self, String> {
-        let value = &params["approval"];
-        for name in ["localServerId", "serverId", "inviteRequestId"] {
-            let id = crate::server_keys::field(value, name)?;
+        let wire: ApprovalWire = object(&params["approval"]);
+        fn checked(value: Option<String>, name: &str) -> Result<String, String> {
+            let value = value.map_or(Value::Null, Value::String);
+            let id = crate::server_keys::field_value(&value, name)?;
             if id.len() > 128
                 || !id
                     .bytes()
@@ -23,9 +33,21 @@ impl Approval {
             {
                 return Err("Invalid approved server identity.".into());
             }
+            Ok(id.to_owned())
         }
-        Self::deserialize(value).map_err(|_| "Invalid approved server identity.".into())
+        Ok(Self {
+            local_server_id: checked(wire.local_server_id, "localServerId")?,
+            server_id: checked(wire.server_id, "serverId")?,
+            invite_request_id: checked(wire.invite_request_id, "inviteRequestId")?,
+            generation: wire.generation,
+        })
     }
+}
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PeerIdentity {
+    #[serde(default, deserialize_with = "optional_text")]
+    server_id: Option<String>,
 }
 #[derive(Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -96,11 +118,12 @@ pub fn approved_peer(
     let peer = snapshot["servers"]
         .as_array()
         .and_then(|rows| {
-            rows.iter()
-                .map(object::<Peer>)
-                .find(|v| v.server_id.as_deref() == Some(approval.server_id.as_str()))
+            rows.iter().find(|v| {
+                object::<PeerIdentity>(v).server_id.as_deref() == Some(approval.server_id.as_str())
+            })
         })
         .ok_or("The approved server is no longer available.")?;
+    let peer: Peer = object(peer);
     let generation = json!([peer.created, peer.public_key]).to_string();
     if snapshot_fields.protocol != 1
         || identity.server_id.as_deref() != Some(approval.local_server_id.as_str())
@@ -172,6 +195,22 @@ mod tests {
         assert_eq!(
             Approval::parse(&params).err().unwrap(),
             "Missing or invalid localServerId."
+        );
+        params["approval"]["localServerId"] = json!("valid");
+        assert_eq!(
+            Approval::parse(&params).err().unwrap(),
+            "Missing or invalid serverId."
+        );
+        params["approval"]["serverId"] = json!("bad/id");
+        params["approval"]["inviteRequestId"] = json!(null);
+        assert_eq!(
+            Approval::parse(&params).err().unwrap(),
+            "Invalid approved server identity."
+        );
+        params["approval"]["serverId"] = json!("valid");
+        assert_eq!(
+            Approval::parse(&params).err().unwrap(),
+            "Missing or invalid inviteRequestId."
         );
     }
 
