@@ -120,6 +120,7 @@ default-filter = '''
     (package(studio-runtime-process) & test(/lease_tests/)) |
     (package(studio-runtime-services) & test(/wave7_p16_assignment::|agent_creation_assigns_task_and_replays_without_reassignment|continuation_corpus::|continuation_recovery::|wave7_p12_completion::|claude_login_actor::|wave7_p18_account_session::|account_session_runtime::limits_|layr_native::mapping|provider_callbacks::projection::tests|model_projection_matches_python_and_keeps_full_result|checkpoint_summaries_filter_agents_and_strip_payloads|workspace_operations_corpus::|current_uses_the_agent_after_pending_settings_are_applied/)) |
 (package(=studio-runtime-services) & kind(lib) & test(reconciliation_budget_conflicts_preserve_partial_and_duplicate_inputs)) |
+(package(=studio-runtime-services) & kind(lib) & test(native_history_manifest_preserves_raw_header_id_and_source_bytes)) |
 (package(=studio-runtime-store) & kind(lib) & test(duplicate_stored_record_tests::)) |
 (package(=studio-runtime-store) & kind(lib) & (test(annotation_typed_tests::) | test(plan_typed_tests::) | test(plan_returns_checked_value_without_a_text_round_trip))) |
 (package(=studio-runtime-services) & kind(lib) & (test(plan_notification_updates_typed_record) | test(read_json_preserves_objects_and_defaults_for_invalid_files) | test(read_object_preserves_objects_and_rejects_invalid_files))) |
@@ -459,6 +460,7 @@ default-filter = '''
     (package(studio-runtime-process) & test(/lease_tests/)) |
     (package(studio-runtime-services) & test(/wave7_p16_assignment::|agent_creation_assigns_task_and_replays_without_reassignment|continuation_corpus::|continuation_recovery::|wave7_p12_completion::|claude_login_actor::|wave7_p18_account_session::|account_session_runtime::limits_|layr_native::mapping|provider_callbacks::projection::tests|model_projection_matches_python_and_keeps_full_result|checkpoint_summaries_filter_agents_and_strip_payloads|workspace_operations_corpus::|current_uses_the_agent_after_pending_settings_are_applied/)) |
 (package(=studio-runtime-services) & kind(lib) & test(reconciliation_budget_conflicts_preserve_partial_and_duplicate_inputs)) |
+(package(=studio-runtime-services) & kind(lib) & test(native_history_manifest_preserves_raw_header_id_and_source_bytes)) |
 (package(=studio-runtime-store) & kind(lib) & test(duplicate_stored_record_tests::)) |
 (package(=studio-runtime-store) & kind(lib) & (test(annotation_typed_tests::) | test(plan_typed_tests::) | test(plan_returns_checked_value_without_a_text_round_trip))) |
 (package(=studio-runtime-services) & kind(lib) & (test(plan_notification_updates_typed_record) | test(read_json_preserves_objects_and_defaults_for_invalid_files) | test(read_object_preserves_objects_and_rejects_invalid_files))) |

@@ -122,7 +122,10 @@ fn copy_native_history(
     let metadata: Value = serde_json::from_slice(&bytes[..first_end])
         .map_err(|_| TransferError::Refused("Native history metadata is invalid"))?;
     let header = crate::analytics_history::SessionHeader::from_value(&metadata);
-    if !header.is_some_and(|header| header.is_session() && header.history_base().is_none()) {
+    if !header
+        .as_ref()
+        .is_some_and(|header| header.is_session() && header.history_base().is_none())
+    {
         return Err(TransferError::Refused(
             "Native history ancestry requires the portable-history importer",
         ));
@@ -212,7 +215,7 @@ fn copy_native_history(
     manifest.insert(
         relative_key,
         json!({
-            "threadId":metadata.pointer("/payload/id").cloned().unwrap_or(Value::Null),
+            "threadId":header.as_ref().and_then(crate::analytics_history::SessionHeader::raw_id).cloned().unwrap_or(Value::Null),
             "sha256":studio_runtime_store::sha256_hex(&bytes),
             "sourceHome":source_root,
         }),
@@ -1582,6 +1585,100 @@ mod destination_settings_tests {
             ))
         ));
         assert!(!target.join("sessions").exists());
+    }
+
+    #[test]
+    fn native_history_manifest_preserves_raw_header_id_and_source_bytes() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        let target = root.path().join("target");
+        fs::create_dir_all(source.join("sessions")).unwrap();
+        fs::create_dir_all(&target).unwrap();
+        for (name, header, expected) in [
+            (
+                "missing",
+                r#"{"type":"session_meta","payload":{}}"#,
+                Value::Null,
+            ),
+            (
+                "null",
+                r#"{"type":"session_meta","payload":{"id":null}}"#,
+                Value::Null,
+            ),
+            (
+                "number",
+                r#"{"type":"session_meta","payload":{"id":42}}"#,
+                json!(42),
+            ),
+            (
+                "boolean",
+                r#"{"type":"session_meta","payload":{"id":false}}"#,
+                json!(false),
+            ),
+            (
+                "array",
+                r#"{"type":"session_meta","payload":{"id":[1,null]}}"#,
+                json!([1, null]),
+            ),
+            (
+                "object",
+                r#"{"type":"session_meta","payload":{"id":{"opaque":true}}}"#,
+                json!({"opaque":true}),
+            ),
+            (
+                "scalar-payload",
+                r#"{"type":"session_meta","payload":false}"#,
+                Value::Null,
+            ),
+            (
+                "duplicate",
+                r#"{"type":"session_meta","payload":{"id":"old","id":{"last":2}}}"#,
+                json!({"last":2}),
+            ),
+        ] {
+            let history = source.join("sessions").join(format!("{name}.jsonl"));
+            let bytes = format!("{header}\n{{\"type\":\"turn\"}}\n").into_bytes();
+            fs::write(&history, &bytes).unwrap();
+            let copied = copy_native_history(
+                source.to_str().unwrap(),
+                target.to_str().unwrap(),
+                history.to_str().unwrap(),
+            )
+            .unwrap();
+            assert_eq!(fs::read(&copied).unwrap(), bytes);
+            assert_eq!(
+                copy_native_history(
+                    source.to_str().unwrap(),
+                    target.to_str().unwrap(),
+                    history.to_str().unwrap()
+                )
+                .unwrap(),
+                copied
+            );
+            let manifest: Value = serde_json::from_slice(
+                &fs::read(target.join(".studio-account-imports.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                manifest[format!("sessions/.studio-imports/{name}.jsonl")]["threadId"],
+                expected
+            );
+        }
+        let invalid = source.join("sessions/invalid.jsonl");
+        fs::write(&invalid, b"{bad}\n").unwrap();
+        assert!(matches!(
+            copy_native_history(
+                source.to_str().unwrap(),
+                target.to_str().unwrap(),
+                invalid.to_str().unwrap()
+            ),
+            Err(TransferError::Refused("Native history metadata is invalid"))
+        ));
+        assert!(
+            !target
+                .join("sessions/.studio-imports/invalid.jsonl")
+                .exists()
+        );
     }
 
     #[test]
