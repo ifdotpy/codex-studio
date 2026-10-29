@@ -183,6 +183,26 @@ fn health_skips_a_child_while_open_is_installing_it() {
 }
 
 #[test]
+fn handshake_rejects_duplicate_fields_before_admission() {
+    let (_root, supervisor) = fixture();
+    let (mut peer, server) = UnixStream::pair().unwrap();
+    peer.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let root = serde_json::to_string(&supervisor.root).unwrap();
+    writeln!(
+        peer,
+        "{{\"protocol\":{SUPERVISOR_PROTOCOL_VERSION},\"protocol\":{SUPERVISOR_PROTOCOL_VERSION},\"stateDir\":{root},\"backendId\":\"fixture\"}}"
+    )
+    .unwrap();
+    let worker = thread::spawn(move || connection_with_budget(supervisor, server, FRAME_BUDGET));
+    let mut line = String::new();
+    BufReader::new(&mut peer).read_line(&mut line).unwrap();
+    drop(peer);
+    worker.join().unwrap();
+    let response: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(response["error"], "Invalid supervisor request");
+}
+
+#[test]
 fn stalled_handshake_releases_connection_slot() {
     // One real partial-handshake expiry proves socket cleanup and replacement
     // admission. Established-frame timing is covered with paused Tokio time.

@@ -638,7 +638,7 @@ fn read_frame(
     reader: &mut BufReader<UnixStream>,
     mut deadline: Option<Instant>,
     budget: Duration,
-) -> Result<Option<Value>> {
+) -> Result<Option<SupervisorHandshakeV2>> {
     let mut bytes = Vec::new();
     loop {
         let remaining = deadline
@@ -947,9 +947,8 @@ fn connection_with_budget(supervisor: Arc<Supervisor>, mut socket: UnixStream, b
     let result = (|| -> Result<()> {
         socket.set_write_timeout(Some(Duration::from_secs(10)))?;
         let mut reader = BufReader::new(socket.try_clone()?);
-        let first_value = read_frame(&mut reader, Some(Instant::now() + budget), budget)?
+        let first = read_frame(&mut reader, Some(Instant::now() + budget), budget)?
             .ok_or(Error::Refused("Missing supervisor handshake"))?;
-        let first: SupervisorHandshakeV2 = serde_json::from_value(first_value)?;
         if first.protocol != SUPERVISOR_PROTOCOL_VERSION {
             return Err(Error::Refused("Supervisor protocol mismatch"));
         }

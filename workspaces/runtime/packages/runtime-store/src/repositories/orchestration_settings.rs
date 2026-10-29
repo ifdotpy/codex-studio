@@ -4,7 +4,7 @@
 use crate::schema::{SchemaRequirements, TableRequirement};
 use crate::{StoreError, StoreResult};
 use rusqlite::{Connection, OptionalExtension, params};
-use serde_json::Value;
+use serde::Deserialize;
 use std::time::Duration;
 use studio_runtime_schema::shared_values::{
     CHILD_RESULT_COALESCE_DEFAULT_SECONDS, CHILD_RESULT_COALESCE_MAX_SECONDS,
@@ -49,6 +49,42 @@ pub const IDLE_SESSION_UNLOAD_SETTING: Setting = Setting {
     min: IDLE_SESSION_UNLOAD_MIN_MINUTES,
     max: IDLE_SESSION_UNLOAD_MAX_MINUTES,
 };
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredSettings {
+    #[serde(default = "default_child_result_coalesce")]
+    child_result_coalesce_seconds: u64,
+    #[serde(default = "default_idle_session_unload")]
+    idle_session_unload_minutes: u64,
+}
+
+fn deserialize_settings<'de, D>(deserializer: D) -> Result<StoredSettings, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct ObjectVisitor;
+    impl<'de> serde::de::Visitor<'de> for ObjectVisitor {
+        type Value = StoredSettings;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a settings object")
+        }
+
+        fn visit_map<M: serde::de::MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
+            StoredSettings::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+        }
+    }
+    deserializer.deserialize_map(ObjectVisitor)
+}
+
+fn default_child_result_coalesce() -> u64 {
+    CHILD_RESULT_COALESCE_SETTING.default
+}
+
+fn default_idle_session_unload() -> u64 {
+    IDLE_SESSION_UNLOAD_SETTING.default
+}
 
 /// How long a lead's child result waits for sibling subagents that are still
 /// queued or running, until the setting is changed.
@@ -145,14 +181,19 @@ impl OrchestrationSettingsRepository {
                 setting.field
             ))
         };
-        let record = serde_json::from_str::<Value>(&raw).map_err(|_| invalid())?;
-        match record.get(setting.field) {
-            None => Ok(setting.default),
-            Some(value) => value
-                .as_u64()
-                .filter(|value| setting.valid(*value))
-                .ok_or_else(invalid),
-        }
+        let mut deserializer = serde_json::Deserializer::from_str(&raw);
+        let record = deserialize_settings(&mut deserializer).map_err(|_| invalid())?;
+        deserializer.end().map_err(|_| invalid())?;
+        let value = match setting.field {
+            field if field == CHILD_RESULT_COALESCE_SETTING.field => {
+                record.child_result_coalesce_seconds
+            }
+            field if field == IDLE_SESSION_UNLOAD_SETTING.field => {
+                record.idle_session_unload_minutes
+            }
+            _ => return Err(invalid()),
+        };
+        setting.valid(value).then_some(value).ok_or_else(invalid)
     }
 
     /// Store a validated value of `setting`, keeping the record's other fields.
@@ -274,6 +315,36 @@ mod tests {
             OrchestrationSettingsRepository::child_result_coalesce(&database()).expect("reads"),
             CHILD_RESULT_COALESCE_DEFAULT
         );
+    }
+
+    #[test]
+    fn stored_field_types_and_unrelated_fields_keep_their_behavior() {
+        let connection = database();
+        for (record, expected) in [
+            (r#"{}"#, Some(CHILD_RESULT_COALESCE_SETTING.default)),
+            (r#"[]"#, None),
+            (r#"null"#, None),
+            (r#"{"idleSessionUnloadMinutes":null}"#, None),
+            (
+                r#"{"unrelated":null,"childResultCoalesceSeconds":0}"#,
+                Some(0),
+            ),
+            (r#"{"childResultCoalesceSeconds":null}"#, None),
+            (r#"{"childResultCoalesceSeconds":"1"}"#, None),
+            (r#"{"childResultCoalesceSeconds":-1}"#, None),
+            (r#"{"#, None),
+        ] {
+            connection.execute(
+                "INSERT OR REPLACE INTO runtime_orchestration_settings(id, record) VALUES ('global', ?1)",
+                [record],
+            ).expect("fixture writes");
+            assert_eq!(
+                OrchestrationSettingsRepository::value(&connection, CHILD_RESULT_COALESCE_SETTING)
+                    .ok(),
+                expected,
+                "{record}"
+            );
+        }
     }
 
     #[test]
