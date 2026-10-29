@@ -36,7 +36,6 @@ pub(super) fn apply(
         return Ok(Some(DispatchOutcome::Written));
     }
     if method == "thread/idleCompaction/updated" {
-<<<<<<< head
         if let Some(request) = p["preparedSummary"]["requestId"].as_str() {
             if agent["idleCompactionEpisode"]["id"] == request
                 && crate::idle_compaction::settled(tx, request)?
@@ -46,10 +45,6 @@ pub(super) fn apply(
             }
             return Ok(Some(DispatchOutcome::Written));
         }
-        crate::idle_compaction::observe(tx, agent, &p["report"])?;
-||||||| base
-        crate::idle_compaction::observe(tx, agent, &p["report"])?;
-=======
         #[derive(serde::Deserialize)]
         #[serde(rename_all = "camelCase")]
         struct StoredEpisode {
@@ -72,7 +67,6 @@ pub(super) fn apply(
             None
         };
         crate::idle_compaction::observe(tx, agent, &p["report"], previous.as_ref())?;
->>>>>>> 81d416f9a5a81dc3ec79231be0997c8f8fdc4432
         persist_agent(tx, &id, agent)?;
         return Ok(Some(DispatchOutcome::Written));
     }
@@ -302,23 +296,15 @@ pub(super) fn apply(
                 put_task(tx, &task)?;
             }
             if decision.compacted {
-<<<<<<< head
                 let deferred = p["item"]["idleCompactionOnReturn"] == true
                     && p["item"]["idleCompactionRequestId"] == agent["idleCompactionEpisode"]["id"];
                 if let Some(request_id) = if deferred {
                     p["item"]["idleCompactionRequestId"].as_str()
                 } else {
                     agent["startAttempt"]["actionRequestId"].as_str()
-                } && request_id.starts_with(crate::idle_compaction::REQUEST_PREFIX)
-||||||| base
-                if let Some(request_id) = agent["startAttempt"]["actionRequestId"].as_str()
-                    && request_id.starts_with(crate::idle_compaction::REQUEST_PREFIX)
-=======
-                if let Some(request_id) = agent["startAttempt"]["actionRequestId"]
-                    .as_str()
-                    .map(str::to_owned)
+                }
+                .map(str::to_owned)
                     && agent["idleCompactionEpisode"]["id"].as_str() == Some(request_id.as_str())
->>>>>>> 81d416f9a5a81dc3ec79231be0997c8f8fdc4432
                 {
                     agent["idleCompactionEpisode"]["outcome"] =
                         json!(studio_runtime_schema::persistence::IdleEpisodeOutcome::Compacted);

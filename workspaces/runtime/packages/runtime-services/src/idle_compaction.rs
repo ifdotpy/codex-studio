@@ -17,13 +17,7 @@ use studio_runtime_store::{
 use tokio::sync::{Notify, watch};
 
 pub const NOTICE: &str = "Compacted while idle, before the prompt cache expired. To turn it off, set Claude idle compaction to Off in Settings > Agent orchestration.";
-<<<<<<< head
 pub const ON_RETURN_NOTICE: &str = "Compacted on return with a summary prepared while idle. To turn it off, set Claude idle compaction to Off in Settings > Agent orchestration.";
-pub const REQUEST_PREFIX: &str = "idle-compaction:";
-||||||| base
-pub const REQUEST_PREFIX: &str = "idle-compaction:";
-=======
->>>>>>> 81d416f9a5a81dc3ec79231be0997c8f8fdc4432
 const FAILURE_RETRY_SECONDS: u64 = 30;
 
 pub use studio_runtime_schema::idle_compaction::CacheReport;
@@ -39,7 +33,16 @@ pub struct Episode {
     pub identity: Value,
     pub prefix_inputs: Value,
     pub attempt: Value,
-<<<<<<< head
+    #[serde(default)]
+    pub fired: bool,
+    #[serde(default)]
+    pub outcome: Option<IdleEpisodeOutcome>,
+    #[serde(default)]
+    pub fired_at: Option<f64>,
+    #[serde(default)]
+    pub before: Option<Value>,
+    #[serde(default)]
+    pub limits: Option<Value>,
     /// Actual account-worker unload deadline, in Unix seconds.
     #[serde(default)]
     pub unload_at: Option<f64>,
@@ -51,19 +54,6 @@ fn cache_seconds(ttl: &str) -> Option<f64> {
         "5m" => Some(IDLE_COMPACTION_SHORT_CACHE_SECONDS),
         _ => None,
     }
-||||||| base
-=======
-    #[serde(default)]
-    pub fired: bool,
-    #[serde(default)]
-    pub outcome: Option<IdleEpisodeOutcome>,
-    #[serde(default)]
-    pub fired_at: Option<f64>,
-    #[serde(default)]
-    pub before: Option<Value>,
-    #[serde(default)]
-    pub limits: Option<Value>,
->>>>>>> 81d416f9a5a81dc3ec79231be0997c8f8fdc4432
 }
 
 pub fn fire_at(activity: f64, expiry: f64, fraction: f64) -> f64 {
@@ -110,7 +100,7 @@ pub fn observe(
     if agent["provider"] != ProviderKind::Claude.key() {
         return Ok(());
     }
-    let cache: CacheReport = CacheReport::deserialize(raw)
+    let cache: CacheReport = serde_json::from_value(raw.clone())
         .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
     if cache.request_id.is_empty()
         || cache.prefix.is_empty()
@@ -122,17 +112,6 @@ pub fn observe(
         ));
     }
     agent["idleCache"] = json!(cache);
-<<<<<<< head
-    if let Some(fields) = agent.as_object_mut() {
-        fields.remove("idleSummaryPrepared");
-    }
-    let settings = OrchestrationSettingsRepository::idle_compaction_for(connection, agent)?;
-    let lifetime = cache_seconds(&cache.ttl);
-    if lifetime.is_none() || settings.mode == Mode::Off {
-||||||| base
-    let settings = OrchestrationSettingsRepository::idle_compaction(connection)?;
-    if cache.ttl != "1h" || settings.mode == Mode::Off {
-=======
     if let Some(previous) = previous
         && previous.cache.request_id == cache.request_id
         && previous.cache.ttl == cache.ttl
@@ -140,39 +119,20 @@ pub fn observe(
     {
         return Ok(());
     }
-    let settings = OrchestrationSettingsRepository::idle_compaction(connection)?;
-    if cache.ttl != "1h" || settings.mode == Mode::Off {
->>>>>>> 81d416f9a5a81dc3ec79231be0997c8f8fdc4432
+    if let Some(fields) = agent.as_object_mut() {
+        fields.remove("idleSummaryPrepared");
+    }
+    let settings = OrchestrationSettingsRepository::idle_compaction_for(connection, agent)?;
+    let lifetime = cache_seconds(&cache.ttl);
+    if lifetime.is_none() || settings.mode == Mode::Off {
         if let Some(fields) = agent.as_object_mut() {
             fields.remove("idleCompactionEpisode");
         }
         return Ok(());
     }
     let activity = cache.last_activity_at / 1000.0;
-<<<<<<< head
     let expiry = activity + lifetime.unwrap_or_default();
-    let id = format!(
-        "{REQUEST_PREFIX}{}",
-        studio_runtime_store::sha256_hex(
-            json!([agent["id"], identity(agent), cache.request_id])
-                .to_string()
-                .as_bytes()
-        )
-    );
-||||||| base
-    let expiry = activity + IDLE_COMPACTION_CACHE_SECONDS;
-    let id = format!(
-        "{REQUEST_PREFIX}{}",
-        studio_runtime_store::sha256_hex(
-            json!([agent["id"], identity(agent), cache.request_id])
-                .to_string()
-                .as_bytes()
-        )
-    );
-=======
-    let expiry = activity + IDLE_COMPACTION_CACHE_SECONDS;
     let id = RequestIdentity::issue_root();
->>>>>>> 81d416f9a5a81dc3ec79231be0997c8f8fdc4432
     agent["idleCompactionEpisode"] = json!(Episode {
         id,
         cache,
@@ -181,16 +141,12 @@ pub fn observe(
         identity: identity(agent),
         prefix_inputs: prefix_inputs(agent),
         attempt: agent["startAttempt"]["id"].clone(),
-<<<<<<< head
-        unload_at: None,
-||||||| base
-=======
         fired: false,
         outcome: None,
         fired_at: None,
         before: None,
         limits: None,
->>>>>>> 81d416f9a5a81dc3ec79231be0997c8f8fdc4432
+        unload_at: None,
     });
     Ok(())
 }
@@ -216,17 +172,9 @@ pub fn refusal(
     if prefix_inputs(agent) != episode.prefix_inputs || identity(agent) != episode.identity {
         return Some(IdleEpisodeOutcome::PrefixChanged);
     }
-<<<<<<< head
     if cache_seconds(&episode.cache.ttl).is_none() || agent["idleCache"]["ttl"] != episode.cache.ttl
     {
-        return Some("ttl_changed");
-||||||| base
-    if agent["idleCache"]["ttl"] != "1h" {
-        return Some("not_one_hour");
-=======
-    if agent["idleCache"]["ttl"] != "1h" {
-        return Some(IdleEpisodeOutcome::NotOneHour);
->>>>>>> 81d416f9a5a81dc3ec79231be0997c8f8fdc4432
+        return Some(IdleEpisodeOutcome::TtlChanged);
     }
     if (now - episode.fire_at).max(0.0) > IDLE_COMPACTION_MAX_LATE_SECONDS
         || !episode.cache.warm
@@ -315,7 +263,7 @@ pub fn sync_unload_deadlines(
 }
 
 /// An immediate unload waits for the same timer admission as ordinary sleep
-/// compaction. Its receipt settles refusals too, so this cannot retry a query.
+/// compaction. Its fired flag settles refusals too, so this cannot retry a query.
 pub fn pending_before_unload(
     connection: &Connection,
     account: &str,
@@ -325,7 +273,7 @@ pub fn pending_before_unload(
     if OrchestrationSettingsRepository::idle_compaction(connection)?.mode == Mode::Off {
         return Ok(false);
     }
-    Ok(connection.query_row("SELECT EXISTS(SELECT 1 FROM runtime_agents a WHERE json_extract(a.record,'$.provider')='claude' AND coalesce(json_extract(a.record,'$.accountKey'),'default')=?1 AND json_extract(a.record,'$.threadId')=?2 AND json_extract(a.record,'$.idleCompactionEpisode.fireAt')<=?3 AND NOT EXISTS(SELECT 1 FROM runtime_operation_receipts r WHERE r.id=json_extract(a.record,'$.idleCompactionEpisode.id')))", params![account,thread,now], |row| row.get(0))?)
+    Ok(connection.query_row("SELECT EXISTS(SELECT 1 FROM runtime_agents a WHERE json_extract(a.record,'$.provider')='claude' AND coalesce(json_extract(a.record,'$.accountKey'),'default')=?1 AND json_extract(a.record,'$.threadId')=?2 AND json_extract(a.record,'$.idleCompactionEpisode.fireAt')<=?3 AND COALESCE(json_extract(a.record,'$.idleCompactionEpisode.fired'),0)=0)", params![account,thread,now], |row| row.get(0))?)
 }
 
 fn queued(connection: &Connection, id: &str) -> Result<bool, StoreError> {
@@ -343,32 +291,7 @@ fn record(
     outcome: IdleEpisodeOutcome,
     now: f64,
 ) -> Result<(), StoreError> {
-<<<<<<< head
-    let inserted = connection.execute("INSERT OR IGNORE INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'idle-compaction',?2)", params![episode.id, json!({"outcome":outcome,"at":now,"fireAt":episode.fire_at,"contextTokens":episode.cache.context_tokens,"lateMs":((now-episode.fire_at).max(0.0)*1000.0)}).to_string()])?;
-    if inserted > 0 && outcome != "started" {
-        // Agent changes wake the unload owner. A receipt-only log/refusal
-        // would otherwise leave an immediate unload parked without an event.
-        connection.execute("UPDATE runtime_agents SET record=json_remove(record,'$.idleCompactionEpisode') WHERE json_extract(record,'$.idleCompactionEpisode.id')=?1", [&episode.id])?;
-    }
-    eprintln!(
-        "idle_compaction_fired request={} outcome={} contextTokens={} lateMs={}",
-        episode.id,
-        outcome,
-        episode.cache.context_tokens,
-        (now - episode.fire_at).max(0.0) * 1000.0
-    );
-||||||| base
-    connection.execute("INSERT OR IGNORE INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'idle-compaction',?2)", params![episode.id, json!({"outcome":outcome,"at":now,"fireAt":episode.fire_at,"contextTokens":episode.cache.context_tokens,"lateMs":((now-episode.fire_at).max(0.0)*1000.0)}).to_string()])?;
-    eprintln!(
-        "idle_compaction_fired request={} outcome={} contextTokens={} lateMs={}",
-        episode.id,
-        outcome,
-        episode.cache.context_tokens,
-        (now - episode.fire_at).max(0.0) * 1000.0
-    );
-=======
     connection.execute("UPDATE runtime_agents SET record=json_set(record,'$.idleCompactionEpisode.fired',json('true'),'$.idleCompactionEpisode.outcome',?2,'$.idleCompactionEpisode.firedAt',?3) WHERE idle_episode_type='object' AND idle_episode_id=?1 AND COALESCE(json_extract(record,'$.idleCompactionEpisode.fired'),0)=0", params![episode.id,outcome,now])?;
->>>>>>> 81d416f9a5a81dc3ec79231be0997c8f8fdc4432
     Ok(())
 }
 
@@ -453,19 +376,11 @@ pub fn handoff_refusal(
     tx: &Transaction<'_>,
     agent: &Value,
     request: &str,
-<<<<<<< head
-) -> Result<Option<&'static str>, StoreError> {
-    let episode: Episode = Episode::deserialize(&agent["idleCompactionEpisode"])
-||||||| base
-) -> Result<Option<&'static str>, StoreError> {
-    let episode: Episode = serde_json::from_value(agent["idleCompactionEpisode"].clone())
-=======
 ) -> Result<Option<IdleEpisodeOutcome>, StoreError> {
     if agent["idleCompactionEpisode"]["id"] != request {
         return Ok(Some(IdleEpisodeOutcome::NewerRequest));
     }
     let episode: Episode = serde_json::from_value(agent["idleCompactionEpisode"].clone())
->>>>>>> 81d416f9a5a81dc3ec79231be0997c8f8fdc4432
         .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
     let receipt = &agent["idleCompactionEpisode"];
     let account = episode.identity["accountKey"].as_str().unwrap_or("default");
@@ -487,16 +402,8 @@ pub fn handoff_refusal(
     if reason.is_some() {
         return Ok(reason);
     }
-<<<<<<< head
     let settings = OrchestrationSettingsRepository::idle_compaction_for(tx, agent)?;
-    Ok((settings.mode == Mode::Log).then_some("would_compact"))
-||||||| base
-    let settings = OrchestrationSettingsRepository::idle_compaction(tx)?;
-    Ok((settings.mode == Mode::Log).then_some("would_compact"))
-=======
-    let settings = OrchestrationSettingsRepository::idle_compaction(tx)?;
     Ok((settings.mode == Mode::Log).then_some(IdleEpisodeOutcome::WouldCompact))
->>>>>>> 81d416f9a5a81dc3ec79231be0997c8f8fdc4432
 }
 
 pub fn limits_allowed(limits: &Value, agent: &Value, now: f64) -> bool {
@@ -517,7 +424,8 @@ fn check(
     limits: &Value,
     now: f64,
 ) -> Result<Option<IdleEpisodeOutcome>, StoreError> {
-    let settings = OrchestrationSettingsRepository::idle_compaction(connection)?.with_environment();
+    let settings =
+        OrchestrationSettingsRepository::idle_compaction_for(connection, agent)?.with_environment();
     Ok(refusal(
         &settings,
         episode,
@@ -899,16 +807,12 @@ mod tests {
             identity: identity(&agent),
             prefix_inputs: prefix_inputs(&agent),
             attempt: json!("request"),
-<<<<<<< head
-            unload_at: None,
-||||||| base
-=======
             fired: false,
             outcome: None,
             fired_at: None,
             before: None,
             limits: None,
->>>>>>> 81d416f9a5a81dc3ec79231be0997c8f8fdc4432
+            unload_at: None,
         };
         (settings, episode, agent, Clock(3241.0))
     }

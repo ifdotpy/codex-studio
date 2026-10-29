@@ -218,6 +218,7 @@ async fn five_minute_sleep_episode_uses_actual_ttl_and_unload_deadline() {
                 &mut agent,
                 &json!({"requestId":"short", "ttl":"5m", "warm":true,
             "lastActivityAt":100000.0,"contextTokens":150000,"prefix":"prefix"}),
+                None,
             )?;
             let episode: Episode = Episode::deserialize(&agent["idleCompactionEpisode"]).unwrap();
             assert_eq!(episode.expires_at, 400.0);
@@ -253,6 +254,7 @@ async fn actual_unload_deadline_advances_one_episode_and_its_receipt_releases_un
                 &mut agent,
                 &json!({"requestId":"warm", "ttl":"1h", "warm":true,
             "lastActivityAt":now*1000.0,"contextTokens":210000,"prefix":"prefix"}),
+                None,
             )?;
             AgentRepository::put(tx, &AgentRecord::from_value(agent).unwrap())?;
             let deadlines = BTreeMap::from([("thread".into(), now + 120.0)]);
@@ -335,9 +337,9 @@ async fn actual_unload_deadline_advances_one_episode_and_its_receipt_releases_un
             let agent = AgentRepository::get(connection, &AgentId::from("claude"))?
                 .unwrap()
                 .value();
-            assert!(
-                agent.get("idleCompactionEpisode").is_none(),
-                "the agent change wakes the blocked unload owner"
+            assert_eq!(
+                agent["idleCompactionEpisode"]["fired"], true,
+                "the fire is an agent change that wakes the blocked unload owner"
             );
             Ok::<_, StoreError>(())
         })
@@ -747,7 +749,7 @@ async fn default_mode_arms_leads_only_and_an_explicit_mode_wins() {
         async move {
             store.transaction(move |tx| {
                 let mut agent = json!({"id":"claude","rootId":"claude","epoch":1,"events":0,"provider":"claude","status":"idle","autoWake":true,"inFlight":false,"cwd":"/work","accountKey":"default","threadId":"thread","isLead":lead,"startAttempt":{"id":"previous"}});
-                idle::observe(tx,&mut agent,&json!({"requestId":"response","ttl":"1h","warm":true,"lastActivityAt":(idle::wall_now()-3240.0)*1000.0,"contextTokens":210000,"prefix":"prefix"}))?;
+                idle::observe(tx,&mut agent,&json!({"requestId":"response","ttl":"1h","warm":true,"lastActivityAt":(idle::wall_now()-3240.0)*1000.0,"contextTokens":210000,"prefix":"prefix"}),None)?;
                 Ok(agent["idleCompactionEpisode"].is_object())
             }).await.unwrap()
         }
