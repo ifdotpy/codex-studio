@@ -67,7 +67,6 @@ fn open(supervisor: &Supervisor, handle: &str) -> Result<Value> {
             command: vec!["/bin/sh".into(), "-c".into(), "exit 0".into()],
             env: BTreeMap::new(),
             cwd: Some(supervisor.root.to_string_lossy().into_owned()),
-            generation: None,
         },
         &super::deadline_tests::backend_capabilities(supervisor),
     )
