@@ -100,7 +100,7 @@ pub fn observe(
     if agent["provider"] != ProviderKind::Claude.key() {
         return Ok(());
     }
-    let cache: CacheReport = serde_json::from_value(raw.clone())
+    let cache: CacheReport = CacheReport::deserialize(raw)
         .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
     if cache.request_id.is_empty()
         || cache.prefix.is_empty()
@@ -380,7 +380,7 @@ pub fn handoff_refusal(
     if agent["idleCompactionEpisode"]["id"] != request {
         return Ok(Some(IdleEpisodeOutcome::NewerRequest));
     }
-    let episode: Episode = serde_json::from_value(agent["idleCompactionEpisode"].clone())
+    let episode: Episode = Episode::deserialize(&agent["idleCompactionEpisode"])
         .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
     let receipt = &agent["idleCompactionEpisode"];
     let account = episode.identity["accountKey"].as_str().unwrap_or("default");
