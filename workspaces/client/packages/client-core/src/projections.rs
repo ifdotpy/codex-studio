@@ -329,7 +329,17 @@ fn apply_entities(
 ) -> Result<Value, String> {
     let changes =
         Vec::<EntityChange>::deserialize(&params["changes"]).map_err(|e| e.to_string())?;
-    apply_entities_inner(connection, workspace, &changes, params)
+    let replace = params["replace"].as_bool().unwrap_or(false);
+    let checkpoint = params.get("checkpoint").map(Value::as_u64);
+    let expected_revision = params.get("expectedRevision").map(Value::as_u64);
+    apply_entities_inner(
+        connection,
+        workspace,
+        &changes,
+        replace,
+        checkpoint,
+        expected_revision,
+    )
 }
 
 pub(crate) fn apply_entity_batch(
@@ -343,21 +353,23 @@ pub(crate) fn apply_entity_batch(
     if !valid_workspace(workspace) {
         return Err("Invalid projection identity.".into());
     }
-    let mut params = json!({"replace":replace});
-    if let Some(checkpoint) = checkpoint {
-        params["checkpoint"] = json!(checkpoint);
-    }
-    if let Some(expected) = expected_revision {
-        params["expectedRevision"] = json!(expected);
-    }
-    apply_entities_inner(connection, workspace, changes, &params)
+    apply_entities_inner(
+        connection,
+        workspace,
+        changes,
+        replace,
+        checkpoint.map(Some),
+        expected_revision.map(Some),
+    )
 }
 
 fn apply_entities_inner(
     connection: &Connection,
     workspace: &str,
     changes: &[EntityChange],
-    params: &Value,
+    replace: bool,
+    checkpoint: Option<Option<u64>>,
+    expected_revision: Option<Option<u64>>,
 ) -> Result<Value, String> {
     let transaction = Transaction::new_unchecked(connection, TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
@@ -365,12 +377,11 @@ fn apply_entities_inner(
     // This is a local materialization revision, never a server cursor. It also
     // fences HTTP reads started before a newer application or reset committed.
     let revision = previous["seq"].as_u64().unwrap_or(0);
-    if let Some(expected) = params.get("expectedRevision")
-        && expected.as_u64() != Some(revision)
+    if let Some(expected) = expected_revision
+        && expected != Some(revision)
     {
         return Err("Entity state changed during synchronization. Retry the pull.".into());
     }
-    let replace = params["replace"].as_bool().unwrap_or(false);
     if replace {
         transaction.execute("DELETE FROM client_projections WHERE workspace=?1 AND (scope LIKE 'entity:%' OR scope LIKE 'state:entities:%')", [workspace]).map_err(|e| e.to_string())?;
     }
@@ -396,9 +407,8 @@ fn apply_entities_inner(
                 != 0;
         }
     }
-    if let Some(checkpoint) = params.get("checkpoint") {
+    if let Some(checkpoint) = checkpoint {
         let seq = checkpoint
-            .as_u64()
             .filter(|seq| *seq <= MAX_SAFE_INTEGER as u64)
             .ok_or("Invalid entity checkpoint.")?;
         for (scope, payload) in [
