@@ -3,7 +3,9 @@
 use crate::protocol::{Request, Response};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use rusqlite::{Connection, OptionalExtension, params};
-use serde_json::{Map, Value, json};
+use serde::{Deserialize, Serialize};
+use serde_json::{Number, Value, json};
+use std::collections::BTreeMap;
 use std::{
     io::Write,
     path::{Path, PathBuf},
@@ -27,25 +29,351 @@ fn now_ms() -> f64 {
         .map(|d| d.as_millis() as f64)
         .unwrap_or(0.0)
 }
-fn identity(value: &Value, key: &str, limit: usize) -> Result<String, String> {
-    value[key]
-        .as_str()
+/// A historical field may be absent or malformed. Malformed individual fields
+/// remain opaque so unrelated edits do not erase data from earlier clients.
+#[derive(Clone, Debug, Default)]
+enum Field<T> {
+    #[default]
+    Missing,
+    Null,
+    Known(T),
+    Other(Value),
+}
+
+impl<T> Field<T> {
+    fn is_missing(&self) -> bool {
+        matches!(self, Self::Missing)
+    }
+    fn known(&self) -> Option<&T> {
+        if let Self::Known(value) = self {
+            Some(value)
+        } else {
+            None
+        }
+    }
+    fn merge(&mut self, patch: Self) {
+        match patch {
+            Self::Missing => {}
+            Self::Null => *self = Self::Missing,
+            value => *self = value,
+        }
+    }
+}
+impl<T: Serialize> Serialize for Field<T> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Known(value) => value.serialize(serializer),
+            Self::Other(value) => value.serialize(serializer),
+            Self::Missing | Self::Null => serializer.serialize_none(),
+        }
+    }
+}
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for Field<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Present<T> {
+            Known(T),
+            Other(Value),
+        }
+        Ok(match Present::deserialize(deserializer)? {
+            Present::Known(value) => Self::Known(value),
+            Present::Other(Value::Null) => Self::Null,
+            Present::Other(value) => Self::Other(value),
+        })
+    }
+}
+
+/// Command input discards malformed fields after applying the existing fallback.
+#[derive(Default)]
+enum InputField<T> {
+    #[default]
+    Missing,
+    Known(T),
+    Invalid,
+}
+impl<T> InputField<T> {
+    fn known(&self) -> Option<&T> {
+        if let Self::Known(value) = self {
+            Some(value)
+        } else {
+            None
+        }
+    }
+}
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for InputField<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Present<T> {
+            Known(T),
+            Invalid(serde::de::IgnoredAny),
+        }
+        Ok(match Present::deserialize(deserializer)? {
+            Present::Known(value) => Self::Known(value),
+            Present::Invalid(_) => Self::Invalid,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum RecordingState {
+    Recording,
+    Ready,
+}
+impl<'de> Deserialize<'de> for RecordingState {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        match String::deserialize(deserializer)?.as_str() {
+            "recording" => Ok(Self::Recording),
+            "ready" => Ok(Self::Ready),
+            _ => Err(serde::de::Error::custom("unknown recording state")),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Recording {
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    id: Field<String>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    chat_id: Field<String>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    created: Field<Number>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    sample_rate: Field<Number>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    samples: Field<Number>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    state: Field<RecordingState>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    transcript: Field<String>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    reviewed_text: Field<String>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    transcription_attempt: Field<String>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    error: Field<String>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    deleted_at: Field<Number>,
+    #[serde(flatten)]
+    extra: BTreeMap<String, Value>,
+}
+
+impl Recording {
+    fn merge(&mut self, patch: Self) {
+        self.id.merge(patch.id);
+        self.chat_id.merge(patch.chat_id);
+        self.created.merge(patch.created);
+        self.sample_rate.merge(patch.sample_rate);
+        self.samples.merge(patch.samples);
+        self.state.merge(patch.state);
+        self.transcript.merge(patch.transcript);
+        self.reviewed_text.merge(patch.reviewed_text);
+        self.transcription_attempt
+            .merge(patch.transcription_attempt);
+        self.error.merge(patch.error);
+        self.deleted_at.merge(patch.deleted_at);
+        for (key, value) in patch.extra {
+            if value.is_null() {
+                self.extra.remove(&key);
+            } else {
+                self.extra.insert(key, value);
+            }
+        }
+    }
+    fn chat(&self) -> &str {
+        self.chat_id.known().map(String::as_str).unwrap_or("")
+    }
+    fn created(&self) -> Option<f64> {
+        self.created.known().and_then(Number::as_f64)
+    }
+    fn deleted_at(&self) -> Option<f64> {
+        self.deleted_at.known().and_then(Number::as_f64)
+    }
+}
+
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Params {
+    #[serde(default)]
+    row: InputField<Recording>,
+    #[serde(default)]
+    id: InputField<String>,
+    #[serde(default)]
+    chat_id: InputField<String>,
+    #[serde(default)]
+    attempt: InputField<String>,
+    #[serde(default)]
+    index: InputField<Number>,
+    #[serde(default)]
+    base64: InputField<String>,
+    #[serde(default)]
+    directory: InputField<String>,
+    #[serde(flatten)]
+    _extra: BTreeMap<String, serde::de::IgnoredAny>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum WireParams {
+    Object(Params),
+    Other(serde::de::IgnoredAny),
+}
+
+enum Command {
+    List {
+        chat: String,
+    },
+    Deleted {
+        chat: String,
+    },
+    Save {
+        id: String,
+        row: Recording,
+    },
+    Chunk {
+        id: String,
+        row: Recording,
+        position: u64,
+        pcm: Vec<u8>,
+    },
+    Delete {
+        id: String,
+    },
+    Update {
+        id: String,
+        chat: String,
+        patch: Recording,
+        attempt: Option<String>,
+    },
+    Begin {
+        id: String,
+        chat: String,
+        attempt: String,
+    },
+    Wav {
+        id: String,
+        directory: PathBuf,
+    },
+}
+
+fn identity(value: Option<&String>, key: &str, limit: usize) -> Result<String, String> {
+    value
         .filter(|v| !v.is_empty() && v.len() <= limit && !v.contains('\0'))
-        .map(str::to_owned)
+        .cloned()
         .ok_or_else(|| format!("Invalid recording {key}."))
 }
-fn document(value: &Value) -> Result<(String, String, Map<String, Value>), String> {
-    let object = value.as_object().ok_or("Invalid recording.")?;
-    if serde_json::to_vec(value).map_err(|e| e.to_string())?.len() > MAX_CHUNK_BYTES {
+fn document(row: InputField<Recording>) -> Result<(String, String, Recording), String> {
+    let InputField::Known(row) = row else {
+        return Err("Invalid recording.".into());
+    };
+    if serde_json::to_vec(&row).map_err(|e| e.to_string())?.len() > MAX_CHUNK_BYTES {
         return Err("The recording details are too large.".into());
     }
     Ok((
-        identity(value, "id", 128)?,
-        identity(value, "chatId", 256)?,
-        object.clone(),
+        identity(row.id.known(), "id", 128)?,
+        identity(row.chat_id.known(), "chatId", 256)?,
+        row,
     ))
 }
-fn load(db: &Connection, id: &str) -> Result<Option<Map<String, Value>>, String> {
+
+fn command(request: &Request) -> Result<Command, String> {
+    let method = request.method.as_str();
+    if !matches!(
+        method,
+        "dictation.list"
+            | "dictation.deleted"
+            | "dictation.save"
+            | "dictation.chunk"
+            | "dictation.delete"
+            | "dictation.update"
+            | "dictation.begin"
+            | "dictation.wav"
+    ) {
+        return Err("Unknown dictation command.".into());
+    }
+    // Non-object params previously behaved as an empty object at each field lookup.
+    let params = match serde_json::from_value::<WireParams>(request.params.clone())
+        .map_err(|error| error.to_string())?
+    {
+        WireParams::Object(params) => params,
+        WireParams::Other(_) => Params::default(),
+    };
+    match method {
+        "dictation.list" => Ok(Command::List {
+            chat: identity(params.chat_id.known(), "chatId", 256)?,
+        }),
+        "dictation.deleted" => Ok(Command::Deleted {
+            chat: identity(params.chat_id.known(), "chatId", 256)?,
+        }),
+        "dictation.save" => {
+            let (id, _, row) = document(params.row)?;
+            Ok(Command::Save { id, row })
+        }
+        "dictation.chunk" => {
+            let (id, _, row) = document(params.row)?;
+            let position = params
+                .index
+                .known()
+                .and_then(Number::as_u64)
+                .filter(|n| *n < 1_000_000)
+                .ok_or("Invalid audio chunk index.")?;
+            let encoded = params
+                .base64
+                .known()
+                .filter(|s| s.len() <= MAX_CHUNK_BYTES.div_ceil(3) * 4)
+                .ok_or("The audio chunk is too large.")?;
+            let pcm = STANDARD
+                .decode(encoded)
+                .map_err(|_| "Invalid audio bytes.")?;
+            if pcm.is_empty() || pcm.len() % 2 != 0 {
+                return Err("Audio chunks contain 16-bit samples.".into());
+            }
+            Ok(Command::Chunk {
+                id,
+                row,
+                position,
+                pcm,
+            })
+        }
+        "dictation.delete" => Ok(Command::Delete {
+            id: identity(params.id.known(), "id", 128)?,
+        }),
+        "dictation.update" => {
+            let (id, chat, patch) = document(params.row)?;
+            Ok(Command::Update {
+                id,
+                chat,
+                patch,
+                attempt: params.attempt.known().cloned(),
+            })
+        }
+        "dictation.begin" => {
+            let (id, chat, _) = document(params.row)?;
+            Ok(Command::Begin {
+                id,
+                chat,
+                attempt: identity(params.attempt.known(), "attempt", 128)?,
+            })
+        }
+        "dictation.wav" => Ok(Command::Wav {
+            id: identity(params.id.known(), "id", 128)?,
+            directory: PathBuf::from(params.directory.known().ok_or("A directory is required.")?),
+        }),
+        _ => unreachable!("method was checked above"),
+    }
+}
+
+fn decode_record(id: &str, raw: &str) -> Result<Recording, String> {
+    let record: Recording = serde_json::from_str(raw).map_err(|e| e.to_string())?;
+    if record.id.known().map(String::as_str) != Some(id) {
+        return Err("Invalid recording identity.".into());
+    }
+    Ok(record)
+}
+fn load(db: &Connection, id: &str) -> Result<Option<Recording>, String> {
     let raw: Option<String> = db
         .query_row(
             "SELECT document FROM client_dictation_recordings WHERE id=?1",
@@ -56,21 +384,8 @@ fn load(db: &Connection, id: &str) -> Result<Option<Map<String, Value>>, String>
         .map_err(|e| e.to_string())?;
     raw.map(|raw| decode_record(id, &raw)).transpose()
 }
-fn decode_record(id: &str, raw: &str) -> Result<Map<String, Value>, String> {
-    let record: Map<String, Value> = serde_json::from_str(raw).map_err(|e| e.to_string())?;
-    if record.get("id").and_then(Value::as_str) != Some(id) {
-        return Err("Invalid recording identity.".into());
-    }
-    Ok(record)
-}
-fn put(db: &Connection, id: &str, row: &Map<String, Value>) -> Result<(), String> {
-    db.execute(
-        "INSERT INTO client_dictation_recordings(id,document) VALUES(?1,?2)
-         ON CONFLICT(id) DO UPDATE SET document=excluded.document",
-        params![id, serde_json::to_string(row).map_err(|e| e.to_string())?],
-    )
-    .map(|_| ())
-    .map_err(|e| e.to_string())
+fn put(db: &Connection, id: &str, row: &Recording) -> Result<(), String> {
+    db.execute("INSERT INTO client_dictation_recordings(id,document) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET document=excluded.document", params![id,serde_json::to_string(row).map_err(|e| e.to_string())?]).map(|_| ()).map_err(|e| e.to_string())
 }
 fn remove(db: &Connection, id: &str) -> Result<(), String> {
     db.execute("DELETE FROM client_dictation_chunks WHERE id=?1", [id])
@@ -78,92 +393,62 @@ fn remove(db: &Connection, id: &str) -> Result<(), String> {
         .map(|_| ())
         .map_err(|e| e.to_string())
 }
-fn all(db: &Connection) -> Result<Vec<Map<String, Value>>, String> {
+fn all(db: &Connection) -> Result<Vec<Recording>, String> {
     let mut statement = db
         .prepare("SELECT id,document FROM client_dictation_recordings")
         .map_err(|e| e.to_string())?;
     let rows = statement
         .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
         .map_err(|e| e.to_string())?;
-    let mut result = vec![];
-    for row in rows {
+    rows.map(|row| {
         let (id, raw) = row.map_err(|e| e.to_string())?;
-        result.push(decode_record(&id, &raw)?);
-    }
-    Ok(result)
-}
-fn number(row: &Map<String, Value>, key: &str) -> Option<f64> {
-    row.get(key).and_then(Value::as_f64)
-}
-fn chat(row: &Map<String, Value>) -> &str {
-    row.get("chatId").and_then(Value::as_str).unwrap_or("")
-}
-// JSON has no undefined. A null field removes it, as the web merge does.
-fn merge(target: &mut Map<String, Value>, change: Map<String, Value>) {
-    for (key, value) in change {
-        if value.is_null() {
-            target.remove(&key);
-        } else {
-            target.insert(key, value);
-        }
-    }
+        decode_record(&id, &raw)
+    })
+    .collect()
 }
 
 fn apply(db: &mut Connection, request: &Request) -> Result<Value, String> {
-    let p = &request.params;
-    match request.method.as_str() {
-        "dictation.list" => {
-            let chat_id = identity(p, "chatId", 256)?;
+    match command(request)? {
+        Command::List { chat } => {
             let mut rows: Vec<_> = all(db)?
                 .into_iter()
-                .filter(|row| chat(row) == chat_id && number(row, "deletedAt").is_none())
+                .filter(|row| row.chat() == chat && row.deleted_at().is_none())
                 .collect();
             rows.sort_by(|a, b| {
-                number(b, "created")
+                b.created()
                     .unwrap_or(0.0)
-                    .total_cmp(&number(a, "created").unwrap_or(0.0))
+                    .total_cmp(&a.created().unwrap_or(0.0))
             });
-            Ok(json!(rows))
+            serde_json::to_value(rows).map_err(|e| e.to_string())
         }
-        "dictation.deleted" => {
-            let chat_id = identity(p, "chatId", 256)?;
+        Command::Deleted { chat } => {
             let now = now_ms();
             let (expired, kept): (Vec<_>, Vec<_>) = all(db)?
                 .into_iter()
-                .filter(|row| number(row, "deletedAt").is_some())
-                .partition(|row| now - number(row, "deletedAt").unwrap_or(0.0) >= UNDO_MS);
+                .filter(|row| row.deleted_at().is_some())
+                .partition(|row| now - row.deleted_at().unwrap_or(0.0) >= UNDO_MS);
             let tx = db.transaction().map_err(|e| e.to_string())?;
             for row in expired {
-                remove(&tx, row.get("id").and_then(Value::as_str).unwrap_or(""))?;
+                remove(&tx, row.id.known().map(String::as_str).unwrap_or(""))?;
             }
             tx.commit().map_err(|e| e.to_string())?;
-            Ok(json!(
+            serde_json::to_value(
                 kept.into_iter()
-                    .filter(|row| chat(row) == chat_id)
-                    .collect::<Vec<_>>()
-            ))
+                    .filter(|row| row.chat() == chat)
+                    .collect::<Vec<_>>(),
+            )
+            .map_err(|e| e.to_string())
         }
-        "dictation.save" => {
-            let (id, _, row) = document(&p["row"])?;
+        Command::Save { id, row } => {
             put(db, &id, &row)?;
             Ok(Value::Null)
         }
-        "dictation.chunk" => {
-            let (id, _, row) = document(&p["row"])?;
-            let position = p["index"]
-                .as_u64()
-                .filter(|n| *n < 1_000_000)
-                .ok_or("Invalid audio chunk index.")?;
-            let encoded = p["base64"]
-                .as_str()
-                .filter(|s| s.len() <= MAX_CHUNK_BYTES.div_ceil(3) * 4)
-                .ok_or("The audio chunk is too large.")?;
-            let pcm = STANDARD
-                .decode(encoded)
-                .map_err(|_| "Invalid audio bytes.")?;
-            if pcm.is_empty() || pcm.len() % 2 != 0 {
-                return Err("Audio chunks contain 16-bit samples.".into());
-            }
+        Command::Chunk {
+            id,
+            row,
+            position,
+            pcm,
+        } => {
             let tx = db.transaction().map_err(|e| e.to_string())?;
             tx.execute(
                 "INSERT OR REPLACE INTO client_dictation_chunks(id,position,pcm) VALUES(?1,?2,?3)",
@@ -174,35 +459,38 @@ fn apply(db: &mut Connection, request: &Request) -> Result<Value, String> {
             tx.commit().map_err(|e| e.to_string())?;
             Ok(Value::Null)
         }
-        "dictation.delete" => {
-            let id = identity(p, "id", 128)?;
+        Command::Delete { id } => {
             let tx = db.transaction().map_err(|e| e.to_string())?;
             remove(&tx, &id)?;
             tx.commit().map_err(|e| e.to_string())?;
             Ok(Value::Null)
         }
-        // Late transcription replies must not recreate or change a deleted recording.
-        "dictation.update" => {
-            let (id, chat_id, change) = document(&p["row"])?;
-            let attempt = p["attempt"].as_str();
+        Command::Update {
+            id,
+            chat,
+            patch,
+            attempt,
+        } => {
             let tx = db.transaction().map_err(|e| e.to_string())?;
             if let Some(mut row) = load(&tx, &id)? {
-                let current = row.get("transcriptionAttempt").and_then(Value::as_str);
-                if chat(&row) == chat_id && attempt.is_none_or(|a| current == Some(a)) {
-                    merge(&mut row, change);
+                let current = row.transcription_attempt.known().map(String::as_str);
+                if row.chat() == chat
+                    && attempt
+                        .as_deref()
+                        .is_none_or(|value| current == Some(value))
+                {
+                    row.merge(patch);
                     put(&tx, &id, &row)?;
                 }
             }
             tx.commit().map_err(|e| e.to_string())?;
             Ok(Value::Null)
         }
-        "dictation.begin" => {
-            let (id, chat_id, _) = document(&p["row"])?;
-            let attempt = identity(p, "attempt", 128)?;
+        Command::Begin { id, chat, attempt } => {
             let tx = db.transaction().map_err(|e| e.to_string())?;
             let claimed = match load(&tx, &id)? {
-                Some(mut row) if chat(&row) == chat_id => {
-                    row.insert("transcriptionAttempt".into(), Value::String(attempt));
+                Some(mut row) if row.chat() == chat => {
+                    row.transcription_attempt = Field::Known(attempt);
                     put(&tx, &id, &row)?;
                     true
                 }
@@ -211,13 +499,7 @@ fn apply(db: &mut Connection, request: &Request) -> Result<Value, String> {
             tx.commit().map_err(|e| e.to_string())?;
             Ok(Value::Bool(claimed))
         }
-        "dictation.wav" => {
-            let id = identity(p, "id", 128)?;
-            let directory =
-                PathBuf::from(p["directory"].as_str().ok_or("A directory is required.")?);
-            Ok(json!({"path": export(db, &id, &directory)?}))
-        }
-        _ => Err("Unknown dictation command.".into()),
+        Command::Wav { id, directory } => Ok(json!({"path":export(db, &id, &directory)?})),
     }
 }
 
@@ -250,10 +532,13 @@ pub fn wav_header(samples: usize, sample_rate: u32) -> [u8; 44] {
 fn export(db: &Connection, id: &str, directory: &Path) -> Result<String, String> {
     use std::os::unix::fs::OpenOptionsExt;
     let row = load(db, id)?.ok_or("The recording was deleted.")?;
-    if number(&row, "deletedAt").is_some() {
+    if row.deleted_at().is_some() {
         return Err("The recording was deleted.".into());
     }
-    let rate = number(&row, "sampleRate")
+    let rate = row
+        .sample_rate
+        .known()
+        .and_then(Number::as_f64)
         .filter(|r| r.fract() == 0.0 && (8000.0..=192_000.0).contains(r))
         .ok_or("The recording has an invalid sample rate.")? as u32;
     let mut statement = db
@@ -309,6 +594,203 @@ mod tests {
         let db = Connection::open_in_memory().unwrap();
         initialize(&db).unwrap();
         db
+    }
+    #[test]
+    fn web_recording_producer_fields_match_the_typed_storage_owner() {
+        let source = include_str!("../../../apps/web/src/dictation/storage.ts");
+        let declaration = source
+            .split_once("export type Recording = {")
+            .unwrap()
+            .1
+            .split_once("\n};")
+            .unwrap()
+            .0;
+        let fields = declaration
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(|line| {
+                let (name, ty) = line.split_once(':').unwrap();
+                (
+                    name.trim_end_matches('?'),
+                    name.ends_with('?'),
+                    ty.trim().trim_end_matches(';'),
+                )
+            })
+            .collect::<Vec<_>>();
+        let expected = [
+            ("id", false, "string"),
+            ("chatId", false, "string"),
+            ("created", false, "number"),
+            ("sampleRate", false, "number"),
+            ("samples", false, "number"),
+            ("state", false, "\"recording\" | \"ready\""),
+            ("transcript", true, "string | undefined"),
+            ("reviewedText", true, "string | undefined"),
+            ("transcriptionAttempt", true, "string | undefined"),
+            ("error", true, "string | undefined"),
+            ("deletedAt", true, "number | undefined"),
+        ];
+        assert_eq!(
+            fields, expected,
+            "web Recording is the producer contract for stored fields"
+        );
+        let raw = json!({"id":"i","chatId":"c","created":1.0,"sampleRate":16000.0,"samples":1,"state":"ready","transcript":"t","reviewedText":"r","transcriptionAttempt":"a","error":"e","deletedAt":2.0});
+        let row: Recording = serde_json::from_value(raw.clone()).unwrap();
+        assert!(
+            row.id.known().is_some()
+                && row.chat_id.known().is_some()
+                && row.created.known().is_some()
+                && row.sample_rate.known().is_some()
+                && row.samples.known().is_some()
+                && row.state.known().is_some()
+                && row.transcript.known().is_some()
+                && row.reviewed_text.known().is_some()
+                && row.transcription_attempt.known().is_some()
+                && row.error.known().is_some()
+                && row.deleted_at.known().is_some()
+        );
+        assert_eq!(serde_json::to_value(row).unwrap(), raw);
+        assert_eq!(
+            serde_json::to_value(RecordingState::Recording).unwrap(),
+            "recording"
+        );
+        assert_eq!(
+            serde_json::to_value(RecordingState::Ready).unwrap(),
+            "ready"
+        );
+    }
+    #[test]
+    fn malformed_optional_fields_and_extensions_survive_unrelated_patches() {
+        let mut db = database();
+        let record = json!({"id":"legacy","chatId":"chat","created":"bad","sampleRate":{"legacy":true},"deletedAt":"bad","state":"future","transcriptionAttempt":7,"unknown":{"keep":[1,2]}});
+        call(&mut db, "dictation.save", json!({"row":record})).unwrap();
+        call(
+            &mut db,
+            "dictation.update",
+            json!({"row":{"id":"legacy","chatId":"chat","transcript":"ok","error":null}}),
+        )
+        .unwrap();
+        let list = call(&mut db, "dictation.list", json!({"chatId":"chat"})).unwrap();
+        let row = &list[0];
+        assert_eq!(row["created"], "bad");
+        assert_eq!(row["sampleRate"], json!({"legacy":true}));
+        assert_eq!(row["deletedAt"], "bad");
+        assert_eq!(row["state"], "future");
+        assert_eq!(row["transcriptionAttempt"], 7);
+        assert_eq!(row["unknown"], json!({"keep":[1,2]}));
+        assert_eq!(row["transcript"], "ok");
+        assert!(row.get("error").is_none());
+        call(
+            &mut db,
+            "dictation.update",
+            json!({"row":{"id":"legacy","chatId":"chat","state":{"ready":null}}}),
+        )
+        .unwrap();
+        let row = call(&mut db, "dictation.list", json!({"chatId":"chat"})).unwrap();
+        assert_eq!(row[0]["state"], json!({"ready":null}));
+    }
+
+    #[test]
+    fn explicit_null_is_preserved_on_save_and_cleared_only_by_patch() {
+        let mut db = database();
+        call(
+            &mut db,
+            "dictation.save",
+            json!({"row":{"id":"n","chatId":"chat","state":null,"error":null,"future":null}}),
+        )
+        .unwrap();
+        let saved = call(&mut db, "dictation.list", json!({"chatId":"chat"})).unwrap();
+        for key in ["state", "error", "future"] {
+            assert!(saved[0].get(key).unwrap().is_null());
+        }
+        call(
+            &mut db,
+            "dictation.update",
+            json!({"row":{"id":"n","chatId":"chat","state":null,"error":null,"future":null}}),
+        )
+        .unwrap();
+        let saved = call(&mut db, "dictation.list", json!({"chatId":"chat"})).unwrap();
+        for key in ["state", "error", "future"] {
+            assert!(saved[0].get(key).is_none());
+        }
+    }
+
+    #[test]
+    fn command_validation_retains_numeric_aliases_and_rejects_without_writes() {
+        let mut db = database();
+        let row = json!({"id":"r","chatId":"c","created":1.0,"sampleRate":16000.0,"samples":1.0,"state":"ready","future":"kept"});
+        call(
+            &mut db,
+            "dictation.chunk",
+            json!({"row":row,"index":0,"base64":"AAA="}),
+        )
+        .unwrap();
+        let initial: String = db
+            .query_row(
+                "SELECT document FROM client_dictation_recordings WHERE id='r'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        for bad in [
+            json!({"row":row,"index":1.0,"base64":"AAA="}),
+            json!({"row":row,"index":1000000,"base64":"AAA="}),
+            json!({"row":row,"index":1,"base64":"!"}),
+            json!({"row":{"id":"r","chatId":"\u{0}"},"index":1,"base64":"AAA="}),
+        ] {
+            assert!(call(&mut db, "dictation.chunk", bad).is_err());
+        }
+        assert_eq!(
+            call(&mut db, "dictation.save", json!({"row":[]})).unwrap_err(),
+            "Invalid recording."
+        );
+        assert_eq!(
+            call(&mut db, "dictation.list", json!([])).unwrap_err(),
+            "Invalid recording chatId."
+        );
+        assert_eq!(
+            call(
+                &mut db,
+                "dictation.begin",
+                json!({"row":{"id":"r","chatId":"c"},"attempt":{}})
+            )
+            .unwrap_err(),
+            "Invalid recording attempt."
+        );
+        let after: String = db
+            .query_row(
+                "SELECT document FROM client_dictation_recordings WHERE id='r'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(after, initial);
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM client_dictation_chunks", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        let directory = tempfile::tempdir().unwrap();
+        assert!(
+            call(
+                &mut db,
+                "dictation.wav",
+                json!({"id":"r","directory":directory.path()})
+            )
+            .is_ok()
+        );
+        call(
+            &mut db,
+            "dictation.update",
+            json!({"row":{"id":"r","chatId":"c","future":null,"transcript":null}}),
+        )
+        .unwrap();
+        let saved = serde_json::to_value(load(&db, "r").unwrap().unwrap()).unwrap();
+        assert!(saved.get("future").is_none());
+        assert!(saved.get("transcript").is_none());
+        assert_eq!(saved["sampleRate"], json!(16000.0));
     }
     #[test]
     fn corrupt_record_identity_cannot_delete_another_recording_or_its_audio() {
@@ -411,9 +893,9 @@ mod tests {
             json!({"row":{"id":"a","chatId":"one","error":null}}),
         )
         .unwrap();
-        let a = load(&db, "a").unwrap().unwrap();
+        let a = serde_json::to_value(load(&db, "a").unwrap().unwrap()).unwrap();
         assert_eq!(a["transcript"], "Привет 🦀");
-        assert!(!a.contains_key("error"));
+        assert!(a.get("error").is_none());
         // Trash, undo within a day, and purge after a day.
         call(
             &mut db,
