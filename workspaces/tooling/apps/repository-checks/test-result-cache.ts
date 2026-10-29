@@ -37,6 +37,10 @@ export const SHARED_INPUTS = [
   "rust-toolchain.toml",
   "justfile",
   "workspaces/tooling/apps/repository-checks",
+  // Files that Rust tests and build scripts read from outside their crate folder.
+  "clippy.toml",
+  ".agents",
+  "workspaces/client/apps/desktop/desktop_vm.py",
 ];
 
 /** Folder of passing results. It is under target/, which layr keeps as a warm
