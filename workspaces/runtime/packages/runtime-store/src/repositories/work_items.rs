@@ -385,7 +385,7 @@ impl WorkItemsRepository {
         let mut seen = std::collections::BTreeSet::new();
         for id in ids.iter().filter(|id| seen.insert(id.as_str())) {
             if let Some(record) = table.get(&TranscriptAssetId::from(id.as_str()))? {
-                result.push(record.value().clone());
+                result.push(record.into_value());
             }
         }
         Ok(result)

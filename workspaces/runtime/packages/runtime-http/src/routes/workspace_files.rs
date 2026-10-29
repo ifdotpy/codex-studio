@@ -124,19 +124,10 @@ async fn file_target(
                 let asset = WorkspaceFilesRepository::asset(connection, &asset_id)
                     .map_err(map_store_error)?
                     .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown attachment"))?;
-                let asset_value = asset.value();
-                let field = |name: &str| {
-                    asset_value
-                        .get(name)
-                        .and_then(Value::as_str)
-                        .map(str::to_owned)
-                        .ok_or_else(|| invalid_stored("assets", asset.id().as_ref()))
-                };
-                let owner_id = field("agent")?;
-                validate_agent(connection, &owner_id)?;
+                validate_agent(connection, asset.agent())?;
                 Ok(FileTarget::Asset {
-                    path: field("path")?,
-                    mime: field("mime")?,
+                    path: asset.path().to_owned(),
+                    mime: asset.mime().to_owned(),
                 })
             })
             .await;

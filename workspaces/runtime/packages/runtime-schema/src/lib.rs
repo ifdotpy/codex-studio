@@ -50,6 +50,7 @@ pub mod supervisor_contract;
 pub mod task_command;
 pub mod task_results;
 pub mod terminal_record;
+pub mod transcript_asset;
 pub mod usage;
 pub mod usage_limits;
 

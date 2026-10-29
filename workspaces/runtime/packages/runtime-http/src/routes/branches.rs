@@ -1176,14 +1176,11 @@ fn copy_asset_views(
                 "missing transcript asset".into(),
             ));
         };
-        let mut record = asset.value().clone();
         let id = deterministic_uuid(&format!("{target}:{old}"));
-        record["id"] = json!(id);
-        record["agent"] = json!(target);
-        tx.execute(
-            "INSERT INTO runtime_assets(id,record) VALUES(?1,?2)",
-            params![id, record.to_string()],
-        )?;
+        let mut asset = asset;
+        asset.retarget(id.clone(), target.to_owned());
+        WorkspaceFilesRepository::insert_asset(tx, &id, &asset)?;
+        let record = asset.into_value();
         let mut copied_view = record.clone();
         if let Some(object) = copied_view.as_object_mut() {
             object.remove("path");

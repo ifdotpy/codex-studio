@@ -13,7 +13,8 @@ use studio_runtime_schema::shared_values::{
     MAX_USER_ATTACHMENT_BYTES as MAX_UPLOAD_BYTES, USER_ATTACHMENT_LIMIT_LABEL,
 };
 use studio_runtime_store::{
-    AgentId, AgentRepository, RuntimeStore, StoreError, WorkspaceFilesRepository, sha256_hex,
+    AgentId, AgentRepository, RuntimeStore, StoreError, TranscriptAssetRecord,
+    WorkspaceFilesRepository, sha256_hex,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -119,19 +120,15 @@ pub async fn upload(
             }
 
             if let Some(existing) = WorkspaceFilesRepository::asset(transaction, &id)? {
-                let value = existing.value().clone();
                 let existing_id = existing.id().as_ref().to_owned();
-                if !valid_asset_record(&value, &existing_id, &root) {
+                if !valid_asset_record(&existing, &existing_id, &root) {
                     return Err(PayloadStoreError::InvalidStoredAsset { id: existing_id });
                 }
-                let existing_agent = value.get("agent").and_then(Value::as_str);
-                let existing_name = value.get("name").and_then(Value::as_str);
-                let existing_hash = value.get("hash").and_then(Value::as_str);
-                if existing_agent == Some(agent_id.as_str())
-                    && existing_name == Some(name.as_str())
-                    && existing_hash == Some(digest.as_str())
+                if existing.agent() == agent_id
+                    && existing.name() == name
+                    && existing.hash() == digest
                 {
-                    let mut view = value;
+                    let mut view = existing.into_value();
                     if let Some(record) = view.as_object_mut() {
                         record.remove("path");
                     }
@@ -153,7 +150,8 @@ pub async fn upload(
                 "hash": &digest,
                 "created": created,
             });
-            WorkspaceFilesRepository::insert_asset(transaction, &id, &record)?;
+            let typed = TranscriptAssetRecord::from_value(record.clone())?;
+            WorkspaceFilesRepository::insert_asset(transaction, &id, &typed)?;
             let mut view = record;
             if let Some(record) = view.as_object_mut() {
                 record.remove("path");
@@ -258,49 +256,34 @@ fn validate_encoded_length(encoded: &str) -> Result<(), PayloadStoreError> {
     Ok(())
 }
 
-pub(crate) fn valid_asset_record(record: &Value, row_id: &str, root: &Path) -> bool {
-    let Some(object) = record.as_object() else {
-        return false;
-    };
-    let Some(name) = object.get("name").and_then(Value::as_str) else {
-        return false;
-    };
+pub(crate) fn valid_asset_record(
+    record: &TranscriptAssetRecord,
+    row_id: &str,
+    root: &Path,
+) -> bool {
+    let name = record.name();
     let expected_path = root
         .join("uploads")
         .join(row_id)
         .join(name)
         .to_string_lossy()
         .into_owned();
-    object.get("id").and_then(Value::as_str) == Some(row_id)
+    record.id().as_ref() == row_id
         && Uuid::parse_str(row_id).is_ok_and(|parsed| parsed.to_string() == row_id)
-        && object
-            .get("agent")
-            .and_then(Value::as_str)
-            .is_some_and(|agent| !agent.is_empty())
+        && !record.agent().is_empty()
         && crate::event_write::python_strip(name) == name
         && name.chars().count() <= 255
         && Path::new(name).file_name().and_then(|part| part.to_str()) == Some(name)
         && Path::new(&expected_path).is_absolute()
-        && object.get("path").and_then(Value::as_str) == Some(expected_path.as_str())
-        && object
-            .get("mime")
-            .and_then(Value::as_str)
-            .is_some_and(|mime| !mime.is_empty())
-        && object.get("image").and_then(Value::as_bool).is_some()
-        && object
-            .get("size")
-            .and_then(Value::as_u64)
+        && record.path() == expected_path
+        && !record.mime().is_empty()
+        && record
+            .size()
+            .as_u64()
             .is_some_and(|size| size > 0 && size <= MAX_UPLOAD_BYTES as u64)
-        && object
-            .get("hash")
-            .and_then(Value::as_str)
-            .is_some_and(|hash| {
-                hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
-            })
-        && object
-            .get("created")
-            .and_then(Value::as_f64)
-            .is_some_and(f64::is_finite)
+        && record.hash().len() == 64
+        && record.hash().bytes().all(|byte| byte.is_ascii_hexdigit())
+        && record.created().as_f64().is_some_and(f64::is_finite)
 }
 
 #[cfg(test)]
@@ -376,25 +359,27 @@ mod tests {
             "hash": "a".repeat(64),
             "created": 1.0,
         });
-        assert!(valid_asset_record(&record, id, root.path()));
+        let valid = |value: &serde_json::Value| {
+            studio_runtime_store::TranscriptAssetRecord::from_value(value.clone())
+                .is_ok_and(|asset| valid_asset_record(&asset, id, root.path()))
+        };
+        assert!(valid(&record));
         for field in [
             "id", "agent", "name", "path", "mime", "image", "size", "hash", "created",
         ] {
             let mut corrupt = record.clone();
             corrupt.as_object_mut().expect("object").remove(field);
-            assert!(
-                !valid_asset_record(&corrupt, id, root.path()),
-                "missing {field} is invalid"
-            );
+            assert!(!valid(&corrupt), "missing {field} is invalid");
         }
         for (field, value) in [
             ("id", json!("not-a-uuid")),
             ("agent", json!(null)),
             ("name", json!("../asset.txt")),
-            ("path", json!("/outside/asset.txt")),
+            ("path", json!(root.path().join("outside.txt"))),
             ("mime", json!("")),
             ("image", json!("false")),
             ("size", json!(0)),
+            ("size", json!(7.0)),
             ("hash", json!("bad")),
             ("created", json!("now")),
         ] {
@@ -403,10 +388,7 @@ mod tests {
                 .as_object_mut()
                 .expect("object")
                 .insert(field.into(), value);
-            assert!(
-                !valid_asset_record(&corrupt, id, root.path()),
-                "invalid {field} is refused"
-            );
+            assert!(!valid(&corrupt), "invalid {field} is refused");
         }
     }
 }

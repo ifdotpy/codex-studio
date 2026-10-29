@@ -139,7 +139,7 @@ string_id!(TaskId);
 string_id!(QueueEventId);
 string_id!(ChatMessageId);
 string_id!(TranscriptItemId);
-string_id!(TranscriptAssetId);
+pub use studio_runtime_schema::transcript_asset::{TranscriptAssetId, TranscriptAssetRecord};
 
 /// A future agent status that is distinct from every known status.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1121,14 +1121,18 @@ record_newtype!(
     key = PayloadId,
     query = PhysicalAgent
 );
-record_newtype!(
-    TranscriptAssetRecord,
-    TranscriptAssetId,
-    table = "runtime_assets",
-    schema = "PersistedTranscriptAsset",
-    key = PayloadId,
-    query = JsonAgent
-);
+impl JsonRecord for TranscriptAssetRecord {
+    type Id = TranscriptAssetId;
+    const TABLE: &'static str = "runtime_assets";
+    const SCHEMA: &'static str = "PersistedTranscriptAsset";
+    const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
+    const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::JsonAgent;
+    const TYPED_SHAPE: bool = true;
+    const DIRECT_TYPED_DECODE: bool = true;
+    fn record_key(&self) -> Option<&Self::Id> {
+        Some(self.id())
+    }
+}
 record_newtype!(
     EventMetadataRecord,
     QueueEventId,
@@ -2599,13 +2603,15 @@ mod tests {
     fn persisted_asset_table_keeps_path_and_extension_fields() {
         let connection = Connection::open_in_memory().expect("memory database opens");
         let table = Table::<TranscriptAssetRecord>::new(&connection);
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("notes.txt");
         connection
             .execute_batch("CREATE TABLE runtime_assets(id TEXT PRIMARY KEY,record TEXT NOT NULL);")
             .expect("assets table creates");
 
         let asset = TranscriptAssetRecord::from_value(json!({
             "id":"asset-1", "agent":"agent-1", "name":"notes.txt",
-            "path":"/private/uploads/asset-1/notes.txt", "mime":"text/plain",
+            "path":path, "mime":"text/plain",
             "image":false, "size":5, "hash":"sha256:abc", "created":1.5,
             "futureField":{"retained":true}
         }))
@@ -2618,23 +2624,18 @@ mod tests {
             .get(&TranscriptAssetId::from("asset-1"))
             .expect("asset reads")
             .expect("asset exists");
+        assert_eq!(read.path(), path.to_str().unwrap());
         assert_eq!(
-            read.get("path").and_then(Value::as_str),
-            Some("/private/uploads/asset-1/notes.txt")
+            read.into_value()["futureField"]["retained"],
+            Value::Bool(true)
         );
-        assert_eq!(read.value()["futureField"]["retained"], Value::Bool(true));
 
         let invalid = TranscriptAssetRecord::from_value(json!({
             "id":"bad-asset", "agent":"agent-1", "name":"notes.txt",
             "mime":"text/plain", "image":false, "size":5,
             "hash":"sha256:abc", "created":1.5
-        }))
-        .expect("invalid schema fixture has an id");
-        assert!(matches!(
-            table.put(&invalid).expect_err("path is required for persisted asset"),
-            StoreError::InvalidStoredObject { table: "runtime_assets", id }
-                if id == "bad-asset"
-        ));
+        }));
+        assert!(invalid.is_err());
     }
 
     #[test]
