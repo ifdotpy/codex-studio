@@ -46,7 +46,11 @@ fn receipt_status<'de, D: serde::Deserializer<'de>>(
 ) -> std::result::Result<ReceiptStatus, D::Error> {
     use serde::Deserialize;
     let value = Value::deserialize(deserializer)?;
-    Ok(ReceiptStatus::deserialize(value).unwrap_or_default())
+    Ok(if value.is_string() {
+        ReceiptStatus::deserialize(value).unwrap_or_default()
+    } else {
+        ReceiptStatus::Unknown
+    })
 }
 
 // Field order matches the previously sorted JSON object encoding.
@@ -1142,13 +1146,32 @@ mod review_tests {
                 "{id}"
             );
         }
+        let save = json!({"kind":"save"});
+        let object_statuses = [
+            (
+                "object_completed",
+                br#"{"intent":{"kind":"save"},"status":{"completed":null}}"#.as_slice(),
+            ),
+            (
+                "object_failed",
+                br#"{"intent":{"kind":"save"},"status":{"failed":null}}"#,
+            ),
+        ]
+        .map(|(id, raw)| {
+            write(id, raw);
+            matches!(replay(id, &save), Err(NativeLayrError::Unknown(_)))
+        });
+        assert_eq!(
+            object_statuses,
+            [true, true],
+            "object statuses must remain unknown"
+        );
         assert_eq!(
             calls.get(),
             0,
             "replayed or malformed receipts cannot run preflight or effect"
         );
 
-        let save = json!({"kind":"save"});
         write("save", br#"{"intent":{"kind":"save"},"status":"failed"}"#);
         assert_eq!(replay("save", &save).unwrap(), json!("effect"));
         assert_eq!(replay("save", &save).unwrap(), json!("effect"));
