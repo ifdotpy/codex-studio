@@ -1776,7 +1776,7 @@ mod tests {
             let outer_body = json!({"actor":if failure == "missing_actor" { None } else if failure == "actor" { Some("other") } else { Some("agent") },"reply":{"success":true,"contentItems":[]},"references":[]}).to_string();
             if failure != "outer" {
                 db.execute(
-                    "INSERT INTO request_results VALUES('tool-id',?1,?2,?3)",
+                    "INSERT INTO request_results(id,signature,result,created) VALUES('tool-id',?1,?2,?3)",
                     params![outer_signature, outer_body, CUTOVER],
                 )
                 .expect("outer");
@@ -1845,7 +1845,7 @@ mod tests {
                     .to_string();
             if outer {
                 db.execute(
-                    "INSERT INTO request_results VALUES('tool-id','outer-signature',?1,?2)",
+                    "INSERT INTO request_results(id,signature,result,created) VALUES('tool-id','outer-signature',?1,?2)",
                     params![outer_body, CUTOVER],
                 )
                 .expect("outer");

@@ -2,7 +2,7 @@
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use studio_runtime_schema::persistence::{
-    REQUEST_RESULT_TTL_MS, RequestIdentity, RequestIdentityError,
+    REQUEST_RESULT_TTL_MS, RequestIdentity, RequestIdentityError, RequestReferenceKind,
 };
 
 /// Maximum rows removed by one GC transaction. Unit: request-result rows.
@@ -56,6 +56,14 @@ pub struct StoredResult {
 pub struct StoredReply<R> {
     pub signature: String,
     pub reply: R,
+}
+
+/// The stable entity and revision recorded when a command was applied.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequestReference {
+    pub kind: RequestReferenceKind,
+    pub id: String,
+    pub revision: i64,
 }
 
 /// Persist this with the admitted owner/outbox for asynchronous settlement.
@@ -117,6 +125,94 @@ pub enum Admission {
 
 pub struct RequestResults;
 impl RequestResults {
+    /// Look up a reference without admitting an operation. A body-backed result
+    /// remains on the existing body replay path.
+    pub fn replay_reference(
+        conn: &Connection,
+        id: &str,
+        signature: &str,
+        now_ms: i64,
+    ) -> Result<Option<RequestReference>> {
+        type SavedReference = (
+            String,
+            Option<RequestReferenceKind>,
+            Option<String>,
+            Option<i64>,
+            i64,
+        );
+        let saved: Option<SavedReference> = conn
+            .query_row(
+                "SELECT signature,ref_kind,ref_id,ref_rev,created FROM request_results WHERE id=?1",
+                [id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((stored_signature, kind, ref_id, revision, created)) = saved else {
+            return Ok(None);
+        };
+        if stored_signature != signature {
+            return Err(RequestResultError::Conflict { id: id.into() });
+        }
+        let floor = now_ms.saturating_sub(REQUEST_RESULT_TTL_MS);
+        if created <= floor {
+            return Err(RequestIdentityError::Expired {
+                issued_ms: created,
+                expired_before_ms: floor,
+            }
+            .into());
+        }
+        match (kind, ref_id, revision) {
+            (Some(kind), Some(id), Some(revision)) => {
+                Ok(Some(RequestReference { kind, id, revision }))
+            }
+            (None, None, None) => Ok(None),
+            _ => Err(rusqlite::Error::InvalidQuery.into()),
+        }
+    }
+
+    /// Settle an entity reference in the same transaction as its mutation.
+    pub fn settle_reference(
+        tx: &Transaction<'_>,
+        admitted: &AdmittedRequest,
+        reference: &RequestReference,
+    ) -> Result<RequestReference> {
+        let existing: Option<String> = tx
+            .query_row(
+                "SELECT signature FROM request_results WHERE id=?1",
+                [admitted.id()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(signature) = existing {
+            if signature != admitted.signature() {
+                return Err(RequestResultError::Conflict {
+                    id: admitted.id().into(),
+                });
+            }
+            return Self::replay_reference(
+                tx,
+                admitted.id(),
+                admitted.signature(),
+                admitted.created(),
+            )?
+            .ok_or_else(|| RequestResultError::Conflict {
+                id: admitted.id().into(),
+            });
+        }
+        tx.execute(
+            "INSERT INTO request_results(id,signature,status,ref_kind,ref_id,ref_rev,created) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+            params![admitted.id(), admitted.signature(), studio_runtime_schema::persistence::RequestResultStatus::Applied, reference.kind, reference.id, reference.revision, admitted.created()],
+        )?;
+        Ok(reference.clone())
+    }
     /// Settle an explicitly authorized abandonment and remove its exact outbox
     /// in the same owner transaction. The effect may have happened.
     pub fn settle_abandoned<P>(
@@ -318,7 +414,7 @@ mod tests {
                 .expect("row")
                 .expect("exists");
         tx.execute(
-            "INSERT INTO request_results VALUES('effect','different','{}',1)",
+            "INSERT INTO request_results(id,signature,result,created) VALUES('effect','different','{}',1)",
             [],
         )
         .expect("conflict");
@@ -381,7 +477,7 @@ mod tests {
         .unwrap();
         for id in ["raw pk", canonical.id()] {
             db.execute(
-                "INSERT INTO request_results VALUES(?1,'sig',?2,?3)",
+                "INSERT INTO request_results(id,signature,result,created) VALUES(?1,'sig',?2,?3)",
                 params![id, envelope, now],
             )
             .unwrap();
@@ -636,7 +732,7 @@ mod tests {
         let mut db = database();
         let cutover = REQUEST_RESULT_TTL_MS * 2;
         db.execute(
-            "INSERT INTO request_results VALUES('opaque-id','original','{\"reply\":7}',?1)",
+            "INSERT INTO request_results(id,signature,result,created) VALUES('opaque-id','original','{\"reply\":7}',?1)",
             [cutover],
         )
         .expect("migration import");
@@ -704,7 +800,7 @@ mod tests {
         ));
         for index in 0..REQUEST_RESULT_GC_BATCH_ROWS + 1 {
             tx.execute(
-                "INSERT INTO request_results VALUES(?1,'sig','{}',?2)",
+                "INSERT INTO request_results(id,signature,result,created) VALUES(?1,'sig','{}',?2)",
                 params![index.to_string(), issued],
             )
             .expect("expired row");

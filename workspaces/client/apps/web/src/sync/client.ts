@@ -488,6 +488,14 @@ export function createSyncClient(options: SyncClientOptions) {
     }));
   }
 
+  async function applyCommandRows(
+    documents: components["schemas"]["SyncEntity"][],
+  ) {
+    if (!documents.length || !canSerializeProjectionWrites()) return;
+    const { workspaceId } = await syncDatabase();
+    await persistEntityDocuments(workspaceId, documents, null, () => true);
+  }
+
   async function persistEntityDocuments(
     targetWorkspaceId: string,
     documents: components["schemas"]["SyncEntity"][],
@@ -3243,6 +3251,7 @@ export function createSyncClient(options: SyncClientOptions) {
   return {
     syncDatabase,
     outboxDatabase,
+    applyCommandRows,
     persistResourceEntityChanges,
     persistStagedEntityTransfer,
     readSubscriptionCursor,
@@ -3290,6 +3299,7 @@ const defaultSyncClient = createSyncClient({
 export const {
   syncDatabase,
   outboxDatabase,
+  applyCommandRows,
   persistResourceEntityChanges,
   persistStagedEntityTransfer,
   readSubscriptionCursor,
