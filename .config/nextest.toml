@@ -84,7 +84,8 @@ inherits = "ci"
 # Reviewer permissions stay read-only under yolo across preparation, turns, and monitors.
 default-filter = '''
     (package(=studio-runtime-services) & kind(lib) & test(/^account_driver::tests::vm_/)) |
-    (package(=studio-runtime-server) & kind(lib) & test(/^host_runtime::codex_vm_auth_tests::/)) |
+    (package(=studio-runtime-server) & kind(lib) & (test(/^host_runtime::codex_vm_auth_tests::/) | test(/^host_runtime::launch_profile_tests::/))) |
+    (package(=studio-runtime-services) & kind(lib) & test(/^provider_adapter::tests::checked_private_profile_launch_keeps_pin_options_and_refusal_order$/)) |
     (package(studio-client-core) & test(/^draft_replication::tests::/)) |
     (package(studio-runtime-schema) & test(/^(request_record|graph_agent_record)::tests::/)) |
     (package(studio-runtime-store) & kind(lib) & test(/request_typed_tests::|execution_run_table_preserves_evidence_and_checks_physical_identity|graph_agent/)) |
@@ -119,6 +120,8 @@ default-filter = '''
     (package(studio-runtime-http) & test(/rules_owner_hold::/)) |
     (package(studio-runtime-process) & test(/lease_tests/)) |
     (package(studio-runtime-services) & test(/wave7_p16_assignment::|agent_creation_assigns_task_and_replays_without_reassignment|continuation_corpus::|continuation_recovery::|wave7_p12_completion::|claude_login_actor::|wave7_p18_account_session::|account_session_runtime::limits_|layr_native::mapping|provider_callbacks::projection::tests|model_projection_matches_python_and_keeps_full_result|checkpoint_summaries_filter_agents_and_strip_payloads|workspace_operations_corpus::|current_uses_the_agent_after_pending_settings_are_applied/)) |
+(package(=studio-runtime-services) & kind(lib) & test(reconciliation_budget_conflicts_preserve_partial_and_duplicate_inputs)) |
+(package(=studio-runtime-services) & kind(lib) & test(native_history_manifest_preserves_raw_header_id_and_source_bytes)) |
 (package(=studio-runtime-store) & kind(lib) & test(duplicate_stored_record_tests::)) |
 (package(=studio-runtime-store) & kind(lib) & (test(annotation_typed_tests::) | test(plan_typed_tests::) | test(plan_returns_checked_value_without_a_text_round_trip))) |
 (package(=studio-runtime-services) & kind(lib) & (test(plan_notification_updates_typed_record) | test(read_json_preserves_objects_and_defaults_for_invalid_files) | test(read_object_preserves_objects_and_rejects_invalid_files))) |
@@ -161,7 +164,7 @@ default-filter = '''
     (package(=studio-runtime-store) & kind(lib) & test(=schema::tests::analytics_marker_admission_preserves_legacy_json_and_error_order)) |
     (package(=studio-runtime-store) & kind(test) & binary(=integration) & (test(/^local_server_id::/) | test(=schema_compat::analytics_marker_projection_is_checked_during_store_open))) |
     (package(=studio-runtime-server) & kind(lib) & test(/^provider_ports::tests::(title_thread_reply_projection_matches_legacy_admission|title_invalid_thread_reply_retains_home_and_unknown_receipt|title_projection_matches_legacy_partial_provider_observations|title_cancelled_turn_uses_exact_id_and_last_final_answer|title_uses_the_retained_thread_turn_and_read_receipts|title_with_written_thread_and_unsent_turn_remains_unknown|unknown_title_start_is_never_followed_by_another_write)$/)) |
-    (package(=studio-runtime-services) & kind(lib) & (test(=browser_host::tests::launcher_request_encoding_preserves_existing_wire_shape) | test(=browser_host::local_open_tests::launcher_request_admission_keeps_order_and_json_number_rules) | test(=browser_host::local_open_tests::without_the_mac_fast_path_the_launcher_only_queues_the_card))) |
+    (package(=studio-runtime-services) & kind(lib) & (test(=browser_host::tests::launcher_request_encoding_preserves_existing_wire_shape) | test(callback_request_refusal_order_handles_partial_stored_records) | test(host_source_preserves_partial_and_duplicate_params) | test(pending_links_become_cards_once_and_unknown_chats_are_refused) | test(non_string_url_or_host_never_creates_a_browser_card) | test(browser_answer_uses_guest_receipt_and_replays_without_second_call) | test(=browser_host::local_open_tests::launcher_request_admission_keeps_order_and_json_number_rules) | test(=browser_host::local_open_tests::without_the_mac_fast_path_the_launcher_only_queues_the_card))) |
     (package(=studio-runtime-server) & kind(lib) & test(/^provider_ports::tests::supervisor_health_(accepts_current_protocol_and_preserves_exact_handles|rejects_incompatible_or_degraded_status)$/)) |
     (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(/^claude_controls_actor::mcp_auto_background_accepts_only_booleans$/)) |
     (package(=studio-runtime-services) & kind(lib) & (test(managed_reads_preserve_corrupt_record_identity) | test(cold_agent_contexts_scan_work_once_for_many_agents) | test(a_crash_between_canvas_commit_and_projection_recovers_once))) |
@@ -183,6 +186,7 @@ default-filter = '''
     (package(=studio-runtime-store) & kind(lib) & test(repositories::analytics_capture::cost_hint_tests::)) |
     (package(=studio-runtime-services) & kind(lib) & (test(agent_move::usage_tests::) | test(typed_usage_conflict_keeps_first_charge_and_dispatches_context))) |
     (package(=studio-runtime-services) & kind(test) & binary(integration) & test(relocation_corpus::python_location_and_move_corpus_through_consumers)) |
+    (package(=studio-runtime-services) & kind(test) & binary(integration) & (test(relocation_corpus::move_status_saved_body_preserves_admission_and_identity_fences) | test(relocation_corpus::move_status_ticket_rejects_stale_generation_and_replay) | test(relocation_corpus::move_release_uses_settled_status_delivery))) |
     (package(=studio-runtime-services) & kind(lib) & (test(typed_usage_dispatch_reaches_priced_cost_groups) | test(typed_usage_ledger_journal_))) |
     (package(=studio-runtime-schema) & kind(lib) & test(usage::legacy_tests::)) |
     (package(=studio-runtime-server) & kind(bin) & test(native_probe::tests::schema_check_refuses_changed_usage_and_error_fragments)) |
@@ -356,7 +360,7 @@ default-filter = '''
     | (package(=studio-runtime-schema) & kind(lib) & (test(task_command::tests::task_commands_validate_variants_and_keep_presence_and_opaque_results) | test(task_command_schema_matches_owner_and_transport_variants)))
     | (package(=studio-runtime-schema) & kind(lib) & test(contracts::tests::transfer_notices_use_the_provider_identity_contract))
     | (package(=studio-runtime-schema) & kind(lib) & (test(usage::ledger::typed_analytics_tests::ledger_deserialization_rejects_mismatched_observation_identity) | test(process_controls::) | test(contracts::tests::account_limit_consumers_share_checked_fields_and_open_vendor_windows)))
-    | (package(=studio-runtime-services) & kind(lib) & (test(costs::tests::usage_reconciliation_rejects_invalid_cache_write_subset) | test(account_session_runtime::limits_freshness_tests::limits_ingress_preserves_vendor_windows_and_rejects_invalid_consumed_fields) | test(account_policy::tests::) | test(claude_bridge::options_tests::public_options_match_legacy_bridge_projection)))
+    | (package(=studio-runtime-services) & kind(lib) & (test(costs::tests::usage_reconciliation_rejects_invalid_cache_write_subset) | test(account_session_runtime::limits_freshness_tests::limits_ingress_preserves_vendor_windows_and_rejects_invalid_consumed_fields) | test(account_policy::tests::) | test(claude_bridge::options_tests::public_options_match_legacy_bridge_projection) | test(claude_bridge::options_tests::launch_projection_preserves_literal_pending_and_credential_pin)))
     | (package(=studio-runtime-store) & kind(lib) & test(repositories::account_state::tests::))
     | (package(=studio-runtime-http) & kind(lib) & (test(routes::catalog::tests::limits_route_preserves_checked_fields_and_vendor_extensions) | test(routes::host_secrets::tests::vault_pull_rejects_malformed_success_counters) | test(routes::host_secrets::tests::vault_pull_preserves_integral_decimal_command_counters)))
     | (package(=studio-runtime-http) & kind(test) & binary(=integration) & (test(process_controls::process_receipt_cannot_certify_a_missing_result) | test(process_controls::process_receipt_and_replay_preserve_retained_result_payload) | test(process_controls::process_command_legacy_nulls_keep_exact_replay_signature) | test(process_controls::process_identity_numeric_spelling_is_not_normalized_into_authority)))
@@ -379,6 +383,7 @@ default-filter = '''
     | (package(=studio-runtime-schema) & kind(lib) & (test(/^agent_progress::tests::/) | test(/^claude_controls::tests::claude_settings_wire_fields_match_derived_schema$/)))
     | (package(=studio-client-core) & kind(lib) & test(/^draft_store::tests::/))
     | (package(=studio-runtime-http) & kind(lib) & (test(/^routes::branches::tests::branch_history_copy_preserves_partial_rows_and_rolls_back_missing_assets$/) | test(/^routes::branches::tests::branch_draft_uses_typed_input_identity_and_prefix$/)))
+    | (package(=studio-runtime-services) & kind(lib) & (test(/^saved_mount::tests::/) | test(/^catalog_reads::tests::vm_finder_/) | test(/^linux_vm_runtime::tests::each_start_mounts_the_registered_project_views_again$/) | test(/^linux_vm_share::tests::a_view_never_replaces_another_mount_or_uses_a_shared_credential$/)))
     | (package(=studio-client-core) & kind(lib) & (test(/^backend::tests::bounded_error_response_preserves_json_admission_and_limits$/) | test(/^server_transport::tests::rejection_diagnostics_keep_tolerant_field_precedence$/)))
     | (package(=studio-runtime-store) & kind(lib) & test(/^repositories::rules_tick::typed_tests::/))
     | (package(=studio-client-core) & kind(lib) & (test(/^file_preview::tests::command_inputs_keep_preview_error_order_and_unicode_offsets$/) | test(/^file_links::tests::link_inputs_preserve_target_extensions_and_path_first_errors$/) | test(/^rich_document::tests::invalid_requests_fail_before_starting_the_native_renderer$/)))
@@ -421,7 +426,8 @@ platform = 'cfg(target_os = "linux")'
 # Reviewer permissions stay read-only under yolo across preparation, turns, and monitors.
 default-filter = '''
     (package(=studio-runtime-services) & kind(lib) & test(/^account_driver::tests::vm_/)) |
-    (package(=studio-runtime-server) & kind(lib) & test(/^host_runtime::codex_vm_auth_tests::/)) |
+    (package(=studio-runtime-server) & kind(lib) & (test(/^host_runtime::codex_vm_auth_tests::/) | test(/^host_runtime::launch_profile_tests::/))) |
+    (package(=studio-runtime-services) & kind(lib) & test(/^provider_adapter::tests::checked_private_profile_launch_keeps_pin_options_and_refusal_order$/)) |
     (package(studio-client-core) & test(/^draft_replication::tests::/)) |
     (package(studio-runtime-schema) & test(/^(request_record|graph_agent_record)::tests::/)) |
     (package(studio-runtime-store) & kind(lib) & test(/request_typed_tests::|execution_run_table_preserves_evidence_and_checks_physical_identity|graph_agent/)) |
@@ -456,6 +462,8 @@ default-filter = '''
     (package(studio-runtime-http) & test(/rules_owner_hold::/)) |
     (package(studio-runtime-process) & test(/lease_tests/)) |
     (package(studio-runtime-services) & test(/wave7_p16_assignment::|agent_creation_assigns_task_and_replays_without_reassignment|continuation_corpus::|continuation_recovery::|wave7_p12_completion::|claude_login_actor::|wave7_p18_account_session::|account_session_runtime::limits_|layr_native::mapping|provider_callbacks::projection::tests|model_projection_matches_python_and_keeps_full_result|checkpoint_summaries_filter_agents_and_strip_payloads|workspace_operations_corpus::|current_uses_the_agent_after_pending_settings_are_applied/)) |
+(package(=studio-runtime-services) & kind(lib) & test(reconciliation_budget_conflicts_preserve_partial_and_duplicate_inputs)) |
+(package(=studio-runtime-services) & kind(lib) & test(native_history_manifest_preserves_raw_header_id_and_source_bytes)) |
 (package(=studio-runtime-store) & kind(lib) & test(duplicate_stored_record_tests::)) |
 (package(=studio-runtime-store) & kind(lib) & (test(annotation_typed_tests::) | test(plan_typed_tests::) | test(plan_returns_checked_value_without_a_text_round_trip))) |
 (package(=studio-runtime-services) & kind(lib) & (test(plan_notification_updates_typed_record) | test(read_json_preserves_objects_and_defaults_for_invalid_files) | test(read_object_preserves_objects_and_rejects_invalid_files))) |
@@ -498,7 +506,7 @@ default-filter = '''
     (package(=studio-runtime-store) & kind(lib) & test(=schema::tests::analytics_marker_admission_preserves_legacy_json_and_error_order)) |
     (package(=studio-runtime-store) & kind(test) & binary(=integration) & (test(/^local_server_id::/) | test(=schema_compat::analytics_marker_projection_is_checked_during_store_open))) |
     (package(=studio-runtime-server) & kind(lib) & test(/^provider_ports::tests::(title_thread_reply_projection_matches_legacy_admission|title_invalid_thread_reply_retains_home_and_unknown_receipt|title_projection_matches_legacy_partial_provider_observations|title_cancelled_turn_uses_exact_id_and_last_final_answer|title_uses_the_retained_thread_turn_and_read_receipts|title_with_written_thread_and_unsent_turn_remains_unknown|unknown_title_start_is_never_followed_by_another_write)$/)) |
-    (package(=studio-runtime-services) & kind(lib) & (test(=browser_host::tests::launcher_request_encoding_preserves_existing_wire_shape) | test(=browser_host::local_open_tests::launcher_request_admission_keeps_order_and_json_number_rules) | test(=browser_host::local_open_tests::without_the_mac_fast_path_the_launcher_only_queues_the_card))) |
+    (package(=studio-runtime-services) & kind(lib) & (test(=browser_host::tests::launcher_request_encoding_preserves_existing_wire_shape) | test(callback_request_refusal_order_handles_partial_stored_records) | test(host_source_preserves_partial_and_duplicate_params) | test(pending_links_become_cards_once_and_unknown_chats_are_refused) | test(non_string_url_or_host_never_creates_a_browser_card) | test(browser_answer_uses_guest_receipt_and_replays_without_second_call) | test(=browser_host::local_open_tests::launcher_request_admission_keeps_order_and_json_number_rules) | test(=browser_host::local_open_tests::without_the_mac_fast_path_the_launcher_only_queues_the_card))) |
     (package(=studio-runtime-server) & kind(lib) & test(/^provider_ports::tests::supervisor_health_(accepts_current_protocol_and_preserves_exact_handles|rejects_incompatible_or_degraded_status)$/)) |
     (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(/^claude_controls_actor::mcp_auto_background_accepts_only_booleans$/)) |
     (package(=studio-runtime-services) & kind(lib) & (test(managed_reads_preserve_corrupt_record_identity) | test(cold_agent_contexts_scan_work_once_for_many_agents) | test(a_crash_between_canvas_commit_and_projection_recovers_once))) |
@@ -520,6 +528,7 @@ default-filter = '''
     (package(=studio-runtime-store) & kind(lib) & test(repositories::analytics_capture::cost_hint_tests::)) |
     (package(=studio-runtime-services) & kind(lib) & (test(agent_move::usage_tests::) | test(typed_usage_conflict_keeps_first_charge_and_dispatches_context))) |
     (package(=studio-runtime-services) & kind(test) & binary(integration) & test(relocation_corpus::python_location_and_move_corpus_through_consumers)) |
+    (package(=studio-runtime-services) & kind(test) & binary(integration) & (test(relocation_corpus::move_status_saved_body_preserves_admission_and_identity_fences) | test(relocation_corpus::move_status_ticket_rejects_stale_generation_and_replay) | test(relocation_corpus::move_release_uses_settled_status_delivery))) |
     (package(=studio-runtime-services) & kind(lib) & (test(typed_usage_dispatch_reaches_priced_cost_groups) | test(typed_usage_ledger_journal_))) |
     (package(=studio-runtime-schema) & kind(lib) & test(usage::legacy_tests::)) |
     (package(=studio-runtime-server) & kind(bin) & test(native_probe::tests::schema_check_refuses_changed_usage_and_error_fragments)) |
@@ -693,7 +702,7 @@ default-filter = '''
     | (package(=studio-runtime-schema) & kind(lib) & (test(task_command::tests::task_commands_validate_variants_and_keep_presence_and_opaque_results) | test(task_command_schema_matches_owner_and_transport_variants)))
     | (package(=studio-runtime-schema) & kind(lib) & test(contracts::tests::transfer_notices_use_the_provider_identity_contract))
     | (package(=studio-runtime-schema) & kind(lib) & (test(usage::ledger::typed_analytics_tests::ledger_deserialization_rejects_mismatched_observation_identity) | test(process_controls::) | test(contracts::tests::account_limit_consumers_share_checked_fields_and_open_vendor_windows)))
-    | (package(=studio-runtime-services) & kind(lib) & (test(costs::tests::usage_reconciliation_rejects_invalid_cache_write_subset) | test(account_session_runtime::limits_freshness_tests::limits_ingress_preserves_vendor_windows_and_rejects_invalid_consumed_fields) | test(account_policy::tests::) | test(claude_bridge::options_tests::public_options_match_legacy_bridge_projection)))
+    | (package(=studio-runtime-services) & kind(lib) & (test(costs::tests::usage_reconciliation_rejects_invalid_cache_write_subset) | test(account_session_runtime::limits_freshness_tests::limits_ingress_preserves_vendor_windows_and_rejects_invalid_consumed_fields) | test(account_policy::tests::) | test(claude_bridge::options_tests::public_options_match_legacy_bridge_projection) | test(claude_bridge::options_tests::launch_projection_preserves_literal_pending_and_credential_pin)))
     | (package(=studio-runtime-store) & kind(lib) & test(repositories::account_state::tests::))
     | (package(=studio-runtime-http) & kind(lib) & (test(routes::catalog::tests::limits_route_preserves_checked_fields_and_vendor_extensions) | test(routes::host_secrets::tests::vault_pull_rejects_malformed_success_counters) | test(routes::host_secrets::tests::vault_pull_preserves_integral_decimal_command_counters)))
     | (package(=studio-runtime-http) & kind(test) & binary(=integration) & (test(process_controls::process_receipt_cannot_certify_a_missing_result) | test(process_controls::process_receipt_and_replay_preserve_retained_result_payload) | test(process_controls::process_command_legacy_nulls_keep_exact_replay_signature) | test(process_controls::process_identity_numeric_spelling_is_not_normalized_into_authority)))
@@ -716,6 +725,7 @@ default-filter = '''
     | (package(=studio-runtime-schema) & kind(lib) & (test(/^agent_progress::tests::/) | test(/^claude_controls::tests::claude_settings_wire_fields_match_derived_schema$/)))
     | (package(=studio-client-core) & kind(lib) & test(/^draft_store::tests::/))
     | (package(=studio-runtime-http) & kind(lib) & (test(/^routes::branches::tests::branch_history_copy_preserves_partial_rows_and_rolls_back_missing_assets$/) | test(/^routes::branches::tests::branch_draft_uses_typed_input_identity_and_prefix$/)))
+    | (package(=studio-runtime-services) & kind(lib) & (test(/^saved_mount::tests::/) | test(/^catalog_reads::tests::vm_finder_/) | test(/^linux_vm_runtime::tests::each_start_mounts_the_registered_project_views_again$/) | test(/^linux_vm_share::tests::a_view_never_replaces_another_mount_or_uses_a_shared_credential$/)))
     | (package(=studio-client-core) & kind(lib) & (test(/^backend::tests::bounded_error_response_preserves_json_admission_and_limits$/) | test(/^server_transport::tests::rejection_diagnostics_keep_tolerant_field_precedence$/)))
     | (package(=studio-runtime-store) & kind(lib) & test(/^repositories::rules_tick::typed_tests::/))
     | (package(=studio-client-core) & kind(lib) & (test(/^file_preview::tests::command_inputs_keep_preview_error_order_and_unicode_offsets$/) | test(/^file_links::tests::link_inputs_preserve_target_extensions_and_path_first_errors$/) | test(/^rich_document::tests::invalid_requests_fail_before_starting_the_native_renderer$/)))

@@ -57,6 +57,53 @@ pub struct MoveDecision {
     operation: Value,
     agent: Option<Value>,
 }
+
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SavedStatusRequest {
+    #[serde(default)]
+    request_id: Value,
+    #[serde(default)]
+    action: Value,
+    #[serde(default, deserialize_with = "status_payload")]
+    payload: SavedStatusPayload,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SavedStatusPayload {
+    #[serde(default, rename = "move", deserialize_with = "present_value")]
+    move_id: Option<Value>,
+    #[serde(default, deserialize_with = "present_value")]
+    reconciliation_generation: Option<Value>,
+}
+
+fn present_value<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Value>, D::Error> {
+    Value::deserialize(deserializer).map(Some)
+}
+
+fn status_payload<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<SavedStatusPayload, D::Error> {
+    let value = Value::deserialize(deserializer)?;
+    if value.is_object() {
+        SavedStatusPayload::deserialize(value).map_err(serde::de::Error::custom)
+    } else {
+        Ok(SavedStatusPayload::default())
+    }
+}
+
+impl SavedStatusRequest {
+    fn from_value(value: Value) -> Result<Self, serde_json::Error> {
+        if value.is_object() {
+            Self::deserialize(value)
+        } else {
+            Ok(Self::default())
+        }
+    }
+}
 impl MoveSnapshot {
     pub fn from_record(raw: &Value) -> Result<Self, MoveError> {
         checked::<Value>("relocation/MoveRecord", "runtime_agent_moves", raw)?;
@@ -305,12 +352,14 @@ pub async fn release_untransferred(
                     .ok_or(MoveError::Refused("Missing move status request"))?,
             )
             .map_err(studio_runtime_store::StoreError::from)?;
+            let body = SavedStatusRequest::from_value(body)
+                .map_err(studio_runtime_store::StoreError::from)?;
             if receipt.server.as_deref() != Some(server)
-                || body.pointer("/payload/reconciliationGeneration")
+                || body.payload.reconciliation_generation.as_ref()
                     != Some(&json!(snapshot.reconciliation_generation()))
-                || body["requestId"] != json!(status_ticket)
-                || body["action"] != "move_status"
-                || body.pointer("/payload/move") != Some(&json!(key))
+                || body.request_id != json!(status_ticket)
+                || body.action != "move_status"
+                || body.payload.move_id.as_ref() != Some(&json!(key))
                 || receipt.response.request_id != status_ticket
                 || receipt.response.outcome
                     != studio_runtime_schema::persistence::RemoteOutcome::Applied

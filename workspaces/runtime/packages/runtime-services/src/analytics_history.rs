@@ -875,8 +875,11 @@ impl SessionHeader {
         self.fields()
             .and_then(|fields| fields.history_base.as_ref())
     }
+    pub(crate) fn raw_id(&self) -> Option<&Value> {
+        self.fields().map(|fields| &fields.raw_id)
+    }
     pub(crate) fn id(&self) -> Option<&str> {
-        self.fields().and_then(|fields| fields.raw_id.as_str())
+        self.raw_id().and_then(Value::as_str)
     }
     pub(crate) fn is_fork(&self) -> bool {
         self.fields()

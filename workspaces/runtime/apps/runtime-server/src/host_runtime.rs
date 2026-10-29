@@ -2101,7 +2101,7 @@ impl AccountLauncher for HostLauncher {
                 spec: launch,
                 executable,
             } = adapter(kind).host_launch(HostLaunch {
-                profile: &profile,
+                profile: profile.as_ref(),
                 home,
                 isolated,
                 codex_executable: codex_executable.as_deref(),
@@ -3774,25 +3774,28 @@ pub fn account_home<R: ProviderAuthReader>(
 fn selected_account(
     accounts: &AccountDriver,
     key: &str,
-) -> Result<(ProviderKind, String, bool, serde_json::Value), WorkerError> {
+) -> Result<
+    (
+        ProviderKind,
+        String,
+        bool,
+        Option<studio_runtime_services::claude_bridge::ClaudeLaunchProfile>,
+    ),
+    WorkerError,
+> {
     let snapshot = accounts
         .snapshot()
         .map_err(|_| WorkerError::PreparationRefused("account-driver/unavailable".into()))?;
     // A sign-in account is not listed until it has an identity; its sign-in
     // request still launches its session.
-    let (kind, profile) = match snapshot
+    let kind = match snapshot
         .accounts
         .iter()
         .find(|profile| profile.id.as_str() == Some(key))
     {
-        Some(profile) => {
-            let kind = profile.provider().map_err(|_| {
-                WorkerError::PreparationRefused("provider-session/unsupported-provider".into())
-            })?;
-            // The provider launch API also accepts private login profiles.
-            let value = serde_json::to_value(profile).map_err(|_| WorkerError::TaskFailed)?;
-            (kind, value)
-        }
+        Some(profile) => profile.provider().map_err(|_| {
+            WorkerError::PreparationRefused("provider-session/unsupported-provider".into())
+        })?,
         None => {
             let profile = accounts
                 .login_launch_record(key)
@@ -3801,26 +3804,25 @@ fn selected_account(
                 .ok_or_else(|| {
                     WorkerError::PreparationRefused("account-driver/unavailable".into())
                 })?;
-            let kind = ProviderKind::of_record(&profile).map_err(|_| {
+            ProviderKind::of_record(&profile).map_err(|_| {
                 WorkerError::PreparationRefused("provider-session/unsupported-provider".into())
-            })?;
-            (kind, profile)
+            })?
         }
     };
     if kind == ProviderKind::Codex {
         let (home, isolated) = account_home(accounts, key)?;
-        return Ok((kind, home, isolated, profile));
+        return Ok((kind, home, isolated, None));
     }
     let profile = accounts
-        .claude_profile(key)
+        .claude_launch_profile(key)
         .map_err(|_| WorkerError::PreparationRefused("account-driver/unavailable".into()))?;
     let home = profile
-        .get("home")
-        .and_then(serde_json::Value::as_str)
+        .home
+        .as_str()
         .filter(|value| !value.is_empty())
         .ok_or_else(|| WorkerError::PreparationRefused("account-driver/profile-home".into()))?
         .to_owned();
-    Ok((kind, home, false, profile))
+    Ok((kind, home, false, Some(profile)))
 }
 
 #[doc(hidden)]
@@ -3833,7 +3835,7 @@ pub fn codex_launch(
 ) -> ProviderLaunchSpec {
     adapter(ProviderKind::Codex)
         .host_launch(HostLaunch {
-            profile: &serde_json::Value::Null,
+            profile: None,
             home,
             isolated,
             codex_executable: native_path,
@@ -3854,9 +3856,17 @@ pub fn claude_launch(
     account: &str,
     environment: BTreeMap<String, String>,
 ) -> Result<ProviderLaunchSpec, WorkerError> {
+    let profile =
+        studio_runtime_services::claude_bridge::ClaudeLaunchProfile::from_record(&profile)
+            .map_err(|_| {
+                WorkerError::PreparationRefused(
+                    studio_runtime_services::provider_adapter::CLAUDE_ACCOUNT_IDENTITY_REFUSAL
+                        .into(),
+                )
+            })?;
     adapter(ProviderKind::Claude)
         .host_launch(HostLaunch {
-            profile: &profile,
+            profile: Some(&profile),
             home: String::new(),
             isolated: false,
             codex_executable: None,
@@ -3866,6 +3876,34 @@ pub fn claude_launch(
             environment,
         })
         .map(|launch| launch.spec)
+}
+
+#[cfg(test)]
+mod launch_profile_tests {
+    #[test]
+    fn starting_codex_login_selects_without_a_launch_profile() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let home = root.path().join("login-home");
+        std::fs::create_dir_all(&home).expect("home");
+        let registry = root.path().join("registry.json");
+        let write = |status: &str| {
+            std::fs::write(&registry, serde_json::json!({
+                "version": studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,
+                "defaultAccountKey":"default", "accounts": {
+                    "default":{"provider":"codex","id":"default","home":"","label":"Default","source":"CLI","status":"signedOut"},
+                    "login-fixture":{"provider":"codex","id":"login-fixture","home":home,"label":"Login","source":"CLI","status":"pending"}
+                }, "logins":{"request":{"requestId":"request","accountKey":"login-fixture","status":status,"createdAt":1.0}},"deleteReceipts":{}
+            }).to_string()).expect("registry");
+            super::AccountDriver::open(&registry).expect("driver")
+        };
+        let driver = write("starting");
+        let (kind, selected_home, isolated, profile) =
+            super::selected_account(&driver, "login-fixture").expect("starting login");
+        assert_eq!(kind, studio_runtime_providers::ProviderKind::Codex);
+        assert_eq!(selected_home, home.to_string_lossy());
+        assert!(isolated && profile.is_none());
+        assert!(super::selected_account(&write("pending"), "login-fixture").is_err());
+    }
 }
 
 #[cfg(all(test, unix))]
