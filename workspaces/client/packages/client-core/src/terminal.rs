@@ -174,6 +174,24 @@ struct Screen {
     failure: String,
     input_failure: String,
 }
+#[derive(Deserialize)]
+struct Output {
+    text: String,
+    offset: u64,
+    truncated: bool,
+    status: String,
+    error: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HistoryOutput {
+    text: String,
+    offset: u64,
+    available_offset: u64,
+    has_more: bool,
+    truncated: bool,
+}
 impl Screen {
     fn new() -> Self {
         Self {
@@ -191,17 +209,7 @@ impl Screen {
             input_failure: String::new(),
         }
     }
-    fn update(&mut self, output: Value) -> Result<String, String> {
-        #[derive(Deserialize)]
-        struct Output {
-            text: String,
-            offset: u64,
-            truncated: bool,
-            status: String,
-            error: Option<String>,
-        }
-        let output: Output = serde_json::from_value(output)
-            .map_err(|_| "The server returned invalid terminal output.")?;
+    fn update(&mut self, output: Output) -> Result<String, String> {
         let count = output.text.chars().count() as u64;
         if output.offset < self.offset
             || output.offset < count
@@ -549,25 +557,17 @@ pub async fn history(backend: &Backend, value: &Value) -> Result<(String, Arc<Ve
             .map(|end: u64| end.saturating_sub(offset).min(65536))
             .unwrap_or(65536)
             .max(1);
-        let part = backend
+        let part: HistoryOutput = backend
             .read_bounded(
                 &format!("/api/terminals/output?id={id}&history=1&offset={offset}&limit={limit}"),
                 2 * 1024 * 1024,
             )
             .await?;
-        let text = part["text"]
-            .as_str()
-            .ok_or("Invalid saved terminal output.")?;
-        let next = part["offset"]
-            .as_u64()
-            .ok_or("Invalid saved terminal cursor.")?;
-        let available = part["availableOffset"]
-            .as_u64()
-            .ok_or("Invalid saved terminal size.")?;
-        let more = part["hasMore"]
-            .as_bool()
-            .ok_or("Invalid saved terminal continuation.")?;
-        if part["truncated"] != false {
+        let text = &part.text;
+        let next = part.offset;
+        let available = part.available_offset;
+        let more = part.has_more;
+        if part.truncated {
             return Err("Earlier output is unavailable. The saved output is incomplete.".into());
         }
         let end = *end.get_or_insert(available);
@@ -599,7 +599,15 @@ mod tests {
     use super::*;
     fn output(screen: &mut Screen, text: &str, truncated: bool) -> String {
         let offset = screen.offset + text.chars().count() as u64;
-        screen.update(json!({"text":text,"offset":offset,"truncated":truncated,"status":"running","error":null})).unwrap()
+        screen
+            .update(Output {
+                text: text.into(),
+                offset,
+                truncated,
+                status: "running".into(),
+                error: None,
+            })
+            .unwrap()
     }
     #[test]
     fn unicode_color_cursor_and_split_sequences_are_native_state() {
@@ -654,8 +662,14 @@ mod tests {
         assert!(s.truncated);
         let prior = s.parser.screen().contents();
         assert!(
-            s.update(json!({"text":"wrong","offset":0,"truncated":false,"status":"running"}))
-                .is_err()
+            s.update(Output {
+                text: "wrong".into(),
+                offset: 0,
+                truncated: false,
+                status: "running".into(),
+                error: None
+            })
+            .is_err()
         );
         assert_eq!(s.parser.screen().contents(), prior);
     }

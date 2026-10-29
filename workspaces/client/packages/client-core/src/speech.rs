@@ -4,6 +4,7 @@ use crate::{
     delivery::{StoreSender, state},
     protocol::{Request, Response},
 };
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
@@ -151,16 +152,111 @@ pub fn validate_wav(data: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(serde::Deserialize)]
+#[serde(tag = "type")]
+enum HelperProgress {
+    #[serde(rename = "progress")]
+    Progress { completed: i64, total: i64 },
+}
+
+fn parse_progress(line: &str) -> Option<HelperProgress> {
+    struct Object;
+    impl<'de> serde::de::Visitor<'de> for Object {
+        type Value = HelperProgress;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a progress object")
+        }
+
+        fn visit_map<M: serde::de::MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
+            HelperProgress::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+        }
+    }
+    let mut decoder = serde_json::Deserializer::from_str(line);
+    let progress = serde::Deserializer::deserialize_map(&mut decoder, Object).ok()?;
+    decoder.end().ok()?;
+    Some(progress)
+}
+
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum OptionalField<T> {
+    Valid(T),
+    Other(serde::de::IgnoredAny),
+}
+
+fn tolerant_field<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    Ok(match OptionalField::deserialize(deserializer)? {
+        OptionalField::Valid(value) => Some(value),
+        OptionalField::Other(_) => None,
+    })
+}
+
+#[derive(serde::Deserialize)]
+struct HelperFields {
+    #[serde(default, deserialize_with = "tolerant_field")]
+    text: Option<String>,
+    #[serde(default, deserialize_with = "tolerant_field")]
+    provider: Option<String>,
+    #[serde(default, rename = "onDevice", deserialize_with = "tolerant_field")]
+    on_device: Option<bool>,
+    #[serde(default, deserialize_with = "tolerant_field")]
+    error: Option<String>,
+    // Flattening ignored members also makes this an object-only wire shape.
+    #[serde(flatten)]
+    _unknown: std::collections::BTreeMap<String, serde::de::IgnoredAny>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum HelperOutput {
+    Object(HelperFields),
+    Other(serde::de::IgnoredAny),
+}
+
+enum HelperOutcome {
+    Success {
+        text: String,
+        provider: String,
+        on_device: bool,
+    },
+    Failure(String),
+}
+
+fn helper_outcome(bytes: &[u8], success: bool) -> HelperOutcome {
+    const FAILED: &str =
+        "Native transcription failed. Your recording is saved; retry transcription.";
+    const EMPTY: &str = "No speech was recognized. Your recording is saved.";
+    let parsed = serde_json::from_slice::<HelperOutput>(bytes);
+    let fields = match parsed {
+        Ok(HelperOutput::Object(fields)) => fields,
+        Ok(HelperOutput::Other(_)) => {
+            return HelperOutcome::Failure(if success { EMPTY } else { FAILED }.into());
+        }
+        Err(_) => return HelperOutcome::Failure(FAILED.into()),
+    };
+    if success && let Some(text) = fields.text.filter(|text| !text.trim().is_empty()) {
+        return HelperOutcome::Success {
+            text,
+            provider: fields.provider.unwrap_or_else(|| "macOS Speech".into()),
+            on_device: fields.on_device.unwrap_or(true),
+        };
+    }
+    HelperOutcome::Failure(
+        fields
+            .error
+            .unwrap_or_else(|| if success { EMPTY } else { FAILED }.into()),
+    )
+}
+
 /// Only increasing, bounded progress lines are events. Other output is diagnostic.
 fn progress_line(line: &str, previous: &mut i64) -> Option<(i64, i64)> {
-    let value: Value = serde_json::from_str(line).ok()?;
-    let (completed, total) = (value["completed"].as_i64()?, value["total"].as_i64()?);
-    if value["type"] != "progress"
-        || !(1..=37).contains(&total)
-        || completed < 0
-        || completed > total
-        || completed <= *previous
-    {
+    let HelperProgress::Progress { completed, total } = parse_progress(line)?;
+    if !(1..=37).contains(&total) || completed < 0 || completed > total || completed <= *previous {
         return None;
     }
     *previous = completed;
@@ -247,28 +343,17 @@ async fn run(
             return Err(error);
         }
     };
-    let parsed: Option<Value> = serde_json::from_slice(&bytes).ok();
-    if !status.success() {
-        return Err(parsed
-            .as_ref()
-            .and_then(|v| v["error"].as_str())
-            .map(str::to_owned)
-            .unwrap_or(
-                "Native transcription failed. Your recording is saved; retry transcription.".into(),
-            ));
-    }
-    let value = parsed
-        .ok_or("Native transcription failed. Your recording is saved; retry transcription.")?;
-    match value["text"].as_str() {
-        Some(text) if !text.trim().is_empty() => Ok(json!({
+    match helper_outcome(&bytes, status.success()) {
+        HelperOutcome::Success {
+            text,
+            provider,
+            on_device,
+        } => Ok(json!({
             "text": text,
-            "provider": value["provider"].as_str().unwrap_or("macOS Speech"),
-            "onDevice": value["onDevice"].as_bool().unwrap_or(true),
+            "provider": provider,
+            "onDevice": on_device,
         })),
-        _ => Err(value["error"]
-            .as_str()
-            .unwrap_or("No speech was recognized. Your recording is saved.")
-            .to_owned()),
+        HelperOutcome::Failure(error) => Err(error),
     }
 }
 
@@ -447,6 +532,8 @@ mod tests {
             "diagnostic",
             r#"{"type":"progress","completed":3,"total":2}"#,
             r#"{"type":"progress","completed":1,"total":38}"#,
+            r#"["progress",1,2]"#,
+            r#"{"type":"progress","completed":1.0,"total":2}"#,
             r#"{"type":"progress","completed":2,"total":2}"#,
         ];
         let events: Vec<_> = lines
@@ -466,6 +553,9 @@ mod tests {
              en-US) echo '{\"type\":\"progress\",\"completed\":0,\"total\":1}' >&2; echo '{\"type\":\"progress\",\"completed\":1,\"total\":1}' >&2; echo '{\"text\":\"Привет 🦀\",\"provider\":\"macOS Speech\",\"onDevice\":true}';;\n\
              de-DE) echo '{\"error\":\"On-device speech is unavailable.\"}'; exit 1;;\n\
              fr-FR) echo 'not json'; exit 1;;\n\
+             it-IT) echo '{\"text\":\"hello\",\"provider\":42,\"onDevice\":null,\"extension\":true}';;\n\
+             es-ES) echo '[\"hello\",\"provider\",true]';;\n\
+             pt-BR) echo '{\"text\":\" \",\"error\":\"No result\"}';;\n\
              *) mkfifo \"$1\"; echo '{\"type\":\"progress\",\"completed\":0,\"total\":1}' >&2; exec cat \"$1\";;\nesac\n",
         )
         .unwrap();
@@ -492,10 +582,28 @@ mod tests {
             "On-device speech is unavailable."
         );
         assert!(
-            run(&script, &file, "fr-FR", "three", stopped)
+            run(&script, &file, "fr-FR", "three", stopped.clone())
                 .await
                 .unwrap_err()
                 .starts_with("Native transcription failed")
+        );
+        assert_eq!(
+            run(&script, &file, "it-IT", "defaults", stopped.clone())
+                .await
+                .unwrap(),
+            json!({"text":"hello","provider":"macOS Speech","onDevice":true})
+        );
+        assert_eq!(
+            run(&script, &file, "es-ES", "array", stopped.clone())
+                .await
+                .unwrap_err(),
+            "No speech was recognized. Your recording is saved."
+        );
+        assert_eq!(
+            run(&script, &file, "pt-BR", "empty", stopped)
+                .await
+                .unwrap_err(),
+            "No result"
         );
         let (stop, stopped) = tokio::sync::watch::channel(false);
         let task = tokio::spawn({

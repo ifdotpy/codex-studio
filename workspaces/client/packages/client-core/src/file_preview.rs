@@ -4,6 +4,7 @@ use crate::{
     protocol::{Request, Response},
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
@@ -20,6 +21,13 @@ struct File {
     format: &'static str,
     bytes: Arc<Vec<u8>>,
     presentation: String,
+}
+#[derive(Deserialize)]
+#[cfg_attr(test, derive(serde::Serialize))]
+struct FileContent {
+    name: String,
+    mime: String,
+    base64: String,
 }
 #[derive(Clone)]
 pub struct Previews {
@@ -208,25 +216,24 @@ fn format(name: &str, mime: &str) -> &'static str {
         "unknown"
     }
 }
-fn prepare(data: Value) -> Result<File, String> {
-    let name = data["name"]
-        .as_str()
-        .filter(|s| !s.is_empty() && s.len() <= 1024 && !s.chars().any(char::is_control))
-        .ok_or("Invalid preview file name.")?
-        .to_owned();
-    let mime = data["mime"]
-        .as_str()
-        .filter(|s| {
-            !s.is_empty()
-                && s.len() <= 256
-                && s.bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b"/-+._".contains(&b))
-        })
-        .ok_or("Invalid preview MIME type.")?;
-    let encoded = data["base64"]
-        .as_str()
-        .filter(|s| s.len() <= FILE_LIMIT.div_ceil(3) * 4)
-        .ok_or("This file exceeds the 20 MiB preview limit.")?;
+fn prepare(data: FileContent) -> Result<File, String> {
+    let name = data.name;
+    if name.is_empty() || name.len() > 1024 || name.chars().any(char::is_control) {
+        return Err("Invalid preview file name.".into());
+    }
+    let mime = &data.mime;
+    if mime.is_empty()
+        || mime.len() > 256
+        || !mime
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"/-+._".contains(&b))
+    {
+        return Err("Invalid preview MIME type.".into());
+    }
+    let encoded = &data.base64;
+    if encoded.len() > FILE_LIMIT.div_ceil(3) * 4 {
+        return Err("This file exceeds the 20 MiB preview limit.".into());
+    }
     let bytes = STANDARD
         .decode(encoded)
         .map_err(|_| "Invalid file bytes.")?;
@@ -384,8 +391,12 @@ fn delimited(source: &str, delimiter: char) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn data(name: &str, mime: &str, bytes: &[u8]) -> Value {
-        json!({"name":name,"mime":mime,"base64":STANDARD.encode(bytes)})
+    fn data(name: &str, mime: &str, bytes: &[u8]) -> FileContent {
+        FileContent {
+            name: name.into(),
+            mime: mime.into(),
+            base64: STANDARD.encode(bytes),
+        }
     }
     #[test]
     fn source_bytes_survive_display_conversion_and_table_limits() {
@@ -583,7 +594,8 @@ mod tests {
             );
             reply(
                 &mut stream,
-                &data("test.txt", "text/plain", "Привет 🦀".as_bytes()).to_string(),
+                &serde_json::to_string(&data("test.txt", "text/plain", "Привет 🦀".as_bytes()))
+                    .unwrap(),
             )
             .await;
             let (mut stream, _) = listener.accept().await.unwrap();
@@ -598,9 +610,23 @@ mod tests {
                 )
                 .await
                 .unwrap();
+            let (mut stream, _) = listener.accept().await.unwrap();
+            read_http(&mut stream).await;
+            reply(
+                &mut stream,
+                r#"{"name":"test.txt","mime":"text/plain","base64":42}"#,
+            )
+            .await;
+            let (mut stream, _) = listener.accept().await.unwrap();
+            read_http(&mut stream).await;
+            let body = r#"{"error":null}"#;
+            stream.write_all(format!("HTTP/1.1 403 Forbidden\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
         });
         let previews = Previews::default();
-        for (index, asset) in ["one&two", "denied", "large"].into_iter().enumerate() {
+        for (index, asset) in ["one&two", "denied", "large", "malformed", "fallback"]
+            .into_iter()
+            .enumerate()
+        {
             let response = previews
                 .dispatch(
                     Some(&backend),
@@ -616,10 +642,11 @@ mod tests {
                 assert_eq!(bytes.as_slice(), "Привет 🦀".as_bytes());
             } else {
                 let message = response.error.unwrap().message;
-                assert!(message.contains(if index == 1 {
-                    "Not authorized"
-                } else {
-                    "exceeds"
+                assert!(message.contains(match index {
+                    1 => "Not authorized",
+                    2 => "exceeds",
+                    3 => "invalid type",
+                    _ => "Cannot read the selected file.",
                 }));
             }
         }

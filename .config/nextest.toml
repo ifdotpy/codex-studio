@@ -82,6 +82,14 @@ inherits = "ci"
 # Desktop projection witness: Keep private native rotation receipts on disk while validating the public status strictly.
 # Retained watcher registrations and analytics connections avoid repeated tree walks and opens.
 default-filter = '''
+    (package(studio-runtime-services) & test(/conversation_signatures_preserve_nullable_setting_identity|confirmed_restart_is_atomic_replay_safe_and_waits_for_exit/)) |
+    (package(studio-runtime-http) & test(/conversation_catalog_admission_tests::|branch_draft_keeps_the_historical_generated_request_identity|http_restart_uses_checked_request|monitor_restart_http_preserves_identity_and_waits_for_old_exit/)) |
+    (package(studio-runtime-schema) & test(/^(continuation_snapshot|claude_login|usage_limits|checkpoint_record)::tests::/)) |
+    (package(studio-client-core) & test(/^(speech|client|terminal|file_preview)::tests::/)) |
+    (package(studio-client-domain) & test(/^protocol::tests::/)) |
+    (package(studio-runtime-store) & test(/checkpoint_(reads_enforce|write_rejects)|state_owner::tests|serving_open_claims_the_state/)) |
+    (package(studio-runtime-process) & test(/lease_tests/)) |
+    (package(studio-runtime-services) & test(/continuation_corpus::|continuation_recovery::|wave7_p12_completion::|claude_login_actor::|wave7_p18_account_session::|account_session_runtime::limits_|layr_native::mapping|provider_callbacks::projection::tests|model_projection_matches_python_and_keeps_full_result|checkpoint_summaries_filter_agents_and_strip_payloads|workspace_operations_corpus::|current_uses_the_agent_after_pending_settings_are_applied/)) |
 (package(=studio-runtime-store) & kind(lib) & (test(annotation_typed_tests::) | test(plan_typed_tests::) | test(plan_returns_checked_value_without_a_text_round_trip))) |
 (package(=studio-runtime-services) & kind(lib) & (test(plan_notification_updates_typed_record) | test(read_json_preserves_objects_and_defaults_for_invalid_files) | test(read_object_preserves_objects_and_rejects_invalid_files))) |
 (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(snapshot_rejects_object_encoded_request_state)) |
@@ -336,6 +344,14 @@ platform = 'cfg(target_os = "linux")'
 # Supervisor health witnesses: Accept the maintained protocol and preserve exact handles; reject foreign identity and blocked recovery.
 # Desktop projection witness: Keep private native rotation receipts on disk while validating the public status strictly.
 default-filter = '''
+    (package(studio-runtime-services) & test(/conversation_signatures_preserve_nullable_setting_identity|confirmed_restart_is_atomic_replay_safe_and_waits_for_exit/)) |
+    (package(studio-runtime-http) & test(/conversation_catalog_admission_tests::|branch_draft_keeps_the_historical_generated_request_identity|http_restart_uses_checked_request|monitor_restart_http_preserves_identity_and_waits_for_old_exit/)) |
+    (package(studio-runtime-schema) & test(/^(continuation_snapshot|claude_login|usage_limits|checkpoint_record)::tests::/)) |
+    (package(studio-client-core) & test(/^(speech|client|terminal|file_preview)::tests::/)) |
+    (package(studio-client-domain) & test(/^protocol::tests::/)) |
+    (package(studio-runtime-store) & test(/checkpoint_(reads_enforce|write_rejects)|state_owner::tests|serving_open_claims_the_state/)) |
+    (package(studio-runtime-process) & test(/lease_tests/)) |
+    (package(studio-runtime-services) & test(/continuation_corpus::|continuation_recovery::|wave7_p12_completion::|claude_login_actor::|wave7_p18_account_session::|account_session_runtime::limits_|layr_native::mapping|provider_callbacks::projection::tests|model_projection_matches_python_and_keeps_full_result|checkpoint_summaries_filter_agents_and_strip_payloads|workspace_operations_corpus::|current_uses_the_agent_after_pending_settings_are_applied/)) |
 (package(=studio-runtime-store) & kind(lib) & (test(annotation_typed_tests::) | test(plan_typed_tests::) | test(plan_returns_checked_value_without_a_text_round_trip))) |
 (package(=studio-runtime-services) & kind(lib) & (test(plan_notification_updates_typed_record) | test(read_json_preserves_objects_and_defaults_for_invalid_files) | test(read_object_preserves_objects_and_rejects_invalid_files))) |
 (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(snapshot_rejects_object_encoded_request_state)) |

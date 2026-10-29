@@ -613,7 +613,7 @@ async fn client_request(
             return Err("Draft commands require the verified workspace identity.".into());
         }
     }
-    let response = client.request(request).await?;
+    let response: Response = client.request(request).await?.into();
     if matches!(method.as_str(), "sync.open" | "identity.get") && response.error.is_none() {
         let Some(workspace) = response
             .result

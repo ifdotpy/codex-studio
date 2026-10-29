@@ -2,7 +2,7 @@
 use crate::protocol::{CommandError, Request, Response};
 use base64::Engine;
 use reqwest::{Client, Url};
-use serde::Deserialize;
+use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::{sync::Arc, time::Duration};
 use tokio::sync::Mutex;
@@ -486,7 +486,11 @@ impl Backend {
         }))
     }
 
-    pub(crate) async fn read_bounded(&self, path: &str, limit: usize) -> Result<Value, String> {
+    pub(crate) async fn read_bounded<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        limit: usize,
+    ) -> Result<T, String> {
         if !self.authorized.load(std::sync::atomic::Ordering::Acquire) {
             return Err("The local backend identity has not been verified.".into());
         }
@@ -508,14 +512,14 @@ impl Backend {
             }
             bytes.extend_from_slice(&chunk);
         }
-        let value: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
         if !status.is_success() {
+            let value: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
             return Err(value["error"]
                 .as_str()
                 .unwrap_or("Cannot read the selected file.")
                 .into());
         }
-        Ok(value)
+        serde_json::from_slice(&bytes).map_err(|e| e.to_string())
     }
 
     pub async fn dispatch(&self, request: Request) -> Response {

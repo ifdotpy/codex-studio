@@ -99,6 +99,96 @@ fn present_result<'de, D: serde::Deserializer<'de>>(
     Value::deserialize(deserializer).map(Some)
 }
 
+/// A native event retains its arbitrary JSON payload; replies are always
+/// exactly one success or command error.
+#[derive(Debug)]
+pub enum NativeFrame {
+    Event(Value),
+    Response(NativeResponse),
+}
+
+#[derive(Debug)]
+pub struct NativeResponse {
+    pub id: String,
+    pub outcome: NativeOutcome,
+}
+
+#[derive(Debug)]
+pub enum NativeOutcome {
+    Success(Value),
+    Failure(CommandError),
+}
+
+impl From<NativeResponse> for Response {
+    fn from(response: NativeResponse) -> Self {
+        match response.outcome {
+            NativeOutcome::Success(result) => Self::success(response.id, result),
+            NativeOutcome::Failure(error) => Self {
+                id: response.id,
+                result: None,
+                error: Some(error),
+            },
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum WireFrame {
+    Event {
+        event: String,
+        #[serde(flatten)]
+        fields: serde_json::Map<String, Value>,
+    },
+    Response(WireResponse),
+}
+
+#[derive(Deserialize)]
+struct WireResponse {
+    id: String,
+    #[serde(flatten)]
+    outcome: WireOutcome,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum WireOutcome {
+    Success {
+        result: Value,
+        #[serde(default, rename = "error")]
+        _error: Option<()>,
+    },
+    Failure {
+        error: CommandError,
+        #[serde(default, rename = "result", deserialize_with = "reject_result")]
+        _result: (),
+    },
+}
+
+fn reject_result<'de, D: serde::Deserializer<'de>>(_: D) -> Result<(), D::Error> {
+    Err(serde::de::Error::custom(
+        "a failure cannot contain a result",
+    ))
+}
+
+impl<'de> Deserialize<'de> for NativeFrame {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(match WireFrame::deserialize(deserializer)? {
+            WireFrame::Event { event, mut fields } => {
+                fields.insert("event".into(), Value::String(event));
+                Self::Event(Value::Object(fields))
+            }
+            WireFrame::Response(WireResponse { id, outcome }) => Self::Response(NativeResponse {
+                id,
+                outcome: match outcome {
+                    WireOutcome::Success { result, _error: _ } => NativeOutcome::Success(result),
+                    WireOutcome::Failure { error, _result: _ } => NativeOutcome::Failure(error),
+                },
+            }),
+        })
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct CommandError {
     pub code: String,
@@ -134,6 +224,70 @@ impl Response {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn native_frames_prioritize_events_and_validate_response_shapes() {
+        use serde_json::json;
+        let event = json!({"event":"changed", "id":"also-a-response", "result":null, "error":{"bad":true}, "payload":{"nested":[null,1]}});
+        let decoded: super::NativeFrame = serde_json::from_value(event.clone()).unwrap();
+        match decoded {
+            super::NativeFrame::Event(value) => assert_eq!(value, event),
+            _ => panic!("event must take priority"),
+        }
+        let success: super::NativeFrame =
+            serde_json::from_str(r#"{"id":"void","result":null}"#).unwrap();
+        assert!(matches!(
+            success,
+            super::NativeFrame::Response(super::NativeResponse {
+                outcome: super::NativeOutcome::Success(serde_json::Value::Null),
+                ..
+            })
+        ));
+        let failure: super::NativeFrame =
+            serde_json::from_str(r#"{"id":"bad","error":{"code":"denied","message":"Denied"}}"#)
+                .unwrap();
+        assert!(matches!(
+            failure,
+            super::NativeFrame::Response(super::NativeResponse {
+                outcome: super::NativeOutcome::Failure(_),
+                ..
+            })
+        ));
+        for value in [
+            json!({"id":"missing"}),
+            json!({"id":"both","result":null,"error":{"code":"x","message":"x"}}),
+            json!({"id":"null","error":null}),
+        ] {
+            assert!(serde_json::from_value::<super::NativeFrame>(value).is_err());
+        }
+        let explicit_null_error: super::NativeFrame =
+            serde_json::from_str(r#"{"id":"reply","result":null,"error":null}"#).unwrap();
+        assert!(matches!(
+            explicit_null_error,
+            super::NativeFrame::Response(super::NativeResponse {
+                outcome: super::NativeOutcome::Success(serde_json::Value::Null),
+                ..
+            })
+        ));
+        for response in [
+            super::Response::success("ok".into(), json!(null)),
+            super::Response::failure("failed".into(), "denied", "Denied"),
+        ] {
+            let original = serde_json::to_value(&response).unwrap();
+            let super::NativeFrame::Response(decoded) =
+                serde_json::from_value(original.clone()).unwrap()
+            else {
+                panic!("response")
+            };
+            assert_eq!(
+                serde_json::to_value(super::Response::from(decoded)).unwrap(),
+                original
+            );
+        }
+        let non_string_event: super::NativeFrame =
+            serde_json::from_str(r#"{"event":null,"id":"reply","result":false}"#).unwrap();
+        assert!(matches!(non_string_event, super::NativeFrame::Response(_)));
+    }
+
     #[test]
     fn void_success_round_trips_without_becoming_a_missing_result() {
         let response = super::Response::success("void".into(), serde_json::Value::Null);

@@ -393,6 +393,37 @@ fn capacity_state(store: &RuntimeStore) -> Value {
         .expect("events");
     json!({"record":serde_json::from_str::<Value>(&record).expect("record JSON"),"agent":serde_json::from_str::<Value>(&agent).expect("agent JSON"),"events":events})
 }
+
+#[tokio::test]
+async fn pending_settings_cannot_claim_a_replaced_capacity_retry() {
+    let (_root, store) = seeded("capacity").await;
+    store
+        .transaction_with(|tx| {
+            let raw: String =
+                tx.query_row("SELECT record FROM runtime_agents WHERE id='a'", [], |r| {
+                    r.get(0)
+                })?;
+            let mut agent: Value = serde_json::from_str(&raw).expect("agent");
+            let mut replacement = agent["capacityRetry"].clone();
+            replacement["id"] = json!("replacement");
+            agent["pendingSettings"] = json!({"capacityRetry":replacement});
+            studio_runtime_store::ContinuationRepository::put_agent(tx, &agent)?;
+            Ok::<_, studio_runtime_store::StoreError>(())
+        })
+        .await
+        .expect("pending settings");
+    let before = capacity_state(&store);
+    let staged = store
+        .transaction_with(|tx| {
+            studio_runtime_services::continuation_runtime::stage_capacity_retry_observed(
+                tx, "a", "retry", 1000.0, true, None,
+            )
+        })
+        .await
+        .expect("retry stage");
+    assert!(!staged.changed());
+    assert_eq!(capacity_state(&store), before);
+}
 /// A claim queues the retry's follow-up input with its record and agent in one
 /// transaction: every boundary before commit leaves the state untouched, and a
 /// replay after commit queues nothing more.

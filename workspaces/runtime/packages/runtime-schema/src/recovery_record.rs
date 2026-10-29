@@ -1,12 +1,13 @@
 //! Typed recovery records. The persisted JSON schema owns wire compatibility;
 //! unknown extensions remain opaque and original records remain with callers.
 use crate::shared_values::MAX_SAFE_INTEGER;
+use crate::stored_record::StoredJsonInteger;
 use serde::{Deserialize, Deserializer, de::Error};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
 #[derive(Clone, Debug)]
-pub struct SafeInteger(f64);
+pub struct SafeInteger(StoredJsonInteger);
 #[derive(Clone, Debug)]
 pub struct NonnegativeInteger(f64);
 #[derive(Clone, Debug)]
@@ -14,7 +15,11 @@ pub struct NonnegativeNumber(f64);
 
 impl SafeInteger {
     pub fn get(&self) -> f64 {
-        self.0
+        // The constructor accepts only JSON numbers within the finite safe range.
+        self.0.number().as_f64().expect("validated finite number")
+    }
+    pub fn as_u64(&self) -> Option<u64> {
+        self.0.number().as_u64()
     }
 }
 impl NonnegativeInteger {
@@ -30,8 +35,11 @@ impl NonnegativeNumber {
 
 impl<'de> Deserialize<'de> for SafeInteger {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let n = f64::deserialize(d)?;
-        if n >= 0.0 && n <= MAX_SAFE_INTEGER as f64 && n.fract() == 0.0 {
+        let n = StoredJsonInteger::deserialize(d)?;
+        if n.number()
+            .as_f64()
+            .is_some_and(|value| (0.0..=MAX_SAFE_INTEGER as f64).contains(&value))
+        {
             Ok(Self(n))
         } else {
             Err(D::Error::custom("invalid safe integer"))
@@ -211,6 +219,15 @@ mod tests {
     use super::*;
     use serde_json::json;
     use sha2::{Digest, Sha256};
+
+    #[test]
+    fn safe_integer_retains_numeric_encoding() {
+        let integer: SafeInteger = serde_json::from_str("1").expect("integer");
+        let decimal: SafeInteger = serde_json::from_str("1.0").expect("integer alias");
+        assert_eq!(integer.get(), decimal.get());
+        assert_eq!(integer.as_u64(), Some(1));
+        assert_eq!(decimal.as_u64(), None);
+    }
 
     #[test]
     fn request_state_requires_string_or_null() {

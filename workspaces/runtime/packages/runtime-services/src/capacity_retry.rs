@@ -121,9 +121,10 @@ pub fn failed_with_reason(
     ]);
     let id = crate::event_write::request_signature(&identity);
     let count = s
-        .agent
-        .get("capacityRetryCount")
-        .and_then(Value::as_u64)
+        .agent_view()
+        .capacity_retry_count
+        .as_ref()
+        .and_then(|n| n.as_u64())
         .unwrap_or(0);
     let delays = kind.delays();
     let delay = usize::try_from(count).ok().and_then(|i| delays.get(i));
@@ -144,18 +145,35 @@ pub fn transition(s: &Snapshot, action: Action<'_>, now: f64) -> Result<Decision
     let mut r = stored.clone();
     let mut agent = s.agent.clone();
     let mut hold = None;
+    let accepted_turn = s.capacity_record().map_or_else(
+        || text(stored, "acceptedTurnId"),
+        |record| {
+            record
+                .accepted_turn_id
+                .as_ref()
+                .map_or("", |id| id.as_str())
+        },
+    );
+    let accepted = s.capacity_record().map_or_else(
+        || present(stored, "acceptedTurnId"),
+        |record| record.accepted_turn_id.is_some(),
+    );
+    let claimed = s.capacity_record().map_or_else(
+        || present(stored, "claimedAt"),
+        |record| record.claimed_at.as_ref().is_some_and(|at| at.get() != 0.0),
+    );
     // A start outcome belongs to the claimed follow-up of this retry, once.
     let start_pending = matches!(s.status(), Some(WaitStatus::Starting | WaitStatus::Unknown))
-        && present(&r, "claimedAt")
-        && !present(&r, "acceptedTurnId")
+        && claimed
+        && !accepted
         && r.get("epoch") == agent.get("epoch")
-        && account(&r) == account(&agent);
+        && s.record_account() == Some(account(&agent));
     match action {
         Action::Completed { turn_id, completed } => {
-            if text(&r, "acceptedTurnId") != turn_id {
+            if accepted_turn != turn_id {
                 return Ok(Decision::default());
             }
-            if text(&r, "status") == "finished" {
+            if s.status() == Some(WaitStatus::Finished) {
                 return Ok(Decision::default());
             }
             patch(&mut r, json!({"status":"finished","dueAt":null}));
@@ -165,7 +183,7 @@ pub fn transition(s: &Snapshot, action: Action<'_>, now: f64) -> Result<Decision
         }
 
         Action::Cancel => {
-            if text(&r, "status") != "scheduled" || present(&r, "claimedAt") {
+            if s.status() != Some(WaitStatus::Scheduled) || claimed {
                 return Ok(Decision::default());
             }
             patch(
@@ -175,12 +193,13 @@ pub fn transition(s: &Snapshot, action: Action<'_>, now: f64) -> Result<Decision
             hold = Some("cancelled");
         }
         Action::Wait(reason) => {
-            if text(&r, "status") == "unknown" || present(&r, "acceptedTurnId") {
+            if s.status() == Some(WaitStatus::Unknown) || accepted {
                 return Ok(Decision::default());
             }
-            let waits = r
-                .get("waits")
-                .and_then(Value::as_u64)
+            let waits = s
+                .capacity_record()
+                .map(|record| record.waits.as_ref().and_then(|n| n.as_u64()))
+                .unwrap_or_else(|| r.get("waits").and_then(Value::as_u64))
                 .unwrap_or(0)
                 .saturating_add(1);
             remove(&mut r, "claimedAt");
@@ -190,7 +209,7 @@ pub fn transition(s: &Snapshot, action: Action<'_>, now: f64) -> Result<Decision
             );
         }
         Action::DiskWait(reason) => {
-            if text(&r, "status") == "unknown" || present(&r, "acceptedTurnId") {
+            if s.status() == Some(WaitStatus::Unknown) || accepted {
                 return Ok(Decision::default());
             }
             remove(&mut r, "claimedAt");
@@ -200,7 +219,7 @@ pub fn transition(s: &Snapshot, action: Action<'_>, now: f64) -> Result<Decision
             );
         }
         Action::Excluded(reason) => {
-            if text(&r, "status") != "scheduled" || present(&r, "acceptedTurnId") {
+            if s.status() != Some(WaitStatus::Scheduled) || accepted {
                 return Ok(Decision::default());
             }
             patch(
@@ -246,15 +265,18 @@ pub fn transition(s: &Snapshot, action: Action<'_>, now: f64) -> Result<Decision
             settings,
             automatic,
         } => {
-            if automatic && text(&r, "status") != "scheduled" {
+            if automatic && s.status() != Some(WaitStatus::Scheduled) {
                 return Ok(Decision::default());
             }
-            if present(&r, "claimedAt")
-                || !matches!(text(&r, "status"), "scheduled" | "cancelled" | "exhausted")
+            if claimed
+                || !matches!(
+                    s.status(),
+                    Some(WaitStatus::Scheduled | WaitStatus::Cancelled | WaitStatus::Exhausted)
+                )
             {
                 return Ok(Decision::default());
             }
-            if !s.claims_valid(&r) {
+            if !s.claims_valid() {
                 patch(
                     &mut r,
                     json!({"status":"cancelled","dueAt":null,"reason":TASK_CHANGED}),
@@ -266,7 +288,7 @@ pub fn transition(s: &Snapshot, action: Action<'_>, now: f64) -> Result<Decision
                     || ["epoch", "threadId", "cwd"]
                         .iter()
                         .any(|k| r.get(*k) != agent.get(*k))
-                    || account(&r) != account(&agent)
+                    || s.record_account() != Some(account(&agent))
                     || r.get("settings") != Some(settings)
                     || r.get("turnId") != agent.get("lastCompletedTurn")
                 {
@@ -286,7 +308,7 @@ pub fn transition(s: &Snapshot, action: Action<'_>, now: f64) -> Result<Decision
                 patch(&mut agent, json!({"status":"queued","error":null}));
                 r["updatedAt"] = json!(now);
                 agent["capacityRetry"] = r.clone();
-                let id = format!("{CAPACITY_FOLLOWUP_PREFIX}{}", text(&r, "id"));
+                let id = format!("{CAPACITY_FOLLOWUP_PREFIX}{}", s.record_id().unwrap_or(""));
                 return Ok(Decision {
                     agent: Some(agent),
                     record: Some(r),
@@ -313,7 +335,7 @@ pub fn transition(s: &Snapshot, action: Action<'_>, now: f64) -> Result<Decision
             text(d.record.as_ref().unwrap_or(&Value::Null), "reason")
         }
         .to_owned();
-        d.hold(text(stored, "id"), transition, &reason);
+        d.hold(s.record_id().unwrap_or(""), transition, &reason);
     }
     Ok(d)
 }

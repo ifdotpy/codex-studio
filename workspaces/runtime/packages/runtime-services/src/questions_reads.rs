@@ -79,15 +79,12 @@ pub fn checkpoint_list(
     let ids = ids.into_iter().collect::<BTreeSet<_>>();
     let mut items = Vec::new();
     for checkpoint in checkpoints {
-        let mut record = checkpoint
-            .value()
-            .as_object()
-            .expect("validated checkpoint record")
-            .clone();
-        let checkpoint_agent = string_member(&record, "agent").unwrap_or_default();
-        if !ids.contains(checkpoint_agent) {
+        if !ids.contains(checkpoint.agent().unwrap_or_default()) {
             continue;
         }
+        let Value::Object(mut record) = checkpoint.into_value() else {
+            unreachable!("typed checkpoint serializes as an object");
+        };
         record.remove("items");
         record.remove("historyDelta");
         record.remove("_payloadBlobs");

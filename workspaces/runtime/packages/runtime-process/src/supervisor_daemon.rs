@@ -704,7 +704,7 @@ fn read_frame(
         }
     }
 }
-fn write_frame(writer: &mut impl Write, value: &Value) -> Result<()> {
+fn write_frame(writer: &mut impl Write, value: &impl serde::Serialize) -> Result<()> {
     serde_json::to_writer(&mut *writer, value)?;
     writer.write_all(b"\n")?;
     writer.flush()?;
@@ -994,6 +994,13 @@ fn connection_with_budget(supervisor: Arc<Supervisor>, mut socket: UnixStream, b
     supervisor.connections.fetch_sub(1, Ordering::AcqRel);
 }
 
+#[derive(Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SupervisorLease {
+    pid: u32,
+    start_time: String,
+}
+
 /// Serve only the explicitly selected directory. Does not install or connect to another service.
 #[allow(
     clippy::disallowed_methods,
@@ -1031,8 +1038,8 @@ pub fn serve(root: &Path, wait_for_lease: bool) -> Result<()> {
                     Read::by_ref(&mut lease)
                         .take(4096)
                         .read_to_string(&mut text)?;
-                    let value: Value = serde_json::from_str(&text)?;
-                    eprintln!("supervisor waiting for owner {}", value["pid"]);
+                    let identity: SupervisorLease = serde_json::from_str(&text)?;
+                    eprintln!("supervisor waiting for owner {}", identity.pid);
                     announced = true;
                 }
                 thread::sleep(RETRY);
@@ -1045,17 +1052,17 @@ pub fn serve(root: &Path, wait_for_lease: bool) -> Result<()> {
         .take(4096)
         .read_to_string(&mut previous)?;
     if !previous.trim().is_empty() {
-        let identity: Value = serde_json::from_str(&previous)?;
-        let pid = identity["pid"]
-            .as_u64()
-            .and_then(|v| u32::try_from(v).ok())
-            .ok_or(Error::Refused(
-                "The previous supervisor lease identity is invalid",
-            ))?;
-        let expected = identity["startTime"].as_str().ok_or(Error::Refused(
-            "The previous supervisor lease identity is invalid",
-        ))?;
-        if matches!(inspect_start(pid, expected)?.0, StartMatch::Exact) {
+        let identity: SupervisorLease = serde_json::from_str(&previous).map_err(|error| {
+            if error.is_data() {
+                Error::Refused("The previous supervisor lease identity is invalid")
+            } else {
+                error.into()
+            }
+        })?;
+        if matches!(
+            inspect_start(identity.pid, &identity.start_time)?.0,
+            StartMatch::Exact
+        ) {
             return Err(Error::Refused(
                 "The previous supervisor process is still alive",
             ));
@@ -1085,7 +1092,10 @@ pub fn serve(root: &Path, wait_for_lease: bool) -> Result<()> {
     lease.set_len(0)?;
     write_frame(
         &mut lease,
-        &json!({"pid":std::process::id(),"startTime":own_start}),
+        &SupervisorLease {
+            pid: std::process::id(),
+            start_time: own_start,
+        },
     )?;
     lease.sync_all()?;
     let socket = root.join("supervisor.sock");
@@ -1146,3 +1156,57 @@ mod deadline_tests;
 #[cfg(all(test, target_os = "macos"))]
 #[path = "../tests/supervisor/legacy_start.rs"]
 mod legacy_start_tests;
+
+#[cfg(test)]
+mod lease_tests {
+    use super::*;
+
+    #[test]
+    fn previous_lease_refuses_invalid_and_live_identity_before_starting() {
+        let root = tempfile::tempdir().unwrap();
+        let lease_path = root.path().join("supervisor.lock");
+        std::fs::write(&lease_path, br#"{"pid":4294967296,"startTime":"x"}"#).unwrap();
+        assert!(matches!(
+            serve(root.path(), false),
+            Err(Error::Refused(
+                "The previous supervisor lease identity is invalid"
+            ))
+        ));
+        let start_time = start_time(std::process::id(), false).unwrap().unwrap();
+        let lease = SupervisorLease {
+            pid: std::process::id(),
+            start_time,
+        };
+        std::fs::write(&lease_path, serde_json::to_vec(&lease).unwrap()).unwrap();
+        assert!(matches!(
+            serve(root.path(), false),
+            Err(Error::Refused(
+                "The previous supervisor process is still alive"
+            ))
+        ));
+        assert!(!root.path().join("supervisor.sock").exists());
+    }
+
+    #[test]
+    fn lease_record_round_trips_and_rejects_invalid_identity() {
+        let identity = SupervisorLease {
+            pid: 42,
+            start_time: "linux:boot:123".into(),
+        };
+        let mut encoded = Vec::new();
+        write_frame(&mut encoded, &identity).unwrap();
+        let decoded: SupervisorLease = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(decoded, identity);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&encoded).unwrap(),
+            json!({"pid":42,"startTime":"linux:boot:123"})
+        );
+        for value in [
+            json!({"pid":4294967296u64,"startTime":"x"}),
+            json!({"pid":42,"startTime":null}),
+            json!({"pid":42}),
+        ] {
+            assert!(serde_json::from_value::<SupervisorLease>(value).is_err());
+        }
+    }
+}

@@ -1260,10 +1260,8 @@ async fn wait_for_agent_catalog(
 
 pub(super) async fn create_branch_draft(
     state: HttpState,
-    body: Value,
+    body: generated::CreateLeadRequest,
 ) -> Result<Json<generated::AgentResponse>, ApiError> {
-    let body: generated::CreateLeadRequest =
-        serde_json::from_value(body).map_err(|_| ApiError::internal())?;
     create_lead_with_model(State(state), ApiJson(body)).await
 }
 async fn configure(
@@ -1282,45 +1280,49 @@ async fn configure(
     })
     .await
 }
+fn conversation_null_field(body: &generated::ConversationRequest) -> Option<&'static str> {
+    [
+        ("model", matches!(body.model, Some(None))),
+        ("fast_mode", matches!(body.fast_mode, Some(None))),
+        (
+            "worker_defaults",
+            matches!(body.worker_defaults, Some(None)),
+        ),
+        (
+            "review_defaults",
+            matches!(body.review_defaults, Some(None)),
+        ),
+    ]
+    .into_iter()
+    .find_map(|(field, is_null)| is_null.then_some(field))
+}
+
 async fn conversation(
     State(state): State<HttpState>,
-    ApiJson(value): ApiJson<Value>,
+    ApiJson(body): ApiJson<generated::ConversationRequest>,
 ) -> Result<Json<generated::AgentResponse>, ApiError> {
-    for field in ["model", "fast_mode", "worker_defaults", "review_defaults"] {
-        if value.get(field).is_some_and(Value::is_null) {
-            return Err(ApiError::validation(vec![
-                Value::String("body".to_owned()),
-                Value::String(field.to_owned()),
-            ]));
-        }
+    if let Some(field) = conversation_null_field(&body) {
+        return Err(ApiError::validation(vec![
+            Value::String("body".to_owned()),
+            Value::String(field.to_owned()),
+        ]));
     }
-    let body: generated::ConversationRequest = serde_json::from_value(value.clone())
-        .map_err(|_| ApiError::validation(vec![Value::String("body".to_owned())]))?;
     let request = agents_create::Conversation {
         non_defaults: body.next_turn.is_some() || body.request_id.is_some(),
-        model_present: body.model.is_some(),
-        effort_present: body.effort.is_some(),
-        fast_mode_present: body.fast_mode.is_some(),
-        daybreak_present: body.daybreak_enabled.is_some(),
         cwd: body.cwd.clone(),
         yolo_mode: body.yolo_mode,
         model: body.model.clone().flatten(),
-        effort: body.effort.clone(),
+        effort: body.effort.clone().into(),
         fast_mode: body.fast_mode.flatten(),
-        daybreak_enabled: body.daybreak_enabled.flatten(),
+        daybreak_enabled: body.daybreak_enabled.into(),
         next_turn: body.next_turn,
         request_id: body.request_id.clone(),
         mode_settings: body.agent_mode.is_some()
             || body.subagent_concurrency.is_some()
             || body.expected_mode_revision.is_some(),
         mode_limit: body.subagent_concurrency.or_else(|| {
-            body.agent_mode.map(|mode| {
-                if serde_json::to_value(mode)
-                    .ok()
-                    .and_then(|value| value.as_str().map(str::to_owned))
-                    .as_deref()
-                    == Some("single")
-                {
+            body.agent_mode.as_ref().map(|mode| {
+                if matches!(mode, Some(generated::AgentMode::Single)) {
                     0
                 } else {
                     32
@@ -1328,7 +1330,7 @@ async fn conversation(
             })
         }),
         mode_revision: body.expected_mode_revision.flatten(),
-        mode_request_id: body.request_id.flatten(),
+        mode_request_id: body.request_id.clone().flatten(),
         worker_settings: body.worker_defaults.is_some() || body.review_defaults.is_some(),
         worker_defaults: body
             .worker_defaults
@@ -1349,10 +1351,10 @@ async fn conversation(
             keys
         }),
     };
-    let needs_conversation_catalog = conversation_needs_catalog(&value);
+    let needs_conversation_catalog = conversation_needs_catalog(&body);
     let requested_model = body.model.as_ref().and_then(Option::as_deref);
     let needs_settings_conversation_account =
-        conversation_settings_need_conversation_account(&value);
+        conversation_settings_need_conversation_account(&body);
     let catalog_account = if needs_conversation_catalog || needs_settings_conversation_account {
         // Python first resolves the existing target and its expected account;
         // worker/review defaults use that conversation context at 5484-5491.
@@ -1390,10 +1392,7 @@ async fn conversation(
         },
     )
     .await?;
-    if let Some(defaults) = value
-        .get("worker_defaults")
-        .filter(|entry| !entry.is_null())
-    {
+    if let Some(defaults) = request.worker_defaults.as_ref() {
         // Python resolves worker_defaults against settings_catalog after the
         // target account is known (`codex_runtime.py:5484-5486`).
         let worker_model = defaults.get("model").and_then(Value::as_str);
@@ -1414,11 +1413,11 @@ async fn conversation(
             .await?;
         }
     }
-    if value.get("review_defaults").is_some() {
+    if request.review_defaults.is_some() {
         // Runtime.update calls settings_catalog for review defaults even when
         // model is null; its account comes from supplied worker_defaults or
         // the target's stored worker account (`codex_runtime.py:5487-5491`).
-        let stored_worker_account = if value.get("worker_defaults").is_none() {
+        let stored_worker_account = if request.worker_defaults.is_none() {
             conversation_worker_catalog_account(
                 &state,
                 request.id.clone(),
@@ -1429,11 +1428,13 @@ async fn conversation(
             None
         };
         let review_account = review_settings_catalog_account(
-            value.get("worker_defaults"),
+            request.worker_defaults.as_ref(),
             stored_worker_account.as_deref(),
         );
-        let review_model = value
-            .pointer("/review_defaults/model")
+        let review_model = request
+            .review_defaults
+            .as_ref()
+            .and_then(|defaults| defaults.get("model"))
             .and_then(Value::as_str);
         wait_for_agent_catalog(
             &state,
@@ -1586,25 +1587,26 @@ async fn finish_title_request(
     }
 }
 
-fn conversation_needs_catalog(value: &Value) -> bool {
-    ["model", "effort", "fast_mode", "daybreak_enabled"]
-        .iter()
-        .any(|field| value.get(*field).is_some())
+fn conversation_needs_catalog(body: &generated::ConversationRequest) -> bool {
+    body.model.is_some()
+        || body.effort.is_some()
+        || body.fast_mode.is_some()
+        || body.daybreak_enabled.is_some()
 }
 
-fn conversation_settings_need_conversation_account(value: &Value) -> bool {
-    // Runtime.update calls settings_catalog for every review_defaults payload,
-    // including model:null (`codex_runtime.py:5487-5491`).
-    let has_review_defaults = value.get("review_defaults").is_some();
-    let has_unpinned_worker_defaults = value
-        .get("worker_defaults")
-        .filter(|defaults| !defaults.is_null())
-        .is_some_and(|defaults| {
-            defaults
-                .get("account_key")
-                .is_none_or(|account| account.is_null())
-        });
-    has_review_defaults || has_unpinned_worker_defaults
+fn conversation_settings_need_conversation_account(body: &generated::ConversationRequest) -> bool {
+    body.review_defaults.is_some()
+        || body
+            .worker_defaults
+            .as_ref()
+            .and_then(Option::as_ref)
+            .is_some_and(|defaults| {
+                defaults
+                    .account_key
+                    .as_ref()
+                    .and_then(Option::as_ref)
+                    .is_none()
+            })
 }
 
 fn catalog_cwd_for_conversation(
@@ -1966,18 +1968,42 @@ mod conversation_catalog_admission_tests {
     };
     use serde_json::json;
 
+    fn parse_request(mut value: serde_json::Value) -> crate::generated::ConversationRequest {
+        value["id"] = json!("agent");
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn generated_conversation_preserves_presence() {
+        for field in ["model", "fast_mode", "worker_defaults", "review_defaults"] {
+            let mut value = json!({});
+            value[field] = serde_json::Value::Null;
+            assert_eq!(
+                super::conversation_null_field(&parse_request(value)),
+                Some(field)
+            );
+        }
+        let body = parse_request(json!({"effort":null, "daybreak_enabled":null, "next_turn":null}));
+        assert_eq!(super::conversation_null_field(&body), None);
+        assert_eq!(body.effort, Some(None));
+        assert_eq!(body.daybreak_enabled, Some(None));
+        assert_eq!(body.next_turn, Some(None));
+    }
+
     #[test]
     fn worker_defaults_only_update_does_not_require_conversation_catalog() {
-        assert!(!conversation_needs_catalog(&json!({
+        assert!(!conversation_needs_catalog(&parse_request(json!({
             "worker_defaults": {
                 "account_key": "worker-account",
-                "model": "gpt-6-luna"
+                "model": "gpt-6-luna", "effort": null, "fast_mode": false
             }
-        })));
-        assert!(!conversation_needs_catalog(&json!({
-            "review_defaults": {"model": "gpt-6-astra"}
-        })));
-        assert!(conversation_needs_catalog(&json!({"model": "gpt-6-astra"})));
+        }))));
+        assert!(!conversation_needs_catalog(&parse_request(json!({
+            "review_defaults": {"model": "gpt-6-astra", "effort": null}
+        }))));
+        assert!(conversation_needs_catalog(&parse_request(
+            json!({"model": "gpt-6-astra"})
+        )));
     }
 
     #[test]
@@ -1985,8 +2011,10 @@ mod conversation_catalog_admission_tests {
         let request = json!({
             "review_defaults": {"model": "gpt-6-astra", "effort": "medium"}
         });
-        assert!(conversation_settings_need_conversation_account(&request));
-        assert!(!conversation_needs_catalog(&request));
+        assert!(conversation_settings_need_conversation_account(
+            &parse_request(request.clone())
+        ));
+        assert!(!conversation_needs_catalog(&parse_request(request.clone())));
         assert_eq!(
             review_settings_catalog_account(None, Some("worker-account")).as_deref(),
             Some("worker-account")
@@ -2035,18 +2063,22 @@ mod conversation_catalog_admission_tests {
             if let Some(account_key) = account_key {
                 defaults["account_key"] = account_key;
             }
-            assert!(conversation_settings_need_conversation_account(&json!({
-                "worker_defaults": defaults
-            })));
+            assert!(conversation_settings_need_conversation_account(
+                &parse_request(json!({
+                    "worker_defaults": defaults
+                }))
+            ));
             assert_eq!(worker_settings_catalog_account(&defaults), None);
         }
         let request = json!({
             "worker_defaults": {
                 "account_key": "worker-account",
-                "model": "gpt-6-luna"
+                "model": "gpt-6-luna", "effort": null, "fast_mode": false
             }
         });
-        assert!(!conversation_settings_need_conversation_account(&request));
+        assert!(!conversation_settings_need_conversation_account(
+            &parse_request(request.clone())
+        ));
         assert_eq!(
             worker_settings_catalog_account(&request["worker_defaults"]).as_deref(),
             Some("worker-account")

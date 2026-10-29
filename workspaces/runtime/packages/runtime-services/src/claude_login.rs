@@ -9,7 +9,6 @@ pub mod process;
 pub mod receipts;
 pub mod service;
 
-use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 const RESTARTED: &str = "Studio restarted during sign-in. Start a new sign-in request.";
@@ -49,43 +48,27 @@ pub enum LoginError {
     SystemProfile,
 }
 
-#[derive(Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum LoginStatus {
-    Starting,
-    Pending,
-    Ready,
-    Error,
-    Cancelled,
-}
-impl LoginStatus {
-    pub fn active(self) -> bool {
-        matches!(self, Self::Starting | Self::Pending)
-    }
-}
+pub use studio_runtime_schema::claude_login::LoginStatus;
+use studio_runtime_schema::claude_login::{
+    ClaudeLoginMetadata, ClaudeLoginReceipt, ClaudeLoginRecord,
+};
 
-#[derive(Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Receipt {
-    request_id: String,
-    account_key: String,
-    status: LoginStatus,
-    email: Option<String>,
-    code_submitted: Option<bool>,
-}
-#[derive(Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Metadata {
-    flow: Option<String>,
-    request_hash: Option<String>,
-    code_submitted: Option<bool>,
+enum LoginFlow<'a> {
+    Add {
+        request_hash: Option<&'a str>,
+        email_hint: Option<&'a str>,
+    },
+    Reauthenticate {
+        account_key: &'a str,
+        email: Option<&'a str>,
+    },
 }
 
 #[derive(Clone)]
 pub struct LoginSnapshot {
     record: Value,
-    receipt: Receipt,
-    metadata: Metadata,
+    receipt: ClaudeLoginReceipt,
+    metadata: ClaudeLoginMetadata,
 }
 
 impl LoginSnapshot {
@@ -94,20 +77,20 @@ impl LoginSnapshot {
         if record.get("receipt").is_none() {
             record = json!({"receipt":record,"metadata":{}});
         }
-        if let Some((path, _)) =
-            studio_runtime_schema::first_error("PersistedClaudeLoginRecord", &record)
-                .map_err(|_| LoginError::InvalidRecord("schema".into()))?
-        {
-            return Err(LoginError::InvalidRecord(path));
-        }
-        let receipt: Receipt = serde_json::from_value(record["receipt"].clone())
-            .map_err(|_| LoginError::InvalidRecord("receipt".into()))?;
-        request_id(&receipt.request_id)?;
-        let metadata: Metadata = serde_json::from_value(record["metadata"].clone())
-            .map_err(|_| LoginError::InvalidRecord("metadata".into()))?;
         if let Some(receipt) = record.get_mut("receipt").and_then(Value::as_object_mut) {
             receipt.remove("verificationUrl");
         }
+        let parsed: ClaudeLoginRecord = serde_json::from_value(record.clone()).map_err(|_| {
+            let path = studio_runtime_schema::first_error("PersistedClaudeLoginRecord", &record)
+                .ok()
+                .flatten()
+                .map(|(path, _)| path)
+                .unwrap_or_else(|| "schema".into());
+            LoginError::InvalidRecord(path)
+        })?;
+        let receipt = parsed.receipt;
+        let metadata = parsed.metadata;
+        request_id(receipt.request_id())?;
         Ok(Self {
             record,
             receipt,
@@ -121,16 +104,35 @@ impl LoginSnapshot {
         self.record["receipt"].clone()
     }
     pub fn request_id(&self) -> &str {
-        &self.receipt.request_id
+        self.receipt.request_id()
     }
     pub fn account_key(&self) -> &str {
-        &self.receipt.account_key
+        self.receipt.account_key()
     }
     pub fn active(&self) -> bool {
         self.receipt.status.active()
     }
     pub fn adding(&self) -> bool {
-        self.metadata.flow.as_deref() == Some("add")
+        matches!(self.flow(), LoginFlow::Add { .. })
+    }
+    fn flow(&self) -> LoginFlow<'_> {
+        if self.metadata.flow.is_some() {
+            LoginFlow::Add {
+                request_hash: self.metadata.request_hash(),
+                email_hint: self.metadata.email_hint.as_deref(),
+            }
+        } else {
+            LoginFlow::Reauthenticate {
+                account_key: self.receipt.account_key(),
+                email: self.receipt.email.as_deref(),
+            }
+        }
+    }
+    fn metadata(&self) -> &ClaudeLoginMetadata {
+        &self.metadata
+    }
+    fn receipt_record(&self) -> &ClaudeLoginReceipt {
+        &self.receipt
     }
     pub fn code_submitted(&self) -> bool {
         self.metadata.code_submitted == Some(true) || self.receipt.code_submitted == Some(true)
@@ -141,12 +143,12 @@ impl LoginSnapshot {
         account: Option<&str>,
         signature: Option<&str>,
     ) -> Result<Value, LoginError> {
-        if self.adding() {
-            if account.is_some() || signature != self.metadata.request_hash.as_deref() {
-                return Err(LoginError::Conflict);
-            }
-        } else if signature.is_some() || account != Some(self.account_key()) {
-            return Err(LoginError::Conflict);
+        match self.flow() {
+            LoginFlow::Add { request_hash, .. }
+                if account.is_none() && signature == request_hash => {}
+            LoginFlow::Reauthenticate { account_key, .. }
+                if signature.is_none() && account == Some(account_key) => {}
+            _ => return Err(LoginError::Conflict),
         }
         Ok(self.receipt())
     }
@@ -229,20 +231,15 @@ impl LoginSnapshot {
         }
     }
     fn provider_identity_mismatch(&self, metadata: &AuthMetadata) -> bool {
-        if self.adding() {
-            let hint = self
-                .record
-                .pointer("/metadata/emailHint")
-                .and_then(Value::as_str);
-            hint.zip(metadata.email.as_deref()).is_some_and(|(a, b)| {
-                a != b && !(a.is_ascii() && b.is_ascii() && a.eq_ignore_ascii_case(b))
-            })
-        } else {
-            self.receipt
-                .email
-                .as_ref()
-                .map(|email| format!("claude:{email}"))
-                != metadata.account_id
+        match self.flow() {
+            LoginFlow::Add { email_hint, .. } => email_hint
+                .zip(metadata.email.as_deref())
+                .is_some_and(|(a, b)| {
+                    a != b && !(a.is_ascii() && b.is_ascii() && a.eq_ignore_ascii_case(b))
+                }),
+            LoginFlow::Reauthenticate { email, .. } => {
+                email.map(|email| format!("claude:{email}")) != metadata.account_id
+            }
         }
     }
     pub fn ready(&self, account: &Value, refreshed: bool) -> Result<Self, LoginError> {

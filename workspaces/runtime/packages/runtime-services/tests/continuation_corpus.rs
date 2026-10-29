@@ -1,5 +1,164 @@
 use serde_json::{Value, json};
 use studio_runtime_services::{capacity_retry, continuation::Snapshot};
+
+#[test]
+fn typed_continuation_snapshot_matches_schema_shapes() {
+    let schema: Value = serde_json::from_str(include_str!(
+        "../../runtime-schema/src/schemas/persisted-continuation-snapshot.schema.json"
+    ))
+    .expect("schema");
+    let validator = jsonschema::validator_for(&schema).expect("validator");
+    let base =
+        json!({"agent":{"id":"a","rootId":"a","epoch":1,"status":"running","provider":"codex"}});
+    for (key, value) in [
+        ("ancestors", json!(null)),
+        ("claims", json!(["a"])),
+        ("claims", json!([""])),
+        ("agent", json!(["a", "a", 1, "running", "codex"])),
+        ("record", json!([])),
+        ("record", json!(null)),
+        ("limits", json!({"accountKey":"a","unknown":true})),
+    ] {
+        let mut input = base.clone();
+        input[key] = value;
+        let typed = serde_json::from_value::<
+            studio_runtime_schema::continuation_snapshot::ContinuationSnapshotRecord,
+        >(input.clone())
+        .is_ok();
+        assert_eq!(typed, validator.is_valid(&input), "{input}");
+    }
+}
+
+#[test]
+fn typed_continuation_snapshot_enforces_schema_bounds() {
+    use studio_runtime_schema::continuation_snapshot::ContinuationSnapshotRecord;
+    let base =
+        json!({"agent":{"id":"a","rootId":"a","epoch":1,"status":"running","provider":"codex"}});
+    for (key, accepted, rejected) in [
+        ("claims", json!(vec!["a"; 4096]), json!(vec!["a"; 4097])),
+        (
+            "ancestors",
+            json!(vec![base["agent"].clone(); 64]),
+            json!(vec![base["agent"].clone(); 65]),
+        ),
+    ] {
+        let mut input = base.clone();
+        input[key] = accepted;
+        assert!(serde_json::from_value::<ContinuationSnapshotRecord>(input.clone()).is_ok());
+        input[key] = rejected;
+        assert!(serde_json::from_value::<ContinuationSnapshotRecord>(input).is_err());
+    }
+    let mut input = base;
+    input["agent"]["id"] = json!("é".repeat(4096));
+    assert!(serde_json::from_value::<ContinuationSnapshotRecord>(input.clone()).is_ok());
+    input["agent"]["id"] = json!("é".repeat(4097));
+    assert!(serde_json::from_value::<ContinuationSnapshotRecord>(input).is_err());
+}
+
+#[test]
+fn continuation_event_identity_keeps_exact_epoch_evidence() {
+    let mut input = json!({
+        "agent":{"id":"a","rootId":"a","epoch":1,"status":"running","provider":"codex"},
+        "events":[{"id":"e","agent":"a","epoch":1,"kind":"input","text":"x","status":"pending","created":1}]
+    });
+    assert!(Snapshot::from_records(input.clone()).is_ok());
+    input["events"][0]["epoch"] = json!(1.0);
+    assert!(
+        Snapshot::from_records(input)
+            .err()
+            .expect("different numeric spelling must not match")
+            .to_string()
+            .contains("/events/identity")
+    );
+}
+
+#[test]
+fn snapshot_rejects_object_encoded_wire_enums() {
+    let records = cases();
+    for family in ["usage", "capacity"] {
+        let original = records
+            .as_array()
+            .expect("cases")
+            .iter()
+            .find(|case| case["family"] == family && case["input"]["record"]["status"].is_string())
+            .expect("family case")["input"]
+            .clone();
+        assert!(Snapshot::from_records(original.clone()).is_ok());
+        for key in ["status", "cause"] {
+            if let Some(spelling) = original["record"][key].as_str() {
+                let mut input = original.clone();
+                input["record"][key] = json!({spelling:null});
+                assert!(Snapshot::from_records(input).is_err(), "{family} {key}");
+            }
+        }
+        let mut input = original;
+        input["agent"]["provider"] = json!({"codex":null});
+        assert!(Snapshot::from_records(input).is_err());
+    }
+}
+
+#[test]
+fn capacity_counts_preserve_integer_and_decimal_alias_behavior() {
+    let cases = cases();
+    let create = cases
+        .as_array()
+        .expect("cases")
+        .iter()
+        .find(|case| case["name"] == "capacity-create-server-0")
+        .expect("fixture")["input"]
+        .clone();
+    for (number, expected) in [(json!(1), 2), (json!(1.0), 1)] {
+        let mut input = create.clone();
+        input["agent"]["capacityRetryCount"] = number;
+        let snapshot = Snapshot::from_records(input).expect("snapshot");
+        let decision = capacity_retry::failed(
+            &snapshot,
+            capacity_retry::Failure::ServerOverloaded,
+            "turn",
+            &json!({}),
+            1000.0,
+        )
+        .expect("failure");
+        assert_eq!(decision.record.expect("record")["attempt"], expected);
+    }
+    let original = cases
+        .as_array()
+        .expect("cases")
+        .iter()
+        .find(|case| case["name"] == "capacity-claim-success")
+        .expect("fixture")["input"]
+        .clone();
+    for (number, expected) in [(json!(1), 2), (json!(1.0), 1)] {
+        let mut input = original.clone();
+        input["record"]["waits"] = number;
+        let snapshot = Snapshot::from_records(input).expect("snapshot");
+        let decision =
+            capacity_retry::transition(&snapshot, capacity_retry::Action::Wait("wait"), 1000.0)
+                .expect("wait");
+        assert_eq!(decision.record.expect("record")["waits"], expected);
+    }
+}
+
+#[test]
+fn auth_backoff_preserves_integer_and_decimal_alias_behavior() {
+    let cases = cases();
+    let original = cases
+        .as_array()
+        .expect("cases")
+        .iter()
+        .find(|case| case["name"] == "usage-auth-proof-899.0")
+        .expect("auth fixture")["input"]
+        .clone();
+    for (number, due) in [(json!(1), 1600.0), (json!(1.0), 1180.0)] {
+        let mut input = original.clone();
+        input["record"]["authAttempt"] = number;
+        let snapshot = Snapshot::from_records(input).expect("snapshot");
+        let decision =
+            studio_runtime_services::usage_resume::tick_without_observation(&snapshot, 1000.0)
+                .expect("tick");
+        assert_eq!(decision.record.expect("rescheduled")["dueAt"], due);
+    }
+}
 /// The stored-record inputs of the continuation corpus.
 fn cases() -> Value {
     let mut cases: Value =

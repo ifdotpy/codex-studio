@@ -285,59 +285,60 @@ pub enum LimitsDecision {
 }
 
 /// Schema-checked response retaining absent/null fields and provider extensions.
-pub struct LimitsSnapshot(Value);
+pub struct LimitsSnapshot {
+    value: Value,
+    response: studio_runtime_schema::usage_limits::UsageLimitsResponse,
+}
 impl LimitsSnapshot {
     pub fn read(account: &str, value: Value) -> Result<Self, AccountSessionError> {
-        let invalid = studio_runtime_schema::first_error(
-            "workspace-usage-limits/UsageLimitsResponse",
-            &value,
-        )
-        .map_err(|_| AccountSessionError::InvalidResponse("/".into()))?;
-        if let Some((pointer, _)) = invalid {
-            return Err(AccountSessionError::InvalidResponse(pointer));
-        }
-        if value.get("accountKey").is_some_and(|key| key != account) {
+        let studio_runtime_schema::json_object::JsonObject(response): studio_runtime_schema::json_object::JsonObject<studio_runtime_schema::usage_limits::UsageLimitsResponse> =
+            serde_path_to_error::deserialize(&value).map_err(|error| {
+                let mut pointer = String::new();
+                for segment in error.path() {
+                    let part = match segment {
+                        serde_path_to_error::Segment::Map { key } => key.clone(),
+                        serde_path_to_error::Segment::Seq { index } => index.to_string(),
+                        serde_path_to_error::Segment::Enum { variant } => variant.clone(),
+                        serde_path_to_error::Segment::Unknown => continue,
+                    };
+                    pointer.push('/');
+                    pointer.push_str(&part.replace('~', "~0").replace('/', "~1"));
+                }
+                AccountSessionError::InvalidResponse(if pointer.is_empty() { "/".into() } else { pointer })
+            })?;
+        if response.account_key != account {
             return Err(AccountSessionError::InvalidResponse("/accountKey".into()));
         }
-        Ok(Self(value))
+        Ok(Self { value, response })
     }
     fn is_fresh_for_provider(&self, now: f64) -> bool {
-        let error = self
-            .0
-            .get("error")
-            .and_then(Value::as_str)
-            .is_some_and(|value| !value.is_empty());
-        if error {
-            return self
-                .0
-                .get("checkedAt")
-                .and_then(Value::as_f64)
-                .is_some_and(|checked_at| {
-                    checked_at > 0.0 && now - checked_at < ACCOUNT_LIMITS_ERROR_RETRY_SECONDS
-                });
+        if self
+            .response
+            .error
+            .as_deref()
+            .is_some_and(|error| !error.is_empty())
+        {
+            return self.response.checked_at.is_some_and(|checked_at| {
+                checked_at > 0.0 && now - checked_at < ACCOUNT_LIMITS_ERROR_RETRY_SECONDS
+            });
         }
         let at_is_fresh = self
-            .0
-            .get("at")
-            .and_then(Value::as_f64)
+            .response
+            .at
             .is_some_and(|at| at > 0.0 && now - at < ACCOUNT_LIMITS_WINDOW_FRESH_SECONDS);
-        let read_at_is_fresh =
-            self.0
-                .get("readAt")
-                .and_then(Value::as_f64)
-                .is_some_and(|read_at| {
-                    read_at > 0.0 && now - read_at < ACCOUNT_LIMITS_FULL_READ_FRESH_SECONDS
-                });
+        let read_at_is_fresh = self.response.read_at.is_some_and(|read_at| {
+            read_at > 0.0 && now - read_at < ACCOUNT_LIMITS_FULL_READ_FRESH_SECONDS
+        });
         at_is_fresh && read_at_is_fresh
     }
 
     pub fn decision(&self, cached: bool, now: f64) -> LimitsDecision {
-        let data = self.0.get("data").is_some_and(|value| !value.is_null());
+        let data = self.response.data.is_some();
         let error = self
-            .0
-            .get("error")
-            .and_then(Value::as_str)
-            .is_some_and(|value| !value.is_empty());
+            .response
+            .error
+            .as_deref()
+            .is_some_and(|error| !error.is_empty());
         if (cached && (data || error)) || self.is_fresh_for_provider(now) {
             LimitsDecision::Cached
         } else if data {
@@ -347,7 +348,7 @@ impl LimitsSnapshot {
         }
     }
     pub fn into_value(self) -> Value {
-        self.0
+        self.value
     }
 }
 

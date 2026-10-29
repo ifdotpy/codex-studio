@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 /// A JSON Schema integer, preserving integral decimal spellings and large values.
 #[derive(Clone, Debug, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(transparent)]
-pub(crate) struct StoredJsonInteger(#[schemars(schema_with = "integer_schema")] serde_json::Number);
+pub struct StoredJsonInteger(#[schemars(schema_with = "integer_schema")] serde_json::Number);
 
 impl StoredJsonInteger {
     pub(crate) fn from_i64(value: i64) -> Self {

@@ -1545,30 +1545,65 @@ pub fn create_in_transaction(
     Ok(record)
 }
 
+/// Checked restart fields and the digest of the exact validated JSON request.
+#[derive(Debug)]
+pub struct RestartRequest {
+    id: String,
+    agent: String,
+    epoch: i64,
+    request_id: String,
+    account_key: String,
+    output_patterns: Vec<String>,
+    signature: String,
+}
+
+impl RestartRequest {
+    pub fn agent(&self) -> &str {
+        &self.agent
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for RestartRequest {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Wire {
+            id: String,
+            agent: String,
+            epoch: i64,
+            request_id: String,
+            account_key: String,
+            output_patterns: Vec<String>,
+        }
+        let raw = <Value as serde::Deserialize>::deserialize(deserializer)?;
+        let signature = crate::process_controls::digest(&raw);
+        let wire: Wire = serde_json::from_value(raw).map_err(D::Error::custom)?;
+        Ok(Self {
+            id: wire.id,
+            agent: wire.agent,
+            epoch: wire.epoch,
+            request_id: wire.request_id,
+            account_key: wire.account_key,
+            output_patterns: wire.output_patterns,
+            signature,
+        })
+    }
+}
+
 /// A confirmed restart admits one replacement and requests cancellation atomically.
 /// The replacement cannot start until the source has a confirmed terminal state.
 pub fn restart_in_transaction(
     tx: &Transaction<'_>,
-    body: &Value,
+    body: &RestartRequest,
     workspace: &dyn WorkspaceAdmission,
     log_root: &str,
     now: f64,
 ) -> Result<Value, MonitorError> {
-    let id = body["id"]
-        .as_str()
-        .ok_or(MonitorError::Refused("Supply a monitor"))?;
-    let owner = body["agent"]
-        .as_str()
-        .ok_or(MonitorError::Refused("Supply an agent"))?;
-    let epoch = body["epoch"]
-        .as_i64()
-        .ok_or(MonitorError::Refused("Supply an owner epoch"))?;
-    let request_id = format!(
-        "monitor-restart:{owner}:{}",
-        body["requestId"]
-            .as_str()
-            .ok_or(MonitorError::Refused("Supply a request identity"))?
-    );
+    let id = body.id.as_str();
+    let owner = body.agent.as_str();
+    let epoch = body.epoch;
+    let request_id = format!("monitor-restart:{owner}:{}", body.request_id);
     let replacement_id =
         uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, request_id.as_bytes()).to_string();
     let actor = event_write::checked_agent(tx, owner)?;
@@ -1578,13 +1613,13 @@ pub fn restart_in_transaction(
             .get("accountKey")
             .and_then(Value::as_str)
             .unwrap_or("default")
-            != body["accountKey"]
+            != body.account_key
     {
         return Err(MonitorError::Refused("The monitor owner changed"));
     }
-    let signature = crate::process_controls::digest(body);
+    let signature = &body.signature;
     if let Some(previous) = MonitorsRepository::get(tx, &replacement_id)? {
-        if previous.value()["restartSignature"] != signature {
+        if previous.value()["restartSignature"] != signature.as_str() {
             return Err(MonitorError::Refused(
                 "This restart request has different content",
             ));
@@ -1605,7 +1640,7 @@ pub fn restart_in_transaction(
             "The monitor changed or finished. Refresh its details",
         ));
     }
-    let patterns = crate::monitor_matches::patterns(body.get("outputPatterns"))?;
+    let patterns = crate::monitor_matches::patterns(Some(&json!(body.output_patterns)))?;
     if json!(patterns) == old["outputPatterns"] {
         return Err(MonitorError::Refused(
             "Use narrower output patterns before restarting",

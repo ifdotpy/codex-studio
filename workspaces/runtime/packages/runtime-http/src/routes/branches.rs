@@ -52,6 +52,23 @@ pub(crate) fn routes() -> RouteGroup {
     )])
 }
 
+fn branch_draft_request(
+    source: &Value,
+    child_id: String,
+    account: String,
+    model: &str,
+) -> Result<crate::generated::CreateLeadRequest, ApiError> {
+    Ok(crate::generated::CreateLeadRequest {
+        id: Some(Some(child_id)),
+        account_key: Some(account),
+        cwd: serde_json::from_value(source["cwd"].clone()).map_err(|_| ApiError::internal())?,
+        model: Some(Some(model.to_owned())),
+        yolo_mode: serde_json::from_value(source["yoloMode"].clone())
+            .map_err(|_| ApiError::internal())?,
+        ..Default::default()
+    })
+}
+
 async fn branch(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<crate::generated::BranchRequest>,
@@ -557,16 +574,10 @@ async fn branch(
     }
     ensure_branch_source(&store, &operation_id, &body.agent).await?;
     let child_id = deterministic_uuid(&operation_id);
-    let created = super::agents_create::create_branch_draft(
-        state.clone(),
-        json!({
-        "id":child_id,"name":format!("{} (branch)",source["name"].as_str().unwrap_or("Lead").chars().take(90).collect::<String>()),
-        "account_key":account,"cwd":source["cwd"],"model":branch_model,
-            "yolo_mode":source["yoloMode"],"workspace_mode":source["workspaceMode"],
-            "profile_id":source["profileId"]
-        }),
-    )
-    .await;
+    let created = match branch_draft_request(&source, child_id, account, branch_model) {
+        Ok(request) => super::agents_create::create_branch_draft(state.clone(), request).await,
+        Err(error) => Err(error),
+    };
     let Json(created) = match created {
         Ok(created) => created,
         Err(error) => {
@@ -1221,6 +1232,29 @@ mod tests {
         AccountSessionFuture, ConnectionScope, SessionReceipt,
     };
     use studio_runtime_store::AgentRecord;
+
+    #[test]
+    fn branch_draft_keeps_the_historical_generated_request_identity() {
+        for (source, historical_wire) in [
+            (
+                json!({"cwd":"/project", "yoloMode":true, "workspaceMode":"worktree", "profileId":"profile"}),
+                r#"{"id":"child","name":"Lead (branch)","account_key":"account","cwd":"/project","model":"model","yolo_mode":true,"workspace_mode":"worktree","profile_id":"profile"}"#,
+            ),
+            (
+                json!({"cwd":null, "yoloMode":null}),
+                r#"{"id":"child","name":"Lead (branch)","account_key":"account","cwd":null,"model":"model","yolo_mode":null,"workspace_mode":null,"profile_id":null}"#,
+            ),
+        ] {
+            let old: crate::generated::CreateLeadRequest =
+                serde_json::from_str(historical_wire).unwrap();
+            let typed =
+                branch_draft_request(&source, "child".into(), "account".into(), "model").unwrap();
+            assert_eq!(
+                serde_json::to_value(old).unwrap(),
+                serde_json::to_value(typed).unwrap()
+            );
+        }
+    }
 
     const HISTORY_TURNS: usize = 100;
     const TURN_BODY_BYTES: usize = 4096;

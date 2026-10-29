@@ -130,14 +130,14 @@ fn next_turn_signature(request: &Conversation, request_id: &str) -> String {
     });
     for (field, value) in [
         ("model", request.model.as_ref().map(|value| json!(value))),
-        ("effort", request.effort.as_ref().map(|value| json!(value))),
+        ("effort", request.effort.nested().map(|value| json!(value))),
         (
             "fast_mode",
             request.fast_mode.as_ref().map(|value| json!(value)),
         ),
         (
             "daybreak_enabled",
-            request.daybreak_enabled.as_ref().map(|value| json!(value)),
+            request.daybreak_enabled.value().map(|value| json!(value)),
         ),
         (
             "expected_account_key",
@@ -156,10 +156,47 @@ fn permissions_signature(request: &Conversation) -> String {
         "operation":AgentMutation::Permissions.operation(), "agent":request.id,
         "yolo":request.yolo_mode, "account":request.expected_account,
         "cwd":request.cwd, "model":request.model,
-        "effort":[request.effort_present, request.effort],
-        "fastMode":request.fast_mode, "daybreak":request.daybreak_enabled,
+        "effort":[request.effort.is_present(), request.effort.nested()],
+        "fastMode":request.fast_mode, "daybreak":request.daybreak_enabled.value(),
         "excluded":request.excluded,
     }))
+}
+
+/// A nullable setting retains wire presence without permitting contradictory flags.
+#[derive(Clone, Debug)]
+pub enum NullableSetting<T> {
+    Missing,
+    Null,
+    Value(T),
+}
+
+impl<T> From<Option<Option<T>>> for NullableSetting<T> {
+    fn from(value: Option<Option<T>>) -> Self {
+        match value {
+            None => Self::Missing,
+            Some(None) => Self::Null,
+            Some(Some(value)) => Self::Value(value),
+        }
+    }
+}
+
+impl<T> NullableSetting<T> {
+    fn is_present(&self) -> bool {
+        !matches!(self, Self::Missing)
+    }
+    fn value(&self) -> Option<&T> {
+        match self {
+            Self::Value(value) => Some(value),
+            _ => None,
+        }
+    }
+    fn nested(&self) -> Option<Option<&T>> {
+        match self {
+            Self::Missing => None,
+            Self::Null => Some(None),
+            Self::Value(value) => Some(Some(value)),
+        }
+    }
 }
 
 pub struct Conversation {
@@ -169,13 +206,9 @@ pub struct Conversation {
     pub cwd: Option<String>,
     pub yolo_mode: Option<bool>,
     pub model: Option<String>,
-    pub model_present: bool,
-    pub effort: Option<Option<String>>,
-    pub effort_present: bool,
+    pub effort: NullableSetting<String>,
     pub fast_mode: Option<bool>,
-    pub fast_mode_present: bool,
-    pub daybreak_enabled: Option<bool>,
-    pub daybreak_present: bool,
+    pub daybreak_enabled: NullableSetting<bool>,
     pub next_turn: Option<Option<bool>>,
     pub request_id: Option<Option<String>>,
     pub mode_settings: bool,
@@ -1708,13 +1741,6 @@ pub async fn conversation(
     request: Conversation,
 ) -> Result<Value, OperationError> {
     let validate = std::sync::Arc::clone(&context.validate);
-    if (request.model_present && request.model.is_none())
-        || (request.fast_mode_present && request.fast_mode.is_none())
-    {
-        return Err(OperationError::Invalid(
-            "Model must be available and fast_mode must be a boolean",
-        ));
-    }
     if request.worker_settings {
         let id = request.id.clone();
         let read_validate = std::sync::Arc::clone(&validate);
@@ -1877,9 +1903,9 @@ pub async fn conversation(
     if request.cwd.is_none()
         && request.yolo_mode.is_none()
         && request.model.is_none()
-        && request.effort.is_none()
+        && !request.effort.is_present()
         && request.fast_mode.is_none()
-        && request.daybreak_enabled.is_none()
+        && request.daybreak_enabled.value().is_none()
         && request.next_turn.flatten().is_none()
         && !request.worker_settings
     {
@@ -1987,17 +2013,13 @@ pub async fn conversation(
     let provider_changed =
         initial.get("provider").and_then(Value::as_str) != Some(provider.as_str());
     let execution_requested = request.model.is_some()
-        || request.model_present
-        || request.effort.is_some()
-        || request.effort_present
+        || request.effort.is_present()
         || request.fast_mode.is_some()
-        || request.fast_mode_present
-        || request.daybreak_enabled.is_some()
-        || request.daybreak_present;
+        || request.daybreak_enabled.is_present();
     let catalog_requested = request.model.is_some()
-        || request.effort.as_ref().is_some_and(Option::is_some)
+        || request.effort.value().is_some()
         || request.fast_mode.is_some()
-        || request.daybreak_enabled.is_some();
+        || request.daybreak_enabled.value().is_some();
     let base_pending = initial
         .get("pendingSettings")
         .filter(|_| {
@@ -2023,8 +2045,8 @@ pub async fn conversation(
                 .flatten()
         })
         .unwrap_or(crate::provider_adapter::default_model(identity.provider));
-    let effort = if request.effort_present {
-        request.effort.as_ref().and_then(Option::as_deref)
+    let effort = if request.effort.is_present() {
+        request.effort.value().map(String::as_str)
     } else {
         (!provider_changed)
             .then(|| base_pending.get("effort").and_then(Value::as_str))
@@ -2050,6 +2072,8 @@ pub async fn conversation(
         .unwrap_or(false);
     let daybreak = request
         .daybreak_enabled
+        .value()
+        .copied()
         .or_else(|| {
             (!provider_changed)
                 .then(|| base_pending.get("daybreakEnabled").and_then(Value::as_bool))
@@ -2071,7 +2095,7 @@ pub async fn conversation(
                 ))?
                 .resolve(&account, &identity, model, effort, fast_mode, daybreak)?,
         )
-    } else if request.effort_present {
+    } else if request.effort.is_present() {
         Some(ExecutionSettings {
             model: model.to_owned(),
             effort: None,
@@ -3145,6 +3169,55 @@ mod tests {
     use crate::host_worker_create::CreationCatalog as _;
 
     #[test]
+    fn conversation_signatures_preserve_nullable_setting_identity() {
+        for effort in [None, Some(None), Some(Some("high".to_owned()))] {
+            for daybreak in [None, Some(None), Some(Some(true))] {
+                let request = Conversation {
+                    id: "agent".into(),
+                    expected_account: Some("account".into()),
+                    excluded: None,
+                    cwd: None,
+                    yolo_mode: Some(true),
+                    model: None,
+                    effort: effort.clone().into(),
+                    fast_mode: None,
+                    daybreak_enabled: daybreak.into(),
+                    next_turn: Some(Some(true)),
+                    request_id: Some(Some("request".into())),
+                    mode_settings: false,
+                    mode_limit: None,
+                    mode_revision: None,
+                    mode_request_id: None,
+                    worker_settings: false,
+                    worker_defaults: None,
+                    review_defaults: None,
+                    non_defaults: true,
+                };
+                let expected_permissions = json!({
+                    "operation": AgentMutation::Permissions.operation(), "agent":"agent",
+                    "yolo":true, "account":"account", "cwd":null, "model":null,
+                    "effort":[effort.is_some(), effort], "fastMode":null, "daybreak":daybreak.flatten(), "excluded":null,
+                });
+                assert_eq!(
+                    permissions_signature(&request),
+                    crate::event_write::request_signature(&expected_permissions)
+                );
+                let mut expected_next = json!({"operation":AgentMutation::NextTurn.operation(), "agent":"agent", "id":"agent", "next_turn":true, "request_id":"request", "expected_account_key":"account"});
+                if let Some(value) = effort.as_ref() {
+                    expected_next["effort"] = json!(value);
+                }
+                if let Some(value) = daybreak.flatten() {
+                    expected_next["daybreak_enabled"] = json!(value);
+                }
+                assert_eq!(
+                    next_turn_signature(&request, "request"),
+                    crate::event_write::request_signature(&expected_next)
+                );
+            }
+        }
+    }
+
+    #[test]
     fn concurrency_reply_keeps_dispatch_bytes() {
         let reply = ConcurrencyReply {
             id: "agent".into(),
@@ -3227,13 +3300,9 @@ mod tests {
             cwd: None,
             yolo_mode: yolo,
             model: model.map(str::to_owned),
-            model_present: model.is_some(),
-            effort: None,
-            effort_present: false,
+            effort: NullableSetting::Missing,
             fast_mode: None,
-            fast_mode_present: false,
-            daybreak_enabled: None,
-            daybreak_present: false,
+            daybreak_enabled: NullableSetting::Missing,
             next_turn: Some(Some(model.is_some())),
             request_id: Some(Some(request_id.into())),
             mode_settings: false,
@@ -4233,13 +4302,9 @@ mod tests {
             cwd: None,
             yolo_mode: None,
             model: None,
-            model_present: false,
-            effort: None,
-            effort_present: false,
+            effort: NullableSetting::Missing,
             fast_mode: None,
-            fast_mode_present: false,
-            daybreak_enabled: None,
-            daybreak_present: false,
+            daybreak_enabled: NullableSetting::Missing,
             next_turn: None,
             request_id: None,
             mode_settings: false,

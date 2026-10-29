@@ -862,14 +862,19 @@ record_newtype!(
     key = PayloadId,
     query = None
 );
-record_newtype!(
-    CheckpointRecord,
-    String,
-    table = "runtime_checkpoints",
-    schema = "PersistedCheckpointRecord",
-    key = PayloadId,
-    query = JsonAgent
-);
+pub use studio_runtime_schema::checkpoint_record::CheckpointRecord;
+impl JsonRecord for CheckpointRecord {
+    type Id = String;
+    const TABLE: &'static str = "runtime_checkpoints";
+    const SCHEMA: &'static str = "PersistedCheckpointRecord";
+    const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
+    const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::JsonAgent;
+    const TYPED_SHAPE: bool = true;
+    const DIRECT_TYPED_DECODE: bool = true;
+    fn record_key(&self) -> Option<&Self::Id> {
+        Some(self.id())
+    }
+}
 record_newtype!(
     MonitorRecord,
     String,
