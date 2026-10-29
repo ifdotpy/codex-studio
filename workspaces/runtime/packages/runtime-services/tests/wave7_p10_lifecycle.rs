@@ -993,6 +993,9 @@ fn assert_records(store: &RuntimeStore, case: &Value) {
         if table == "runtime_agents" {
             for row in expected.as_array_mut().expect("expected agent rows") {
                 row["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
+                if row.get("accountKey").is_none() {
+                    row["accountKey"] = json!("default");
+                }
                 use_current_ticket_shape(row);
             }
             for rows in [&mut actual, &mut expected] {
@@ -1043,6 +1046,9 @@ fn assert_records(store: &RuntimeStore, case: &Value) {
             let mut payload: Value = serde_json::from_str(row[2].as_str().expect("agent payload"))
                 .expect("frozen agent JSON");
             payload["value"]["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
+            if payload["value"].get("accountKey").is_none() {
+                payload["value"]["accountKey"] = json!("default");
+            }
             row[2] = json!(payload.to_string());
         }
         *row = json!([row[0], row[1], row[2], row[3]]);

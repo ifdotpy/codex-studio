@@ -2230,7 +2230,7 @@ mod tests {
         let (_directory, store) = voice_outbox_fixture().await;
         store.transaction_with_error(|tx| -> Result<(), VoiceProviderError> {
             tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.accountKey',NULL) WHERE id='agent'", [])?;
-            assert!(matches!(capture_delete_sessions(tx, "agent"), Err(VoiceProviderError::ContextUnavailable)));
+            assert!(matches!(capture_delete_sessions(tx, "agent"), Err(VoiceProviderError::Store(_))));
             tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.accountKey','account','$.threadId',NULL) WHERE id='agent'", [])?;
             assert!(capture_delete_sessions(tx, "agent")?.is_empty());
             Ok(())

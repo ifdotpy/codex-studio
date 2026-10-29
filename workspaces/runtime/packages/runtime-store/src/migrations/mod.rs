@@ -13,6 +13,7 @@ pub(crate) mod m2026_10_27_cost_index;
 mod m2026_10_27_retired_sqlite;
 mod m2026_10_27_scheduler_indexes;
 mod m2026_10_28_agent_account;
+mod m2026_10_29_agent_authorizations;
 mod m2026_10_28_agent_fields;
 mod m2026_10_28_group_revision;
 mod m2026_10_28_receipts_account_worker;
@@ -510,6 +511,16 @@ static CATALOG: &[&dyn Migration] = &[
     &ReceiptMigration {
         family: &m2026_10_28_receipts_drop_old_tables::Family,
         sources: &[],
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-29-agent-authorizations",
+            introduced: OCTOBER_29,
+            target: MigrationTarget::Canvas,
+            supported_source: "Agent and pending recovery authorization snapshots before typed identities",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_29_agent_authorizations::apply(c.transaction),
     },
     &SqlMigration {
         definition: MigrationDefinition {

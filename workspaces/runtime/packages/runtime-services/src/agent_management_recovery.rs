@@ -172,7 +172,11 @@ impl AuthorizedRecoveryRequest {
         };
         match authorize(tx, &self.lead, target) {
             Ok((lead, worker)) => {
-                Ok(stable(&lead) == stable(&self.lead) && stable(&worker) == stable(&self.target))
+                let saved_lead = AgentRecord::from_value(stable(&self.lead)).map_err(|_| Error::Stale)?;
+                let saved_worker = AgentRecord::from_value(stable(&self.target)).map_err(|_| Error::Stale)?;
+                let current_lead = AgentRecord::from_value(stable(&lead)).map_err(|_| Error::Stale)?;
+                let current_worker = AgentRecord::from_value(stable(&worker)).map_err(|_| Error::Stale)?;
+                Ok(current_lead == saved_lead && current_worker == saved_worker)
             }
             Err(Error::Stale | Error::Invalid(_)) => Ok(false),
             Err(error) => Err(error),

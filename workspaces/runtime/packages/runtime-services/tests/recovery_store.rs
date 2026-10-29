@@ -664,7 +664,11 @@ async fn legacy_start_absence_matches_python_writes_and_visible_wait() {
                 .expect("record")
                 .remove("startRecoveryCheck");
         }
-        assert_eq!(after, case["after"], "{}", case["name"]);
+        let mut expected = case["after"].clone();
+        if expected.get("turnId").is_some_and(serde_json::Value::is_null) {
+            expected.as_object_mut().expect("record").remove("turnId");
+        }
+        assert_eq!(after, expected, "{}", case["name"]);
         assert_eq!(
             json!(*stopped.lock().expect("stopped witness")),
             case["stopped"],
