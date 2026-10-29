@@ -1212,7 +1212,7 @@ mod native_review_preflight_tests {
             .expect("open store");
         let record = AgentRecord::from_value(json!({
             "id":"vm-local-archive-failure", "rootId":"vm-local-archive-failure",
-            "epoch":1, "status":"starting", "provider":"codex", "executionMode":"vm",
+            "epoch":1, "status":"starting", "provider":"codex", "executionMode":"vm", "accountKey":"default",
             "isLead":true, "autoWake":true, "cwd":missing_source,
             "startAttempt":{"id":"attempt-local-archive-failure"}
         }))
@@ -1395,7 +1395,7 @@ mod native_review_preflight_tests {
                 .expect("open store"),
         );
         let parent = AgentRecord::from_value(json!({
-            "id":"vm-parent", "rootId":"vm-parent", "epoch":2, "status":"idle",
+            "id":"vm-parent", "rootId":"vm-parent", "epoch":2, "status":"idle", "accountKey":"default",
             "provider":"codex", "executionMode":"vm", "isLead":true, "autoWake":true,
             "cwd":"/home/studio/project", "layrReady":true,
             "layrProjectId":"project-key", "layrLine":"main"
@@ -1403,7 +1403,7 @@ mod native_review_preflight_tests {
         .expect("valid parent");
         let reviewer = AgentRecord::from_value(json!({
             "id":"vm-reviewer", "rootId":"vm-parent", "parentId":"vm-parent",
-            "epoch":4, "status":"starting", "provider":"codex", "executionMode":"vm",
+            "epoch":4, "status":"starting", "provider":"codex", "executionMode":"vm", "accountKey":"default",
             "isLead":false, "role":"reviewer", "autoWake":true, "layrReady":false,
             "layrSubpath":"review", "layrBaseState":"base-1", "cwd":"/host/project",
             "threadId":"thread-review",
@@ -1497,7 +1497,7 @@ mod native_review_preflight_tests {
                 .expect("open store"),
         );
         let record = AgentRecord::from_value(json!({
-            "id":"vm-unknown", "rootId":"vm-unknown", "epoch":1, "status":"starting",
+            "id":"vm-unknown", "rootId":"vm-unknown", "epoch":1, "status":"starting", "accountKey":"default",
             "provider":"codex", "executionMode":"vm", "isLead":true, "autoWake":true,
             "cwd":source, "hostProjectPath":source, "threadId":"thread-unknown",
             "startAttempt":{"id":"attempt-unknown"}
