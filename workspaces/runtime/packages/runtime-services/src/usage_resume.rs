@@ -483,12 +483,7 @@ fn tick_before_observation(s: &Snapshot, now: f64) -> Result<Option<Decision>> {
     {
         return Ok(Some(cancel(s, r, STOPPED, now)));
     }
-    if ["threadId", "epoch"]
-        .iter()
-        .any(|k| s.agent.get(*k) != r.get(*k))
-        || s.agent.get("lastCompletedTurn") != r.get("turnId")
-        || !s.agent_view().native_failure_hold.unwrap_or(false)
-    {
+    if !s.record_matches_agent_identity() || !s.agent_view().native_failure_hold.unwrap_or(false) {
         return Ok(Some(cancel(s, r, CHANGED, now)));
     }
     if !s.claims_valid() {

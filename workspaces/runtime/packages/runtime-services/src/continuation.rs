@@ -147,14 +147,33 @@ impl Snapshot {
             .map_or(&[], |a| a.as_slice())
     }
     pub(crate) fn record_id(&self) -> Option<&str> {
-        self.typed.0.record.as_ref().map(|r| match r {
-            ContinuationRecord::Usage(r) => r.id.as_str(),
-            ContinuationRecord::Capacity(r) => r.id.as_str(),
-            ContinuationRecord::Auth(r) => r.id.as_str(),
-        })
+        self.typed.0.record.as_ref().map(ContinuationRecord::id)
     }
     pub(crate) fn checked_record(&self) -> Option<&ContinuationRecord> {
         self.typed.0.record.as_ref()
+    }
+    pub(crate) fn record_matches_agent_identity(&self) -> bool {
+        match self.checked_record() {
+            Some(ContinuationRecord::Usage(r)) => {
+                self.agent.get("threadId").and_then(Value::as_str) == Some(r.thread_id.as_str())
+                    && self.agent.get("epoch").and_then(Value::as_number) == Some(r.epoch.number())
+                    && self.agent.get("lastCompletedTurn").and_then(Value::as_str)
+                        == Some(r.turn_id.as_str())
+            }
+            Some(ContinuationRecord::Capacity(r)) => {
+                self.agent.get("threadId").and_then(Value::as_str) == Some(r.thread_id.as_str())
+                    && self.agent.get("epoch").and_then(Value::as_number) == Some(r.epoch.number())
+                    && self.agent.get("lastCompletedTurn").and_then(Value::as_str)
+                        == Some(r.turn_id.as_str())
+            }
+            Some(ContinuationRecord::Auth(_)) => self.record.as_ref().is_some_and(|r| {
+                ["threadId", "epoch"]
+                    .iter()
+                    .all(|k| self.agent.get(*k) == r.get(*k))
+                    && self.agent.get("lastCompletedTurn") == r.get("turnId")
+            }),
+            None => false,
+        }
     }
     pub(crate) fn record_account(&self) -> Option<&str> {
         self.typed.0.record.as_ref().map(|r| match r {
@@ -246,12 +265,12 @@ impl Snapshot {
     // Pending settings are merged into the raw agent before a capacity claim.
     // Those legacy settings are open JSON, so check the updated identity directly.
     pub(crate) fn current(&self, key: &str) -> bool {
-        self.record.as_ref().is_some_and(|r| {
+        self.record_id().is_some_and(|id| {
             self.agent
                 .get(key)
                 .and_then(|a| a.get("id"))
                 .and_then(Value::as_str)
-                == r.get("id").and_then(Value::as_str)
+                == Some(id)
         })
     }
     pub(crate) fn claims_valid(&self) -> bool {

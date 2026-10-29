@@ -84,6 +84,23 @@ fn continuation_event_identity_keeps_exact_epoch_evidence() {
 }
 
 #[test]
+fn usage_identity_keeps_exact_epoch_evidence() {
+    let records = cases();
+    let mut input = records
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|case| case["name"] == "usage-auth-proof-899.0")
+        .unwrap()["input"]
+        .clone();
+    input["record"]["epoch"] = json!(1.0);
+    let snapshot = Snapshot::from_records(input).unwrap();
+    let decision =
+        studio_runtime_services::usage_resume::tick_without_observation(&snapshot, 1000.0).unwrap();
+    assert_eq!(decision.record.unwrap()["status"], "cancelled");
+}
+
+#[test]
 fn snapshot_rejects_object_encoded_wire_enums() {
     let records = cases();
     for family in ["usage", "capacity"] {

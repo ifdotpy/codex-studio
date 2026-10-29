@@ -22,6 +22,9 @@ impl SafeInteger {
     pub fn as_u64(&self) -> Option<u64> {
         self.0.number().as_u64()
     }
+    pub fn number(&self) -> &serde_json::Number {
+        self.0.number()
+    }
 }
 impl NonnegativeInteger {
     pub fn get(&self) -> f64 {
