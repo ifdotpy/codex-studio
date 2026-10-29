@@ -115,25 +115,51 @@ pub fn local(href: &str) -> Result<Value, String> {
     }
     Ok(value)
 }
+#[derive(Default, serde::Deserialize)]
+struct LinkValue<'a> {
+    #[serde(borrow)]
+    value: Option<&'a str>,
+}
+#[derive(Default, serde::Deserialize)]
+struct LinkPath<'a> {
+    #[serde(borrow)]
+    path: Option<&'a str>,
+}
+#[derive(Default, serde::Deserialize)]
+struct LinkBase<'a> {
+    #[serde(borrow)]
+    base: Option<&'a str>,
+}
+fn project<'a, T: serde::Deserialize<'a> + Default>(value: &'a Value) -> T {
+    if value.is_object() {
+        T::deserialize(value).unwrap_or_default()
+    } else {
+        T::default()
+    }
+}
 fn execute(request: &Request) -> Result<Value, String> {
     match request.method.as_str() {
         "file_link.local" => local(
-            request.params["value"]
-                .as_str()
+            project::<LinkValue<'_>>(&request.params)
+                .value
                 .ok_or("A file link is required.")?,
         ),
         "file_link.relative_location" => Ok(json!(
             patterns().relative.is_match(bounded(
-                request.params["value"]
-                    .as_str()
+                project::<LinkValue<'_>>(&request.params)
+                    .value
                     .ok_or("A file link is required.")?
             )?)
         )),
         "file_link.relative_to_document" => {
             let mut target = request.params["target"].clone();
-            let path = bounded(target["path"].as_str().ok_or("A file path is required.")?)?;
-            if let Some(base) = request.params["base"]
-                .as_str()
+            let path = bounded(
+                project::<LinkPath<'_>>(&target)
+                    .path
+                    .ok_or("A file path is required.")?,
+            )?;
+            if let Some(base) = project::<LinkBase<'_>>(&request.params)
+                .base
                 .filter(|_| !path.starts_with('/'))
             {
                 let base = bounded(base)?;
@@ -157,6 +183,29 @@ pub fn dispatch(request: &Request) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn link_inputs_preserve_target_extensions_and_path_first_errors() {
+        let request = |params| Request {
+            id: "fixture".into(),
+            method: "file_link.relative_to_document".into(),
+            params,
+        };
+        let reply = dispatch(&request(
+            json!({"target":{"path":"a.md","future":{"value":null}},"base":"/dir/file.md"}),
+        ));
+        assert_eq!(
+            reply.result.unwrap(),
+            json!({"path":"/dir/a.md","future":{"value":null}})
+        );
+        let reply = dispatch(&request(
+            json!({"target":{"path":null},"base":"x".repeat(20000)}),
+        ));
+        assert_eq!(reply.error.unwrap().message, "A file path is required.");
+        let reply = dispatch(&request(
+            json!({"target":{"path":"/absolute"},"base":"x".repeat(20000)}),
+        ));
+        assert!(reply.error.is_none());
+    }
     #[test]
     fn synchronous_link_commands_reject_unbounded_input() {
         let long = "x".repeat(16385);
