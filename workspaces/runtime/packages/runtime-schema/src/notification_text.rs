@@ -53,13 +53,8 @@ pub fn complaint_ids(text: &str) -> Option<Vec<String>> {
 }
 
 #[derive(Deserialize)]
-enum ProgressImportance {
-    #[serde(rename = "progress")]
-    Progress,
-}
-#[derive(Deserialize)]
 struct Progress {
-    importance: ProgressImportance,
+    importance: String,
     sender: String,
     room: String,
     progress_key: String,
@@ -68,13 +63,13 @@ struct Progress {
 
 pub fn progress_update(text: &str) -> Option<((String, String, String), u64)> {
     let Progress {
-        importance: ProgressImportance::Progress,
+        importance,
         sender,
         room,
         progress_key,
         progress_version,
     } = parse(text)?;
-    if sender.is_empty() || room.is_empty() || progress_key.is_empty() {
+    if importance != "progress" || sender.is_empty() || room.is_empty() || progress_key.is_empty() {
         return None;
     }
     Some(((sender, room, progress_key), progress_version))
@@ -176,6 +171,7 @@ mod tests {
             r#"{"complaints":[["c"]]}"#.to_owned(),
             r#"{"complaints":[]}"#.to_owned(),
             r#"{"importance":"progress","sender":"s","room":"r","progress_key":"k","progress_version":0}"#.to_owned(),
+            r#"{"importance":{"progress":null},"sender":"s","room":"r","progress_key":"k","progress_version":1}"#.to_owned(),
             r#"{"importance":"progress","sender":"s","room":"r","progress_key":"k","progress_version":1.0}"#.to_owned(),
             r#"{"importance":"progress","sender":"s","room":"r","progress_key":"k","progress_version":18446744073709551615}"#.to_owned(),
             r#"{"importance":"progress","sender":"s","room":"r","progress_key":"k","progress_version":-1}"#.to_owned(),
