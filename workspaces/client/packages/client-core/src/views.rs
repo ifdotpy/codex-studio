@@ -182,7 +182,10 @@ impl Views {
                     .as_ref()
                     .and_then(TextField::text)
                     .is_some_and(|path| flow.resume(path)),
-                _ => false,
+                ViewCommand::Unsubscribe(_)
+                | ViewCommand::Next(_)
+                | ViewCommand::Subscribe(_)
+                | ViewCommand::Unknown => false,
             });
             return if accepted {
                 Response::success(request.id.clone(), json!({"accepted":true}))
@@ -242,7 +245,7 @@ impl Views {
                 Ok(flow) => Some(Arc::new(flow)),
                 Err(error) => return Response::failure(request.id.clone(), "event_credit", error),
             },
-            _ => {
+            FlowControl::Enabled(_) | FlowControl::Other(_) => {
                 return Response::failure(
                     request.id.clone(),
                     "invalid_subscription",
@@ -332,7 +335,16 @@ impl Views {
                 } else if topic == "sse" {
                     crate::events::run_controlled(id, params, backend, output, flow).await;
                 } else {
-                    run(id, topic, workspace, scope, backend, store, changes, output).await;
+                    run(
+                        id,
+                        topic,
+                        (workspace, scope),
+                        backend,
+                        store,
+                        changes,
+                        output,
+                    )
+                    .await;
                 }
             }),
         );
@@ -487,13 +499,13 @@ impl Patcher {
 async fn run(
     id: String,
     topic: String,
-    mut workspace: String,
-    scope: String,
+    projection: (String, String),
     backend: Arc<Result<Backend, String>>,
     store: StoreSender,
     mut changes: watch::Receiver<u64>,
     output: mpsc::Sender<Value>,
 ) {
+    let (mut workspace, scope) = projection;
     let mut previous = None;
     let mut patcher = Patcher::default();
     let scope = scope.as_str();
@@ -706,8 +718,7 @@ mod flow_tests {
         let task = tokio::spawn(run(
             "one".into(),
             "projection".into(),
-            workspace,
-            "state".into(),
+            (workspace, "state".into()),
             Arc::new(Err("No backend".into())),
             sender.clone(),
             changes,
@@ -718,7 +729,7 @@ mod flow_tests {
         let second = received.recv().await.unwrap();
         assert_eq!(second["error"]["code"], "backend_config");
         task.abort();
-        let _ = task.await;
+        drop(task.await);
         drop(sender);
         worker.join().unwrap();
     }

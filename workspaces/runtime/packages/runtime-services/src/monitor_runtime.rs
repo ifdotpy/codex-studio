@@ -325,7 +325,7 @@ pub fn snapshot(
         .ok_or(MonitorError::Refused("Unknown agent"))?;
     let actor_value =
         serde_json::to_value(&actor).map_err(studio_runtime_store::StoreError::from)?;
-    let snapshot = MonitorSnapshot::checked_stored(row, actor_value)?;
+    let snapshot = MonitorSnapshot::checked_stored(&row, actor_value)?;
     Ok((snapshot, actor))
 }
 
@@ -446,7 +446,7 @@ pub async fn answer_approval(
                     let rule = studio_runtime_store::RulesRepository::get(tx, rule_id)?
                         .ok_or(MonitorError::Refused("Unknown monitor rule"))?;
                     let rule_snapshot =
-                        crate::rules_engine::RuleSnapshot::from_stored(rule, actor.value())
+                        crate::rules_engine::RuleSnapshot::from_stored(&rule, actor.value())
                             .map_err(crate::rules_tick::RulesTickError::from)?;
                     let check = rule_snapshot.check();
                     if check.monitor_id != monitor_id {
@@ -1467,7 +1467,7 @@ pub async fn stored_create_result(
                 .ok_or(MonitorError::Refused("Invalid monitor identity"))?;
             match MonitorsRepository::get(tx, id)? {
                 Some(previous) if policy::same_request(&previous.value(), &record) => {
-                    Ok(Some(previous.value().clone()))
+                    Ok(Some(previous.value()))
                 }
                 Some(_) => Err(MonitorError::Refused(
                     "This monitor request id has different content",
@@ -1512,7 +1512,7 @@ pub fn create_in_transaction(
                 "This monitor request id has different content",
             ));
         }
-        return Ok(previous.value().clone());
+        return Ok(previous.value());
     }
     if actor.epoch != epoch || actor.extra.get("autoWake") != Some(&json!(true)) {
         return Err(MonitorError::Refused(
@@ -1619,7 +1619,7 @@ pub fn restart_in_transaction(
                 "This restart request has different content",
             ));
         }
-        return Ok(previous.value().clone());
+        return Ok(previous.value());
     }
     let (source, _) = snapshot(tx, id)?;
     let old = source.record();

@@ -496,8 +496,7 @@ fn authorize_recovered_monitor_cancel(
         cancel_requested: bool,
         reattached_connection_id: String,
     }
-    let Ok(monitor) = serde_json::from_value::<RecoveredCancelMonitor>(record.value().clone())
-    else {
+    let Ok(monitor) = serde_json::from_value::<RecoveredCancelMonitor>(record.value()) else {
         return Ok(false);
     };
     Ok(monitor.agent == actor.agent

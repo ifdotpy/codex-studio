@@ -647,7 +647,7 @@ impl RetainedMonitorPort {
                     return Err(MonitorError::Refused("Monitor owner changed"));
                 }
                 Ok((
-                    saved.value().clone(),
+                    saved.value(),
                     serde_json::to_value(agent).map_err(studio_runtime_store::StoreError::from)?,
                 ))
             })
@@ -833,7 +833,7 @@ impl RetainedMonitorPort {
                     .ok_or(MonitorError::Refused("Rule agent is unavailable"))?;
                 let check_snapshot =
                     studio_runtime_services::rules_engine::RuleSnapshot::from_records(
-                        rule.value().clone(),
+                        rule.value(),
                         actor.value(),
                     )
                     .map_err(|_| MonitorError::Refused("Rule check record is invalid"))?;
@@ -899,7 +899,7 @@ impl RetainedMonitorPort {
                         "Rule monitor identity has different content",
                     ));
                 }
-                Ok(saved.value().clone())
+                Ok(saved.value())
             })
             .await
             .map_err(|error: MonitorError| error.to_string())
@@ -947,7 +947,7 @@ impl RetainedMonitorPort {
             .store
             .read_async("runtime-server/rule-monitor-admission", move |db| {
                 MonitorsRepository::get(db, &monitor_id)?
-                    .map(|record| record.value().clone())
+                    .map(|record| record.value())
                     .ok_or(MonitorError::Refused("Rule monitor disappeared"))
             })
             .await
@@ -1059,7 +1059,7 @@ impl RetainedMonitorPort {
                 };
                 let (snapshot, _) =
                     studio_runtime_services::monitor_runtime::snapshot(tx, &monitor_id)?;
-                Ok(Some((record.value().clone(), snapshot)))
+                Ok(Some((record.value(), snapshot)))
             })
             .await;
         let Ok(Some((record, snapshot))) = loaded else {
@@ -3266,7 +3266,6 @@ mod tests {
                 .expect("read")
                 .expect("watch")
                 .value()
-                .clone()
         };
         if generation == 2 {
             let watch = read(Arc::clone(&store)).await;
@@ -3423,7 +3422,6 @@ mod tests {
                 .expect("read")
                 .expect("watch")
                 .value()
-                .clone()
         };
         let exits = |store: Arc<RuntimeStore>| async move {
             store
@@ -4107,7 +4105,6 @@ mod tests {
             .expect("read rule")
             .expect("rule")
             .value()
-            .clone()
     }
 
     async fn settled_rule(store: &RuntimeStore) -> Value {

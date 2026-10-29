@@ -563,7 +563,9 @@ impl ExecutionHistoryRepository {
         run.thread_id = match thread {
             Value::String(value) => Field::Value(value),
             Value::Null => Field::Null,
-            _ => return Err(invalid(&run.id)),
+            Value::Bool(_) | Value::Number(_) | Value::Array(_) | Value::Object(_) => {
+                return Err(invalid(&run.id));
+            }
         };
         if run.first_attempt_id.value().is_none() {
             run.first_attempt_id = Field::Value(id.to_owned());

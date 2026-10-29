@@ -331,7 +331,7 @@ pub async fn enqueue_probe(
             let Some(record) = MonitorsRepository::get(tx, &id)? else {
                 return Err(MonitorError::Refused("Unknown command watch"));
             };
-            let mut value = record.value().clone();
+            let mut value = record.value();
             if value.get("operation")
                 != Some(&serde_json::to_value(&operation).unwrap_or(Value::Null))
             {
@@ -406,7 +406,7 @@ pub fn enqueue_exit_in_transaction(
     struct StoredOperation {
         operation: Operation,
     }
-    let mut value = record.value().clone();
+    let mut value = record.value();
     if !serde_json::from_str::<StoredOperation>(&raw)
         .is_ok_and(|stored| stored.operation == *operation)
     {
@@ -494,7 +494,7 @@ pub async fn acknowledge(store: &RuntimeStore, delivery: &Delivery) -> Result<()
             let Some(record) = MonitorsRepository::get(tx, &delivery.id)? else {
                 return Err(MonitorError::Refused("Unknown command watch"));
             };
-            let mut value = record.value().clone();
+            let mut value = record.value();
             if value["streamAckCursor"].as_str() == Some(&delivery.cursor) {
                 return Ok(());
             }

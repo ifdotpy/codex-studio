@@ -24,7 +24,6 @@ fn record(store: &RuntimeStore, id: &str) -> Value {
         .expect("monitor fixture")
         .expect("monitor fixture")
         .value()
-        .clone()
 }
 
 #[test]

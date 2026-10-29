@@ -39,7 +39,7 @@ pub(crate) async fn list(
 
     let output = records
         .into_iter()
-        .map(|rule| rule.value().clone())
+        .map(|rule| rule.value())
         .collect::<Vec<_>>();
     let response = json!({"rules": output});
     Ok(Json(super::generated_json::<crate::generated::RuleList>(
@@ -130,7 +130,7 @@ async fn update(
             validate_agent(agent.id().as_ref(), &agent_value)?;
             let old =
                 RulesRepository::get(connection, &prepare_rule_id).map_err(store_api_error)?;
-            let old_value = old.as_ref().map(|old| old.value().clone());
+            let old_value = old.as_ref().map(|old| old.value());
             let path = if matches!(prepare_action, RuleAction::Resume { .. })
                 && old_value.as_ref().and_then(|value| string(value, "kind")) == Some("file")
             {
@@ -166,7 +166,7 @@ async fn update(
                 return Err(ApiError::new(StatusCode::CONFLICT, "Agent changed while updating its rule"));
             }
             let old = RulesRepository::get(transaction, &rule_id).map_err(store_api_error)?;
-            let old_value = old.as_ref().map(|old| old.value().clone());
+            let old_value = old.as_ref().map(|old| old.value());
             if old_value != prepared_old {
                 return Err(ApiError::new(StatusCode::CONFLICT, "Rule changed while applying this update"));
             }

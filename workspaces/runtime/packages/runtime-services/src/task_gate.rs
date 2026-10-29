@@ -557,8 +557,7 @@ mod tests {
             .transaction_with(move |tx| {
                 let mut monitor = MonitorsRepository::get(tx, &id)?
                     .expect("gate monitor exists")
-                    .value()
-                    .clone();
+                    .value();
                 monitor["status"] = json!("completed");
                 monitor["exitCode"] = json!(0);
                 settle(tx, &monitor, 4.0)

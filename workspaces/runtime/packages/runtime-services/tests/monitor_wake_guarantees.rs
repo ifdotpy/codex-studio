@@ -700,7 +700,6 @@ mod orphan {
             .expect("read")
             .expect("monitor")
             .value()
-            .clone()
     }
 
     #[tokio::test]

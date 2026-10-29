@@ -423,7 +423,6 @@ async fn missed_once_rule_is_atomic_durable_and_owner_can_resume_or_delete() {
             .expect("read rule")
             .expect("rule")
             .value()
-            .clone()
     };
     assert_eq!(read()["status"], "active", "event failure rolls back pause");
     assert!(

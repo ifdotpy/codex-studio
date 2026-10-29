@@ -67,7 +67,7 @@ async fn finder_view(
                 .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Unknown managed agent"))
         })
         .await?;
-    let record = agent.value().clone();
+    let record = agent.value();
     let state_dir = state.vm_state_dir.clone();
     let view = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/routes/catalog_agent",

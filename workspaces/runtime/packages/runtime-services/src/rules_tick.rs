@@ -466,7 +466,7 @@ pub fn event_in_transaction(
         if row.rule.agent.as_deref() != Some(agent.id().as_ref()) {
             continue;
         }
-        let snapshot = RuleSnapshot::from_stored(row.rule, agent.value())?;
+        let snapshot = RuleSnapshot::from_stored(&row.rule, agent.value())?;
         let decision = snapshot.event(event.kind, event.text, event.key, event.now)?;
         if decision.check.is_some() && !monitor_available {
             return Err(RulesTickError::MonitorUnavailable);
@@ -493,7 +493,7 @@ fn load_snapshot(
             id: rule.id().clone(),
         })?;
     let owner = owner(connection, agent_id)?.value();
-    Ok(RuleSnapshot::from_stored(rule, owner)?)
+    Ok(RuleSnapshot::from_stored(&rule, owner)?)
 }
 /// Decide one sampled rule against current rows: `None` when the sample is stale.
 fn decide(

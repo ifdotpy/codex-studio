@@ -49,15 +49,13 @@ fn rule(store: &RuntimeStore) -> Value {
         .expect("rule read")
         .expect("rule exists")
         .value()
-        .clone()
 }
 async fn change(store: &RuntimeStore, fields: Value) {
     store
         .transaction(move |tx| {
             let mut value = RulesRepository::get(tx, "rule")?
                 .expect("rule exists")
-                .value()
-                .clone();
+                .value();
             for (field, value_new) in fields.as_object().expect("changes") {
                 value[field] = value_new.clone();
             }
@@ -573,8 +571,7 @@ async fn cancelled_paused_check_settles_its_durable_launch_intent() {
         .transaction(move |tx| {
             let mut value = RulesRepository::get(tx, "rule")?
                 .expect("rule exists")
-                .value()
-                .clone();
+                .value();
             value["status"] = json!("paused");
             value["inFlight"] = json!(false);
             value["launchIntent"]["timeoutMs"] = json!(30_000);

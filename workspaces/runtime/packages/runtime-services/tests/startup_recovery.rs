@@ -44,8 +44,7 @@ fn complete_rows(store: &RuntimeStore, id: &str) -> Value {
     let monitor = MonitorsRepository::get(&connection, id)
         .expect("read monitor")
         .expect("monitor exists")
-        .value()
-        .clone();
+        .value();
     let requests = Table::<RequestRecord>::new(&connection)
         .list()
         .expect("read requests")

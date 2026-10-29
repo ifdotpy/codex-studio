@@ -58,7 +58,7 @@ async fn changes(
         .read_async("runtime-http/routes/workspace_views", move |transaction| {
             let actor = WorkspaceViewsRepository::agent(transaction, &actor_id)?
                 .ok_or_else(invalid_request)?;
-            let actor = actor.value().clone();
+            let actor = actor.value();
             if deleted(&actor) {
                 return Err(invalid_request());
             }
@@ -543,7 +543,7 @@ async fn task_output(
                 .ok_or_else(invalid_request)?;
             let agent =
                 WorkspaceViewsRepository::agent(connection, &owner)?.ok_or_else(invalid_request)?;
-            Ok::<_, ApiError>((task, agent.value().clone()))
+            Ok::<_, ApiError>((task, agent.value()))
         })
         .await?;
     let owner = agent["id"].as_str().ok_or_else(invalid_request)?.to_owned();

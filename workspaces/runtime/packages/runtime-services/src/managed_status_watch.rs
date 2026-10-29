@@ -1037,7 +1037,7 @@ pub async fn rules(
                                 .copied()
                                 .unwrap_or(false)
                     })
-                    .map(|rule| rule.value().clone())
+                    .map(|rule| rule.value())
                     .collect::<Vec<_>>();
                 Ok::<_, RulesServiceError>(json!({"rules": visible}))
             })
@@ -1066,8 +1066,7 @@ pub async fn rules(
                 checked_actor(connection, &read_actor, actor_epoch).map_err(status_to_rules)?;
             let saved_receipt =
                 read_rules_request(connection, &read_actor, &read_request_id, &read_signature)?;
-            let old =
-                RulesRepository::get(connection, &read_key)?.map(|record| record.value().clone());
+            let old = RulesRepository::get(connection, &read_key)?.map(|record| record.value());
             Ok::<_, RulesServiceError>((actor, old, saved_receipt))
         })
         .await?;
@@ -1158,7 +1157,7 @@ pub async fn rules(
             if actor.value() != prepared_actor.value() {
                 return Err(RulesServiceError::Stale);
             }
-            let old = RulesRepository::get(tx, &key)?.map(|record| record.value().clone());
+            let old = RulesRepository::get(tx, &key)?.map(|record| record.value());
             if old != old_before {
                 return Err(RulesServiceError::Invalid(
                     "The rule changed while it was being prepared",
@@ -1544,7 +1543,7 @@ fn save_rule(
 
 fn checked_rule(record: Value, actor: Value) -> Result<RuleRecord, RulesServiceError> {
     let rule = RuleRecord::from_value(record).map_err(|_| RulesServiceError::Invalid("rule"))?;
-    crate::rules_engine::RuleSnapshot::from_stored(rule.clone(), actor)?;
+    crate::rules_engine::RuleSnapshot::from_stored(&rule, actor)?;
     Ok(rule)
 }
 
