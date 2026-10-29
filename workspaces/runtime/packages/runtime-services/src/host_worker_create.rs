@@ -475,7 +475,7 @@ fn recheck_parent_epoch(
     if expected_epoch < 0
         || parent.epoch != expected_epoch
         || field(&parent, "deletedAt").is_some_and(|value| !value.is_null())
-        || field(&parent, "autoWake").and_then(Value::as_bool) == Some(false)
+        || parent.auto_wake == Some(false)
         || parent.root_id != draft.root_id
     {
         return Err(CreateError::IdentityChanged);
@@ -484,7 +484,7 @@ fn recheck_parent_epoch(
         .ok_or(CreateError::IdentityChanged)?;
     if field(&root, "isLead").and_then(Value::as_bool) != Some(true)
         || field(&root, "deletedAt").is_some_and(|value| !value.is_null())
-        || field(&root, "autoWake").and_then(Value::as_bool) == Some(false)
+        || root.auto_wake == Some(false)
         || field(&root, "concurrency").and_then(Value::as_i64) == Some(0)
     {
         return Err(CreateError::IdentityChanged);
@@ -511,7 +511,7 @@ fn recheck_record(transaction: &Transaction<'_>, draft: &AgentRecord) -> Result<
             return Err(CreateError::IdentityChanged);
         };
         if field(&parent, "deletedAt").is_some_and(|value| !value.is_null())
-            || field(&parent, "autoWake").and_then(Value::as_bool) == Some(false)
+            || parent.auto_wake == Some(false)
             || parent.root_id != draft.root_id
         {
             return Err(CreateError::IdentityChanged);
@@ -1163,6 +1163,16 @@ mod tests {
             )
             .expect("saved project after recheck");
         assert_eq!(before, after);
+    }
+
+    #[test]
+    fn worker_recheck_refuses_parent_with_auto_wake_disabled() {
+        let mut fixture = worker_draft_fixture("Named worker", "Do the task");
+        fixture.database.execute(
+            "UPDATE runtime_agents SET record=json_set(record,'$.autoWake',json('false')) WHERE id=?1",
+            [&fixture.parent_id.0],
+        ).expect("disable parent auto wake");
+        assert_worker_recheck_refuses_without_writes(&mut fixture);
     }
 
     #[test]

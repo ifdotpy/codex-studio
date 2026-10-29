@@ -123,30 +123,10 @@ fn counter(row: &contract::SourceReceipt) -> Result<Counter> {
 #[serde(rename_all = "camelCase")]
 struct SourceAgent {
     id: crate::records::AgentId,
-    #[serde(rename = "rootId")]
-    _root_id: crate::records::AgentId,
     epoch: i64,
-    #[serde(rename = "status")]
-    _status: crate::records::AgentStatus,
-    #[serde(rename = "titleJob")]
-    _title_job: Option<crate::records::StoredTitleJob>,
-    #[serde(rename = "startOutcomeHold")]
-    _start_outcome_hold: Option<crate::records::StoredStartOutcomeHold>,
-    #[serde(rename = "firedEvents", default)]
-    _fired_events: std::collections::BTreeSet<String>,
-    #[serde(rename = "nativeReviewThread")]
-    _native_review_thread: Option<crate::records::NativeReviewThread>,
-    #[serde(rename = "vmLaunch")]
-    _vm_launch: Option<crate::records::VmLaunch>,
-    #[serde(rename = "credentialCopy")]
-    _credential_copy: Option<crate::records::CredentialCopy>,
-    #[serde(rename = "vmAuthBootstrap")]
-    _vm_auth_bootstrap: Option<crate::records::VmAuthBootstrap>,
-    #[serde(rename = "nativeRelease")]
-    _native_release: Option<crate::records::NativeRelease>,
-    account_key: Option<serde_json::Value>,
-    thread_id: Option<serde_json::Value>,
-    turn_id: Option<serde_json::Value>,
+    account_key: Option<String>,
+    thread_id: Option<String>,
+    turn_id: Option<String>,
 }
 
 // Source-era refusal hashes depended on the historical run selector.
@@ -164,13 +144,9 @@ fn source_submission_identity(
         return Ok(None);
     }
 
-    let account = agent
-        .account_key
-        .as_ref()
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("default");
-    let thread = agent.thread_id.as_ref().and_then(serde_json::Value::as_str);
-    let turn = agent.turn_id.as_ref().and_then(serde_json::Value::as_str);
+    let account = agent.account_key.as_deref().unwrap_or("default");
+    let thread = agent.thread_id.as_deref();
+    let turn = agent.turn_id.as_deref();
     let row: Option<(String, String)> = if let Some(turn) = turn {
         let mut statement = connection.prepare_cached(
             "SELECT id, record FROM runtime_execution_runs \
