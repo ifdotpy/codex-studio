@@ -1,6 +1,7 @@
 //! Native queue delivery. The server owns deduplication of each message ID.
 use crate::{
     backend::Backend,
+    outbox::{Claim, Entry},
     protocol::{Request, Response},
 };
 use serde_json::{Value, json};
@@ -201,6 +202,10 @@ pub async fn state(sender: &StoreSender, method: &str, params: Value) -> Result<
     })
 }
 
+async fn entry_state(sender: &StoreSender, method: &str, params: Value) -> Result<Entry, String> {
+    serde_json::from_value(state(sender, method, params).await?).map_err(|e| e.to_string())
+}
+
 async fn http(backend: &Backend, path: &str, body: Option<Value>, workspace: &str) -> Response {
     let mut params = json!({"path":path,"workspaceId":workspace,"timeoutMs":15000});
     if let Some(body) = body {
@@ -221,6 +226,16 @@ pub async fn deliver(
     workspace: &str,
     id: &str,
 ) -> Result<Value, String> {
+    serde_json::to_value(deliver_entry(backend, sender, workspace, id).await?)
+        .map_err(|e| e.to_string())
+}
+
+async fn deliver_entry(
+    backend: &Backend,
+    sender: &StoreSender,
+    workspace: &str,
+    id: &str,
+) -> Result<Entry, String> {
     let identity = http(backend, "/api/sync/identity", None, workspace).await;
     let current = identity
         .result
@@ -234,24 +249,21 @@ pub async fn deliver(
             .unwrap_or_else(|| "The server workspace changed. Reload before sending.".into()));
     }
     backend.prepare_session().await.map_err(|e| e.message)?;
-    let claim = state(
-        sender,
-        "outbox.claim",
-        json!({"workspace":workspace,"id":id}),
+    let claim: Claim = serde_json::from_value(
+        state(
+            sender,
+            "outbox.claim",
+            json!({"workspace":workspace,"id":id}),
+        )
+        .await?,
     )
-    .await?;
-    if claim.get("claimed").and_then(Value::as_bool) != Some(true) {
-        return Ok(claim["entry"].clone());
+    .map_err(|e| e.to_string())?;
+    if !claim.claimed {
+        return Ok(claim.entry);
     }
-    let response = http(
-        backend,
-        "/api/messages",
-        Some(claim["entry"]["body"].clone()),
-        workspace,
-    )
-    .await;
+    let response = http(backend, "/api/messages", Some(claim.entry.body), workspace).await;
     if let Some(result) = response.result {
-        match state(
+        match entry_state(
             sender,
             "outbox.receipt",
             json!({"workspace":workspace,"id":id,"receipt":result}),
@@ -260,7 +272,7 @@ pub async fn deliver(
         {
             Ok(entry) => Ok(entry),
             Err(error) => {
-                state(
+                entry_state(
                     sender,
                     "outbox.failure",
                     json!({"workspace":workspace,"id":id,"error":error,"retryable":true}),
@@ -273,7 +285,7 @@ pub async fn deliver(
         let retryable = error
             .status
             .is_none_or(|status| status >= 500 || status == 408 || status == 429);
-        state(
+        entry_state(
             sender,
             "outbox.failure",
             json!({"workspace":workspace,"id":id,"error":error.message,"retryable":retryable}),
@@ -295,16 +307,16 @@ pub async fn dispatch(backend: &Backend, sender: &StoreSender, request: Request)
             .and_then(Value::as_str)
             .filter(|value| !value.is_empty()),
     ) {
-        (Some(workspace), Some(id)) => deliver(backend, sender, workspace, id).await,
+        (Some(workspace), Some(id)) => deliver_entry(backend, sender, workspace, id).await,
         _ => Err("Workspace and message identity are required.".into()),
     };
     match result {
         Ok(value) => {
-            if value["status"] == "failed" {
+            if value.status == "failed" {
                 let mut response = Response::failure(
                     request.id,
                     "message_failed",
-                    value["error"].as_str().unwrap_or("Message failed."),
+                    value.error.as_deref().unwrap_or("Message failed."),
                 );
                 // Response::failure always initializes its error member.
                 response
@@ -314,10 +326,10 @@ pub async fn dispatch(backend: &Backend, sender: &StoreSender, request: Request)
                     .status = Some(400);
                 response
             } else {
-                let result = value.get("receipt").cloned().unwrap_or_else(|| {
+                let result = value.receipt.unwrap_or_else(|| {
                     json!({
-                        "queued":value["status"]=="queued" || value["status"]=="paused",
-                        "status":value["status"],"error":value["error"]
+                        "queued":value.status=="queued" || value.status=="paused",
+                        "status":value.status,"error":value.error
                     })
                 });
                 Response::success(request.id, result)
@@ -340,20 +352,18 @@ pub async fn drain(backend: &Backend, sender: &StoreSender) {
     let Ok(entries) = state(sender, "outbox.list", json!({"workspace":workspace})).await else {
         return;
     };
-    let Some(entries) = entries.as_array() else {
+    let Ok(entries) = serde_json::from_value::<Vec<Entry>>(entries) else {
         return;
     };
     let mut rooms = std::collections::BTreeSet::new();
     let mut pending = tokio::task::JoinSet::new();
     // One oldest queued message per room, with at most four concurrent HTTP waits.
     for entry in entries {
-        if entry.get("status").and_then(Value::as_str) != Some("queued") {
+        if entry.status != "queued" {
             continue;
         }
-        let (Some(id), Some(room)) = (
-            entry.get("id").and_then(Value::as_str),
-            entry["body"].get("room").and_then(Value::as_str),
-        ) else {
+        let id = &entry.id;
+        let Some(room) = entry.body.get("room").and_then(Value::as_str) else {
             continue;
         };
         if !rooms.insert(room.to_owned()) {
@@ -366,7 +376,7 @@ pub async fn drain(backend: &Backend, sender: &StoreSender) {
             id.to_owned(),
         );
         pending.spawn(async move {
-            drop(deliver(&backend, &sender, &workspace, &id).await);
+            drop(deliver_entry(&backend, &sender, &workspace, &id).await);
         });
         if pending.len() >= 4 {
             let _ = pending.join_next().await;
@@ -409,6 +419,52 @@ mod tests {
             .await
             .unwrap();
         receive.await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn uncertain_receipt_stays_settled_without_reposting() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let mut posts = 0;
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let (headers, body) = read_http(&mut stream).await;
+                if headers.starts_with("GET /api/sync/identity ") {
+                    reply(&mut stream, r#"{"workspaceId":"w"}"#).await;
+                } else if headers.starts_with("GET /api/session ") {
+                    reply(&mut stream, r#"{"token":"test"}"#).await;
+                } else {
+                    assert!(headers.starts_with("POST /api/messages "));
+                    posts += 1;
+                    assert_eq!(posts, 1, "an uncertain receipt must not be reposted");
+                    assert_eq!(body["extra"], json!({"opaque":[null,1]}));
+                    reply(&mut stream, r#"{"id":"message","status":"uncertain"}"#).await;
+                }
+            }
+        });
+        let directory = tempfile::tempdir().unwrap();
+        let (sender, worker) = store(directory.path().join("client.sqlite3"));
+        user(&sender, "enqueue", "outbox.enqueue", json!({"workspace":"w","body":{"id":"message","room":"r","text":"hi","extra":{"opaque":[null,1]}}})).await.result.unwrap();
+        let backend = Backend::new(&origin).unwrap();
+        let first = deliver_entry(&backend, &sender, "w", "message")
+            .await
+            .unwrap();
+        assert_eq!(first.status, "uncertain");
+        let second = dispatch(
+            &backend,
+            &sender,
+            Request {
+                id: "caller".into(),
+                method: "outbox.deliver".into(),
+                params: json!({"workspace":"w","id":"message"}),
+            },
+        )
+        .await;
+        assert_eq!(second.result.unwrap()["status"], "uncertain");
+        drop(sender);
+        worker.join().unwrap();
+        server.abort();
     }
 
     #[tokio::test]
