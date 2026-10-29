@@ -404,6 +404,12 @@ enum Sequence {
     Other(serde::de::IgnoredAny),
 }
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenWorkspace<'a> {
+    #[serde(borrow)]
+    workspace_id: Option<TextField<'a>>,
+}
+#[derive(Deserialize)]
 struct ProjectionDocument<'a> {
     seq: Option<Sequence>,
     #[serde(borrow)]
@@ -503,8 +509,9 @@ async fn run(
                     .as_ref()
                     .as_ref()
                     .map_err(|e| sync::error("backend_config", e))?;
-                workspace = sync::open(backend, &store).await?["workspaceId"]
-                    .as_str()
+                let opened = sync::open(backend, &store).await?;
+                workspace = decode::<OpenWorkspace>(&opened)
+                    .map(|value| text(&value.workspace_id))
                     .unwrap_or("")
                     .to_owned();
             }
@@ -517,7 +524,9 @@ async fn run(
                 )
                 .await
                 .map_err(|e| sync::error("storage_error", e))?;
-                let cached_error = cached["payload"].as_str().and_then(sync::projection_error);
+                let cached_error = decode::<ProjectionDocument>(&cached)
+                    .and_then(|value| value.payload.and_then(|field| field.text()))
+                    .and_then(sync::projection_error);
                 if previous.is_none() && !cached.is_null() && cached_error.is_none() {
                     let event =
                         patcher.event(&id, json!({"workspaceId":workspace,"document":cached}));
@@ -565,19 +574,20 @@ async fn run(
             Ok::<_, crate::protocol::CommandError>(value)
         }
         .await;
-        let event = match result {
-            Ok(value) => json!({"event":id,"value":value}),
-            Err(error) => json!({"event":id,"error":error}),
-        };
-        let sent = if topic == "projection" && event.get("value").is_some() {
-            match patcher.event(&id, event["value"].clone()) {
+        let sent = match result {
+            Ok(value) if topic == "projection" => match patcher.event(&id, value) {
                 Some(event) => output.send(event).await.map_err(|_| ()),
                 None => Ok(()),
+            },
+            result => {
+                // A later value must reach the UI after an error clears its state.
+                patcher.last = None;
+                let event = match result {
+                    Ok(value) => json!({"event":id,"value":value}),
+                    Err(error) => json!({"event":id,"error":error}),
+                };
+                send_changed(&output, &mut previous, event).await
             }
-        } else {
-            // A later value must reach the UI after an error clears its state.
-            patcher.last = None;
-            send_changed(&output, &mut previous, event).await
         };
         if sent.is_err() {
             return;
@@ -670,6 +680,47 @@ mod flow_tests {
         assert!(foreign.command(&resume).error.is_some());
         assert!(owner.command(&resume).error.is_none());
         assert!(owner.command(&resume).error.is_some());
+    }
+    #[tokio::test]
+    async fn projection_run_emits_cached_document_before_backend_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("client.sqlite3");
+        let workspace = "a".repeat(32);
+        let (sender, mut receiver) = mpsc::channel::<crate::delivery::StoreCommand>(8);
+        let worker = std::thread::spawn(move || {
+            let mut store = crate::store::Store::open(&path).unwrap();
+            while let Some(command) = receiver.blocking_recv() {
+                command.execute(&mut store);
+            }
+        });
+        let document = json!({"id":"state","seq":1,"payload":"{\"cached\":true}"});
+        state(
+            &sender,
+            "projection.put",
+            json!({"workspace":workspace,"scope":"state","document":document}),
+        )
+        .await
+        .unwrap();
+        let (_changes, changes) = watch::channel(0);
+        let (output, mut received) = mpsc::channel(8);
+        let task = tokio::spawn(run(
+            "one".into(),
+            "projection".into(),
+            workspace,
+            "state".into(),
+            Arc::new(Err("No backend".into())),
+            sender.clone(),
+            changes,
+            output,
+        ));
+        let first = received.recv().await.unwrap();
+        assert_eq!(first["value"]["document"]["payload"], document["payload"]);
+        let second = received.recv().await.unwrap();
+        assert_eq!(second["error"]["code"], "backend_config");
+        task.abort();
+        let _ = task.await;
+        drop(sender);
+        worker.join().unwrap();
     }
     #[tokio::test]
     async fn malformed_commands_leave_subscription_and_credit_unchanged() {
