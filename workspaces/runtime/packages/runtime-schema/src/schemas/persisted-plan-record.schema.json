@@ -1,53 +1,33 @@
 {
   "$defs": {
-    "JsonValue": {}
+    "PlanVersion": {
+      "description": "A plan version is an integral JSON number within the safe-integer domain.",
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "type": "integer"
+    }
   },
-  "additionalProperties": {
-    "$ref": "#/$defs/JsonValue"
-  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
   "properties": {
     "agent": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Agent"
+      "type": ["string", "null"]
     },
     "id": {
-      "title": "Id",
       "type": "string"
     },
     "native": {
-      "anyOf": [
-        {
-          "additionalProperties": {
-            "$ref": "#/$defs/JsonValue"
-          },
-          "type": "object"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Native"
+      "additionalProperties": true,
+      "type": ["object", "null"]
     },
     "rootId": {
-      "title": "Rootid",
       "type": "string"
     },
     "steps": {
-      "items": {
-        "$ref": "#/$defs/JsonValue"
-      },
-      "title": "Steps",
+      "items": {},
       "type": "array"
     },
     "text": {
-      "title": "Text",
       "type": "string"
     },
     "updated": {
@@ -62,17 +42,13 @@
         {
           "type": "null"
         }
-      ],
-      "title": "Updated"
+      ]
     },
     "version": {
-      "maximum": 9007199254740991,
-      "minimum": 0,
-      "title": "Version",
-      "type": "integer"
+      "$ref": "#/$defs/PlanVersion"
     }
   },
   "required": ["id", "rootId", "text", "version", "updated"],
-  "title": "PersistedPlanRecord",
+  "title": "PlanRecord",
   "type": "object"
 }

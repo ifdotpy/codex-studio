@@ -425,8 +425,7 @@ pub(super) async fn initial_snapshot(
     Ok(entry)
 }
 
-pub(super) async fn resource_content(state: HttpState, resource: Value) -> Option<Vec<u8>> {
-    let resource: ResourceRef = serde_json::from_value(resource).ok()?;
+pub(super) async fn resource_content(state: HttpState, resource: ResourceRef) -> Option<Vec<u8>> {
     let handler = handler(&resource).ok()?;
     let bytes = handler.content_fingerprint(state, resource).await?;
     (bytes.len() <= handler.max_bytes()).then_some(bytes)
@@ -978,6 +977,35 @@ mod tests {
                 value.insert(field.clone(), field_value);
             }
             value.insert("kind".into(), json!(kind));
+            for optional_fields in [false, true] {
+                let mut sample = value.clone();
+                if !optional_fields {
+                    let required = schemas[name]["required"]
+                        .as_array()
+                        .expect("required fields");
+                    sample.retain(|field, _| required.iter().any(|item| item == field));
+                }
+                let original = Value::Object(sample);
+                assert!(
+                    studio_runtime_schema::validate("ResourceRef", &original).expect("schema"),
+                    "{kind}"
+                );
+                let typed: ResourceRef =
+                    serde_json::from_value(original.clone()).expect("generated reference");
+                use studio_runtime_services::resource_notify::ResourceIdentity;
+                let selector = crate::routes::sync_stream::SubscribedResource::new(typed.clone())
+                    .expect("resource identity");
+                assert_eq!(
+                    selector.notification_kind().expect("typed role"),
+                    original.notification_kind().expect("wire role"),
+                    "notification role for {kind}"
+                );
+                assert_eq!(
+                    serde_json::to_value(typed).expect("serialized reference"),
+                    original,
+                    "wire identity for {kind}"
+                );
+            }
             let resource: ResourceRef =
                 serde_json::from_value(Value::Object(value)).expect("generated reference");
             let matches: Vec<_> = REGISTRY

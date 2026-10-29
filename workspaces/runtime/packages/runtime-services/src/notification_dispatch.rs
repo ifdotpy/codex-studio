@@ -2224,6 +2224,24 @@ mod tests {
         RuntimeStore, SchedulerRepository, StoreError, TranscriptRepository,
     };
 
+    #[test]
+    fn plan_notification_updates_typed_record() {
+        let mut connection = database();
+        connection
+            .execute_batch("CREATE TABLE runtime_plans(id TEXT PRIMARY KEY,record TEXT NOT NULL)")
+            .unwrap();
+        let transaction = connection.transaction().unwrap();
+        let mut streams = NotificationStreamBuffer::default();
+        dispatch(&transaction, &mut streams, 1, &json!({"method":"turn/plan/updated","params":{"threadId":"thread","turnId":"turn","plan":[{"step":"one"}]}}), 4.0).unwrap();
+        let record = studio_runtime_store::WorkItemsRepository::plan(&transaction, "agent")
+            .unwrap()
+            .unwrap()
+            .value();
+        assert_eq!(record["steps"], json!([{"step":"one"}]));
+        assert_eq!(record["updated"], json!(4.0));
+        assert_eq!(record["native"]["threadId"], "thread");
+    }
+
     #[tokio::test]
     async fn typed_usage_dispatch_reaches_priced_cost_groups() {
         use super::NotificationPostCommit;

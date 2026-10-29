@@ -8,6 +8,7 @@
 //! `workspaces/client/contracts/account-preference.json`; the Python server and the web
 //! client run the same cases.
 
+use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use std::sync::LazyLock;
 use studio_runtime_schema::ProviderKind;
@@ -30,32 +31,99 @@ pub struct AccountOrder {
     pub default_groups: Vec<String>,
 }
 
+// The file is a preference: malformed containers and non-string entries are
+// ignored independently, while an unsupported version discards the whole file.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AccountOrderFile {
+    version: u64,
+    #[serde(default)]
+    groups: Option<GroupMap>,
+    #[serde(default)]
+    default_account_groups: Option<GroupList>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum GroupMap {
+    Map(std::collections::BTreeMap<String, GroupValue>),
+    Other(serde::de::IgnoredAny),
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum GroupList {
+    List(Vec<GroupValue>),
+    Other(serde::de::IgnoredAny),
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum GroupValue {
+    Name(String),
+    Other(serde::de::IgnoredAny),
+}
+
+impl GroupValue {
+    fn name(self) -> Option<String> {
+        match self {
+            Self::Name(name) => Some(name),
+            Self::Other(_) => None,
+        }
+    }
+}
+
+// Serde's struct derive also accepts positional arrays. The file is an object.
+fn read_order_file<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<AccountOrderFile, D::Error> {
+    struct Object;
+    impl<'de> serde::de::Visitor<'de> for Object {
+        type Value = AccountOrderFile;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("an account order object")
+        }
+
+        fn visit_map<M: serde::de::MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
+            AccountOrderFile::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+        }
+    }
+    deserializer.deserialize_map(Object)
+}
+
 impl AccountOrder {
     /// Read the file at `path`. A missing or unreadable file, another version, and
     /// invalid names give no order: the order is a preference, and account reads
     /// must not fail because of it.
     #[must_use]
     pub fn read(path: &std::path::Path) -> Self {
-        let Some(value) = std::fs::read(path)
+        let Some(file) = std::fs::read(path)
             .ok()
-            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-            .filter(|value| {
-                value.get("version").and_then(Value::as_u64) == Some(ACCOUNT_ORDER_VERSION)
+            .and_then(|bytes| {
+                let mut deserializer = serde_json::Deserializer::from_slice(&bytes);
+                let file = read_order_file(&mut deserializer).ok()?;
+                deserializer.end().ok()?;
+                Some(file)
             })
+            .filter(|file| file.version == ACCOUNT_ORDER_VERSION)
         else {
             return Self::default();
         };
-        let groups = value
-            .get("groups")
-            .and_then(Value::as_object)
-            .map(|rows| {
-                rows.iter()
-                    .filter_map(|(key, group)| Some((key.clone(), group.as_str()?.to_owned())))
-                    .filter(|(_, group)| valid_group(group))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let default_groups = groups_of(value.get(DEFAULT_GROUPS_FIELD));
+        let groups = match file.groups {
+            Some(GroupMap::Map(rows)) => rows
+                .into_iter()
+                .filter_map(|(key, group)| Some((key, group.name()?)))
+                .filter(|(_, group)| valid_group(group))
+                .collect(),
+            Some(GroupMap::Other(_)) | None => Default::default(),
+        };
+        let default_groups = match file.default_account_groups {
+            Some(GroupList::List(items)) => {
+                items.into_iter().filter_map(GroupValue::name).collect()
+            }
+            Some(GroupList::Other(_)) | None => Vec::new(),
+        };
         Self {
             groups,
             default_groups: if validate_groups(&default_groups).is_ok() {
@@ -257,6 +325,46 @@ pub fn new_chat_default(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn account_order_file_filters_entries_and_preserves_fallbacks() {
+        let dir = tempfile::tempdir().expect("temporary order directory");
+        let path = dir.path().join(ACCOUNT_ORDER_FILE);
+        let read = |value: Value| {
+            std::fs::write(&path, serde_json::to_vec(&value).expect("encode fixture"))
+                .expect("write fixture");
+            AccountOrder::read(&path)
+        };
+        let order = read(serde_json::json!({
+            "version": 1,
+            "groups": {"a":"team", "b":false, "c":"Bad", "d":"work"},
+            "defaultAccountGroups": ["work", 2, null, "team"],
+            "future": true
+        }));
+        assert_eq!(
+            order.groups,
+            [("a".into(), "team".into()), ("d".into(), "work".into())].into()
+        );
+        assert_eq!(order.default_groups, ["work", "team"]);
+        std::fs::write(&path, order.encode()).expect("write order");
+        assert_eq!(AccountOrder::read(&path), order);
+        for value in [
+            serde_json::json!([]),
+            serde_json::json!([1, {}, []]),
+            serde_json::json!({"version": null}),
+            serde_json::json!({"version": 1.0}),
+            serde_json::json!({"version": 2, "groups":{"a":"team"}}),
+        ] {
+            assert_eq!(read(value), AccountOrder::default());
+        }
+        let order = read(serde_json::json!({"version":1,"groups":[],"defaultAccountGroups":{}}));
+        assert_eq!(order, AccountOrder::default());
+        let order = read(
+            serde_json::json!({"version":1,"groups":{"a":"team"},"defaultAccountGroups":["same","same"]}),
+        );
+        assert_eq!(order.groups.get("a").map(String::as_str), Some("team"));
+        assert!(order.default_groups.is_empty());
+    }
 
     #[test]
     fn provider_identity_unknown_accounts_cannot_be_selected() {

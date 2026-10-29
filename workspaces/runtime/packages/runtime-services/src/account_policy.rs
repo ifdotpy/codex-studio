@@ -209,6 +209,11 @@ pub(crate) fn project_registry_value(
     value: &Value,
     order: &RegistryOrder,
 ) -> Result<AccountsSnapshot, AccountPolicyError> {
+    let typed: studio_runtime_schema::json_object::JsonObject<
+        studio_runtime_schema::account_registry::AccountRegistry,
+    > = serde_json::from_value(value.clone())
+        .map_err(|_| registry_error("/", "schema validation failed"))?;
+    let typed = typed.0;
     let accounts_by_key = value
         .get("accounts")
         .and_then(Value::as_object)
@@ -228,25 +233,25 @@ pub(crate) fn project_registry_value(
         let Some(mut row) = accounts_by_key.get(key).and_then(Value::as_object).cloned() else {
             continue;
         };
-        let provider = studio_runtime_providers::ProviderKind::of_field(row.get("provider"))
-            .map_err(|_| {
-                registry_error(&format!("/accounts/{key}/provider"), "unknown provider")
-            })?;
+        let Some(account) = typed.accounts.get(key).map(|account| &account.0) else {
+            continue;
+        };
+        let provider = account.provider;
         row.insert("provider".into(), Value::String(provider.key().into()));
         known.insert(key.clone());
         if provider == ProviderKind::Claude
             && let Some(organization) = crate::account_driver::claude_identity::organization(
-                row.get("_credentialIdentity").and_then(Value::as_str),
-                row.get("_organizationName").and_then(Value::as_str),
+                account.credential_identity.as_deref(),
+                account.organization_name.as_deref(),
             )
         {
             row.insert("organization".into(), organization);
         }
         row.retain(|field, _| !field.starts_with('_'));
-        if row.get("deleted") == Some(&Value::Bool(true)) {
+        if account.deleted == Some(true) {
             archived.push(Value::Object(row));
-        } else if listed_account(key, &row) {
-            if can_attempt_native_proof(accounts_by_key.get(key).and_then(Value::as_object)) {
+        } else if listed_account(key, account) {
+            if can_attempt_native_proof_typed(account) {
                 row.insert("canAttemptNativeProof".into(), Value::Bool(true));
             }
             accounts.push(Value::Object(row));
@@ -275,34 +280,45 @@ pub(crate) fn project_registry_value(
 /// when it has a provider identity, so a signed-out account keeps its
 /// sign-in action. A sign-in row without an identity (in progress, failed or
 /// cancelled) stays hidden, and so does a non-ready duplicate row.
-fn listed_account(key: &str, row: &Map<String, Value>) -> bool {
-    if !key.starts_with("login-") || row.get("status").and_then(Value::as_str) == Some("ready") {
-        return true;
-    }
-    row.get("accountId")
-        .is_some_and(|id| studio_runtime_store::truthy(Some(id)))
-        && !row
-            .get("duplicateOf")
-            .is_some_and(|duplicate| studio_runtime_store::truthy(Some(duplicate)))
+fn listed_account(key: &str, row: &studio_runtime_schema::account_registry::AccountRecord) -> bool {
+    !key.starts_with("login-")
+        || row.status == studio_runtime_schema::account_registry::AccountStatus::Ready
+        || (row.account_id.as_deref().is_some_and(|id| !id.is_empty())
+            && row
+                .duplicate_of
+                .as_ref()
+                .and_then(Option::as_deref)
+                .is_none_or(str::is_empty))
 }
 
 pub(crate) fn can_attempt_native_proof(stored: Option<&Map<String, Value>>) -> bool {
-    let Some(row) = stored else { return false };
-    let email = row.get("email").and_then(Value::as_str).unwrap_or_default();
-    row.get("provider").and_then(Value::as_str) == Some(ProviderKind::Claude.key())
-        && row.get("status").and_then(Value::as_str) == Some("error")
-        && row.get("_authErrorKind").and_then(Value::as_str) == Some("keychain")
-        && row.get("deleted") != Some(&Value::Bool(true))
-        && row.get("disconnected") != Some(&Value::Bool(true))
-        && row.get("duplicateOf").is_none()
+    stored
+        .and_then(|row| {
+            serde_json::from_value::<
+                studio_runtime_schema::json_object::JsonObject<
+                    studio_runtime_schema::account_registry::AccountRecord,
+                >,
+            >(Value::Object(row.clone()))
+            .ok()
+        })
+        .is_some_and(|row| can_attempt_native_proof_typed(&row.0))
+}
+
+fn can_attempt_native_proof_typed(
+    row: &studio_runtime_schema::account_registry::AccountRecord,
+) -> bool {
+    let email = row.email.as_deref().unwrap_or_default();
+    row.provider == ProviderKind::Claude
+        && row.status == studio_runtime_schema::account_registry::AccountStatus::Error
+        && row.auth_error_kind.as_deref() == Some("keychain")
+        && row.deleted != Some(true)
+        && row.disconnected != Some(true)
+        && row.duplicate_of.is_none()
         && !email.is_empty()
-        && row.get("accountId").and_then(Value::as_str) == Some(&format!("claude:{email}"))
-        && row
-            .get("_credentialIdentity")
-            .and_then(Value::as_str)
-            .is_some_and(|identity| {
-                crate::account_driver::claude_identity::belongs_to(identity, email)
-            })
+        && row.account_id.as_deref() == Some(&format!("claude:{email}"))
+        && row.credential_identity.as_deref().is_some_and(|identity| {
+            crate::account_driver::claude_identity::belongs_to(identity, email)
+        })
 }
 
 fn registry_error(pointer: &str, reason: &'static str) -> AccountPolicyError {

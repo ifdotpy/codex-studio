@@ -97,13 +97,23 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             .iter()
             .filter_map(|key| state.value.get("accounts")?.get(key))
             .find(|row| {
-                row.get("provider") == Some(&json!(ProviderKind::Claude.key()))
-                    && row
-                        .pointer("/claudeOptions/configDir")
-                        .and_then(Value::as_str)
-                        .is_some_and(|stored| {
-                            studio_runtime_store::path_identity::same_text(stored, config)
-                        })
+                serde_json::from_value::<
+                    studio_runtime_schema::json_object::JsonObject<
+                        studio_runtime_schema::account_registry::AccountRecord,
+                    >,
+                >((*row).clone())
+                .ok()
+                .is_some_and(|account| {
+                    account.0.provider == ProviderKind::Claude
+                        && account
+                            .0
+                            .claude_options
+                            .as_ref()
+                            .and_then(|options| options.0.config_dir.as_deref())
+                            .is_some_and(|stored| {
+                                studio_runtime_store::path_identity::same_text(stored, config)
+                            })
+                })
             })
             .cloned())
     }
@@ -129,11 +139,10 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         }
         if label.trim().is_empty()
             || label.chars().count() > 200
-            || !studio_runtime_schema::validate(
-                "account-registry/ClaudeOptionsRecord",
-                &Value::Object(options.clone()),
+            || serde_json::from_value::<studio_runtime_schema::claude_options::ClaudeOptionsRecord>(
+                Value::Object(options.clone()),
             )
-            .map_err(|_| ClaudeAccountError::InvalidProfile)?
+            .is_err()
         {
             return Err(ClaudeAccountError::InvalidProfile);
         }

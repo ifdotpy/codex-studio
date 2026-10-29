@@ -204,7 +204,7 @@ pub fn annotate(
         now_ms,
     )? {
         CallerAdmission::Replay(reply) => {
-            EventWriteRepository::validate_annotation(connection, &id, reply.value())?;
+            EventWriteRepository::validate_annotation(connection, &id, &reply.value())?;
             return Ok(WriteResult {
                 record: reply.into_value(),
                 event_inserted: false,

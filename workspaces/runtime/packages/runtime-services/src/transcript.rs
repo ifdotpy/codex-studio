@@ -489,7 +489,7 @@ fn search_item_in(
         .get(&AgentId::from(identity))
         .map_err(|_| TranscriptError::Store)?
     {
-        Some((row.value().clone(), "plan"))
+        Some((row.value(), "plan"))
     } else {
         Table::<ComplaintRecord>::new(connection)
             .get(&String::from(identity))

@@ -13,6 +13,7 @@ use std::sync::{
 use studio_runtime_schema::persistence::{
     OutboxKind, OutboxStatus, OwnerKind, RequestIdentity, WorkEffectStatus,
 };
+use studio_runtime_schema::queue_command::Field;
 use studio_runtime_schema::shared_values::{
     TASK_SUBMISSION_MAX_FILES, TASK_SUBMISSION_PATH_MAX_CODEPOINTS,
 };
@@ -1030,7 +1031,7 @@ fn accepted_archive_due_records(
 }
 
 pub struct CreateWork {
-    pub gate: Option<Value>,
+    pub gate: Field<studio_runtime_schema::task_gate::GateInput>,
     pub actor_id: String,
     pub title: String,
     pub description: String,
@@ -1047,7 +1048,7 @@ pub enum WorkActorWrite {
 
 pub enum WorkMutation {
     Update {
-        gate: Option<Value>,
+        gate: Field<studio_runtime_schema::task_gate::GateInput>,
         task_id: String,
         version: Option<i64>,
         title: Option<String>,
@@ -1560,13 +1561,6 @@ pub fn task_command(
         Field::Null => Some(Value::Null),
         Field::Value(value) => Some(value),
     };
-    let provided_gate = |field| match field {
-        Field::Missing => None,
-        Field::Null => Some(Value::Null),
-        Field::Value(value) => Some(studio_runtime_schema::task_gate::GateInput::into_value(
-            value,
-        )),
-    };
     Ok(match command {
         TaskCommand::Create {
             title,
@@ -1584,7 +1578,7 @@ pub fn task_command(
             status,
             dependencies,
             result_schema: provided(result_schema),
-            gate: provided_gate(gate),
+            gate,
         }),
         TaskCommand::Update {
             task_id,
@@ -1609,7 +1603,7 @@ pub fn task_command(
             status,
             dependencies,
             result_schema: provided(result_schema),
-            gate: provided_gate(gate),
+            gate,
         }),
         TaskCommand::Cancel {
             task_id,
@@ -2739,14 +2733,15 @@ fn create(
     let id = work_id(event_write::unix_time()?);
     let dependencies = unique(input.dependencies);
     validate_dependencies(tx, &agent.root_id.0, &id, &dependencies)?;
-    let gate = crate::task_gate::normalize(
-        input.gate.as_ref().unwrap_or(
-            root_agent(tx, agent)?
-                .extra
-                .get("taskDefaultGate")
-                .unwrap_or(&Value::Null),
-        ),
-    )?;
+    let root = root_agent(tx, agent)?;
+    let gate = match input.gate {
+        Field::Value(gate) => Some(gate.normalize().map_err(Error::InvalidRequest)?),
+        Field::Null => None,
+        Field::Missing => studio_runtime_schema::task_gate::parse(
+            root.extra.get("taskDefaultGate").unwrap_or(&Value::Null),
+        )
+        .map_err(Error::InvalidRequest)?,
+    };
     let mut work = json!({
         "gate":gate,
         "id": id, "rootId": agent.root_id.0, "title": title, "description": description,
@@ -2842,8 +2837,13 @@ fn mutate(
                     .map_err(Error::InvalidResultSchema)?;
                 work["resultSchema"] = schema;
             }
-            if let Some(gate) = gate {
-                work["gate"] = crate::task_gate::normalize(&gate)?;
+            match gate {
+                Field::Missing => {}
+                Field::Null => work["gate"] = Value::Null,
+                Field::Value(gate) => {
+                    let gate = gate.normalize().map_err(Error::InvalidRequest)?;
+                    work["gate"] = studio_runtime_store::projection_value(&gate);
+                }
             }
             if let Some(title) = title {
                 work["title"] = json!(text(&title, false)?);
@@ -3937,6 +3937,7 @@ mod actor_tests {
     use rusqlite::Connection;
     use serde_json::{Value, json};
     use std::sync::Arc;
+    use studio_runtime_schema::queue_command::Field;
     use studio_runtime_store::{
         AgentId, AgentRecord, AgentRepository, RuntimeStore, WorkItemsRepository,
     };
@@ -4884,7 +4885,7 @@ mod actor_tests {
             "create-assigned-work",
             WorkActorWrite::Create(CreateWork {
                 result_schema: None,
-                gate: None,
+                gate: Field::Missing,
                 actor_id: "lead".to_owned(),
                 title: "Assigned task".to_owned(),
                 description: "Do the task".to_owned(),
@@ -4924,7 +4925,7 @@ mod actor_tests {
             "reassign-ready-work",
             WorkActorWrite::Mutate(WorkMutation::Update {
                 result_schema: None,
-                gate: None,
+                gate: Field::Missing,
                 task_id: "reassign".to_owned(),
                 version: Some(2),
                 title: None,
@@ -5184,7 +5185,7 @@ mod actor_tests {
             "create-with-worker-selected",
             WorkWrite::Create(CreateWork {
                 result_schema: None,
-                gate: None,
+                gate: Field::Missing,
                 actor_id: "lead".to_owned(),
                 title: "must be refused".to_owned(),
                 description: String::new(),
@@ -5220,7 +5221,7 @@ mod actor_tests {
             "worker-assignment-update",
             WorkActorWrite::Mutate(WorkMutation::Update {
                 result_schema: None,
-                gate: None,
+                gate: Field::Missing,
                 task_id: "unauthorized-update".to_owned(),
                 version: Some(2),
                 title: None,

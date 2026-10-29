@@ -3,7 +3,9 @@
 //! never establish ownership. The decision core has no effects.
 use std::net::IpAddr;
 
+use serde::Deserialize;
 use serde_json::{Value, json};
+use studio_runtime_schema::multi_server_protocol::{DiscoveryIdentity, PersistedAccessInvite};
 use studio_runtime_store::StoreError;
 use subtle::ConstantTimeEq;
 use thiserror::Error;
@@ -98,12 +100,30 @@ pub(crate) fn schema(schema: &str, value: &Value) -> Result<(), AccessError> {
         )),
     }
 }
+pub(crate) fn discovery_identity(value: &Value) -> Result<DiscoveryIdentity, AccessError> {
+    schema("DiscoveryIdentity", value)?;
+    DiscoveryIdentity::deserialize(value)
+        .map_err(|_| refused(400, "invalid_request", "Invalid multi-server request"))
+}
 pub(crate) fn stored(
     schema: &str,
     table: &'static str,
     id: &str,
     raw: &str,
 ) -> Result<Value, AccessError> {
+    let value = stored_value(table, id, raw)?;
+    let invalid = |location: String| AccessError::Stored {
+        table,
+        id: id.to_owned(),
+        location,
+    };
+    match studio_runtime_schema::first_error(schema, &value) {
+        Ok(None) => Ok(value),
+        Ok(Some((location, _))) => Err(invalid(location)),
+        Err(_) => Err(invalid("schema".into())),
+    }
+}
+fn stored_value(table: &'static str, id: &str, raw: &str) -> Result<Value, AccessError> {
     let invalid = |location: String| AccessError::Stored {
         table,
         id: id.to_owned(),
@@ -112,12 +132,7 @@ pub(crate) fn stored(
     if raw.len() > remote_transport::MAX_RESPONSE_BYTES {
         return Err(invalid("record size".into()));
     }
-    let value: Value = serde_json::from_str(raw).map_err(|_| invalid("JSON".into()))?;
-    match studio_runtime_schema::first_error(schema, &value) {
-        Ok(None) => Ok(value),
-        Ok(Some((location, _))) => Err(invalid(location)),
-        Err(_) => Err(invalid("schema".into())),
-    }
+    serde_json::from_str(raw).map_err(|_| invalid("JSON".into()))
 }
 pub(crate) fn text<'a>(value: &'a Value, field: &str) -> &'a str {
     value.get(field).and_then(Value::as_str).unwrap_or_default()
@@ -428,7 +443,7 @@ pub(crate) fn origin_host(origin: &str) -> Result<String, AccessError> {
 #[derive(Clone)]
 pub struct AccessSnapshot {
     client: Option<Value>,
-    invite: Option<Value>,
+    invite: Option<PersistedAccessInvite>,
     auto_pair: bool,
 }
 impl AccessSnapshot {
@@ -451,20 +466,18 @@ impl AccessSnapshot {
             .transpose()?;
         let invite = invite
             .map(|v| {
-                stored(
-                    "PersistedAccessInvite",
-                    "runtime_access_invites",
-                    invite_id,
-                    v,
-                )
+                let value = stored_value("runtime_access_invites", invite_id, v)?;
+                PersistedAccessInvite::from_value(&value).map_err(|location| AccessError::Stored {
+                    table: "runtime_access_invites",
+                    id: invite_id.to_owned(),
+                    location,
+                })
             })
             .transpose()?;
         if client
             .as_ref()
             .is_some_and(|v| text(v, "id") != client_id || text(v, "clientId") != client_id)
-            || invite
-                .as_ref()
-                .is_some_and(|v| text(v, "inviteId") != invite_id)
+            || invite.as_ref().is_some_and(|v| v.invite_id() != invite_id)
         {
             return Err(refused(
                 503,
@@ -481,7 +494,7 @@ impl AccessSnapshot {
     pub(crate) fn client(&self) -> Option<&Value> {
         self.client.as_ref()
     }
-    pub(crate) fn invite(&self) -> Option<&Value> {
+    pub(crate) fn invite(&self) -> Option<&PersistedAccessInvite> {
         self.invite.as_ref()
     }
 }
@@ -571,12 +584,18 @@ pub fn authorize_at(
                 "Not implemented: requires remote-transport/owner-lookup",
             )
         })?;
-        schema("DiscoveryIdentity", probe)?;
+        let probe = discovery_identity(probe)?;
         if owner.dns.as_deref() != Some(origin_host(text(&request.body, "origin"))?.as_str())
-            || text(probe, "serverId") != request.client
-            || text(probe, "publicKey") != text(&request.body, "publicKey")
-            || text(probe, "origin") != text(&request.body, "origin")
-            || text(probe, "tailscaleUser").trim().to_lowercase() != owner.login
+            || probe.server_id != request.client
+            || probe.public_key != text(&request.body, "publicKey")
+            || probe.origin.as_deref().unwrap_or_default() != text(&request.body, "origin")
+            || probe
+                .tailscale_user
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .to_lowercase()
+                != owner.login
         {
             return Err(refused(
                 403,
@@ -584,7 +603,7 @@ pub fn authorize_at(
                 "The caller identity does not match its proof",
             ));
         }
-        if probe.get("autoPair") != Some(&Value::Bool(true)) {
+        if !probe.auto_pair {
             return Err(refused(
                 403,
                 "auto_pair_disabled",
@@ -806,27 +825,21 @@ fn verify_request_signature(
     Ok(())
 }
 pub(crate) fn check_invite(
-    invite: Option<&Value>,
+    invite: Option<&PersistedAccessInvite>,
     body: &Value,
     owner: Option<&str>,
     now: f64,
 ) -> Result<(), AccessError> {
-    let invite = invite
-        .filter(|v| {
-            text(v, "status") == "open"
-                && v.get("expires")
-                    .and_then(Value::as_f64)
-                    .is_some_and(|v| v >= now)
-        })
-        .ok_or_else(|| {
-            refused(
-                403,
-                "invite_unavailable",
-                "The invitation is expired or was already used",
-            )
-        })?;
+    let invite = invite.filter(|v| v.is_open_at(now)).ok_or_else(|| {
+        refused(
+            403,
+            "invite_unavailable",
+            "The invitation is expired or was already used",
+        )
+    })?;
     if !bool::from(
-        text(invite, "tokenHash")
+        invite
+            .token_hash()
             .as_bytes()
             .ct_eq(digest(text(body, "token").as_bytes()).as_bytes()),
     ) {
@@ -836,7 +849,7 @@ pub(crate) fn check_invite(
             "The invitation secret is invalid",
         ));
     }
-    if owner.is_some_and(|login| text(invite, "tailscaleUser") != login) {
+    if owner.is_some_and(|login| invite.tailscale_user() != login) {
         return Err(refused(
             403,
             "owner_mismatch",
@@ -844,4 +857,53 @@ pub(crate) fn check_invite(
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+
+    #[test]
+    fn invite_snapshot_retains_extensions_and_refuses_invalid_identity() {
+        let invite = json!({"inviteId":"i", "status":"open", "expires":9007199254740993_u64, "tokenHash":digest(b"secret"), "tailscaleUser":"owner", "extra":{"opaque":true}});
+        let raw = invite.to_string();
+        let snapshot = AccessSnapshot::from_records("c", None, "i", Some(&raw), false).unwrap();
+        check_invite(
+            snapshot.invite(),
+            &json!({"token":"secret"}),
+            Some("owner"),
+            1.0,
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(snapshot.invite().unwrap()).unwrap(),
+            invite
+        );
+        let error = AccessSnapshot::from_records("c", None, "other", Some(&raw), false)
+            .err()
+            .unwrap();
+        assert!(matches!(
+            error,
+            AccessError::Refused {
+                code: "invalid_record",
+                ..
+            }
+        ));
+        for raw in ["[]", "null", "{}"] {
+            assert!(matches!(
+                AccessSnapshot::from_records("c", None, "i", Some(raw), false),
+                Err(AccessError::Stored { .. })
+            ));
+        }
+        let mut invalid = invite;
+        invalid["status"] = json!("unknown");
+        let expected = studio_runtime_schema::first_error("PersistedAccessInvite", &invalid)
+            .unwrap()
+            .unwrap()
+            .0;
+        let error = AccessSnapshot::from_records("c", None, "i", Some(&invalid.to_string()), false)
+            .err()
+            .unwrap();
+        assert!(matches!(error, AccessError::Stored { location, .. } if location == expected));
+    }
 }

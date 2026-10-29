@@ -1,6 +1,7 @@
 //! Bounded, process-local model catalog reads for display.
 
 use crate::account_session_runtime::SessionOutcome as ReceiptOutcome;
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::future::Future;
@@ -48,6 +49,37 @@ pub enum ModelListError {
     Pending,
     #[error("Model catalog is unavailable")]
     Unavailable,
+}
+
+// Account records can contain fields unrelated to catalog identity. A missing or
+// non-string home has historically denoted the empty home.
+#[derive(Deserialize)]
+struct CatalogAccount {
+    id: String,
+    #[serde(default, deserialize_with = "catalog_home")]
+    home: String,
+    #[serde(deserialize_with = "catalog_provider")]
+    provider: ProviderKind,
+}
+
+fn catalog_provider<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<ProviderKind, D::Error> {
+    let provider = String::deserialize(deserializer)?;
+    provider.parse().map_err(serde::de::Error::custom)
+}
+
+fn catalog_home<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Home {
+        String(String),
+        Other(serde::de::IgnoredAny),
+    }
+    Ok(match Home::deserialize(deserializer)? {
+        Home::String(home) => home,
+        Home::Other(_) => String::new(),
+    })
 }
 
 /// Shared catalog surface used by rename and the HTTP model route.
@@ -672,20 +704,16 @@ impl ModelCatalogService {
             .unwrap_or(CatalogRead::Pending)
     }
     pub fn retain_accounts(&self, accounts: &[Value]) {
+        let accounts: Vec<CatalogAccount> = accounts
+            .iter()
+            .filter(|account| account.is_object())
+            .filter_map(|account| CatalogAccount::deserialize(account).ok())
+            .collect();
         let mut retired = Vec::new();
         if let Ok(mut profiles) = self.0.accounts.lock() {
             let retained = accounts
                 .iter()
-                .filter_map(|account| {
-                    let id = account.get("id")?.as_str()?.to_owned();
-                    let home = account
-                        .get("home")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_owned();
-                    let provider = ProviderKind::of_record(account).ok()?;
-                    Some((id, (home, provider)))
-                })
+                .map(|account| (account.id.clone(), (account.home.clone(), account.provider)))
                 .collect::<HashMap<_, _>>();
             retired.extend(
                 profiles
@@ -706,9 +734,7 @@ impl ModelCatalogService {
             .entries
             .retain(|key, _| {
                 accounts.iter().any(|account| {
-                    account["id"].as_str() == Some(key.0.as_str())
-                        && account["home"].as_str().unwrap_or("") == key.1
-                        && ProviderKind::of_record(account).ok() == Some(key.2)
+                    account.id == key.0 && account.home == key.1 && account.provider == key.2
                 })
             });
         self.0.refresh_changed.notify_waiters();
@@ -1195,6 +1221,51 @@ pub(crate) mod tests {
             .await,
             Err(ModelListError::InvalidParams)
         );
+    }
+
+    #[tokio::test]
+    async fn model_list_params_keep_exact_object_contract() {
+        let service = ModelCatalogService::new();
+        let port = service.model_list_port();
+        for params in [
+            json!([MODEL_CATALOG_ITEMS_PER_PAGE]),
+            json!({"limit": 100.0}),
+            json!({"limit": 100, "extra": true}),
+            json!({"limit": null}),
+        ] {
+            assert_eq!(
+                port.list("missing", ProviderKind::Codex, params).await,
+                Err(ModelListError::InvalidParams)
+            );
+        }
+    }
+
+    #[test]
+    fn retained_account_projection_preserves_home_and_identity_rules() {
+        let service = ModelCatalogService::new();
+        service.retain_accounts(&[
+            json!({"id":"default-home", "home":null, "provider":"codex"}),
+            json!({"id":"wrong-home", "home":7, "provider":"claude"}),
+            json!({"id":"valid", "home":"/home", "provider":"codex", "extra":true}),
+            json!({"id":"bad", "provider":null}),
+            json!({"id":"object-provider", "provider":{"codex":null}}),
+            json!(["array", "/home", "codex"]),
+        ]);
+        assert_eq!(
+            service.account_profile("default-home"),
+            Some((String::new(), ProviderKind::Codex))
+        );
+        assert_eq!(
+            service.account_profile("wrong-home"),
+            Some((String::new(), ProviderKind::Claude))
+        );
+        assert_eq!(
+            service.account_profile("valid"),
+            Some(("/home".into(), ProviderKind::Codex))
+        );
+        assert_eq!(service.account_profile("bad"), None);
+        assert_eq!(service.account_profile("object-provider"), None);
+        assert_eq!(service.account_profile("array"), None);
     }
 
     pub(crate) fn expire_fixture(service: &ModelCatalogService) {

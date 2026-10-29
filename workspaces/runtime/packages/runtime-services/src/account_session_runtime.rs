@@ -1980,22 +1980,66 @@ fn public_login(mut receipt: Value) -> Value {
     }
     receipt
 }
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ClaudeProfileInput {
+    binary_path: Option<String>,
+    config_dir: Option<String>,
+    #[serde(default)]
+    custom_models: Vec<ClaudeModelInput>,
+    auto_compact_window: Option<ClaudeWindowInput>,
+    #[serde(default)]
+    launch_args: String,
+    #[serde(flatten)]
+    extensions: serde_json::Map<String, Value>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ClaudeWindowInput {
+    Text(String),
+    Number(serde_json::Number),
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ClaudeModelInput {
+    Name(String),
+    Model(ClaudeModelObject),
+}
+
+#[derive(Deserialize)]
+struct ClaudeModelObject {
+    id: String,
+    label: Option<String>,
+    #[serde(flatten)]
+    extensions: serde_json::Map<String, Value>,
+}
+
 pub fn normalize_profile(
-    mut options: serde_json::Map<String, Value>,
+    options: serde_json::Map<String, Value>,
     home: &Path,
 ) -> Result<serde_json::Map<String, Value>, AccountSessionError> {
     let invalid = || AccountSessionError::Refused("Invalid Claude profile options");
-    if options.keys().any(|key| {
-        !matches!(
-            key.as_str(),
-            "binaryPath" | "configDir" | "customModels" | "autoCompactWindow" | "launchArgs"
-        )
-    }) {
+    // Path fields reject explicit null, whereas omitted fields are allowed.
+    if ["configDir", "binaryPath"]
+        .iter()
+        .any(|key| options.get(*key) == Some(&Value::Null))
+    {
         return Err(invalid());
     }
-    for field in ["configDir", "binaryPath"] {
-        if let Some(value) = options.remove(field) {
-            let value = value.as_str().ok_or_else(invalid)?.trim();
+    let input: ClaudeProfileInput =
+        serde_json::from_value(Value::Object(options)).map_err(|_| invalid())?;
+    if !input.extensions.is_empty() || input.custom_models.len() > 100 {
+        return Err(invalid());
+    }
+    let mut options = serde_json::Map::new();
+    for (field, value) in [
+        ("configDir", input.config_dir),
+        ("binaryPath", input.binary_path),
+    ] {
+        if let Some(value) = value {
+            let value = value.trim();
             if value.contains('\0') {
                 return Err(invalid());
             }
@@ -2020,79 +2064,54 @@ pub fn normalize_profile(
             }
         }
     }
-    let models = options
-        .entry("customModels")
-        .or_insert_with(|| serde_json::json!([]))
-        .as_array_mut()
-        .ok_or_else(invalid)?;
-    if models.len() > 100 {
-        return Err(invalid());
-    }
     let identifier =
         regex::Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,199}$").map_err(|_| invalid())?;
     let mut seen = std::collections::BTreeSet::new();
-    for model in models {
-        if let Some(id) = model.as_str() {
-            *model = serde_json::json!({"id":id,"label":id});
-        }
-        let object = model.as_object_mut().ok_or_else(invalid)?;
-        if object
-            .keys()
-            .any(|key| !matches!(key.as_str(), "id" | "label"))
-        {
-            return Err(invalid());
-        }
-        let id = object
-            .get("id")
-            .and_then(Value::as_str)
-            .ok_or_else(invalid)?
-            .to_owned();
+    let mut models = Vec::new();
+    for model in input.custom_models {
+        let (id, label) = match model {
+            ClaudeModelInput::Name(id) => (id, None),
+            ClaudeModelInput::Model(model) if model.extensions.is_empty() => {
+                (model.id, model.label)
+            }
+            ClaudeModelInput::Model(_) => return Err(invalid()),
+        };
         if !identifier.is_match(&id) || !seen.insert(id.clone()) {
             return Err(invalid());
         }
-        let label = match object.get("label") {
-            None | Some(Value::Null) => id.as_str(),
-            Some(Value::String(label)) if label.is_empty() => id.as_str(),
-            Some(Value::String(label)) => label.as_str(),
-            _ => return Err(invalid()),
-        };
+        let label = label
+            .as_deref()
+            .filter(|label| !label.is_empty())
+            .unwrap_or(&id);
         if label.trim().is_empty() || label.chars().count() > 200 {
             return Err(invalid());
         }
-        let label = label.trim().to_owned();
-        object.insert("label".into(), Value::String(label));
+        models.push(serde_json::json!({"id":id,"label":label.trim()}));
     }
-    if let Some(window) = options.remove("autoCompactWindow")
-        && !window.is_null()
-        && window != ""
-    {
-        let text = window
-            .as_str()
-            .map(str::to_owned)
-            .unwrap_or_else(|| window.to_string());
-        if !text.bytes().all(|value| value.is_ascii_digit()) {
-            return Err(invalid());
+    options.insert("customModels".into(), Value::Array(models));
+    if let Some(window) = input.auto_compact_window {
+        let text = match window {
+            ClaudeWindowInput::Text(value) => value,
+            ClaudeWindowInput::Number(value) => value.to_string(),
+        };
+        if !text.is_empty() {
+            if !text.bytes().all(|value| value.is_ascii_digit()) {
+                return Err(invalid());
+            }
+            let value: u64 = text.parse().map_err(|_| invalid())?;
+            if !(100_000..=1_000_000).contains(&value) {
+                return Err(invalid());
+            }
+            options.insert("autoCompactWindow".into(), serde_json::json!(value));
         }
-        let value: u64 = text.parse().map_err(|_| invalid())?;
-        if !(100_000..=1_000_000).contains(&value) {
-            return Err(invalid());
-        }
-        options.insert("autoCompactWindow".into(), serde_json::json!(value));
     }
-    let args = match options.get("launchArgs") {
-        None => "",
-        Some(Value::String(args)) if args.chars().count() <= 4096 => args.as_str(),
-        _ => return Err(invalid()),
-    };
-    let tokens = shlex::split(args).ok_or_else(invalid)?;
+    if input.launch_args.chars().count() > 4096 {
+        return Err(invalid());
+    }
+    let tokens = shlex::split(&input.launch_args).ok_or_else(invalid)?;
     let args = shlex::try_join(tokens.iter().map(String::as_str)).map_err(|_| invalid())?;
     options.insert("launchArgs".into(), Value::String(args));
     let value = Value::Object(options.clone());
-    if !studio_runtime_schema::validate("account-registry/ClaudeOptionsRecord", &value)
-        .map_err(|_| invalid())?
-    {
-        return Err(invalid());
-    }
     crate::claude_bridge::bridge_options(&value).map_err(|_| invalid())?;
     Ok(options)
 }

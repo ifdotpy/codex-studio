@@ -157,16 +157,12 @@ pub(crate) async fn perform(
     .map_err(|message| ApiError::new(StatusCode::BAD_REQUEST, message))?;
     if let studio_runtime_schema::task_command::TaskCommand::SetDefaultGate { gate } = command {
         let store = state.store.clone().ok_or_else(ApiError::internal)?;
-        let gate = gate.map_or(
-            Value::Null,
-            studio_runtime_schema::task_gate::GateInput::into_value,
-        );
         return store
             .transaction_with(move |tx| {
                 studio_runtime_services::task_gate::set_default(
                     tx,
                     &agent,
-                    &gate,
+                    gate,
                     request_id.as_deref(),
                     &signature,
                 )
@@ -1487,6 +1483,76 @@ mod managed_work_port_tests {
             accepted["decisions"][0]["gateOverrideReason"],
             "Manual evidence checked"
         );
+    }
+
+    #[tokio::test]
+    async fn acceptance_gate_typed_input_preserves_null_update_and_replay() {
+        let (state, _, _) = state().await;
+        let port = managed_work_port(state, None);
+        let default_args = json!({"action":"set_default_gate","gate":" check "});
+        let default = written(
+            port.act("lead", &default_args, &request_id("typed-default"))
+                .await,
+        );
+        assert_eq!(
+            default["defaultGate"],
+            json!({"command":" check ","timeout_ms":600000})
+        );
+        assert_eq!(
+            written(
+                port.act("lead", &default_args, &request_id("typed-default"))
+                    .await
+            ),
+            default
+        );
+        let created = written(
+            port.act(
+                "lead",
+                &json!({"action":"create","title":"typed"}),
+                &request_id("typed-create"),
+            )
+            .await,
+        );
+        assert_eq!(created["gate"], default["defaultGate"]);
+        let task = created["id"].as_str().expect("task id");
+        let updated = written(
+            port.act(
+                "lead",
+                &json!({"action":"update","task_id":task,"gate":null}),
+                &request_id("typed-clear"),
+            )
+            .await,
+        );
+        assert!(updated["gate"].is_null());
+        let updated = written(port.act("lead", &json!({"action":"update","task_id":task,"gate":{"command":"test","timeout_ms":1234}}), &request_id("typed-config")).await);
+        assert_eq!(updated["gate"], json!({"command":"test","timeout_ms":1234}));
+        let updated = written(
+            port.act(
+                "lead",
+                &json!({"action":"update","task_id":task,"description":"unchanged gate"}),
+                &request_id("typed-missing"),
+            )
+            .await,
+        );
+        assert_eq!(updated["gate"], json!({"command":"test","timeout_ms":1234}));
+        assert!(matches!(
+            port.act(
+                "lead",
+                &json!({"action":"set_default_gate","gate":"different"}),
+                &request_id("typed-default")
+            )
+            .await,
+            WorkActionOutcome::Refused(_)
+        ));
+        assert!(matches!(
+            port.act(
+                "lead",
+                &json!({"action":"create","title":"bad","gate":"  "}),
+                &request_id("typed-invalid")
+            )
+            .await,
+            WorkActionOutcome::Refused(_)
+        ));
     }
 
     #[tokio::test]

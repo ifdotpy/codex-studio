@@ -1,10 +1,13 @@
 //! Compiled persisted-state validators and the Rust owners of the shared
 //! runtime contracts (`contracts` renders their copies in other languages).
 
+pub mod account_registry;
 pub mod agent_limits;
 pub mod agent_progress;
+pub mod annotation_record;
 pub mod api_schema;
 pub mod claude_controls;
+pub mod claude_options;
 pub mod claude_failure;
 mod codex_generated;
 pub mod complaints;
@@ -14,9 +17,11 @@ pub mod desktop;
 pub mod federation_limits;
 pub mod idle_compaction;
 pub mod json_compat;
+pub mod json_object;
 pub mod model_catalog;
 pub mod multi_server_protocol;
 pub mod persistence;
+pub mod plan_record;
 pub mod pricing;
 pub mod process_controls;
 pub mod provider_call_contract;
@@ -30,12 +35,16 @@ pub mod provider_rate_limits;
 pub mod question_answers;
 pub mod queue_command;
 pub mod records;
+pub mod recovery_record;
 pub mod shared_values;
 pub mod shell_policy;
+mod stored_record;
 pub mod studio_errors;
+pub mod string_enum;
 pub mod supervisor_contract;
 pub mod task_command;
 pub mod task_results;
+pub mod terminal_record;
 pub mod usage;
 
 pub use delivery::DeliveryMoment;

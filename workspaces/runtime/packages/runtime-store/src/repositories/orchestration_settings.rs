@@ -6,6 +6,7 @@ use crate::{StoreError, StoreResult};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Deserialize;
 use std::time::Duration;
+use studio_runtime_schema::json_object::JsonObject;
 use studio_runtime_schema::shared_values::{
     CHILD_RESULT_COALESCE_DEFAULT_SECONDS, CHILD_RESULT_COALESCE_MAX_SECONDS,
     CHILD_RESULT_COALESCE_MIN_SECONDS, IDLE_SESSION_UNLOAD_DEFAULT_MINUTES,
@@ -57,25 +58,6 @@ struct StoredSettings {
     child_result_coalesce_seconds: u64,
     #[serde(default = "default_idle_session_unload")]
     idle_session_unload_minutes: u64,
-}
-
-fn deserialize_settings<'de, D>(deserializer: D) -> Result<StoredSettings, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    struct ObjectVisitor;
-    impl<'de> serde::de::Visitor<'de> for ObjectVisitor {
-        type Value = StoredSettings;
-
-        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            formatter.write_str("a settings object")
-        }
-
-        fn visit_map<M: serde::de::MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
-            StoredSettings::deserialize(serde::de::value::MapAccessDeserializer::new(map))
-        }
-    }
-    deserializer.deserialize_map(ObjectVisitor)
 }
 
 fn default_child_result_coalesce() -> u64 {
@@ -181,9 +163,8 @@ impl OrchestrationSettingsRepository {
                 setting.field
             ))
         };
-        let mut deserializer = serde_json::Deserializer::from_str(&raw);
-        let record = deserialize_settings(&mut deserializer).map_err(|_| invalid())?;
-        deserializer.end().map_err(|_| invalid())?;
+        let JsonObject(record): JsonObject<StoredSettings> =
+            serde_json::from_str(&raw).map_err(|_| invalid())?;
         let value = match setting.field {
             field if field == CHILD_RESULT_COALESCE_SETTING.field => {
                 record.child_result_coalesce_seconds

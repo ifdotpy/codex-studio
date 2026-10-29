@@ -132,10 +132,11 @@ impl<'a> HistoryRead<'a> {
             if let Some(value) = &cursor {
                 params["cursor"] = json!(value);
             }
-            let page = self
-                .call(HistoryMethod::BackgroundTerminals, params)
-                .await?;
-            for entry in data(&page)? {
+            let page = history_page(
+                self.call(HistoryMethod::BackgroundTerminals, params)
+                    .await?,
+            )?;
+            for entry in &page.data {
                 nonempty(&entry["itemId"])?;
                 nonempty(&entry["processId"])?;
                 if entry.get("threadId").is_some_and(|v| v != thread) {
@@ -222,7 +223,7 @@ impl<'a> HistoryRead<'a> {
                 params["cursor"] = Value::String(c.clone());
             }
             let page = self.turn_page(params.clone(), thread).await?;
-            if let Some(found) = data(&page)?.iter().find(|t| t["id"] == turn) {
+            if let Some(found) = page.data.iter().find(|t| t["id"] == turn) {
                 if found
                     .get("itemsView")
                     .is_none_or(|v| v == CodexTurnItemsView::Full.as_str())
@@ -243,15 +244,16 @@ impl<'a> HistoryRead<'a> {
                         Err(HistoryError::Unsupported) => {
                             params["itemsView"] = json!(CodexTurnItemsView::Full.as_str());
                             let fallback = self.turn_page(params, thread).await?;
-                            let exact = data(&fallback)?
+                            let exact = fallback
+                                .data
                                 .iter()
                                 .find(|t| t["id"] == turn)
                                 .ok_or(HistoryError::Identity)?;
                             return checked_full(exact, thread, turn).map(Some);
                         }
-                        result => result?,
+                        result => history_page(result?)?,
                     };
-                    for entry in data(&item_page)? {
+                    for entry in &item_page.data {
                         let item = if entry.get("item").is_some() {
                             if entry["turnId"] != turn
                                 || entry.get("threadId").is_some_and(|v| v != thread)
@@ -270,7 +272,8 @@ impl<'a> HistoryRead<'a> {
                     }
                 }
                 let confirmation = self.turn_page(params, thread).await?;
-                let confirmed = data(&confirmation)?
+                let confirmed = confirmation
+                    .data
                     .iter()
                     .find(|t| t["id"] == turn)
                     .ok_or(HistoryError::Identity)?;
@@ -304,8 +307,8 @@ impl<'a> HistoryRead<'a> {
             if let Some(cursor) = &cursor {
                 params["cursor"] = json!(cursor);
             }
-            let page = self.call(HistoryMethod::Items, params).await?;
-            for entry in data(&page)? {
+            let page = history_page(self.call(HistoryMethod::Items, params).await?)?;
+            for entry in &page.data {
                 let item = &entry["item"];
                 if entry["turnId"] != turn
                     || entry.get("threadId").is_some_and(|id| id != thread)
@@ -340,9 +343,9 @@ impl<'a> HistoryRead<'a> {
             if let Some(cursor) = &cursor {
                 params["cursor"] = json!(cursor);
             }
-            let page = self.call(HistoryMethod::Turns, params).await?;
+            let page = history_page(self.call(HistoryMethod::Turns, params).await?)?;
             let mut page_match = false;
-            for turn in data(&page)? {
+            for turn in &page.data {
                 if matches!(
                     turn["startOutcome"].as_str(),
                     Some("preparing" | "not_applied")
@@ -394,9 +397,9 @@ impl<'a> HistoryRead<'a> {
             if let Some(cursor) = &cursor {
                 params["cursor"] = json!(cursor);
             }
-            let page = self.call(HistoryMethod::Turns, params).await?;
+            let page = history_page(self.call(HistoryMethod::Turns, params).await?)?;
             let mut page_match = false;
-            for turn in data(&page)? {
+            for turn in &page.data {
                 let matches = turn["clientUserMessageId"] == message
                     || turn["items"].as_array().is_some_and(|items| {
                         items.iter().any(|item| {
@@ -458,10 +461,14 @@ impl<'a> HistoryRead<'a> {
             }
         }
     }
-    async fn turn_page(&mut self, params: Value, thread: &str) -> Result<Value, HistoryError> {
-        let page = self.call(HistoryMethod::Turns, params).await?;
+    async fn turn_page(
+        &mut self,
+        params: Value,
+        thread: &str,
+    ) -> Result<HistoryPage, HistoryError> {
+        let page = history_page(self.call(HistoryMethod::Turns, params).await?)?;
         let mut ids = BTreeSet::new();
-        for turn in data(&page)? {
+        for turn in &page.data {
             let id = nonempty(&turn["id"])?;
             if !ids.insert(id)
                 || turn.get("threadId").is_some_and(|v| v != thread)
@@ -481,11 +488,20 @@ fn nonempty(v: &Value) -> Result<&str, HistoryError> {
         .filter(|s| !s.is_empty())
         .ok_or(HistoryError::Invalid("identity"))
 }
-fn data(v: &Value) -> Result<&Vec<Value>, HistoryError> {
-    v["data"].as_array().ok_or(HistoryError::Invalid("data"))
+type HistoryPage = crate::provider_pagination::Page<Value>;
+
+fn history_page(value: Value) -> Result<HistoryPage, HistoryError> {
+    if !value.is_object() {
+        return Err(HistoryError::Invalid("data"));
+    }
+    serde_json::from_value(value).map_err(|_| HistoryError::Invalid("data"))
 }
-fn next_cursor(page: &Value, seen: &mut BTreeSet<String>) -> Result<Option<String>, HistoryError> {
-    let Some(cursor) = crate::provider_pagination::next_cursor(page)
+
+fn next_cursor(
+    page: &HistoryPage,
+    seen: &mut BTreeSet<String>,
+) -> Result<Option<String>, HistoryError> {
+    let Some(cursor) = crate::provider_pagination::next_cursor(&page.next_cursor)
         .map_err(|_| HistoryError::Invalid("nextCursor"))?
     else {
         return Ok(None);

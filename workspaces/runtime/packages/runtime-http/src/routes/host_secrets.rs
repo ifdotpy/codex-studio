@@ -1359,7 +1359,12 @@ mod tests {
                 );
                 let view = ResourceChanges {
                     cursor: state.sync_changes.snapshot(),
-                    resources: vec![resource.clone()],
+                    resources: vec![
+                        crate::routes::sync_stream::SubscribedResource::new(
+                            serde_json::from_value(resource.clone()).expect("resource fixture"),
+                        )
+                        .expect("resource identity"),
+                    ],
                     versions: vec![state.sync_changes.snapshot().revision],
                     entity_reset: false,
                     overflow: false,

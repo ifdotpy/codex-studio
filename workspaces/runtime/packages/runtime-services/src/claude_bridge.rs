@@ -8,6 +8,7 @@ use studio_runtime_process::ProviderLaunchSpec;
 /// Launch variable that binds a bridge to its credential identity.
 pub const CREDENTIAL_IDENTITY_ENVIRONMENT: &str = "STUDIO_CLAUDE_CREDENTIAL_IDENTITY";
 use studio_runtime_providers::ProviderKind;
+use studio_runtime_schema::claude_options::ClaudeOptionsRecord;
 #[derive(Debug, thiserror::Error)]
 pub enum BridgeHold {
     #[error("Cannot verify the pinned Claude account")]
@@ -37,6 +38,7 @@ fn empty_options() -> Value {
 pub struct BridgeSnapshot {
     profile: Profile,
     raw: Value,
+    options: ClaudeOptionsRecord,
 }
 impl BridgeSnapshot {
     pub fn from_record(record: Value) -> Result<Self, BridgeHold> {
@@ -45,17 +47,12 @@ impl BridgeSnapshot {
         if profile.provider != ProviderKind::Claude.key() {
             return Err(BridgeHold::Account);
         }
-        if !studio_runtime_schema::validate(
-            "account-registry/ClaudeOptionsRecord",
-            &profile.claude_options,
-        )
-        .map_err(|_| BridgeHold::Options)?
-        {
-            return Err(BridgeHold::Options);
-        }
+        let options = serde_json::from_value(profile.claude_options.clone())
+            .map_err(|_| BridgeHold::Options)?;
         Ok(Self {
             profile,
             raw: record,
+            options,
         })
     }
     pub fn launch(
@@ -133,13 +130,7 @@ impl BridgeSnapshot {
                 ))
             })
             .collect::<Result<_, BridgeHold>>()?;
-        if let Some(config) = self
-            .profile
-            .claude_options
-            .get("configDir")
-            .and_then(Value::as_str)
-            .filter(|v| !v.is_empty())
-        {
+        if let Some(config) = self.options.config_dir.as_deref().filter(|v| !v.is_empty()) {
             env.insert("CLAUDE_CONFIG_DIR".into(), config.into());
         }
         env.insert(
@@ -232,4 +223,30 @@ pub fn bridge_options(value: &Value) -> Result<Value, BridgeHold> {
     options.entry("customModels").or_insert(json!([]));
     options.insert("extraArgs".into(), Value::Object(extra));
     Ok(Value::Object(options))
+}
+
+#[cfg(test)]
+mod options_tests {
+    use super::{BridgeHold, BridgeSnapshot, bridge_options};
+    use serde_json::json;
+
+    #[test]
+    fn snapshot_checks_options_shape_and_bridge_preserves_extensions() {
+        let profile =
+            |options| json!({"provider":"claude","status":"ready","claudeOptions":options});
+        assert!(BridgeSnapshot::from_record(profile(json!({"customModels":[{"id":"m","label":"Model","extra":true}],"extension":{"key":1}}))).is_ok());
+        assert!(matches!(
+            BridgeSnapshot::from_record(profile(json!({"customModels":[["m","Model"]]}))),
+            Err(BridgeHold::Options)
+        ));
+        assert!(matches!(
+            BridgeSnapshot::from_record(profile(json!(null))),
+            Err(BridgeHold::Options)
+        ));
+        assert_eq!(
+            bridge_options(&json!({"launchArgs":"--verbose","extension":{"key":1}})).unwrap(),
+            json!({"customModels":[],"extension":{"key":1},"extraArgs":{"verbose":null}})
+        );
+        assert!(bridge_options(&json!({"launchArgs":null})).is_err());
+    }
 }

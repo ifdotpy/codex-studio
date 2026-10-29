@@ -785,3 +785,89 @@ async fn profile_change_notification_starts_a_new_probe_without_waiting_for_cach
     );
     monitor.shutdown().await;
 }
+
+#[test]
+fn release_cache_uses_typed_fields_and_preserves_defaults() {
+    let dir = isolated_tempdir();
+    let path = dir.path().join("cache.json");
+    std::fs::write(&path, r#"{"packages":{"@openai/codex":{"version":"0.154.0","etag":null,"fetchedAt":42},"unknown":{"version":"1.0.0"}}}"#).expect("write cache");
+    let cache = read_cache(&path).expect("read cache");
+    assert_eq!(cache.len(), 1);
+    let entry = &cache["@openai/codex"];
+    assert_eq!(entry.version.as_deref(), Some("0.154.0"));
+    assert_eq!(entry.etag, None);
+    assert_eq!(entry.fetched_at, Some(42.0));
+    assert_eq!(entry.last_attempt_at, 0.0);
+    save_cache(&path, &cache).expect("save cache");
+    let saved: Value = serde_json::from_slice(&std::fs::read(&path).expect("read saved cache"))
+        .expect("valid JSON");
+    assert_eq!(saved["version"], 1);
+    assert_eq!(saved["packages"]["@openai/codex"]["lastAttemptAt"], 0.0);
+
+    std::fs::write(
+        &path,
+        r#"{"packages":{"@openai/codex":{"fetchedAt":"invalid"}}}"#,
+    )
+    .expect("write malformed cache");
+    assert!(
+        read_cache(&path)
+            .expect("malformed cache is ignored")
+            .is_empty()
+    );
+}
+
+#[test]
+fn registry_document_rejects_malformed_known_fields() {
+    let JsonObject(document): JsonObject<RegistryDocument> =
+        serde_json::from_str(r#"{"dist-tags":{"latest":"0.154.0"}}"#)
+            .expect("valid registry document");
+    assert_eq!(
+        document.dist_tags.and_then(|tags| tags.0.latest).as_deref(),
+        Some("0.154.0")
+    );
+    let JsonObject(document): JsonObject<RegistryDocument> =
+        serde_json::from_str("{}").expect("missing tags are allowed");
+    assert!(document.dist_tags.is_none());
+    let JsonObject(document): JsonObject<RegistryDocument> =
+        serde_json::from_str(r#"{"dist-tags":null}"#).expect("null tags are allowed");
+    assert!(document.dist_tags.is_none());
+    let JsonObject(document): JsonObject<RegistryDocument> =
+        serde_json::from_str(r#"{"dist-tags":{"latest":null}}"#).expect("null latest is allowed");
+    assert!(document.dist_tags.expect("tags exist").0.latest.is_none());
+    assert!(
+        serde_json::from_str::<JsonObject<RegistryDocument>>(r#"{"dist-tags":{"latest":42}}"#)
+            .is_err()
+    );
+}
+
+#[test]
+fn release_documents_reject_positional_arrays() {
+    assert!(
+        serde_json::from_str::<JsonObject<RegistryDocument>>(r#"{"dist-tags":["0.154.0"]}"#)
+            .is_err()
+    );
+    assert!(serde_json::from_str::<JsonObject<RegistryDocument>>(r#"[["0.154.0"]]"#).is_err());
+    let dir = isolated_tempdir();
+    let path = dir.path().join("cache.json");
+    for text in [
+        r#"[1,{}]"#,
+        r#"{"packages":{"@openai/codex":["0.154.0",null,42,0]}}"#,
+    ] {
+        std::fs::write(&path, text).expect("write cache");
+        assert!(read_cache(&path).expect("invalid cache ignored").is_empty());
+    }
+}
+
+#[test]
+fn null_last_attempt_keeps_cache_entries() {
+    let dir = isolated_tempdir();
+    let path = dir.path().join("cache.json");
+    std::fs::write(&path, r#"{"packages":{"@openai/codex":{"version":"0.154.0","etag":"tag","fetchedAt":42,"lastAttemptAt":null},"@anthropic-ai/claude-code":{"version":"2.1.0","lastAttemptAt":10}}}"#).expect("write cache");
+    let cache = read_cache(&path).expect("read cache");
+    let entry = &cache["@openai/codex"];
+    assert_eq!(entry.version.as_deref(), Some("0.154.0"));
+    assert_eq!(entry.etag.as_deref(), Some("tag"));
+    assert_eq!(entry.fetched_at, Some(42.0));
+    assert_eq!(entry.last_attempt_at, 0.0);
+    assert_eq!(cache["@anthropic-ai/claude-code"].last_attempt_at, 10.0);
+}

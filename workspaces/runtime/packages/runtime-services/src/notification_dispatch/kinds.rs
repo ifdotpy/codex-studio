@@ -359,14 +359,10 @@ pub(super) fn apply(
                 let key = AgentId::from(id.as_str());
                 let mut plan = Table::<PlanRecord>::new(tx)
                     .get(&key)?
-                    .map(|r| r.value().clone())
-                    .unwrap_or_else(
-                        || json!({"id":id,"rootId":agent["rootId"],"text":"","version":0}),
-                    );
-                plan["native"] = p.clone();
-                plan["steps"] = p.get("plan").cloned().unwrap_or(json!([]));
-                plan["updated"] = json!(at);
-                Table::<PlanRecord>::new(tx).put_at(&key, &PlanRecord::from_value(plan)?)?;
+                    .map(Ok)
+                    .unwrap_or_else(|| PlanRecord::from_value(json!({"id":id,"rootId":agent["rootId"],"text":"","version":0,"updated":null})))?;
+                plan.update_native(p.clone(), at)?;
+                Table::<PlanRecord>::new(tx).put_at(&key, &plan)?;
             }
             let turn = turn(agent, p);
             let key = format!(

@@ -1142,6 +1142,12 @@ fn page(rows: Vec<Value>, args: &Value, scope: Value) -> Result<Value, CallbackE
 /// Model text bytes of one list page (Python `model_text_bytes` limit).
 const MODEL_PAGE_BYTES: usize = 13000;
 
+#[derive(serde::Deserialize)]
+struct PageCursor {
+    offset: u64,
+    revision: String,
+}
+
 /// Python `model_page(rows, args, scope, byte_limit)`.
 fn model_page(
     rows: Vec<Value>,
@@ -1181,9 +1187,11 @@ fn paginate(
         let raw = base64::engine::general_purpose::URL_SAFE
             .decode(cursor)
             .map_err(|_| invalid())?;
-        let cursor: Value = serde_json::from_slice(&raw).map_err(|_| invalid())?;
-        let offset = cursor["offset"].as_u64().ok_or_else(invalid)? as usize;
-        if offset > rows.len() || cursor["revision"] != revision {
+        let studio_runtime_schema::json_object::JsonObject(cursor):
+            studio_runtime_schema::json_object::JsonObject<PageCursor> =
+            serde_json::from_slice(&raw).map_err(|_| invalid())?;
+        let offset = cursor.offset as usize;
+        if offset > rows.len() || cursor.revision != revision {
             return Err(invalid());
         }
         offset
@@ -1207,6 +1215,55 @@ fn paginate(
     Ok(
         json!({"apiVersion":2,"items":rows[offset..end],"total":rows.len(),"revision":revision,"nextCursor":cursor}),
     )
+}
+
+#[cfg(test)]
+mod pagination_tests {
+    use super::*;
+    use base64::Engine;
+
+    #[test]
+    fn cursor_preserves_object_offsets_extras_and_scope() {
+        let rows = vec![json!("one"), json!("two"), json!("three")];
+        let first = paginate(
+            rows.clone(),
+            &rows,
+            &json!({"limit":1}),
+            json!("scope"),
+            None,
+        )
+        .expect("first page");
+        let revision = first["revision"].as_str().expect("revision");
+        let cursor = |text: String| base64::engine::general_purpose::URL_SAFE.encode(text);
+        let page = |text: String, scope: Value| {
+            paginate(
+                rows.clone(),
+                &rows,
+                &json!({"limit":1,"cursor":cursor(text)}),
+                scope,
+                None,
+            )
+        };
+        let extra = format!(r#"{{"offset":1,"revision":"{revision}","extra":true}}"#);
+        let result = page(extra, json!("scope")).expect("extra fields are accepted");
+        assert_eq!(result["items"], json!(["two"]));
+        for value in [
+            format!(r#"[1,"{revision}"]"#),
+            format!(r#"{{"offset":1.0,"revision":"{revision}"}}"#),
+            format!(r#"{{"offset":-1,"revision":"{revision}"}}"#),
+            format!(r#"{{"offset":4,"revision":"{revision}"}}"#),
+            format!(r#"{{"offset":1,"revision":"{revision}","offset":null}}"#),
+        ] {
+            assert!(page(value, json!("scope")).is_err());
+        }
+        assert!(
+            page(
+                format!(r#"{{"offset":1,"revision":"{revision}"}}"#),
+                json!("other")
+            )
+            .is_err()
+        );
+    }
 }
 
 pub(super) fn payload_selection(

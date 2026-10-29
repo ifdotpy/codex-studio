@@ -7,6 +7,7 @@
 use std::collections::{BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock};
 
+#[cfg(any(test, feature = "test-support"))]
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -29,17 +30,19 @@ pub enum ResourceNotifyError {
     Unavailable,
 }
 
-// Notification roles only: HTTP's generated ResourceRef owns input validation.
+// Fixture adapter for tests of notification selection.
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Deserialize)]
 struct ResourceScope {
     kind: ResourceKind,
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "kebab-case")]
-enum ResourceKind {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "test-support"), derive(Deserialize))]
+#[cfg_attr(any(test, feature = "test-support"), serde(rename_all = "kebab-case"))]
+pub enum ResourceKind {
     State,
-    #[serde(rename = "agentDetail")]
+    #[cfg_attr(any(test, feature = "test-support"), serde(rename = "agentDetail"))]
     AgentDetail,
     Costs,
     Desktop,
@@ -58,8 +61,26 @@ enum ResourceKind {
     Tasks,
     Workspace,
     MultiServer,
-    #[serde(other)]
+    #[cfg_attr(any(test, feature = "test-support"), serde(other))]
     Other,
+}
+
+/// The notification service selects and returns the caller's typed resources.
+pub trait ResourceIdentity: Clone {
+    fn notification_key(&self) -> Result<String, ResourceNotifyError>;
+    fn notification_kind(&self) -> Result<ResourceKind, ResourceNotifyError>;
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl ResourceIdentity for Value {
+    fn notification_key(&self) -> Result<String, ResourceNotifyError> {
+        Ok(self.to_string())
+    }
+    fn notification_kind(&self) -> Result<ResourceKind, ResourceNotifyError> {
+        ResourceScope::deserialize(self)
+            .map(|scope| scope.kind)
+            .map_err(|_| ResourceNotifyError::Invalid)
+    }
 }
 
 impl ResourceKind {
@@ -106,9 +127,9 @@ impl Publications {
 }
 
 /// A consistent resource view, with only the requested resources that changed.
-pub struct ResourceChanges {
+pub struct ResourceChanges<T = Value> {
     pub cursor: ChangeSnapshot,
-    pub resources: Vec<Value>,
+    pub resources: Vec<T>,
     pub versions: Vec<i64>,
     pub entity_reset: bool,
     pub overflow: bool,
@@ -221,11 +242,11 @@ impl ResourceNotifications {
     }
 
     /// Read versions and their cursor under the publication guard. Retain only bounded metadata.
-    pub fn changes_since(
+    pub fn changes_since<T: ResourceIdentity>(
         &self,
-        resources: &[Value],
+        resources: &[T],
         after: Option<i64>,
-    ) -> Result<ResourceChanges, ResourceNotifyError> {
+    ) -> Result<ResourceChanges<T>, ResourceNotifyError> {
         let state = self
             .publications
             .lock()
@@ -235,15 +256,14 @@ impl ResourceNotifications {
         let mut selected = Vec::new();
         let mut versions = Vec::new();
         for resource in resources {
-            let key = resource.to_string();
-            let scope =
-                ResourceScope::deserialize(resource).map_err(|_| ResourceNotifyError::Invalid)?;
-            let explicit = if matches!(scope.kind, ResourceKind::State) {
+            let key = resource.notification_key()?;
+            let kind = resource.notification_kind()?;
+            let explicit = if matches!(kind, ResourceKind::State) {
                 state.entity_reset_revision
             } else {
                 state.resource_revision(&key)
             };
-            let version = match scope.kind {
+            let version = match kind {
                 // Discovery reads refresh volatile access timestamps; only its
                 // explicit publications may advance this semantic cursor.
                 ResourceKind::MultiServer => explicit,
@@ -291,14 +311,15 @@ impl ResourceNotifications {
     /// transient resources against their served content.
     /// Uncomputable reads retain the original safe refresh. The bounded
     /// cache shares computations across streams; no publication does projection work.
-    pub async fn changes_since_with_content<F, Fut>(
+    pub async fn changes_since_with_content<T, F, Fut>(
         &self,
-        resources: &[Value],
+        resources: &[T],
         after: Option<i64>,
         mut read: F,
-    ) -> Result<ResourceChanges, ResourceNotifyError>
+    ) -> Result<ResourceChanges<T>, ResourceNotifyError>
     where
-        F: FnMut(Value) -> Fut,
+        T: ResourceIdentity,
+        F: FnMut(T) -> Fut,
         Fut: std::future::Future<Output = Option<Vec<u8>>>,
     {
         let mut view = self.changes_since(resources, after)?;
@@ -308,10 +329,8 @@ impl ResourceNotifications {
         let mut selected = Vec::new();
         let mut versions = Vec::new();
         for (resource, version) in view.resources.iter().zip(&view.versions) {
-            let key = resource.to_string();
-            let scope =
-                ResourceScope::deserialize(resource).map_err(|_| ResourceNotifyError::Invalid)?;
-            if scope.kind.is_entity() {
+            let key = resource.notification_key()?;
+            if resource.notification_kind()?.is_entity() {
                 selected.push(resource.clone());
                 versions.push(*version);
                 continue;

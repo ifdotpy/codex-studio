@@ -115,7 +115,8 @@ pub trait PairedExchange: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<ExchangeOutcome, BrowserError>> + Send + 'a>>;
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ForwardInput {
     pub server: String,
     pub bridge_id: String,
@@ -125,6 +126,7 @@ pub struct ForwardInput {
     pub path: String,
     pub expires_at: f64,
     #[cfg(test)]
+    #[serde(skip)]
     observe_half_close: bool,
 }
 

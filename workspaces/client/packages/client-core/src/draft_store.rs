@@ -178,8 +178,8 @@ fn execute(db: &Connection, request: &Request) -> Result<DraftResult, String> {
                 return Err("Too many saved draft branches.".into());
             }
             for version in versions {
+                version.validate()?;
                 let incoming = document(&version);
-                decode(&incoming)?;
                 let existing = keyed_row(db, workspace, &version.id)?;
                 match existing {
                     Some((local, master, _)) => {
@@ -457,12 +457,13 @@ mod tests {
         let path = directory.path().join("client.sqlite3");
         let mut store = crate::store::Store::open(&path).unwrap();
         let input = json!({"versions":[
-            {"id":"a:room","device":"a","session":"room","text":"first","updated":1},
+            {"id":"a:room","device":"a","session":"room","text":"first","updated":1,"extension":{"kept":true}},
             {"id":"b:room","device":"b","session":"room","text":"second","updated":2}
         ]});
         let imported = command(&mut store, "import", "drafts.import", input.clone());
         assert_eq!(imported["drafts"]["room"], "second");
         assert_eq!(imported["conflicts"][0]["text"], "first");
+        assert_eq!(imported["conflicts"][0]["extension"]["kept"], true);
         assert_eq!(
             command(&mut store, "pending", "drafts.pending", json!({}))["rows"]
                 .as_array()
@@ -491,6 +492,14 @@ mod tests {
             ]}),
         });
         assert!(invalid.error.is_some());
+        let positional = store.dispatch(Request {
+            id: "positional-import".into(),
+            method: "drafts.import".into(),
+            params: json!({"workspace":"a".repeat(32),"versions":[
+                ["a:room", "room", "a", "text", 1]
+            ]}),
+        });
+        assert!(positional.error.is_some());
         assert!(
             command(&mut store, "after-bad", "drafts.view", json!({}))["drafts"]
                 .get("other")

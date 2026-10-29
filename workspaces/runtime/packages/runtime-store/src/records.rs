@@ -691,22 +691,153 @@ record_newtype!(
     key = PayloadId,
     query = JsonAgent
 );
-record_newtype!(
-    PlanRecord,
-    AgentId,
-    table = "runtime_plans",
-    schema = "PersistedPlanRecord",
-    key = External,
-    query = None
-);
-record_newtype!(
-    AnnotationRecord,
-    String,
-    table = "runtime_annotations",
-    schema = "PersistedAnnotationRecord",
-    key = PayloadId,
-    query = None
-);
+pub use studio_runtime_schema::plan_record::PlanRecord;
+impl JsonRecord for PlanRecord {
+    type Id = AgentId;
+    const TABLE: &'static str = "runtime_plans";
+    const SCHEMA: &'static str = "PersistedPlanRecord";
+    const KEY_MODE: RecordKeyMode = RecordKeyMode::External;
+    const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
+    const TYPED_SHAPE: bool = true;
+    const DIRECT_TYPED_DECODE: bool = true;
+    fn record_key(&self) -> Option<&Self::Id> {
+        None
+    }
+}
+#[cfg(test)]
+mod plan_typed_tests {
+    use super::{AgentId, PlanRecord, Table};
+    use serde_json::json;
+
+    #[test]
+    fn plan_deserialization_enforces_shape_and_preserves_extensions() {
+        for invalid in [
+            json!({"id":"a"}),
+            json!({"id":"a","rootId":"r","text":"","version":1.5,"updated":null}),
+            json!({"id":"a","rootId":"r","text":"","version":1,"updated":null,"native":[]}),
+        ] {
+            assert!(serde_json::from_value::<PlanRecord>(invalid).is_err());
+        }
+        let value = json!({"id":"different-from-row","rootId":"r","text":"x","version":1.0,"updated":null,"native":null,"future":[1]});
+        let record: PlanRecord = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(record).unwrap(), value);
+    }
+
+    #[test]
+    fn plan_store_uses_external_key_and_rejects_duplicate_fields() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE runtime_plans(id TEXT PRIMARY KEY,record TEXT NOT NULL)")
+            .unwrap();
+        let value = json!({"id":"payload-id","rootId":"root","text":"x","version":1.0,"updated":null,"future":true});
+        let record = PlanRecord::from_value(value.clone()).unwrap();
+        let key = AgentId::from("row-id");
+        Table::<PlanRecord>::new(&db).put_at(&key, &record).unwrap();
+        assert_eq!(
+            Table::<PlanRecord>::new(&db)
+                .get(&key)
+                .unwrap()
+                .unwrap()
+                .into_value(),
+            value
+        );
+        db.execute(
+            "UPDATE runtime_plans SET record=?1",
+            [r#"{"id":"a","id":"b","rootId":"r","text":"","version":0,"updated":null}"#],
+        )
+        .unwrap();
+        assert!(Table::<PlanRecord>::new(&db).get(&key).is_err());
+    }
+}
+pub use studio_runtime_schema::annotation_record::AnnotationRecord;
+impl JsonRecord for AnnotationRecord {
+    type Id = String;
+    const TABLE: &'static str = "runtime_annotations";
+    const SCHEMA: &'static str = "PersistedAnnotationRecord";
+    const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
+    const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
+    const TYPED_SHAPE: bool = true;
+    const DIRECT_TYPED_DECODE: bool = true;
+    fn record_key(&self) -> Option<&Self::Id> {
+        Some(self.id())
+    }
+}
+#[cfg(test)]
+mod annotation_typed_tests {
+    use super::{AnnotationRecord, Table};
+    use serde_json::json;
+
+    #[test]
+    fn annotation_deserialization_enforces_shapes() {
+        for value in [
+            json!(["a"]),
+            json!({"id":"a","line":1.5}),
+            json!({"id":"a","text":1}),
+        ] {
+            assert!(serde_json::from_value::<AnnotationRecord>(value).is_err());
+        }
+        for value in [
+            json!({"id":"a"}),
+            json!({"id":"a","line":1.0,"created":null,"extra":[1]}),
+        ] {
+            let record: AnnotationRecord = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(serde_json::to_value(record).unwrap(), value);
+        }
+    }
+
+    #[test]
+    fn annotation_line_validator_domain() {
+        for value in [json!(-1), json!(u64::MAX), json!(1.0)] {
+            assert!(
+                studio_runtime_schema::validate(
+                    "PersistedAnnotationRecord",
+                    &json!({"id":"a","line":value})
+                )
+                .unwrap(),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn annotation_store_preserves_identity_extensions_and_rejects_duplicate_keys() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE runtime_annotations(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
+        )
+        .unwrap();
+        let value = json!({"id":"a","line":-1.0,"created":null,"future":{"x":1}});
+        let record = AnnotationRecord::from_value(value.clone()).unwrap();
+        Table::<AnnotationRecord>::new(&db).put(&record).unwrap();
+        assert_eq!(
+            Table::<AnnotationRecord>::new(&db)
+                .get(&"a".to_owned())
+                .unwrap()
+                .unwrap()
+                .into_value(),
+            value
+        );
+        db.execute(
+            "UPDATE runtime_annotations SET record=?1 WHERE id='a'",
+            [r#"{"id":"other","id":"a"}"#],
+        )
+        .unwrap();
+        assert!(
+            Table::<AnnotationRecord>::new(&db)
+                .get(&"a".to_owned())
+                .is_err()
+        );
+        db.execute(
+            "UPDATE runtime_annotations SET record=?1 WHERE id='a'",
+            [r#"{"id":"other"}"#],
+        )
+        .unwrap();
+        assert!(
+            Table::<AnnotationRecord>::new(&db)
+                .get(&"a".to_owned())
+                .is_err()
+        );
+    }
+}
 record_newtype!(
     ToolResultRecord,
     String,
@@ -747,14 +878,88 @@ record_newtype!(
     key = PayloadId,
     query = JsonAgent
 );
-record_newtype!(
-    TerminalRecord,
-    String,
-    table = "user_terminals",
-    schema = "PersistedTerminalRecord",
-    key = PayloadId,
-    query = None
-);
+pub use studio_runtime_schema::terminal_record::TerminalRecord;
+
+impl JsonRecord for TerminalRecord {
+    type Id = String;
+    const TABLE: &'static str = "user_terminals";
+    const SCHEMA: &'static str = "PersistedTerminalRecord";
+    const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
+    const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
+    const TYPED_SHAPE: bool = true;
+    fn record_key(&self) -> Option<&Self::Id> {
+        Some(self.id())
+    }
+}
+
+#[cfg(test)]
+mod terminal_typed_tests {
+    use super::{Table, TerminalRecord};
+    use serde_json::json;
+
+    #[test]
+    fn terminal_deserialization_enforces_schema_and_preserves_fields() {
+        for invalid in [
+            json!(["t"]),
+            json!({"id":"t","agent":7}),
+            json!({"id":"t","status":false}),
+            json!({"id":"t","exitCode":1.5}),
+        ] {
+            assert!(serde_json::from_value::<TerminalRecord>(invalid).is_err());
+        }
+        for valid in [
+            json!({"id":"t"}),
+            json!({"id":"t","agent":null,"status":null,"exitCode":null,"extra":{"a":1}}),
+            json!({"id":"t","exitCode":1.0}),
+            json!({"id":"t","exitCode":u64::MAX}),
+        ] {
+            let record: TerminalRecord = serde_json::from_value(valid.clone()).unwrap();
+            assert_eq!(serde_json::to_value(record).unwrap(), valid);
+        }
+    }
+
+    #[test]
+    fn terminal_storage_checks_row_identity_and_preserves_sql_columns() {
+        let mut db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE user_terminals(id TEXT PRIMARY KEY,record TEXT NOT NULL,output TEXT NOT NULL,offset INTEGER NOT NULL,output_generation INTEGER NOT NULL)").unwrap();
+        let payload = json!({"id":"t","status":null,"exitCode":1.0,"future":{"value":true}});
+        let record = TerminalRecord::from_value(payload.clone()).unwrap();
+        let tx = db.transaction().unwrap();
+        crate::TerminalsRepository::put(&tx, "t", &record, "hello", 4).unwrap();
+        let row = crate::TerminalsRepository::get(&tx, "t").unwrap().unwrap();
+        assert_eq!(row.record.value(), payload);
+        assert_eq!(
+            (row.output.as_str(), row.offset, row.output_generation),
+            ("hello", 4, 0)
+        );
+        let mut conflicting = record.clone();
+        assert!(conflicting.set("status", json!(false)).is_err());
+        assert_eq!(conflicting.value(), payload);
+        tx.execute(
+            "UPDATE user_terminals SET record=?1 WHERE id='t'",
+            [json!({"id":"other"}).to_string()],
+        )
+        .unwrap();
+        assert!(
+            Table::<TerminalRecord>::new(&tx)
+                .get(&"t".to_string())
+                .is_err()
+        );
+        tx.execute(
+            "UPDATE user_terminals SET record=?1 WHERE id='t'",
+            [r#"{"id":"old","id":"t","status":3,"status":"running"}"#],
+        )
+        .unwrap();
+        assert_eq!(
+            Table::<TerminalRecord>::new(&tx)
+                .get(&"t".to_string())
+                .unwrap()
+                .unwrap()
+                .status(),
+            Some("running")
+        );
+    }
+}
 record_newtype!(
     UsageResumeRecord,
     String,
@@ -1025,6 +1230,8 @@ pub trait JsonRecord: Serialize + DeserializeOwned {
     const SCHEMA: &'static str;
     const KEY_MODE: RecordKeyMode;
     const QUERY_SHAPE: RecordQueryShape;
+    const TYPED_SHAPE: bool = false;
+    const DIRECT_TYPED_DECODE: bool = false;
 
     fn record_key(&self) -> Option<&Self::Id>;
 
@@ -1525,8 +1732,17 @@ pub(crate) fn decode_record<R: JsonRecord>(
         table: R::TABLE,
         id: row_id.to_owned(),
     };
-    let value = decode_value(R::SCHEMA, encoded, invalid)?;
-    let record = serde_json::from_value::<R>(value).map_err(|_| invalid())?;
+    let record = if R::DIRECT_TYPED_DECODE {
+        serde_json::from_str::<R>(encoded).map_err(|_| invalid())?
+    } else if R::TYPED_SHAPE {
+        // Stored JSON was historically parsed to a map first, so duplicate
+        // property names retain serde_json's last-value behavior.
+        let value = serde_json::from_str::<Value>(encoded).map_err(|_| invalid())?;
+        serde_json::from_value::<R>(value).map_err(|_| invalid())?
+    } else {
+        let value = decode_value(R::SCHEMA, encoded, invalid)?;
+        serde_json::from_value::<R>(value).map_err(|_| invalid())?
+    };
     if R::KEY_MODE == RecordKeyMode::PayloadId
         && record.record_key().map(AsRef::as_ref) != Some(row_id)
     {
@@ -1640,8 +1856,9 @@ fn checked_value<R: JsonRecord>(record: &R, row_id: &str) -> StoreResult<Value> 
     if (R::KEY_MODE == RecordKeyMode::PayloadId
         && (record.record_key().map(AsRef::as_ref) != Some(row_id)
             || value.get("id").and_then(Value::as_str) != Some(row_id)))
-        || !studio_runtime_schema::validate(R::SCHEMA, &value)
-            .map_err(crate::StoreError::SchemaValidation)?
+        || (!R::TYPED_SHAPE
+            && !studio_runtime_schema::validate(R::SCHEMA, &value)
+                .map_err(crate::StoreError::SchemaValidation)?)
     {
         return Err(invalid());
     }

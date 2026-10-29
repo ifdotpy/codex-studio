@@ -724,10 +724,17 @@ fn apply_pair(
             .invite()
             .cloned()
             .ok_or_else(|| refused(403, "invite_unavailable", "The invitation is unavailable"))?;
-        invite["status"] = json!("used");
+        invite.mark_used();
+        let invite = serde_json::to_string(&invite).map_err(|_| {
+            refused(
+                503,
+                "invalid_record",
+                "Stored access identity differs from its row",
+            )
+        })?;
         tx.execute(
             "UPDATE runtime_access_invites SET record=?1 WHERE id=?2",
-            params![invite.to_string(), text(body, "inviteId")],
+            params![invite, text(body, "inviteId")],
         )?;
         new_client(request, principal, now)
     } else {

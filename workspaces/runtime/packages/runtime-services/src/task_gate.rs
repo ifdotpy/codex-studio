@@ -25,7 +25,7 @@ pub fn normalize(value: &Value) -> Result<Value, EventWriteError> {
 pub fn set_default(
     tx: &Transaction<'_>,
     actor_id: &str,
-    gate: &Value,
+    gate: Option<studio_runtime_schema::task_gate::GateInput>,
     request_id: Option<&str>,
     signature: &str,
 ) -> Result<Value, EventWriteError> {
@@ -35,8 +35,10 @@ pub fn set_default(
             "Only the lead can set the default acceptance gate",
         ));
     }
-    let gate =
-        studio_runtime_schema::task_gate::parse(gate).map_err(EventWriteError::InvalidRequest)?;
+    let gate = gate
+        .map(studio_runtime_schema::task_gate::GateInput::normalize)
+        .transpose()
+        .map_err(EventWriteError::InvalidRequest)?;
     let admitted = if let Some(root) = request_id {
         match event_write::begin_request::<DefaultGateReply>(
             tx,

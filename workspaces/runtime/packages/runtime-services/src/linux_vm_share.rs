@@ -316,12 +316,7 @@ fn project_id(value: Option<&Value>) -> Result<String, String> {
 }
 
 fn read_object(path: &Path) -> Option<Map<String, Value>> {
-    match serde_json::from_str(&fs::read_to_string(path).ok()?).ok()? {
-        Value::Object(map) => Some(map),
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) | Value::Array(_) => {
-            None
-        }
-    }
+    serde_json::from_str(&fs::read_to_string(path).ok()?).ok()
 }
 
 /// Save `value` atomically with mode 0600.
