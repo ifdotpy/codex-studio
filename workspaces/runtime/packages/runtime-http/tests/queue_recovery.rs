@@ -284,3 +284,44 @@ async fn send_now_does_not_release_owned_account_auth_holds() {
         assert_eq!(snapshot(&store), before);
     }
 }
+
+#[tokio::test]
+async fn send_now_preserves_legacy_original_and_extensions_in_metadata() {
+    for (metadata, expected) in [
+        (
+            json!({"delivery":"after_turn","assets":[],"future":{"n":1}}),
+            "after_turn",
+        ),
+        (
+            json!({"delivery":"after_turn","requestedDelivery":"steer","assets":[],"future":{"n":1}}),
+            "steer",
+        ),
+    ] {
+        let (_directory, store, app) = fixture().await;
+        store
+            .transaction(move |tx| {
+                QueueWriteRepository::put_metadata(tx, USER, &metadata)?;
+                let mut agent = AgentRepository::get(tx, &AgentId::from(ACTOR))?.unwrap();
+                agent.status = studio_runtime_store::AgentStatus::Queued;
+                AgentRepository::put(tx, &agent)
+            })
+            .await
+            .unwrap();
+        let body = promotion(&app).await;
+        let (status, receipt) = call(&app, Some(body)).await;
+        assert_eq!(status, 200, "{receipt}");
+        let stored: String = store
+            .test_reader()
+            .unwrap()
+            .query_row(
+                "SELECT record FROM runtime_event_meta WHERE id=?1",
+                [USER],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let stored: Value = serde_json::from_str(&stored).unwrap();
+        assert_eq!(stored["requestedDelivery"], expected);
+        assert_eq!(stored["delivery"], "current_turn");
+        assert_eq!(stored["future"], json!({"n":1}));
+    }
+}

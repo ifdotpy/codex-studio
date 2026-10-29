@@ -153,8 +153,10 @@ pub fn action(
             QueueWriteRepository::update_text(transaction, target_id, text)?;
             if row.get("text").and_then(Value::as_str) != Some(text) {
                 let mut metadata = read_metadata(transaction, target_id)?;
-                metadata["acceptedAt"] = json!(unix_time()?);
-                QueueWriteRepository::put_metadata(transaction, target_id, &metadata)?;
+                metadata
+                    .extensions
+                    .insert("acceptedAt".into(), json!(unix_time()?));
+                QueueWriteRepository::put_typed_metadata(transaction, target_id, &metadata)?;
             }
         }
         QueueCommand::First(_) | QueueCommand::SendNow(_) => {
@@ -192,24 +194,24 @@ pub fn action(
             QueueWriteRepository::update_created(transaction, target_id, first - 0.001)?;
             if matches!(body, QueueCommand::SendNow(_)) {
                 let mut metadata = read_metadata(transaction, target_id)?;
-                if metadata.get("requestedDelivery").is_none()
-                    && !event_write::truthy(metadata.get("sendNow"))
+                if metadata.requested_delivery.is_missing()
+                    && !event_write::truthy(metadata.extensions.get("sendNow"))
                 {
-                    let original = studio_runtime_schema::DeliveryMoment::for_event(
-                        "user",
-                        "",
-                        Some(&metadata),
-                    )
-                    .map_err(|_| QueueWriteError::InvalidStoredObject {
-                        object: "runtime_event_meta",
-                        id: target_id.to_owned(),
-                    })?;
-                    metadata["requestedDelivery"] = json!(original);
+                    let original = metadata.delivery.value().cloned().unwrap_or_else(|| {
+                        studio_runtime_schema::event_metadata::StoredDelivery::canonical(
+                            studio_runtime_schema::DeliveryMoment::default(),
+                        )
+                    });
+                    metadata.requested_delivery =
+                        studio_runtime_schema::queue_command::Field::Value(original);
                 }
-                metadata["delivery"] =
-                    json!(studio_runtime_schema::delivery::DeliveryMoment::CurrentTurn);
-                metadata["sendNow"] = json!(true);
-                QueueWriteRepository::put_metadata(transaction, target_id, &metadata)?;
+                metadata.delivery = studio_runtime_schema::queue_command::Field::Value(
+                    studio_runtime_schema::event_metadata::StoredDelivery::canonical(
+                        studio_runtime_schema::DeliveryMoment::CurrentTurn,
+                    ),
+                );
+                metadata.extensions.insert("sendNow".into(), json!(true));
+                QueueWriteRepository::put_typed_metadata(transaction, target_id, &metadata)?;
             }
         }
     }
@@ -344,12 +346,11 @@ fn reorder(
     Ok(())
 }
 
-fn read_metadata(transaction: &Transaction<'_>, id: &str) -> Result<Value, QueueWriteError> {
-    let record = QueueWriteRepository::metadata(transaction, id)?;
-    match record {
-        None => Ok(json!({})),
-        Some(value) => Ok(value),
-    }
+fn read_metadata(
+    transaction: &Transaction<'_>,
+    id: &str,
+) -> Result<studio_runtime_store::EventMetadataRecord, QueueWriteError> {
+    Ok(QueueWriteRepository::typed_metadata(transaction, id)?.unwrap_or_default())
 }
 
 fn unix_time() -> Result<f64, QueueWriteError> {

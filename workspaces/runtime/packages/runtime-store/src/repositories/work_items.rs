@@ -65,7 +65,7 @@ pub struct StoredQueueEvent {
     pub status: String,
     pub created: f64,
     pub error: Option<String>,
-    pub metadata: Option<Value>,
+    pub metadata: Option<EventMetadataRecord>,
     pub valid: bool,
 }
 
@@ -381,7 +381,7 @@ impl WorkItemsRepository {
         let metadata = Table::<EventMetadataRecord>::new(connection);
         for event in &mut events {
             if let Some(record) = metadata.get(&QueueEventId::from(event.id.as_str()))? {
-                event.metadata = Some(record.value().clone());
+                event.metadata = Some(record);
             }
         }
         Ok(events)

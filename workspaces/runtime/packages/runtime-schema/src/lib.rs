@@ -19,6 +19,7 @@ pub mod contracts;
 pub mod delivery;
 pub mod desktop;
 pub mod federation_limits;
+pub mod event_metadata;
 pub mod idle_compaction;
 pub mod json_compat;
 pub mod json_object;

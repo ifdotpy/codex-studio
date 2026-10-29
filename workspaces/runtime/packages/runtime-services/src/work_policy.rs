@@ -14,7 +14,7 @@ pub enum WorkPolicyError {
 
 pub struct PreparedQueueItem {
     event: StoredQueueEvent,
-    metadata: Value,
+    metadata: studio_runtime_store::EventMetadataRecord,
 }
 
 pub struct PreparedQueue {
@@ -66,15 +66,9 @@ pub fn prepare_queue(events: Vec<StoredQueueEvent>) -> Result<PreparedQueue, Wor
         if !event.valid {
             return Err(invalid("runtime_events", &event.id));
         }
-        let metadata = event.metadata.clone().unwrap_or_else(|| json!({}));
-        let Some(metadata_object) = metadata.as_object() else {
-            return Err(invalid("runtime_event_meta", &event.id));
-        };
-        if let Some(assets) = metadata_object.get("assets") {
-            for value in assets
-                .as_array()
-                .ok_or_else(|| invalid("runtime_event_meta", &event.id))?
-            {
+        let metadata = event.metadata.clone().unwrap_or_default();
+        if let Some(assets) = &metadata.assets {
+            for value in assets {
                 asset_ids.push(
                     value
                         .as_str()
@@ -102,11 +96,7 @@ pub fn queue_items(
         .map(|prepared| {
             let event = prepared.event;
             let metadata = prepared.metadata;
-            let ids = metadata
-                .get("assets")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten();
+            let ids = metadata.assets.iter().flatten();
             let attachments = ids
                 .map(|value| {
                     let id = value.as_str().expect("validated queue asset id");
@@ -116,18 +106,22 @@ pub fn queue_items(
                         .ok_or_else(|| invalid("runtime_assets", id))
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            let delivery = metadata
-                .get("delivery")
-                .cloned()
-                .unwrap_or_else(|| json!("queue"));
+            let delivery = match &metadata.delivery {
+                studio_runtime_schema::queue_command::Field::Missing => json!("queue"),
+                other => json!(other),
+            };
+            let requested = match &metadata.requested_delivery {
+                studio_runtime_schema::queue_command::Field::Missing => delivery.clone(),
+                other => json!(other),
+            };
             let mut item = json!({
                 "id": event.id, "kind": event.kind, "text": event.text,
                 "status": event.status, "created": event.created,
                 "error": event.error, "assets": attachments,
                 "delivery": delivery,
-                "requestedDelivery": metadata.get("requestedDelivery").cloned().unwrap_or(delivery),
+                "requestedDelivery": requested,
             });
-            if let Some(accepted) = metadata.get("acceptedAt") {
+            if let Some(accepted) = metadata.extensions.get("acceptedAt") {
                 item["acceptedAt"] = accepted.clone();
             }
             Ok(item)
@@ -208,7 +202,10 @@ mod tests {
             status: "pending".into(),
             created: 1.0,
             error: None,
-            metadata: Some(json!({"assets":["asset"]})),
+            metadata: Some(
+                studio_runtime_store::EventMetadataRecord::from_value(json!({"assets":["asset"]}))
+                    .unwrap(),
+            ),
             valid: true,
         }])
         .expect("queue event is valid");

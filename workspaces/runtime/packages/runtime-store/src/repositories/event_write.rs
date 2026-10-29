@@ -166,30 +166,19 @@ impl EventWriteRepository {
     ) -> StoreResult<()> {
         let key = QueueEventId::from(id);
         let table = Table::<EventMetadataRecord>::new(connection);
-        let mut value = table
-            .get(&key)?
-            .map(|record| record.value().clone())
-            .unwrap_or_else(|| serde_json::json!({}));
-        let Some(object) = value.as_object_mut() else {
-            return Err(StoreError::InvalidStoredObject {
-                table: EventMetadataRecord::TABLE,
-                id: id.to_owned(),
-            });
-        };
-        let timing = object
-            .entry("timing".to_owned())
-            .or_insert_with(|| serde_json::json!({}));
-        if timing.is_null() {
-            *timing = serde_json::json!({});
-        }
-        let Some(timing) = timing.as_object_mut() else {
-            return Err(StoreError::InvalidStoredObject {
-                table: EventMetadataRecord::TABLE,
-                id: id.to_owned(),
-            });
+        let mut record = table.get(&key)?.unwrap_or_default();
+        let timing = match &mut record.timing {
+            studio_runtime_schema::queue_command::Field::Value(timing) => timing,
+            timing @ (studio_runtime_schema::queue_command::Field::Missing
+            | studio_runtime_schema::queue_command::Field::Null) => {
+                *timing = studio_runtime_schema::queue_command::Field::Value(Default::default());
+                let studio_runtime_schema::queue_command::Field::Value(timing) = timing else {
+                    unreachable!()
+                };
+                timing
+            }
         };
         timing.insert("enqueuedAt".to_owned(), serde_json::json!(monotonic_ns));
-        let record = EventMetadataRecord::from_value(value)?;
         table.put_at(&key, &record)
     }
 
@@ -570,6 +559,37 @@ mod tests {
             serde_json::from_str::<serde_json::Value>(&record).expect("metadata parses")["timing"]
                 ["enqueuedAt"],
             42
+        );
+    }
+
+    #[test]
+    fn enqueue_timing_preserves_legacy_metadata_and_unknown_values() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY,record TEXT NOT NULL);",
+            )
+            .unwrap();
+        let original = serde_json::json!({"delivery":"after_turn","requestedDelivery":null,"timing":{"prior":18446744073709551615u64},"assets":[null,{"extra":true}],"future":{"a":1}});
+        connection
+            .execute(
+                "INSERT INTO runtime_event_meta VALUES('e',?1)",
+                [original.to_string()],
+            )
+            .unwrap();
+        EventWriteRepository::mark_event_enqueued(&connection, "e", 42).unwrap();
+        let raw: String = connection
+            .query_row(
+                "SELECT record FROM runtime_event_meta WHERE id='e'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let mut expected = original;
+        expected["timing"]["enqueuedAt"] = serde_json::json!(42);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&raw).unwrap(),
+            expected
         );
     }
 

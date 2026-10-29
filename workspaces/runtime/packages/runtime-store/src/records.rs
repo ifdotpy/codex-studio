@@ -1258,14 +1258,18 @@ impl JsonRecord for TranscriptAssetRecord {
         Some(self.id())
     }
 }
-record_newtype!(
-    EventMetadataRecord,
-    QueueEventId,
-    table = "runtime_event_meta",
-    schema = "RuntimeEventMetadataRecord",
-    key = External,
-    query = None
-);
+pub use studio_runtime_schema::event_metadata::EventMetadataRecord;
+impl JsonRecord for EventMetadataRecord {
+    type Id = QueueEventId;
+    const TABLE: &'static str = "runtime_event_meta";
+    const SCHEMA: &'static str = "RuntimeEventMetadataRecord";
+    const KEY_MODE: RecordKeyMode = RecordKeyMode::External;
+    const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
+    const TYPED_SHAPE: bool = true;
+    fn record_key(&self) -> Option<&Self::Id> {
+        None
+    }
+}
 record_newtype!(
     GraphAgentRecord,
     String,
@@ -2714,8 +2718,8 @@ mod tests {
                 .get(&key)
                 .expect("external key read")
                 .expect("metadata exists")
-                .value(),
-            &json!({"timing":{"enqueuedAt":9}})
+                .into_value(),
+            json!({"timing":{"enqueuedAt":9}})
         );
         let stored: String = connection
             .query_row(
