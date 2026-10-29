@@ -172,6 +172,17 @@ Use `nice -n 10`, not `taskpolicy -b`. Background priority made the WASM build
 miss its 30-minute limit. On macOS, `just test-fast` takes 12.3 min cold, about
 4 min in a warm line after a code change, and 17 s after a docs-only change.
 
+### Machine gate lock
+
+`just test-fast` and `just test-comprehensive` take one machine-wide lock
+(`/tmp/studio-gate.lock`, a folder with a `pid` file) before the first step and
+release it at exit, also on error and signals. A second gate waits and prints the
+holder's pid and command every minute. A lock whose pid is dead is taken over. A
+gate started under the lock holder (for example the studio-ops wrapper scripts,
+which use the same lock) does not wait. Set `STUDIO_GATE_LOCK_MAX_WAIT_S` to stop
+waiting after that many seconds; the default is no limit. Focused commands do not
+take the lock. Owner: `gate-config.ts`; code: `gate-lock.ts`.
+
 ### Test result cache
 
 - A step with declared inputs reuses its saved result while the git tree IDs of

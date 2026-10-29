@@ -706,7 +706,7 @@ async fn settle_failure(
                 &AgentId::from(operation["agent"].as_str().unwrap_or_default()),
             )? {
                 if unknown {
-                    actor.extra.insert("status".into(), json!("interrupted"));
+                    actor.set_status(studio_runtime_store::AgentStatus::Interrupted);
                     actor.auto_wake = Some(false);
                     actor.extra.insert("error".into(), json!(error.clone()));
                 } else {
@@ -926,7 +926,7 @@ async fn copy_branch_history(
         child.extra.insert("profileId".into(), provider.get("activePermissionProfile").cloned().or_else(|| current.extra.get("profileId").cloned()).unwrap_or(Value::Null));
         child.thread_id = match &provider["thread"]["id"] { Value::Null => None, Value::String(id) => Some(id.clone()), Value::Bool(_) | Value::Number(_) | Value::Array(_) | Value::Object(_) => return Err(studio_runtime_store::StoreError::SchemaMismatch("invalid branch thread".into())) };
         child.extra.insert("forkedFrom".into(),json!(source)); child.extra.insert("sourceMessage".into(),json!(selected.id));
-        child.extra.insert("status".into(),json!("idle")); child.auto_wake = Some(true); child.extra.insert("needsTitle".into(),json!(false));
+        child.set_status(studio_runtime_store::AgentStatus::Idle); child.auto_wake = Some(true); child.extra.insert("needsTitle".into(),json!(false));
         child.extra.remove("quickCreate"); child.extra.remove("quickCreateRequest");
         let mut stmt=tx.prepare_cached("SELECT id,record,created FROM runtime_items WHERE agent=?1 AND json_extract(record,'$.afterRestore') IS NULL ORDER BY created,id")?;
         let rows=stmt.query_map([source.as_str()],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,f64>(2)?)))?.collect::<Result<Vec<_>,_>>()?;
@@ -1244,6 +1244,44 @@ mod tests {
                 serde_json::to_value(typed).unwrap()
             );
         }
+    }
+
+    async fn status_fixture() -> (tempfile::TempDir, RuntimeStore) {
+        let root = tempfile::tempdir().expect("state");
+        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        store.transaction(|tx| {
+            let source = AgentRecord::from_value(json!({"id":"source","rootId":"source","epoch":0,"status":"running","workspaceReservationId":"operation","provider":"codex"}))?;
+            let child = AgentRecord::from_value(json!({"id":"child","rootId":"child","epoch":0,"status":"queued","provider":"codex"}))?;
+            AgentRepository::put(tx, &source)?;
+            AgentRepository::put(tx, &child)?;
+            let operation = json!({"id":"operation","agent":"source","phase":"provider_pending","source":CheckpointsRepository::workspace_source(&source.value())});
+            tx.execute("INSERT INTO runtime_workspace_operations(id,record) VALUES('operation',?1)", [operation.to_string()])?;
+            Ok::<_, studio_runtime_store::StoreError>(())
+        }).await.expect("seed");
+        (root, store)
+    }
+
+    fn assert_stored_status(store: &RuntimeStore, id: &str, expected: &str) {
+        let db = store.test_reader().expect("reader");
+        let (status, count): (String, i64) = db.query_row("SELECT json_extract(record,'$.status'), (SELECT count(*) FROM json_each(record) WHERE key='status') FROM runtime_agents WHERE id=?1", [id], |row| Ok((row.get(0)?, row.get(1)?))).expect("agent status");
+        assert_eq!((status.as_str(), count), (expected, 1));
+    }
+
+    #[tokio::test]
+    async fn unknown_fork_sets_one_interrupted_status() {
+        let (_root, store) = status_fixture().await;
+        settle_failure(&store, "operation", true, "unknown").await.expect("settle");
+        assert_stored_status(&store, "source", "interrupted");
+    }
+
+    #[tokio::test]
+    async fn branch_copy_sets_one_idle_status() {
+        let (_root, store) = status_fixture().await;
+        let selected = studio_runtime_store::TranscriptItem { id: "message".into(), agent: "source".into(), record: json!({"id":"message","turnId":"turn"}) };
+        let provider = json!({"thread":{"id":"new-thread"}});
+        let result = copy_branch_history(&store, BranchCopy { source:"source", target:"child", selected:&selected, message_id:"message", fork_turn:None, before:false, provider:&provider, operation_id:"operation" }, Arc::new(tokio::sync::Notify::new())).await.expect("copy");
+        assert_eq!(result["status"], "idle");
+        assert_stored_status(&store, "child", "idle");
     }
 
     const HISTORY_TURNS: usize = 100;
