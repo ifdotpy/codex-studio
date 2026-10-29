@@ -197,15 +197,15 @@ impl Transfers {
             Command::Begin(declared) => self.begin_typed(declared, now),
             Command::Declare { id, declaration } => self.declare_typed(id, declaration, now),
             Command::Chunk { id, chunk } => self.chunk_typed(id, chunk, now),
-            Command::Cancel(id) => self.cancel_id(id?),
+            Command::Cancel(id) => self.cancel_id(&id?),
         }
     }
     pub(crate) fn cancel(&mut self, value: &Value) -> Result<Value, String> {
-        self.cancel_id(SaveInput::parse(value).transfer_id("A transfer is required.")?)
+        self.cancel_id(&SaveInput::parse(value).transfer_id("A transfer is required.")?)
     }
 
-    fn cancel_id(&mut self, id: String) -> Result<Value, String> {
-        self.items.remove(&id);
+    fn cancel_id(&mut self, id: &str) -> Result<Value, String> {
+        self.items.remove(id);
         Ok(Value::Null)
     }
 

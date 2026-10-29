@@ -602,7 +602,7 @@ mod tests {
             .unwrap();
         assert_eq!(saved["asset"], asset);
         assert!(saved["asset"]["created"].as_u64().is_some());
-        let mut extended = saved.clone();
+        let mut extended = saved;
         extended["future"] = json!({"opaque":true});
         extended["created"] = json!(1.5);
         store
@@ -752,8 +752,8 @@ mod tests {
         let (sender, mut receive) = tokio::sync::mpsc::channel::<crate::delivery::StoreCommand>(64);
         let thread = std::thread::spawn(move || {
             let mut store = Store::open(&path).unwrap();
-            while let Some((request, reply)) = receive.blocking_recv() {
-                drop(reply.send(store.dispatch(request)));
+            while let Some(command) = receive.blocking_recv() {
+                command.execute(&mut store);
             }
         });
         let backend = Backend::new(&origin).unwrap();
