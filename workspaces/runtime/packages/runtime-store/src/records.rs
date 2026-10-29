@@ -748,6 +748,15 @@ impl JsonRecord for AgentRecord {
                 .map(Option::flatten)
         }
         let decode = |_: serde_json::Error| invalid_agent_field(row_id, "", "record_decode", None);
+        let in_flight = field(&mut fields, "inFlight").map_err(decode)?;
+        let auto_wake = field(&mut fields, "autoWake").map_err(decode)?;
+        let execution_mode = field(&mut fields, "executionMode").map_err(decode)?;
+        let turn_epoch = field(&mut fields, "turnEpoch").map_err(decode)?;
+        let account_key = field(&mut fields, "accountKey")
+            .map_err(decode)?
+            .unwrap_or_else(default_account_key);
+        let thread_id = field(&mut fields, "threadId").map_err(decode)?;
+        let turn_id = field(&mut fields, "turnId").map_err(decode)?;
         let title_job = field(&mut fields, "titleJob").map_err(decode)?;
         let start_outcome_hold = field(&mut fields, "startOutcomeHold").map_err(decode)?;
         let fired_events = fields
@@ -766,6 +775,13 @@ impl JsonRecord for AgentRecord {
             root_id,
             epoch,
             status,
+            in_flight,
+            auto_wake,
+            execution_mode,
+            turn_epoch,
+            account_key,
+            thread_id,
+            turn_id,
             title_job,
             start_outcome_hold,
             fired_events,
@@ -2418,6 +2434,37 @@ mod tests {
             .execute_batch(crate::agent_volatile::agent_volatile_table_sql())
             .expect("volatile agent table creates");
         connection
+    }
+
+    #[test]
+    fn stored_agent_decodes_typed_execution_fields_and_preserves_extensions() {
+        let connection = database();
+        let value = json!({
+            "id":"agent", "rootId":"agent", "epoch":2, "status":"idle",
+            "inFlight":true, "autoWake":false, "executionMode":"native", "turnEpoch":2,
+            "accountKey":"account", "threadId":"thread", "turnId":"turn", "future":42
+        });
+        connection
+            .execute(
+                "INSERT INTO runtime_agents VALUES (?1, ?2)",
+                ["agent", &value.to_string()],
+            )
+            .unwrap();
+        let record = Table::<AgentRecord>::new(&connection)
+            .get(&AgentId::from("agent"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.in_flight, Some(true));
+        assert_eq!(record.auto_wake, Some(false));
+        assert_eq!(
+            record.execution_mode,
+            Some(super::AgentExecutionMode::Native)
+        );
+        assert_eq!(record.turn_epoch, Some(2));
+        assert_eq!(record.account_key, "account");
+        assert_eq!(record.thread_id.as_deref(), Some("thread"));
+        assert_eq!(record.turn_id.as_deref(), Some("turn"));
+        assert_eq!(record.value(), value);
     }
 
     #[test]
