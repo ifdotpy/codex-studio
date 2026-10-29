@@ -1456,14 +1456,14 @@ async fn subscription_frame(state: &mut ResourceStream, update: SubscriptionChan
 /// ahead: the durable item carries the text that was dropped.
 async fn next_live_delta(
     live: &mut tokio::sync::broadcast::Receiver<LiveDelta>,
-    resources: &[Value],
+    resources: &[SubscribedResource],
 ) -> Event {
     use tokio::sync::broadcast::error::RecvError;
     loop {
         match live.recv().await {
             Ok(delta)
                 if resources.iter().any(|resource| {
-                    resource["kind"] == "transcript" && resource["agentId"] == delta.agent_id
+                    matches!(&resource.resource, ResourceRef::TranscriptResource(transcript) if transcript.agent_id == delta.agent_id)
                 }) =>
             {
                 return sse_event(
@@ -5383,13 +5383,13 @@ mod tests {
             &hub,
             &tokens,
             notifications.clone(),
-            vec![json!({"kind":"transcript","agentId":"a"})],
+            &[json!({"kind":"transcript","agentId":"a"})],
         );
         let other = test_stream(
             &hub,
             &tokens,
             notifications.clone(),
-            vec![json!({"kind":"transcript","agentId":"b"})],
+            &[json!({"kind":"transcript","agentId":"b"})],
         );
         notifications.publish_live(LiveDelta {
             agent_id: "a".into(),
