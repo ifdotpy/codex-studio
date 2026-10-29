@@ -133,9 +133,59 @@ pub fn work_review_ids(text: &str) -> Option<(String, String)> {
     Some((review.task, review.result.0.id))
 }
 
+#[derive(Deserialize)]
+pub struct ChatReceipt {
+    pub message_id: String,
+    pub room: String,
+    pub sender: String,
+    pub text: String,
+}
+
+/// The four fields used to identify a delivered chat notification.
+pub fn chat_receipt(text: &str) -> Option<ChatReceipt> {
+    let receipt: ChatReceipt = parse(text)?;
+    (!receipt.message_id.is_empty() && !receipt.room.is_empty() && !receipt.sender.is_empty())
+        .then_some(receipt)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chat_receipt_matches_value_admission() {
+        for text in [
+            r#"{"message_id":"old","message_id":"m","room":"r","sender":"s","text":""}"#,
+            r#"{"message_id":"","room":"r","sender":"s","text":"x"}"#,
+            r#"{"message_id":"m","room":null,"sender":"s","text":"x"}"#,
+            r#"{"message_id":"m","room":"r","sender":"s"}"#,
+            r#"{"message_id":"m","room":"r","sender":"s","text":"x","extra":1e999}"#,
+            "[]",
+            "{",
+        ] {
+            let original = (|| {
+                let value: Value = serde_json::from_str(text).ok()?;
+                let field = |key| value.get(key)?.as_str();
+                let (id, room, sender, body) = (
+                    field("message_id")?,
+                    field("room")?,
+                    field("sender")?,
+                    field("text")?,
+                );
+                if id.is_empty() || room.is_empty() || sender.is_empty() {
+                    return None;
+                }
+                Some((
+                    id.to_owned(),
+                    room.to_owned(),
+                    sender.to_owned(),
+                    body.to_owned(),
+                ))
+            })();
+            let projected = chat_receipt(text).map(|r| (r.message_id, r.room, r.sender, r.text));
+            assert_eq!(projected, original, "{text}");
+        }
+    }
 
     #[test]
     fn complaint_entries_validate_each_item_lazily_after_full_json_parse() {
