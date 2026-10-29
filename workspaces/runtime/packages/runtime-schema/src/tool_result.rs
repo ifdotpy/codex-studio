@@ -5,6 +5,7 @@ use serde_json::{Number, Value};
 use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[schemars(rename = "PersistedToolContent")]
 pub struct ToolContent {
     #[serde(rename = "type", default, skip_serializing_if = "Field::is_missing")]
     #[schemars(with = "Option<String>")]
@@ -123,12 +124,7 @@ pub(crate) fn check_schema_parity() -> Result<(), String> {
         "schemas/persisted-tool-request-record.schema.json"
     ))
     .map_err(|e| e.to_string())?;
-    let mut typed = schemars::schema_for!(ToolResultRecord).to_value();
-    // The persisted schemas use the historical definition name.
-    let typed_text = typed
-        .to_string()
-        .replace("ToolContent", "PersistedToolContent");
-    typed = serde_json::from_str(&typed_text).map_err(|e| format!("{e}"))?;
+    let typed = schemars::schema_for!(ToolResultRecord).to_value();
     for (actual, expected) in [
         (&stored["type"], &typed["type"]),
         (&stored["required"], &typed["required"]),
