@@ -183,6 +183,9 @@ impl Snapshot {
     pub fn agent_id(&self) -> &str {
         &self.identity.id.0
     }
+    pub(crate) fn agent_record(&self) -> &AgentRecord {
+        &self.identity
+    }
     pub(crate) fn agent_epoch(&self) -> i64 {
         self.identity.epoch
     }

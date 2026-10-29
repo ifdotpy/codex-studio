@@ -125,8 +125,6 @@ fn apply(
                 return Err(ContinuationError::Invalid("/events/identity".into()));
             }
 
-            let agent = serde_json::from_value(snapshot.agent.clone())
-                .map_err(|_| ContinuationError::Invalid("/agent".into()))?;
             if prior.is_none() {
                 studio_runtime_store::QueueWriteRepository::put_metadata(
                     tx,
@@ -136,7 +134,7 @@ fn apply(
             }
             crate::event_write::enqueue_event(
                 tx,
-                &agent,
+                snapshot.agent_record(),
                 id.clone(),
                 "followup",
                 text.clone(),
@@ -172,9 +170,9 @@ fn apply(
         }
         fault.at(Boundary::AfterEffect)?;
     }
-    if let Some(agent) = &d.agent {
+    if d.agent.is_some() {
         fault.at(Boundary::BeforeAgent)?;
-        ContinuationRepository::put_agent(tx, agent)?;
+        ContinuationRepository::put_checked_agent(tx, checked.agent_record())?;
         fault.at(Boundary::AfterAgent)?;
     }
     for event in &d.events {
