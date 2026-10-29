@@ -389,6 +389,7 @@ mod tests {
         cancelled["error"] = json!("Scheduled chat reviews have been removed");
         assert_eq!(event(&after, "pending"), cancelled);
         let mut expected_agents = before["agents"].clone();
+        expected_agents[0]["record"]["accountKey"] = json!("default");
         expected_agents[0]["record"]
             .as_object_mut()
             .expect("agent record object")

@@ -5769,8 +5769,7 @@ mod release_tests {
             .as_object_mut()
             .expect("capacity retry is an object")
             .remove("accountKey");
-        let explicit_null = AgentRecord::from_value(explicit_null).expect("worker record parses");
-        assert!(!continuation_work_pending(&explicit_null));
+        assert!(AgentRecord::from_value(explicit_null).is_err());
     }
 
     #[test]

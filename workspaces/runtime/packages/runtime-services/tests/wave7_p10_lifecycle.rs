@@ -112,6 +112,14 @@ async fn seed(store: &RuntimeStore, records: Records) {
 
 // Frozen fixtures used numeric tickets before the current agent view stored strings.
 fn use_current_ticket_shape(row: &mut Value) {
+    if row.get("accountKey").is_none_or(Value::is_null) {
+        row["accountKey"] = json!("default");
+    }
+    for key in ["threadId", "turnId"] {
+        if row.get(key).is_some_and(Value::is_null) {
+            row.as_object_mut().expect("agent row").remove(key);
+        }
+    }
     if let Some(ticket) = row.pointer_mut("/startAttempt/requestTicket")
         && let Some(number) = ticket.as_i64()
     {
@@ -1552,6 +1560,9 @@ async fn production_child_notification_matches_python_corpus() {
             let mut payload: Value = serde_json::from_str(row[2].as_str().expect("agent payload"))
                 .expect("frozen agent JSON");
             payload["value"]["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
+            if payload["value"].get("accountKey").is_none() {
+                payload["value"]["accountKey"] = json!("default");
+            }
             row[2] = json!(payload.to_string());
         }
     }

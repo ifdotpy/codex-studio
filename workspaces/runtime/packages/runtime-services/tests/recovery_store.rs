@@ -296,7 +296,7 @@ async fn preparation_transaction_failpoints_roll_back_every_row() {
         assert_eq!(projection(&store), renderer);
         drop(store);
         let reopened = open_store(root.path()).await;
-        assert_eq!(snapshot(&reopened).record(), before.record());
+        assert_eq!(snapshot(&reopened).record(), &studio_runtime_store::AgentRecord::from_value(before.record().clone()).expect("agent fixture").value());
         assert_eq!(events(&reopened), queue);
         assert_eq!(projection(&reopened), renderer);
     }
@@ -788,7 +788,8 @@ async fn start_absence_failpoints_roll_back_restore_wait_and_hold() {
             let case = cases.iter().find(|c| c["name"] == name).expect("case");
             let root = fixture();
             let store = open_store(root.path()).await;
-            seed_agent(&store, &case["agent"]).await;
+            let agent = studio_runtime_store::AgentRecord::from_value(case["agent"].clone()).expect("agent fixture").value();
+            seed_agent(&store, &agent).await;
             let before = snapshot(&store);
             let queue = events(&store);
             let renderer = projection(&store);
@@ -825,7 +826,7 @@ async fn start_absence_failpoints_roll_back_restore_wait_and_hold() {
             assert!(result.is_err(), "{name}/{table}/{timing}");
             drop(store);
             let reopened = open_store(root.path()).await;
-            assert_eq!(snapshot(&reopened).record(), before.record());
+            assert_eq!(snapshot(&reopened).record(), &studio_runtime_store::AgentRecord::from_value(before.record().clone()).expect("agent fixture").value());
             assert_eq!(events(&reopened), queue);
             assert_eq!(projection(&reopened), renderer);
             let count: i64 = reopened
@@ -864,6 +865,7 @@ async fn restart_not_applied_failpoints_roll_back_event_and_agent_together() {
             } else {
                 panic!("restore oracle agent is not an object");
             }
+            let agent = studio_runtime_store::AgentRecord::from_value(agent).expect("agent fixture").value();
             seed_agent(&store, &agent).await;
             let before = snapshot(&store);
             let queue = events(&store);
@@ -925,7 +927,7 @@ async fn restart_not_applied_failpoints_roll_back_event_and_agent_together() {
             assert!(result.is_err(), "{table}/{timing}");
             drop(store);
             let reopened = open_store(root.path()).await;
-            assert_eq!(snapshot(&reopened).record(), before.record());
+            assert_eq!(snapshot(&reopened).record(), &studio_runtime_store::AgentRecord::from_value(before.record().clone()).expect("agent fixture").value());
             assert_eq!(events(&reopened), queue);
         }
     }
@@ -1335,7 +1337,7 @@ async fn held_task_rechecks_current_receipts_before_later_absence_recovery() {
             .expect("stale proof")
     );
     let current_task =
-        TaskRecoverySnapshot::from_records(case["agent"].clone(), held, vec![], vec![])
+        TaskRecoverySnapshot::from_records(snapshot(&store).record().clone(), held, vec![], vec![])
             .expect("held snapshot");
     let mut reader = TaskReader {
         observation: observation.clone(),

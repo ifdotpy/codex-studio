@@ -1,3 +1,16 @@
+use crate::StoreResult;
+use rusqlite::Transaction;
+
+pub(super) fn apply(tx: &Transaction<'_>) -> StoreResult<()> {
+    if crate::schema::table_exists(tx, "runtime_agents")? {
+        tx.execute(
+            "UPDATE runtime_agents SET record=json_set(record,'$.accountKey',?1) WHERE json_valid(record) AND (json_type(record,'$.accountKey') IS NULL OR json_type(record,'$.accountKey')='null')",
+            [crate::cost_aggregate::DEFAULT_ACCOUNT],
+        )?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use rusqlite::Connection;
@@ -34,16 +47,4 @@ mod tests {
         assert_eq!(read("null"), json!({"accountKey":"default"}));
         assert_eq!(read("other"), json!({"accountKey":"other"}));
     }
-}
-use crate::StoreResult;
-use rusqlite::Transaction;
-
-pub(super) fn apply(tx: &Transaction<'_>) -> StoreResult<()> {
-    if crate::schema::table_exists(tx, "runtime_agents")? {
-        tx.execute(
-            "UPDATE runtime_agents SET record=json_set(record,'$.accountKey',?1) WHERE json_valid(record) AND (json_type(record,'$.accountKey') IS NULL OR json_type(record,'$.accountKey')='null')",
-            [crate::cost_aggregate::DEFAULT_ACCOUNT],
-        )?;
-    }
-    Ok(())
 }

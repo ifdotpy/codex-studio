@@ -3102,7 +3102,7 @@ pub(super) fn bound_turn<'a>(agent: &'a AgentRecord, attempt: &'a Value) -> Opti
         (native_action_attempt(attempt)
             && attempt.get("threadId").is_some()
             && attempt.get("threadId").and_then(Value::as_str) == agent.thread_id.as_deref())
-        .then(|| agent.turn_id.as_deref())
+        .then_some(agent.turn_id.as_deref())
         .flatten()
     })
 }
