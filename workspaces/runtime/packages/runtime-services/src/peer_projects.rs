@@ -396,12 +396,17 @@ mod tests {
                 struct Items<'a, T> {
                     items: &'a [T],
                 }
-                let value = match envelope["action"].as_str() {
-                    Some("projects") => serde_json::value::to_raw_value(&Items {
+                #[derive(serde::Deserialize)]
+                struct Request {
+                    action: String,
+                }
+                let request: Request = serde_json::from_str(&envelope.to_string()).unwrap();
+                let value = match request.action.as_str() {
+                    "projects" => serde_json::value::to_raw_value(&Items {
                         items: &self.items.lock().unwrap(),
                     })
                     .unwrap(),
-                    Some(CHANGED_ACTION) => {
+                    CHANGED_ACTION => {
                         *self.notices.lock().unwrap() += 1;
                         serde_json::value::RawValue::from_string("{}".to_owned()).unwrap()
                     }

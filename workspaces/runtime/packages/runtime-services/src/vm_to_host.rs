@@ -241,12 +241,10 @@ pub async fn move_to_host(
             let mut moved = Vec::new();
             for mut record in current.members {
                 relocate(&mut record, &plan.host_path);
-                AgentRepository::put(
-                    tx,
-                    &AgentRecord::from_value(record.clone()).map_err(StoreError::from)?,
-                )?;
+                let agent = AgentRecord::from_value(record.clone()).map_err(StoreError::from)?;
+                AgentRepository::put(tx, &agent)?;
                 crate::agents_create::publish_agent(tx, &record)?;
-                moved.push(record["id"].as_str().unwrap_or_default().to_owned());
+                moved.push(agent.id().0.clone());
             }
             let result = VmToHostReply {
                 id,

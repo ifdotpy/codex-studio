@@ -1934,7 +1934,7 @@ impl RuntimeOrchestrationEffects {
                 wake.peer_changed(principal);
             }
             return Ok(ExchangeOutcome::Applied(AppliedReply::new(
-                serde_json::value::to_raw_value(&json!({})).expect("empty reply"),
+                serde_json::value::RawValue::from_string("{}".to_owned()).expect("empty reply"),
             )));
         }
         if crate::peer_updates::ACTIONS.contains(&action) {
