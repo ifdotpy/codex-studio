@@ -1360,14 +1360,15 @@ mod tests {
     async fn branch_history_copy_preserves_partial_rows_and_rolls_back_missing_assets() {
         let root = tempfile::tempdir().unwrap();
         let store = RuntimeStore::open(Some(root.path())).await.unwrap();
-        let source = json!({"id":"source","rootId":"source","epoch":0,"status":"idle","provider":"codex","cwd":"/tmp","workspaceReservationId":"op"});
-        let child = json!({"id":"child","rootId":"child","epoch":0,"status":"idle","provider":"codex","cwd":"/tmp"});
+        let source = json!({"id":"source","rootId":"source","epoch":0,"status":"idle","provider":"codex","cwd":root.path(),"workspaceReservationId":"op"});
+        let child = json!({"id":"child","rootId":"child","epoch":0,"status":"idle","provider":"codex","cwd":root.path()});
         let source_identity = CheckpointsRepository::workspace_source(&source);
+        let asset_path = root.path().join("file.txt");
         store.transaction(move |tx| {
             tx.execute("INSERT INTO runtime_agents(id,record) VALUES('source',?1)", [source.to_string()])?;
             tx.execute("INSERT INTO runtime_agents(id,record) VALUES('child',?1)", [child.to_string()])?;
             tx.execute("INSERT INTO runtime_workspace_operations(id,record) VALUES('op',?1)", [json!({"source":source_identity,"phase":"provider_ready"}).to_string()])?;
-            tx.execute("INSERT INTO runtime_assets(id,record) VALUES('asset',?1)", [json!({"id":"asset","agent":"source","name":"file.txt","path":"/tmp/file.txt","mime":"text/plain","image":false,"size":1,"hash":"h","created":1}).to_string()])?;
+            tx.execute("INSERT INTO runtime_assets(id,record) VALUES('asset',?1)", [json!({"id":"asset","agent":"source","name":"file.txt","path":asset_path,"mime":"text/plain","image":false,"size":1,"hash":"h","created":1}).to_string()])?;
             tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES('source:a','source',?1,1)", [r#"{"role":9,"text":"old","text":"first","turnId":"t","assets":[{"id":"asset"}],"inputs":[null,{"text":"second","created":null,"at":2,"assets":[{"id":"asset"}]}]}"#])?;
             tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES('source:b','source',?1,1)", [r#"{"turnId":"t","text":null,"assets":null}"#])?;
             tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES('source:c','source',?1,1)", [json!({"turnId":7,"text":"🦀".repeat(20_001),"inputs":[{"text":"Ж".repeat(19_999)},{"text":"AB"}]}).to_string()])?;
