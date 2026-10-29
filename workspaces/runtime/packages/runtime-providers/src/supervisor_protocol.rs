@@ -8,6 +8,22 @@ pub const SUPERVISOR_PROTOCOL_VERSION: u64 = 3;
 pub const HANDLE_LIMIT: u64 = 256 * 1024 * 1024;
 pub const MAX_HANDLE_CHARACTERS: usize = 180;
 
+/// Supervisor evidence for one provider operation, not provider application.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderOperationState {
+    Unknown,
+    Accepted,
+    Written,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderOperationStatus {
+    pub state: ProviderOperationState,
+    pub native_id: Option<NativeId>,
+}
+
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 #[error("{0}")]
 pub struct Refusal(pub &'static str);

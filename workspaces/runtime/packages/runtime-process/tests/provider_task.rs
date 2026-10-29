@@ -677,6 +677,70 @@ async fn real_write(
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
+async fn supervisor_outbox_status_reports_unknown_then_written() {
+    use studio_runtime_providers::supervisor_protocol::ProviderOperationState;
+    #[derive(serde::Serialize)]
+    struct Request {
+        method: &'static str,
+        id: i64,
+    }
+    let state = DisposableState::new();
+    let mut supervisor = SupervisorProcess::start(&state);
+    real_watchdog(async {
+        let launch = ProviderLaunchSpec::new(
+            shell_command("while IFS= read -r line; do :; done"),
+            support::child_environment(&state.0),
+            state.0.clone(),
+        );
+        let factory = SupervisorProviderTaskFactory::new(state.identity())
+            .with_account_store(account_store(&state).await);
+        let handle = ProviderHandle::for_account("status-test");
+        let mut attachment = factory
+            .open(
+                handle.clone(),
+                OpenOptions {
+                    clock: SessionClock::default(),
+                    launch,
+                    expected_generation: None,
+                },
+                Shutdown::default(),
+            )
+            .await
+            .expect("attachment");
+        let info = real_info(&mut attachment).await;
+        supervisor.own_child(info.pid);
+        let operation = OperationId("account:status-test:attempt:turn/start".into());
+        let before = factory
+            .operation_status(handle.clone(), operation.clone(), Shutdown::default())
+            .await
+            .expect("unknown status");
+        assert_eq!(before.state, ProviderOperationState::Unknown);
+        assert!(matches!(
+            real_write(
+                &attachment,
+                &operation.0,
+                studio_runtime_store::projection_value(&Request {
+                    method: "turn/start",
+                    id: 7
+                })
+            )
+            .await,
+            CommandReceipt::Written { .. }
+        ));
+        let after = factory
+            .operation_status(handle, operation, Shutdown::default())
+            .await
+            .expect("written status");
+        assert_eq!(after.state, ProviderOperationState::Written);
+        assert!(after.native_id.is_some());
+        // The fixture deliberately stops before initialization completes.
+        assert!(attachment.shutdown().await.recovery_needed.is_some());
+    })
+    .await;
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
 async fn real_supervisor_incomplete_initialization_recovers_same_child_and_replays_after_ack() {
     // Wait for the real startup handshake before arming the scenario hang guard.
     let state = DisposableState::new();

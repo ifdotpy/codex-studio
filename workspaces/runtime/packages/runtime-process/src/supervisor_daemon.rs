@@ -523,6 +523,7 @@ impl Supervisor {
                         ..
                     } => {
                         child.write(&outbound)?;
+                        self.journal.mark_written(&handle, &operation_id)?;
                         (false, remote_id)
                     }
                 };
@@ -531,7 +532,14 @@ impl Supervisor {
                 )
             }
             Command::OperationStatus { operation_id, .. } => {
-                Ok(self.journal.operation_status(&handle, &operation_id)?)
+                if operation_id.starts_with("monitor:") {
+                    Ok(self.journal.operation_status(&handle, &operation_id)?)
+                } else {
+                    Ok(serde_json::to_value(
+                        self.journal
+                            .provider_operation_status(&handle, &operation_id)?,
+                    )?)
+                }
             }
             Command::Ack { sequence, .. } => {
                 self.journal.ack(&handle, sequence)?;

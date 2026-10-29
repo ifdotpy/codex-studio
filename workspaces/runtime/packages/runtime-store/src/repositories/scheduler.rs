@@ -349,6 +349,48 @@ mod tests {
     }
 
     #[test]
+    fn unclean_start_requires_exact_history_identity_to_settle() {
+        let mut connection = database();
+        let tx = connection.transaction().expect("transaction");
+        SchedulerRepository::claim(&tx, "agent", 4, "attempt", 10.0, 2).expect("claim");
+        SchedulerRepository::hold_unclean_starts(&tx).expect("hold");
+        let identity = crate::TurnAttemptIdentity {
+            agent_id: "agent".into(),
+            epoch: 4,
+            attempt_id: "attempt".into(),
+        };
+        assert!(
+            !SchedulerRepository::settle_unclean_start(&tx, &identity, "thread", "wrong", "turn")
+                .expect("wrong event")
+        );
+        assert!(
+            SchedulerRepository::settle_unclean_start(&tx, &identity, "thread", "first", "turn")
+                .expect("exact history")
+        );
+        tx.commit().expect("commit");
+        let status: String = connection
+            .query_row(
+                "SELECT status FROM runtime_events WHERE id='first'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("event");
+        assert_eq!(status, "delivered");
+        let agent = AgentRepository::get(&connection, &AgentId::from("agent"))
+            .expect("agent")
+            .expect("present");
+        assert_eq!(
+            agent
+                .start_attempt()
+                .expect("attempt")
+                .expect("present")
+                .submitted,
+            Some(false)
+        );
+        assert!(agent.start_outcome_hold.is_none());
+    }
+
+    #[test]
     fn unclean_startup_holds_a_reserved_start() {
         let mut connection = database();
         let transaction = connection.transaction().expect("claim transaction");
