@@ -22,9 +22,11 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
+use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use studio_runtime_providers::{Method, ProviderKind};
+use studio_runtime_schema::provider_lifecycle::CodexTurnStatus;
 use studio_runtime_services::{
     account_driver::AccountDriver,
     account_session_runtime::{
@@ -41,6 +43,73 @@ use studio_runtime_store::RuntimeStore;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 const MAX_POLLS: u32 = 64;
+// These projections read only title-generation fields; provider items and
+// extensions remain opaque. Empty turn IDs retain their existing behavior.
+#[derive(Deserialize)]
+struct TitleTurnIdentity<'a> {
+    id: &'a str,
+}
+
+#[derive(Deserialize)]
+struct TitleTurnObservation<'a> {
+    id: &'a str,
+    status: &'a str,
+}
+
+#[derive(Deserialize)]
+struct TitleTurnList {
+    data: Vec<Value>,
+}
+
+#[derive(Deserialize)]
+struct TitleItems {
+    items: Vec<Value>,
+}
+
+#[derive(Deserialize)]
+struct TitleMessage<'a> {
+    #[serde(rename = "type")]
+    kind: &'a str,
+    phase: &'a str,
+    text: &'a str,
+}
+
+fn title_turn_id(value: &Value) -> Option<&str> {
+    let turn = value.get("turn")?;
+    if !turn.is_object() {
+        return None;
+    }
+    TitleTurnIdentity::deserialize(turn)
+        .ok()
+        .map(|turn| turn.id)
+}
+
+fn title_turn_complete(candidate: &Value, turn_id: &str) -> bool {
+    if !candidate.is_object() {
+        return false;
+    }
+    let Ok(turn) = TitleTurnObservation::deserialize(candidate) else {
+        return false;
+    };
+    turn.id == turn_id
+        && (CodexTurnStatus::observe(candidate).and_then(CodexTurnStatus::terminal).is_some()
+            // Older title providers report cancelled; Codex's generated status
+            // contract does not include it, so do not broaden that shared owner.
+            || turn.status == "cancelled")
+}
+
+fn title_final_answer(turn: &Value) -> Option<String> {
+    let items = TitleItems::deserialize(turn).ok()?;
+    items.items.iter().rev().find_map(|item| {
+        if !item.is_object() {
+            return None;
+        }
+        let message = TitleMessage::deserialize(item).ok()?;
+        (message.kind == "agentMessage" && message.phase == "final_answer")
+            .then(|| message.text.to_owned())
+    })
+}
+
 /// Time one account has to answer its diagnostics query before it is reported
 /// unavailable; accounts are queried concurrently, so this bounds the whole phase.
 const DIAGNOSTICS_ACCOUNT_DEADLINE: Duration = Duration::from_secs(1);
@@ -528,15 +597,14 @@ impl TitleRequestPort for ProviderTitleRequestPort {
                 home.release();
                 return title_receipt(&request, WriteOutcome::Written, None);
             }
-            let turn_id = turn
+            let Some(turn_id) = turn
                 .pipe_response_value()
-                .and_then(|value| value.pointer("/turn/id"))
-                .and_then(Value::as_str)
-                .map(str::to_owned);
-            if turn_id.is_none() {
+                .and_then(title_turn_id)
+                .map(str::to_owned)
+            else {
                 home.retain();
                 return fallback();
-            }
+            };
             for poll in 0..MAX_POLLS {
                 if Instant::now() >= deadline {
                     home.retain();
@@ -561,43 +629,18 @@ impl TitleRequestPort for ProviderTitleRequestPort {
                     .await;
                 if let Some(listed) = listed
                     && listed.certainty() == RequestCertainty::Written
-                    && let Some(turns) = listed
-                        .pipe_response_value()
-                        .and_then(|value| value.get("data"))
-                        .and_then(Value::as_array)
+                    && let Some(value) = listed.pipe_response_value()
+                    && value.is_object()
+                    && let Ok(turns) = TitleTurnList::deserialize(value)
+                    && let Some(turn) = turns
+                        .data
+                        .iter()
+                        .find(|candidate| title_turn_complete(candidate, &turn_id))
                 {
-                    let completed = turns.iter().find(|candidate| {
-                        let id_matches = turn_id.as_deref().is_none_or(|id| {
-                            candidate.get("id").and_then(Value::as_str) == Some(id)
-                        });
-                        id_matches
-                            && candidate.get("status").and_then(Value::as_str).is_some_and(
-                                |status| {
-                                    matches!(
-                                        status,
-                                        "completed" | "failed" | "interrupted" | "cancelled"
-                                    )
-                                },
-                            )
-                    });
-                    if let Some(turn) = completed {
-                        let raw_title =
-                            turn.get("items")
-                                .and_then(Value::as_array)
-                                .and_then(|items| {
-                                    items.iter().rev().find_map(|item| {
-                                        (item.get("type").and_then(Value::as_str)
-                                            == Some("agentMessage")
-                                            && item.get("phase").and_then(Value::as_str)
-                                                == Some("final_answer"))
-                                        .then(|| item.get("text").and_then(Value::as_str))
-                                        .flatten()
-                                    })
-                                });
-                        let title = raw_title.and_then(|value| normalize_title(value).ok());
-                        home.release();
-                        return title_receipt(&request, WriteOutcome::Written, title);
-                    }
+                    let title =
+                        title_final_answer(turn).and_then(|value| normalize_title(&value).ok());
+                    home.release();
+                    return title_receipt(&request, WriteOutcome::Written, title);
                 }
                 let delay = deadline
                     .saturating_duration_since(Instant::now())
@@ -789,7 +832,7 @@ mod tests {
         ProviderTitleRequestPort, SupervisorDiagnostics, TitleHome, account_queue_counts,
         leased_session_binary,
     };
-    use serde_json::json;
+    use serde_json::{Value, json};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, SystemTime};
     use studio_runtime_providers::Method;
@@ -853,6 +896,7 @@ mod tests {
         Ready,
         UnknownThread,
         NotSentTurn,
+        Listed(Value),
     }
 
     struct Session {
@@ -900,11 +944,16 @@ mod tests {
                     Method::TurnStart => {
                         Some(ProviderResponse::Reply(json!({"turn":{"id":"title-turn"}})))
                     }
-                    Method::ThreadTurnsList => Some(ProviderResponse::Reply(json!({"data":[{
-                        "id":"title-turn", "status":"completed", "items":[{
-                            "type":"agentMessage", "phase":"final_answer", "text":"A Useful Title"
-                        }]
-                    }]}))),
+                    Method::ThreadTurnsList => {
+                        Some(ProviderResponse::Reply(match &self.scenario {
+                            ReplyScenario::Listed(value) => value.clone(),
+                            _ => json!({"data":[{
+                                "id":"title-turn", "status":"completed", "items":[{
+                                    "type":"agentMessage", "phase":"final_answer", "text":"A Useful Title"
+                                }]
+                            }]}),
+                        }))
+                    }
                     Method::Initialize
                     | Method::Initialized
                     | Method::Ack
@@ -1155,6 +1204,93 @@ mod tests {
             )
         );
         assert_eq!(calls[2].expected_scope, calls[1].expected_scope);
+    }
+
+    #[test]
+    fn title_projection_matches_legacy_partial_provider_observations() {
+        for id in ["", "turn", "other"] {
+            for status in [
+                json!("completed"),
+                json!("failed"),
+                json!("interrupted"),
+                json!("cancelled"),
+                json!("inProgress"),
+                json!("unknown"),
+                json!(null),
+                json!(1),
+            ] {
+                for item in [
+                    json!({"type":"agentMessage","phase":"final_answer","text":"valid"}),
+                    json!({"type":"agentMessage","phase":"analysis","text":"hidden"}),
+                    json!({"type":"agentMessage","phase":"final_answer","text":false}),
+                    json!(["agentMessage", "final_answer", "wrong"]),
+                    json!(null),
+                ] {
+                    let candidate = json!({"id":id,"status":status,"items":[{"type":"agentMessage","phase":"final_answer","text":"first"},item]});
+                    let expected = candidate.get("id").and_then(Value::as_str) == Some("turn")
+                        && candidate
+                            .get("status")
+                            .and_then(Value::as_str)
+                            .is_some_and(|s| {
+                                matches!(s, "completed" | "failed" | "interrupted" | "cancelled")
+                            });
+                    assert_eq!(
+                        super::title_turn_complete(&candidate, "turn"),
+                        expected,
+                        "{candidate}"
+                    );
+                    let expected_text = candidate["items"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .rev()
+                        .find_map(|item| {
+                            (item.get("type").and_then(Value::as_str) == Some("agentMessage")
+                                && item.get("phase").and_then(Value::as_str)
+                                    == Some("final_answer"))
+                            .then(|| item.get("text").and_then(Value::as_str))
+                            .flatten()
+                        });
+                    assert_eq!(
+                        super::title_final_answer(&candidate).as_deref(),
+                        expected_text,
+                        "{candidate}"
+                    );
+                }
+            }
+        }
+        assert_eq!(super::title_turn_id(&json!({"turn":{"id":""}})), Some(""));
+        assert_eq!(super::title_turn_id(&json!({"turn":["turn"]})), None);
+        assert!(!super::title_turn_complete(
+            &json!(["turn", "completed"]),
+            "turn"
+        ));
+        assert!(super::title_final_answer(&json!({"items":false})).is_none());
+    }
+
+    #[tokio::test]
+    async fn title_cancelled_turn_uses_exact_id_and_last_final_answer() {
+        let session = Arc::new(Session {
+            requests: Mutex::new(Vec::new()),
+            scenario: ReplyScenario::Listed(json!({"data":[
+                {"id":"other", "status":"completed", "items":[{"type":"agentMessage","phase":"final_answer","text":"Wrong"}]},
+                {"id":"title-turn", "status":"cancelled", "items":[
+                    {"type":"agentMessage","phase":"final_answer","text":"First"},
+                    {"type":"agentMessage","phase":"analysis","text":"Hidden"},
+                    {"type":"other","phase":"final_answer","text":"Wrong"},
+                    {"type":"agentMessage","phase":"final_answer","text":"  Chosen Title  "},
+                    {"type":"agentMessage","phase":"final_answer","text":false}
+                ]}
+            ]})),
+        });
+        let (_root, _request_id, result) = run_title(Arc::clone(&session), "codex", 3).await;
+        assert_eq!(
+            result,
+            TitleResult::Applied {
+                title: "Chosen Title".into()
+            }
+        );
+        assert_eq!(session.requests.lock().unwrap().len(), 3);
     }
 
     #[tokio::test]
