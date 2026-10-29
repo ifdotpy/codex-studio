@@ -42,7 +42,7 @@ async fn callback_studio_ids_are_v7_and_distinct_from_rpc_labels() {
     .unwrap()
     .unwrap();
     let reply: ResultEnvelope<ToolResultRecord> = serde_json::from_str(&saved.result).unwrap();
-    assert_eq!(reply.reply.success().unwrap(), true);
+    assert!(reply.reply.success().unwrap());
     let callback_id: String = store
         .test_reader()
         .unwrap()
