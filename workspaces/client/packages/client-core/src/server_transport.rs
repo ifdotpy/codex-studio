@@ -40,6 +40,44 @@ fn transport_diagnostic(method: &str, url: &reqwest::Url, status: u16, kind: &st
     );
 }
 
+#[derive(Default, serde::Deserialize)]
+struct DiagnosticCode<'a> {
+    #[serde(borrow)]
+    code: Option<&'a str>,
+}
+#[derive(Default, serde::Deserialize)]
+struct DiagnosticError<'a> {
+    #[serde(borrow)]
+    error: Option<&'a str>,
+}
+fn rejection_kind(value: &Value) -> &str {
+    use serde::Deserialize;
+    let (code, error) = if value.is_object() {
+        (
+            DiagnosticCode::deserialize(value).unwrap_or_default(),
+            DiagnosticError::deserialize(value).unwrap_or_default(),
+        )
+    } else {
+        (DiagnosticCode::default(), DiagnosticError::default())
+    };
+    match code.code {
+        Some(
+            code @ ("invalid_credentials"
+            | "invalid_id"
+            | "server_mismatch"
+            | "clock_difference"
+            | "invalid_nonce"
+            | "invalid_signature"
+            | "client_revoked"
+            | "owner_mismatch"
+            | "request_conflict"
+            | "replayed_nonce"),
+        ) => code,
+        _ if error.error == Some("Invalid request") => "invalid-request",
+        _ => "other-rejection",
+    }
+}
+
 // These fields are the complete pairing ingress. Identity evidence remains JSON:
 // an existing draft can be retried with values that predate string validation.
 #[derive(Default)]
@@ -425,22 +463,7 @@ impl RemoteClient {
                             && bytes.len() < 4096
                             && let Ok(value) = serde_json::from_slice::<Value>(&bytes)
                         {
-                            let code = match value["code"].as_str() {
-                                Some(
-                                    code @ ("invalid_credentials"
-                                    | "invalid_id"
-                                    | "server_mismatch"
-                                    | "clock_difference"
-                                    | "invalid_nonce"
-                                    | "invalid_signature"
-                                    | "client_revoked"
-                                    | "owner_mismatch"
-                                    | "request_conflict"
-                                    | "replayed_nonce"),
-                                ) => code,
-                                _ if value["error"] == "Invalid request" => "invalid-request",
-                                _ => "other-rejection",
-                            };
+                            let code = rejection_kind(&value);
                             transport_diagnostic(
                                 "READ",
                                 body.response.url(),
@@ -667,6 +690,28 @@ mod tests {
         sync::Mutex as StdMutex,
     };
     struct Memory(StdMutex<Value>);
+    #[test]
+    fn rejection_diagnostics_keep_tolerant_field_precedence() {
+        for (raw, expected) in [
+            (
+                r#"{"code":"bad","code":"invalid_nonce","error":"Invalid request"}"#,
+                "invalid_nonce",
+            ),
+            (
+                r#"{"code":null,"error":"Invalid request"}"#,
+                "invalid-request",
+            ),
+            (
+                r#"{"code":{},"error":"Invalid request"}"#,
+                "invalid-request",
+            ),
+            (r#"{"code":"unknown","error":null}"#, "other-rejection"),
+            (r#""Invalid request""#, "other-rejection"),
+        ] {
+            let value: Value = serde_json::from_str(raw).unwrap();
+            assert_eq!(rejection_kind(&value), expected);
+        }
+    }
     impl Vault for Memory {
         fn read(&self) -> Result<server_keys::VaultState, String> {
             Ok(server_keys::VaultState::from_value(
@@ -1136,137 +1181,149 @@ mod tests {
     }
     #[tokio::test]
     async fn https_transport_signs_exact_bytes_and_streams_without_forwarding_local_auth() {
-        let cert =
-            rcgen::generate_simple_self_signed(vec!["fixture.tailnet.ts.net".into()]).unwrap();
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        let origin = format!("https://fixture.tailnet.ts.net:{}", address.port());
-        let invitation = json!({"protocol":1,"origin":origin,"serverId":"server","inviteId":"invite","token":"test","publicKey":"fixture","tailscaleUser":"user"});
-        let credential = server_keys::new_pair(&invitation, "pair")
-            .unwrap()
-            .into_value();
-        let expected = credential.clone();
-        let root = reqwest::Certificate::from_der(cert.cert.der().as_ref()).unwrap();
-        let config = rustls::ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(
-                vec![cert.cert.der().clone()],
-                rustls::pki_types::PrivateKeyDer::Pkcs8(cert.signing_key.serialize_der().into()),
-            )
-            .unwrap();
-        let server = std::thread::spawn(move || {
-            let (socket, _) = listener.accept().unwrap();
-            socket
-                .set_read_timeout(Some(Duration::from_secs(10)))
+        for response_body in [
+            b"a\0\xff".to_vec(),
+            br#"{"code":"bad","code":"invalid_nonce","error":"Invalid request"}"#.to_vec(),
+        ] {
+            let cert =
+                rcgen::generate_simple_self_signed(vec!["fixture.tailnet.ts.net".into()]).unwrap();
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let origin = format!("https://fixture.tailnet.ts.net:{}", address.port());
+            let invitation = json!({"protocol":1,"origin":origin,"serverId":"server","inviteId":"invite","token":"test","publicKey":"fixture","tailscaleUser":"user"});
+            let credential = server_keys::new_pair(&invitation, "pair")
+                .unwrap()
+                .into_value();
+            let expected = credential.clone();
+            let expected_response = response_body.clone();
+            let root = reqwest::Certificate::from_der(cert.cert.der().as_ref()).unwrap();
+            let config = rustls::ServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(
+                    vec![cert.cert.der().clone()],
+                    rustls::pki_types::PrivateKeyDer::Pkcs8(
+                        cert.signing_key.serialize_der().into(),
+                    ),
+                )
                 .unwrap();
-            let mut stream = rustls::StreamOwned::new(
-                rustls::ServerConnection::new(Arc::new(config)).unwrap(),
-                socket,
-            );
-            let mut bytes = Vec::new();
-            let mut byte = [0];
-            while !bytes.ends_with(b"\r\n\r\n") {
-                stream.read_exact(&mut byte).unwrap();
-                bytes.push(byte[0]);
-            }
-            let header = String::from_utf8(bytes).unwrap();
-            let headers = header
-                .lines()
-                .skip(1)
-                .filter_map(|line| line.split_once(':'))
-                .map(|(k, v)| (k.to_ascii_lowercase(), v.trim().to_owned()))
-                .collect::<HashMap<_, _>>();
-            let length = headers["content-length"].parse::<usize>().unwrap();
-            let mut body = vec![0; length];
-            stream.read_exact(&mut body).unwrap();
-            assert_eq!(body, b"null");
-            assert!(!headers.contains_key("x-canvas-token"));
-            assert!(!headers.contains_key("authorization"));
-            assert!(!headers.contains_key("cookie"));
-            assert_eq!(headers["x-studio-request-id"], "original");
-            let nonce = &headers["x-studio-nonce"];
-            assert_eq!(nonce.len(), 32);
-            assert!(
-                nonce
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
-            );
-
-            {
-                // Verify the wire request with the public key; never sign the expectation
-                // with the implementation under test. The body digest is the fixed null vector.
-                let public = expected["publicKey"]
-                    .as_str()
-                    .unwrap()
-                    .lines()
-                    .filter(|line| !line.starts_with("-----"))
-                    .collect::<String>();
-                let public = STANDARD.decode(public).unwrap();
-                assert_eq!(public.len(), 44);
-                let message = format!(
-                    "studio-multi-server-v1\nPOST\n/api/test?q=1\nserver\n{}\n{}\n{}\noriginal\n74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
-                    expected["clientId"].as_str().unwrap(),
-                    headers["x-studio-timestamp"],
-                    headers["x-studio-nonce"]
+            let server = std::thread::spawn(move || {
+                let (socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(10)))
+                    .unwrap();
+                let mut stream = rustls::StreamOwned::new(
+                    rustls::ServerConnection::new(Arc::new(config)).unwrap(),
+                    socket,
                 );
-                ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, &public[12..])
+                let mut bytes = Vec::new();
+                let mut byte = [0];
+                while !bytes.ends_with(b"\r\n\r\n") {
+                    stream.read_exact(&mut byte).unwrap();
+                    bytes.push(byte[0]);
+                }
+                let header = String::from_utf8(bytes).unwrap();
+                let headers = header
+                    .lines()
+                    .skip(1)
+                    .filter_map(|line| line.split_once(':'))
+                    .map(|(k, v)| (k.to_ascii_lowercase(), v.trim().to_owned()))
+                    .collect::<HashMap<_, _>>();
+                let length = headers["content-length"].parse::<usize>().unwrap();
+                let mut body = vec![0; length];
+                stream.read_exact(&mut body).unwrap();
+                assert_eq!(body, b"null");
+                assert!(!headers.contains_key("x-canvas-token"));
+                assert!(!headers.contains_key("authorization"));
+                assert!(!headers.contains_key("cookie"));
+                assert_eq!(headers["x-studio-request-id"], "original");
+                let nonce = &headers["x-studio-nonce"];
+                assert_eq!(nonce.len(), 32);
+                assert!(
+                    nonce
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+                );
+
+                {
+                    // Verify the wire request with the public key; never sign the expectation
+                    // with the implementation under test. The body digest is the fixed null vector.
+                    let public = expected["publicKey"]
+                        .as_str()
+                        .unwrap()
+                        .lines()
+                        .filter(|line| !line.starts_with("-----"))
+                        .collect::<String>();
+                    let public = STANDARD.decode(public).unwrap();
+                    assert_eq!(public.len(), 44);
+                    let message = format!(
+                        "studio-multi-server-v1\nPOST\n/api/test?q=1\nserver\n{}\n{}\n{}\noriginal\n74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+                        expected["clientId"].as_str().unwrap(),
+                        headers["x-studio-timestamp"],
+                        headers["x-studio-nonce"]
+                    );
+                    ring::signature::UnparsedPublicKey::new(
+                        &ring::signature::ED25519,
+                        &public[12..],
+                    )
                     .verify(
                         message.as_bytes(),
                         &STANDARD.decode(&headers["x-studio-signature"]).unwrap(),
                     )
                     .unwrap();
-            };
-            stream.write_all(b"HTTP/1.1 409 Conflict\r\nContent-Length: 3\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\na\0\xff").unwrap();
-            stream.flush().unwrap();
-        });
-        let vault = Arc::new(Memory(StdMutex::new(
-            json!({"drafts":{},"servers":{"server":credential}}),
-        )));
-        let mut client = RemoteClient::new(vault).unwrap();
-        client.http = reqwest::Client::builder()
-            .no_proxy()
-            .redirect(reqwest::redirect::Policy::none())
-            .retry(reqwest::retry::never())
-            .resolve("fixture.tailnet.ts.net", address)
-            .tls_certs_only([root])
-            .build()
-            .unwrap();
-        let params = json!({"serverId":"server","credentialId":credential["clientId"],"url":origin.clone()+"/api/test?q=1","method":"POST","base64":STANDARD.encode(b"null"),"requestId":"original","headers":[["X-Canvas-Token","secret"],["Authorization","secret"],["Cookie","secret"]]});
-        let mut wrong = params.clone();
-        wrong["url"] = json!("https://other.tailnet.ts.net/api/test");
-        assert!(client.dispatch("servers.request", &wrong).await.is_err());
-        // Saturation rejects before the fixture receives any bytes. Releasing
-        // the reservation lets the same original request execute exactly once.
-        let reserved = client
-            .response_slots
-            .clone()
-            .try_acquire_many_owned(MAX_OPEN_SERVER_RESPONSES as u32)
-            .unwrap();
-        assert!(
-            client
-                .dispatch("servers.request", &params)
-                .await
-                .unwrap_err()
-                .contains("The request was not sent")
-        );
-        drop(reserved);
-        let response = client.dispatch("servers.request", &params).await.unwrap();
-        assert_eq!(response["status"], 409);
-        let stream = json!({"stream":response["stream"]});
-        let mut bytes = Vec::new();
-        loop {
-            let chunk = client.dispatch("servers.read", &stream).await.unwrap();
-            if chunk["done"] == true {
-                break;
+                };
+                stream.write_all(format!("HTTP/1.1 409 Conflict\r\nContent-Length: {}\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\n", response_body.len()).as_bytes()).unwrap();
+                stream.write_all(&response_body).unwrap();
+                stream.flush().unwrap();
+            });
+            let vault = Arc::new(Memory(StdMutex::new(
+                json!({"drafts":{},"servers":{"server":credential}}),
+            )));
+            let mut client = RemoteClient::new(vault).unwrap();
+            client.http = reqwest::Client::builder()
+                .no_proxy()
+                .redirect(reqwest::redirect::Policy::none())
+                .retry(reqwest::retry::never())
+                .resolve("fixture.tailnet.ts.net", address)
+                .tls_certs_only([root])
+                .build()
+                .unwrap();
+            let params = json!({"serverId":"server","credentialId":credential["clientId"],"url":origin.clone()+"/api/test?q=1","method":"POST","base64":STANDARD.encode(b"null"),"requestId":"original","headers":[["X-Canvas-Token","secret"],["Authorization","secret"],["Cookie","secret"]]});
+            let mut wrong = params.clone();
+            wrong["url"] = json!("https://other.tailnet.ts.net/api/test");
+            assert!(client.dispatch("servers.request", &wrong).await.is_err());
+            // Saturation rejects before the fixture receives any bytes. Releasing
+            // the reservation lets the same original request execute exactly once.
+            let reserved = client
+                .response_slots
+                .clone()
+                .try_acquire_many_owned(MAX_OPEN_SERVER_RESPONSES as u32)
+                .unwrap();
+            assert!(
+                client
+                    .dispatch("servers.request", &params)
+                    .await
+                    .unwrap_err()
+                    .contains("The request was not sent")
+            );
+            drop(reserved);
+            let response = client.dispatch("servers.request", &params).await.unwrap();
+            assert_eq!(response["status"], 409);
+            let stream = json!({"stream":response["stream"]});
+            let mut bytes = Vec::new();
+            loop {
+                let chunk = client.dispatch("servers.read", &stream).await.unwrap();
+                if chunk["done"] == true {
+                    break;
+                }
+                bytes.extend(STANDARD.decode(chunk["base64"].as_str().unwrap()).unwrap());
             }
-            bytes.extend(STANDARD.decode(chunk["base64"].as_str().unwrap()).unwrap());
+            assert_eq!(bytes, expected_response);
+            assert_eq!(
+                client.response_slots.available_permits(),
+                MAX_OPEN_SERVER_RESPONSES
+            );
+            server.join().unwrap();
+            assert!(client.dispatch("servers.read", &stream).await.is_err());
         }
-        assert_eq!(bytes, b"a\0\xff");
-        assert_eq!(
-            client.response_slots.available_permits(),
-            MAX_OPEN_SERVER_RESPONSES
-        );
-        server.join().unwrap();
-        assert!(client.dispatch("servers.read", &stream).await.is_err());
     }
 }

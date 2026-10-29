@@ -125,6 +125,7 @@ default-filter = '''
 (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(snapshot_rejects_object_encoded_request_state)) |
 (package(=studio-runtime-http) & kind(lib) & (test(legacy_branch_operation_catalog_and_settlement_preserve_evidence) | test(branch_retry_keeps_unknown_broker_identity) | test(branch_failed_retry_clears_old_evidence_only))) |
 (package(=studio-runtime-http) & kind(lib) & (test(invite_replay_preserves_registered_peer_and_refuses_revoked) | test(remote_name_rejects_partial_peer_before_outbound_reservation))) |
+(package(=studio-runtime-server) & kind(bin) & (test(auto_pair_reservation_preserves_partial_json_evidence) | test(auto_pair_reservation_rolls_back_failed_write) | test(paired_refresh_ignores_partial_and_malformed_local_evidence))) |
 (package(=studio-runtime-server) & kind(bin) & test(discovered_reachability_keeps_partial_records_and_extensions)) |
 (package(=studio-runtime-services) & kind(lib) & test(stored_peer_projection_preserves_partial_and_opaque_fields)) |
 (package(=studio-runtime-http) & kind(lib) & test(asset_upload_uses_nullable_fields_and_base64_precedence)) |
@@ -168,7 +169,7 @@ default-filter = '''
     (package(=studio-runtime-services) & binary(=integration) & (test(recovery_history::exact_start_rejects_invalid_negative_receipt_identity) | test(recovery_history::exact_start_refuses_malformed_delivered_items))) |
     (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(non_radio_async_answer_is_steered_and_acknowledged)) |
     (package(=studio-runtime-services) & kind(lib) & test(private_answer_waits_while_shared_turn_holds_floor)) |
-    (package(=studio-runtime-http) & kind(lib) & (test(pricing_refresh) | test(generated_provider_identity_is_the_schema_owner) | test(catalog_rejects_unsupported_effort_and_uses_native_default_when_omitted))) |
+    (package(=studio-runtime-http) & kind(lib) & (test(pricing_refresh) | test(generated_provider_identity_is_the_schema_owner) | test(model_entities::tests::cleanup_preserves_partial_and_other_account_rows) | test(model_entities::tests::publishes_full_per_account_rows_and_tombstones_removed_models) | test(catalog_rejects_unsupported_effort_and_uses_native_default_when_omitted))) |
     (package(=studio-runtime-services) & kind(lib) & (test(rejected_usage_does_not_feed_rate_or_move_cache) | test(usage::tests::claude_cost_snapshot_) | test(usage::tests::local_claude_session_fixture_) | test(usage::tests::claude_refresh_uses_completion_time))) |
     (package(=studio-runtime-schema) & kind(lib) & (test(bridge_wire) | test(provider_kind::tests::) | test(provider_identity) | test(provider_errors::) | test(studio_errors::) | test(provider_lifecycle::) | test(provider_parity_rejects_each_native_discriminator_and_sql_drift))) |
     (package(=studio-runtime-providers) & kind(lib) & test(provider_kind::tests::)) |
@@ -375,6 +376,7 @@ default-filter = '''
     | (package(=studio-runtime-services) & kind(test) & binary(=integration) & (test(task_recovery::historical_negative_receipt_resolves_without_rewriting_or_native_evidence) | test(task_recovery::cancelled_receipt_requires_exact_attempt_and_negative_finished_result) | test(task_recovery::exact_task_receipts_match_python_and_unknown_local_outcomes_override_native)))
     | (package(=studio-runtime-schema) & kind(lib) & (test(/^agent_progress::tests::/) | test(/^claude_controls::tests::claude_settings_wire_fields_match_derived_schema$/)))
     | (package(=studio-client-core) & kind(lib) & test(/^draft_store::tests::/))
+    | (package(=studio-client-core) & kind(lib) & (test(/^backend::tests::bounded_error_response_preserves_json_admission_and_limits$/) | test(/^server_transport::tests::rejection_diagnostics_keep_tolerant_field_precedence$/)))
     | (package(=studio-runtime-store) & kind(lib) & test(/^repositories::rules_tick::typed_tests::/))
     | (package(=studio-client-core) & kind(lib) & (test(/^file_preview::tests::command_inputs_keep_preview_error_order_and_unicode_offsets$/) | test(/^file_links::tests::link_inputs_preserve_target_extensions_and_path_first_errors$/) | test(/^rich_document::tests::invalid_requests_fail_before_starting_the_native_renderer$/)))
     | (package(=studio-client-core) & kind(lib) & (test(/^store::tests::preference_inputs_preserve_shape_order_and_raw_remove_defaults$/) | test(/^store::tests::snapshot_(import_replay_after_restart_preserves_later_edits|conflict_and_storage_failure_leave_no_partial_import|validation_never_partially_writes)$/) | test(/^store::tests::long_preference_keys_survive_import_and_keep_byte_limit$/)))
@@ -457,6 +459,7 @@ default-filter = '''
 (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(snapshot_rejects_object_encoded_request_state)) |
 (package(=studio-runtime-http) & kind(lib) & (test(legacy_branch_operation_catalog_and_settlement_preserve_evidence) | test(branch_retry_keeps_unknown_broker_identity) | test(branch_failed_retry_clears_old_evidence_only))) |
 (package(=studio-runtime-http) & kind(lib) & (test(invite_replay_preserves_registered_peer_and_refuses_revoked) | test(remote_name_rejects_partial_peer_before_outbound_reservation))) |
+(package(=studio-runtime-server) & kind(bin) & (test(auto_pair_reservation_preserves_partial_json_evidence) | test(auto_pair_reservation_rolls_back_failed_write) | test(paired_refresh_ignores_partial_and_malformed_local_evidence))) |
 (package(=studio-runtime-server) & kind(bin) & test(discovered_reachability_keeps_partial_records_and_extensions)) |
 (package(=studio-runtime-services) & kind(lib) & test(stored_peer_projection_preserves_partial_and_opaque_fields)) |
 (package(=studio-runtime-http) & kind(lib) & test(asset_upload_uses_nullable_fields_and_base64_precedence)) |
@@ -500,7 +503,7 @@ default-filter = '''
     (package(=studio-runtime-services) & binary(=integration) & (test(recovery_history::exact_start_rejects_invalid_negative_receipt_identity) | test(recovery_history::exact_start_refuses_malformed_delivered_items))) |
     (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(non_radio_async_answer_is_steered_and_acknowledged)) |
     (package(=studio-runtime-services) & kind(lib) & test(private_answer_waits_while_shared_turn_holds_floor)) |
-    (package(=studio-runtime-http) & kind(lib) & (test(pricing_refresh) | test(generated_provider_identity_is_the_schema_owner) | test(catalog_rejects_unsupported_effort_and_uses_native_default_when_omitted))) |
+    (package(=studio-runtime-http) & kind(lib) & (test(pricing_refresh) | test(generated_provider_identity_is_the_schema_owner) | test(model_entities::tests::cleanup_preserves_partial_and_other_account_rows) | test(model_entities::tests::publishes_full_per_account_rows_and_tombstones_removed_models) | test(catalog_rejects_unsupported_effort_and_uses_native_default_when_omitted))) |
     (package(=studio-runtime-services) & kind(lib) & (test(rejected_usage_does_not_feed_rate_or_move_cache) | test(usage::tests::claude_cost_snapshot_) | test(usage::tests::local_claude_session_fixture_) | test(usage::tests::claude_refresh_uses_completion_time))) |
     (package(=studio-runtime-schema) & kind(lib) & (test(bridge_wire) | test(provider_kind::tests::) | test(provider_identity) | test(provider_errors::) | test(studio_errors::) | test(provider_lifecycle::) | test(provider_parity_rejects_each_native_discriminator_and_sql_drift))) |
     (package(=studio-runtime-providers) & kind(lib) & test(provider_kind::tests::)) |
@@ -707,6 +710,7 @@ default-filter = '''
     | (package(=studio-runtime-services) & kind(test) & binary(=integration) & (test(task_recovery::historical_negative_receipt_resolves_without_rewriting_or_native_evidence) | test(task_recovery::cancelled_receipt_requires_exact_attempt_and_negative_finished_result) | test(task_recovery::exact_task_receipts_match_python_and_unknown_local_outcomes_override_native)))
     | (package(=studio-runtime-schema) & kind(lib) & (test(/^agent_progress::tests::/) | test(/^claude_controls::tests::claude_settings_wire_fields_match_derived_schema$/)))
     | (package(=studio-client-core) & kind(lib) & test(/^draft_store::tests::/))
+    | (package(=studio-client-core) & kind(lib) & (test(/^backend::tests::bounded_error_response_preserves_json_admission_and_limits$/) | test(/^server_transport::tests::rejection_diagnostics_keep_tolerant_field_precedence$/)))
     | (package(=studio-runtime-store) & kind(lib) & test(/^repositories::rules_tick::typed_tests::/))
     | (package(=studio-client-core) & kind(lib) & (test(/^file_preview::tests::command_inputs_keep_preview_error_order_and_unicode_offsets$/) | test(/^file_links::tests::link_inputs_preserve_target_extensions_and_path_first_errors$/) | test(/^rich_document::tests::invalid_requests_fail_before_starting_the_native_renderer$/)))
     | (package(=studio-client-core) & kind(lib) & (test(/^store::tests::preference_inputs_preserve_shape_order_and_raw_remove_defaults$/) | test(/^store::tests::snapshot_(import_replay_after_restart_preserves_later_edits|conflict_and_storage_failure_leave_no_partial_import|validation_never_partially_writes)$/) | test(/^store::tests::long_preference_keys_survive_import_and_keep_byte_limit$/)))
