@@ -916,7 +916,7 @@ async fn copy_branch_history(
         child.extra.insert("sandbox".into(), provider.get("sandbox").cloned().or_else(|| current.extra.get("sandbox").cloned()).unwrap_or(Value::Null));
         child.extra.insert("approvalPolicy".into(), provider.get("approvalPolicy").cloned().or_else(|| current.extra.get("approvalPolicy").cloned()).unwrap_or(Value::Null));
         child.extra.insert("profileId".into(), provider.get("activePermissionProfile").cloned().or_else(|| current.extra.get("profileId").cloned()).unwrap_or(Value::Null));
-        child.thread_id = match &provider["thread"]["id"] { Value::Null => None, Value::String(id) => Some(id.clone()), _ => return Err(studio_runtime_store::StoreError::SchemaMismatch("invalid branch thread".into())) };
+        child.thread_id = match &provider["thread"]["id"] { Value::Null => None, Value::String(id) => Some(id.clone()), Value::Bool(_) | Value::Number(_) | Value::Array(_) | Value::Object(_) => return Err(studio_runtime_store::StoreError::SchemaMismatch("invalid branch thread".into())) };
         child.extra.insert("forkedFrom".into(),json!(source)); child.extra.insert("sourceMessage".into(),json!(selected.id));
         child.extra.insert("status".into(),json!("idle")); child.auto_wake = Some(true); child.extra.insert("needsTitle".into(),json!(false));
         child.extra.remove("quickCreate"); child.extra.remove("quickCreateRequest");
