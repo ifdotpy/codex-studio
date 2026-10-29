@@ -1019,10 +1019,10 @@ pub async fn rules(
                 let visible = rules
                     .into_iter()
                     .filter(|rule| {
-                        rule.get("rootId").and_then(Value::as_str) == Some(root.as_str())
+                        rule.root_id.as_deref() == Some(root.as_str())
                             && rule
-                                .get("agent")
-                                .and_then(Value::as_str)
+                                .agent
+                                .as_deref()
                                 .and_then(|id| live.get(id))
                                 .copied()
                                 .unwrap_or(false)
@@ -1534,7 +1534,7 @@ fn save_rule(
 
 fn checked_rule(record: Value, actor: Value) -> Result<RuleRecord, RulesServiceError> {
     let rule = RuleRecord::from_value(record).map_err(|_| RulesServiceError::Invalid("rule"))?;
-    crate::rules_engine::RuleSnapshot::from_records(rule.value().clone(), actor)?;
+    crate::rules_engine::RuleSnapshot::from_stored(rule.clone(), actor)?;
     Ok(rule)
 }
 
@@ -1975,7 +1975,7 @@ mod tests {
         )
         .expect("read rule row")
         .expect("saved rule remains");
-        assert_eq!(persisted_after_mismatch.value(), &saved.value);
+        assert_eq!(persisted_after_mismatch.value(), saved.value);
         store
             .transaction_with(move |tx| {
                 tx.execute(
@@ -2015,7 +2015,10 @@ mod tests {
         )
         .expect("read rule")
         .expect("rule exists");
-        assert_eq!(stored.get("status"), Some(&json!("paused")));
+        assert_eq!(
+            stored.status,
+            Some(studio_runtime_schema::rule_record::RuleStatus::Paused)
+        );
         store
             .test_reader()
             .expect("read rule sync projection")

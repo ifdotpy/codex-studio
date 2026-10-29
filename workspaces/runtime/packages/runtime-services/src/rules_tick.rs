@@ -174,7 +174,7 @@ pub async fn tick_batch(
         let rule = row.rule;
         // Most stored rules are paused or completed. Skip them before the owner
         // record, which can hold hundreds of kilobytes, is read and decoded.
-        if !tick_can_change(rule.value())? {
+        if !tick_can_change(&rule)? {
             continue;
         }
         let sampled = store
@@ -266,7 +266,7 @@ pub async fn recover_batch(
                     return Ok(None);
                 };
                 let owner = owner(tx, sampled.owner_id())?;
-                if !sampled.current(rule.value(), &owner.value()) {
+                if !sampled.current(&rule.value(), &owner.value()) {
                     return Ok(None);
                 }
                 if let Some(check) = &intent_for_tx
@@ -377,22 +377,7 @@ pub async fn settle_submission(
 }
 
 fn launch_intent(snapshot: &RuleSnapshot) -> Result<Option<RuleCheck>, RulesTickError> {
-    let Some(value) = snapshot
-        .record()
-        .get("launchIntent")
-        .filter(|value| !value.is_null())
-    else {
-        return Ok(None);
-    };
-    serde_json::from_value(value.clone())
-        .map(Some)
-        .map_err(|_| {
-            RuleError::Invalid {
-                object: format!("rules/{}", snapshot.id()),
-                location: "/launchIntent".into(),
-            }
-            .into()
-        })
+    snapshot.launch_intent().map_err(Into::into)
 }
 
 pub async fn finish(
@@ -478,10 +463,10 @@ pub fn event_in_transaction(
     };
     let mut checks = Vec::new();
     for row in rows {
-        if row.rule.get("agent").and_then(serde_json::Value::as_str) != Some(agent.id().as_ref()) {
+        if row.rule.agent.as_deref() != Some(agent.id().as_ref()) {
             continue;
         }
-        let snapshot = RuleSnapshot::from_records(row.rule.value().clone(), agent.value())?;
+        let snapshot = RuleSnapshot::from_stored(row.rule, agent.value())?;
         let decision = snapshot.event(event.kind, event.text, event.key, event.now)?;
         if decision.check.is_some() && !monitor_available {
             return Err(RulesTickError::MonitorUnavailable);
@@ -501,16 +486,14 @@ fn load_snapshot(
     rule: RuleRecord,
 ) -> Result<RuleSnapshot, RulesTickError> {
     let agent_id = rule
-        .get("agent")
-        .and_then(serde_json::Value::as_str)
+        .agent
+        .as_deref()
         .ok_or_else(|| StoreError::InvalidStoredRecord {
             object: "rules",
             id: rule.id().clone(),
         })?;
-    Ok(RuleSnapshot::from_records(
-        rule.value().clone(),
-        owner(connection, agent_id)?.value(),
-    )?)
+    let owner = owner(connection, agent_id)?.value();
+    Ok(RuleSnapshot::from_stored(rule, owner)?)
 }
 /// Decide one sampled rule against current rows: `None` when the sample is stale.
 fn decide(
@@ -524,7 +507,7 @@ fn decide(
         return Ok(None);
     };
     let owner = owner(connection, sampled.owner_id())?;
-    if !sampled.current(rule.value(), &owner.value()) {
+    if !sampled.current(&rule.value(), &owner.value()) {
         return Ok(None);
     }
     let activity = if sampled.is_low_workers() {

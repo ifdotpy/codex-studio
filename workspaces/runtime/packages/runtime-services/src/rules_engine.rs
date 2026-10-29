@@ -83,23 +83,7 @@ pub enum RuleError {
     Schema,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
-enum Kind {
-    Interval,
-    Once,
-    File,
-    Event,
-    LowWorkers,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
-enum Status {
-    Active,
-    Paused,
-    Completed,
-}
+use studio_runtime_schema::rule_record::{RuleKind as Kind, RuleStatus as Status};
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -157,6 +141,127 @@ struct Rule {
     owner_hold: Option<String>,
 }
 impl Rule {
+    fn from_record(record: &studio_runtime_store::RuleRecord) -> Result<Self, RuleError> {
+        let invalid = |name: &str| RuleError::Invalid {
+            object: format!("rules/{}", record.id),
+            location: format!("/{name}"),
+        };
+        macro_rules! required {
+            ($field:ident, $wire:literal) => {
+                record.$field.clone().ok_or_else(|| invalid($wire))?
+            };
+        }
+        macro_rules! integer {
+            ($field:ident, $wire:literal, $default:expr) => {
+                match &record.$field {
+                    Some(value) => value.number().as_u64().ok_or_else(|| invalid($wire))?,
+                    None => $default,
+                }
+            };
+        }
+        let kind = required!(kind, "kind");
+        let status = required!(status, "status");
+        let fingerprint = match &record.fingerprint {
+            Some(Some((a, b, c))) => Some((
+                a.number().as_i64().ok_or_else(|| invalid("fingerprint"))?,
+                b.number().as_u64().ok_or_else(|| invalid("fingerprint"))?,
+                c.number().as_u64().ok_or_else(|| invalid("fingerprint"))?,
+            )),
+            _ => None,
+        };
+        let optional_integer =
+            |number: Option<&serde_json::Number>, name: &str| -> Result<Option<u64>, RuleError> {
+                number
+                    .map(|value| value.as_u64().ok_or_else(|| invalid(name)))
+                    .transpose()
+            };
+        Ok(Self {
+            id: record.id.clone(),
+            agent: required!(agent, "agent"),
+            epoch: required!(epoch, "epoch")
+                .number()
+                .as_u64()
+                .ok_or_else(|| invalid("epoch"))?,
+            name: required!(name, "name").as_str().to_owned(),
+            kind,
+            status,
+            interval_seconds: required!(interval_seconds, "intervalSeconds")
+                .number()
+                .as_u64()
+                .ok_or_else(|| invalid("intervalSeconds"))?,
+            next_at: required!(next_at, "nextAt")
+                .as_f64()
+                .ok_or_else(|| invalid("nextAt"))?,
+            created: required!(created, "created")
+                .as_f64()
+                .ok_or_else(|| invalid("created"))?,
+            command: required!(command, "command").as_str().to_owned(),
+            text: required!(text, "text"),
+            path: record.path.clone().flatten(),
+            event: record.event.clone().unwrap_or_default(),
+            in_flight: record.in_flight.unwrap_or(false),
+            checks: integer!(checks, "checks", 0),
+            wakes: integer!(wakes, "wakes", 0),
+            fingerprint,
+            file_activity_at: record.file_activity_at.as_ref().and_then(|n| n.as_f64()),
+            file_generation: integer!(file_generation, "fileGeneration", 0),
+            stall_wake_generation: match &record.stall_wake_generation {
+                Some(n) => n
+                    .number()
+                    .as_i64()
+                    .ok_or_else(|| invalid("stallWakeGeneration"))?,
+                None => -1,
+            },
+            stall_timeout_seconds: integer!(
+                stall_timeout_seconds,
+                "stallTimeoutSeconds",
+                DEFAULT_RULE_STALL_SECONDS
+            ),
+            liveness_command: record
+                .liveness_command
+                .as_ref()
+                .map(|s| s.as_str().to_owned())
+                .unwrap_or_default(),
+            stall_probe: record.stall_probe.unwrap_or(false),
+            stall_event_key: record.stall_event_key.clone(),
+            minimum_workers: optional_integer(
+                record.minimum_workers.as_ref().map(|n| n.number()),
+                "minimumWorkers",
+            )?,
+            duration_minutes: optional_integer(
+                record.duration_minutes.as_ref().map(|n| n.number()),
+                "durationMinutes",
+            )?,
+            low_since: record
+                .low_since
+                .as_ref()
+                .and_then(|n| n.as_ref())
+                .and_then(|n| n.as_f64()),
+            alerted: record.alerted.unwrap_or(false),
+            last_event: record.last_event.clone(),
+            event_text: record
+                .event_text
+                .as_ref()
+                .map(|s| s.as_str().to_owned())
+                .unwrap_or_default(),
+            owner_hold: record
+                .owner_hold
+                .as_ref()
+                .and_then(|v| v.as_ref())
+                .map(|v| {
+                    match v {
+                        studio_runtime_schema::rule_record::OwnerHold::FailedInputHeld => {
+                            "failed_input_held"
+                        }
+                        studio_runtime_schema::rule_record::OwnerHold::NativeFailureHold => {
+                            "native_failure_hold"
+                        }
+                        studio_runtime_schema::rule_record::OwnerHold::Archived => "archived",
+                    }
+                    .to_owned()
+                }),
+        })
+    }
     /// Only an active rule without a check in flight can change in a tick.
     fn can_tick(&self) -> bool {
         self.status == Status::Active && !self.in_flight
@@ -171,8 +276,8 @@ impl Rule {
 /// Whether a tick can change the stored rule `rule`, which is validated as in
 /// [`RuleSnapshot::from_records`]. [`RuleSnapshot::tick`] decides nothing for
 /// any other rule, so its owner record need not be read.
-pub fn tick_can_change(rule: &Value) -> Result<bool, RuleError> {
-    let parsed: Rule = checked("rules", "PersistedRuleRecord", rule)?;
+pub fn tick_can_change(rule: &studio_runtime_store::RuleRecord) -> Result<bool, RuleError> {
+    let parsed = Rule::from_record(rule)?;
     Ok(parsed.can_tick() || parsed.owner_paused())
 }
 
@@ -267,6 +372,7 @@ impl Owner {
 #[derive(Clone)]
 pub struct RuleSnapshot {
     raw: Value,
+    launch_intent: Option<studio_runtime_schema::rule_record::LaunchIntent>,
     owner_raw: Value,
     rule: Rule,
     owner: Owner,
@@ -321,7 +427,18 @@ pub struct TickObservation {
 
 impl RuleSnapshot {
     pub fn from_records(rule: Value, owner: Value) -> Result<Self, RuleError> {
-        let parsed: Rule = checked("rules", "PersistedRuleRecord", &rule)?;
+        let record: studio_runtime_store::RuleRecord =
+            serde_path_to_error::deserialize(rule.clone())
+                .map_err(|error| invalid("rules", &rule, &format!("/{}", error.path())))?;
+        Self::from_stored(record, owner)
+    }
+
+    pub fn from_stored(
+        record: studio_runtime_store::RuleRecord,
+        owner: Value,
+    ) -> Result<Self, RuleError> {
+        let parsed = Rule::from_record(&record)?;
+        let rule = record.value();
         let agent: Owner = checked("agents", "PersistedAgentRecord", &owner)?;
         if parsed.agent != agent.id {
             return Err(invalid("rules", &rule, "/agent"));
@@ -336,6 +453,7 @@ impl RuleSnapshot {
         }
         Ok(Self {
             raw: rule,
+            launch_intent: record.launch_intent.flatten(),
             owner_raw: owner,
             rule: parsed,
             owner: agent,
@@ -344,6 +462,27 @@ impl RuleSnapshot {
 
     pub fn id(&self) -> &str {
         &self.rule.id
+    }
+    pub(crate) fn launch_intent(&self) -> Result<Option<RuleCheck>, RuleError> {
+        let Some(intent) = &self.launch_intent else {
+            return Ok(None);
+        };
+        let invalid = || RuleError::Invalid {
+            object: format!("rules/{}", self.id()),
+            location: "/launchIntent".into(),
+        };
+        Ok(Some(RuleCheck {
+            rule_id: intent.rule_id.clone(),
+            check_number: intent.check_number.number().as_u64().ok_or_else(invalid)?,
+            agent_id: intent.agent_id.clone(),
+            epoch: intent.epoch.number().as_u64().ok_or_else(invalid)?,
+            account_key: intent.account_key.clone(),
+            thread_id: intent.thread_id.clone(),
+            monitor_id: intent.monitor_id.clone(),
+            command: intent.command.as_str().to_owned(),
+            timeout_ms: intent.timeout_ms.number().as_u64().ok_or_else(invalid)?,
+            liveness: intent.liveness,
+        }))
     }
     pub fn owner_id(&self) -> &str {
         &self.rule.agent

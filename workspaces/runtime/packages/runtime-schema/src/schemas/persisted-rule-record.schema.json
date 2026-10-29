@@ -1,317 +1,213 @@
 {
   "$defs": {
-    "JsonValue": {},
-    "PersistedRuleLaunchIntent": {
+    "LaunchIntent": {
       "additionalProperties": false,
-      "description": "Exact request reserved before handing a rule command to the monitor driver.",
       "properties": {
         "accountKey": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "title": "Accountkey"
+          "type": ["string", "null"]
         },
         "agentId": {
-          "title": "Agentid",
           "type": "string"
         },
         "checkNumber": {
           "maximum": 9007199254740991,
           "minimum": 0,
-          "title": "Checknumber",
           "type": "integer"
         },
         "command": {
           "maxLength": 12000,
-          "title": "Command",
           "type": "string"
         },
         "epoch": {
           "maximum": 9007199254740991,
           "minimum": 0,
-          "title": "Epoch",
           "type": "integer"
         },
         "liveness": {
-          "title": "Liveness",
           "type": "boolean"
         },
         "monitorId": {
-          "title": "Monitorid",
           "type": "string"
         },
         "ruleId": {
-          "title": "Ruleid",
           "type": "string"
         },
         "threadId": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "title": "Threadid"
+          "type": ["string", "null"]
         },
         "timeoutMs": {
           "maximum": 86400000,
           "minimum": 1000,
-          "title": "Timeoutms",
           "type": "integer"
         }
       },
       "required": [
-        "ruleId",
-        "checkNumber",
-        "agentId",
-        "epoch",
         "accountKey",
-        "threadId",
-        "monitorId",
+        "agentId",
+        "checkNumber",
         "command",
-        "timeoutMs",
-        "liveness"
+        "epoch",
+        "liveness",
+        "monitorId",
+        "ruleId",
+        "threadId",
+        "timeoutMs"
       ],
-      "title": "PersistedRuleLaunchIntent",
       "type": "object"
+    },
+    "OwnerHold": {
+      "enum": ["failed_input_held", "native_failure_hold", "archived"],
+      "type": "string"
+    },
+    "RuleKind": {
+      "enum": ["interval", "once", "file", "event", "low_workers"],
+      "type": "string"
+    },
+    "RuleStatus": {
+      "enum": ["active", "paused", "completed"],
+      "type": "string"
+    },
+    "StoredJsonInteger": {
+      "description": "A JSON Schema integer, preserving integral decimal spellings and large values.",
+      "type": "integer"
     }
   },
-  "additionalProperties": {
-    "$ref": "#/$defs/JsonValue"
-  },
-  "description": "Open rule records; only fields consumed by the rule engine are constrained.",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
   "properties": {
     "activeWorkers": {
       "maximum": 9007199254740991,
       "minimum": 0,
-      "title": "Activeworkers",
       "type": "integer"
     },
     "agent": {
-      "title": "Agent",
       "type": "string"
     },
     "alerted": {
-      "title": "Alerted",
       "type": "boolean"
     },
     "at": {
-      "anyOf": [
-        {
-          "type": "number"
-        },
-        {
-          "type": "integer"
-        }
-      ],
-      "title": "At"
+      "type": "number"
     },
     "checks": {
       "maximum": 9007199254740991,
       "minimum": 0,
-      "title": "Checks",
       "type": "integer"
     },
     "command": {
       "maxLength": 12000,
-      "title": "Command",
       "type": "string"
     },
     "created": {
-      "anyOf": [
-        {
-          "type": "number"
-        },
-        {
-          "type": "integer"
-        }
-      ],
-      "title": "Created"
+      "type": "number"
     },
     "durationMinutes": {
       "maximum": 525600,
       "minimum": 1,
-      "title": "Durationminutes",
       "type": "integer"
     },
     "epoch": {
       "maximum": 9007199254740991,
       "minimum": 0,
-      "title": "Epoch",
       "type": "integer"
     },
     "error": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Error"
+      "type": ["string", "null"]
     },
     "event": {
-      "title": "Event",
       "type": "string"
     },
     "eventText": {
       "maxLength": 12000,
-      "title": "Eventtext",
       "type": "string"
     },
     "fileActivityAt": {
-      "anyOf": [
-        {
-          "type": "number"
-        },
-        {
-          "type": "integer"
-        }
-      ],
-      "title": "Fileactivityat"
+      "type": "number"
     },
     "fileGeneration": {
       "maximum": 9007199254740991,
       "minimum": 0,
-      "title": "Filegeneration",
       "type": "integer"
     },
     "fingerprint": {
-      "anyOf": [
+      "maxItems": 3,
+      "minItems": 3,
+      "prefixItems": [
         {
-          "maxItems": 3,
-          "minItems": 3,
-          "prefixItems": [
-            {
-              "maximum": 9223372036854775807,
-              "minimum": -9223372036854775808,
-              "type": "integer"
-            },
-            {
-              "maximum": 18446744073709551615,
-              "minimum": 0,
-              "type": "integer"
-            },
-            {
-              "maximum": 18446744073709551615,
-              "minimum": 0,
-              "type": "integer"
-            }
-          ],
-          "type": "array"
+          "maximum": 9223372036854775807,
+          "minimum": -9223372036854775808,
+          "type": "integer"
         },
         {
-          "type": "null"
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": "integer"
         }
       ],
-      "title": "Fingerprint"
+      "type": ["array", "null"]
     },
     "id": {
-      "title": "Id",
       "type": "string"
     },
     "inFlight": {
-      "title": "Inflight",
       "type": "boolean"
     },
     "intervalSeconds": {
       "maximum": 31536000,
       "minimum": 10,
-      "title": "Intervalseconds",
       "type": "integer"
     },
     "kind": {
-      "enum": ["interval", "once", "file", "event", "low_workers"],
-      "title": "Kind",
-      "type": "string"
+      "$ref": "#/$defs/RuleKind"
     },
     "lastAt": {
-      "anyOf": [
-        {
-          "type": "number"
-        },
-        {
-          "type": "integer"
-        }
-      ],
-      "title": "Lastat"
+      "type": "number"
     },
     "lastEvent": {
-      "title": "Lastevent",
       "type": "string"
     },
     "lastExitCode": {
       "anyOf": [
         {
-          "type": "integer"
+          "$ref": "#/$defs/StoredJsonInteger"
         },
         {
           "type": "null"
         }
-      ],
-      "title": "Lastexitcode"
+      ]
     },
     "lastFinished": {
-      "anyOf": [
-        {
-          "type": "number"
-        },
-        {
-          "type": "integer"
-        }
-      ],
-      "title": "Lastfinished"
+      "type": "number"
     },
     "lastOutput": {
       "maxLength": 12000,
-      "title": "Lastoutput",
       "type": "string"
     },
     "lastStallError": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Laststallerror"
+      "type": ["string", "null"]
     },
     "lastStallExitCode": {
       "anyOf": [
         {
-          "type": "integer"
+          "$ref": "#/$defs/StoredJsonInteger"
         },
         {
           "type": "null"
         }
-      ],
-      "title": "Laststallexitcode"
+      ]
     },
     "lastStallFinished": {
-      "anyOf": [
-        {
-          "type": "number"
-        },
-        {
-          "type": "integer"
-        }
-      ],
-      "title": "Laststallfinished"
+      "type": "number"
     },
     "launchIntent": {
       "anyOf": [
         {
-          "$ref": "#/$defs/PersistedRuleLaunchIntent"
+          "$ref": "#/$defs/LaunchIntent"
         },
         {
           "type": "null"
@@ -320,128 +216,75 @@
     },
     "livenessCommand": {
       "maxLength": 12000,
-      "title": "Livenesscommand",
       "type": "string"
     },
     "lowSince": {
-      "anyOf": [
-        {
-          "type": "number"
-        },
-        {
-          "type": "integer"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Lowsince"
+      "type": ["number", "null"]
     },
     "minimumWorkers": {
       "maximum": 255,
       "minimum": 1,
-      "title": "Minimumworkers",
       "type": "integer"
     },
     "name": {
       "maxLength": 120,
-      "title": "Name",
       "type": "string"
     },
     "nextAt": {
-      "anyOf": [
-        {
-          "type": "number"
-        },
-        {
-          "type": "integer"
-        }
-      ],
-      "title": "Nextat"
+      "type": "number"
     },
     "ownerHold": {
       "anyOf": [
         {
-          "enum": ["failed_input_held", "native_failure_hold", "archived"],
-          "type": "string"
+          "$ref": "#/$defs/OwnerHold"
         },
         {
           "type": "null"
         }
-      ],
-      "description": "Why the tick paused this rule while its owner cannot act on a wake. The tick resumes the rule when the owner can run again; a manual pause or resume removes it.",
-      "title": "Ownerhold"
+      ]
     },
     "path": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Path"
+      "type": ["string", "null"]
     },
     "restartCheck": {
-      "anyOf": [
-        {
-          "additionalProperties": {
-            "$ref": "#/$defs/JsonValue"
-          },
-          "type": "object"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Restartcheck"
+      "additionalProperties": true,
+      "type": ["object", "null"]
     },
     "rootId": {
-      "title": "Rootid",
       "type": "string"
     },
     "stallEventKey": {
-      "title": "Stalleventkey",
       "type": "string"
     },
     "stallProbe": {
-      "title": "Stallprobe",
       "type": "boolean"
     },
     "stallText": {
-      "title": "Stalltext",
       "type": "string"
     },
     "stallTimeoutSeconds": {
       "maximum": 31536000,
       "minimum": 0,
-      "title": "Stalltimeoutseconds",
       "type": "integer"
     },
     "stallWakeGeneration": {
       "maximum": 9007199254740991,
       "minimum": -1,
-      "title": "Stallwakegeneration",
       "type": "integer"
     },
     "status": {
-      "enum": ["active", "paused", "completed"],
-      "title": "Status",
-      "type": "string"
+      "$ref": "#/$defs/RuleStatus"
     },
     "text": {
-      "title": "Text",
       "type": "string"
     },
     "wakes": {
       "maximum": 9007199254740991,
       "minimum": 0,
-      "title": "Wakes",
       "type": "integer"
     }
   },
   "required": ["id"],
-  "title": "PersistedRuleRecord",
+  "title": "RuleRecord",
   "type": "object"
 }

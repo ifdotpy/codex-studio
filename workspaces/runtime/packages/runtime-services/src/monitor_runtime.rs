@@ -448,11 +448,9 @@ pub async fn answer_approval(
                 if let Some(rule_id) = monitor.get("ruleId").and_then(Value::as_str) {
                     let rule = studio_runtime_store::RulesRepository::get(tx, rule_id)?
                         .ok_or(MonitorError::Refused("Unknown monitor rule"))?;
-                    let rule_snapshot = crate::rules_engine::RuleSnapshot::from_records(
-                        rule.value().clone(),
-                        actor.value(),
-                    )
-                    .map_err(crate::rules_tick::RulesTickError::from)?;
+                    let rule_snapshot =
+                        crate::rules_engine::RuleSnapshot::from_stored(rule, actor.value())
+                            .map_err(crate::rules_tick::RulesTickError::from)?;
                     let check = rule_snapshot.check();
                     if check.monitor_id != monitor_id {
                         return Err(MonitorError::Refused("Monitor rule identity changed"));

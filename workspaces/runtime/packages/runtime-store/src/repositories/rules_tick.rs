@@ -30,8 +30,15 @@ impl RulesTickRepository {
         let mut result = Vec::new();
         while let Some(row) = rows.next()? {
             let id: String = row.get(1)?;
-            let value = decode(row.get(2)?, "rules", &id)?;
-            let rule = RuleRecord::from_value(value)?;
+            let raw: String = row.get(2)?;
+            let invalid = || StoreError::InvalidStoredRecord {
+                object: "rules",
+                id: id.clone(),
+            };
+            if raw.len() > MAX_RECORD_BYTES {
+                return Err(invalid());
+            }
+            let rule: RuleRecord = serde_json::from_str(&raw).map_err(|_| invalid())?;
             if rule.id() != &id {
                 return Err(StoreError::InvalidStoredRecord {
                     object: "rules",
@@ -112,4 +119,42 @@ fn decode(raw: String, object: &'static str, id: &str) -> StoreResult<Value> {
         return Err(invalid());
     }
     serde_json::from_str(&raw).map_err(|_| invalid())
+}
+
+#[cfg(test)]
+mod typed_tests {
+    use super::*;
+
+    #[test]
+    fn page_checks_shape_identity_and_preserves_extensions() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE runtime_rules(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+            .unwrap();
+        let raw = r#"{"id":"r","checks":1.0,"ownerHold":null,"future":{"nested":true}}"#;
+        db.execute(
+            "INSERT INTO runtime_rules VALUES (?1,?2)",
+            params!["r", raw],
+        )
+        .unwrap();
+        let rows = RulesTickRepository::page(&db, 0).unwrap();
+        assert_eq!(
+            rows[0].rule.value(),
+            serde_json::from_str::<Value>(raw).unwrap()
+        );
+        db.execute("UPDATE runtime_rules SET record=?1", [r#"{"id":"other"}"#])
+            .unwrap();
+        assert!(RulesTickRepository::page(&db, 0).is_err());
+        db.execute(
+            "UPDATE runtime_rules SET record=?1",
+            [r#"{"id":"r","checks":-1}"#],
+        )
+        .unwrap();
+        assert!(RulesTickRepository::page(&db, 0).is_err());
+        db.execute(
+            "UPDATE runtime_rules SET record=?1",
+            [r#"{"id":"r","id":"r"}"#],
+        )
+        .unwrap();
+        assert!(RulesTickRepository::page(&db, 0).is_err());
+    }
 }

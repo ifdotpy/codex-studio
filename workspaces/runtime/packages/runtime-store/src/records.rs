@@ -1164,14 +1164,19 @@ record_newtype!(
     key = PayloadId,
     query = JsonAgent
 );
-record_newtype!(
-    RuleRecord,
-    String,
-    table = "runtime_rules",
-    schema = "PersistedRuleRecord",
-    key = PayloadId,
-    query = None
-);
+pub use studio_runtime_schema::rule_record::RuleRecord;
+impl JsonRecord for RuleRecord {
+    type Id = String;
+    const TABLE: &'static str = "runtime_rules";
+    const SCHEMA: &'static str = "PersistedRuleRecord";
+    const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
+    const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
+    const TYPED_SHAPE: bool = true;
+    const DIRECT_TYPED_DECODE: bool = true;
+    fn record_key(&self) -> Option<&Self::Id> {
+        Some(self.id())
+    }
+}
 record_newtype!(
     TranscriptItemRecord,
     TranscriptItemId,

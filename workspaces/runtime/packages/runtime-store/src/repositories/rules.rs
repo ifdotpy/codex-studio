@@ -54,12 +54,11 @@ impl RulesRepository {
 
     pub fn put(transaction: &Transaction<'_>, record: &RuleRecord) -> StoreResult<()> {
         let id = record.id().as_ref();
-        let value = record.value();
         put_rule_entity(
             transaction,
             id,
-            value.get("agent"),
-            value.get("name"),
+            record.agent.as_deref(),
+            record.name.as_ref().map(|name| name.as_str()),
             false,
         )?;
         Table::<RuleRecord>::new(transaction).put(record)
@@ -89,18 +88,18 @@ impl RulesRepository {
 fn put_rule_entity(
     transaction: &Transaction<'_>,
     id: &str,
-    agent: Option<&Value>,
-    name: Option<&Value>,
+    agent: Option<&str>,
+    name: Option<&str>,
     deleted: bool,
 ) -> StoreResult<()> {
     let mut value = serde_json::Map::new();
     if !deleted {
         value.insert("id".to_owned(), Value::String(id.to_owned()));
-        if let Some(agent) = agent.filter(|value| value.is_string()) {
-            value.insert("agent".to_owned(), agent.clone());
+        if let Some(agent) = agent {
+            value.insert("agent".to_owned(), Value::String(agent.to_owned()));
         }
-        if let Some(name) = name.filter(|value| value.is_string()) {
-            value.insert("name".to_owned(), name.clone());
+        if let Some(name) = name {
+            value.insert("name".to_owned(), Value::String(name.to_owned()));
         }
     }
     let payload = serde_json::to_string(&json!({

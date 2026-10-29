@@ -79,9 +79,8 @@ pub fn visible_rules(
 
     let mut visible = Vec::with_capacity(rules.len());
     for rule in rules {
-        let value = rule.value();
         let id = rule.id().as_str().to_owned();
-        let Some(agent_id) = value.get("agent").and_then(Value::as_str) else {
+        let Some(agent_id) = rule.agent.as_deref() else {
             return Err(invalid_object("rules", id));
         };
         let Some(deleted) = deleted_agents.get(agent_id) else {
