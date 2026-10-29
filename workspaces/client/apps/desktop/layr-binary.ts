@@ -117,6 +117,15 @@ export async function bundleLayrBinary({
 }
 
 // Also used by both package checks. Execute only after the hash has matched.
+/** `layr --version` prints `layr version X`, optionally followed by ` (build date)`
+ * (layr #46). Same rule as `version_matches` in runtime-services layr_native/install.rs. */
+export function layrVersionMatches(output: string, version: string) {
+  const line = `layr version ${version}`;
+  if (output === line) return true;
+  const build = output.startsWith(line) ? output.slice(line.length) : "";
+  return build.startsWith(" (") && build.endsWith(")");
+}
+
 export async function verifyBundledLayr(
   workspace: string,
   repository = repositoryRoot,
@@ -136,7 +145,7 @@ export async function verifyBundledLayr(
     encoding: "utf8",
     timeout: versionTimeoutMs,
   }).trim();
-  if (actual !== `layr version ${version}`)
+  if (!layrVersionMatches(actual, version))
     throw new Error(`Expected Layr ${version}, found ${actual}.`);
   return version;
 }
