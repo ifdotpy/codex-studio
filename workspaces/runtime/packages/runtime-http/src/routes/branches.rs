@@ -1270,16 +1270,37 @@ mod tests {
     #[tokio::test]
     async fn unknown_fork_sets_one_interrupted_status() {
         let (_root, store) = status_fixture().await;
-        settle_failure(&store, "operation", true, "unknown").await.expect("settle");
+        settle_failure(&store, "operation", true, "unknown")
+            .await
+            .expect("settle");
         assert_stored_status(&store, "source", "interrupted");
     }
 
     #[tokio::test]
     async fn branch_copy_sets_one_idle_status() {
         let (_root, store) = status_fixture().await;
-        let selected = studio_runtime_store::TranscriptItem { id: "message".into(), agent: "source".into(), record: json!({"id":"message","turnId":"turn"}) };
+        let selected = studio_runtime_store::TranscriptItem {
+            id: "message".into(),
+            agent: "source".into(),
+            record: json!({"id":"message","turnId":"turn"}),
+        };
         let provider = json!({"thread":{"id":"new-thread"}});
-        let result = copy_branch_history(&store, BranchCopy { source:"source", target:"child", selected:&selected, message_id:"message", fork_turn:None, before:false, provider:&provider, operation_id:"operation" }, Arc::new(tokio::sync::Notify::new())).await.expect("copy");
+        let result = copy_branch_history(
+            &store,
+            BranchCopy {
+                source: "source",
+                target: "child",
+                selected: &selected,
+                message_id: "message",
+                fork_turn: None,
+                before: false,
+                provider: &provider,
+                operation_id: "operation",
+            },
+            Arc::new(tokio::sync::Notify::new()),
+        )
+        .await
+        .expect("copy");
         assert_eq!(result["status"], "idle");
         assert_stored_status(&store, "child", "idle");
     }

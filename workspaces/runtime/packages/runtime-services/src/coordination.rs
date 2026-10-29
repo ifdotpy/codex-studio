@@ -863,7 +863,9 @@ pub fn post_message(
     if let Some(message) = CoordinationRepository::message(transaction, input.id)? {
         let message = validated_message(message)?;
         if message.room != input.room || message.author != "user" || message.text != text {
-            return Err(CoordinationError::Conflict("This message id has different content"));
+            return Err(CoordinationError::Conflict(
+                "This message id has different content",
+            ));
         }
         return Ok(message_receipt(message, true));
     }
@@ -1245,9 +1247,8 @@ mod tests {
     use studio_runtime_store::Connection;
 
     use super::{
-        CoordinationError, PostManagedMessage, PostMessage, connect_chat,
-        create_chat, message_text_within_limit, post_message, post_message_with_admission,
-        require_single_team,
+        CoordinationError, PostManagedMessage, PostMessage, connect_chat, create_chat,
+        message_text_within_limit, post_message, post_message_with_admission, require_single_team,
     };
 
     #[test]
@@ -1898,15 +1899,28 @@ mod tests {
         tx.commit().expect("chat commit");
         let id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
         let tx = connection.transaction().expect("transaction");
-        post_message_with_admission(&tx, PostManagedMessage {
-            room, id: &id, text: "hello", delivery: DeliveryMoment::NextTurn, assets: &[],
-        }, &AllowAdmission).expect("message");
+        post_message_with_admission(
+            &tx,
+            PostManagedMessage {
+                room,
+                id: &id,
+                text: "hello",
+                delivery: DeliveryMoment::NextTurn,
+                assets: &[],
+            },
+            &AllowAdmission,
+        )
+        .expect("message");
         tx.commit().expect("message commit");
         assert_eq!(count(&connection, "messages"), 1);
         assert_eq!(count(&connection, "request_results"), 0);
         let tx = connection.transaction().expect("transaction");
         let input = |text| PostManagedMessage {
-            room, id: &id, text, delivery: DeliveryMoment::NextTurn, assets: &[],
+            room,
+            id: &id,
+            text,
+            delivery: DeliveryMoment::NextTurn,
+            assets: &[],
         };
         assert!(post_message_with_admission(&tx, input("hello"), &AllowAdmission).is_ok());
         assert!(post_message_with_admission(&tx, input("changed"), &AllowAdmission).is_err());
@@ -1923,16 +1937,54 @@ mod tests {
         tx.commit().expect("chat commit");
         let id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
         let tx = connection.transaction().expect("transaction");
-        let first = post_message(&tx, PostMessage { room, id: &id, text: "hello" }).expect("message");
+        let first = post_message(
+            &tx,
+            PostMessage {
+                room,
+                id: &id,
+                text: "hello",
+            },
+        )
+        .expect("message");
         tx.commit().expect("message commit");
-        let signature = studio_runtime_store::sha256_hex(format!(r#"{{"author": "user", "room": "{room}", "text": "hello"}}"#).as_bytes());
+        let signature = studio_runtime_store::sha256_hex(
+            format!(r#"{{"author": "user", "room": "{room}", "text": "hello"}}"#).as_bytes(),
+        );
         let old = studio_runtime_store::request_results::ResultEnvelope {
-            actor: Some("user".to_owned()), reply: first.clone(), references: Vec::new(),
+            actor: Some("user".to_owned()),
+            reply: first.clone(),
+            references: Vec::new(),
         };
-        connection.execute("INSERT INTO request_results(id,signature,result,created) VALUES(?1,?2,?3,?4)", rusqlite::params![id, signature, serde_json::to_string(&old).unwrap(), chrono::Utc::now().timestamp_millis()]).unwrap();
-        connection.execute("UPDATE messages SET deliveries=?1 WHERE id=?2", [r#"{"worker":{"status":"delivered","error":null}}"#, &id]).unwrap();
+        connection
+            .execute(
+                "INSERT INTO request_results(id,signature,result,created) VALUES(?1,?2,?3,?4)",
+                rusqlite::params![
+                    id,
+                    signature,
+                    serde_json::to_string(&old).unwrap(),
+                    chrono::Utc::now().timestamp_millis()
+                ],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE messages SET deliveries=?1 WHERE id=?2",
+                [r#"{"worker":{"status":"delivered","error":null}}"#, &id],
+            )
+            .unwrap();
         let tx = connection.transaction().expect("transaction");
-        assert_eq!(post_message(&tx, PostMessage { room, id: &id, text: "hello" }).unwrap(), first);
+        assert_eq!(
+            post_message(
+                &tx,
+                PostMessage {
+                    room,
+                    id: &id,
+                    text: "hello"
+                }
+            )
+            .unwrap(),
+            first
+        );
     }
 
     #[test]

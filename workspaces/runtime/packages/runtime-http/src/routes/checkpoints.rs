@@ -1002,7 +1002,9 @@ mod status_tests {
             tx.execute("INSERT INTO runtime_workspace_operations(id,record) VALUES('operation',?1)", [operation.to_string()])?;
             Ok::<_, studio_runtime_store::StoreError>(())
         }).await.expect("seed");
-        settle_restore_failure(&store, "operation", "agent", true, "unknown").await.expect("settle");
+        settle_restore_failure(&store, "operation", "agent", true, "unknown")
+            .await
+            .expect("settle");
         let db = store.test_reader().expect("reader");
         let (status, count): (String, i64) = db.query_row("SELECT json_extract(record,'$.status'), (SELECT count(*) FROM json_each(record) WHERE key='status') FROM runtime_agents WHERE id='agent'", [], |row| Ok((row.get(0)?, row.get(1)?))).expect("status");
         assert_eq!((status.as_str(), count), ("interrupted", 1));
