@@ -1,0 +1,20 @@
+[package]
+name = "studio-operator-cli"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "layr-studio"
+path = "src/main.rs"
+
+[dependencies]
+studio-client-core = { path = "../../packages/client-core" }
+serde_json.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
