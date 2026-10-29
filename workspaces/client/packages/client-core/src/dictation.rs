@@ -199,8 +199,8 @@ impl Recording {
 struct Params {
     #[serde(default)]
     row: InputField<Recording>,
-    #[serde(default)]
-    id: InputField<String>,
+    // Only delete and wav use a top-level identity; other commands use row.id.
+    id: Option<InputField<String>>,
     #[serde(default)]
     chat_id: InputField<String>,
     #[serde(default)]
@@ -339,7 +339,7 @@ fn command(request: &Request) -> Result<Command, String> {
             })
         }
         "dictation.delete" => Ok(Command::Delete {
-            id: identity(params.id.known(), "id", 128)?,
+            id: identity(params.id.as_ref().and_then(InputField::known), "id", 128)?,
         }),
         "dictation.update" => {
             let (id, chat, patch) = document(params.row)?;
@@ -359,7 +359,7 @@ fn command(request: &Request) -> Result<Command, String> {
             })
         }
         "dictation.wav" => Ok(Command::Wav {
-            id: identity(params.id.known(), "id", 128)?,
+            id: identity(params.id.as_ref().and_then(InputField::known), "id", 128)?,
             directory: PathBuf::from(params.directory.known().ok_or("A directory is required.")?),
         }),
         _ => unreachable!("method was checked above"),
