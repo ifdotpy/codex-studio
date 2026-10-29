@@ -88,6 +88,13 @@ default-filter = '''
     (package(studio-client-core) & test(/^(speech|client|terminal|file_preview|rich_document|file_actions|notifications|dictation)::tests::/)) |
     (package(studio-client-domain) & test(/^(protocol|json_object)::tests::/)) |
     (package(studio-runtime-store) & test(/checkpoint_(reads_enforce|write_rejects)|state_owner::tests|serving_open_claims_the_state/)) |
+    (package(studio-runtime-schema) & test(/^transcript_asset::tests::/)) |
+    (package(studio-runtime-schema) & test(/^records::agent_projection::tests::/)) |
+    (package(studio-runtime-store) & test(/agent_projection_tests::/)) |
+    (package(studio-runtime-services) & test(/changed_agent_publication_rejects_decimal_root_epoch/)) |
+    (package(studio-client-core) & test(/^(media|platform)::tests::/)) |
+    (package(studio-runtime-store) & test(/repositories::workspace_files::tests::|persisted_asset_table_keeps_path_and_extension_fields/)) |
+    (package(studio-runtime-services) & test(/replay_validation_requires_the_full_stored_asset_record|http_accepts_uploaded_asset_id_with_empty_message_text/)) |
     (package(studio-runtime-store) & test(/complaint_typed_tests::|questions_reads::|journal_reads_raw_valid_json_without_number_normalization|malformed_journal_events_are_refused_on_read_and_startup|append_refuses_unknown_kind_without_advancing_the_journal|v2_batch_rejects_an_oversized_first_event_without_advancing_ack/)) |
     (package(studio-runtime-providers) & test(/supervisor_protocol/)) |
     (package(studio-runtime-process) & test(/journal_v2_protocol_embeds_raw_json_without_numeric_conversion/)) |
@@ -357,6 +364,13 @@ default-filter = '''
     (package(studio-client-core) & test(/^(speech|client|terminal|file_preview|rich_document|file_actions|notifications|dictation)::tests::/)) |
     (package(studio-client-domain) & test(/^(protocol|json_object)::tests::/)) |
     (package(studio-runtime-store) & test(/checkpoint_(reads_enforce|write_rejects)|state_owner::tests|serving_open_claims_the_state/)) |
+    (package(studio-runtime-schema) & test(/^transcript_asset::tests::/)) |
+    (package(studio-runtime-schema) & test(/^records::agent_projection::tests::/)) |
+    (package(studio-runtime-store) & test(/agent_projection_tests::/)) |
+    (package(studio-runtime-services) & test(/changed_agent_publication_rejects_decimal_root_epoch/)) |
+    (package(studio-client-core) & test(/^(media|platform)::tests::/)) |
+    (package(studio-runtime-store) & test(/repositories::workspace_files::tests::|persisted_asset_table_keeps_path_and_extension_fields/)) |
+    (package(studio-runtime-services) & test(/replay_validation_requires_the_full_stored_asset_record|http_accepts_uploaded_asset_id_with_empty_message_text/)) |
     (package(studio-runtime-store) & test(/complaint_typed_tests::|questions_reads::|journal_reads_raw_valid_json_without_number_normalization|malformed_journal_events_are_refused_on_read_and_startup|append_refuses_unknown_kind_without_advancing_the_journal|v2_batch_rejects_an_oversized_first_event_without_advancing_ack/)) |
     (package(studio-runtime-providers) & test(/supervisor_protocol/)) |
     (package(studio-runtime-process) & test(/journal_v2_protocol_embeds_raw_json_without_numeric_conversion/)) |
