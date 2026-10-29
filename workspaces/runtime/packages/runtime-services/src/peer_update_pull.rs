@@ -129,6 +129,9 @@ fn failed(error: impl std::fmt::Display) -> Step {
     Step::Failed(error.to_string())
 }
 
+#[derive(serde::Serialize)]
+struct Empty {}
+
 #[derive(serde::Deserialize)]
 struct OfferReply {
     build: Option<PeerUpdateBuild>,
@@ -294,7 +297,7 @@ impl Puller {
             }
             // An offline server, or an older one that refuses the action, offers nothing.
             let Ok(value) = self
-                .call::<OfferReply>(id, "update.offer", json!({}), SHORT_REQUEST)
+                .call::<OfferReply>(id, "update.offer", Empty {}, SHORT_REQUEST)
                 .await
             else {
                 continue;
@@ -319,7 +322,7 @@ impl Puller {
         &self,
         server: &str,
         action: &str,
-        payload: Value,
+        payload: impl serde::Serialize,
         timeout: Duration,
     ) -> Result<R, Step> {
         let key = studio_runtime_schema::persistence::RequestIdentity::issue_root();
@@ -1365,31 +1368,33 @@ exit 0"#;
             .to_string(),
         )
         .unwrap();
-        let value = serde_json::from_str::<Value>(
-            &serde_json::to_string(&status(root, Some(installed.as_path()))).unwrap(),
-        )
-        .unwrap();
+        let value = status(root, Some(installed.as_path()));
         assert_eq!(
             value,
-            json!({
-                "build": old_build(),
-                "checkedAt": NOW as f64,
-                "lastPull": {"at": NOW as f64, "server": "server", "build": new_build(),
-                             "outcome": "failed", "reason": "Invalid update archive chunk"},
-                "pending": {"build": new_build(), "server": "server"},
-                "lastInstall": {"at": (NOW - 100) as f64, "server": "server",
-                                "build": old_build(), "outcome": "installed", "reason": null},
-            })
+            serde_json::from_str::<PeerUpdateStatus>(
+                &json!({
+                    "build": old_build(),
+                    "checkedAt": NOW as f64,
+                    "lastPull": {"at": NOW as f64, "server": "server", "build": new_build(),
+                                 "outcome": "failed", "reason": "Invalid update archive chunk"},
+                    "pending": {"build": new_build(), "server": "server"},
+                    "lastInstall": {"at": (NOW - 100) as f64, "server": "server",
+                                    "build": old_build(), "outcome": "installed", "reason": null},
+                })
+                .to_string()
+            )
+            .unwrap()
         );
         // Without any file, the status has no build, pass or update.
-        let empty = serde_json::from_str::<Value>(
-            &serde_json::to_string(&status(&root.join("empty"), None)).unwrap(),
-        )
-        .unwrap();
+        let empty = status(&root.join("empty"), None);
         assert_eq!(
             empty,
-            json!({"build": null, "checkedAt": null, "lastPull": null,
+            serde_json::from_str::<PeerUpdateStatus>(
+                &json!({"build": null, "checkedAt": null, "lastPull": null,
                    "pending": null, "lastInstall": null})
+                .to_string()
+            )
+            .unwrap()
         );
     }
 
