@@ -14,6 +14,38 @@ use std::{
 };
 use tokio::{io::AsyncBufReadExt, sync::broadcast};
 
+#[derive(Default, Deserialize)]
+struct SpeechId<'a> {
+    #[serde(borrow)]
+    id: Option<&'a str>,
+}
+#[derive(Default, Deserialize)]
+struct SpeechLocale<'a> {
+    #[serde(borrow)]
+    locale: Option<&'a str>,
+}
+#[derive(Default, Deserialize)]
+struct SpeechRecording<'a> {
+    #[serde(borrow)]
+    recording: Option<&'a str>,
+}
+#[derive(Default, Deserialize)]
+struct SpeechTransfer<'a> {
+    #[serde(borrow)]
+    transfer: Option<&'a str>,
+}
+#[derive(Default, Deserialize)]
+struct SpeechPermit<'a> {
+    #[serde(borrow)]
+    permit: Option<&'a str>,
+}
+fn project<'a, T: Deserialize<'a> + Default>(value: &'a Value) -> T {
+    if value.is_object() {
+        T::deserialize(value).unwrap_or_default()
+    } else {
+        T::default()
+    }
+}
 const PERMIT_LIFETIME: Duration = Duration::from_secs(60);
 const TIMEOUT: Duration = Duration::from_secs(75 * 60);
 pub const CANCELLED: &str = "Transcription canceled. Your recording is saved.";
@@ -49,8 +81,11 @@ pub fn prepare(now: Instant) -> Result<Value, String> {
 
 /// Called after the native gesture for Cancel transcription.
 pub fn cancel(id: &Value) -> Result<Value, String> {
+    let id = Option::<&str>::deserialize(id).ok().flatten();
+    cancel_id(id)
+}
+fn cancel_id(id: Option<&str>) -> Result<Value, String> {
     let id = id
-        .as_str()
         .filter(|id| !id.is_empty() && id.len() <= 128)
         .ok_or("Invalid transcription identity.")?;
     let mut service = service()
@@ -86,7 +121,7 @@ fn upload(method: &str, params: &Value) -> Result<Value, String> {
         let service = service()
             .lock()
             .map_err(|_| "The speech service stopped.")?;
-        let permit = params["permit"].as_str().unwrap_or("");
+        let permit = project::<SpeechPermit<'_>>(params).permit.unwrap_or("");
         if !service
             .permits
             .get(permit)
@@ -358,19 +393,19 @@ async fn run(
 }
 
 async fn transcribe(store: &StoreSender, params: &Value) -> Result<Value, String> {
-    let id = params["id"]
-        .as_str()
+    let id = project::<SpeechId<'_>>(params)
+        .id
         .filter(|v| !v.is_empty() && v.len() <= 128)
         .ok_or("Invalid transcription identity.")?
         .to_owned();
-    let locale = params["locale"]
-        .as_str()
+    let locale = project::<SpeechLocale<'_>>(params)
+        .locale
         .filter(|v| valid_locale(v))
         .ok_or("Invalid speech language.")?;
-    let recording = params["recording"]
-        .as_str()
+    let recording = project::<SpeechRecording<'_>>(params)
+        .recording
         .filter(|v| !v.is_empty() && v.len() <= 128);
-    if recording.is_none() && !params["transfer"].is_string() {
+    if recording.is_none() && project::<SpeechTransfer<'_>>(params).transfer.is_none() {
         return Err("Invalid recording.".into());
     }
     let (stop, stopped) = tokio::sync::watch::channel(false);
@@ -378,7 +413,7 @@ async fn transcribe(store: &StoreSender, params: &Value) -> Result<Value, String
         let mut service = service()
             .lock()
             .map_err(|_| "The speech service stopped.")?;
-        let permit = params["permit"].as_str().unwrap_or("");
+        let permit = project::<SpeechPermit<'_>>(params).permit.unwrap_or("");
         match service.permits.remove(permit) {
             Some(expires) if expires > Instant::now() => {}
             _ => return Err("Use the Transcribe button again.".into()),
@@ -433,7 +468,7 @@ async fn transcribe(store: &StoreSender, params: &Value) -> Result<Value, String
 pub async fn dispatch(store: &StoreSender, request: Request) -> Response {
     let result = match request.method.as_str() {
         "speech.transcribe" => transcribe(store, &request.params).await,
-        "speech.cancel" => cancel(&request.params["id"]),
+        "speech.cancel" => cancel_id(project::<SpeechId<'_>>(&request.params).id),
         "speech.uploadBegin" | "speech.uploadChunk" | "speech.uploadCancel" => {
             upload(&request.method, &request.params)
         }
@@ -448,6 +483,52 @@ pub async fn dispatch(store: &StoreSender, request: Request) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn speech_command_validation_keeps_permit_until_cancelled_attempt() {
+        let (store, mut receiver) = tokio::sync::mpsc::channel(1);
+        let permit = prepare(Instant::now()).unwrap();
+        let id = "speech-input-order-fixture";
+        let request = |params| Request {
+            id: "fixture".into(),
+            method: "speech.transcribe".into(),
+            params,
+        };
+        for (params, expected) in [
+            (
+                json!({"id":null,"locale":null,"permit":permit}),
+                "Invalid transcription identity.",
+            ),
+            (
+                json!({"id":id,"locale":null,"permit":permit}),
+                "Invalid speech language.",
+            ),
+            (
+                json!({"id":id,"locale":"en","recording":null,"transfer":null,"permit":permit}),
+                "Invalid recording.",
+            ),
+        ] {
+            assert_eq!(
+                dispatch(&store, request(params))
+                    .await
+                    .error
+                    .unwrap()
+                    .message,
+                expected
+            );
+        }
+        let bad = upload("speech.uploadBegin", &json!({"permit":"bad","size":null}));
+        assert_eq!(bad.unwrap_err(), "Use the Transcribe button again.");
+        cancel(&json!(id)).unwrap();
+        let params = json!({"id":id,"locale":"en","recording":null,"transfer":"","permit":permit});
+        let first = dispatch(&store, request(params.clone())).await;
+        assert_eq!(first.error.unwrap().message, CANCELLED);
+        let replay = dispatch(&store, request(params)).await;
+        assert_eq!(
+            replay.error.unwrap().message,
+            "Use the Transcribe button again."
+        );
+        assert!(receiver.try_recv().is_err());
+    }
     #[test]
     fn speech_uploads_require_permission_preserve_bytes_and_cannot_authorize_saves() {
         use base64::Engine;
