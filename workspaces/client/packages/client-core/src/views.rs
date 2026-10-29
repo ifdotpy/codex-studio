@@ -5,12 +5,86 @@ use crate::{
     protocol::{Request, Response},
     sync,
 };
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{collections::HashMap, sync::Arc, time::Duration};
+use studio_client_domain::json_object::JsonObject;
 use tokio::{
     sync::{mpsc, watch},
     task::JoinHandle,
 };
+
+// Non-string optional fields historically behave like absent values.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum TextField<'a> {
+    Text(&'a str),
+    Other(serde::de::IgnoredAny),
+}
+impl<'a> TextField<'a> {
+    fn text(&self) -> Option<&'a str> {
+        match self {
+            Self::Text(value) => Some(value),
+            Self::Other(_) => None,
+        }
+    }
+}
+#[derive(Deserialize)]
+struct Identity<'a> {
+    #[serde(borrow)]
+    subscription: Option<TextField<'a>>,
+}
+#[derive(Deserialize)]
+struct Reason<'a> {
+    #[serde(borrow)]
+    reason: Option<TextField<'a>>,
+}
+#[derive(Deserialize)]
+struct Credit<'a> {
+    #[serde(borrow)]
+    credit: Option<TextField<'a>>,
+}
+#[derive(Deserialize)]
+struct Resume<'a> {
+    #[serde(borrow)]
+    path: Option<TextField<'a>>,
+}
+#[derive(Default, Deserialize)]
+#[serde(untagged)]
+enum FlowControl {
+    Enabled(bool),
+    Other(serde::de::IgnoredAny),
+    #[default]
+    Missing,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Subscribe<'a> {
+    #[serde(borrow)]
+    topic: Option<TextField<'a>>,
+    #[serde(default)]
+    flow_control: FlowControl,
+    #[serde(borrow)]
+    handle: Option<TextField<'a>>,
+    #[serde(borrow)]
+    workspace: Option<TextField<'a>>,
+    #[serde(borrow)]
+    scope: Option<TextField<'a>>,
+}
+enum ViewCommand<'a> {
+    Unsubscribe(Reason<'a>),
+    Next(Credit<'a>),
+    Resume(Resume<'a>),
+    Restart(Reason<'a>),
+    Subscribe(Subscribe<'a>),
+    Unknown,
+}
+fn decode<'a, T: Deserialize<'a>>(value: &'a Value) -> Option<T> {
+    JsonObject::<T>::deserialize(value).ok().map(|v| v.0)
+}
+fn text<'a>(field: &Option<TextField<'a>>) -> &'a str {
+    field.as_ref().and_then(TextField::text).unwrap_or("")
+}
 
 pub struct Views {
     tasks: HashMap<String, JoinHandle<()>>,
@@ -41,8 +115,11 @@ impl Views {
         }
     }
     pub fn command(&mut self, request: &Request) -> Response {
-        let Some(id) = request.params["subscription"]
-            .as_str()
+        let identity = decode::<Identity>(&request.params);
+        let Some(id) = identity
+            .as_ref()
+            .and_then(|v| v.subscription.as_ref())
+            .and_then(TextField::text)
             .filter(|id| !id.is_empty() && id.len() <= 128)
         else {
             return Response::failure(
@@ -51,12 +128,22 @@ impl Views {
                 "A subscription identity is required.",
             );
         };
-        if request.method == "view.unsubscribe" {
+        let command = match request.method.as_str() {
+            "view.unsubscribe" => {
+                ViewCommand::Unsubscribe(decode(&request.params).expect("object"))
+            }
+            "view.next" => ViewCommand::Next(decode(&request.params).expect("object")),
+            "view.resume" => ViewCommand::Resume(decode(&request.params).expect("object")),
+            "view.restart" => ViewCommand::Restart(decode(&request.params).expect("object")),
+            "view.subscribe" => ViewCommand::Subscribe(decode(&request.params).expect("object")),
+            _ => ViewCommand::Unknown,
+        };
+        if let ViewCommand::Unsubscribe(reason) = &command {
             crate::stream_log::line(&format!(
                 "unsubscribe {id} known={} views={} reason={}",
                 self.tasks.contains_key(id),
                 self.tasks.len(),
-                request.params["reason"].as_str().unwrap_or("")
+                text(&reason.reason)
             ));
             self.flows.remove(id);
             if let Some(task) = self.tasks.remove(id) {
@@ -64,10 +151,12 @@ impl Views {
             }
             return Response::success(request.id.clone(), json!({"closed":true}));
         }
-        if request.method == "view.next" {
+        if let ViewCommand::Next(credit) = &command {
             return if self.flows.get(id).is_some_and(|flow| {
-                request.params["credit"]
-                    .as_str()
+                credit
+                    .credit
+                    .as_ref()
+                    .and_then(TextField::text)
                     .is_some_and(|credit| flow.grant(credit))
             }) {
                 Response::success(request.id.clone(), json!({"granted":true}))
@@ -80,17 +169,20 @@ impl Views {
                 )
             };
         }
-        if request.method == "view.resume" || request.method == "view.restart" {
-            let accepted = self.flows.get(id).is_some_and(|flow| {
-                if request.method == "view.restart" {
-                    let reason = request.params["reason"].as_str().unwrap_or("");
+        if matches!(command, ViewCommand::Resume(_) | ViewCommand::Restart(_)) {
+            let accepted = self.flows.get(id).is_some_and(|flow| match &command {
+                ViewCommand::Restart(reason) => {
+                    let reason = text(&reason.reason);
                     crate::stream_log::line(&format!("restart {id} reason={reason}"));
                     flow.restart(reason);
-                    return true;
+                    true
                 }
-                request.params["path"]
-                    .as_str()
-                    .is_some_and(|path| flow.resume(path))
+                ViewCommand::Resume(resume) => resume
+                    .path
+                    .as_ref()
+                    .and_then(TextField::text)
+                    .is_some_and(|path| flow.resume(path)),
+                _ => false,
             });
             return if accepted {
                 Response::success(request.id.clone(), json!({"accepted":true}))
@@ -102,7 +194,7 @@ impl Views {
                 )
             };
         }
-        if request.method != "view.subscribe"
+        if !matches!(command, ViewCommand::Subscribe(_))
             || self.tasks.contains_key(id)
             || self.tasks.len() >= 64
         {
@@ -117,7 +209,10 @@ impl Views {
                 "The subscription already exists or the view limit was reached.",
             );
         }
-        let topic = request.params["topic"].as_str().unwrap_or("");
+        let ViewCommand::Subscribe(subscription) = command else {
+            unreachable!()
+        };
+        let topic = text(&subscription.topic);
         if !matches!(
             topic,
             "projection"
@@ -136,10 +231,14 @@ impl Views {
                 "Unknown view topic.",
             );
         }
+        let log_id = id.to_owned();
         let (id, topic, params) = (id.to_owned(), topic.to_owned(), request.params.clone());
-        let flow = match params.get("flowControl") {
-            None | Some(Value::Bool(false)) => None,
-            Some(Value::Bool(true)) if topic == "sse" => match crate::events::EventFlow::new() {
+        let workspace = text(&subscription.workspace).to_owned();
+        let scope = text(&subscription.scope).to_owned();
+        let handle = text(&subscription.handle);
+        let flow = match subscription.flow_control {
+            FlowControl::Missing | FlowControl::Enabled(false) => None,
+            FlowControl::Enabled(true) if topic == "sse" => match crate::events::EventFlow::new() {
                 Ok(flow) => Some(Arc::new(flow)),
                 Err(error) => return Response::failure(request.id.clone(), "event_credit", error),
             },
@@ -161,10 +260,7 @@ impl Views {
             self.output.clone(),
         );
         let terminal = if topic == "terminal" {
-            match self
-                .terminals
-                .watch(params["handle"].as_str().unwrap_or(""))
-            {
+            match self.terminals.watch(handle) {
                 Ok(value) => Some(value),
                 Err(error) => return Response::failure(request.id.clone(), "terminal", error),
             }
@@ -236,15 +332,11 @@ impl Views {
                 } else if topic == "sse" {
                     crate::events::run_controlled(id, params, backend, output, flow).await;
                 } else {
-                    run(id, topic, params, backend, store, changes, output).await;
+                    run(id, topic, workspace, scope, backend, store, changes, output).await;
                 }
             }),
         );
-        crate::stream_log::line(&format!(
-            "subscribe {} views={}",
-            request.params["subscription"].as_str().unwrap_or(""),
-            self.tasks.len()
-        ));
+        crate::stream_log::line(&format!("subscribe {} views={}", log_id, self.tasks.len()));
         Response::success(request.id.clone(), json!({"subscribed":true}))
     }
 }
@@ -303,6 +395,31 @@ pub fn diff(old: &Value, new: &Value, path: &mut Vec<Value>, ops: &mut Vec<Value
     }
 }
 
+// Patch only the fields used by this view. Missing IDs and malformed unrelated
+// fields must still be forwarded unchanged to the UI.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Sequence {
+    Number(u64),
+    Other(serde::de::IgnoredAny),
+}
+#[derive(Deserialize)]
+struct ProjectionDocument<'a> {
+    seq: Option<Sequence>,
+    #[serde(borrow)]
+    payload: Option<TextField<'a>>,
+    #[serde(default, rename = "_deleted")]
+    deleted: FlowControl,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectionEnvelope<'a> {
+    #[serde(borrow)]
+    workspace_id: Option<TextField<'a>>,
+    #[serde(borrow)]
+    document: JsonObject<ProjectionDocument<'a>>,
+}
+
 /// Projection events carry the full document once, then patches against the
 /// last document this subscription delivered. Large unchanged snapshots no
 /// longer cross the native transport every refresh.
@@ -312,14 +429,20 @@ struct Patcher {
 }
 impl Patcher {
     fn event(&mut self, id: &str, value: Value) -> Option<Value> {
-        let workspace = value["workspaceId"].as_str().unwrap_or("").to_owned();
-        let document = &value["document"];
-        let (Some(seq), Some(payload)) = (document["seq"].as_u64(), document["payload"].as_str())
-        else {
+        let Some(envelope) = decode::<ProjectionEnvelope>(&value) else {
             self.last = None;
             return Some(json!({"event":id,"value":value}));
         };
-        if document["_deleted"] == true {
+        let workspace = text(&envelope.workspace_id).to_owned();
+        let document = envelope.document.0;
+        let (Some(Sequence::Number(seq)), Some(payload)) = (
+            document.seq,
+            document.payload.as_ref().and_then(TextField::text),
+        ) else {
+            self.last = None;
+            return Some(json!({"event":id,"value":value}));
+        };
+        if matches!(document.deleted, FlowControl::Enabled(true)) {
             self.last = None;
             return Some(json!({"event":id,"value":value}));
         }
@@ -358,7 +481,8 @@ impl Patcher {
 async fn run(
     id: String,
     topic: String,
-    params: Value,
+    mut workspace: String,
+    scope: String,
     backend: Arc<Result<Backend, String>>,
     store: StoreSender,
     mut changes: watch::Receiver<u64>,
@@ -366,8 +490,7 @@ async fn run(
 ) {
     let mut previous = None;
     let mut patcher = Patcher::default();
-    let mut workspace = params["workspace"].as_str().unwrap_or("").to_owned();
-    let scope = params["scope"].as_str().unwrap_or("");
+    let scope = scope.as_str();
     let mut interval = tokio::time::interval(Duration::from_secs(3));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     interval.tick().await; // Consume the immediate tick before the initial refresh.
@@ -549,6 +672,52 @@ mod flow_tests {
         assert!(owner.command(&resume).error.is_some());
     }
     #[tokio::test]
+    async fn malformed_commands_leave_subscription_and_credit_unchanged() {
+        let mut owner = views();
+        let subscribe = request(
+            "view.subscribe",
+            json!({"subscription":"one","topic":"sse","flowControl":true}),
+        );
+        assert!(owner.command(&subscribe).error.is_none());
+        let token = owner.flows["one"].credit();
+        for params in [
+            json!({"subscription":"one","credit":false}),
+            json!(["one", token]),
+        ] {
+            assert!(owner.command(&request("view.next", params)).error.is_some());
+        }
+        assert!(
+            owner
+                .command(&request(
+                    "view.next",
+                    json!({"subscription":"one","credit":token})
+                ))
+                .error
+                .is_none()
+        );
+        assert!(
+            owner
+                .command(&request(
+                    "view.unsubscribe",
+                    json!({"subscription":"one","reason":false})
+                ))
+                .error
+                .is_none()
+        );
+        for flow in [json!(null), json!(0), json!([])] {
+            assert!(
+                owner
+                    .command(&request(
+                        "view.subscribe",
+                        json!({"subscription":"bad","topic":"sse","flowControl":flow})
+                    ))
+                    .error
+                    .is_some()
+            );
+            assert!(!owner.tasks.contains_key("bad"));
+        }
+    }
+    #[tokio::test]
     async fn push_views_remain_push_and_flow_control_is_sse_only() {
         let mut owner = views();
         assert!(
@@ -629,6 +798,32 @@ mod patch_tests {
         let mut none = vec![];
         diff(&new, &new, &mut vec![], &mut none);
         assert!(none.is_empty());
+    }
+    #[test]
+    fn malformed_projection_envelopes_are_forwarded_unchanged() {
+        let mut patcher = Patcher::default();
+        for value in [
+            json!(null),
+            json!({"document":[]}),
+            json!({"document":{"seq":false,"payload":"{}"}}),
+            json!({"document":{"seq":1,"payload":false}}),
+        ] {
+            assert_eq!(
+                patcher.event("id", value.clone()).unwrap(),
+                json!({"event":"id","value":value})
+            );
+            assert!(patcher.last.is_none());
+        }
+        // Only fields consumed by patching are required, matching historical views.
+        assert!(
+            patcher
+                .event(
+                    "id",
+                    json!({"document":{"seq":1,"payload":"{}","_deleted":"no"}})
+                )
+                .is_some()
+        );
+        assert!(patcher.last.is_some());
     }
     #[test]
     fn patcher_sends_full_then_patch_skips_same_seq_and_resets_after_delete() {
