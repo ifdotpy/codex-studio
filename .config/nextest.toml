@@ -83,6 +83,10 @@ inherits = "ci"
 # Retained watcher registrations and analytics connections avoid repeated tree walks and opens.
 # Reviewer permissions stay read-only under yolo across preparation, turns, and monitors.
 default-filter = '''
+    (package(studio-client-domain) & test(/^sync_entity::tests::/)) |
+    (package(studio-client-core) & test(/^(sync|projections|delivery)::tests::|^views::(flow_tests|patch_tests)::|typed_voice_commands_validate_before_effects_and_preserve_ids/)) |
+    (package(studio-runtime-schema) & test(/^(rule_record|monitor_record)::tests::/)) |
+    (package(studio-runtime-store) & test(/^repositories::(execution_history|work_items|monitors|rules)::tests::|typed_registry_decode_preserves_order_and_error_location/)) |
     (package(studio-runtime-services) & test(/conversation_signatures_preserve_nullable_setting_identity|confirmed_restart_is_atomic_replay_safe_and_waits_for_exit/)) |
     (package(studio-runtime-http) & test(/conversation_catalog_admission_tests::|branch_draft_keeps_the_historical_generated_request_identity|http_restart_uses_checked_request|monitor_restart_http_preserves_identity_and_waits_for_old_exit/)) |
     (package(studio-runtime-schema) & test(/^(continuation_snapshot|claude_login|usage_limits|checkpoint_record|complaint_record|stored_record)::tests::/)) |
@@ -362,6 +366,10 @@ platform = 'cfg(target_os = "linux")'
 # Desktop projection witness: Keep private native rotation receipts on disk while validating the public status strictly.
 # Reviewer permissions stay read-only under yolo across preparation, turns, and monitors.
 default-filter = '''
+    (package(studio-client-domain) & test(/^sync_entity::tests::/)) |
+    (package(studio-client-core) & test(/^(sync|projections|delivery)::tests::|^views::(flow_tests|patch_tests)::|typed_voice_commands_validate_before_effects_and_preserve_ids/)) |
+    (package(studio-runtime-schema) & test(/^(rule_record|monitor_record)::tests::/)) |
+    (package(studio-runtime-store) & test(/^repositories::(execution_history|work_items|monitors|rules)::tests::|typed_registry_decode_preserves_order_and_error_location/)) |
     (package(studio-runtime-services) & test(/conversation_signatures_preserve_nullable_setting_identity|confirmed_restart_is_atomic_replay_safe_and_waits_for_exit/)) |
     (package(studio-runtime-http) & test(/conversation_catalog_admission_tests::|branch_draft_keeps_the_historical_generated_request_identity|http_restart_uses_checked_request|monitor_restart_http_preserves_identity_and_waits_for_old_exit/)) |
     (package(studio-runtime-schema) & test(/^(continuation_snapshot|claude_login|usage_limits|checkpoint_record|complaint_record|stored_record)::tests::/)) |
