@@ -130,7 +130,7 @@ fn next_turn_signature(request: &Conversation, request_id: &str) -> String {
     });
     for (field, value) in [
         ("model", request.model.as_ref().map(|value| json!(value))),
-        ("effort", request.effort.nested().map(|value| json!(value))),
+        ("effort", request.effort.wire_value()),
         (
             "fast_mode",
             request.fast_mode.as_ref().map(|value| json!(value)),
@@ -156,7 +156,7 @@ fn permissions_signature(request: &Conversation) -> String {
         "operation":AgentMutation::Permissions.operation(), "agent":request.id,
         "yolo":request.yolo_mode, "account":request.expected_account,
         "cwd":request.cwd, "model":request.model,
-        "effort":[request.effort.is_present(), request.effort.nested()],
+        "effort":[request.effort.is_present(), request.effort.wire_value()],
         "fastMode":request.fast_mode, "daybreak":request.daybreak_enabled.value(),
         "excluded":request.excluded,
     }))
@@ -190,11 +190,14 @@ impl<T> NullableSetting<T> {
             Self::Missing | Self::Null => None,
         }
     }
-    fn nested(&self) -> Option<Option<&T>> {
+    fn wire_value(&self) -> Option<Value>
+    where
+        T: Serialize,
+    {
         match self {
             Self::Missing => None,
-            Self::Null => Some(None),
-            Self::Value(value) => Some(Some(value)),
+            Self::Null => Some(Value::Null),
+            Self::Value(value) => Some(json!(value)),
         }
     }
 }
