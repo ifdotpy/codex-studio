@@ -22,7 +22,10 @@ async fn an_unknown_thread_resume_holds_input_without_retry() {
     pass_reply_deadline(&mut peer).await;
     worker_barrier(&worker).await;
     assert_eq!(state.event_status("input").await, "pending");
-    assert!(peer.writes.try_recv().is_err(), "Unknown is never retried automatically");
+    assert!(
+        peer.writes.try_recv().is_err(),
+        "Unknown is never retried automatically"
+    );
     worker.shutdown().await.unwrap();
 }
 
@@ -40,6 +43,9 @@ async fn an_unknown_thread_resume_is_not_retried_after_restart() {
     state.wake(&replacement).await;
     worker_barrier(&replacement).await;
     assert_eq!(state.event_status("input").await, "pending");
-    assert!(next.writes.try_recv().is_err(), "restart does not make Unknown safe to resend");
+    assert!(
+        next.writes.try_recv().is_err(),
+        "restart does not make Unknown safe to resend"
+    );
     replacement.shutdown().await.unwrap();
 }

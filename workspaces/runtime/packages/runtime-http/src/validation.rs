@@ -1987,8 +1987,9 @@ mod tests {
             );
         }
 
-        let safe_raw_body =
-            format!(r#"{{"requestId":"r","action":"event","operation":[],"payload":{{"key":{MAX_SAFE_INTEGER}}}}}"#);
+        let safe_raw_body = format!(
+            r#"{{"requestId":"r","action":"event","operation":[],"payload":{{"key":{MAX_SAFE_INTEGER}}}}}"#
+        );
         let safe_body = serde_json::from_str(&safe_raw_body).expect("safe integer parses");
         assert!(
             registry
@@ -2003,8 +2004,7 @@ mod tests {
                 )
                 .is_ok()
         );
-        let large_fraction =
-            r#"{"requestId":"r","action":"event","operation":[],"payload":{"key":18446744073709551616.5}}"#;
+        let large_fraction = r#"{"requestId":"r","action":"event","operation":[],"payload":{"key":18446744073709551616.5}}"#;
         let fractional_body =
             serde_json::from_str(large_fraction).expect("large fractional JSON number parses");
         assert!(

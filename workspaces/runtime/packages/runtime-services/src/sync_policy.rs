@@ -3962,7 +3962,10 @@ mod tests {
                 .expect("server row"),
         )
         .expect("JSON");
-        assert_eq!(persisted["value"]["fields"][key]["value"], json!({"codex:astra": "blacklisted"}));
+        assert_eq!(
+            persisted["value"]["fields"][key]["value"],
+            json!({"codex:astra": "blacklisted"})
+        );
         assert_eq!(persisted["value"]["fields"][other]["value"], true);
         let user_row: Value = serde_json::from_str(
             &SyncDocumentsRepository::preference_payload(&reader, "user")

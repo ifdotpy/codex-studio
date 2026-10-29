@@ -144,7 +144,11 @@ fn range_rows(connection: &Connection, workspace: &str, params: &Value) -> Resul
         ))
         .map_err(|e| e.to_string())?;
     let mut cursor = statement
-        .query(params![workspace, format!("{base}{lower}"), format!("{base}{upper}")])
+        .query(params![
+            workspace,
+            format!("{base}{lower}"),
+            format!("{base}{upper}")
+        ])
         .map_err(|e| e.to_string())?;
     let (mut rows, mut bytes, mut more) = (Vec::new(), 0, false);
     while let Some(row) = cursor.next().map_err(|e| e.to_string())? {
@@ -176,9 +180,13 @@ fn put_rows(connection: &Connection, workspace: &str, params: &Value) -> Result<
             .as_u64()
             .filter(|seq| *seq <= MAX_SAFE_INTEGER as u64)
             .ok_or("Invalid row sequence.")?;
-        transaction.execute("INSERT INTO client_projections(workspace,scope,document,seq) VALUES(?1,?2,?3,?4)
+        transaction
+            .execute(
+                "INSERT INTO client_projections(workspace,scope,document,seq) VALUES(?1,?2,?3,?4)
             ON CONFLICT(workspace,scope) DO UPDATE SET document=excluded.document,seq=excluded.seq",
-            params![workspace, scope, row.to_string(), seq as i64]).map_err(|e| e.to_string())?;
+                params![workspace, scope, row.to_string(), seq as i64],
+            )
+            .map_err(|e| e.to_string())?;
     }
     transaction.commit().map_err(|e| e.to_string())?;
     Ok(json!({"written":rows.len()}))
@@ -1102,27 +1110,62 @@ mod tests {
         let path = directory.path().join("client.sqlite3");
         {
             let mut store = crate::store::Store::open(&path).unwrap();
-            let written = rows(&mut store, "projection.putRows", json!({"prefix":"v1","rows":[
-                {"id":"entity:agent:a","seq":9,"payload":"","entity":{"id":"a"}},
-                {"id":"entity:agent:b","seq":7,"payload":"","_deleted":true},
-                {"id":"state:entities:checkpoint","seq":9,"payload":"{}"},
-            ]}));
+            let written = rows(
+                &mut store,
+                "projection.putRows",
+                json!({"prefix":"v1","rows":[
+                    {"id":"entity:agent:a","seq":9,"payload":"","entity":{"id":"a"}},
+                    {"id":"entity:agent:b","seq":7,"payload":"","_deleted":true},
+                    {"id":"state:entities:checkpoint","seq":9,"payload":"{}"},
+                ]}),
+            );
             assert_eq!(written.result, Some(json!({"written":3})));
             // A reset lowers the sequence; the store keeps no ordering rule of its own.
-            assert!(rows(&mut store, "projection.putRows", json!({"prefix":"v1","rows":[
-                {"id":"state:entities:checkpoint","seq":0,"payload":"{}"}]})).error.is_none());
+            assert!(
+                rows(
+                    &mut store,
+                    "projection.putRows",
+                    json!({"prefix":"v1","rows":[
+                {"id":"state:entities:checkpoint","seq":0,"payload":"{}"}]})
+                )
+                .error
+                .is_none()
+            );
         }
         let mut store = crate::store::Store::open(&path).unwrap();
-        let found = rows(&mut store, "projection.getRows", json!({"prefix":"v1","ids":["state:entities:checkpoint","missing"]}));
+        let found = rows(
+            &mut store,
+            "projection.getRows",
+            json!({"prefix":"v1","ids":["state:entities:checkpoint","missing"]}),
+        );
         assert_eq!(found.result.unwrap()[0]["seq"], 0);
-        let range = rows(&mut store, "projection.rangeRows", json!({"prefix":"v1","gte":"entity:","lt":"entity;"}));
+        let range = rows(
+            &mut store,
+            "projection.rangeRows",
+            json!({"prefix":"v1","gte":"entity:","lt":"entity;"}),
+        );
         let range = range.result.unwrap();
         assert_eq!(range["more"], false);
         assert_eq!(range["rows"][0]["id"], "entity:agent:a");
         assert_eq!(range["rows"][1]["_deleted"], true);
-        let page = rows(&mut store, "projection.rangeRows", json!({"prefix":"v1","gte":"entity:","lt":"entity;","limit":1})).result.unwrap();
-        assert_eq!((page["rows"].as_array().unwrap().len(), page["more"].clone()), (1, json!(true)));
-        let next = rows(&mut store, "projection.rangeRows", json!({"prefix":"v1","gt":"entity:agent:a","lt":"entity;"})).result.unwrap();
+        let page = rows(
+            &mut store,
+            "projection.rangeRows",
+            json!({"prefix":"v1","gte":"entity:","lt":"entity;","limit":1}),
+        )
+        .result
+        .unwrap();
+        assert_eq!(
+            (page["rows"].as_array().unwrap().len(), page["more"].clone()),
+            (1, json!(true))
+        );
+        let next = rows(
+            &mut store,
+            "projection.rangeRows",
+            json!({"prefix":"v1","gt":"entity:agent:a","lt":"entity;"}),
+        )
+        .result
+        .unwrap();
         assert_eq!(next["rows"][0]["id"], "entity:agent:b");
         assert_eq!(next["more"], false);
     }
@@ -1130,24 +1173,54 @@ mod tests {
     #[test]
     fn page_rows_are_separate_per_prefix_and_old_prefixes_are_pruned() {
         let directory = tempfile::tempdir().unwrap();
-        let mut store = crate::store::Store::open(&directory.path().join("client.sqlite3")).unwrap();
+        let mut store =
+            crate::store::Store::open(&directory.path().join("client.sqlite3")).unwrap();
         for prefix in ["old", "new"] {
-            assert!(rows(&mut store, "projection.putRows", json!({"prefix":prefix,"rows":[
-                {"id":"entity:agent:a","seq":1,"payload":""}]})).error.is_none());
+            assert!(
+                rows(
+                    &mut store,
+                    "projection.putRows",
+                    json!({"prefix":prefix,"rows":[
+                {"id":"entity:agent:a","seq":1,"payload":""}]})
+                )
+                .error
+                .is_none()
+            );
         }
         // A projection of the server's own documents is not a page row.
         assert!(rows(&mut store, "projection.put", json!({"scope":"transcript:one","document":{"id":"transcript:one","seq":1,"payload":"{}"}})).error.is_none());
         let pruned = rows(&mut store, "projection.pruneRows", json!({"prefix":"new"}));
         assert_eq!(pruned.result, Some(json!({"removed":1})));
-        let count = |store: &mut crate::store::Store, prefix: &str| rows(store, "projection.getRows", json!({"prefix":prefix,"ids":["entity:agent:a"]})).result.unwrap().as_array().unwrap().len();
+        let count = |store: &mut crate::store::Store, prefix: &str| {
+            rows(
+                store,
+                "projection.getRows",
+                json!({"prefix":prefix,"ids":["entity:agent:a"]}),
+            )
+            .result
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .len()
+        };
         assert_eq!((count(&mut store, "old"), count(&mut store, "new")), (0, 1));
-        assert!(rows(&mut store, "projection.get", json!({"scope":"transcript:one"})).result.unwrap().is_object());
+        assert!(
+            rows(
+                &mut store,
+                "projection.get",
+                json!({"scope":"transcript:one"})
+            )
+            .result
+            .unwrap()
+            .is_object()
+        );
     }
 
     #[test]
     fn page_rows_refuse_bad_prefixes_identities_and_sequences() {
         let directory = tempfile::tempdir().unwrap();
-        let mut store = crate::store::Store::open(&directory.path().join("client.sqlite3")).unwrap();
+        let mut store =
+            crate::store::Store::open(&directory.path().join("client.sqlite3")).unwrap();
         for params in [
             json!({"prefix":"","rows":[]}),
             json!({"prefix":"a/b","rows":[]}),
@@ -1155,10 +1228,31 @@ mod tests {
             json!({"prefix":"v1","rows":[{"id":"x","seq":-1}]}),
             json!({"prefix":"v1","rows":[{"id":"ok","seq":1},{"id":"x","seq":MAX_SAFE_INTEGER as u64 + 1}]}),
         ] {
-            assert!(rows(&mut store, "projection.putRows", params.clone()).error.is_some(), "{params}");
+            assert!(
+                rows(&mut store, "projection.putRows", params.clone())
+                    .error
+                    .is_some(),
+                "{params}"
+            );
         }
         // The failed batch above wrote nothing, including its valid first row.
-        assert_eq!(rows(&mut store, "projection.getRows", json!({"prefix":"v1","ids":["ok"]})).result, Some(json!([])));
-        assert!(rows(&mut store, "projection.rangeRows", json!({"prefix":"v1","lt":"z"})).error.is_some());
+        assert_eq!(
+            rows(
+                &mut store,
+                "projection.getRows",
+                json!({"prefix":"v1","ids":["ok"]})
+            )
+            .result,
+            Some(json!([]))
+        );
+        assert!(
+            rows(
+                &mut store,
+                "projection.rangeRows",
+                json!({"prefix":"v1","lt":"z"})
+            )
+            .error
+            .is_some()
+        );
     }
 }
