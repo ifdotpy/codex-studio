@@ -1,11 +1,9 @@
 //! Resolve file identities through the verified backend before any desktop action.
 use crate::{backend::Backend, protocol::Request};
-use serde::{
-    Deserialize,
-    de::{IgnoredAny, MapAccess, Visitor, value::MapAccessDeserializer},
-};
+use serde::{Deserialize, de::IgnoredAny};
 use serde_json::{Value, json};
-use std::{fmt, marker::PhantomData, os::unix::fs::PermissionsExt, path::PathBuf};
+use std::{os::unix::fs::PermissionsExt, path::PathBuf};
+use studio_client_domain::json_object::JsonObject as ObjectOnly;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Action {
@@ -57,24 +55,6 @@ impl TryFrom<TargetWire> for Target {
             (Some(agent), Some(path), None) => Ok(Self::Workspace { agent, path }),
             _ => Err("Select a workspace file or attachment.".into()),
         }
-    }
-}
-
-// Derived structs accept positional sequences; native wire objects must be maps.
-struct ObjectOnly<T>(T);
-impl<'de, T: Deserialize<'de>> Deserialize<'de> for ObjectOnly<T> {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct ObjectVisitor<T>(PhantomData<T>);
-        impl<'de, T: Deserialize<'de>> Visitor<'de> for ObjectVisitor<T> {
-            type Value = ObjectOnly<T>;
-            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("an object")
-            }
-            fn visit_map<M: MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
-                T::deserialize(MapAccessDeserializer::new(map)).map(ObjectOnly)
-            }
-        }
-        deserializer.deserialize_map(ObjectVisitor(PhantomData))
     }
 }
 
@@ -332,7 +312,10 @@ mod tests {
             "denied"
         );
         for path in [
-            "/tmp/invalid\0name".to_owned(),
+            std::env::temp_dir()
+                .join("invalid\0name")
+                .to_string_lossy()
+                .into_owned(),
             format!("/{}", "x".repeat(4096)),
         ] {
             assert_eq!(
