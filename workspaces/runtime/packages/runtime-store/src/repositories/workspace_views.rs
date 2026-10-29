@@ -558,13 +558,9 @@ mod bulk_read_tests {
         connection.trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, Some(count_statement));
         STATEMENTS.set(0);
         let agents = WorkspaceViewsRepository::agents(&connection).expect("agents");
-        let records = agents
-            .into_iter()
-            .map(|row| serde_json::to_value(row).expect("JSON"))
-            .collect::<Vec<_>>();
-        assert_eq!(records[0]["tail"], Value::Null);
-        assert_eq!(records[1]["tail"], "legacy");
-        assert_eq!(records[2]["tail"], "current");
+        assert_eq!(agents[0].extensions["tail"], Value::Null);
+        assert_eq!(agents[1].extensions["tail"], "legacy");
+        assert_eq!(agents[2].extensions["tail"], "current");
         assert_eq!(STATEMENTS.get(), 1, "one joined SELECT for all agents");
     }
 }
