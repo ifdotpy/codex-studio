@@ -419,18 +419,24 @@ pub struct TickObservation {
 
 impl RuleSnapshot {
     pub fn from_records(rule: Value, owner: Value) -> Result<Self, RuleError> {
-        let record: studio_runtime_store::RuleRecord =
-            serde_path_to_error::deserialize(rule.clone())
-                .map_err(|error| invalid("rules", &rule, &format!("/{}", error.path())))?;
-        Self::from_stored(record, owner)
+        let record: studio_runtime_store::RuleRecord = serde_path_to_error::deserialize(&rule)
+            .map_err(|error| invalid("rules", &rule, &format!("/{}", error.path())))?;
+        Self::from_stored_raw(&record, rule, owner)
     }
 
     pub fn from_stored(
-        record: studio_runtime_store::RuleRecord,
+        record: &studio_runtime_store::RuleRecord,
         owner: Value,
     ) -> Result<Self, RuleError> {
-        let parsed = Rule::from_record(&record)?;
-        let rule = record.value();
+        Self::from_stored_raw(record, record.value(), owner)
+    }
+
+    fn from_stored_raw(
+        record: &studio_runtime_store::RuleRecord,
+        rule: Value,
+        owner: Value,
+    ) -> Result<Self, RuleError> {
+        let parsed = Rule::from_record(record)?;
         let agent: Owner = checked("agents", "PersistedAgentRecord", &owner)?;
         if parsed.agent != agent.id {
             return Err(invalid("rules", &rule, "/agent"));
@@ -931,13 +937,10 @@ impl RuleSnapshot {
         // The reservation records the exact check submitted to the monitor. A rule may be
         // paused while that monitor is still live, so settle that durable intent even when
         // derived settings have since changed. Without a reservation, compare the snapshot.
-        let matches_check = match self
-            .raw
-            .get("launchIntent")
-            .filter(|value| !value.is_null())
-        {
-            Some(intent) => serde_json::from_value::<RuleCheck>(intent.clone())
-                .is_ok_and(|intent| intent == *check),
+        let matches_check = match &self.launch_intent {
+            Some(_) => self
+                .launch_intent()
+                .is_ok_and(|intent| intent.as_ref() == Some(check)),
             None => self.check() == *check,
         };
         if !matches_check {
@@ -1050,6 +1053,58 @@ pub fn active_workers(agents: &[Value], monitors: &[Value]) -> Result<u64, RuleE
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn launch_intent_requires_strict_integer_at_use_and_preserves_raw_record() {
+        let seed: Value = serde_json::from_str(include_str!("../tests/rules_engine/seed.json"))
+            .expect("frozen rule seed");
+        let mut rule = seed["rule"].clone();
+        rule["inFlight"] = json!(true);
+        rule["future"] = json!({"evidence": true});
+        rule["launchIntent"] = json!({"ruleId":"rule", "checkNumber":1, "agentId":"owner",
+            "epoch":7, "accountKey":"fixture", "threadId":"thread-fixture", "monitorId":"m",
+            "command":"run", "timeoutMs":1000, "liveness":false});
+        let snapshot = RuleSnapshot::from_records(rule.clone(), seed["owner"].clone()).unwrap();
+        assert_eq!(snapshot.record(), &rule);
+        let check = snapshot.launch_intent().unwrap().unwrap();
+        let result = || CheckResult {
+            code: Some(0),
+            error: None,
+            cancelled: false,
+            output: "ok",
+        };
+        assert!(
+            snapshot
+                .finish_check(&check, result(), 1_800_000_000.0)
+                .unwrap()
+                .record
+                .is_some()
+        );
+        rule["launchIntent"]["checkNumber"] = json!(1.0);
+        let snapshot = RuleSnapshot::from_records(rule.clone(), seed["owner"].clone()).unwrap();
+        assert_eq!(snapshot.record(), &rule);
+        assert!(snapshot.launch_intent().is_err());
+        assert!(
+            snapshot
+                .finish_check(&check, result(), 1_800_000_000.0)
+                .unwrap()
+                .record
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn from_records_reports_invalid_field_path() {
+        let seed: Value = serde_json::from_str(include_str!("../tests/rules_engine/seed.json"))
+            .expect("frozen rule seed");
+        let mut rule = seed["rule"].clone();
+        rule["kind"] = json!(42);
+        assert!(matches!(
+            RuleSnapshot::from_records(rule, seed["owner"].clone()),
+            Err(RuleError::Invalid { object, location })
+                if object == "rules/rule" && location == "/kind"
+        ));
+    }
 
     /// The persisted rule schema owns the stored `ownerHold` codes; each code
     /// of [`OwnerHold`] is one of them, and no other code is stored.

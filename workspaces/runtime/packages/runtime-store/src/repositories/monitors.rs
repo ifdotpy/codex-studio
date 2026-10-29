@@ -18,7 +18,7 @@ pub struct MonitorOperation {
 }
 
 #[derive(Clone, Debug, Default, serde::Deserialize, Eq, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MonitorOperationEvidence {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread_id: Option<String>,
@@ -261,6 +261,28 @@ mod tests {
             original
         );
         assert!(serde_json::from_str::<super::MonitorOperation>(r#"{"agent":"a","epoch":1,"accountKey":"default","connectionId":"c","unexpected":true}"#).is_err());
+    }
+
+    #[test]
+    fn operation_evidence_rejects_unknown_fields_directly_and_when_flattened() {
+        use serde::Deserialize;
+        use serde_json::json;
+
+        let evidence = json!({"threadId":"t", "rootRequestId":"r", "providerGeneration":3,
+            "providerRequest":{"id":"i", "signature":"s", "created":1}});
+        assert!(super::MonitorOperationEvidence::deserialize(evidence.clone()).is_ok());
+        let mut invalid = evidence.clone();
+        invalid["unexpected"] = json!(true);
+        assert!(super::MonitorOperationEvidence::deserialize(invalid.clone()).is_err());
+        let mut operation =
+            json!({"agent":"a", "epoch":1, "accountKey":"default", "connectionId":"c"});
+        operation
+            .as_object_mut()
+            .unwrap()
+            .extend(evidence.as_object().unwrap().clone());
+        assert!(super::MonitorOperation::deserialize(operation.clone()).is_ok());
+        operation["unexpected"] = json!(true);
+        assert!(super::MonitorOperation::deserialize(operation).is_err());
     }
 
     /// The index build runs at every store open, also on older states that

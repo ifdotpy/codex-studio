@@ -317,20 +317,33 @@ impl Fields {
             .operation
             .value()
             .map(|value| {
-                serde_json::to_value(value)
-                    .map_err(|_| ())
-                    .and_then(|v| serde_json::from_value(v).map_err(|_| ()))
+                let evidence = OperationEvidence::deserialize(serde::de::value::MapDeserializer::<
+                    _,
+                    serde_json::Error,
+                >::new(
+                    value.extra.clone().into_iter()
+                ))
+                .map_err(|_| ())?;
+                Ok(Operation {
+                    agent: value.agent.as_str().to_owned(),
+                    epoch: value.epoch.number().as_i64().ok_or(())?,
+                    account_key: value.account_key.as_str().to_owned(),
+                    connection_id: value.connection_id.as_str().to_owned(),
+                    evidence,
+                })
             })
             .transpose()?;
-        let input_attempt = row
-            .input_attempt
-            .value()
-            .map(|value| {
-                serde_json::to_value(value)
+        let input_attempt =
+            row.input_attempt
+                .value()
+                .map(|value| {
+                    InputAttempt::deserialize(serde::de::value::MapDeserializer::<
+                        _,
+                        serde_json::Error,
+                    >::new(value.clone().into_iter()))
                     .map_err(|_| ())
-                    .and_then(|v| serde_json::from_value(v).map_err(|_| ()))
-            })
-            .transpose()?;
+                })
+                .transpose()?;
         let probe_generation = signed(row.stall_probe_generation.value().map(|v| v.number()))?;
         let probe_started = row
             .stall_probe_started
@@ -390,6 +403,41 @@ impl Fields {
     }
 }
 
+#[cfg(test)]
+mod typed_conversion_tests {
+    use super::*;
+
+    #[test]
+    fn operation_rejects_fractional_integer_and_unknown_evidence() {
+        let base = json!({"id":"m", "agent":"a", "status":"running", "operation": {
+            "agent":"a", "epoch":1, "accountKey":"account", "connectionId":"connection"
+        }});
+        for (key, value) in [("epoch", json!(1.0)), ("future", json!(true))] {
+            let mut raw = base.clone();
+            raw["operation"][key] = value;
+            let record = studio_runtime_store::MonitorRecord::deserialize(raw).unwrap();
+            assert!(Fields::from_monitor(&record).is_err(), "{key}");
+        }
+        let record = studio_runtime_store::MonitorRecord::deserialize(base).unwrap();
+        assert!(Fields::from_monitor(&record).is_ok());
+    }
+
+    #[test]
+    fn input_attempt_uses_strict_epoch_and_keeps_raw_extensions() {
+        let raw = json!({"id":"m", "agent":"a", "status":"running", "inputAttempt": {
+            "id":"ticket", "agent":"a", "epoch":1, "accountKey":"account",
+            "connectionId":"connection", "method":"input", "future":{"data":true}
+        }});
+        let record = studio_runtime_store::MonitorRecord::deserialize(raw.clone()).unwrap();
+        assert!(Fields::from_monitor(&record).is_ok());
+        assert_eq!(record.value(), raw);
+        let mut invalid = raw;
+        invalid["inputAttempt"]["epoch"] = json!(1.0);
+        let record = studio_runtime_store::MonitorRecord::deserialize(invalid).unwrap();
+        assert!(Fields::from_monitor(&record).is_err());
+    }
+}
+
 fn minus_one() -> i64 {
     -1
 }
@@ -435,11 +483,11 @@ impl MonitorSnapshot {
                     id,
                     location: format!("/{}", error.path()),
                 })?;
-        Self::checked_stored(typed, actor)
+        Self::checked_stored(&typed, actor)
     }
 
     pub fn checked_stored(
-        typed: studio_runtime_store::MonitorRecord,
+        typed: &studio_runtime_store::MonitorRecord,
         actor: Value,
     ) -> Result<Self, MonitorError> {
         let record = typed.value();
@@ -458,7 +506,7 @@ impl MonitorSnapshot {
             return Err(invalid("agent"));
         }
         crate::monitor_matches::validate(&record).map_err(invalid)?;
-        let fields = Fields::from_monitor(&typed).map_err(|_| invalid("record"))?;
+        let fields = Fields::from_monitor(typed).map_err(|_| invalid("record"))?;
         if fields.reattach_recovery.as_ref().is_some_and(|recovery| {
             recovery.status == RecoveryStatus::Running && recovery.started_at.is_none()
         }) {

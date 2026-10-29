@@ -217,10 +217,6 @@
       "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:0"
     },
     {
-      "file": "workspaces/runtime/packages/runtime-services/src/claude_bridge.rs",
-      "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:0"
-    },
-    {
       "file": "workspaces/runtime/packages/runtime-services/src/claude_controls.rs",
       "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:0"
     },
@@ -486,14 +482,6 @@
     },
     {
       "file": "workspaces/runtime/packages/runtime-services/src/relocation.rs",
-      "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:0"
-    },
-    {
-      "file": "workspaces/runtime/packages/runtime-services/src/rules_engine.rs",
-      "fingerprint": "b572e2c8dbb07d3c5858365f9fad7813bbbd754557a400d37bba11b94510948c:0"
-    },
-    {
-      "file": "workspaces/runtime/packages/runtime-services/src/rules_tick.rs",
       "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:0"
     },
     {
@@ -2276,10 +2264,6 @@
       "fingerprint": "a8a2929f25fa5a52e86b1aaa53c30a886d25438e0ca884d8e019bc756c5bfd99:2"
     },
     {
-      "file": "workspaces/runtime/packages/runtime-http/src/routes/catalog_agent.rs",
-      "fingerprint": "a8a2929f25fa5a52e86b1aaa53c30a886d25438e0ca884d8e019bc756c5bfd99:0"
-    },
-    {
       "file": "workspaces/runtime/packages/runtime-http/src/routes/checkpoints.rs",
       "fingerprint": "a8a2929f25fa5a52e86b1aaa53c30a886d25438e0ca884d8e019bc756c5bfd99:0"
     },
@@ -2290,14 +2274,6 @@
     {
       "file": "workspaces/runtime/packages/runtime-http/src/routes/workspace_views.rs",
       "fingerprint": "a8a2929f25fa5a52e86b1aaa53c30a886d25438e0ca884d8e019bc756c5bfd99:0"
-    },
-    {
-      "file": "workspaces/runtime/packages/runtime-http/src/routes/workspace_views.rs",
-      "fingerprint": "a8a2929f25fa5a52e86b1aaa53c30a886d25438e0ca884d8e019bc756c5bfd99:1"
-    },
-    {
-      "file": "workspaces/runtime/packages/runtime-http/src/routes/workspace_views.rs",
-      "fingerprint": "a8a2929f25fa5a52e86b1aaa53c30a886d25438e0ca884d8e019bc756c5bfd99:2"
     },
     {
       "file": "workspaces/runtime/packages/runtime-http/src/validation.rs",
