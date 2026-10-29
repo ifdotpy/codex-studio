@@ -100,9 +100,7 @@ fn recovery_record_typed_boundary_matches_schema() {
             candidate[field] = value;
             let expected =
                 studio_runtime_schema::validate("RecoveryAgentRecord", &candidate).expect("schema");
-            let actual = serde_json::from_value::<
-                studio_runtime_schema::recovery_record::RecoveryAgentRecord,
-            >(candidate.clone())
+            let actual = <studio_runtime_schema::recovery_record::RecoveryAgentRecord as serde::Deserialize>::deserialize(&candidate)
             .is_ok();
             assert_eq!(actual, expected, "{candidate}");
             let snapshot = RecoverySnapshot::from_record(candidate.clone());
@@ -113,7 +111,7 @@ fn recovery_record_typed_boundary_matches_schema() {
         }
     }
     assert!(
-        serde_json::from_value::<studio_runtime_schema::recovery_record::RecoveryAgentRecord>(
+        <studio_runtime_schema::recovery_record::RecoveryAgentRecord as serde::Deserialize>::deserialize(
             serde_json::json!(["a", "a", 1, "running"])
         )
         .is_err()

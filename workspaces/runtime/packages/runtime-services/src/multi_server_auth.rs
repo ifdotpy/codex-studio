@@ -876,7 +876,10 @@ mod snapshot_tests {
         )
         .unwrap();
         assert_eq!(
-            serde_json::to_value(snapshot.invite().unwrap()).unwrap(),
+            serde_json::from_str::<Value>(
+                &serde_json::to_string(snapshot.invite().unwrap()).unwrap()
+            )
+            .unwrap(),
             invite
         );
         let error = AccessSnapshot::from_records("c", None, "other", Some(&raw), false)

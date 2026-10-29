@@ -265,7 +265,7 @@ async fn confirmed_restart_is_atomic_replay_safe_and_waits_for_exit() {
         Ok(())
     }).await.unwrap();
     let body = json!({"id":original,"agent":"owner","epoch":2,"requestId":"confirmed","accountKey":"default","outputPatterns":["test complete"]});
-    let request = serde_json::from_value(body.clone()).unwrap();
+    let request = serde::Deserialize::deserialize(&body).unwrap();
     let new = store
         .transaction_with(move |tx| {
             monitor_runtime::restart_in_transaction(tx, &request, &Workspace, "/logs", 2.0)
@@ -286,7 +286,7 @@ async fn confirmed_restart_is_atomic_replay_safe_and_waits_for_exit() {
             .unwrap()
             .is_empty()
     );
-    let request = serde_json::from_value(body.clone()).unwrap();
+    let request = serde::Deserialize::deserialize(&body).unwrap();
     let replay = store
         .transaction_with(move |tx| {
             monitor_runtime::restart_in_transaction(tx, &request, &Workspace, "/logs", 3.0)
@@ -301,7 +301,7 @@ async fn confirmed_restart_is_atomic_replay_safe_and_waits_for_exit() {
     ] {
         let mut changed = body.clone();
         changed[field] = value;
-        let changed = serde_json::from_value(changed).unwrap();
+        let changed = serde::Deserialize::deserialize(changed).unwrap();
         assert!(
             store
                 .transaction_with(move |tx| monitor_runtime::restart_in_transaction(
@@ -314,7 +314,7 @@ async fn confirmed_restart_is_atomic_replay_safe_and_waits_for_exit() {
     }
     let mut changed = body;
     changed["outputPatterns"] = json!(["different"]);
-    let changed = serde_json::from_value(changed).unwrap();
+    let changed = serde::Deserialize::deserialize(changed).unwrap();
     assert!(
         store
             .transaction_with(move |tx| monitor_runtime::restart_in_transaction(

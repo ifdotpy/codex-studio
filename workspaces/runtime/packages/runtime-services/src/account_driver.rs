@@ -2719,7 +2719,7 @@ fn persist_registry(
 fn auth_profile(row: &Value) -> Result<AuthProfile, AccountDriverError> {
     let account: studio_runtime_schema::json_object::JsonObject<
         studio_runtime_schema::account_registry::AccountRecord,
-    > = serde_json::from_value(row.clone()).map_err(|_| AccountDriverError::InvalidRegistry)?;
+    > = serde::Deserialize::deserialize(row).map_err(|_| AccountDriverError::InvalidRegistry)?;
     Ok(AuthProfile {
         provider: account.0.provider,
         home: PathBuf::from(account.0.home),

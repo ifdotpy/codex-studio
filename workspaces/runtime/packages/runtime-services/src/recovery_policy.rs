@@ -74,7 +74,7 @@ impl AutomaticTurnRecovery<'_> {
 impl RecoverySnapshot {
     pub fn from_record(agent: Value) -> Result<Self, InvalidRecoveryRecord> {
         let typed: RecoveryAgentRecord =
-            serde_json::from_value(agent.clone()).map_err(|_| InvalidRecoveryRecord::Schema {
+            serde::Deserialize::deserialize(&agent).map_err(|_| InvalidRecoveryRecord::Schema {
                 location: "runtime_agents.recovery",
             })?;
         Ok(Self {

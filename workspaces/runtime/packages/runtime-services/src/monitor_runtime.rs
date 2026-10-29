@@ -1578,7 +1578,7 @@ impl<'de> serde::Deserialize<'de> for RestartRequest {
         }
         let raw = <Value as serde::Deserialize>::deserialize(deserializer)?;
         let signature = crate::process_controls::digest(&raw);
-        let wire: Wire = serde_json::from_value(raw).map_err(D::Error::custom)?;
+        let wire: Wire = serde::Deserialize::deserialize(raw).map_err(D::Error::custom)?;
         Ok(Self {
             id: wire.id,
             agent: wire.agent,

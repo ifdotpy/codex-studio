@@ -211,7 +211,7 @@ pub(crate) fn project_registry_value(
 ) -> Result<AccountsSnapshot, AccountPolicyError> {
     let typed: studio_runtime_schema::json_object::JsonObject<
         studio_runtime_schema::account_registry::AccountRegistry,
-    > = serde_json::from_value(value.clone())
+    > = serde::Deserialize::deserialize(value)
         .map_err(|_| registry_error("/", "schema validation failed"))?;
     let typed = typed.0;
     let accounts_by_key = value
@@ -294,11 +294,9 @@ fn listed_account(key: &str, row: &studio_runtime_schema::account_registry::Acco
 pub(crate) fn can_attempt_native_proof(stored: Option<&Map<String, Value>>) -> bool {
     stored
         .and_then(|row| {
-            serde_json::from_value::<
-                studio_runtime_schema::json_object::JsonObject<
-                    studio_runtime_schema::account_registry::AccountRecord,
-                >,
-            >(Value::Object(row.clone()))
+            <studio_runtime_schema::json_object::JsonObject<
+                studio_runtime_schema::account_registry::AccountRecord,
+            > as serde::Deserialize>::deserialize(Value::Object(row.clone()))
             .ok()
         })
         .is_some_and(|row| can_attempt_native_proof_typed(&row.0))

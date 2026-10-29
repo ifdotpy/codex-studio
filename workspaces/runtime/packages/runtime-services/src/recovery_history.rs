@@ -494,7 +494,7 @@ fn history_page(value: Value) -> Result<HistoryPage, HistoryError> {
     if !value.is_object() {
         return Err(HistoryError::Invalid("data"));
     }
-    serde_json::from_value(value).map_err(|_| HistoryError::Invalid("data"))
+    serde::Deserialize::deserialize(value).map_err(|_| HistoryError::Invalid("data"))
 }
 
 fn next_cursor(

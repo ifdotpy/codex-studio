@@ -47,7 +47,7 @@ mod tests {
             json!([]),
             json!({}),
         ] {
-            let cursor: Cursor = serde_json::from_value(value.clone()).expect("cursor shape");
+            let cursor: Cursor = serde::Deserialize::deserialize(&value).expect("cursor shape");
             match value {
                 serde_json::Value::Null => assert!(matches!(next_cursor(&cursor), Ok(None))),
                 serde_json::Value::String(ref s) if !s.is_empty() => {

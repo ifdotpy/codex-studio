@@ -47,7 +47,7 @@ impl BridgeSnapshot {
         if profile.provider != ProviderKind::Claude.key() {
             return Err(BridgeHold::Account);
         }
-        let options = serde_json::from_value(profile.claude_options.clone())
+        let options = serde::Deserialize::deserialize(&profile.claude_options)
             .map_err(|_| BridgeHold::Options)?;
         Ok(Self {
             profile,

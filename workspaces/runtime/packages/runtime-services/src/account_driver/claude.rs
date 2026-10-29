@@ -97,11 +97,9 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             .iter()
             .filter_map(|key| state.value.get("accounts")?.get(key))
             .find(|row| {
-                serde_json::from_value::<
-                    studio_runtime_schema::json_object::JsonObject<
-                        studio_runtime_schema::account_registry::AccountRecord,
-                    >,
-                >((*row).clone())
+                <studio_runtime_schema::json_object::JsonObject<
+                    studio_runtime_schema::account_registry::AccountRecord,
+                > as serde::Deserialize>::deserialize(*row)
                 .ok()
                 .is_some_and(|account| {
                     account.0.provider == ProviderKind::Claude
@@ -139,9 +137,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         }
         if label.trim().is_empty()
             || label.chars().count() > 200
-            || serde_json::from_value::<studio_runtime_schema::claude_options::ClaudeOptionsRecord>(
-                Value::Object(options.clone()),
-            )
+            || <studio_runtime_schema::claude_options::ClaudeOptionsRecord as serde::Deserialize>::deserialize(Value::Object(options.clone()))
             .is_err()
         {
             return Err(ClaudeAccountError::InvalidProfile);

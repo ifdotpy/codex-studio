@@ -2030,7 +2030,7 @@ pub fn normalize_profile(
         return Err(invalid());
     }
     let input: ClaudeProfileInput =
-        serde_json::from_value(Value::Object(options)).map_err(|_| invalid())?;
+        serde::Deserialize::deserialize(Value::Object(options)).map_err(|_| invalid())?;
     if !input.extensions.is_empty() || input.custom_models.len() > 100 {
         return Err(invalid());
     }

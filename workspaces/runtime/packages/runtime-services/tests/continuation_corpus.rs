@@ -21,9 +21,7 @@ fn typed_continuation_snapshot_matches_schema_shapes() {
     ] {
         let mut input = base.clone();
         input[key] = value;
-        let typed = serde_json::from_value::<
-            studio_runtime_schema::continuation_snapshot::ContinuationSnapshotRecord,
-        >(input.clone())
+        let typed = <studio_runtime_schema::continuation_snapshot::ContinuationSnapshotRecord as serde::Deserialize>::deserialize(&input)
         .is_ok();
         assert_eq!(typed, validator.is_valid(&input), "{input}");
     }
@@ -44,15 +42,15 @@ fn typed_continuation_snapshot_enforces_schema_bounds() {
     ] {
         let mut input = base.clone();
         input[key] = accepted;
-        assert!(serde_json::from_value::<ContinuationSnapshotRecord>(input.clone()).is_ok());
+        assert!(<ContinuationSnapshotRecord as serde::Deserialize>::deserialize(&input).is_ok());
         input[key] = rejected;
-        assert!(serde_json::from_value::<ContinuationSnapshotRecord>(input).is_err());
+        assert!(<ContinuationSnapshotRecord as serde::Deserialize>::deserialize(input).is_err());
     }
     let mut input = base;
     input["agent"]["id"] = json!("é".repeat(4096));
-    assert!(serde_json::from_value::<ContinuationSnapshotRecord>(input.clone()).is_ok());
+    assert!(<ContinuationSnapshotRecord as serde::Deserialize>::deserialize(&input).is_ok());
     input["agent"]["id"] = json!("é".repeat(4097));
-    assert!(serde_json::from_value::<ContinuationSnapshotRecord>(input).is_err());
+    assert!(<ContinuationSnapshotRecord as serde::Deserialize>::deserialize(input).is_err());
 }
 
 #[test]

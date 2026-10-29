@@ -2096,7 +2096,7 @@ mod conversation_catalog_admission_tests {
         assert!(conversation_settings_need_conversation_account(
             &parse_request(request.clone())
         ));
-        assert!(!conversation_needs_catalog(&parse_request(request.clone())));
+        assert!(!conversation_needs_catalog(&parse_request(request)));
         assert_eq!(
             review_settings_catalog_account(None, Some("worker-account")).as_deref(),
             Some("worker-account")

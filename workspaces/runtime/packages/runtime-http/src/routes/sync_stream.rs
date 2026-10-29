@@ -3406,7 +3406,7 @@ mod tests {
                 &http.sync_changes,
                 &http.token_rates,
                 http.resource_notifications.clone(),
-                vec![],
+                &[],
             );
             stream.http_state = Some(http.clone());
             stream.store = Some(store.clone());
@@ -3566,7 +3566,7 @@ mod tests {
             &http.sync_changes,
             &http.token_rates,
             http.resource_notifications.clone(),
-            vec![],
+            &[],
         );
         let app = crate::router(http.clone()).expect("router");
         let full = studio_runtime_services::transcript::pull_scope(
@@ -3875,7 +3875,7 @@ mod tests {
             &http.sync_changes,
             &http.token_rates,
             http.resource_notifications.clone(),
-            resources,
+            &resources,
         );
         state.http_state = Some(http.clone());
         state.store = Some(store.clone());
@@ -4241,7 +4241,7 @@ mod tests {
             &http.sync_changes,
             &http.token_rates,
             http.resource_notifications.clone(),
-            resources,
+            &resources,
         );
         state.store = Some(store.clone());
         state.http_state = Some(http);
@@ -4357,7 +4357,7 @@ mod tests {
         let hub = Arc::new(ChangeNotificationHub::new());
         let notifications = Arc::new(ResourceNotifications::new(hub.clone()));
         let tokens = TokenRateHub::new();
-        let mut state = test_stream(&hub, &tokens, notifications, vec![json!({"kind":"state"})]);
+        let mut state = test_stream(&hub, &tokens, notifications, &[json!({"kind":"state"})]);
         state.store = Some(store.clone());
         state.entity_sequence = read_entity_sequence(Some(store.clone()), &state.resources)
             .await
@@ -4452,8 +4452,7 @@ mod tests {
             let hub = Arc::new(ChangeNotificationHub::new());
             let tokens = TokenRateHub::new();
             let notifications = Arc::new(ResourceNotifications::new(hub.clone()));
-            let mut state =
-                test_stream(&hub, &tokens, notifications, vec![json!({"kind":"state"})]);
+            let mut state = test_stream(&hub, &tokens, notifications, &[json!({"kind":"state"})]);
             state.store = Some(store.clone());
             store.transaction(move |tx| {
                 let count = if scenario == "documents" { 513 } else { 1 };
@@ -4513,12 +4512,7 @@ mod tests {
         let hub = Arc::new(ChangeNotificationHub::new());
         let tokens = TokenRateHub::new();
         let notifications = Arc::new(ResourceNotifications::new(hub.clone()));
-        let state = test_stream(
-            &hub,
-            &tokens,
-            notifications,
-            vec![json!({"kind":"accounts"})],
-        );
+        let state = test_stream(&hub, &tokens, notifications, &[json!({"kind":"accounts"})]);
         hub.notify_one();
         let (_, state) = next_frame(state).await.expect("first frame");
         let mut next = Box::pin(next_frame(state));
@@ -5128,7 +5122,7 @@ mod tests {
             &hub,
             &token_hub,
             notifications,
-            vec![json!({"kind":"accounts"})],
+            &[json!({"kind":"accounts"})],
         );
         hub.notify_one();
         token_hub.publish(test_rates(1)).expect("token rate");
@@ -5194,7 +5188,7 @@ mod tests {
             &http.sync_changes,
             &http.token_rates,
             http.resource_notifications.clone(),
-            vec![],
+            &[],
         );
         state.http_state = Some(http.clone());
         state.store = Some(store.clone());
@@ -5289,7 +5283,7 @@ mod tests {
             &http.sync_changes,
             &http.token_rates,
             http.resource_notifications.clone(),
-            vec![json!({"kind":"voice","agentId":"voice-chat"})],
+            &[json!({"kind":"voice","agentId":"voice-chat"})],
         );
         state.http_state = Some(http.clone());
         state.store = Some(store.clone());
@@ -5341,7 +5335,7 @@ mod tests {
         hub: &Arc<ChangeNotificationHub>,
         tokens: &TokenRateHub,
         notifications: Arc<ResourceNotifications>,
-        resources: Vec<Value>,
+        resources: &[Value],
     ) -> ResourceStream {
         let changes = hub.subscribe();
         let baseline = changes.borrow().clone();
@@ -5355,7 +5349,7 @@ mod tests {
             workspace_id: "workspace".into(),
             epoch: baseline.epoch,
             last_revision: baseline.revision,
-            resources: fixture_resources(&resources),
+            resources: fixture_resources(resources),
             entity_sequence: 0,
             transcript_sequences: BTreeMap::new(),
             terminal_cursors: BTreeMap::new(),
@@ -5428,7 +5422,7 @@ mod tests {
             .await
             .expect("baseline");
         port.0.store(0, Ordering::SeqCst);
-        let mut state = test_stream(&hub, &tokens, notifications, resources);
+        let mut state = test_stream(&hub, &tokens, notifications, &resources);
         state.http_state = Some(http);
         let mut pending = Box::pin(next_frame(state));
         assert!(futures_util::poll!(&mut pending).is_pending());
@@ -5535,7 +5529,7 @@ mod tests {
             &hub,
             &tokens,
             notifications,
-            vec![json!({"kind":"limits","accountKey":"default"})],
+            &[json!({"kind":"limits","accountKey":"default"})],
         );
         other.http_state = Some(http);
         other.heartbeat = interval_at(Instant::now(), Duration::from_secs(15));
@@ -5613,7 +5607,7 @@ mod tests {
                 &hub,
                 &tokens,
                 notifications.clone(),
-                vec![json!({"kind":"accounts"})],
+                &[json!({"kind":"accounts"})],
             ),
             next_frame,
         ));
@@ -5622,7 +5616,7 @@ mod tests {
                 &hub,
                 &tokens,
                 notifications.clone(),
-                vec![json!({"kind":"accounts"})],
+                &[json!({"kind":"accounts"})],
             ),
             next_frame,
         ));
@@ -5690,7 +5684,7 @@ mod tests {
                 &hub,
                 &tokens,
                 notifications.clone(),
-                case["resources"].as_array().expect("resources").clone(),
+                case["resources"].as_array().expect("resources"),
             );
             let mut events = Box::pin(stream::unfold(state, next_frame));
             let mut expected = expected.into_iter();
@@ -5770,7 +5764,7 @@ mod tests {
         let hub = Arc::new(ChangeNotificationHub::new());
         let tokens = TokenRateHub::with_change_hub(hub.clone());
         let notifications = Arc::new(ResourceNotifications::new(hub.clone()));
-        let mut state = test_stream(&hub, &tokens, notifications.clone(), vec![]);
+        let mut state = test_stream(&hub, &tokens, notifications.clone(), &[]);
         let record = |id: &str, root: &str, rate: f64| {
             json!({
                 "agentId":id,"rootId":root,"turnId":"turn","active":true,
@@ -5803,7 +5797,7 @@ mod tests {
         assert_eq!(unchanged["records"], json!([]));
         assert_eq!(unchanged["removed"], json!([]));
 
-        let mut reconnect = test_stream(&hub, &tokens, notifications, vec![]);
+        let mut reconnect = test_stream(&hub, &tokens, notifications, &[]);
         let full =
             event_document(Ok(token_rate_sse_frame(&mut reconnect).expect("reconnect"))).await;
         assert_eq!(full["snapshot"], true);
@@ -5835,7 +5829,7 @@ mod tests {
         let hub = Arc::new(ChangeNotificationHub::new());
         let tokens = TokenRateHub::with_change_hub(hub.clone());
         let notifications = Arc::new(ResourceNotifications::new(hub.clone()));
-        let mut state = test_stream(&hub, &tokens, notifications, vec![]);
+        let mut state = test_stream(&hub, &tokens, notifications, &[]);
         let mut records: Vec<Value> = (0..50).map(|id| json!({
             "agentId":format!("agent-{id:02}"),"rootId":"root","turnId":"turn",
             "active":id < 2,"estimated":false,"rate":if id < 2 {10.0} else {0.0},"outputTokens":100.0

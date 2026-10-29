@@ -334,7 +334,7 @@ mod tests {
             json!({"id":"old-main","kind":"auto","line":"main-line","time":1,"layers":{"target":"old"}}),
             json!({"id":"new-main","kind":"auto","line":"main-line","time":2,"layers":{"target":"new"}}),
             json!({"id":"other-line","kind":"auto","line":"worker-line","time":3,"layers":{"target":"other"}}),
-        ].into_iter().map(|value| serde_json::from_value(value).unwrap()).collect();
+        ].into_iter().map(|value| serde::Deserialize::deserialize(value).unwrap()).collect();
         assert_eq!(newest_main_cache(&records, "main-line"), Some("new-main"));
         assert_eq!(newest_main_cache(&records, "unknown-line"), None);
     }
@@ -367,7 +367,7 @@ null"#;
             let mut head = json!({"id":"main-state"});
             head[field] = json!({"target":"saved-target"});
             assert!(
-                cache_warning_for_head(main, &serde_json::from_value(head).unwrap())
+                cache_warning_for_head(main, &serde::Deserialize::deserialize(head).unwrap())
                     .expect("saved cache")
                     .is_none()
             );
