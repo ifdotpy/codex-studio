@@ -1267,14 +1267,78 @@ impl JsonRecord for WorkItemRecord {
         Self::decode(row_id, encoded)
     }
 }
-record_newtype!(
-    ExecutionRunRecord,
-    String,
-    table = "runtime_execution_runs",
-    schema = "PersistedExecutionRunRecord",
-    key = PayloadId,
-    query = None
+/// The stored run uses the execution-history owner with unconstrained historical evidence.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct ExecutionRunRecord(
+    crate::ExecutionRun<Value, studio_runtime_schema::records::agent_projection::AgentCounter>,
 );
+impl<'de> Deserialize<'de> for ExecutionRunRecord {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let studio_runtime_schema::json_object::JsonObject(run) =
+            studio_runtime_schema::json_object::JsonObject::deserialize(deserializer)?;
+        Ok(Self(run))
+    }
+}
+impl ExecutionRunRecord {
+    pub fn from_value(value: Value) -> Result<Self, serde_json::Error> {
+        Self::deserialize(value)
+    }
+    pub fn run(
+        &self,
+    ) -> &crate::ExecutionRun<Value, studio_runtime_schema::records::agent_projection::AgentCounter>
+    {
+        &self.0
+    }
+}
+impl JsonRecord for ExecutionRunRecord {
+    type Id = String;
+    const TABLE: &'static str = "runtime_execution_runs";
+    const SCHEMA: &'static str = "PersistedExecutionRunRecord";
+    const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
+    const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
+    const TYPED_SHAPE: bool = true;
+    fn record_key(&self) -> Option<&Self::Id> {
+        Some(&self.0.id)
+    }
+}
+#[cfg(test)]
+mod execution_run_record_tests {
+    use super::{ExecutionRunRecord, Table};
+    use serde::Serialize;
+    use serde_json::{Value, json};
+
+    #[test]
+    fn execution_run_table_preserves_evidence_and_checks_physical_identity() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
+        )
+        .unwrap();
+        let raw = r#"{"id":"bad","id":"run","agent":"a","accountKey":"default","epoch":1.0,"created":1.0,"status":"running","latestAttemptId":null,"rootAttemptId":{"opaque":[1]},"extra":9007199254740993}"#;
+        db.execute("INSERT INTO runtime_execution_runs VALUES('run',?1)", [raw])
+            .unwrap();
+        let record = Table::<ExecutionRunRecord>::new(&db)
+            .get(&"run".into())
+            .unwrap()
+            .unwrap();
+        let value = record.serialize(serde_json::value::Serializer).unwrap();
+        let expected: Value = serde_json::from_str(raw).unwrap();
+        assert_eq!(value, expected);
+        assert_eq!(value["extra"], json!(9007199254740993_u64));
+        assert!(value.get("threadId").is_none());
+        db.execute(
+            "UPDATE runtime_execution_runs SET record=?1",
+            [raw.replace("\"id\":\"run\"", "\"id\":\"other\"")],
+        )
+        .unwrap();
+        assert!(
+            Table::<ExecutionRunRecord>::new(&db)
+                .get(&"run".into())
+                .is_err()
+        );
+    }
+}
 pub use studio_runtime_schema::workspace_operation::WorkspaceOperationRecord;
 impl JsonRecord for WorkspaceOperationRecord {
     type Id = String;

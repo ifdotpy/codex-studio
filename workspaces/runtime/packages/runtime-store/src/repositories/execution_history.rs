@@ -891,6 +891,11 @@ mod tests {
             >::deserialize(&record)
             .is_ok();
             assert_eq!(typed, schema_valid, "{record}");
+            assert_eq!(
+                crate::ExecutionRunRecord::from_value(record.clone()).is_ok(),
+                schema_valid,
+                "stored owner: {record}"
+            );
         }
     }
 
