@@ -156,7 +156,6 @@ pub mod questions_write;
 pub mod queue_write;
 pub mod radio;
 pub mod radio_runtime;
-mod saved_mount;
 pub use radio_runtime::{
     Interrupt, InterruptOutcome, InterruptReceipt, InterruptTransport, NativeAcceptanceReceipt,
     RadioCreation, handoff_interrupt,
@@ -175,6 +174,7 @@ pub mod rules;
 pub mod rules_engine;
 pub mod rules_tick;
 pub mod safety_buffering;
+mod saved_mount;
 pub mod scheduler;
 pub mod server_exec;
 pub mod server_git;
