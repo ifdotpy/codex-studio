@@ -779,7 +779,7 @@ async fn settle_restore_failure(
                     agent
                         .extra
                         .insert("workspaceOperation".into(), json!("restore_recovery"));
-                    agent.extra.insert("status".into(), json!("interrupted"));
+                    agent.set_status(studio_runtime_store::AgentStatus::Interrupted);
                     agent.auto_wake = Some(false);
                     agent.extra.insert("error".into(), json!(message.clone()));
                 } else if agent
@@ -959,5 +959,28 @@ inventory::submit! {
         dependencies: &[
         "provider-session/thread-fork",
         ],
+    }
+}
+
+#[cfg(test)]
+mod status_tests {
+    use super::*;
+    use studio_runtime_store::RuntimeStore;
+
+    #[tokio::test]
+    async fn unknown_restore_sets_one_interrupted_status() {
+        let root = tempfile::tempdir().expect("state");
+        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        store.transaction(|tx| {
+            let agent = AgentRecord::from_value(json!({"id":"agent","rootId":"agent","epoch":0,"status":"running","workspaceReservationId":"operation","provider":"codex"}))?;
+            AgentRepository::put(tx, &agent)?;
+            let operation = json!({"id":"operation","kind":"restore","agent":"agent","phase":"provider_pending","source":CheckpointsRepository::workspace_source(&agent.value())});
+            tx.execute("INSERT INTO runtime_workspace_operations(id,record) VALUES('operation',?1)", [operation.to_string()])?;
+            Ok::<_, studio_runtime_store::StoreError>(())
+        }).await.expect("seed");
+        settle_restore_failure(&store, "operation", "agent", true, "unknown").await.expect("settle");
+        let db = store.test_reader().expect("reader");
+        let (status, count): (String, i64) = db.query_row("SELECT json_extract(record,'$.status'), (SELECT count(*) FROM json_each(record) WHERE key='status') FROM runtime_agents WHERE id='agent'", [], |row| Ok((row.get(0)?, row.get(1)?))).expect("status");
+        assert_eq!((status.as_str(), count), ("interrupted", 1));
     }
 }
