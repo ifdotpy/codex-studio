@@ -45,6 +45,24 @@ const POLL_INTERVAL: Duration = Duration::from_millis(500);
 const MAX_POLLS: u32 = 64;
 // These projections read only title-generation fields; provider items and
 // extensions remain opaque. Empty turn IDs retain their existing behavior.
+// ThreadLifecycle owns the general provider thread identity observation; this
+// partial wire view retains the title request's separate 1024-byte limit.
+#[derive(Deserialize)]
+struct TitleThreadIdentity<'a> {
+    id: &'a str,
+}
+
+fn title_thread_id(value: &Value) -> Option<&str> {
+    let thread = value.get("thread")?;
+    if !thread.is_object() {
+        return None;
+    }
+    TitleThreadIdentity::deserialize(thread)
+        .ok()
+        .map(|thread| thread.id)
+        .filter(|id| !id.is_empty() && id.len() <= 1024)
+}
+
 #[derive(Deserialize)]
 struct TitleTurnIdentity<'a> {
     id: &'a str,
@@ -548,9 +566,7 @@ impl TitleRequestPort for ProviderTitleRequestPort {
             }
             let Some(thread_id) = started
                 .pipe_response_value()
-                .and_then(|value| value.pointer("/thread/id"))
-                .and_then(Value::as_str)
-                .filter(|value| !value.is_empty() && value.len() <= 1024)
+                .and_then(title_thread_id)
                 .map(str::to_owned)
             else {
                 home.retain();
@@ -897,6 +913,7 @@ mod tests {
         UnknownThread,
         NotSentTurn,
         Listed(Value),
+        ThreadReply(Value),
     }
 
     struct Session {
@@ -938,9 +955,13 @@ mod tests {
                     RequestCertainty::Written
                 };
                 let result = match method {
-                    Method::ThreadStart => Some(ProviderResponse::Reply(
-                        json!({"thread":{"id":"title-thread"}}),
-                    )),
+                    Method::ThreadStart => Some(ProviderResponse::Reply(match &self.scenario {
+                        ReplyScenario::ThreadReply(value) => value.clone(),
+                        ReplyScenario::Ready
+                        | ReplyScenario::UnknownThread
+                        | ReplyScenario::NotSentTurn
+                        | ReplyScenario::Listed(_) => json!({"thread":{"id":"title-thread"}}),
+                    })),
                     Method::TurnStart => {
                         Some(ProviderResponse::Reply(json!({"turn":{"id":"title-turn"}})))
                     }
@@ -949,7 +970,8 @@ mod tests {
                             ReplyScenario::Listed(value) => value.clone(),
                             ReplyScenario::Ready
                             | ReplyScenario::UnknownThread
-                            | ReplyScenario::NotSentTurn => json!({"data":[{
+                            | ReplyScenario::NotSentTurn
+                            | ReplyScenario::ThreadReply(_) => json!({"data":[{
                                 "id":"title-turn", "status":"completed", "items":[{
                                     "type":"agentMessage", "phase":"final_answer", "text":"A Useful Title"
                                 }]
@@ -1293,6 +1315,53 @@ mod tests {
             }
         );
         assert_eq!(session.requests.lock().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn title_thread_reply_projection_matches_legacy_admission() {
+        let boundary = "a".repeat(1024);
+        let over = "é".repeat(513);
+        let cases = [
+            json!(null),
+            json!([]),
+            json!({}),
+            json!({"thread": null}),
+            json!({"thread": ["id"]}),
+            json!({"thread": {"id": null}}),
+            json!({"thread": {"id": 12}}),
+            json!({"thread": {"id": ""}}),
+            json!({"thread": {"id": boundary, "extra": {"any": true}}, "future": 9}),
+            json!({"thread": {"id": over}}),
+            serde_json::from_str::<Value>(r#"{"thread":{"id":"first","id":"last"}}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"thread":{"id":"old"},"thread":{"id":false}}"#)
+                .unwrap(),
+        ];
+        for value in cases {
+            let legacy = value
+                .pointer("/thread/id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty() && id.len() <= 1024);
+            assert_eq!(super::title_thread_id(&value), legacy, "{value}");
+        }
+    }
+
+    #[tokio::test]
+    async fn title_invalid_thread_reply_retains_home_and_unknown_receipt() {
+        let session = Arc::new(Session {
+            requests: Mutex::new(Vec::new()),
+            scenario: ReplyScenario::ThreadReply(json!({"thread":{"id":null}})),
+        });
+        let (_root, request_id, result) = run_title(Arc::clone(&session), "codex", 3).await;
+        assert_eq!(result, TitleResult::HeldUnknown);
+        let calls = session.requests.lock().expect("fixture requests");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].method, Method::ThreadStart);
+        let path = std::path::PathBuf::from(calls[0].params["cwd"].as_str().expect("title cwd"));
+        assert!(path.is_dir(), "the original title home was retained");
+        drop(calls);
+        let home = TitleHome::new(&request_id).expect("retained title home");
+        assert_eq!(home.path(), path);
+        drop(home);
     }
 
     #[tokio::test]

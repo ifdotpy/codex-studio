@@ -1158,22 +1158,19 @@ fn preserve_complaint(
     if event.kind != "complaint" {
         return Ok(false);
     }
-    let value: Value = match serde_json::from_str(&event.text) {
-        Ok(value) => value,
-        Err(_) => return Ok(true),
-    };
-    let Some(entries) = value["complaints"].as_array().filter(|v| !v.is_empty()) else {
+    let Some(entries) = studio_runtime_schema::notification_text::complaint_entries(&event.text)
+    else {
         return Ok(true);
     };
     for entry in entries {
-        let Some(id) = entry["complaint_id"].as_str().filter(|s| !s.is_empty()) else {
+        let Some(id) = entry else {
             return Ok(true);
         };
         use rusqlite::OptionalExtension;
         let raw: Option<String> = tx
             .query_row(
                 "SELECT record FROM runtime_complaints WHERE id=?1",
-                [id],
+                [&id],
                 |r| r.get(0),
             )
             .optional()?;
@@ -1691,6 +1688,39 @@ fn can_delegate(tx: &Transaction<'_>, record: &Value, root: &Value) -> Result<bo
 
 #[cfg(test)]
 mod resource_tests {
+    #[test]
+    fn complaint_entry_decoding_keeps_database_error_order() {
+        let mut db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE runtime_complaints(id TEXT PRIMARY KEY,record TEXT); INSERT INTO runtime_complaints VALUES('bad','{'),('ok','{\"leadId\":\"lead\"}'),('foreign','{\"leadId\":\"other\"}');").unwrap();
+        let tx = db.transaction().unwrap();
+        let mut event = crate::scheduler::TurnEvent {
+            id: "e".into(),
+            kind: "complaint".into(),
+            text: String::new(),
+            created: 0.0,
+            epoch: 1,
+            error: None,
+            metadata: serde_json::json!({}),
+        };
+        event.text = r#"{"complaints":[{"complaint_id":"bad"},{}]}"#.into();
+        assert!(super::preserve_complaint(&tx, "lead", &event).is_err());
+        for (text, expected) in [
+            (r#"{"complaints":[{}, {"complaint_id":"bad"}]}"#, true),
+            (r#"{"complaints":[{"complaint_id":"ok"}]}"#, false),
+            (r#"{"complaints":[{"complaint_id":"foreign"}]}"#, true),
+            (r#"{"complaints":[]}"#, true),
+            (r#"{"complaints":[{"complaint_id":"missing"}]}"#, true),
+        ] {
+            event.text = text.into();
+            assert_eq!(
+                super::preserve_complaint(&tx, "lead", &event).unwrap(),
+                expected,
+                "{text}"
+            );
+        }
+        event.kind = "user".into();
+        assert!(!super::preserve_complaint(&tx, "lead", &event).unwrap());
+    }
     #[test]
     fn authorization_projects_exclude_destructive_removal_fences() {
         let db = rusqlite::Connection::open_in_memory().expect("database");

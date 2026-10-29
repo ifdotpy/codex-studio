@@ -27,6 +27,7 @@ pub mod json_object;
 pub mod model_catalog;
 pub mod monitor_record;
 pub mod multi_server_protocol;
+pub mod notification_text;
 pub mod persistence;
 pub mod plan_record;
 pub mod pricing;

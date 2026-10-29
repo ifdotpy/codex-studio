@@ -24,6 +24,77 @@ pub struct Entry {
     pub receipt: Option<Value>,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+pub(crate) struct Claim {
+    pub claimed: bool,
+    pub entry: Entry,
+}
+
+// These are decision projections; Entry keeps the original body and receipt.
+#[derive(Default, Deserialize)]
+struct BodyIdentity {
+    #[serde(default, deserialize_with = "loose_string")]
+    id: Option<String>,
+    #[serde(default, deserialize_with = "present")]
+    room: Option<Value>,
+    #[serde(default, deserialize_with = "loose_string")]
+    text: Option<String>,
+}
+#[derive(Default, Deserialize)]
+struct ReceiptObservation {
+    #[serde(default, deserialize_with = "loose_string")]
+    id: Option<String>,
+    #[serde(default, deserialize_with = "loose_string")]
+    status: Option<String>,
+    #[serde(default, deserialize_with = "present")]
+    room: Option<Value>,
+    #[serde(default, deserialize_with = "loose_string")]
+    text: Option<String>,
+    #[serde(default, deserialize_with = "object_field")]
+    deliveries: bool,
+    #[serde(default, deserialize_with = "loose_string")]
+    error: Option<String>,
+}
+fn loose_string<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(Value::deserialize(d)?.as_str().map(str::to_owned))
+}
+fn present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Value>, D::Error> {
+    Value::deserialize(d).map(Some)
+}
+fn object_field<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    Ok(Value::deserialize(d)?.is_object())
+}
+fn observation<T: serde::de::DeserializeOwned + Default>(value: &Value) -> T {
+    if value.is_object() {
+        T::deserialize(value).unwrap_or_default()
+    } else {
+        T::default()
+    }
+}
+impl BodyIdentity {
+    fn room(&self) -> Result<&str, String> {
+        self.room
+            .as_ref()
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty() && value.len() <= 512)
+            .ok_or_else(|| "room is required.".into())
+    }
+    fn id(&self) -> Result<&str, String> {
+        self.id
+            .as_deref()
+            .filter(|value| !value.is_empty() && value.len() <= 512)
+            .ok_or_else(|| "id is required.".into())
+    }
+}
+impl ReceiptObservation {
+    fn confirmed(&self) -> bool {
+        matches!(
+            self.status.as_deref(),
+            Some("delivered" | "accepted" | "sent")
+        )
+    }
+}
+
 pub fn initialize(connection: &Connection) -> rusqlite::Result<()> {
     connection.execute_batch(
         "CREATE TABLE IF NOT EXISTS client_outbox (
@@ -82,7 +153,8 @@ fn load(connection: &Connection, workspace: &str, id: &str) -> Result<(Entry, bo
 }
 
 fn save(connection: &Connection, entry: &Entry, in_flight: bool) -> Result<(), String> {
-    let room = text(&entry.body, "room")?;
+    let identity: BodyIdentity = observation(&entry.body);
+    let room = identity.room()?;
     connection.execute("INSERT INTO client_outbox(workspace,id,room,payload,in_flight) VALUES(?1,?2,?3,?4,?5)
         ON CONFLICT(workspace,id) DO UPDATE SET payload=excluded.payload,in_flight=excluded.in_flight",
         params![entry.workspace,entry.id,room,serde_json::to_string(entry).map_err(|e| e.to_string())?,in_flight])
@@ -116,8 +188,9 @@ fn apply(connection: &Connection, method: &str, params: &Value) -> Result<Value,
             .get("body")
             .filter(|value| value.is_object())
             .ok_or("A message body is required.")?;
-        let id = text(body, "id")?;
-        text(body, "room")?;
+        let identity: BodyIdentity = observation(body);
+        let id = identity.id()?;
+        identity.room()?;
         let exists: bool = connection
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM client_outbox WHERE workspace=?1 AND id=?2)",
@@ -162,22 +235,32 @@ fn apply(connection: &Connection, method: &str, params: &Value) -> Result<Value,
     let (mut entry, mut in_flight) = load(connection, workspace, id)?;
     match method {
         "outbox.claim" => {
-            let room = text(&entry.body, "room")?;
+            let identity: BodyIdentity = observation(&entry.body);
+            let room = identity.room()?;
             let occupied: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM client_outbox WHERE workspace=?1 AND room=?2 AND in_flight<>0)",
                 params![workspace,room], |row| row.get(0)).map_err(|e| e.to_string())?;
             let first = list(connection, workspace)?.into_iter().find(|other| {
-                other.status == "queued" && other.body.get("room") == entry.body.get("room")
+                other.status == "queued"
+                    && observation::<BodyIdentity>(&other.body).room == identity.room
             });
             if entry.status != "queued"
                 || in_flight
                 || occupied
                 || first.as_ref().map(|first| first.id.as_str()) != Some(id)
             {
-                return Ok(json!({"claimed":false,"entry":entry}));
+                return serde_json::to_value(Claim {
+                    claimed: false,
+                    entry,
+                })
+                .map_err(|e| e.to_string());
             }
             entry.attempted = Some(true);
             save(connection, &entry, true)?;
-            return Ok(json!({"claimed":true,"entry":entry}));
+            return serde_json::to_value(Claim {
+                claimed: true,
+                entry,
+            })
+            .map_err(|e| e.to_string());
         }
         "outbox.change" => {
             if !["queued", "paused"].contains(&entry.status.as_str()) {
@@ -212,10 +295,11 @@ fn apply(connection: &Connection, method: &str, params: &Value) -> Result<Value,
         }
         "outbox.receipt" => {
             let receipt = params.get("receipt").ok_or("A receipt is required.")?;
-            if receipt.get("id").and_then(Value::as_str) != Some(id) {
+            let observed: ReceiptObservation = observation(receipt);
+            if observed.id.as_deref() != Some(id) {
                 return Err("The delivery response does not match this message.".into());
             }
-            let status = receipt.get("status").and_then(Value::as_str);
+            let status = observed.status.as_deref();
             let acknowledged = status.is_some_and(|value| {
                 [
                     "queued",
@@ -231,28 +315,21 @@ fn apply(connection: &Connection, method: &str, params: &Value) -> Result<Value,
                 ]
                 .contains(&value)
             });
+            let body: BodyIdentity = observation(&entry.body);
             let legacy = status.is_none()
-                && receipt.get("room") == entry.body.get("room")
-                && receipt.get("text").and_then(Value::as_str)
-                    == entry
-                        .body
-                        .get("text")
-                        .and_then(Value::as_str)
-                        .map(str::trim)
-                && receipt.get("deliveries").is_some_and(Value::is_object);
+                && observed.room == body.room
+                && observed.text.as_deref() == body.text.as_deref().map(str::trim)
+                && observed.deliveries;
             if !acknowledged && !legacy {
                 return Err("The delivery response does not match this message.".into());
             }
-            let confirmed = |value: Option<&Value>| {
-                value
-                    .and_then(|r| r.get("status"))
-                    .and_then(Value::as_str)
-                    .is_some_and(|status| ["delivered", "accepted", "sent"].contains(&status))
-            };
+            let confirmed = entry
+                .receipt
+                .as_ref()
+                .is_some_and(|value| observation::<ReceiptObservation>(value).confirmed());
             let preserve = entry.status == "cancelled"
                 || (["accepted", "uncertain"].contains(&entry.status.as_str())
-                    && (confirmed(entry.receipt.as_ref())
-                        || (!confirmed(Some(receipt)) && status != Some("uncertain"))));
+                    && (confirmed || (!observed.confirmed() && status != Some("uncertain"))));
             if !preserve {
                 entry.status = match status {
                     Some("uncertain") => "uncertain",
@@ -260,10 +337,7 @@ fn apply(connection: &Connection, method: &str, params: &Value) -> Result<Value,
                     _ => "accepted",
                 }
                 .into();
-                entry.error = receipt
-                    .get("error")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned);
+                entry.error = observed.error;
                 entry.receipt = Some(receipt.clone());
             }
             in_flight = false;
@@ -451,6 +525,94 @@ mod tests {
         );
         assert_eq!(result.result.unwrap()["receipt"]["status"], "sent");
     }
+    #[test]
+    fn legacy_receipt_presence_conflicts_and_uncertainty_preserve_state() {
+        let mut db = database();
+        enqueue(&mut db, "a", "  hello  ");
+        let before = list(&db, "w").unwrap();
+        for receipt in [
+            json!({"id":"a","text":"hello","deliveries":{}}),
+            json!({"id":"a","room":null,"text":"hello","deliveries":{}}),
+            json!({"id":"other","room":"r","text":"hello","deliveries":{}}),
+        ] {
+            assert!(
+                command(
+                    &mut db,
+                    "outbox.receipt",
+                    json!({"workspace":"w","id":"a","receipt":receipt})
+                )
+                .error
+                .is_some()
+            );
+            assert_eq!(
+                serde_json::to_value(list(&db, "w").unwrap()).unwrap(),
+                serde_json::to_value(&before).unwrap()
+            );
+        }
+        let legacy =
+            json!({"id":"a","room":"r","text":"hello","deliveries":{},"future":{"opaque":true}});
+        let accepted = command(
+            &mut db,
+            "outbox.receipt",
+            json!({"workspace":"w","id":"a","receipt":legacy}),
+        )
+        .result
+        .unwrap();
+        assert_eq!(accepted["status"], "accepted");
+        assert_eq!(accepted["receipt"], legacy);
+        let uncertain = command(
+            &mut db,
+            "outbox.receipt",
+            json!({"workspace":"w","id":"a","receipt":{"id":"a","status":"uncertain"}}),
+        )
+        .result
+        .unwrap();
+        assert_eq!(uncertain["status"], "uncertain");
+        let delayed = command(
+            &mut db,
+            "outbox.receipt",
+            json!({"workspace":"w","id":"a","receipt":legacy}),
+        )
+        .result
+        .unwrap();
+        assert_eq!(delayed["status"], "uncertain");
+        assert_eq!(delayed["receipt"]["status"], "uncertain");
+        let confirmed = command(
+            &mut db,
+            "outbox.receipt",
+            json!({"workspace":"w","id":"a","receipt":{"id":"a","status":"sent"}}),
+        )
+        .result
+        .unwrap();
+        assert_eq!(confirmed["status"], "accepted");
+    }
+
+    #[test]
+    fn legacy_receipt_missing_room_differs_from_explicit_null() {
+        let mut db = database();
+        enqueue(&mut db, "a", "hello");
+        db.execute(
+            "UPDATE client_outbox SET payload=json_remove(payload,'$.body.room') WHERE id='a'",
+            [],
+        )
+        .unwrap();
+        let missing = command(
+            &mut db,
+            "outbox.receipt",
+            json!({"workspace":"w","id":"a","receipt":{"id":"a","text":"hello","deliveries":{}}}),
+        );
+        assert_eq!(missing.error.unwrap().message, "room is required.");
+        let null = command(
+            &mut db,
+            "outbox.receipt",
+            json!({"workspace":"w","id":"a","receipt":{"id":"a","room":null,"text":"hello","deliveries":{}}}),
+        );
+        assert_eq!(
+            null.error.unwrap().message,
+            "The delivery response does not match this message."
+        );
+    }
+
     #[test]
     fn cancelled_unsent_messages_are_not_claimed() {
         let mut db = database();

@@ -109,6 +109,7 @@ pub use records::{
 };
 pub use repositories::agent_indexed_reads::{AgentIndexedReads, RESERVED_TURN_INPUT};
 pub use repositories::agent_move::{AgentMoveRepository, MoveRecord};
+pub use repositories::claude_records::ClaudeAttemptRecord;
 pub use repositories::claude_retry::{ClaudeRetryRecords, ClaudeRetryRepository};
 pub use repositories::context_repair::ContextRepairRepository;
 pub use repositories::continuation::{ContinuationRepository, ContinuationTable};
@@ -2235,6 +2236,13 @@ impl RuntimeStore {
     }
 }
 
+// Startup needs only the public routing ID, not the private credential record.
+#[derive(serde::Deserialize)]
+struct LocalPublicServerIdentity {
+    #[serde(rename = "serverId")]
+    server_id: Option<String>,
+}
+
 /// Read the public routing ID from the multi-server identity file before startup.
 /// Missing identity remains a read-only `None`; malformed, unsafe, or unusable
 /// identity data is refused, matching the Python runtime's credential gate.
@@ -2299,13 +2307,16 @@ pub fn local_server_id(root: &Path) -> StoreResult<Option<String>> {
         Ok(identity) => identity,
         Err(_) => return Err(invalid_local_identity("malformed JSON in identity.json")),
     };
-    let Some(server_id) = identity.get("serverId").and_then(serde_json::Value::as_str) else {
-        return Err(invalid_local_identity("missing serverId"));
-    };
-    if !valid_server_id(server_id) {
+    let server_id = identity
+        .is_object()
+        .then(|| <LocalPublicServerIdentity as serde::Deserialize>::deserialize(identity).ok())
+        .flatten()
+        .and_then(|identity| identity.server_id)
+        .ok_or_else(|| invalid_local_identity("missing serverId"))?;
+    if !valid_server_id(&server_id) {
         return Err(invalid_local_identity("invalid serverId"));
     }
-    Ok(Some(server_id.to_owned()))
+    Ok(Some(server_id))
 }
 
 fn valid_server_id(value: &str) -> bool {
