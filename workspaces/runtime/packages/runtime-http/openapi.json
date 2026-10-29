@@ -42498,6 +42498,40 @@
         "title": "ResourceHeartbeatEvent",
         "type": "object"
       },
+      "ResourceLiveDeltaEvent": {
+        "additionalProperties": false,
+        "description": "Named `live-delta` SSE payload: model text that was committed but may not yet be in the durable transcript item. `offset` is the item text length (Unicode scalars) before `text`. Sent only to streams that subscribe to the agent's transcript. A lost frame is harmless; the durable item replaces the live text.",
+        "properties": {
+          "agentId": {
+            "minLength": 1,
+            "title": "Agentid",
+            "type": "string"
+          },
+          "itemId": {
+            "minLength": 1,
+            "title": "Itemid",
+            "type": "string"
+          },
+          "offset": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Offset",
+            "type": "integer"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "agentId",
+          "itemId",
+          "offset",
+          "text"
+        ],
+        "title": "ResourceLiveDeltaEvent",
+        "type": "object"
+      },
       "ResourceNotifyAck": {
         "additionalProperties": false,
         "description": "Acknowledgement for a newly published or exactly deduplicated request.",
@@ -80152,6 +80186,9 @@
                       "$ref": "#/components/schemas/ResourceHeartbeatEvent"
                     },
                     {
+                      "$ref": "#/components/schemas/ResourceLiveDeltaEvent"
+                    },
+                    {
                       "$ref": "#/components/schemas/ResourceTokenRatesEvent"
                     },
                     {
@@ -80167,6 +80204,7 @@
                   "x-sse-events": {
                     "api-schema": "ApiSchemaEvent",
                     "heartbeat": "ResourceHeartbeatEvent",
+                    "live-delta": "ResourceLiveDeltaEvent",
                     "resource-progress": "ResourceProgressEvent",
                     "resources": "ResourceChangeEvent",
                     "session": "SyncSessionEvent",
