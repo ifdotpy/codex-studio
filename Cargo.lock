@@ -5443,6 +5443,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.1",
  "studio-client-domain",
+ "studio-runtime-schema",
  "tempfile",
  "tokio",
  "unicode-segmentation",

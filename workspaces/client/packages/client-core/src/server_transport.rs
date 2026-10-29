@@ -40,6 +40,63 @@ fn transport_diagnostic(method: &str, url: &reqwest::Url, status: u16, kind: &st
     );
 }
 
+// The producer owns the protocol version in runtime-schema. Keep the refusal
+// separate from an accepted receipt so it cannot install a credential.
+struct PairReceipt {
+    server_id: String,
+    label: String,
+    public_key: Option<String>,
+    tailscale_user: Option<String>,
+}
+
+enum PairReply {
+    InviteUnavailable,
+    Accepted(PairReceipt),
+}
+
+fn pair_reply(
+    bytes: &[u8],
+    status: reqwest::StatusCode,
+    invitation: &Value,
+    draft: &Value,
+    origin: &str,
+) -> Result<PairReply, String> {
+    let value: Value = serde_json::from_slice(bytes)
+        .map_err(|_| "Invalid pairing reply. Retry the same invitation.")?;
+    if status.as_u16() == 403 && value["code"] == "invite_unavailable" {
+        return Ok(PairReply::InviteUnavailable);
+    }
+    if !status.is_success() {
+        return Err("Pairing failed. Retry the same invitation.".into());
+    }
+    if value["protocol"] != studio_runtime_schema::multi_server_protocol::ACCESS_PROTOCOL_VERSION
+        || value["paired"] != true
+        || value["serverId"] != invitation["serverId"]
+        || value["clientId"] != draft["clientId"]
+        || server_keys::origin(field(&value, "origin")?)? != origin
+        || value["publicKey"] != invitation["publicKey"]
+        || value["tailscaleUser"] != invitation["tailscaleUser"]
+    {
+        return Err("The pairing reply does not match the invitation.".into());
+    }
+    let server = field(&value, "serverId")?;
+    // The invitation normally supplies strings. Preserve null when a saved
+    // draft is retried with an invitation whose nullable fields are absent.
+    let nullable = |name: &str| -> Result<Option<String>, String> {
+        match &value[name] {
+            Value::Null => Ok(None),
+            Value::String(value) => Ok(Some(value.clone())),
+            _ => Err("The pairing reply does not match the invitation.".into()),
+        }
+    };
+    Ok(PairReply::Accepted(PairReceipt {
+        server_id: server.to_owned(),
+        label: value["label"].as_str().unwrap_or(server).to_owned(),
+        public_key: nullable("publicKey")?,
+        tailscale_user: nullable("tailscaleUser")?,
+    }))
+}
+
 struct Body {
     _permits: (OwnedSemaphorePermit, OwnedSemaphorePermit),
     response: reqwest::Response,
@@ -464,40 +521,28 @@ impl RemoteClient {
         })
         .await
         .map_err(|_| "Pairing reply timed out. Retry the same invitation.")??;
-        let receipt: Value = serde_json::from_slice(&bytes)
-            .map_err(|_| "Invalid pairing reply. Retry the same invitation.")?;
-        if status.as_u16() == 403 && receipt["code"] == "invite_unavailable" {
-            state["drafts"][id]["rejected"] = json!(true);
-            self.vault.write(&state)?;
-            return Ok(json!({"notApplied":"invite_unavailable"}));
-        }
-        if !status.is_success() {
-            return Err("Pairing failed. Retry the same invitation.".into());
-        }
-        if receipt["protocol"] != 1
-            || receipt["paired"] != true
-            || receipt["serverId"] != invitation["serverId"]
-            || receipt["clientId"] != draft["clientId"]
-            || server_keys::origin(field(&receipt, "origin")?)? != origin
-            || receipt["publicKey"] != invitation["publicKey"]
-            || receipt["tailscaleUser"] != invitation["tailscaleUser"]
-        {
-            return Err("The pairing reply does not match the invitation.".into());
-        }
-        let server = field(&receipt, "serverId")?;
-        let result = json!({"id":server,"origin":origin,"label":receipt["label"].as_str().unwrap_or(server),"credentialId":draft["clientId"]});
+        let receipt = match pair_reply(&bytes, status, invitation, &draft, &origin)? {
+            PairReply::InviteUnavailable => {
+                state["drafts"][id]["rejected"] = json!(true);
+                self.vault.write(&state)?;
+                return Ok(json!({"notApplied":"invite_unavailable"}));
+            }
+            PairReply::Accepted(receipt) => receipt,
+        };
+        let server = &receipt.server_id;
+        let result = json!({"id":server,"origin":origin,"label":receipt.label,"credentialId":draft["clientId"]});
         let mut credential = draft.clone();
         // field(&draft, "body") above proved this cloned draft is an object.
         credential
             .as_object_mut()
             .expect("pairing draft is an object")
             .remove("body");
-        credential["targetPublicKey"] = receipt["publicKey"].clone();
-        credential["tailscaleUser"] = receipt["tailscaleUser"].clone();
+        credential["targetPublicKey"] = json!(receipt.public_key);
+        credential["tailscaleUser"] = json!(receipt.tailscale_user);
         state["servers"]
             .as_object_mut()
             .ok_or("Invalid server key store.")?
-            .insert(server.to_owned(), credential);
+            .insert(server.clone(), credential);
         // state still contains the draft validated above; its shape was not replaced.
         state["drafts"][id]
             .as_object_mut()
@@ -530,6 +575,214 @@ mod tests {
             *self.0.lock().unwrap() = value.clone();
             Ok(())
         }
+    }
+    #[test]
+    fn pairing_receipt_boundary_preserves_refusal_and_retry_validation() {
+        let invitation = json!({"serverId":"server", "publicKey":"key", "tailscaleUser":"user"});
+        let draft = json!({"clientId":"client"});
+        let origin = "https://fixture.tailnet.ts.net";
+        let receipt = json!({"protocol":1,"paired":true,"serverId":"server","clientId":"client","origin":origin,"publicKey":"key","tailscaleUser":"user","label":null});
+        let parse = |value: &Value, status| {
+            pair_reply(
+                value.to_string().as_bytes(),
+                status,
+                &invitation,
+                &draft,
+                origin,
+            )
+        };
+        for _ in 0..2 {
+            match parse(&receipt, reqwest::StatusCode::OK).unwrap() {
+                PairReply::Accepted(receipt) => {
+                    assert_eq!(receipt.server_id, "server");
+                    assert_eq!(receipt.label, "server");
+                    assert_eq!(receipt.public_key.as_deref(), Some("key"));
+                }
+                PairReply::InviteUnavailable => panic!("unexpected refusal"),
+            }
+        }
+        assert!(matches!(
+            parse(
+                &json!({"code":"invite_unavailable"}),
+                reqwest::StatusCode::FORBIDDEN
+            ),
+            Ok(PairReply::InviteUnavailable)
+        ));
+        assert!(
+            parse(
+                &json!({"code":"invite_unavailable"}),
+                reqwest::StatusCode::CONFLICT
+            )
+            .err()
+            .unwrap()
+            .contains("Pairing failed")
+        );
+        let mut mismatch = receipt.clone();
+        mismatch["clientId"] = json!("other");
+        assert!(
+            parse(&mismatch, reqwest::StatusCode::OK)
+                .err()
+                .unwrap()
+                .contains("does not match")
+        );
+        assert!(
+            pair_reply(
+                b"{",
+                reqwest::StatusCode::FORBIDDEN,
+                &invitation,
+                &draft,
+                origin
+            )
+            .err()
+            .unwrap()
+            .contains("Invalid pairing reply")
+        );
+        let mut nullable = receipt;
+        nullable["publicKey"] = Value::Null;
+        nullable["tailscaleUser"] = Value::Null;
+        let invitation = json!({"serverId":"server"});
+        assert!(matches!(
+            pair_reply(
+                nullable.to_string().as_bytes(),
+                reqwest::StatusCode::OK,
+                &invitation,
+                &draft,
+                origin
+            ),
+            Ok(PairReply::Accepted(PairReceipt {
+                public_key: None,
+                tailscale_user: None,
+                ..
+            }))
+        ));
+    }
+    #[tokio::test]
+    async fn pairing_retry_reuses_draft_after_mismatched_receipt() {
+        let cert =
+            rcgen::generate_simple_self_signed(vec!["fixture.tailnet.ts.net".into()]).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let origin = format!("https://fixture.tailnet.ts.net:{}", address.port());
+        let invitation = json!({"protocol":1,"origin":origin,"serverId":"server","inviteId":"invite","token":"test","publicKey":"fixture","tailscaleUser":"user"});
+        let root = reqwest::Certificate::from_der(cert.cert.der().as_ref()).unwrap();
+        let config = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![cert.cert.der().clone()],
+                rustls::pki_types::PrivateKeyDer::Pkcs8(cert.signing_key.serialize_der().into()),
+            )
+            .unwrap();
+        let server_origin = origin.clone();
+        let server = std::thread::spawn(move || {
+            let mut first_body = Vec::new();
+            for attempt in 0..2 {
+                let (socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(10)))
+                    .unwrap();
+                let mut stream = rustls::StreamOwned::new(
+                    rustls::ServerConnection::new(Arc::new(config.clone())).unwrap(),
+                    socket,
+                );
+                let mut header = Vec::new();
+                let mut byte = [0];
+                while !header.ends_with(b"\r\n\r\n") {
+                    stream.read_exact(&mut byte).unwrap();
+                    header.push(byte[0]);
+                }
+                let header = String::from_utf8(header).unwrap();
+                let headers = header
+                    .lines()
+                    .skip(1)
+                    .filter_map(|line| line.split_once(':'))
+                    .map(|(k, v)| (k.to_ascii_lowercase(), v.trim().to_owned()))
+                    .collect::<HashMap<_, _>>();
+                assert_eq!(headers["x-studio-request-id"], "pair-request");
+                let mut body = vec![0; headers["content-length"].parse().unwrap()];
+                stream.read_exact(&mut body).unwrap();
+                if attempt == 0 {
+                    first_body = body.clone();
+                } else {
+                    assert_eq!(body, first_body);
+                }
+                use sha2::Digest;
+                let digest = sha2::Sha256::digest(&body)
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>();
+                let body: Value = serde_json::from_slice(&body).unwrap();
+                assert_eq!(body["requestId"], "pair-request");
+                assert_eq!(
+                    headers["x-studio-client"],
+                    body["clientId"].as_str().unwrap()
+                );
+                let public = body["publicKey"]
+                    .as_str()
+                    .unwrap()
+                    .lines()
+                    .filter(|line| !line.starts_with("-----"))
+                    .collect::<String>();
+                let public = STANDARD.decode(public).unwrap();
+                let message = format!(
+                    "studio-multi-server-v1\nPOST\n/api/multi-server/v1/pair\nserver\n{}\n{}\n{}\npair-request\n{}",
+                    headers["x-studio-client"],
+                    headers["x-studio-timestamp"],
+                    headers["x-studio-nonce"],
+                    digest
+                );
+                ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, &public[12..])
+                    .verify(
+                        message.as_bytes(),
+                        &STANDARD.decode(&headers["x-studio-signature"]).unwrap(),
+                    )
+                    .unwrap();
+                let client_id = if attempt == 0 {
+                    json!("wrong")
+                } else {
+                    body["clientId"].clone()
+                };
+                let reply = json!({"protocol":1,"paired":true,"serverId":"server","clientId":client_id,"origin":server_origin,"publicKey":"fixture","tailscaleUser":"user"}).to_string();
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    reply.len(),
+                    reply
+                )
+                .unwrap();
+                stream.flush().unwrap();
+            }
+        });
+        let vault = Arc::new(Memory(StdMutex::new(json!({"drafts":{},"servers":{}}))));
+        let mut client = RemoteClient::new(vault.clone()).unwrap();
+        client.http = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .retry(reqwest::retry::never())
+            .resolve("fixture.tailnet.ts.net", address)
+            .tls_certs_only([root])
+            .build()
+            .unwrap();
+        let params = json!({"requestId":"pair-request","origin":origin,"invitation":invitation});
+        assert!(
+            client
+                .dispatch("servers.pair", &params)
+                .await
+                .unwrap_err()
+                .contains("does not match")
+        );
+        let draft = vault.read().unwrap()["drafts"]["pair-request"].clone();
+        let result = client.dispatch("servers.pair", &params).await.unwrap();
+        assert_eq!(result["credentialId"], draft["clientId"]);
+        assert_eq!(result["label"], "server");
+        assert_eq!(
+            client.dispatch("servers.pair", &params).await.unwrap(),
+            result
+        );
+        let state = vault.read().unwrap();
+        assert_eq!(state["drafts"]["pair-request"]["receipt"], result);
+        assert!(state["drafts"]["pair-request"].get("privateKey").is_none());
+        assert!(state["drafts"]["pair-request"].get("body").is_none());
+        server.join().unwrap();
     }
     #[tokio::test]
     async fn one_server_cannot_hold_the_slots_of_another_server() {
