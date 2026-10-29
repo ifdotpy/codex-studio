@@ -428,3 +428,68 @@ test("Rust startup consumes the desktop identity and restart environment contrac
   ].map((match) => match[1]);
   assert.deepEqual(retired, retiredRestartKeys);
 });
+
+test("recovery field names match the native serde owners", () => {
+  const rust = readFileSync(
+    path.join(
+      repositoryRoot,
+      "workspaces/client/packages/client-core/src/startup.rs",
+    ),
+    "utf8",
+  );
+  const source = readFileSync(
+    path.join(import.meta.dirname, "restart-environment.ts"),
+    "utf8",
+  );
+  const saved = rust.match(/struct SavedRecovery \{([\s\S]*?)\n\}/)?.[1];
+  const enabled = rust.match(
+    /pub struct EnabledRecovery \{([\s\S]*?)\n\}/,
+  )?.[1];
+  const supervisor = rust.match(
+    /pub struct SupervisorRecovery \{([\s\S]*?)\n\}/,
+  )?.[1];
+  assert.ok(saved, "SavedRecovery owns startup fields");
+  assert.ok(enabled, "EnabledRecovery owns enabled");
+  assert.ok(supervisor, "SupervisorRecovery owns attach fields");
+  assert.match(saved, /supervisor_enabled: SupervisorEnabled/);
+  assert.match(supervisor, /supervisor_enabled: SupervisorEnabled/);
+  assert.match(enabled, /enabled: Option<bool>/);
+  const nativeFields = [
+    ...`${saved}\n${enabled}`.matchAll(/(?:pub )?(\w+): [^,\n]+,/g),
+  ].map((match) =>
+    match[1]!.replace(/_([a-z])/g, (_, letter: string) => letter.toUpperCase()),
+  );
+  const environment = source.match(
+    /export type SavedEnvironment = \{([\s\S]*?)\n\};/,
+  )?.[1];
+  const recovery = source.match(
+    /export type SavedRecovery = SavedEnvironment & \{([\s\S]*?)\n\};/,
+  )?.[1];
+  assert.ok(environment);
+  assert.ok(recovery);
+  for (const field of [
+    "version",
+    "stateDir",
+    "environment",
+    "unsetEnvironment",
+  ]) {
+    assert.match(environment, new RegExp(`${field}\\?: unknown;`));
+  }
+  assert.match(recovery, /supervisorEnabled\?: unknown;/);
+  assert.match(recovery, /enabled\?: boolean;/);
+  const desktopFields = new Set(
+    [...`${environment}\n${recovery}`.matchAll(/(\w+)\?:/g)].map(
+      (match) => match[1],
+    ),
+  );
+  assert.deepEqual(nativeFields.sort(), [
+    "enabled",
+    "environment",
+    "stateDir",
+    "supervisorEnabled",
+    "unsetEnvironment",
+    "version",
+  ]);
+  for (const field of nativeFields)
+    assert.ok(desktopFields.has(field), `SavedRecovery is missing ${field}`);
+});
