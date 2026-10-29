@@ -1050,7 +1050,7 @@ mod native_command_tests {
         let stored_cancel_root = cancel_root.clone();
         store.transaction(move |tx| {
             studio_runtime_store::receipt_schema::create(tx)?;
-            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('agent',?1)", [json!({"id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"idle"}).to_string()])?;
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('agent',?1)", [json!({"accountKey":"default","id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"idle"}).to_string()])?;
             tx.execute("INSERT INTO runtime_tasks(id,record) VALUES('task',?1)", [json!({"id":"task","agent":"agent","kind":"command","status":"completed","processId":"17","itemId":"item","created":1.0}).to_string()])?;
             let signature = json!({"task":"task","action":"input","text":"one"}).to_string();
             let envelope = json!({"actor":"agent","reply":{"id":"original-input","status":"pending"},"references":[]});

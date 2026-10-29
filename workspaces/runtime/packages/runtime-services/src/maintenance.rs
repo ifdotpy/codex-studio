@@ -214,10 +214,10 @@ mod tests {
                 "INSERT INTO runtime_agents(id,record) VALUES (?1,?2), (?3,?4)",
                 (
                     "agent-a",
-                    json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent-a","rootId":"agent-a","epoch":0,"status":"idle","reviewSchedules":[{"id":"retired"}],"extra":1})
+                    json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent-a","rootId":"agent-a","epoch":0,"status":"idle","reviewSchedules":[{"id":"retired"}],"extra":1})
                         .to_string(),
                     "agent-b",
-                    json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent-b","rootId":"agent-b","epoch":0,"status":"idle","extra":2}).to_string(),
+                    json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent-b","rootId":"agent-b","epoch":0,"status":"idle","extra":2}).to_string(),
                 ),
             )
             .expect("Python-shaped agent records insert");

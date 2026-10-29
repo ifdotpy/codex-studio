@@ -1335,7 +1335,7 @@ async fn invalid_agent_hold_rechecks_the_same_field_before_publishing() {
         .transaction(move |tx| {
             tx.execute(
                 "INSERT INTO runtime_agents(id,record) VALUES('racy',?1)",
-                [json!({
+                [json!({"accountKey":"default",
                     "id":"racy", "rootId":17, "epoch":1,
                     "provider":studio_runtime_schema::ProviderKind::Codex,
                     "status":"idle", "isLead":true
@@ -1388,7 +1388,7 @@ async fn invalid_agent_hold_rechecks_the_same_field_before_publishing() {
         .transaction(move |tx| {
             AgentRepository::put(
                 tx,
-                &studio_runtime_store::AgentRecord::from_value(json!({
+                &studio_runtime_store::AgentRecord::from_value(json!({"accountKey":"default",
                     "id":"racy", "rootId":"racy", "epoch":1,
                     "provider":studio_runtime_schema::ProviderKind::Codex,
                     "status":"idle", "isLead":true

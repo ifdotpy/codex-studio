@@ -127,7 +127,7 @@ mod tests {
     }
 
     fn agent(id: &str, deleted_at: Option<serde_json::Value>) -> AgentRecord {
-        let mut record = json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+        let mut record = json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
             "id": id,
             "rootId": id,
             "epoch": 0,

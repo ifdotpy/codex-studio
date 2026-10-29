@@ -1658,8 +1658,8 @@ mod tests {
         let root = tempfile::tempdir().expect("state");
         let store = RuntimeStore::open(Some(root.path())).await.expect("store");
         store.transaction(|tx| {
-            let source = AgentRecord::from_value(json!({"id":"source","rootId":"source","epoch":0,"status":"running","workspaceReservationId":"operation","provider":"codex"}))?;
-            let child = AgentRecord::from_value(json!({"id":"child","rootId":"child","epoch":0,"status":"queued","provider":"codex"}))?;
+            let source = AgentRecord::from_value(json!({"accountKey":"default","id":"source","rootId":"source","epoch":0,"status":"running","workspaceReservationId":"operation","provider":"codex"}))?;
+            let child = AgentRecord::from_value(json!({"accountKey":"default","id":"child","rootId":"child","epoch":0,"status":"queued","provider":"codex"}))?;
             AgentRepository::put(tx, &source)?;
             AgentRepository::put(tx, &child)?;
             let operation = json!({"id":"operation","agent":"source","phase":"provider_pending","source":CheckpointsRepository::workspace_source(&source.value())});
@@ -1968,7 +1968,7 @@ mod tests {
                 AgentRepository::put(
                     tx,
                     &AgentRecord::from_value(
-                        json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                        json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
                             "id":"source","rootId":"source","epoch":0,"status":"idle",
                             "cwd":cwd,"threadId":"thread","isLead":true,"model":"gpt-5.6-sol"
                         }),

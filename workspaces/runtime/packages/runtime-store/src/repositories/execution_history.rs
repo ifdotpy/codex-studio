@@ -1006,7 +1006,7 @@ mod tests {
             saved.terminal_repair.as_ref().unwrap().get(),
             r#"{"note": "preserve"}"#
         );
-        let agent = AgentRecord::from_value(json!({"id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"idle","activeExecution":{"runId":"run","attemptId":"attempt"}})).expect("agent");
+        let agent = AgentRecord::from_value(json!({"accountKey":"default","id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"idle","activeExecution":{"runId":"run","attemptId":"attempt"}})).expect("agent");
         let tx = db.transaction().expect("transaction");
         let saved_run = ExecutionHistoryRepository::current_run(&tx, &agent)
             .expect("read")
@@ -1035,7 +1035,7 @@ mod tests {
         .expect("history");
         let tx = db.transaction().expect("transaction");
         let pointer = json!({"runId":"run","attemptId":null});
-        let mut agent=AgentRecord::from_value(json!({"id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"idle","threadId":"destination","activeExecution":pointer})).expect("current owner");
+        let mut agent=AgentRecord::from_value(json!({"accountKey":"default","id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"idle","threadId":"destination","activeExecution":pointer})).expect("current owner");
         ExecutionHistoryRepository::record_current(&tx, &mut agent).expect("same account/epoch");
         assert_eq!(
             agent.extra["activeExecution"], pointer,

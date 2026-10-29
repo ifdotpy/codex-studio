@@ -244,7 +244,7 @@ fn exact_task_receipts_match_python_and_unknown_local_outcomes_override_native()
 #[test]
 fn malformed_persisted_recovery_inputs_are_located() {
     use studio_runtime_services::recovery_policy::RecoverySnapshot;
-    let base = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":0,"status":"running"});
+    let base = json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":0,"status":"running"});
     for (field, value) in [
         ("epoch", json!(-1)),
         ("startAttempt", json!({"created":"not a clock"})),
@@ -278,7 +278,7 @@ fn malformed_persisted_recovery_inputs_are_located() {
 fn large_recovery_attempt_retains_every_persisted_event_identity() {
     use studio_runtime_services::recovery_policy::RecoverySnapshot;
     let events: Vec<_> = (0..1000).map(|index| format!("event-{index}")).collect();
-    let agent = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":0,"status":"running",
+    let agent = json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":0,"status":"running",
         "startAttempt":{"id":"attempt","events":events}});
     let snapshot = RecoverySnapshot::from_record(agent.clone()).expect("valid large attempt");
     assert_eq!(snapshot.record(), &agent);

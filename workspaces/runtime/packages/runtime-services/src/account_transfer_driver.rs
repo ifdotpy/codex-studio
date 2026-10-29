@@ -1535,7 +1535,7 @@ mod request_tests {
             // Each valid row fits the per-record limit; their combined size
             // crosses the snapshot bound before the final oversized sentinel.
             let padding_bytes = studio_runtime_store::MAX_TRANSFER_RECORD_BYTES - 1024 * 1024;
-            let template = json!({"id":"padding", "rootId":"lead", "epoch":1, "status":"idle",
+            let template = json!({"accountKey":"default","id":"padding", "rootId":"lead", "epoch":1, "status":"idle",
                 "provider":"codex", "fixturePadding":"x".repeat(padding_bytes)}).to_string();
             let count = Repository::MAX_SNAPSHOT_BYTES / padding_bytes + 1;
             for index in 0..count {

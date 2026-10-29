@@ -1886,6 +1886,9 @@ mod tests {
         db.execute("INSERT INTO runtime_agents VALUES('agent',?1)", [json!({"id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"running","startAttempt":{"id":"attempt","requestTicket":91}}).to_string()]).expect("legacy agent");
         db.execute("INSERT INTO runtime_agents VALUES('real',?1)", [json!({"id":"real","rootId":"real","provider":"codex","epoch":1,"status":"running","startAttempt":{"id":"attempt","requestTicket":91.0}}).to_string()]).expect("legacy real ticket");
         batch(&mut db, "runtime_agents").expect("migrate agent");
+        let tx = db.transaction().expect("account migration transaction");
+        super::super::m2026_10_28_agent_account::apply(&tx).expect("materialize accounts");
+        tx.commit().expect("account migration commit");
         for id in ["agent", "real"] {
             let raw: String = db
                 .query_row(

@@ -588,7 +588,7 @@ async fn project_deletion_orders_archive_restore_with_its_writer() {
             .1;
         let epoch = parent["epoch"].as_i64().expect("epoch");
         let mut worker = parent.clone();
-        for(k,v)in json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"archived","rootId":"new-lead","parentId":"new-lead","isLead":false,"role":"implementer","epoch":1,"status":"paused","autoWake":false,"deletedAt":1,"agentArchive":{"at":1,"epoch":1,"cleanupPending":false},"worktree":false,"worktreeReady":false,"workspaceMode":"shared"}).as_object().expect("patch"){worker[k]=v.clone();}
+        for(k,v)in json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"archived","rootId":"new-lead","parentId":"new-lead","isLead":false,"role":"implementer","epoch":1,"status":"paused","autoWake":false,"deletedAt":1,"agentArchive":{"at":1,"epoch":1,"cleanupPending":false},"worktree":false,"worktreeReady":false,"workspaceMode":"shared"}).as_object().expect("patch"){worker[k]=v.clone();}
         store
             .transaction(move |tx| AgentRepository::put(tx, &AgentRecord::from_value(worker)?))
             .await

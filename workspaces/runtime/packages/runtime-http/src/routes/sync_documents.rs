@@ -1641,7 +1641,7 @@ mod vault_maintenance_tests {
                     "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
                     rusqlite::params![
                         "agent-1",
-                        json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent-1","rootId":"agent-1","epoch":0,"status":"idle"})
+                        json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent-1","rootId":"agent-1","epoch":0,"status":"idle"})
                             .to_string()
                     ],
                 )?;
@@ -1702,7 +1702,7 @@ mod vault_maintenance_tests {
                         "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
                         rusqlite::params![
                             id,
-                            json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":id,"epoch":0,"status":"idle"}).to_string()
+                            json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":id,"epoch":0,"status":"idle"}).to_string()
                         ],
                     )?;
                     transaction.execute(

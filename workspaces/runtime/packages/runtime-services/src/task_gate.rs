@@ -356,7 +356,7 @@ mod tests {
         let cwd = root.path().to_string_lossy().into_owned();
         store.transaction(move |tx| {
             for id in ["lead", "worker", "dependent"] {
-                AgentRepository::put(tx, &AgentRecord::from_value(json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":"lead","isLead":id=="lead",
+                AgentRepository::put(tx, &AgentRecord::from_value(json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":"lead","isLead":id=="lead",
                     "epoch":1,"status":"running","autoWake":true,"agentMode":"multi","concurrency":8,"cwd":cwd,"yoloMode":approved}))?)?;
             }
             for (id, owner, deps) in [("task","worker",json!([])),("next","dependent",json!(["task"]))] {

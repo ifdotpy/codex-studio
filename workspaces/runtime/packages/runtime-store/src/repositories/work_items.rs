@@ -631,7 +631,7 @@ mod tests {
         connection.execute_batch(
             "CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,agent TEXT,account TEXT,epoch INTEGER,thread TEXT,turn TEXT,created REAL,record TEXT);",
         ).expect("execution table creates");
-        let agent = AgentRecord::from_value(json!({
+        let agent = AgentRecord::from_value(json!({"accountKey":"default",
             "id":"worker","provider":"codex","rootId":"lead","epoch":4,"status":"paused",
             "activeExecution":{"runId":"run-1","attemptId":null}
         }))
@@ -800,7 +800,7 @@ mod receipt_domain_tests {
         )
         .expect("historical execution");
         let mut agent = AgentRecord::from_value(
-            json!({"id":"agent","rootId":"agent","provider":"codex","status":"idle","epoch":1}),
+            json!({"accountKey":"default","id":"agent","rootId":"agent","provider":"codex","status":"idle","epoch":1}),
         )
         .expect("agent");
         assert_eq!(

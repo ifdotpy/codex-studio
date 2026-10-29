@@ -996,7 +996,7 @@ mod status_tests {
         let root = tempfile::tempdir().expect("state");
         let store = RuntimeStore::open(Some(root.path())).await.expect("store");
         store.transaction(|tx| {
-            let agent = AgentRecord::from_value(json!({"id":"agent","rootId":"agent","epoch":0,"status":"running","workspaceReservationId":"operation","provider":"codex"}))?;
+            let agent = AgentRecord::from_value(json!({"accountKey":"default","id":"agent","rootId":"agent","epoch":0,"status":"running","workspaceReservationId":"operation","provider":"codex"}))?;
             AgentRepository::put(tx, &agent)?;
             let operation = json!({"id":"operation","kind":"restore","agent":"agent","phase":"provider_pending","source":CheckpointsRepository::workspace_source(&agent.value())});
             tx.execute("INSERT INTO runtime_workspace_operations(id,record) VALUES('operation',?1)", [operation.to_string()])?;

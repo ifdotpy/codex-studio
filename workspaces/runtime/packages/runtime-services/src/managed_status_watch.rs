@@ -1607,14 +1607,14 @@ mod tests {
             .transaction_with(move |tx| {
                 studio_runtime_store::receipt_schema::create(tx)?;
                 for record in [
-                    json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                    json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
                         "id":"lead","rootId":"lead","epoch":3,"status":"running",
                         "isLead":true,"autoWake":true,"cwd":cwd,
                         "concurrency":2,"maxAgents":8,
                         "workerDefaults":{"model":"gpt-fixture","effort":"high","fastMode":false}
                     }),
-                    json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"queued","rootId":"lead","epoch":4,"status":"queued","autoWake":false,"cwd":cwd}),
-                    json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"done","rootId":"lead","epoch":2,"status":"completed","autoWake":false,"cwd":cwd}),
+                    json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"queued","rootId":"lead","epoch":4,"status":"queued","autoWake":false,"cwd":cwd}),
+                    json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"done","rootId":"lead","epoch":2,"status":"completed","autoWake":false,"cwd":cwd}),
                 ] {
                     AgentRepository::put(
                         tx,
@@ -1799,14 +1799,14 @@ mod tests {
                 }
             );
         }
-        let record = json!({"provider":"codex","id":"worker","rootId":"worker","epoch":4,"status":"starting","startWait":{"reason":"slot","epoch":4,"runningTurns":2,"maxRunningTurns":3,"until":null}});
+        let record = json!({"accountKey":"default","provider":"codex","id":"worker","rootId":"worker","epoch":4,"status":"starting","startWait":{"reason":"slot","epoch":4,"runningTurns":2,"maxRunningTurns":3,"until":null}});
         let view = crate::sync_views::agent_entity_view(&record, &Default::default())
             .expect("valid legacy wait");
         assert_eq!(
             view["startWait"],
             json!({"reason":"slot","epoch":4,"runningTurns":2,"maxRunningTurns":3})
         );
-        let record = json!({"provider":"codex","id":"worker","rootId":"worker","epoch":4,"status":"running","startWait":{"reason":"slot","epoch":4}});
+        let record = json!({"accountKey":"default","provider":"codex","id":"worker","rootId":"worker","epoch":4,"status":"running","startWait":{"reason":"slot","epoch":4}});
         assert!(crate::sync_views::agent_entity_view(&record, &Default::default()).is_some());
     }
 

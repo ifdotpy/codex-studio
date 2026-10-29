@@ -4052,7 +4052,7 @@ mod tests {
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         store.transaction(|tx| {
             tx.execute("INSERT INTO runtime_agents(id,record) VALUES('open',?1)",
-                [json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"open","rootId":"open","epoch":0,"status":"idle"}).to_string()])?;
+                [json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"open","rootId":"open","epoch":0,"status":"idle"}).to_string()])?;
             tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES('answer','open',?1,1)",
                 [json!({"id":"answer","role":"assistant","text":"before"}).to_string()])?;
             tx.execute_batch("CREATE TABLE transcript_build_witness(count INTEGER NOT NULL);
@@ -5308,7 +5308,7 @@ mod tests {
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         store.transaction(|tx| {
             tx.execute("INSERT INTO runtime_agents(id,record) VALUES('voice-chat',?1)",
-                [json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"voice-chat","rootId":"voice-chat","epoch":0,"status":"idle","isLead":true}).to_string()])?;
+                [json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"voice-chat","rootId":"voice-chat","epoch":0,"status":"idle","isLead":true}).to_string()])?;
             tx.execute("INSERT INTO voice_sessions(id,agent,created,state) VALUES('session','voice-chat',1,'ready')", [])?;
             tx.execute("INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('first','voice-chat','session','user','hello','','','{}',1)", [])?;
             Ok(())
