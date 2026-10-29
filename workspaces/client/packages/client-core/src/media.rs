@@ -5,6 +5,7 @@
     not(target_os = "macos"),
     allow(dead_code, unused_imports, unused_variables)
 )]
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
@@ -116,17 +117,79 @@ fn service() -> &'static Mutex<Service> {
     VALUE.get_or_init(Mutex::default)
 }
 
-fn capture_id(value: &Value) -> Result<String, String> {
-    value
-        .as_str()
-        .filter(|v| !v.is_empty() && v.len() <= 128)
-        .map(str::to_owned)
-        .ok_or("Invalid capture identity.".into())
+#[derive(Debug, Deserialize)]
+#[serde(try_from = "String")]
+struct CaptureId(String);
+
+impl TryFrom<String> for CaptureId {
+    type Error = &'static str;
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        if value.is_empty() || value.len() > 128 {
+            Err("Invalid capture identity.")
+        } else {
+            Ok(Self(value))
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct CaptureParams {
+    capture: CaptureId,
+}
+#[derive(Deserialize)]
+struct RecordingParams {
+    recording: CaptureId,
+}
+#[derive(Deserialize)]
+struct ReservationParams {
+    reservation: String,
+}
+
+enum Command {
+    RequestMicrophone(String),
+    CaptureStart(CaptureId),
+    CaptureStop(CaptureId),
+    PlayRecording(CaptureId),
+    StopPlayback,
+}
+
+fn command(method: &str, params: Value) -> Result<Command, String> {
+    if method != "media.stopPlayback" && !params.is_object() {
+        return Err(if method == "media.requestMicrophone" {
+            "Use the button again to allow the microphone."
+        } else if matches!(
+            method,
+            "media.captureStart" | "media.captureStop" | "media.playRecording"
+        ) {
+            "Invalid capture identity."
+        } else {
+            "Unknown audio command."
+        }
+        .into());
+    }
+    match method {
+        "media.requestMicrophone" => serde_json::from_value::<ReservationParams>(params)
+            .map(|p| Command::RequestMicrophone(p.reservation))
+            .map_err(|_| "Use the button again to allow the microphone.".into()),
+        "media.captureStart" => serde_json::from_value::<CaptureParams>(params)
+            .map(|p| Command::CaptureStart(p.capture))
+            .map_err(|_| "Invalid capture identity.".into()),
+        "media.captureStop" => serde_json::from_value::<CaptureParams>(params)
+            .map(|p| Command::CaptureStop(p.capture))
+            .map_err(|_| "Invalid capture identity.".into()),
+        "media.playRecording" => serde_json::from_value::<RecordingParams>(params)
+            .map(|p| Command::PlayRecording(p.recording))
+            .map_err(|_| "Invalid capture identity.".into()),
+        "media.stopPlayback" => Ok(Command::StopPlayback),
+        _ => Err("Unknown audio command.".into()),
+    }
 }
 
 /// A view subscription receives one capture's audio. Dropping it stops capture.
 pub fn attach(id: &Value) -> Result<mpsc::Receiver<Value>, String> {
-    let id = capture_id(id)?;
+    let id = serde_json::from_value::<CaptureId>(id.clone())
+        .map_err(|_| "Invalid capture identity.")?
+        .0;
     let (sender, receiver) = mpsc::channel(QUEUE);
     let mut service = service().lock().map_err(|_| "The audio service stopped.")?;
     service.subscribers.retain(|_, s| !s.is_closed());
@@ -159,9 +222,9 @@ pub fn reserve_microphone(now: Instant) -> Result<Value, String> {
     Ok(Value::String(token))
 }
 
-fn take_reservation(token: &Value, now: Instant) -> Result<(), String> {
+fn take_reservation(token: &str, now: Instant) -> Result<(), String> {
     let mut service = service().lock().map_err(|_| "The audio service stopped.")?;
-    match token.as_str().and_then(|t| service.reservations.remove(t)) {
+    match service.reservations.remove(token) {
         Some(expires) if expires > now => Ok(()),
         _ => Err("Use the button again to allow the microphone.".into()),
     }
@@ -192,14 +255,12 @@ pub async fn dispatch(
 ) -> crate::protocol::Response {
     use crate::protocol::Response;
     let result = async {
-        let p = &request.params;
-        match request.method.as_str() {
-            "media.requestMicrophone" => {
-                take_reservation(&p["reservation"], Instant::now())?;
+        match command(&request.method, request.params)? {
+            Command::RequestMicrophone(reservation) => {
+                take_reservation(&reservation, Instant::now())?;
                 request_microphone().await
             }
-            "media.captureStart" => {
-                let id = capture_id(&p["capture"])?;
+            Command::CaptureStart(CaptureId(id)) => {
                 take_microphone(Instant::now())?;
                 let sender = service()
                     .lock()
@@ -219,8 +280,7 @@ pub async fn dispatch(
                     Err("Microphone capture requires macOS.".to_owned())
                 }
             }
-            "media.captureStop" => {
-                let id = capture_id(&p["capture"])?;
+            Command::CaptureStop(CaptureId(id)) => {
                 #[cfg(target_os = "macos")]
                 {
                     Ok(Value::Bool(
@@ -233,8 +293,7 @@ pub async fn dispatch(
                     Ok(Value::Bool(false))
                 }
             }
-            "media.playRecording" => {
-                let recording = capture_id(&p["recording"])?;
+            Command::PlayRecording(CaptureId(recording)) => {
                 if crate::platform::hidden_check() {
                     return Err("Hidden checks do not play audio.".to_owned());
                 }
@@ -248,10 +307,12 @@ pub async fn dispatch(
                     json!({"id":recording,"directory":directory.path()}),
                 )
                 .await?;
-                let path = exported["path"]
-                    .as_str()
-                    .ok_or("The recording was not exported.")?
-                    .to_owned();
+                if !exported.is_object() {
+                    return Err("The recording was not exported.".into());
+                }
+                let path = serde_json::from_value::<crate::dictation::WavExport>(exported)
+                    .map_err(|_| "The recording was not exported.")?
+                    .path;
                 #[cfg(target_os = "macos")]
                 {
                     let duration = mac::on_main(move || mac::play(path, directory)).await?;
@@ -263,7 +324,7 @@ pub async fn dispatch(
                     Err("Playback requires macOS.".to_owned())
                 }
             }
-            "media.stopPlayback" => {
+            Command::StopPlayback => {
                 #[cfg(target_os = "macos")]
                 mac::on_main(|| {
                     mac::stop_playback();
@@ -272,7 +333,6 @@ pub async fn dispatch(
                 .await?;
                 Ok(Value::Null)
             }
-            _ => Err("Unknown audio command.".to_owned()),
         }
     }
     .await;
@@ -493,6 +553,75 @@ pub(crate) mod mac {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn command_fields_are_checked_without_consuming_reservations_or_subscribers() {
+        let _serial = AUDIO_TEST_MUTEX.lock().unwrap();
+        close_all();
+        let now = Instant::now();
+        let token = reserve_microphone(now).unwrap();
+        let receiver = attach(&json!("capture")).unwrap();
+        for value in [
+            json!(null),
+            json!(["capture"]),
+            json!({"capture": ""}),
+            json!({"capture": "é".repeat(65)}),
+        ] {
+            assert!(command("media.captureStart", value).is_err());
+        }
+        assert!(command("media.requestMicrophone", json!({"reservation": false})).is_err());
+        assert!(matches!(
+            command(
+                "media.captureStart",
+                json!({"capture":"capture","extra":true})
+            ),
+            Ok(Command::CaptureStart(_))
+        ));
+        assert!(matches!(
+            command("media.stopPlayback", json!([1])),
+            Ok(Command::StopPlayback)
+        ));
+        assert!(
+            service()
+                .lock()
+                .unwrap()
+                .subscribers
+                .contains_key("capture")
+        );
+        take_reservation(token.as_str().unwrap(), now).unwrap();
+        drop(receiver);
+        close_all();
+    }
+
+    #[tokio::test]
+    async fn dispatch_rejects_invalid_capture_before_touching_the_subscription() {
+        let _serial = AUDIO_TEST_MUTEX.lock().unwrap();
+        close_all();
+        let receiver = attach(&json!("capture")).unwrap();
+        let (store, mut requests) = mpsc::channel(1);
+        for params in [json!({"capture": ""}), json!({"capture":"capture"})] {
+            let response = dispatch(
+                crate::protocol::Request {
+                    id: "request".into(),
+                    method: "media.captureStart".into(),
+                    params,
+                },
+                &store,
+            )
+            .await;
+            assert!(response.error.is_some());
+            assert!(
+                service()
+                    .lock()
+                    .unwrap()
+                    .subscribers
+                    .contains_key("capture")
+            );
+        }
+        assert!(requests.try_recv().is_err());
+        drop(receiver);
+        close_all();
+    }
     fn tone(rate: f64, frequency: f64, seconds: f64) -> Vec<f32> {
         (0..(rate * seconds) as usize)
             .map(|n| {
@@ -559,14 +688,17 @@ mod tests {
         assert!(take_microphone(now).is_ok());
         assert!(take_microphone(now + MICROPHONE_GRANT).is_err());
         let reservation = reserve_microphone(now).unwrap();
-        assert!(take_reservation(&json!("other"), now).is_err());
+        assert!(take_reservation("other", now).is_err());
         assert!(
-            take_reservation(&reservation, now + RESERVATION).is_err(),
+            take_reservation(reservation.as_str().unwrap(), now + RESERVATION).is_err(),
             "expired"
         );
         let reservation = reserve_microphone(now).unwrap();
-        take_reservation(&reservation, now).unwrap();
-        assert!(take_reservation(&reservation, now).is_err(), "single use");
+        take_reservation(reservation.as_str().unwrap(), now).unwrap();
+        assert!(
+            take_reservation(reservation.as_str().unwrap(), now).is_err(),
+            "single use"
+        );
         let receiver = attach(&json!("capture-test")).unwrap();
         assert!(attach(&json!("capture-test")).is_err());
         drop(receiver);

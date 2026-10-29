@@ -499,8 +499,16 @@ fn apply(db: &mut Connection, request: &Request) -> Result<Value, String> {
             tx.commit().map_err(|e| e.to_string())?;
             Ok(Value::Bool(claimed))
         }
-        Command::Wav { id, directory } => Ok(json!({"path":export(db, &id, &directory)?})),
+        Command::Wav { id, directory } => serde_json::to_value(WavExport {
+            path: export(db, &id, &directory)?,
+        })
+        .map_err(|error| error.to_string()),
     }
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct WavExport {
+    pub(crate) path: String,
 }
 
 pub fn stored(db: &mut Connection, request: &Request) -> Response {
@@ -986,15 +994,13 @@ mod tests {
         ] {
             assert!(call(&mut db, "dictation.chunk", bad).is_err());
         }
-        let path = call(
+        let exported = call(
             &mut db,
             "dictation.wav",
             json!({"id":"r","directory":directory.path()}),
         )
-        .unwrap()["path"]
-            .as_str()
-            .unwrap()
-            .to_owned();
+        .unwrap();
+        let path = serde_json::from_value::<WavExport>(exported).unwrap().path;
         let bytes = std::fs::read(&path).unwrap();
         assert_eq!(
             &bytes[..44],
