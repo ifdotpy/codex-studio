@@ -3,7 +3,7 @@ use crate::protocol::{Request, Response};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::path::Path;
+use std::{collections::BTreeMap, path::Path};
 
 // Shared contract owns UTF-8 key bytes, including the browser-owner prefix.
 fn max_preference_key_bytes() -> usize {
@@ -34,6 +34,36 @@ struct DraftCommand {
     room: String,
     text: String,
     base_revision: u64,
+}
+
+#[derive(Default, Deserialize)]
+struct DraftLookup<'a> {
+    #[serde(borrow)]
+    workspace: Option<&'a str>,
+    #[serde(borrow)]
+    room: Option<&'a str>,
+}
+#[derive(Default, Deserialize)]
+struct RawKey<'a> {
+    #[serde(borrow)]
+    key: Option<&'a str>,
+}
+#[derive(Default, Deserialize)]
+struct RawText<'a> {
+    #[serde(borrow)]
+    raw: Option<&'a str>,
+}
+#[derive(Default, Deserialize)]
+struct SnapshotVersion {
+    #[serde(default)]
+    version: Value,
+}
+fn project<'a, T: Deserialize<'a> + Default>(value: &'a Value) -> T {
+    if value.is_object() {
+        T::deserialize(value).unwrap_or_default()
+    } else {
+        T::default()
+    }
 }
 
 impl Store {
@@ -111,10 +141,8 @@ impl Store {
                 }),
             )),
             "draft.get" => {
-                let (Some(workspace), Some(room)) = (
-                    request.params.get("workspace").and_then(Value::as_str),
-                    request.params.get("room").and_then(Value::as_str),
-                ) else {
+                let lookup: DraftLookup<'_> = project(&request.params);
+                let (Some(workspace), Some(room)) = (lookup.workspace, lookup.room) else {
                     return Ok(Response::failure(
                         id,
                         "invalid_params",
@@ -187,19 +215,37 @@ impl Store {
                 "A storage snapshot is required.",
             ));
         };
-        if request.params["version"] != 1
+        let version: SnapshotVersion = project(&request.params);
+        if version.version != 1
             || request
                 .params
                 .as_object()
                 .is_none_or(|params| params.len() != 2)
             || entries.len() > 10_000
-            || entries.iter().any(|(key, value)| {
-                key.is_empty()
-                    || key.len() > max_preference_key_bytes()
-                    || value.as_str().is_none_or(|raw| raw.len() > 8 * 1024 * 1024)
-            })
-            // serde_json::Value contains only JSON-serializable values.
-            || serde_json::to_vec(&request.params).expect("JSON value serializes").len() > 16 * 1024 * 1024
+        {
+            return Ok(Response::failure(
+                request.id.clone(),
+                "invalid_params",
+                "Invalid or oversized storage snapshot.",
+            ));
+        }
+        let entries: BTreeMap<&str, &str> = match BTreeMap::deserialize(&request.params["entries"])
+        {
+            Ok(entries) => entries,
+            Err(_) => {
+                return Ok(Response::failure(
+                    request.id.clone(),
+                    "invalid_params",
+                    "Invalid or oversized storage snapshot.",
+                ));
+            }
+        };
+        if entries.iter().any(|(key, raw)| {
+            key.is_empty() || key.len() > max_preference_key_bytes() || raw.len() > 8 * 1024 * 1024
+        }) || serde_json::to_vec(&request.params)
+            .expect("JSON value serializes")
+            .len()
+            > 16 * 1024 * 1024
         {
             return Ok(Response::failure(
                 request.id.clone(),
@@ -214,7 +260,7 @@ impl Store {
             return Ok(response);
         }
         // Check every key before writing. A conflict rejects the entire snapshot.
-        for (key, value) in entries {
+        for (key, value) in &entries {
             let existing: Option<String> = transaction
                 .query_row(
                     "SELECT value FROM client_preferences WHERE key=?1",
@@ -222,10 +268,7 @@ impl Store {
                     |row| row.get(0),
                 )
                 .optional()?;
-            if existing
-                .as_deref()
-                .is_some_and(|raw| Some(raw) != value.as_str())
-            {
+            if existing.as_deref().is_some_and(|raw| raw != *value) {
                 let response = Response::failure(
                     request.id.clone(),
                     "migration_conflict",
@@ -237,11 +280,10 @@ impl Store {
             }
         }
         let mut imported = 0;
-        // Validation above requires every entry value to be a string.
-        for (key, value) in entries {
+        for (key, value) in &entries {
             imported += transaction.execute(
                 "INSERT OR IGNORE INTO client_preferences(key,value) VALUES(?1,?2)",
-                params![key, value.as_str().expect("validated preference string")],
+                params![key, value],
             )?;
         }
         let response = Response::success(
@@ -254,12 +296,12 @@ impl Store {
     }
 
     fn set_raw_preference(&mut self, request: &Request) -> rusqlite::Result<Response> {
-        let key = request.params["key"]
-            .as_str()
+        let key: RawKey<'_> = project(&request.params);
+        let raw: RawText<'_> = project(&request.params);
+        let key = key
+            .key
             .filter(|v| !v.is_empty() && v.len() <= max_preference_key_bytes());
-        let raw = request.params["raw"]
-            .as_str()
-            .filter(|v| v.len() <= 8 * 1024 * 1024);
+        let raw = raw.raw.filter(|v| v.len() <= 8 * 1024 * 1024);
         if key.is_none() || (request.method == "preferences.raw_set" && raw.is_none()) {
             return Ok(Response::failure(
                 request.id.clone(),
@@ -451,6 +493,77 @@ pub(crate) fn unsigned(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn preference_inputs_preserve_shape_order_and_raw_remove_defaults() {
+        let mut store = Store::open(Path::new(":memory:")).unwrap();
+        let request = |id: &str, method: &str, params: Value| Request {
+            id: id.into(),
+            method: method.into(),
+            params,
+        };
+        for (params, expected) in [
+            (
+                json!({"version":2,"entries":null}),
+                "A storage snapshot is required.",
+            ),
+            (
+                json!({"version":1.0,"entries":{"a":"value"}}),
+                "Invalid or oversized storage snapshot.",
+            ),
+            (
+                json!({"version":1,"entries":{"a":"value"},"extra":true}),
+                "Invalid or oversized storage snapshot.",
+            ),
+            (
+                json!({"version":1,"entries":{"a":null}}),
+                "Invalid or oversized storage snapshot.",
+            ),
+        ] {
+            let reply = store.dispatch(request("bad", "preferences.import", params));
+            assert_eq!(reply.error.unwrap().message, expected);
+            assert_eq!(raw(&mut store), json!({}));
+        }
+        let entries: serde_json::Map<String, Value> = (0..10_001)
+            .map(|index| (format!("key-{index}"), json!("value")))
+            .collect();
+        let reply = store.dispatch(request(
+            "too-many",
+            "preferences.import",
+            json!({"version":1,"entries":entries}),
+        ));
+        assert_eq!(
+            reply.error.unwrap().message,
+            "Invalid or oversized storage snapshot."
+        );
+        assert_eq!(raw(&mut store), json!({}));
+        assert!(
+            store
+                .dispatch(request(
+                    "set",
+                    "preferences.raw_set",
+                    json!({"key":"a","raw":"saved"})
+                ))
+                .error
+                .is_none()
+        );
+        assert!(
+            store
+                .dispatch(request(
+                    "remove",
+                    "preferences.raw_remove",
+                    json!({"key":"a","raw":{"ignored":true}})
+                ))
+                .error
+                .is_none()
+        );
+        assert_eq!(raw(&mut store), json!({}));
+        let draft = store.dispatch(request(
+            "draft",
+            "draft.get",
+            json!({"workspace":"","room":""}),
+        ));
+        assert_eq!(draft.result, Some(json!({"text":"","revision":0})));
+    }
     fn import(id: &str, entries: Value) -> Request {
         Request {
             id: id.into(),
