@@ -9,6 +9,7 @@ import { useSubscription } from "./sync/subscriptions";
 import { ProviderKind } from "./generated/providerKind.ts";
 import { submitRename, watchRenameResult } from "./renameRequest";
 import { randomUUID } from "./uuid";
+import { leaveVm, leaveVmTitle } from "./leaveVm";
 import {
   createConversationMenuTools,
   ConversationMenuTools,
@@ -41,6 +42,7 @@ import {
   useServerOutbox,
   useServerActivityScope,
   useServerSidebarServices,
+  useServerServices,
 } from "./servers/ServerServicesContext";
 import { useServerFileDialogs } from "./servers/ServerServicesContext";
 import { onDesktopNavigate } from "./native/notifications";
@@ -315,6 +317,7 @@ export default function App({ active = true }: { active?: boolean }) {
     updateRendererAndReload,
     automaticallyUpdateRenderer,
   } = useServerApi();
+  const serverName = useServerServices()?.owner.label ?? "this server";
 
   const serverStorageEventKey = useServerStorageEventKey();
   const projectStorage = useServerStorage();
@@ -2682,7 +2685,9 @@ export default function App({ active = true }: { active?: boolean }) {
               Stop team
             </Menu.Item>
           )}
-          {agent.workspaceMode === GeneratedApiWorkspaceMode.worktree &&
+          {(agent.workspaceMode === GeneratedApiWorkspaceMode.worktree ||
+            (agent.workspaceMode === GeneratedApiWorkspaceMode.shared &&
+              agent.executionMode !== "vm")) &&
             (agent.isLead ||
               agent.role === GeneratedApiAgentRole.implementer) && (
               <Menu.Item
@@ -2711,20 +2716,15 @@ export default function App({ active = true }: { active?: boolean }) {
               data-action="move-to-device"
               leftSection={<HardDriveDownload size={14} />}
               disabled={busy.has(agent.status ?? "") || !!agent.inFlight}
+              title={leaveVmTitle(serverName)}
               onClick={() => {
-                void run(() =>
-                  post(
-                    "/api/agents/move-to-host",
-                    { id: agent.id, request_id: randomUUID() },
-                    { timeoutMs: 3600000 },
-                  ),
-                );
+                void run(() => leaveVm(projectApi, agent.id));
               }}
             >
-              Move to this device
+              Leave VM
               <small className="menu-action-help">
                 Keeps this chat and its history. Moves the project files and the
-                chat history from the virtual machine to this device.
+                chat history from the virtual machine to {serverName}.
               </small>
             </Menu.Item>
           )}

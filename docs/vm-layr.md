@@ -154,14 +154,18 @@ writes it again if the attempt fails. The project entity changes when an attempt
 gets the lock, when it ends, at backend start, and with each project write.
 Linux servers send no `layrReadiness`.
 
-## Move a VM chat to this device
+## Leave VM: move a VM chat to the host
 
-`POST /api/agents/move-to-host` (`id`, `request_id`; menu item **Move to this device**) moves an idle
+`POST /api/agents/move-to-host` (`id`, `request_id`; menu item **Leave VM**) moves an idle
 VM chat to host execution. It keeps the chat ID, thread ID and history. A lead moves with its
 workers; a worker moves alone after its parent. Code: `vm_to_host.rs` in `runtime-services`.
+The client sends the request to the server that owns the chat, with one saved request ID for retries.
+The moved chat is in `shared` mode in the project folder. **Switch to Layr** accepts it (a lead or
+implementer, idle, not on the VM) with the same steps as a worktree chat.
 
 1. The action refuses unless the whole chat tree is idle (the in-place switch rules) and every
-   worker line is contained in main (`layr merge-base head main` equals `layr rev-parse head`).
+   worker line is contained in main (`layr merge-base HEAD main` equals `layr rev-parse HEAD`; both
+   hashes must exist and both commands must succeed; a review line is checked as its lead).
 2. It checks the free space of the project folder volume and the state volume. It needs the bytes
    to write plus `DISK_FULL_EXIT_FREE_BYTES`, or it refuses and names both numbers.
 3. A Mac folder sync round brings the project folder to the VM main line. It transfers only

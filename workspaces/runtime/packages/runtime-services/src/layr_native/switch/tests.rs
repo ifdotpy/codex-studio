@@ -214,6 +214,55 @@ async fn a_switched_lead_records_layr_fields_keeps_its_thread_and_workers_inheri
     assert_eq!(child["layrStoreRoot"], "/store");
 }
 
+fn shared_lead() -> Value {
+    // The record a chat has after "Leave VM": on the device, in the project folder.
+    let mut lead = wt_lead();
+    lead["id"] = json!("shared-lead");
+    lead["rootId"] = json!("shared-lead");
+    lead["workspaceMode"] = json!("shared");
+    lead["executionMode"] = json!("native");
+    lead
+}
+
+#[tokio::test]
+async fn a_shared_lead_switches_in_place_and_keeps_its_thread() {
+    let (_directory, store) = store_with(&[shared_lead()]).await;
+    let result = switch_chat_with(Arc::clone(&store), "shared-lead", fake_effects)
+        .await
+        .expect("an idle shared lead switches");
+    assert_eq!(result["workspaceMode"], "layr-native");
+    let lead = stored(&store, "shared-lead").await;
+    assert_eq!(lead["workspaceMode"], "layr-native");
+    assert_eq!(lead["threadId"], "thread-kept");
+    assert_eq!(lead["hostProjectPath"], "/fixture/project");
+    assert_eq!(lead["layrReady"], true);
+}
+
+#[tokio::test]
+async fn a_busy_shared_lead_and_a_vm_chat_are_refused() {
+    let mut busy = shared_lead();
+    busy["status"] = json!("running");
+    busy["inFlight"] = json!(true);
+    let mut vm = shared_lead();
+    vm["id"] = json!("vm-lead");
+    vm["rootId"] = json!("vm-lead");
+    vm["executionMode"] = json!("vm");
+    let (_directory, store) = store_with(&[busy, vm]).await;
+    let error = switch_chat_with(Arc::clone(&store), "shared-lead", no_effects)
+        .await
+        .expect_err("a running turn refuses the switch");
+    assert!(
+        error
+            .to_string()
+            .contains("Finish the active or queued turn")
+    );
+    let error = switch_chat_with(Arc::clone(&store), "vm-lead", no_effects)
+        .await
+        .expect_err("a VM chat is refused");
+    assert!(error.to_string().contains("on this device"));
+    assert_eq!(stored(&store, "vm-lead").await["workspaceMode"], "shared");
+}
+
 #[tokio::test]
 async fn a_worker_switches_only_after_its_parent() {
     let worker = json!({"provider":"codex","id":"wt-worker","rootId":"wt-lead","parentId":"wt-lead",
