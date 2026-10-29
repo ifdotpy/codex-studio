@@ -3670,8 +3670,8 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
         |row| row.get(0),
     ).unwrap();
     assert_eq!(
-        managed_calls, 1,
-        "the direct Claude bridge receives one successful managed callback answer"
+        managed_calls, 0,
+        "the successful managed read leaves no saved receipt after delivery"
     );
     // A loaded thread with unchanged settings keeps its live query for the
     // next turn. Changed thread settings resume it in a new query, which the

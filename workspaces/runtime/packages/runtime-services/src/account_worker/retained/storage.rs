@@ -70,6 +70,25 @@ fn retained(row: &RetainedRow) -> Result<&RetainedCall, WorkerError> {
 fn put(tx: &rusqlite::Transaction<'_>, row: &RetainedRow) -> Result<(), WorkerError> {
     Outbox::put(tx, row).map_err(outbox_error)
 }
+pub(super) fn hold_unclean_pending(tx: &rusqlite::Transaction<'_>) -> Result<(), WorkerError> {
+    let mut statement = tx.prepare("SELECT id FROM runtime_outbox WHERE kind=?1 AND status=?2")?;
+    let ids = statement
+        .query_map(
+            rusqlite::params![OutboxKind::ProviderCall, OutboxStatus::Pending],
+            |row| row.get::<_, String>(0),
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(statement);
+    for id in ids {
+        let Some(mut row) = row(tx, &id)? else {
+            continue;
+        };
+        row.status = OutboxStatus::Unknown;
+        row.next_at = None;
+        put(tx, &row)?;
+    }
+    Ok(())
+}
 fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
@@ -695,6 +714,14 @@ pub(super) fn replay_recorded(
         if row.status == OutboxStatus::Unknown && prior.request.is_none() {
             return Ok(Err(PortError::Unknown));
         }
+        if row.status == OutboxStatus::Unknown && proven_not_sent(prior, row.stream_id.as_deref()) {
+            let request = prior.request.as_ref().ok_or(WorkerError::Capacity)?;
+            let mut receipt = prior
+                .call
+                .receipt(request.recovered().ticket, RequestResult::Unknown);
+            receipt.replayed = true;
+            return Ok(Ok(Replay::Return(receipt)));
+        }
         let replay = replay_pending(prior, row.stream_id.as_deref());
         if call.admitted_request.is_none()
             && matches!(replay, Replay::Ready | Replay::Retry(_))
@@ -934,6 +961,9 @@ fn settle(
     let store::ProviderCall::Retained(payload) = &mut row.payload else {
         return Err(WorkerError::Capacity);
     };
+    if row.status == OutboxStatus::Unknown && proven_not_sent(payload, row.stream_id.as_deref()) {
+        return Ok(());
+    }
     let Some(outcome) = &mut payload.outcome else {
         return Ok(());
     };
@@ -1068,6 +1098,15 @@ pub fn record_outcome(
         return Ok(None);
     };
     let mut payload = retained(&row)?.clone();
+    if row.status == OutboxStatus::Unknown
+        && proven_not_sent(&payload, row.stream_id.as_deref())
+        && payload
+            .outcome
+            .as_ref()
+            .is_some_and(|old| cursor <= old.cursor)
+    {
+        return Ok(None);
+    }
     if payload.outcome.as_ref().is_some_and(|outcome| {
         outcome.committed_ack.is_some()
             && !proof_matches(
@@ -1245,6 +1284,74 @@ pub(super) fn recorded_operation(
 #[cfg(test)]
 mod replay_identity_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn unclean_pending_call_is_not_prepared_again() {
+        let root = tempfile::tempdir().expect("root");
+        let store = database(root.path()).await;
+        store
+            .transaction_with(|tx| {
+                let mut call = call();
+                call.actor = None;
+                let identity =
+                    RequestIdentity::new("retained-fixture", &[], &call.root_request_id, &[])
+                        .expect("identity");
+                let owner = match RequestResults::admit(tx, &identity, "fixture", now_ms())
+                    .map_err(result_error)?
+                {
+                    Admission::Fresh(owner) => owner,
+                    Admission::Replay(_) => return Err(WorkerError::Capacity),
+                };
+                call.admitted_request = Some(super::super::reserve_provider_call(
+                    tx,
+                    &owner,
+                    call.clone(),
+                )?);
+                assert!(matches!(replay_recorded(tx, &call)?, Ok(Replay::Ready)));
+                hold_unclean_pending(tx)?;
+                assert!(matches!(
+                    replay_recorded(tx, &call)?,
+                    Err(PortError::Unknown)
+                ));
+                Ok::<_, WorkerError>(())
+            })
+            .await
+            .expect("recovery");
+    }
+
+    #[tokio::test]
+    async fn unclean_retry_does_not_reuse_old_not_sent_proof() {
+        let root = tempfile::tempdir().expect("root");
+        let store = database(root.path()).await;
+        store.transaction_with(|tx| {
+            let mut call = call();
+            call.actor = None;
+            let key = call.key();
+            let request = RecoveredRequest {
+                ticket: RequestTicket { generation: 4, id: RequestId::String(key.clone()), method: call.method },
+                operation_id: OperationId(key.clone()), thread_id: None, lightweight: true,
+                deadline_ms: 1000, unknown: true, remote_id: None,
+            };
+            let outcome = RetainedOutcome {
+                result: RequestResult::NotSent, cursor: 1,
+                committed_ack: Some(CommittedAck { stream_id: "default".into(), generation: 4, cursor: 1 }),
+            };
+            let call = seed(tx, call, &request, false, Some(outcome))?;
+            let mut saved = row(tx, &key)?.ok_or(WorkerError::Capacity)?;
+            saved.status = OutboxStatus::Pending;
+            put(tx, &saved)?;
+            assert!(matches!(replay_recorded(tx, &call)?, Ok(Replay::Retry(_))));
+            hold_unclean_pending(tx)?;
+            assert!(matches!(replay_recorded(tx, &call)?, Ok(Replay::Return(receipt)) if receipt.result == RequestResult::Unknown));
+            assert!(retained(&row(tx, &key)?.ok_or(WorkerError::Capacity)?)?.outcome.is_some());
+            record_outcome(tx, &key, None, Some(RequestResult::NotSent), 1)?;
+            assert_eq!(row(tx, &key)?.ok_or(WorkerError::Capacity)?.status, OutboxStatus::Unknown);
+            let mut saved = row(tx, &key)?.ok_or(WorkerError::Capacity)?;
+            settle(tx, &mut saved, "default", 4)?;
+            assert_eq!(row(tx, &key)?.ok_or(WorkerError::Capacity)?.status, OutboxStatus::Unknown);
+            Ok::<_, WorkerError>(())
+        }).await.expect("recovery");
+    }
 
     #[tokio::test]
     async fn migrated_submitted_without_request_stays_unknown_without_preparation() {
