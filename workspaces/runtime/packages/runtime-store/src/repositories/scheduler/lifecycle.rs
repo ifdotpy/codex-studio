@@ -8,6 +8,72 @@ use studio_runtime_schema::shared_values::{
 };
 
 impl SchedulerRepository {
+    pub fn settle_unclean_start(
+        transaction: &Transaction<'_>,
+        identity: &TurnAttemptIdentity,
+        thread: &str,
+        first_event: &str,
+        turn: &str,
+    ) -> StoreResult<bool> {
+        let Some(mut agent) = load_agent(transaction, &identity.agent_id)? else {
+            return Ok(false);
+        };
+        let Some(attempt) = agent
+            .start_attempt()
+            .map_err(|_| invalid_agent(&identity.agent_id))?
+        else {
+            return Ok(false);
+        };
+        let Some(events) = attempt.events.as_ref() else {
+            return Ok(false);
+        };
+        let held = matches!(&agent.start_outcome_hold,
+            Some(crate::StoredStartOutcomeHold::Known(crate::StartOutcomeHold::Held { reason: Some(reason), attempt_id: Some(id), .. }))
+                if reason == Self::UNCLEAN_START_HOLD && id == &identity.attempt_id);
+        if !held
+            || agent.status != AgentStatus::Interrupted
+            || agent.epoch != identity.epoch
+            || attempt.id.as_deref() != Some(&identity.attempt_id)
+            || attempt.epoch != Some(identity.epoch)
+            || attempt.submitted != Some(false)
+            || attempt.thread_id.as_deref().is_some_and(|id| id != thread)
+            || attempt.turn_id.is_some()
+            || attempt.observed_turn_id.is_some()
+            || attempt.action.is_some()
+            || attempt.active_at_reservation == Some(true)
+            || events.first().map(String::as_str) != Some(first_event)
+            || turn.is_empty()
+            || agent.thread_id.as_deref() != Some(thread)
+            || agent.auto_wake != Some(false)
+            || agent.in_flight != Some(false)
+        {
+            return Ok(false);
+        }
+        let event_ids = (serde_json::to_string(events)?, events.len());
+        let count: i64 = transaction.query_row_cached(
+            "SELECT COUNT(*) FROM runtime_events WHERE agent=?1 AND epoch=?2 AND id IN (SELECT value FROM json_each(?3)) AND status='uncertain' AND turn_id IS NULL AND error=?4",
+            params![identity.agent_id, identity.epoch, event_ids.0, Self::UNCLEAN_START_HOLD], |row| row.get(0))?;
+        if usize::try_from(count).ok() != Some(events.len()) {
+            return Ok(false);
+        }
+        deliver_attempt_events(
+            transaction,
+            &identity.agent_id,
+            identity.epoch,
+            &event_ids,
+            turn,
+        )?;
+        agent
+            .set_start_attempt_turn_id(Some(turn))
+            .map_err(|_| invalid_agent(&identity.agent_id))?;
+        agent.start_outcome_hold = None;
+        agent.extra.insert(
+            "error".into(),
+            crate::projection_value(&Option::<String>::None),
+        );
+        publish_agent(transaction, &agent)?;
+        Ok(true)
+    }
     pub const UNCLEAN_START_HOLD: &'static str =
         "The server stopped before input delivery could be confirmed.";
 

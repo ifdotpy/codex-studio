@@ -203,6 +203,7 @@ pub async fn recover_turn(
         if attempt["connectionId"] != scope.connection
             && !observation.replaced_child(snapshot)
             && !restart_input_wait
+            && !snapshot.is_unclean_start()
         {
             return effects
                 .apply(
@@ -242,6 +243,9 @@ pub async fn recover_turn(
                     .await;
             }
             Ok(crate::recovery_history::ExactStart::NotApplied(proof)) => {
+                if snapshot.is_unclean_start() {
+                    return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Unconfirmed));
+                }
                 let state = read.thread_document(thread).await?;
                 if !ThreadLifecycle::observe(&state)
                     .and_then(|observation| observation.activity)
@@ -273,6 +277,9 @@ pub async fn recover_turn(
                 return Err(error.into());
             }
             history => {
+                if snapshot.is_unclean_start() {
+                    return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Unconfirmed));
+                }
                 let complete_history =
                     matches!(history, Ok(crate::recovery_history::ExactStart::Missing));
                 let mut idle_twice = complete_history;
