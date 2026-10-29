@@ -219,8 +219,10 @@ event store:
    system, or the network.
 2. **One transaction.** The row changes, the body hash of a create command, and the outbox
    entries are written together. A half-written command cannot exist.
-3. **Effects in a worker.** A worker reads the outbox and does the I/O (provider, files,
-   peer servers). It reports the result as a new command through the same path.
+3. **Effects start at once.** After the commit, the same handler starts the I/O
+   (provider, files, peer servers). It does not wait for a worker to pick up the entry.
+   The result returns as a new command through the same path. The outbox worker only
+   handles entries that remain after a crash or a restart.
 4. **Recovery after a crash.** The worker marks an outbox entry `Sending` in a commit
    before the I/O. On restart, each `Sending` entry follows the rule of its effect kind:
 
@@ -272,11 +274,46 @@ from the Claude bridge to the server.
 
 Traffic to a remote frontend stays small:
 
-- Large text (tool output, long messages) is sent as a hash and a size. The client fetches
-  it once, when it opens it.
+- Text below a threshold (for example 8 KB compressed) comes inline. Larger text (tool
+  output, long messages) is sent as a hash and a size. The client fetches it once, when
+  it opens it.
 - The stream is compressed (brotli or zstd).
 - A chat sends only its visible tail. Older items come on scroll.
 - Live deltas go only to the chat that is open.
+- The server also sends the visible tail of the few most recent chats, so a switch to
+  one of them needs no request.
+- Tombstones are kept long (they are small service data), so a reconnect gets a delta,
+  not a snapshot.
+
+### Latency
+
+No fixed timer and no queue that a person waits for:
+
+1. **The UI does not wait for the server.** The client makes the command id, so the UI
+   shows the expected result at once (a queued message, a stop, an answer) as a pending
+   layer keyed by that id. The row from the stream replaces it. The command response
+   returns the changed rows and their `seq`, so the client does not wait for a stream
+   frame either.
+2. **Effects start right after the commit** (see Command execution). The outbox protects
+   against a crash. It is not a queue on the normal path.
+3. **The writer writes only domain rows, and commands go first.** Analytics, process
+   output, and raw provider frames have their own file or database and their own writer.
+   The writer has two queues: commands from people and agents go before background
+   batches. A background batch writes in parts with a time limit.
+4. **A peer is checked once per connection.** The QUIC link with raw public keys knows
+   the peer. The identity and owner check (today `tailscale whois` on each request) runs
+   when the connection opens. Per-request signatures stay only on HTTPS. A restored
+   connection sends the outbox at once, without a backoff timer.
+5. **No batching in the live stream.** A model delta goes from the adapter to every
+   subscription in memory. Deltas are merged only for a slow client whose buffer is full.
+6. **Few round trips for a remote client.** Inline small text, the preloaded tails of
+   recent chats, and long-kept tombstones (see Two streams). The contract check is part
+   of the first subscription frame, not a separate request.
+7. **Snapshots are copy-on-write.** A rewind uses the checkpoint taken after the turn. A
+   new layr snapshot covers only the files that changed after it.
+
+Kept on purpose: the fsync before a write to the provider (a few ms, it protects against
+a repeated send), and the separate Claude bridge process (the SDK is JavaScript only).
 
 ### Device identity
 
@@ -292,7 +329,7 @@ Traffic to a remote frontend stays small:
 ### Contract version
 
 At each connection, the frontend and each peer compare the hash of the contract (the
-existing `api-schema` hash). When the hashes differ, the server refuses the connection
+existing `api-schema` hash), in the first frame of the subscription. When the hashes differ, the server refuses the connection
 and shows "update needed". It never decodes data in a form that it does not know.
 
 ### Frontend cache
@@ -350,6 +387,7 @@ is one file for backups and layr snapshots. The problems are in its use:
 - No I/O inside a write transaction. Long transactions block every writer; one took 282 s
   (`docs/verification/2026-10-05-sqlite-owners-and-code-cells.md`).
 - An alert when a write transaction exceeds a set duration.
+- Command writes go before background writes (see Latency).
 - `canvas.sqlite3` has about 4 GB of free pages. Reclaim them after the copies are removed.
 
 ### Types
