@@ -182,32 +182,30 @@ fn message_info(
     }
     repo::require_agent(db, agent)?;
     let item = repo::message_item(db, agent, item_id, options.thread.as_deref())?.filter(|i| {
-        i["type"] == "agentMessage" && options.turn.as_deref().is_none_or(|t| i["turnId"] == t)
+        i.kind.as_deref() == Some("agentMessage")
+            && options
+                .turn
+                .as_deref()
+                .is_none_or(|t| i.turn_id.as_deref() == Some(t))
     });
     let mut result = MessageInfo::default();
     let (thread, turn_id) = if let Some(item) = &item {
-        result.at = item
-            .get("finishedAt")
-            .filter(|v| !v.is_null())
-            .or_else(|| item.get("startedAt"))
-            .or_else(|| item.get("at"))
-            .and_then(Value::as_number)
-            .cloned();
-        (text(item, "threadId"), text(item, "turnId"))
+        result.at = item.at.clone();
+        (item.thread_id.clone(), item.turn_id.clone())
     } else {
         (options.thread.clone(), options.turn.clone())
     };
     if let Some(turn_id) = turn_id
         && let Some(turn) = repo::message_turn(db, agent, &turn_id, thread.as_deref())?
     {
-        let thread = turn["threadId"].as_str();
+        let thread = turn.thread_id.as_deref();
         if let Some(run) = repo::message_run(db, agent, &turn_id, thread)? {
             result.run_id = text(&run, "id");
             result.attempt_id = text(&run, "rootAttemptId");
         }
-        result.model = text(&turn, "model").filter(|s| !s.is_empty());
-        result.effort = text(&turn, "effort").filter(|s| !s.is_empty());
-        result.account_key = text(&turn, "accountKey").filter(|s| !s.is_empty());
+        result.model = turn.model.clone().filter(|s| !s.is_empty());
+        result.effort = turn.effort.clone().filter(|s| !s.is_empty());
+        result.account_key = turn.account_key.clone().filter(|s| !s.is_empty());
         if let Some(key) = &result.account_key
             && let Ok(raw) = fs::read(root.join("accounts/registry.json"))
             && let Ok(registry) = serde_json::from_slice::<Value>(&raw)
@@ -216,11 +214,7 @@ fn message_info(
             result.account_label = text(account, "label");
             result.provider = ProviderKind::of_record(account).ok();
         }
-        result.turn_duration_ms = turn
-            .get("nativeDurationMs")
-            .or_else(|| turn.get("durationMs"))
-            .and_then(Value::as_number)
-            .cloned();
+        result.turn_duration_ms = turn.duration_ms.clone();
         let usage = repo::message_usage(db, agent, thread, &turn_id, None)?;
         let exact = unique(repo::message_usage(
             db,
@@ -234,7 +228,7 @@ fn message_info(
         } else if item.is_some()
             && usage.len() == 1
             && matches!(
-                turn["status"].as_str(),
+                turn.status.as_deref(),
                 Some("completed" | "failed" | "interrupted")
             )
             && repo::unambiguous_message(db, agent, thread, &turn_id, item_id)?
@@ -298,6 +292,91 @@ mod provider_identity_tests {
             (witness.opens, witness.attaches),
             (0, 0),
             "opens and attaches after store initialization"
+        );
+    }
+
+    #[tokio::test]
+    async fn historical_message_info_keeps_partial_and_ambiguous_rows() {
+        let root = tempfile::tempdir().expect("state");
+        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        let agent = json!({"id":"agent","name":"Agent","rootId":"agent","provider":"claude","accountKey":"account","threadId":"thread","turnId":"turn","status":"running","epoch":0});
+        store
+            .transaction(move |tx| {
+                tx.execute(
+                    "INSERT INTO runtime_agents(id,record) VALUES('agent',?1)",
+                    [agent.to_string()],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("agent");
+        store.analytics_transaction::<_, studio_runtime_store::StoreError>(|tx, _| {
+            tx.execute("INSERT INTO main.analytics_items VALUES ('i','agent',NULL,'thread','turn',1,'agentMessage',NULL,0,?1)", [r#"{"itemId":"item","type":"agentMessage","threadId":"thread","turnId":"turn","finishedAt":null,"startedAt":"wrong","at":7,"extra":{"x":1}}"#])?;
+            tx.execute("INSERT INTO analytics_turns VALUES ('t','agent',NULL,1,?1)", [r#"{"turnId":"turn","threadId":"thread","model":"first","model":"last","effort":null,"nativeDurationMs":null,"durationMs":14,"status":"completed","extra":[1]}"#])?;
+            Ok(())
+        }).await.expect("historical rows");
+        let options = AnalyticsOptions {
+            agent: Some("agent".into()),
+            item: Some("item".into()),
+            view: Some("message-info".into()),
+            ..Default::default()
+        };
+        let result = read(&store, &options).expect("partial metadata");
+        assert_eq!(result["model"], "last");
+        assert!(result.get("at").is_none());
+        assert!(result.get("turnDurationMs").is_none());
+        assert!(result.get("effort").is_none());
+        let mut filtered = options.clone();
+        filtered.thread = Some("other".into());
+        assert!(
+            read(&store, &filtered)
+                .expect("different thread")
+                .get("model")
+                .is_none()
+        );
+        filtered.thread = None;
+        filtered.turn = Some("other".into());
+        assert!(
+            read(&store, &filtered)
+                .expect("different turn")
+                .get("model")
+                .is_none()
+        );
+        filtered.scope = Some("team".into());
+        assert!(matches!(
+            read(&store, &filtered),
+            Err(AnalyticsError::InvalidRequest(_))
+        ));
+        filtered.scope = None;
+        filtered.from = Some(2.0);
+        filtered.to = Some(1.0);
+        assert!(matches!(
+            read(&store, &filtered),
+            Err(AnalyticsError::InvalidRequest(_))
+        ));
+        store.analytics_transaction::<_, studio_runtime_store::StoreError>(|tx, _| {
+            tx.execute("UPDATE main.analytics_items SET record=?1 WHERE id='i'", [r#"{"itemId":"item","type":"agentMessage","threadId":"thread","turnId":"turn","finishedAt":null,"at":7}"#])?;
+            tx.execute("UPDATE analytics_turns SET record=?1 WHERE id='t'", [r#"{"turnId":"turn","threadId":"thread","durationMs":14,"status":3}"#])?;
+            Ok(())
+        }).await.expect("missing fields");
+        let fallback = read(&store, &options).expect("fallback metadata");
+        assert_eq!(fallback["at"], 7);
+        assert_eq!(fallback["turnDurationMs"], 14);
+        store
+            .analytics_transaction::<_, studio_runtime_store::StoreError>(|tx, _| {
+                tx.execute(
+                    "INSERT INTO analytics_turns VALUES ('t2','agent',NULL,1,?1)",
+                    [r#"{"turnId":"turn","threadId":"thread","model":"other"}"#],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("ambiguous turn");
+        assert!(
+            read(&store, &options)
+                .expect("ambiguous")
+                .get("model")
+                .is_none()
         );
     }
 
