@@ -27,7 +27,7 @@ impl schemars::JsonSchema for StoredDelivery {
         "StoredDelivery".into()
     }
     fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        serde_json::from_value(serde_json::json!({"$ref": format!("{}#/components/schemas/DeliveryMomentInput", crate::OPENAPI_URI)})).expect("schema")
+        schemars::json_schema!({"$ref": format!("{}#/components/schemas/DeliveryMomentInput", crate::OPENAPI_URI)})
     }
     fn inline_schema() -> bool {
         true
@@ -87,7 +87,52 @@ impl EventMetadataRecord {
         serde_json::from_value(value)
     }
     pub fn into_value(self) -> Value {
-        serde_json::to_value(self).expect("metadata serializes")
+        let EventMetadataFields {
+            assets,
+            delivery,
+            requested_delivery,
+            timing,
+            transcript_item_id,
+            extensions,
+        } = self.0;
+        let mut fields = Map::new();
+        if let Some(assets) = assets {
+            fields.insert("assets".into(), Value::Array(assets));
+        }
+        move_field(&mut fields, "delivery", delivery, |value| {
+            Value::String(value.0)
+        });
+        move_field(
+            &mut fields,
+            "requestedDelivery",
+            requested_delivery,
+            |value| Value::String(value.0),
+        );
+        move_field(&mut fields, "timing", timing, Value::Object);
+        move_field(
+            &mut fields,
+            "transcriptItemId",
+            transcript_item_id,
+            Value::String,
+        );
+        fields.extend(extensions);
+        Value::Object(fields)
+    }
+}
+fn move_field<T>(
+    fields: &mut Map<String, Value>,
+    name: &str,
+    field: Field<T>,
+    into_value: impl FnOnce(T) -> Value,
+) {
+    match field {
+        Field::Missing => {}
+        Field::Null => {
+            fields.insert(name.into(), Value::Null);
+        }
+        Field::Value(value) => {
+            fields.insert(name.into(), into_value(value));
+        }
     }
 }
 pub(crate) fn schema() -> Value {
@@ -107,6 +152,44 @@ pub(crate) fn check_schema_parity() -> Result<(), String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn consuming_projection_moves_owned_payloads() {
+        let record = EventMetadataRecord::from_value(json!({
+            "assets":[{"payload":"asset-value"}],
+            "delivery":"after_turn", "requestedDelivery":"steer",
+            "timing":{"evidence":["timing-value"]},
+            "transcriptItemId":"transcript-id", "future":["extension-value"]
+        }))
+        .unwrap();
+        let assets = record.assets.as_ref().unwrap().as_ptr();
+        let delivery = record.delivery.value().unwrap().0.as_ptr();
+        let requested = record.requested_delivery.value().unwrap().0.as_ptr();
+        let timing = record.timing.value().unwrap()["evidence"]
+            .as_array()
+            .unwrap()
+            .as_ptr();
+        let transcript = record.transcript_item_id.value().unwrap().as_ptr();
+        let future = record.extensions["future"].as_array().unwrap().as_ptr();
+        let expected = json!(&record);
+        let result = record.into_value();
+        assert_eq!(result, expected);
+        assert_eq!(result["assets"].as_array().unwrap().as_ptr(), assets);
+        assert_eq!(result["delivery"].as_str().unwrap().as_ptr(), delivery);
+        assert_eq!(
+            result["requestedDelivery"].as_str().unwrap().as_ptr(),
+            requested
+        );
+        assert_eq!(
+            result["timing"]["evidence"].as_array().unwrap().as_ptr(),
+            timing
+        );
+        assert_eq!(
+            result["transcriptItemId"].as_str().unwrap().as_ptr(),
+            transcript
+        );
+        assert_eq!(result["future"].as_array().unwrap().as_ptr(), future);
+    }
 
     #[test]
     fn schema_and_typed_owner_agree_on_presence_legacy_and_extensions() {
