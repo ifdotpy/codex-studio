@@ -825,9 +825,20 @@ struct SessionFields {
     session_id: Value,
     #[serde(default, deserialize_with = "present_header_field")]
     history_base: Option<Value>,
+    #[serde(default, deserialize_with = "present_header_field")]
+    context_window: Option<Value>,
+    #[serde(default, deserialize_with = "present_fork_field")]
+    forked_from_id: Option<serde::de::IgnoredAny>,
+    #[serde(default)]
+    timestamp: Value,
 }
 
 fn present_header_field<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Value>, D::Error> {
+    serde::Deserialize::deserialize(d).map(Some)
+}
+fn present_fork_field<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<serde::de::IgnoredAny>, D::Error> {
     serde::Deserialize::deserialize(d).map(Some)
 }
 
@@ -863,6 +874,20 @@ impl SessionHeader {
     pub(crate) fn history_base(&self) -> Option<&Value> {
         self.fields()
             .and_then(|fields| fields.history_base.as_ref())
+    }
+    pub(crate) fn id(&self) -> Option<&str> {
+        self.fields().and_then(|fields| fields.raw_id.as_str())
+    }
+    pub(crate) fn is_fork(&self) -> bool {
+        self.fields()
+            .is_some_and(|fields| fields.forked_from_id.is_some())
+    }
+    pub(crate) fn timestamp(&self) -> Option<&str> {
+        self.fields().and_then(|fields| fields.timestamp.as_str())
+    }
+    pub(crate) fn context_window(&self) -> Option<&Value> {
+        self.fields()
+            .and_then(|fields| fields.context_window.as_ref())
     }
 }
 
@@ -1476,6 +1501,8 @@ mod invalid_record_tests {
             r#"{"type":"session_meta","payload":null}"#,
             r#"{"type":"session_meta","payload":{"id":"","session_id":"t","history_base":null}}"#,
             r#"{"type":"session_meta","payload":{"id":7,"session_id":"t","history_base":false}}"#,
+            r#"{"type":"session_meta","payload":{"id":"","forked_from_id":null,"timestamp":7,"context_window":null}}"#,
+            r#"{"type":"session_meta","payload":{"id":"t","forked_from_id":false,"timestamp":"time","context_window":4}}"#,
             r#"{"type":"other","type":"session_meta","payload":{"id":"t","extra":1}}"#,
             r#"{"type":"session_meta","payload":{"id":"t","id":"other"}}"#,
         ] {
@@ -1506,6 +1533,26 @@ mod invalid_record_tests {
             assert_eq!(
                 header.as_ref().and_then(SessionHeader::history_base),
                 value.pointer("/payload/history_base"),
+                "{raw}"
+            );
+            assert_eq!(
+                header.as_ref().and_then(SessionHeader::id),
+                value["payload"]["id"].as_str(),
+                "{raw}"
+            );
+            assert_eq!(
+                header.as_ref().is_some_and(SessionHeader::is_fork),
+                value.pointer("/payload/forked_from_id").is_some(),
+                "{raw}"
+            );
+            assert_eq!(
+                header.as_ref().and_then(SessionHeader::timestamp),
+                value["payload"]["timestamp"].as_str(),
+                "{raw}"
+            );
+            assert_eq!(
+                header.as_ref().and_then(SessionHeader::context_window),
+                value.pointer("/payload/context_window"),
                 "{raw}"
             );
         }

@@ -779,24 +779,21 @@ where
             else {
                 continue;
             };
-            let payload = row.get("payload");
             let at = row
                 .get("timestamp")
                 .and_then(Value::as_str)
                 .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok());
             match row.get("type").and_then(Value::as_str) {
                 Some("session_meta") => {
-                    if payload.is_some_and(|meta| meta.get("forked_from_id").is_some()) {
-                        fork_at = payload
-                            .and_then(|meta| meta.get("timestamp"))
-                            .and_then(Value::as_str)
+                    let header = crate::analytics_history::SessionHeader::from_value(&row);
+                    if header.as_ref().is_some_and(|header| header.is_fork()) {
+                        fork_at = header
+                            .as_ref()
+                            .and_then(|header| header.timestamp())
                             .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
                             .or(at);
                     }
-                    if let Some(id) = payload
-                        .and_then(|meta| meta.get("id"))
-                        .and_then(Value::as_str)
-                    {
+                    if let Some(id) = header.as_ref().and_then(|header| header.id()) {
                         let mut context = rollout.record().clone();
                         context["threadId"] = json!(id);
                         rollout = crate::analytics_rollout::RolloutContext::from_record(context)
@@ -1637,7 +1634,7 @@ mod tests {
         std::fs::write(day.join("rollout-parent.jsonl"), parent.join("\n")).expect("parent log");
         let fork = [
             json!({"timestamp":at(30),"type":"session_meta","payload":{"id":"fork",
-                "forked_from_id":"parent","timestamp":at(30)}})
+                "forked_from_id":null,"timestamp":false}})
             .to_string(),
             context(40, "gpt-test"),
             record(39, "r2", 600_000, 100_000, 60_000),
