@@ -92,9 +92,13 @@ fn apply(
     fault: &mut dyn Fault,
 ) -> Result<()> {
     // Validate all resulting stored records with the same constructor used for reads.
-    let mut validation = serde_json::json!({"agent":d.agent.as_ref().unwrap_or(&snapshot.agent),"record":d.record.as_ref().or(snapshot.record.as_ref()),"events":d.events,"ancestors":snapshot.ancestors,"claims":snapshot.claims});
+    let proposed = d.record.as_ref().map(|record| record.value());
+    let mut validation = serde_json::json!({"agent":d.agent.as_ref().unwrap_or(&snapshot.agent),"record":proposed.as_ref().or(snapshot.record.as_ref()),"events":d.events,"ancestors":snapshot.ancestors,"claims":snapshot.claims});
     validation["metadata"] = serde_json::json!(d.metadata);
-    let checked = Snapshot::from_records(validation)?;
+    let checked = match d.record.as_ref().and_then(|record| record.checked()) {
+        Some(record) => Snapshot::from_records_with_checked_record(validation, record)?,
+        None => Snapshot::from_records(validation)?,
+    };
     if d.record.is_some() {
         fault.at(Boundary::BeforeRecord)?;
         let record = checked.checked_record().ok_or(ContinuationError::Store(

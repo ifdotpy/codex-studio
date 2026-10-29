@@ -268,7 +268,8 @@ pub fn stage_capacity_cancel(
     let decision = capacity_retry::transition(&snapshot, CapacityAction::Cancel, now)?;
     let value = decision
         .record
-        .clone()
+        .as_ref()
+        .map(|record| record.value())
         .or_else(|| snapshot.record.clone())
         .ok_or_else(|| ContinuationError::Invalid("/capacity/record".into()))?;
     continuation_driver::apply_in_transaction(
@@ -511,7 +512,7 @@ fn stage_terminal(
                 tx,
                 ContinuationTable::Capacity,
                 agent_id,
-                text(record, "id"),
+                text(&record.value(), "id"),
             )?
         {
             return Ok(staged);
@@ -556,7 +557,12 @@ fn stage_terminal(
             now,
         )?;
         if let Some(record) = decision.record.as_ref()
-            && record_exists(tx, ContinuationTable::Usage, agent_id, text(record, "id"))?
+            && record_exists(
+                tx,
+                ContinuationTable::Usage,
+                agent_id,
+                text(&record.value(), "id"),
+            )?
         {
             return Ok(staged);
         }
@@ -868,7 +874,7 @@ fn collect_apply(
         || decision
             .record
             .as_ref()
-            .is_some_and(|record| snapshot.record.as_ref() != Some(record))
+            .is_some_and(|record| snapshot.record.as_ref() != Some(&record.value()))
         || !decision.events.is_empty()
         || !decision.metadata.is_empty()
         || !decision.effects.is_empty();

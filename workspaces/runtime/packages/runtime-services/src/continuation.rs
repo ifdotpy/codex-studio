@@ -56,6 +56,29 @@ pub struct Snapshot {
     pub(crate) work: BTreeMap<String, Value>,
 }
 impl Snapshot {
+    pub(crate) fn from_records_with_checked_record(
+        mut raw: Value,
+        record: ContinuationRecord,
+    ) -> Result<Self> {
+        if raw.to_string().len() > MAX_RECORD_BYTES {
+            return Err(ContinuationError::Invalid("/size".into()));
+        }
+        let original = raw.clone();
+        raw["record"] = Value::Null;
+        let mut snapshot = match Self::from_records(raw) {
+            Ok(snapshot) => snapshot,
+            Err(_) => return Self::from_records(original),
+        };
+        snapshot.record = original
+            .get("record")
+            .filter(|value| !value.is_null())
+            .cloned();
+        Arc::get_mut(&mut snapshot.typed)
+            .expect("new snapshot is uniquely owned")
+            .0
+            .record = Some(record);
+        Ok(snapshot)
+    }
     /// The only constructor. It accepts raw Python-written records, never trusted flags.
     pub fn from_records(raw: Value) -> Result<Self> {
         if raw.to_string().len() > MAX_RECORD_BYTES {
@@ -343,10 +366,285 @@ pub enum Effect {
         reason: String,
     },
 }
+
+/// A transition proposal retains the checked source and unbounded edits until
+/// the writer validates the complete resulting snapshot.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProposedRecord(ProposedRecordData);
+
+#[derive(Clone, Debug, PartialEq)]
+enum ProposedRecordData {
+    Existing {
+        source: ContinuationRecord,
+        updates: Vec<ContinuationUpdate>,
+    },
+    Usage(UsageDraft),
+    Capacity(CapacityDraft),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum ContinuationUpdate {
+    Status(&'static str),
+    DueAt(Option<f64>),
+    Reason(Option<String>),
+    StartedAt(f64),
+    UpdatedAt(f64),
+    PlannedAt(Option<f64>),
+    ResetAt(Option<f64>),
+    ProofAt(f64),
+    LastCheckedAt(Option<Value>),
+    WaitingForAuth(bool),
+    RemoveClaimedAt,
+    ClaimedAt(f64),
+    AcceptedTurnId(String),
+    Waits(u64),
+    Settings(Value),
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UsageDraft {
+    pub id: String,
+    pub status: &'static str,
+    pub account_key: String,
+    pub thread_id: Value,
+    pub epoch: Value,
+    pub turn_id: String,
+    pub cause: crate::usage_resume::Cause,
+    pub failed_at: f64,
+    pub auth_attempt: u64,
+    pub auth_refresh_marker: Option<String>,
+    pub due_at: Option<f64>,
+    pub planned_at: Option<f64>,
+    pub reset_at: Option<f64>,
+    pub reason: Option<String>,
+    pub task_claims: Vec<String>,
+    pub updated_at: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CapacityDraft {
+    pub id: String,
+    pub thread_id: Value,
+    pub turn_id: String,
+    pub account_key: String,
+    pub epoch: Value,
+    pub cause: &'static str,
+    pub status: &'static str,
+    pub due_at: Option<f64>,
+    pub attempt: u64,
+    pub max_attempts: usize,
+    pub cwd: Value,
+    pub settings: Value,
+    pub task_claims: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    pub updated_at: f64,
+}
+
+impl ProposedRecord {
+    /// Validate only the proposed fields on an already checked source. New
+    /// records and edits which can change the untagged variant use the full
+    /// snapshot validator so its diagnostics and timing remain unchanged.
+    pub(crate) fn checked(&self) -> Option<ContinuationRecord> {
+        use serde::Deserialize;
+        use studio_runtime_schema::queue_command::Field;
+        let ProposedRecordData::Existing { source, updates } = &self.0 else {
+            return None;
+        };
+        let mut record = source.clone();
+        for update in updates {
+            match update {
+                ContinuationUpdate::Status(v) => {
+                    let wire = Value::String((*v).to_owned());
+                    match &mut record {
+                        ContinuationRecord::Usage(r) => {
+                            r.status = studio_runtime_schema::string_enum::deserialize(wire).ok()?
+                        }
+                        ContinuationRecord::Capacity(r) => {
+                            r.status = studio_runtime_schema::string_enum::deserialize(wire).ok()?
+                        }
+                        ContinuationRecord::Auth(r) => {
+                            r.status = studio_runtime_schema::string_enum::deserialize(wire).ok()?
+                        }
+                    }
+                }
+                ContinuationUpdate::DueAt(v) => match &mut record {
+                    ContinuationRecord::Usage(r) => r.due_at = Field::deserialize(json!(v)).ok()?,
+                    ContinuationRecord::Capacity(r) => {
+                        r.due_at = Field::deserialize(json!(v)).ok()?
+                    }
+                    ContinuationRecord::Auth(r) => r.due_at = Option::deserialize(json!(v)).ok()?,
+                },
+                ContinuationUpdate::Reason(v) => match &mut record {
+                    ContinuationRecord::Usage(r) => r.reason = Field::deserialize(json!(v)).ok()?,
+                    ContinuationRecord::Capacity(r) => {
+                        r.reason = Field::deserialize(json!(v)).ok()?
+                    }
+                    ContinuationRecord::Auth(r) => {
+                        r.extra.insert("reason".into(), json!(v));
+                    }
+                },
+                ContinuationUpdate::PlannedAt(v) => match &mut record {
+                    ContinuationRecord::Usage(r) => {
+                        r.planned_at = Field::deserialize(json!(v)).ok()?
+                    }
+                    ContinuationRecord::Capacity(_) | ContinuationRecord::Auth(_) => {
+                        record.extra_mut().insert("plannedAt".into(), json!(v));
+                    }
+                },
+                ContinuationUpdate::ResetAt(v) => match &mut record {
+                    ContinuationRecord::Usage(r) => {
+                        r.reset_at = Field::deserialize(json!(v)).ok()?
+                    }
+                    ContinuationRecord::Capacity(_) | ContinuationRecord::Auth(_) => {
+                        record.extra_mut().insert("resetAt".into(), json!(v));
+                    }
+                },
+                ContinuationUpdate::ProofAt(v) => match &mut record {
+                    ContinuationRecord::Usage(r) => {
+                        r.proof_at = Field::deserialize(json!(v)).ok()?
+                    }
+                    ContinuationRecord::Capacity(_) | ContinuationRecord::Auth(_) => {
+                        record.extra_mut().insert("proofAt".into(), json!(v));
+                    }
+                },
+                ContinuationUpdate::RemoveClaimedAt => match &mut record {
+                    ContinuationRecord::Capacity(r) => r.claimed_at = Field::Missing,
+                    ContinuationRecord::Usage(_) | ContinuationRecord::Auth(_) => {
+                        record.extra_mut().remove("claimedAt");
+                    }
+                },
+                ContinuationUpdate::ClaimedAt(v) => match &mut record {
+                    ContinuationRecord::Capacity(r) => {
+                        r.claimed_at = Field::deserialize(json!(v)).ok()?
+                    }
+                    ContinuationRecord::Usage(_) | ContinuationRecord::Auth(_) => {
+                        record.extra_mut().insert("claimedAt".into(), json!(v));
+                    }
+                },
+                ContinuationUpdate::AcceptedTurnId(v) => match &mut record {
+                    ContinuationRecord::Capacity(r) => {
+                        r.accepted_turn_id = Field::deserialize(json!(v)).ok()?
+                    }
+                    ContinuationRecord::Usage(_) | ContinuationRecord::Auth(_) => {
+                        record.extra_mut().insert("acceptedTurnId".into(), json!(v));
+                    }
+                },
+                ContinuationUpdate::Waits(v) => match &mut record {
+                    ContinuationRecord::Capacity(r) => {
+                        r.waits = Some(Deserialize::deserialize(json!(v)).ok()?)
+                    }
+                    ContinuationRecord::Usage(_) | ContinuationRecord::Auth(_) => {
+                        record.extra_mut().insert("waits".into(), json!(v));
+                    }
+                },
+                ContinuationUpdate::Settings(v) => match &mut record {
+                    ContinuationRecord::Capacity(r) => {
+                        r.settings = v
+                            .as_object()?
+                            .iter()
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect()
+                    }
+                    ContinuationRecord::Usage(_) | ContinuationRecord::Auth(_) => {
+                        record.extra_mut().insert("settings".into(), v.clone());
+                    }
+                },
+                ContinuationUpdate::StartedAt(v) => {
+                    record.extra_mut().insert("startedAt".into(), json!(v));
+                }
+                ContinuationUpdate::UpdatedAt(v) => {
+                    record.extra_mut().insert("updatedAt".into(), json!(v));
+                }
+                ContinuationUpdate::LastCheckedAt(v) => {
+                    record.extra_mut().insert("lastCheckedAt".into(), json!(v));
+                }
+                ContinuationUpdate::WaitingForAuth(v) => {
+                    record.extra_mut().insert("waitingForAuth".into(), json!(v));
+                }
+            }
+        }
+        Some(record)
+    }
+    pub fn value(&self) -> Value {
+        match &self.0 {
+            ProposedRecordData::Usage(record) => json!(record),
+            ProposedRecordData::Capacity(record) => json!(record),
+            ProposedRecordData::Existing { source, updates } => {
+                let mut value = json!(source);
+                for update in updates {
+                    match update {
+                        ContinuationUpdate::Status(v) => value["status"] = json!(v),
+                        ContinuationUpdate::DueAt(v) => value["dueAt"] = json!(v),
+                        ContinuationUpdate::Reason(v) => value["reason"] = json!(v),
+                        ContinuationUpdate::StartedAt(v) => value["startedAt"] = json!(v),
+                        ContinuationUpdate::UpdatedAt(v) => value["updatedAt"] = json!(v),
+                        ContinuationUpdate::PlannedAt(v) => value["plannedAt"] = json!(v),
+                        ContinuationUpdate::ResetAt(v) => value["resetAt"] = json!(v),
+                        ContinuationUpdate::ProofAt(v) => value["proofAt"] = json!(v),
+                        ContinuationUpdate::LastCheckedAt(v) => value["lastCheckedAt"] = json!(v),
+                        ContinuationUpdate::WaitingForAuth(v) => value["waitingForAuth"] = json!(v),
+                        ContinuationUpdate::RemoveClaimedAt => {
+                            value
+                                .as_object_mut()
+                                .expect("record object")
+                                .remove("claimedAt");
+                        }
+                        ContinuationUpdate::ClaimedAt(v) => value["claimedAt"] = json!(v),
+                        ContinuationUpdate::AcceptedTurnId(v) => value["acceptedTurnId"] = json!(v),
+                        ContinuationUpdate::Waits(v) => value["waits"] = json!(v),
+                        ContinuationUpdate::Settings(v) => value["settings"] = v.clone(),
+                    }
+                }
+                value
+            }
+        }
+    }
+    pub(crate) fn existing(snapshot: &Snapshot) -> Option<Self> {
+        let source = snapshot.checked_record()?.clone();
+        let mut updates = Vec::new();
+        if let Some(current) = snapshot
+            .record
+            .as_ref()
+            .and_then(|record| record.get("settings"))
+        {
+            let unchanged = match &source {
+                ContinuationRecord::Capacity(record) => current.as_object().is_some_and(|object| {
+                    object.len() == record.settings.len()
+                        && object
+                            .iter()
+                            .all(|(key, value)| record.settings.get(key) == Some(value))
+                }),
+                ContinuationRecord::Usage(record) => record.extra.get("settings") == Some(current),
+                ContinuationRecord::Auth(record) => record.extra.get("settings") == Some(current),
+            };
+            if !unchanged {
+                updates.push(ContinuationUpdate::Settings(current.clone()));
+            }
+        }
+        Some(Self(ProposedRecordData::Existing { source, updates }))
+    }
+    pub(crate) fn usage(record: UsageDraft) -> Self {
+        Self(ProposedRecordData::Usage(record))
+    }
+    pub(crate) fn capacity(record: CapacityDraft) -> Self {
+        Self(ProposedRecordData::Capacity(record))
+    }
+    pub(crate) fn update(&mut self, update: ContinuationUpdate) {
+        match &mut self.0 {
+            ProposedRecordData::Existing { updates, .. } => updates.push(update),
+            ProposedRecordData::Usage(_) | ProposedRecordData::Capacity(_) => {
+                unreachable!("new drafts are built directly")
+            }
+        }
+    }
+}
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Decision {
     pub agent: Option<Value>,
-    pub record: Option<Value>,
+    pub record: Option<ProposedRecord>,
     pub events: Vec<Value>,
     pub metadata: BTreeMap<String, Value>,
     pub effects: Vec<Effect>,
@@ -354,10 +652,12 @@ pub struct Decision {
     pub batch: Vec<Value>,
 }
 impl Decision {
-    pub(crate) fn save(s: &Snapshot, mut record: Value, key: &str, now: f64) -> Self {
-        record["updatedAt"] = json!(now);
+    pub(crate) fn save(s: &Snapshot, mut record: ProposedRecord, key: &str, now: f64) -> Self {
+        if matches!(record.0, ProposedRecordData::Existing { .. }) {
+            record.update(ContinuationUpdate::UpdatedAt(now));
+        }
         let mut agent = s.agent.clone();
-        agent[key] = record.clone();
+        agent[key] = record.value();
         Self {
             agent: Some(agent),
             record: Some(record),
@@ -421,6 +721,55 @@ pub(crate) fn native_thread_blocked(agent: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn checked_updates_match_full_untagged_deserialization() {
+        use serde::Deserialize;
+        let samples = [
+            json!({"id":"u","accountKey":"a","threadId":"t","epoch":1.0,"turnId":"v","status":"scheduled","cause":"auth","failedAt":1,"future":true}),
+            json!({"id":"c","accountKey":"a","threadId":"t","epoch":1,"turnId":"v","status":"scheduled","cause":"serverOverloaded","cwd":"","settings":{},"attempt":1,"maxAttempts":4}),
+            json!({"id":"a","agent":"a","accountKey":"a","status":"auth_probe_wait","cause":"claude_auth_probe","error":"Cannot read Claude Code sign-in status","createdAt":1,"dueAt":null,"source":{},"attempt":{"id":"x","epoch":1,"submitted":false},"inputs":[],"accountPin":{},"taskClaims":[]}),
+        ];
+        let updates = vec![
+            ContinuationUpdate::Status("scheduled"),
+            ContinuationUpdate::Status("failed"),
+            ContinuationUpdate::DueAt(None),
+            ContinuationUpdate::DueAt(Some(42.0)),
+            ContinuationUpdate::DueAt(Some(-1.0)),
+            ContinuationUpdate::Reason(None),
+            ContinuationUpdate::Reason(Some("text".into())),
+            ContinuationUpdate::Reason(Some("x".repeat(1_048_577))),
+            ContinuationUpdate::StartedAt(1.0),
+            ContinuationUpdate::UpdatedAt(2.0),
+            ContinuationUpdate::PlannedAt(Some(3.0)),
+            ContinuationUpdate::ResetAt(None),
+            ContinuationUpdate::ProofAt(4.0),
+            ContinuationUpdate::LastCheckedAt(Some(json!({"opaque":true}))),
+            ContinuationUpdate::WaitingForAuth(true),
+            ContinuationUpdate::RemoveClaimedAt,
+            ContinuationUpdate::ClaimedAt(5.0),
+            ContinuationUpdate::AcceptedTurnId("turn".into()),
+            ContinuationUpdate::AcceptedTurnId(String::new()),
+            ContinuationUpdate::Waits(6),
+            ContinuationUpdate::Settings(json!({"x":[1]})),
+            ContinuationUpdate::Settings(json!(false)),
+        ];
+        for sample in samples {
+            let source = ContinuationRecord::deserialize(sample).unwrap();
+            for update in &updates {
+                let proposal = ProposedRecord(ProposedRecordData::Existing {
+                    source: source.clone(),
+                    updates: vec![update.clone()],
+                });
+                let full = ContinuationRecord::deserialize(proposal.value());
+                let checked = proposal.checked();
+                assert_eq!(checked.is_some(), full.is_ok(), "{update:?}");
+                if let (Some(actual), Ok(expected)) = (checked, full) {
+                    assert_eq!(json!(actual), json!(expected), "{update:?}");
+                }
+            }
+        }
+    }
 
     #[test]
     fn current_uses_the_agent_after_pending_settings_are_applied() {

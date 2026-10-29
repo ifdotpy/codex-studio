@@ -129,6 +129,13 @@ pub enum ContinuationRecord {
     Auth(AuthWaitReceipt),
 }
 impl ContinuationRecord {
+    pub fn extra_mut(&mut self) -> &mut BTreeMap<String, Value> {
+        match self {
+            Self::Usage(record) => &mut record.extra,
+            Self::Capacity(record) => &mut record.extra,
+            Self::Auth(record) => &mut record.extra,
+        }
+    }
     pub fn id(&self) -> &str {
         match self {
             Self::Usage(record) => record.id.as_str(),

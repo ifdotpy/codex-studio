@@ -8,7 +8,7 @@ fn capacity_wait_accepts_usage_record_with_matching_embedded_id() {
     let snapshot = Snapshot::from_records(json!({"agent":{"id":"a","rootId":"a","epoch":1,"status":"failed","provider":"codex","capacityRetry":retry},"record":usage})).unwrap();
     let decision =
         capacity_retry::transition(&snapshot, capacity_retry::Action::Wait("wait"), 20.0).unwrap();
-    let record = decision.record.unwrap();
+    let record = decision.record.unwrap().value();
     assert_eq!(record["cause"], "auth");
     assert_eq!(record["status"], "scheduled");
     assert_eq!(record["waits"], 1);
@@ -97,7 +97,7 @@ fn usage_identity_keeps_exact_epoch_evidence() {
     let snapshot = Snapshot::from_records(input).unwrap();
     let decision =
         studio_runtime_services::usage_resume::tick_without_observation(&snapshot, 1000.0).unwrap();
-    assert_eq!(decision.record.unwrap()["status"], "cancelled");
+    assert_eq!(decision.record.unwrap().value()["status"], "cancelled");
 }
 
 #[test]
@@ -147,7 +147,10 @@ fn capacity_counts_preserve_integer_and_decimal_alias_behavior() {
             1000.0,
         )
         .expect("failure");
-        assert_eq!(decision.record.expect("record")["attempt"], expected);
+        assert_eq!(
+            decision.record.expect("record").value()["attempt"],
+            expected
+        );
     }
     let original = cases
         .as_array()
@@ -163,7 +166,7 @@ fn capacity_counts_preserve_integer_and_decimal_alias_behavior() {
         let decision =
             capacity_retry::transition(&snapshot, capacity_retry::Action::Wait("wait"), 1000.0)
                 .expect("wait");
-        assert_eq!(decision.record.expect("record")["waits"], expected);
+        assert_eq!(decision.record.expect("record").value()["waits"], expected);
     }
 }
 
@@ -184,7 +187,7 @@ fn auth_backoff_preserves_integer_and_decimal_alias_behavior() {
         let decision =
             studio_runtime_services::usage_resume::tick_without_observation(&snapshot, 1000.0)
                 .expect("tick");
-        assert_eq!(decision.record.expect("rescheduled")["dueAt"], due);
+        assert_eq!(decision.record.expect("rescheduled").value()["dueAt"], due);
     }
 }
 /// The stored-record inputs of the continuation corpus.
@@ -349,7 +352,7 @@ fn claimed_capacity_retry_ends_finished_after_its_turn_settles() {
     let step = |raw: &mut Value, action: capacity_retry::Action<'_>| {
         let snapshot = Snapshot::from_records(raw.clone()).expect("snapshot");
         let decision = capacity_retry::transition(&snapshot, action, 1000.0).expect("transition");
-        raw["record"] = decision.record.clone().expect("record");
+        raw["record"] = decision.record.clone().expect("record").value();
         raw["agent"] = decision.agent.clone().expect("agent");
         decision
     };
@@ -411,7 +414,7 @@ fn rejected_capacity_start_ends_failed_and_lost_reply_ends_unknown() {
             1000.0,
         )
         .expect("claim");
-        raw["record"] = claimed.record.expect("record");
+        raw["record"] = claimed.record.expect("record").value();
         raw["agent"] = claimed.agent.expect("agent");
         let snapshot = Snapshot::from_records(raw).expect("claimed snapshot");
         let failed = capacity_retry::transition(
@@ -423,6 +426,6 @@ fn rejected_capacity_start_ends_failed_and_lost_reply_ends_unknown() {
             1000.0,
         )
         .expect("error");
-        assert_eq!(failed.record.expect("record")["status"], status);
+        assert_eq!(failed.record.expect("record").value()["status"], status);
     }
 }

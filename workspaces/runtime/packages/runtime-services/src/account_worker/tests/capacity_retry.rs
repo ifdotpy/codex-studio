@@ -52,7 +52,7 @@ async fn claim_retry(state: &State) -> String {
                         NOW,
                     )
                     .expect("failure");
-                    let scheduled = failure.record.expect("scheduled retry");
+                    let scheduled = failure.record.expect("scheduled retry").value();
                     let held = AgentRecord::from_value(failure.agent.expect("agent"))
                         .map_err(StoreError::from)?;
                     AgentRepository::put(tx, &held)?;
@@ -78,7 +78,7 @@ async fn claim_retry(state: &State) -> String {
                         NOW,
                     )
                     .expect("claim");
-                    let record = claim.record.expect("claimed record");
+                    let record = claim.record.expect("claimed record").value();
                     ContinuationRepository::put_record(
                         tx,
                         ContinuationTable::Capacity,
@@ -231,7 +231,7 @@ async fn complete(state: &State, id: &str, action: Action<'static>) {
                         tx,
                         ContinuationTable::Capacity,
                         &agent,
-                        &decision.record.expect("record"),
+                        &decision.record.expect("record").value(),
                     )?;
                     Ok::<_, WorkerError>(())
                 })
