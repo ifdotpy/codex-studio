@@ -265,10 +265,6 @@
       "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:0"
     },
     {
-      "file": "workspaces/runtime/packages/runtime-services/src/costs.rs",
-      "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:1"
-    },
-    {
       "file": "workspaces/runtime/packages/runtime-services/src/disk_space.rs",
       "fingerprint": "13b5cb06e017943b1fe119b52552377679c473c24d5cb3349aee3100f78469f8:0"
     },
