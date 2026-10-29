@@ -1270,7 +1270,7 @@ impl RuntimeStore {
 
     /// Open an existing state directory, bootstrapping the sync family on first open.
     pub async fn open(state_dir: Option<&Path>) -> StoreResult<Self> {
-        Self::open_inner(state_dir, None).await
+        Self::open_inner(state_dir, None, None).await
     }
 
     /// Open the state as its serving owner: after `runtime.lock` is held and before the first
@@ -1279,12 +1279,22 @@ impl RuntimeStore {
         state_dir: Option<&Path>,
         owner: &state_owner::StateOwnerClaim,
     ) -> StoreResult<Self> {
-        Self::open_inner(state_dir, Some(owner)).await
+        Self::open_inner(state_dir, Some(owner), None).await
+    }
+
+    /// Open the serving state while reporting the current receipt migration position.
+    pub async fn open_claiming_with_progress(
+        state_dir: Option<&Path>,
+        owner: &state_owner::StateOwnerClaim,
+        progress: &(dyn Fn(migrations::MigrationProgress) + Send + Sync),
+    ) -> StoreResult<Self> {
+        Self::open_inner(state_dir, Some(owner), Some(progress)).await
     }
 
     async fn open_inner(
         state_dir: Option<&Path>,
         owner: Option<&state_owner::StateOwnerClaim>,
+        progress: Option<&(dyn Fn(migrations::MigrationProgress) + Send + Sync)>,
     ) -> StoreResult<Self> {
         let root = match state_dir {
             Some(path) => path::resolve_explicit_state_dir(path)?,
@@ -1306,7 +1316,7 @@ impl RuntimeStore {
                 return Err(StoreError::MissingDatabase(database.clone()));
             }
         }
-        migrations::run(&root)?;
+        migrations::run(&root, progress)?;
 
         let table_change_flags = Arc::new(AtomicU32::new(0));
         let resource_receipt_update_count = Arc::new(AtomicU64::new(0));
