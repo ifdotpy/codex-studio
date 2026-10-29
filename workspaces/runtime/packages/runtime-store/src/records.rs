@@ -681,8 +681,58 @@ impl JsonRecord for AgentRecord {
     }
 
     fn decode_stored(connection: &Connection, row_id: &str, encoded: &str) -> StoreResult<Self> {
-        let value = decode_agent_value(connection, row_id, encoded)?;
-        Self::deserialize(value).map_err(|_| invalid_agent_field(row_id, "", "record_decode", None))
+        let mut value = parse_agent_value(row_id, encoded)?;
+        crate::agent_volatile::merge(connection, row_id, &mut value)?;
+        let projection = checked_agent_projection(row_id, &value)?;
+        let id = AgentId(projection.id);
+        let root_id = AgentId(projection.root_id);
+        let epoch = projection.epoch.as_i64();
+        let status = AgentStatus::parse(&projection.status);
+        let Value::Object(mut fields) = value else {
+            return Err(invalid_agent_field(row_id, "", "record_decode", None));
+        };
+        for key in ["id", "rootId", "epoch", "status"] {
+            fields.remove(key);
+        }
+        fn field<T: DeserializeOwned>(
+            fields: &mut serde_json::Map<String, Value>,
+            key: &str,
+        ) -> Result<Option<T>, serde_json::Error> {
+            fields
+                .remove(key)
+                .map(Option::<T>::deserialize)
+                .transpose()
+                .map(Option::flatten)
+        }
+        let decode = |_: serde_json::Error| invalid_agent_field(row_id, "", "record_decode", None);
+        let title_job = field(&mut fields, "titleJob").map_err(decode)?;
+        let start_outcome_hold = field(&mut fields, "startOutcomeHold").map_err(decode)?;
+        let fired_events = fields
+            .remove("firedEvents")
+            .map(BTreeSet::<String>::deserialize)
+            .transpose()
+            .map_err(decode)?
+            .unwrap_or_default();
+        let native_review_thread = field(&mut fields, "nativeReviewThread").map_err(decode)?;
+        let vm_launch = field(&mut fields, "vmLaunch").map_err(decode)?;
+        let credential_copy = field(&mut fields, "credentialCopy").map_err(decode)?;
+        let vm_auth_bootstrap = field(&mut fields, "vmAuthBootstrap").map_err(decode)?;
+        let native_release = field(&mut fields, "nativeRelease").map_err(decode)?;
+        Ok(Self {
+            id,
+            root_id,
+            epoch,
+            status,
+            title_job,
+            start_outcome_hold,
+            fired_events,
+            native_review_thread,
+            vm_launch,
+            credential_copy,
+            vm_auth_bootstrap,
+            native_release,
+            extra: fields.into_iter().collect(),
+        })
     }
 }
 
@@ -2797,7 +2847,8 @@ mod agent_projection_tests {
         db.execute_batch(crate::agent_volatile::agent_volatile_table_sql())
             .unwrap();
         let raw = json!({"id":"a","rootId":"r","epoch":1,"status":"idle", "accountKey":null,
-            "events":1.0,"agentArchive":{"at":1.5,"epoch":1.0},"future":{"x":[1,null]}});
+            "events":1.0,"agentArchive":{"at":1.5,"epoch":1.0},"future":{"x":[1,null]},
+            "titleJob":{"legacy":true},"startOutcomeHold":{"stage":"held","reason":"pending"},"firedEvents":["one"]});
         db.execute(
             "INSERT INTO runtime_agents(id,record) VALUES('a',?1)",
             [raw.to_string()],
