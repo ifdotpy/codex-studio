@@ -569,8 +569,7 @@ async fn native_input_is_called_after_commit_and_unknown_is_never_resent() {
                         assert_eq!(
                             saved
                                 .input_attempt
-                                .as_ref()
-                                .and_then(Option::as_ref)
+                                .value()
                                 .and_then(|v| v.get("id"))
                                 .and_then(Value::as_str),
                             Some("ticket-1")

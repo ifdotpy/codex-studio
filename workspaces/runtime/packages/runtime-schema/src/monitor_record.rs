@@ -1,5 +1,6 @@
 //! Typed persisted monitor rows and their open transport evidence.
-use crate::stored_record::{StoredJsonInteger, present_nullable};
+use crate::queue_command::Field;
+use crate::stored_record::StoredJsonInteger;
 use crate::studio_errors::MonitorStatus;
 use serde::{Deserialize, Serialize};
 use serde_json::{Number, Value};
@@ -143,9 +144,13 @@ fn present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
 }
 fn present_operation<'de, D: serde::Deserializer<'de>>(
     d: D,
-) -> Result<Option<Option<MonitorOperationRecord>>, D::Error> {
-    Option::<crate::json_object::JsonObject<MonitorOperationRecord>>::deserialize(d)
-        .map(|v| Some(v.map(|o| o.0)))
+) -> Result<Field<MonitorOperationRecord>, D::Error> {
+    Field::<crate::json_object::JsonObject<MonitorOperationRecord>>::deserialize(d).map(|v| match v
+    {
+        Field::Missing => Field::Missing,
+        Field::Null => Field::Null,
+        Field::Value(value) => Field::Value(value.0),
+    })
 }
 fn status_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
     let status =
@@ -186,13 +191,9 @@ pub struct MonitorRecord {
     )]
     #[schemars(with = "MonitorInteger<0, 9007199254740991>")]
     pub activity_generation: Option<MonitorInteger<0, 9007199254740991>>,
-    #[serde(
-        default,
-        deserialize_with = "present_nullable",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
     #[schemars(with = "Option<String>")]
-    pub agent: Option<Option<String>>,
+    pub agent: Field<String>,
     #[serde(
         default,
         deserialize_with = "present",
@@ -235,42 +236,22 @@ pub struct MonitorRecord {
     )]
     #[schemars(with = "String")]
     pub cwd: Option<String>,
-    #[serde(
-        default,
-        deserialize_with = "present_nullable",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
     #[schemars(with = "Option<MonitorInteger<0, 9007199254740991>>")]
-    pub epoch: Option<Option<MonitorInteger<0, 9007199254740991>>>,
-    #[serde(
-        default,
-        deserialize_with = "present_nullable",
-        skip_serializing_if = "Option::is_none"
-    )]
+    pub epoch: Field<MonitorInteger<0, 9007199254740991>>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
     #[schemars(with = "Option<MonitorText<0, 12000>>")]
-    pub error: Option<Option<MonitorText<0, 12000>>>,
-    #[serde(
-        default,
-        deserialize_with = "present_nullable",
-        skip_serializing_if = "Option::is_none"
-    )]
+    pub error: Field<MonitorText<0, 12000>>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
     #[schemars(with = "Option<StoredJsonInteger>")]
-    pub exit_code: Option<Option<StoredJsonInteger>>,
-    #[serde(
-        default,
-        deserialize_with = "present_nullable",
-        skip_serializing_if = "Option::is_none"
-    )]
+    pub exit_code: Field<StoredJsonInteger>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
     #[schemars(with = "Option<MonitorTime>")]
-    pub finished: Option<Option<MonitorTime>>,
+    pub finished: Field<MonitorTime>,
     pub id: String,
-    #[serde(
-        default,
-        deserialize_with = "present_nullable",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
     #[schemars(with = "Option<BTreeMap<String, Value>>")]
-    pub input_attempt: Option<Option<BTreeMap<String, Value>>>,
+    pub input_attempt: Field<BTreeMap<String, Value>>,
     #[serde(
         default,
         deserialize_with = "present",
@@ -278,13 +259,9 @@ pub struct MonitorRecord {
     )]
     #[schemars(with = "bool")]
     pub interactive: Option<bool>,
-    #[serde(
-        default,
-        deserialize_with = "present_nullable",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
     #[schemars(with = "Option<StoredJsonInteger>")]
-    pub last_exit_code: Option<Option<StoredJsonInteger>>,
+    pub last_exit_code: Field<StoredJsonInteger>,
     #[serde(
         default,
         deserialize_with = "present",
@@ -302,31 +279,19 @@ pub struct MonitorRecord {
     #[serde(
         default,
         deserialize_with = "present_operation",
-        skip_serializing_if = "Option::is_none"
+        skip_serializing_if = "Field::is_missing"
     )]
     #[schemars(with = "Option<MonitorOperationRecord>")]
-    pub operation: Option<Option<MonitorOperationRecord>>,
-    #[serde(
-        default,
-        deserialize_with = "present_nullable",
-        skip_serializing_if = "Option::is_none"
-    )]
+    pub operation: Field<MonitorOperationRecord>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
     #[schemars(with = "Option<String>")]
-    pub rule_id: Option<Option<String>>,
-    #[serde(
-        default,
-        deserialize_with = "present_nullable",
-        skip_serializing_if = "Option::is_none"
-    )]
+    pub rule_id: Field<String>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
     #[schemars(with = "Option<MonitorInteger<0, 9007199254740991>>")]
-    pub stall_probe_generation: Option<Option<MonitorInteger<0, 9007199254740991>>>,
-    #[serde(
-        default,
-        deserialize_with = "present_nullable",
-        skip_serializing_if = "Option::is_none"
-    )]
+    pub stall_probe_generation: Field<MonitorInteger<0, 9007199254740991>>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
     #[schemars(with = "Option<MonitorTime>")]
-    pub stall_probe_started: Option<Option<MonitorTime>>,
+    pub stall_probe_started: Field<MonitorTime>,
     #[serde(
         default,
         deserialize_with = "present",
@@ -341,20 +306,12 @@ pub struct MonitorRecord {
     )]
     #[schemars(with = "MonitorInteger<-1, 9007199254740991>")]
     pub stall_wake_generation: Option<MonitorInteger<-1, 9007199254740991>>,
-    #[serde(
-        default,
-        deserialize_with = "present_nullable",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
     #[schemars(schema_with = "status_schema")]
-    pub status: Option<Option<MonitorStatus>>,
-    #[serde(
-        default,
-        deserialize_with = "present_nullable",
-        skip_serializing_if = "Option::is_none"
-    )]
+    pub status: Field<MonitorStatus>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
     #[schemars(with = "Option<String>")]
-    pub stdin_close_requested: Option<Option<String>>,
+    pub stdin_close_requested: Field<String>,
     #[serde(
         default,
         deserialize_with = "present",
@@ -408,10 +365,10 @@ impl MonitorRecord {
         self.value()
     }
     pub fn agent(&self) -> Option<&str> {
-        self.agent.as_ref().and_then(Option::as_deref)
+        self.agent.value().map(String::as_str)
     }
     pub fn status(&self) -> Option<MonitorStatus> {
-        self.status.flatten()
+        self.status.value().copied()
     }
 }
 pub(crate) fn schema() -> Value {
@@ -434,6 +391,7 @@ mod tests {
     use serde_json::json;
     #[test]
     fn stored_monitor_schema_matches_all_field_shapes() {
+        check_schema_parity().unwrap();
         let schema: Value = serde_json::from_slice(include_bytes!(
             "schemas/persisted-monitor-record.schema.json"
         ))

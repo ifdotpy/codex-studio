@@ -696,16 +696,12 @@ fn agent_status_record(agent: &AgentRecord) -> Value {
 }
 
 fn monitor_status_record(monitor: &MonitorRecord) -> Value {
-    let error = monitor
-        .error
-        .as_ref()
-        .and_then(Option::as_ref)
-        .map(|value| json!(value.as_str()));
+    let error = monitor.error.value().map(|value| json!(value.as_str()));
     json!({
         "id": monitor.id,
         "agent": monitor.agent(),
         "status": monitor.status(),
-        "exitCode": monitor.exit_code.as_ref().and_then(Option::as_ref),
+        "exitCode": monitor.exit_code.value(),
         "kind": "monitor",
         "error": clip_value(error.as_ref()),
     })

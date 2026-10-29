@@ -315,8 +315,7 @@ impl Fields {
         }
         let operation = row
             .operation
-            .as_ref()
-            .and_then(Option::as_ref)
+            .value()
             .map(|value| {
                 serde_json::to_value(value)
                     .map_err(|_| ())
@@ -325,24 +324,17 @@ impl Fields {
             .transpose()?;
         let input_attempt = row
             .input_attempt
-            .as_ref()
-            .and_then(Option::as_ref)
+            .value()
             .map(|value| {
                 serde_json::to_value(value)
                     .map_err(|_| ())
                     .and_then(|v| serde_json::from_value(v).map_err(|_| ()))
             })
             .transpose()?;
-        let probe_generation = signed(
-            row.stall_probe_generation
-                .as_ref()
-                .and_then(Option::as_ref)
-                .map(|v| v.number()),
-        )?;
+        let probe_generation = signed(row.stall_probe_generation.value().map(|v| v.number()))?;
         let probe_started = row
             .stall_probe_started
-            .as_ref()
-            .and_then(Option::as_ref)
+            .value()
             .and_then(|v| v.number().as_f64());
         let probe = ProbeState::try_from(ProbeFields {
             stall_probe_generation: probe_generation,
@@ -360,15 +352,10 @@ impl Fields {
         Ok(Self {
             id: row.id.clone(),
             agent: row.agent().ok_or(())?.to_owned(),
-            epoch: signed(
-                row.epoch
-                    .as_ref()
-                    .and_then(Option::as_ref)
-                    .map(|v| v.number()),
-            )?,
+            epoch: signed(row.epoch.value().map(|v| v.number()))?,
             status: row.status().ok_or(())?,
             reattach_recovery: optional(row.extra.get("reattachRecovery"))?,
-            rule_id: row.rule_id.clone().flatten(),
+            rule_id: row.rule_id.value().cloned(),
             operation,
             cancel_requested: row.cancel_requested.unwrap_or(false),
             interactive: row.interactive.unwrap_or(false),
@@ -397,7 +384,7 @@ impl Fields {
                 .unwrap_or_default(),
             success_exit_codes,
             stdin_closed: row.stdin_closed.unwrap_or(false),
-            stdin_close_requested: row.stdin_close_requested.clone().flatten(),
+            stdin_close_requested: row.stdin_close_requested.value().cloned(),
             input_attempt,
         })
     }

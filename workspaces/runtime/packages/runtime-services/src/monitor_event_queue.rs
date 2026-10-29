@@ -68,18 +68,13 @@ pub fn enqueue_output_with_scope_in_transaction(
     else {
         return Ok(false);
     };
-    let Some(operation) = record.operation.as_ref().and_then(Option::as_ref) else {
+    let Some(operation) = record.operation.value() else {
         return Ok(false);
     };
     if record.status() != Some(studio_runtime_schema::studio_errors::MonitorStatus::Running)
         || operation.account_key.as_str() != scope.account
         || Some(operation.agent.as_str()) != record.agent()
-        || record
-            .epoch
-            .as_ref()
-            .and_then(Option::as_ref)
-            .map(|epoch| epoch.number())
-            != Some(operation.epoch.number())
+        || record.epoch.value().map(|epoch| epoch.number()) != Some(operation.epoch.number())
         || scope
             .expected_agent
             .is_some_and(|agent| record.agent() != Some(agent))
