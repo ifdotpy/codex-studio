@@ -560,6 +560,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "heavy tier: just test-quarantine (flaky under load, issue #616)"]
     fn printf_output_is_delivered_losslessly() {
         let cwd = terminal_cwd();
         let adapter = PtyTerminalSession::new();

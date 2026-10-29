@@ -17,10 +17,12 @@ test("Claude idle compaction settings and notice at 320 and 1200 pixels", async 
   const root = join(import.meta.dirname, "../../");
   const notice =
     "Compacted while idle, before the prompt cache expired. To turn it off, set Claude idle compaction to Off in Settings > Agent orchestration.";
+  const deferredNotice =
+    "Compacted on return with a summary prepared while idle. To turn it off, set Claude idle compaction to Off in Settings > Agent orchestration.";
   let settings: components["schemas"]["OrchestrationSettings"] = {
     childResultCoalesceSeconds: 10,
     idleSessionUnloadMinutes: 15,
-    idleCompaction: { mode: "off", minTokens: 200000 },
+    idleCompaction: { mode: "default", minTokens: 150000 },
   };
   const saved: (typeof settings)[] = [];
   await page.route("**/api/orchestration/settings", async (route) => {
@@ -69,15 +71,25 @@ test("Claude idle compaction settings and notice at 320 and 1200 pixels", async 
       await expect.poll(() => saved.at(-1)?.idleCompaction?.mode).toBe("log");
       await mode.selectOption("compact");
       const tokens = page.getByLabel("Idle compaction minimum context tokens");
-      await tokens.fill("100000");
+      await tokens.fill("60000");
       await tokens.blur();
       await page
         .getByRole("button", { name: "Save orchestration settings" })
         .click();
       await expect
         .poll(() => saved.at(-1)?.idleCompaction)
-        .toEqual({ mode: "compact", minTokens: 100000 });
-      await expect(page.getByRole("status")).toHaveText(notice);
+        .toEqual({ mode: "compact", minTokens: 60000 });
+      await mode.selectOption("compact_on_return");
+      await page
+        .getByRole("button", { name: "Save orchestration settings" })
+        .click();
+      await expect
+        .poll(() => saved.at(-1)?.idleCompaction)
+        .toEqual({ mode: "compact_on_return", minTokens: 60000 });
+      await expect(page.getByRole("status")).toHaveText([
+        notice,
+        deferredNotice,
+      ]);
       expect(
         await page.evaluate(
           () => document.documentElement.scrollWidth <= window.innerWidth,
