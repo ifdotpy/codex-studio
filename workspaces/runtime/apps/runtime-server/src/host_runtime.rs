@@ -195,7 +195,7 @@ enum VmAuthOwner<'a> {
 
 struct VmCodexAuthSource<'a> {
     account_key: &'a str,
-    account: &'a Value,
+    account: &'a studio_runtime_services::account_policy::PublicAccount,
     root_request_id: &'a str,
     owner: VmAuthOwner<'a>,
 }
@@ -205,7 +205,7 @@ struct ClaudeCredentialRequest<'a> {
     host_config: &'a Path,
     email: &'a str,
     account_key: &'a str,
-    original_account: &'a Value,
+    original_account: &'a studio_runtime_services::account_policy::PublicAccount,
     claude_bridge_dir: &'a Path,
     explicit_host_config: bool,
 }
@@ -930,19 +930,17 @@ async fn resolve_vm_launch_inputs(
     let account = snapshot
         .accounts
         .iter()
-        .find(|profile| {
-            profile.get("id").and_then(serde_json::Value::as_str) == Some(&request.account_key)
-        })
+        .find(|profile| profile.id.as_str() == Some(&request.account_key))
         .ok_or_else(|| WorkerError::PreparationRefused("account-driver/unavailable".into()))?;
-    if account.get("deleted") == Some(&serde_json::Value::Bool(true))
-        || account.get("disconnected") == Some(&serde_json::Value::Bool(true))
-        || account.get("status").and_then(serde_json::Value::as_str) != Some("ready")
+    if account.deleted.as_bool() == Some(true)
+        || account.disconnected.as_bool() == Some(true)
+        || account.status.as_str() != Some("ready")
     {
         return Err(WorkerError::PreparationRefused(
             "account-driver/unavailable".into(),
         ));
     }
-    let kind = ProviderKind::of_record(account).map_err(|_| {
+    let kind = account.provider().map_err(|_| {
         WorkerError::PreparationRefused("provider-session/unsupported-provider".into())
     })?;
     let provider = adapter(kind);
@@ -962,14 +960,12 @@ async fn resolve_vm_launch_inputs(
     let (command, environment, credential_path, credential_document, bootstrap) = if kind
         == ProviderKind::Claude
     {
-        let options = account
-            .get("claudeOptions")
-            .cloned()
-            .unwrap_or_else(|| serde_json::json!({}));
-        let options =
-            studio_runtime_services::claude_bridge::bridge_options(&options).map_err(|_| {
-                WorkerError::PreparationRefused("provider-session/claude-runtime-launch".into())
-            })?;
+        let options = studio_runtime_services::claude_bridge::bridge_options_public(
+            account.claude_options.as_ref(),
+        )
+        .map_err(|_| {
+            WorkerError::PreparationRefused("provider-session/claude-runtime-launch".into())
+        })?;
         // The host CLI path is not portable and can expose host layout.
         // The guest bridge resolves its own `claude` executable.
         let mut options = options;
@@ -1001,8 +997,8 @@ async fn resolve_vm_launch_inputs(
         let credential_path = format!("{profile_relative}/{}", provider.guest_credential_file());
         let credential_file = host_config.join(".credentials.json");
         let email = account
-            .get("email")
-            .and_then(Value::as_str)
+            .email
+            .as_str()
             .filter(|value| !value.is_empty())
             .ok_or_else(|| {
                 WorkerError::PreparationRefused("vm-credentials/account-identity".into())
@@ -1037,11 +1033,7 @@ async fn resolve_vm_launch_inputs(
             ("STUDIO_CLAUDE_OPTIONS".into(), options.to_string()),
             (
                 "STUDIO_CLAUDE_ACCOUNT".into(),
-                account
-                    .get("email")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("")
-                    .to_owned(),
+                account.email.as_str().unwrap_or("").to_owned(),
             ),
         ]);
         (
@@ -1112,8 +1104,8 @@ async fn read_vm_codex_bootstrap(
             "runtime-server/vm-codex-auth-file",
             move || -> Result<(Value, Option<f64>), WorkerError> {
                 let home = account
-                    .get("home")
-                    .and_then(Value::as_str)
+                    .home
+                    .as_str()
                     .map(PathBuf::from)
                     .or_else(|| {
                         std::env::var_os("HOME")
@@ -1142,8 +1134,11 @@ async fn read_vm_codex_bootstrap(
                 };
                 let credential = codex_vm_auth(
                     &bytes,
-                    account.get("_credentialIdentity").and_then(Value::as_str),
-                    account.get("accountId").and_then(Value::as_str),
+                    account
+                        .extensions
+                        .get("_credentialIdentity")
+                        .and_then(Value::as_str),
+                    account.account_id.as_str(),
                 )
                 .map_err(|error| {
                     WorkerError::PreparationRefused(
@@ -1290,10 +1285,10 @@ async fn read_vm_codex_bootstrap(
         .map_err(|_| WorkerError::TaskFailed)?
         .map_err(|_| WorkerError::PreparationPending("account-driver/unavailable".into()))?;
         let still_same = current.accounts.iter().any(|row| {
-            row.get("id").and_then(Value::as_str) == Some(account_key)
-                && row.get("accountId") == account.get("accountId")
-                && row.get("provider").and_then(Value::as_str) == Some(ProviderKind::Codex.key())
-                && row.get("status").and_then(Value::as_str) == Some("ready")
+            row.id.as_str() == Some(account_key)
+                && row.account_id == account.account_id
+                && row.provider.as_str() == Some(ProviderKind::Codex.key())
+                && row.status.as_str() == Some("ready")
         });
         if !still_same {
             return Err(WorkerError::PreparationRefused(
@@ -1363,11 +1358,11 @@ async fn refresh_vm_codex_token(
     let account = snapshot
         .accounts
         .iter()
-        .find(|row| row.get("id").and_then(Value::as_str) == Some(account_key))
+        .find(|row| row.id.as_str() == Some(account_key))
         .ok_or_else(|| WorkerError::PreparationRefused("vm-auth/account-unavailable".into()))?;
-    if account.get("provider").and_then(Value::as_str) != Some(ProviderKind::Codex.key())
-        || account.get("status").and_then(Value::as_str) != Some("ready")
-        || account.get("accountId").and_then(Value::as_str) != Some(previous_account_id)
+    if account.provider.as_str() != Some(ProviderKind::Codex.key())
+        || account.status.as_str() != Some("ready")
+        || account.account_id.as_str() != Some(previous_account_id)
     {
         return Err(WorkerError::PreparationRefused(
             "vm-auth/account-changed".into(),
@@ -1471,7 +1466,7 @@ fn read_vm_claude_credentials(
             false,
         )?;
         let config_dir = host_config.to_string_lossy();
-        let binary = studio_runtime_services::account_driver::claude::resolve_claude_binary(
+        let binary = studio_runtime_services::account_driver::claude::resolve_public_claude_binary(
             original_account,
         )
         .ok_or_else(|| {
@@ -1771,7 +1766,7 @@ fn unix_time_ms() -> Result<f64, WorkerError> {
 fn verify_vm_claude_account<R: studio_runtime_services::account_driver::ProviderAuthReader>(
     accounts: &AccountDriver<R>,
     account_key: &str,
-    original_account: &Value,
+    original_account: &studio_runtime_services::account_policy::PublicAccount,
     expected_pin: &Value,
     email: &str,
     refresh_auth_status: bool,
@@ -1792,7 +1787,7 @@ fn verify_vm_claude_account<R: studio_runtime_services::account_driver::Provider
     let current = snapshot
         .accounts
         .iter()
-        .find(|row| row.get("id").and_then(Value::as_str) == Some(account_key))
+        .find(|row| row.id.as_str() == Some(account_key))
         .ok_or_else(|| WorkerError::PreparationRefused("vm-credentials/account-identity".into()))?;
     if !accounts
         .auth_pin_matches(account_key, expected_pin)
@@ -1802,28 +1797,26 @@ fn verify_vm_claude_account<R: studio_runtime_services::account_driver::Provider
             "vm-credentials/account-changed".into(),
         ));
     }
-    for field in [
-        "provider",
-        "home",
-        "accountId",
-        "email",
-        "claudeOptions",
-        "deleted",
-        "disconnected",
-        "duplicateOf",
-        "_credentialIdentity",
-    ] {
-        if current.get(field) != original_account.get(field) {
-            return Err(WorkerError::PreparationRefused(
-                "vm-credentials/account-changed".into(),
-            ));
-        }
+    if current.provider != original_account.provider
+        || current.home != original_account.home
+        || current.account_id != original_account.account_id
+        || current.email != original_account.email
+        || current.claude_options != original_account.claude_options
+        || current.deleted != original_account.deleted
+        || current.disconnected != original_account.disconnected
+        || current.duplicate_of != original_account.duplicate_of
+        || current.extensions.get("_credentialIdentity")
+            != original_account.extensions.get("_credentialIdentity")
+    {
+        return Err(WorkerError::PreparationRefused(
+            "vm-credentials/account-changed".into(),
+        ));
     }
     let expected_account_id = format!("{CLAUDE_ACCOUNT_ID_PREFIX}{email}");
-    if current.get("status").and_then(Value::as_str) != Some("ready")
-        || current.get("provider").and_then(Value::as_str) != Some(ProviderKind::Claude.key())
-        || current.get("email").and_then(Value::as_str) != Some(email)
-        || current.get("accountId").and_then(Value::as_str) != Some(expected_account_id.as_str())
+    if current.status.as_str() != Some("ready")
+        || current.provider.as_str() != Some(ProviderKind::Claude.key())
+        || current.email.as_str() != Some(email)
+        || current.account_id.as_str() != Some(expected_account_id.as_str())
     {
         return Err(WorkerError::PreparationRefused(
             "vm-credentials/account-identity".into(),
@@ -3485,7 +3478,8 @@ mod codex_vm_auth_tests {
                 generation: 1,
             },
         };
-        let account = json!({"home":home,"accountId":"account"});
+        let account = <studio_runtime_services::account_policy::PublicAccount as serde::Deserialize>::deserialize(json!({"home":home,"accountId":"account"}))
+            .expect("account fixture");
         for _ in 0..2 {
             let result = read_vm_codex_bootstrap(
                 accounts.clone(),
@@ -3525,6 +3519,8 @@ mod codex_vm_auth_tests {
             1,
         );
         let call = |account: Value| {
+            let account: studio_runtime_services::account_policy::PublicAccount =
+                serde_json::from_value(account).expect("account fixture");
             let accounts = accounts.clone();
             let store = &store;
             let owner = &owner;
@@ -3637,7 +3633,7 @@ mod codex_vm_auth_tests {
             &store,
             VmCodexAuthSource {
                 account_key: "fake",
-                account: &account,
+                account: &serde_json::from_value(account.clone()).expect("account fixture"),
                 root_request_id: "fake",
                 owner: VmAuthOwner::Callback { source: &owner },
             },
@@ -3727,11 +3723,9 @@ pub fn account_home<R: ProviderAuthReader>(
     let initial_profile = initial
         .accounts
         .iter()
-        .find(|profile| profile["id"] == key)
+        .find(|profile| profile.id.as_str() == Some(key))
         .ok_or_else(|| WorkerError::PreparationRefused("account-driver/unavailable".into()))?;
-    if studio_runtime_providers::ProviderKind::key_of(initial_profile)
-        != Some(ProviderKind::Codex.key())
-    {
+    if initial_profile.provider_kind().map(ProviderKind::key) != Some(ProviderKind::Codex.key()) {
         return Err(WorkerError::PreparationRefused(
             "provider-session/claude-runtime-launch".into(),
         ));
@@ -3751,20 +3745,23 @@ pub fn account_home<R: ProviderAuthReader>(
     let profile = snapshot
         .accounts
         .iter()
-        .find(|profile| profile["id"] == key)
+        .find(|profile| profile.id.as_str() == Some(key))
         .ok_or_else(|| WorkerError::PreparationRefused("account-driver/unavailable".into()))?;
-    if studio_runtime_providers::ProviderKind::key_of(profile) != Some(ProviderKind::Codex.key()) {
+    if profile.provider_kind().map(ProviderKind::key) != Some(ProviderKind::Codex.key()) {
         return Err(WorkerError::PreparationRefused(
             "provider-session/claude-runtime-launch".into(),
         ));
     }
-    if profile["disconnected"] == true || profile["deleted"] == true || profile["status"] != "ready"
+    if profile.disconnected.as_bool() == Some(true)
+        || profile.deleted.as_bool() == Some(true)
+        || profile.status.as_str() != Some("ready")
     {
         return Err(WorkerError::PreparationRefused(
             "account-driver/unavailable".into(),
         ));
     }
-    let home = profile["home"]
+    let home = profile
+        .home
         .as_str()
         .filter(|home| !home.is_empty())
         .ok_or_else(|| WorkerError::PreparationRefused("account-driver/profile-home".into()))?
@@ -3783,21 +3780,33 @@ fn selected_account(
         .map_err(|_| WorkerError::PreparationRefused("account-driver/unavailable".into()))?;
     // A sign-in account is not listed until it has an identity; its sign-in
     // request still launches its session.
-    let profile = match snapshot
+    let (kind, profile) = match snapshot
         .accounts
         .iter()
-        .find(|profile| profile["id"] == key)
+        .find(|profile| profile.id.as_str() == Some(key))
     {
-        Some(profile) => profile.clone(),
-        None => accounts
-            .login_launch_record(key)
-            .ok()
-            .flatten()
-            .ok_or_else(|| WorkerError::PreparationRefused("account-driver/unavailable".into()))?,
+        Some(profile) => {
+            let kind = profile.provider().map_err(|_| {
+                WorkerError::PreparationRefused("provider-session/unsupported-provider".into())
+            })?;
+            // The provider launch API also accepts private login profiles.
+            let value = serde_json::to_value(profile).map_err(|_| WorkerError::TaskFailed)?;
+            (kind, value)
+        }
+        None => {
+            let profile = accounts
+                .login_launch_record(key)
+                .ok()
+                .flatten()
+                .ok_or_else(|| {
+                    WorkerError::PreparationRefused("account-driver/unavailable".into())
+                })?;
+            let kind = ProviderKind::of_record(&profile).map_err(|_| {
+                WorkerError::PreparationRefused("provider-session/unsupported-provider".into())
+            })?;
+            (kind, profile)
+        }
     };
-    let kind = ProviderKind::of_record(&profile).map_err(|_| {
-        WorkerError::PreparationRefused("provider-session/unsupported-provider".into())
-    })?;
     if kind == ProviderKind::Codex {
         let (home, isolated) = account_home(accounts, key)?;
         return Ok((kind, home, isolated, profile));
@@ -4032,7 +4041,9 @@ IFS= read -r release
         .unwrap();
         assert_ne!(accounts.auth_pin("claude-test").unwrap(), expected_pin);
         let mut changed_original = original;
-        changed_original["email"] = json!("other@example.invalid");
+        changed_original.email = studio_runtime_services::account_policy::PublicString::String(
+            "other@example.invalid".into(),
+        );
         assert!(matches!(
             verify_vm_claude_account(
                 &accounts,

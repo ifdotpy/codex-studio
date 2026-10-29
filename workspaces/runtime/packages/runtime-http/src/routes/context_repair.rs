@@ -50,11 +50,11 @@ async fn repair(
                 let account = snapshot
                     .accounts
                     .iter()
-                    .find(|row| row.get("id").and_then(Value::as_str) == Some(account_key))
+                    .find(|row| row.id.as_str() == Some(account_key))
                     .ok_or(RepairError::AccountSession)?;
                 let home = account
-                    .get("home")
-                    .and_then(Value::as_str)
+                    .home
+                    .as_str()
                     .map(PathBuf::from)
                     .ok_or(RepairError::AccountSession)?;
                 Ok::<_, RepairError>(home)

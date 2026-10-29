@@ -472,6 +472,10 @@ async fn fixture(root_dir: &Path) -> (RuntimeStore, BTreeMap<String, Value>) {
 async fn session_cost_matches_the_row_scanning_golden_answers() {
     let temp = tempfile::tempdir().expect("temporary state");
     let (store, accounts) = fixture(temp.path()).await;
+    let accounts = accounts
+        .into_iter()
+        .map(|(key, value)| (key, serde_json::from_value(value).expect("account fixture")))
+        .collect();
     let mut answers = BTreeMap::new();
     for agent in ["lead", "codex-worker", "claude-worker", "other-root"] {
         let answer =

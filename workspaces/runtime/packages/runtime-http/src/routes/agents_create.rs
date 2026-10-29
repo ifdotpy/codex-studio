@@ -296,32 +296,26 @@ impl studio_runtime_services::provider_callbacks::ManagedCreationAccountRead
             .accounts
             .iter()
             .filter_map(|row| {
-                let key = row.get("id")?.as_str()?.to_owned();
+                let key = row.id.as_str()?.to_owned();
                 Some(Candidate {
                     account_key: key,
                     identity: ManagedAccountIdentity {
-                        provider: studio_runtime_providers::ProviderKind::of_record(row).ok()?,
-                        home: row.get("home").and_then(Value::as_str).map(str::to_owned),
-                        account_id: row
-                            .get("accountId")
-                            .and_then(Value::as_str)
+                        provider: row.provider_kind()?,
+                        home: row.home.as_str().map(str::to_owned),
+                        account_id: row.account_id.as_str()
                             .map(str::to_owned),
-                        email: row.get("email").and_then(Value::as_str).map(str::to_owned),
+                        email: row.email.as_str().map(str::to_owned),
                     },
-                    ready: row.get("status").and_then(Value::as_str) == Some("ready"),
-                    can_attempt_native_proof: row
-                        .get("canAttemptNativeProof")
-                        .and_then(Value::as_bool)
+                    ready: row.status.as_str() == Some("ready"),
+                    can_attempt_native_proof: row.can_attempt_native_proof.as_bool()
                         == Some(true),
-                    disconnected: row.get("disconnected").and_then(Value::as_bool) == Some(true),
-                    deleted: row.get("deleted").and_then(Value::as_bool) == Some(true),
-                    duplicate: row.get("duplicateOf").and_then(Value::as_str).is_some(),
+                    disconnected: row.disconnected.as_bool() == Some(true),
+                    deleted: row.deleted.as_bool() == Some(true),
+                    duplicate: row.duplicate_of.as_str().is_some(),
                     max_running_turns:
-                        studio_runtime_services::account_start_gate::StartThrottle::of_record(row)?
+                        studio_runtime_services::account_start_gate::StartThrottle::of_public_account(row)?
                             .max_running,
-                    group: row
-                        .get(studio_runtime_services::account_preference::ACCOUNT_GROUP_FIELD)
-                        .and_then(Value::as_str)
+                    group: row.group.as_str()
                         .map(str::to_owned),
                 })
             })
@@ -344,29 +338,27 @@ impl studio_runtime_services::provider_callbacks::ManagedCreationAccountRead
         let row = snapshot
             .accounts
             .iter()
-            .find(|row| row.get("id").and_then(Value::as_str) == Some(account_key))
+            .find(|row| row.id.as_str() == Some(account_key))
             .ok_or(
                 studio_runtime_services::provider_callbacks::ManagedCreationAccountError::Unknown,
             )?;
-        if row.get("deleted").and_then(Value::as_bool) == Some(true) {
+        if row.deleted.as_bool() == Some(true) {
             return Err(
                 studio_runtime_services::provider_callbacks::ManagedCreationAccountError::Deleted,
             );
         }
-        if row.get("disconnected").and_then(Value::as_bool) == Some(true) {
+        if row.disconnected.as_bool() == Some(true) {
             return Err(studio_runtime_services::provider_callbacks::ManagedCreationAccountError::Disconnected);
         }
         Ok(
             studio_runtime_services::provider_callbacks::ManagedAccountIdentity {
-                provider: studio_runtime_providers::ProviderKind::of_record(row).map_err(|_| {
-                    studio_runtime_services::provider_callbacks::ManagedCreationAccountError::Unknown
-                })?,
-                home: row.get("home").and_then(Value::as_str).map(str::to_owned),
-                account_id: row
-                    .get("accountId")
-                    .and_then(Value::as_str)
+                provider: row.provider_kind().ok_or(
+                    studio_runtime_services::provider_callbacks::ManagedCreationAccountError::Unknown,
+                )?,
+                home: row.home.as_str().map(str::to_owned),
+                account_id: row.account_id.as_str()
                     .map(str::to_owned),
-                email: row.get("email").and_then(Value::as_str).map(str::to_owned),
+                email: row.email.as_str().map(str::to_owned),
             },
         )
     }
@@ -972,7 +964,7 @@ async fn create_agent(
 }
 
 fn catalog_admission_candidates(
-    rows: &[Value],
+    rows: &[studio_runtime_services::account_policy::PublicAccount],
     ordered_keys: &[String],
     parent_account: Option<&str>,
     account_is_pinned: bool,
@@ -983,18 +975,18 @@ fn catalog_admission_candidates(
         .filter_map(|key| {
             let row = rows
                 .iter()
-                .find(|row| row.get("id").and_then(Value::as_str) == Some(key.as_str()))?;
-            let home = row.get("home")?.as_str()?.to_owned();
-            if row.get("disconnected") == Some(&Value::Bool(true))
-                || row.get("deleted") == Some(&Value::Bool(true))
-                || row.get("duplicateOf").is_some_and(|value| !value.is_null())
+                .find(|row| row.id.as_str() == Some(key.as_str()))?;
+            let home = row.home.as_str()?.to_owned();
+            if row.disconnected.as_bool() == Some(true)
+                || row.deleted.as_bool() == Some(true)
+                || row.duplicate_of.is_present_non_null()
                 || (Some(key.as_str()) != parent_account
-                    && row.get("status").and_then(Value::as_str) != Some("ready")
-                    && row.get("canAttemptNativeProof") != Some(&Value::Bool(true)))
+                    && row.status.as_str() != Some("ready")
+                    && row.can_attempt_native_proof.as_bool() != Some(true))
             {
                 return None;
             }
-            let provider = ProviderKind::of_record(row).ok()?;
+            let provider = row.provider_kind()?;
             if !account_is_pinned && expected_provider.is_some_and(|wanted| wanted != provider) {
                 return None;
             }
@@ -1171,8 +1163,8 @@ async fn wait_for_agent_catalog(
                             snapshot
                                 .accounts
                                 .iter()
-                                .find(|row| row.get("id").and_then(Value::as_str) == Some(key))
-                                .and_then(|row| ProviderKind::of_record(row).ok())
+                                .find(|row| row.id.as_str() == Some(key))
+                                .and_then(|row| row.provider_kind())
                                 == Some(expected)
                         })
                     {
@@ -1185,7 +1177,7 @@ async fn wait_for_agent_catalog(
                     add(parent_account.as_deref(), provider);
                     add(snapshot.default_account_key.as_str(), provider);
                     for row in &snapshot.accounts {
-                        let key = row.get("id").and_then(Value::as_str);
+                        let key = row.id.as_str();
                         add(key, provider);
                     }
                 }
@@ -1596,7 +1588,7 @@ async fn finish_title_request(
         )
         .await;
         match account_snapshot {
-            Ok(Ok(accounts)) => catalog.retain_accounts(&accounts),
+            Ok(Ok(accounts)) => catalog.retain_public_accounts(&accounts),
             _ => {
                 settle_failure(store, agent_id, request_id).await;
                 return;
@@ -1959,7 +1951,10 @@ mod creation_catalog_flow_tests {
             json!({"id":"parent-claude","home":"/claude","provider":"claude","status":"ready"}),
             json!({"id":"default-codex","home":"/codex","provider":"codex","status":"ready"}),
             json!({"id":"later-codex","home":"/codex-2","provider":"codex","status":"ready"}),
-        ];
+        ]
+        .into_iter()
+        .map(|row| serde_json::from_value(row).expect("account fixture"))
+        .collect::<Vec<_>>();
         let candidates = catalog_admission_candidates(
             &rows,
             &[
@@ -1990,8 +1985,12 @@ mod creation_catalog_flow_tests {
 
     #[test]
     fn no_automatic_provider_candidate_is_validated_by_the_selector() {
-        let rows =
-            vec![json!({"id":"only-claude","home":"/claude","provider":"claude","status":"ready"})];
+        let rows = vec![
+            serde_json::from_value(
+                json!({"id":"only-claude","home":"/claude","provider":"claude","status":"ready"}),
+            )
+            .expect("account fixture"),
+        ];
         assert!(
             catalog_admission_candidates(
                 &rows,

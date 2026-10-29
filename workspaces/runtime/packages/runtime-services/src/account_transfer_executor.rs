@@ -1004,7 +1004,7 @@ impl TransferExecutor for AccountTransferExecutor {
                         "The account registry is unavailable for transfer preparation",
                     )
                 })?;
-                self.catalog.retain_accounts(&snapshot.accounts);
+                self.catalog.retain_public_accounts(&snapshot.accounts);
             }
             let (home, registered_provider) =
                 self.catalog

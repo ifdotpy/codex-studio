@@ -360,6 +360,34 @@ fn nearest_existing_directory(path: &Path) -> Result<PathBuf, HistoryError> {
     }
 }
 
+// A changed/error account is still watched; only history profile selection refuses it.
+fn history_profile(
+    snapshot: &studio_runtime_services::account_policy::AccountsSnapshot,
+    key: &str,
+) -> Option<PathBuf> {
+    snapshot
+        .accounts
+        .iter()
+        .find(|account| account.id.as_str() == Some(key))
+        .filter(|account| !matches!(account.status.as_str(), Some("changed" | "error")))
+        .and_then(|account| account.home.as_str())
+        .filter(|home| !home.is_empty())
+        .map(PathBuf::from)
+}
+fn history_profile_homes(
+    snapshot: &studio_runtime_services::account_policy::AccountsSnapshot,
+) -> BTreeMap<String, PathBuf> {
+    snapshot
+        .accounts
+        .iter()
+        .filter_map(|account| {
+            let id = account.id.as_str()?;
+            let home = account.home.as_str()?;
+            (!home.is_empty()).then(|| (id.to_owned(), PathBuf::from(home)))
+        })
+        .collect()
+}
+
 impl HistoryRuntime {
     pub(crate) fn new(store: Arc<RuntimeStore>, accounts: Arc<AccountDriver>) -> Self {
         Self {
@@ -400,18 +428,7 @@ impl HistoryRuntime {
             let snapshot = accounts
                 .snapshot()
                 .map_err(|_| HistoryError::read(ACCOUNT_REGISTRY))?;
-            // Python `accounts.home` refuses unknown accounts and accounts in
-            // the changed or error state; the importer records that refusal.
-            // The active snapshot omits signed-out logins and deleted accounts.
-            snapshot
-                .accounts
-                .iter()
-                .find(|account| account["id"].as_str() == Some(account_key))
-                .filter(|account| !matches!(account["status"].as_str(), Some("changed" | "error")))
-                .and_then(|account| account["home"].as_str())
-                .filter(|home| !home.is_empty())
-                .map(PathBuf::from)
-                .ok_or(HistoryError::ProfileUnavailable)
+            history_profile(&snapshot, account_key).ok_or(HistoryError::ProfileUnavailable)
         };
         self.collector
             .step(
@@ -438,17 +455,7 @@ impl HistoryRuntime {
             "runtime-server/history-account-profiles",
             move || {
                 let snapshot = accounts.snapshot()?;
-                Ok::<_, HistoryError>(
-                    snapshot
-                        .accounts
-                        .iter()
-                        .filter_map(|account| {
-                            let id = account.get("id")?.as_str()?;
-                            let home = account.get("home")?.as_str()?;
-                            (!home.is_empty()).then(|| (id.to_owned(), PathBuf::from(home)))
-                        })
-                        .collect::<BTreeMap<_, _>>(),
-                )
+                Ok::<_, HistoryError>(history_profile_homes(&snapshot))
             },
         )
         .await
@@ -1078,6 +1085,32 @@ fn history_error_backoff(failures: u32) -> Duration {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn checked_registry_profiles_keep_listing_and_history_rules() {
+        use super::{history_profile, history_profile_homes};
+        use studio_runtime_services::account_policy::AccountPolicyState;
+        let registry = serde_json::json!({"version":2,"defaultAccountKey":"a","accounts":{
+            "a":{"id":"a","home":"/a","provider":"codex","label":"A","source":"CLI","status":"ready"},
+            "changed":{"id":"changed","home":"/changed","provider":"codex","label":"C","source":"CLI","status":"changed"},
+            "error":{"id":"error","home":"/error","provider":"codex","label":"E","source":"CLI","status":"error"},
+            "empty":{"id":"empty","home":"","provider":"codex","label":"Empty","source":"CLI","status":"ready"},
+            "login-hidden":{"id":"login-hidden","home":"/hidden","provider":"codex","label":"Hidden","source":"CLI","status":"signedOut"}
+        },"logins":{}});
+        let snapshot = AccountPolicyState::from_startup(Some(registry.to_string().as_bytes()), [])
+            .expect("registry")
+            .accounts();
+        assert_eq!(
+            history_profile(&snapshot, "a"),
+            Some(std::path::PathBuf::from("/a"))
+        );
+        for key in ["changed", "error", "empty", "login-hidden", "missing"] {
+            assert_eq!(history_profile(&snapshot, key), None);
+        }
+        let homes = history_profile_homes(&snapshot);
+        assert!(homes.contains_key("changed") && homes.contains_key("error"));
+        assert!(!homes.contains_key("empty") && !homes.contains_key("login-hidden"));
+    }
+
     use super::*;
     use serde_json::{Value, json};
     use tempfile::tempdir;

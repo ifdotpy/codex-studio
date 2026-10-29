@@ -318,7 +318,7 @@ pub fn session_cost(store: &RuntimeStore, agent_id: &str) -> Result<Value, Costs
 pub fn session_cost_with_account_profiles(
     store: &RuntimeStore,
     agent_id: &str,
-    accounts: &BTreeMap<String, Value>,
+    accounts: &BTreeMap<String, crate::account_policy::PublicAccount>,
 ) -> Result<Value, CostsError> {
     session_cost_inner(store, agent_id, accounts, true)
 }
@@ -326,7 +326,7 @@ pub fn session_cost_with_account_profiles(
 fn session_cost_inner(
     store: &RuntimeStore,
     agent_id: &str,
-    accounts: &BTreeMap<String, Value>,
+    accounts: &BTreeMap<String, crate::account_policy::PublicAccount>,
     has_account_profiles: bool,
 ) -> Result<Value, CostsError> {
     let root = store.root().to_path_buf();
@@ -341,7 +341,7 @@ fn session_cost_on_reader(
     db: &mut rusqlite::Connection,
     state_root: &Path,
     agent_id: &str,
-    accounts: &BTreeMap<String, Value>,
+    accounts: &BTreeMap<String, crate::account_policy::PublicAccount>,
     has_account_profiles: bool,
 ) -> Result<Value, CostsError> {
     let tx = db.transaction()?;
@@ -472,7 +472,7 @@ fn read_usage_snapshot(
 pub fn usage_reconciliation(
     store: &RuntimeStore,
     agent_id: &str,
-    accounts: &BTreeMap<String, Value>,
+    accounts: &BTreeMap<String, crate::account_policy::PublicAccount>,
 ) -> Result<Value, CostsError> {
     let root = store.root().to_owned();
     let agent_id = agent_id.to_owned();
@@ -485,7 +485,7 @@ fn usage_reconciliation_on_reader(
     db: &mut rusqlite::Connection,
     root: &Path,
     agent_id: &str,
-    accounts: &BTreeMap<String, Value>,
+    accounts: &BTreeMap<String, crate::account_policy::PublicAccount>,
 ) -> Result<Value, CostsError> {
     use rusqlite::OptionalExtension;
     use studio_runtime_schema::usage::{UsageObservation, UsageScope};
@@ -792,7 +792,7 @@ fn price_response(
 
 fn read_codex_evidence(
     member: &CostMember,
-    accounts: &BTreeMap<String, Value>,
+    accounts: &BTreeMap<String, crate::account_policy::PublicAccount>,
     rows: &mut BTreeMap<String, NativeResponse>,
     budget: &mut EvidenceBudget,
 ) -> Result<(), CostsError> {
@@ -819,8 +819,8 @@ fn read_codex_evidence(
         }
         let Some(profile) = accounts
             .get(&account)
-            .filter(|account| ProviderKind::of_record(account) == Ok(ProviderKind::Codex))
-            .and_then(|account| account["home"].as_str())
+            .filter(|account| account.provider_kind() == Some(ProviderKind::Codex))
+            .and_then(|account| account.home.as_str())
         else {
             continue;
         };
@@ -1363,7 +1363,7 @@ impl EvidenceBudget {
 fn read_local_claude_usage(
     state_root: &Path,
     members: &[(String, CostMember)],
-    accounts: &BTreeMap<String, Value>,
+    accounts: &BTreeMap<String, crate::account_policy::PublicAccount>,
 ) -> Result<Vec<LocalClaudeUsage>, CostsError> {
     read_local_claude_usage_inner(state_root, members, accounts, None)
 }
@@ -1371,7 +1371,7 @@ fn read_local_claude_usage(
 fn read_local_claude_usage_inner(
     state_root: &Path,
     members: &[(String, CostMember)],
-    accounts: &BTreeMap<String, Value>,
+    accounts: &BTreeMap<String, crate::account_policy::PublicAccount>,
     mut budget: Option<&mut EvidenceBudget>,
 ) -> Result<Vec<LocalClaudeUsage>, CostsError> {
     let mut sessions = BTreeSet::new();
@@ -1536,20 +1536,20 @@ fn read_local_claude_usage_inner(
     Ok(rows.into_values().collect())
 }
 
-fn account_claude_config(account_key: &str, accounts: &BTreeMap<String, Value>) -> Option<PathBuf> {
+fn account_claude_config(
+    account_key: &str,
+    accounts: &BTreeMap<String, crate::account_policy::PublicAccount>,
+) -> Option<PathBuf> {
     let account = accounts.get(account_key)?;
-    if ProviderKind::of_record(account) != Ok(ProviderKind::Claude) {
+    if account.provider_kind() != Some(ProviderKind::Claude) {
         return None;
     }
     let config_dir = account
-        .get("claudeOptions")
-        .and_then(|options| options.get("configDir"))
-        .and_then(Value::as_str)
+        .claude_options
+        .as_ref()
+        .and_then(|options| options.config_dir.as_str())
         .filter(|path| !path.is_empty());
-    let home = account
-        .get("home")
-        .and_then(Value::as_str)
-        .filter(|path| !path.is_empty());
+    let home = account.home.as_str().filter(|path| !path.is_empty());
     let path = config_dir
         .or(home)
         .map(PathBuf::from)
@@ -2142,7 +2142,10 @@ mod tests {
 
     fn reconciliation_journal_fixture(
         root: &std::path::Path,
-    ) -> (Vec<(String, CostMember)>, BTreeMap<String, Value>) {
+    ) -> (
+        Vec<(String, CostMember)>,
+        BTreeMap<String, crate::account_policy::PublicAccount>,
+    ) {
         let profile = root.join("profile");
         fs::create_dir_all(profile.join("projects/project")).expect("project");
         fs::write(profile.join("projects/project/thread.jsonl"),
@@ -2154,14 +2157,20 @@ mod tests {
             )],
             BTreeMap::from([(
                 "claude".into(),
-                json!({"provider":"claude","claudeOptions":{"configDir":profile}}),
+                <crate::account_policy::PublicAccount as serde::Deserialize>::deserialize(
+                    json!({"provider":"claude","claudeOptions":{"configDir":profile}}),
+                )
+                .expect("account fixture"),
             )]),
         )
     }
 
     fn reconciliation_codex_fixture(
         root: &std::path::Path,
-    ) -> (CostMember, BTreeMap<String, Value>) {
+    ) -> (
+        CostMember,
+        BTreeMap<String, crate::account_policy::PublicAccount>,
+    ) {
         fs::create_dir_all(root.join("sessions")).expect("sessions");
         let mut lines = vec![
             json!({"type":"session_meta","payload":{"id":"thread"}}),
@@ -2182,7 +2191,13 @@ mod tests {
         .expect("rollout");
         (
             member(json!({"provider":"codex","accountKey":"codex","threadId":"thread"})),
-            BTreeMap::from([("codex".into(), json!({"provider":"codex","home":root}))]),
+            BTreeMap::from([(
+                "codex".into(),
+                <crate::account_policy::PublicAccount as serde::Deserialize>::deserialize(
+                    json!({"provider":"codex","home":root}),
+                )
+                .expect("account fixture"),
+            )]),
         )
     }
 
@@ -2517,7 +2532,10 @@ mod tests {
         let member = member(json!({"provider":"codex","accountKey":"codex","threadId":"thread"}));
         let accounts = BTreeMap::from([(
             "codex".into(),
-            json!({"provider":"codex","home":root.path()}),
+            <crate::account_policy::PublicAccount as serde::Deserialize>::deserialize(
+                json!({"provider":"codex","home":root.path()}),
+            )
+            .expect("account fixture"),
         )]);
         let mut rows = BTreeMap::new();
         let mut budget = super::EvidenceBudget::default();
@@ -2607,7 +2625,10 @@ mod tests {
         let member = member(json!({"provider":"codex","accountKey":"codex","threadId":"thread"}));
         let accounts = BTreeMap::from([(
             "codex".into(),
-            json!({"provider":"codex","home":directory.path()}),
+            <crate::account_policy::PublicAccount as serde::Deserialize>::deserialize(
+                json!({"provider":"codex","home":directory.path()}),
+            )
+            .expect("account fixture"),
         )]);
         let mut native = BTreeMap::new();
         let mut budget = super::EvidenceBudget::default();
@@ -2813,11 +2834,17 @@ mod tests {
         let accounts = BTreeMap::from([
             (
                 "current".to_owned(),
-                json!({"provider":"claude", "claudeOptions":{"configDir":current_profile}}),
+                <crate::account_policy::PublicAccount as serde::Deserialize>::deserialize(
+                    json!({"provider":"claude", "claudeOptions":{"configDir":current_profile}}),
+                )
+                .expect("account fixture"),
             ),
             (
                 "previous".to_owned(),
-                json!({"provider":"claude", "claudeOptions":{"configDir":previous_profile}}),
+                <crate::account_policy::PublicAccount as serde::Deserialize>::deserialize(
+                    json!({"provider":"claude", "claudeOptions":{"configDir":previous_profile}}),
+                )
+                .expect("account fixture"),
             ),
         ]);
         let members = vec![(
@@ -2886,7 +2913,10 @@ mod tests {
         .expect("write log");
         let accounts = BTreeMap::from([(
             "acct".to_owned(),
-            json!({"provider":"claude","claudeOptions":{"configDir":profile}}),
+            <crate::account_policy::PublicAccount as serde::Deserialize>::deserialize(
+                json!({"provider":"claude","claudeOptions":{"configDir":profile}}),
+            )
+            .expect("account fixture"),
         )]);
         let members = vec![(
             "agent".to_owned(),
@@ -2938,7 +2968,10 @@ mod tests {
         .expect("write large native log");
         let accounts = BTreeMap::from([(
             "acct".to_owned(),
-            json!({"provider":"claude","claudeOptions":{"configDir":profile}}),
+            <crate::account_policy::PublicAccount as serde::Deserialize>::deserialize(
+                json!({"provider":"claude","claudeOptions":{"configDir":profile}}),
+            )
+            .expect("account fixture"),
         )]);
         for (thread, native, bytes) in [
             ("thread-small", "native-small", 1_024),
@@ -3000,7 +3033,10 @@ mod tests {
         .expect("write ignored history");
         let accounts = BTreeMap::from([(
             "account".to_owned(),
-            json!({"provider":"openai", "claudeOptions":{"configDir":config}}),
+            <crate::account_policy::PublicAccount as serde::Deserialize>::deserialize(
+                json!({"provider":"openai", "claudeOptions":{"configDir":config}}),
+            )
+            .expect("account fixture"),
         )]);
         let members = vec![(
             "agent".to_owned(),
@@ -3112,7 +3148,10 @@ mod tests {
         ));
         let accounts = BTreeMap::from([(
             "claude".to_owned(),
-            json!({"provider":"claude", "claudeOptions":{"configDir":profile}}),
+            <crate::account_policy::PublicAccount as serde::Deserialize>::deserialize(
+                json!({"provider":"claude", "claudeOptions":{"configDir":profile}}),
+            )
+            .expect("account fixture"),
         )]);
 
         let result = session_cost_with_account_profiles(&store, "agent", &accounts)

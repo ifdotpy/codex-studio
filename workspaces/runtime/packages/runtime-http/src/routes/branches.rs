@@ -872,27 +872,24 @@ async fn ensure_branch_model_catalog(state: &HttpState, account_key: &str) -> Re
     )
     .await
     .map_err(|_| ApiError::internal())??;
-    state.model_catalog.retain_accounts(&snapshot.accounts);
+    state
+        .model_catalog
+        .retain_public_accounts(&snapshot.accounts);
     state
         .model_catalog
         .set_account_session(state.account_session.clone());
     let account = snapshot
         .accounts
         .iter()
-        .find(|row| row.get("id").and_then(Value::as_str) == Some(account_key))
+        .find(|row| row.id.as_str() == Some(account_key))
         .ok_or_else(|| bad_request("Unknown Codex account"))?;
-    if matches!(
-        account.get("status").and_then(Value::as_str),
-        Some("changed" | "error")
-    ) {
+    if matches!(account.status.as_str(), Some("changed" | "error")) {
         return Err(bad_request("Account is unavailable"));
     }
-    let home = account
-        .get("home")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let provider = studio_runtime_providers::ProviderKind::of_record(account)
-        .map_err(|_| bad_request("Account provider is unknown"))?;
+    let home = account.home.as_str().unwrap_or_default();
+    let provider = account
+        .provider_kind()
+        .ok_or_else(|| bad_request("Account provider is unknown"))?;
     match state
         .model_catalog
         .wait_for_admission_catalog(account_key, home, provider)

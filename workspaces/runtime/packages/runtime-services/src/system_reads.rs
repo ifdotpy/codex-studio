@@ -144,10 +144,19 @@ pub fn ui_summary(
     connection: &rusqlite::Transaction<'_>,
     account_snapshot: Option<crate::account_policy::AccountsSnapshot>,
 ) -> Result<Value, StoreError> {
-    let accounts=account_snapshot.map_or_else(Vec::new,|snapshot|snapshot.accounts.iter().filter_map(|account|{
-        let provider=studio_runtime_providers::ProviderKind::of_record(account).ok()?.key();
-        Some(json!({"accountKey":account["id"],"provider":provider,"email":account["email"],"plan":account["plan"],"status":if truthy(account.get("disconnected")){"signedOut"}else{account["status"].as_str().unwrap_or("error")},"label":account["label"].as_str().unwrap_or("Account"),"isDefault":account["id"]==snapshot.default_account_key}))
-    }).collect::<Vec<_>>());
+    let accounts = account_snapshot.map_or_else(Vec::new, |snapshot| {
+        snapshot.accounts.iter().filter_map(|account| {
+            let provider = account.provider.as_str()?.parse::<studio_runtime_providers::ProviderKind>().ok()?;
+            Some(json!({
+                "accountKey": account.id, "provider": provider.key(),
+                "email": account.email,
+                "plan": account.plan,
+                "status": if account.disconnected.truthy() { "signedOut" } else { account.status.as_str().unwrap_or("error") },
+                "label": account.label.as_str().unwrap_or("Account"),
+                "isDefault": account.id.equals_json(&snapshot.default_account_key),
+            }))
+        }).collect::<Vec<_>>()
+    });
     let system = if cfg!(target_os = "macos") {
         "Darwin"
     } else if cfg!(target_os = "windows") {
@@ -415,7 +424,7 @@ mod tests {
                 json!({"id":"z","provider":"claude","status":"","label":"","email":null,"plan":null,"home":"/private/profile","credentials":{"accessToken":"must-not-leak"}}),
                 json!({"id":"a","provider":"codex","disconnected":true,"label":"A"}),
                 json!({"id":"other","provider":"unsupported"}),
-            ],
+            ].into_iter().map(|account| serde_json::from_value(account).expect("public account fixture")).collect(),
             archived_accounts: vec![],
             default_account_key: json!("a"),
             default_account_groups: Vec::new(),

@@ -340,6 +340,18 @@ pub fn resolve_claude_binary(profile: &Value) -> Option<String> {
     resolve_claude_binary_with_environment(profile, &environment)
 }
 
+pub fn resolve_public_claude_binary(
+    profile: &crate::account_policy::PublicAccount,
+) -> Option<String> {
+    let configured = profile
+        .claude_options
+        .as_ref()
+        .and_then(|options| options.binary_path.as_str())
+        .filter(|value| !value.is_empty());
+    resolve_login_binary(configured, &env::vars_os().collect())
+        .map(|binary| binary.to_string_lossy().into_owned())
+}
+
 pub(crate) fn resolve_claude_binary_with_environment(
     profile: &Value,
     environment: &std::collections::BTreeMap<std::ffi::OsString, std::ffi::OsString>,

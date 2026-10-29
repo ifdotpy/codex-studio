@@ -267,14 +267,14 @@ fn public_organization_metadata_keeps_pins_and_excludes_private_identity() {
     let account = snapshot
         .accounts
         .iter()
-        .find(|a| a["id"] == key)
+        .find(|a| a.id.as_str() == Some(key.as_str()))
         .expect("registered account is listed");
     assert_eq!(
-        account["organization"],
+        serde_json::to_value(&account.organization).expect("organization"),
         json!({"name":"Expected organization","idSuffix":"12345678"})
     );
     assert_eq!(
-        account["organizationMismatch"]["observed"],
+        serde_json::to_value(&account.organization_mismatch).expect("organization mismatch")["observed"],
         json!({"name":"Observed organization","idSuffix":"87654321"})
     );
     let public = serde_json::to_string(account).expect("public account serializes");
@@ -294,9 +294,9 @@ fn public_organization_metadata_keeps_pins_and_excludes_private_identity() {
     let account = restored
         .accounts
         .iter()
-        .find(|a| a["id"] == key)
+        .find(|a| a.id.as_str() == Some(key.as_str()))
         .expect("restored account is listed");
-    assert!(account.get("organizationMismatch").is_none());
+    assert!(account.organization_mismatch.is_none());
 }
 
 #[test]

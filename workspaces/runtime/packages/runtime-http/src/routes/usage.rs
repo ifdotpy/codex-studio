@@ -57,7 +57,7 @@ async fn costs(
         .accounts()
         .accounts
         .into_iter()
-        .find(|account| account.get("id").and_then(Value::as_str) == Some(&account_key))
+        .find(|account| account.id.as_str() == Some(&account_key))
         .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown Codex account"))?;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)

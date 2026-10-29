@@ -709,6 +709,24 @@ impl ModelCatalogService {
             .filter(|account| account.is_object())
             .filter_map(|account| CatalogAccount::deserialize(account).ok())
             .collect();
+        self.retain_catalog_accounts(accounts);
+    }
+
+    pub fn retain_public_accounts(&self, accounts: &[crate::account_policy::PublicAccount]) {
+        let accounts = accounts
+            .iter()
+            .filter_map(|account| {
+                Some(CatalogAccount {
+                    id: account.id.as_str()?.to_owned(),
+                    home: account.home.as_str().unwrap_or_default().to_owned(),
+                    provider: account.provider.as_str()?.parse().ok()?,
+                })
+            })
+            .collect();
+        self.retain_catalog_accounts(accounts);
+    }
+
+    fn retain_catalog_accounts(&self, accounts: Vec<CatalogAccount>) {
         let mut retired = Vec::new();
         if let Ok(mut profiles) = self.0.accounts.lock() {
             let retained = accounts

@@ -220,9 +220,8 @@ impl studio_runtime_services::diagnostics::ProviderDiagnosticsPort for ProviderD
                         .accounts
                         .iter()
                         .filter_map(|account| {
-                            let key = account.get("id")?.as_str()?.to_owned();
-                            let provider =
-                                studio_runtime_providers::ProviderKind::of_record(account).ok()?;
+                            let key = account.id.as_str()?.to_owned();
+                            let provider = account.provider_kind()?;
                             let scope = session.current_scope(&key)?;
                             (scope.account == key && !scope.connection.is_empty())
                                 .then_some((key, provider, scope))
@@ -426,12 +425,12 @@ impl ActiveProviderConnections for LiveProviderConnections {
             .accounts
             .iter()
             .filter_map(|account| {
-                let account_key = account.get("id")?.as_str()?.to_owned();
+                let account_key = account.id.as_str()?.to_owned();
                 let scope = self.session.current_scope(&account_key)?;
                 if scope.account != account_key || scope.connection.is_empty() {
                     return None;
                 }
-                let kind = studio_runtime_providers::ProviderKind::of_record(account).ok()?;
+                let kind = account.provider_kind()?;
                 let launched_binary = leased_session_binary(
                     &self.session_binaries,
                     &account_key,
@@ -445,7 +444,7 @@ impl ActiveProviderConnections for LiveProviderConnections {
                     // profile setting for the binary used by that session.
                     studio_runtime_providers::ProviderKind::Claude => {
                         launched_binary.as_ref()?;
-                        studio_runtime_services::account_driver::claude::resolve_claude_binary(
+                        studio_runtime_services::account_driver::claude::resolve_public_claude_binary(
                             account,
                         )
                     }

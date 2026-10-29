@@ -336,9 +336,8 @@ async fn require_claude_account(state: &HttpState, agent: &Value) -> Result<(), 
     let provider = accounts
         .accounts
         .iter()
-        .find(|account| account.get("id").and_then(Value::as_str) == Some(account_key.as_str()))
-        .and_then(|account| account.get("provider"))
-        .and_then(Value::as_str);
+        .find(|account| account.id.as_str() == Some(account_key.as_str()))
+        .and_then(|account| account.provider.as_str());
     if provider != Some(ProviderKind::Claude.key()) {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,

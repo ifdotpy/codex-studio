@@ -2846,7 +2846,10 @@ fn launch_admission_refreshes_restored_and_changed_credentials() {
     )
     .unwrap();
     assert!(host_runtime::account_home(&driver, "default").is_err());
-    assert_eq!(driver.snapshot().unwrap().accounts[0]["status"], "changed");
+    assert_eq!(
+        driver.snapshot().unwrap().accounts[0].status.as_str(),
+        Some("changed")
+    );
 }
 
 #[test]

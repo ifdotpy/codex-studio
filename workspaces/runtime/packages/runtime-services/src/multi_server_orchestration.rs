@@ -656,7 +656,7 @@ pub struct RuntimeOrchestrationEffects {
     store: Arc<RuntimeStore>,
     browser_callback: Arc<dyn BrowserCallbackEffect>,
     default_account: String,
-    known_accounts: Vec<Value>,
+    known_accounts: Vec<crate::account_policy::PublicAccount>,
     lifecycle_ports: Option<Arc<dyn crate::agent_lifecycle_runtime::LifecyclePorts>>,
     /// The installed app that this server offers to paired servers (docs/peer-updates.md).
     update_offer: Arc<crate::peer_updates::Offer>,
@@ -717,7 +717,7 @@ impl RuntimeOrchestrationEffects {
         store: Arc<RuntimeStore>,
         browser_callback: Arc<dyn BrowserCallbackEffect>,
         default_account: String,
-        known_accounts: Vec<Value>,
+        known_accounts: Vec<crate::account_policy::PublicAccount>,
     ) -> Self {
         Self {
             store,
@@ -734,7 +734,7 @@ impl RuntimeOrchestrationEffects {
         store: Arc<RuntimeStore>,
         browser_callback: Arc<dyn BrowserCallbackEffect>,
         default_account: String,
-        known_accounts: Vec<Value>,
+        known_accounts: Vec<crate::account_policy::PublicAccount>,
         lifecycle_ports: Arc<dyn crate::agent_lifecycle_runtime::LifecyclePorts>,
     ) -> Self {
         Self {

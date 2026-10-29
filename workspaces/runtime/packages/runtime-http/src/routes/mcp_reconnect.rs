@@ -99,8 +99,8 @@ async fn execute(
     let provider = accounts
         .accounts
         .iter()
-        .find(|a| a["id"] == account)
-        .and_then(|account| ProviderKind::of_record(account).ok());
+        .find(|a| a.id.as_str() == Some(account.as_str()))
+        .and_then(|account| account.provider_kind());
     match provider {
         Some(ProviderKind::Claude) => {}
         Some(ProviderKind::Codex) => {

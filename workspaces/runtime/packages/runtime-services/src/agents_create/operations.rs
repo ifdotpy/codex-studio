@@ -2655,36 +2655,36 @@ fn account_identity_blocking(
     let row = snapshot
         .accounts
         .into_iter()
-        .find(|row| row.get("id").and_then(Value::as_str) == Some(account_key))
+        .find(|row| row.id.as_str() == Some(account_key))
         .ok_or(OperationError::Invalid("Unknown account"))?;
-    if truthy(row.get("deleted")) {
+    if row.deleted.truthy() {
         return Err(OperationError::Invalid(
             "This account was deleted. Select another account for new chats",
         ));
     }
-    if truthy(row.get("disconnected")) {
+    if row.disconnected.truthy() {
         return Err(OperationError::Invalid(
             "Reconnect this account before creating a chat",
         ));
     }
-    let string_field = |key: &str| row.get(key).and_then(Value::as_str).map(str::to_owned);
-    // AccountDriver snapshots expose the eligibility projection; private
-    // registry fields used to derive it are intentionally not in this row.
-    // This matches `codex_runtime.py:4843-4935`'s account read and gate.
-    let can_attempt_native_proof = can_attempt_native_proof_projection(&row);
+    let can_attempt_native_proof = row.can_attempt_native_proof.as_bool() == Some(true);
     Ok((
         AccountIdentity {
-            provider: studio_runtime_providers::ProviderKind::of_record(&row)
-                .map_err(|_| OperationError::Invalid("Account provider is unknown"))?,
-            home: string_field("home"),
-            account_id: string_field("accountId"),
-            email: string_field("email"),
+            provider: row
+                .provider
+                .as_str()
+                .and_then(|provider| provider.parse().ok())
+                .ok_or(OperationError::Invalid("Account provider is unknown"))?,
+            home: row.home.as_str().map(str::to_owned),
+            account_id: row.account_id.as_str().map(str::to_owned),
+            email: row.email.as_str().map(str::to_owned),
         },
         status,
         can_attempt_native_proof,
     ))
 }
 
+#[cfg(test)]
 fn can_attempt_native_proof_projection(row: &Value) -> bool {
     row.get("canAttemptNativeProof").and_then(Value::as_bool) == Some(true)
 }
