@@ -358,15 +358,15 @@ impl SchedulerRepository {
             return Ok(false);
         };
         if run.status != studio_runtime_schema::persistence::ExecutionStatus::Unsent
-            || run.epoch != agent.epoch
+            || run.epoch.as_i64() != Some(agent.epoch)
             || run.account_key != account
-            || run.thread_id.as_deref() != Some(thread)
-            || run.turn_id.is_some()
-            || run.root_attempt_id.is_some()
+            || run.thread_id.value().map(String::as_str) != Some(thread)
+            || run.turn_id.value().is_some()
+            || run.root_attempt_id.value().is_some()
         {
             return Ok(false);
         }
-        let Some(id) = run.latest_attempt_id.as_deref() else {
+        let Some(id) = run.latest_attempt_id.value().map(String::as_str) else {
             return Ok(false);
         };
         let Some(saved) = ExecutionHistoryRepository::attempt(tx, id)? else {

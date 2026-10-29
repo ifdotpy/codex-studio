@@ -4,8 +4,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
 
 use crate::records::{
-    AgentId, AgentRecord, EventMetadataRecord, ExecutionRunRecord, JsonRecord, PlanRecord,
-    QueueEventId, Table, TaskId, TranscriptAssetId, TranscriptAssetRecord, WorkItemRecord,
+    AgentId, AgentRecord, EventMetadataRecord, JsonRecord, PlanRecord, QueueEventId, Table, TaskId,
+    TranscriptAssetId, TranscriptAssetRecord, WorkItemRecord,
 };
 use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
 use crate::{StoreError, StoreResult};
@@ -96,12 +96,10 @@ impl WorkItemsRepository {
             table: "runtime_agents",
             id: agent.id.0.clone(),
         };
-        let id = pointer["runId"].as_str().ok_or_else(invalid)?;
-        let attempt = match pointer.get("attemptId") {
-            None | Some(Value::Null) => None,
-            Some(Value::String(attempt)) => Some(attempt.clone()),
-            Some(_) => return Err(invalid()),
-        };
+        let studio_runtime_schema::json_object::JsonObject(pointer) =
+            <studio_runtime_schema::json_object::JsonObject<crate::records::ActiveExecutionView> as serde::Deserialize>::deserialize(pointer).map_err(|_| invalid())?;
+        let id = pointer.run_id.as_deref().ok_or_else(invalid)?;
+        let attempt = pointer.attempt_id;
         let raw: Option<String> = connection
             .query_row(
                 "SELECT record FROM runtime_execution_runs WHERE id=?1",
@@ -110,17 +108,37 @@ impl WorkItemsRepository {
             )
             .optional()?;
         let raw = raw.ok_or_else(invalid)?;
-        let run = serde_json::from_str::<ExecutionRunRecord>(&raw).map_err(|_| invalid())?;
-        Table::<ExecutionRunRecord>::new(connection).validate(&run)?;
-        if run.id().as_str() != id
-            || run.value()["agent"] != agent.id.0
-            || run.value()["accountKey"]
-                != agent
-                    .extra
-                    .get("accountKey")
-                    .cloned()
-                    .unwrap_or_else(|| serde_json::json!("default"))
-            || run.value()["epoch"] != agent.epoch
+        let studio_runtime_schema::json_object::JsonObject(run): studio_runtime_schema::json_object::JsonObject<super::execution_history::ExecutionRun<Value>> =
+            serde_json::from_str(&raw).map_err(|_| {
+                // The older record owner reports malformed JSON or a missing ID at
+                // the agent pointer; schema errors are located at the run row.
+                match serde_json::from_str::<Value>(&raw) {
+                    Ok(value) => match value.get("id").and_then(Value::as_str) {
+                        Some(record_id) => StoreError::InvalidStoredObject { table: "runtime_execution_runs", id: record_id.into() },
+                        None => invalid(),
+                    },
+                    Err(_) => invalid(),
+                }
+            })?;
+        if !run.epoch.as_f64().is_some_and(|epoch| {
+            epoch >= 0.0
+                && epoch <= studio_runtime_schema::shared_values::MAX_SAFE_INTEGER as f64
+                && epoch.fract() == 0.0
+        }) {
+            return Err(StoreError::InvalidStoredObject {
+                table: "runtime_execution_runs",
+                id: run.id.clone(),
+            });
+        }
+        if run.id != id
+            || run.agent != agent.id.0
+            || !agent
+                .extra
+                .get("accountKey")
+                .map_or(run.account_key == "default", |value| {
+                    *value == run.account_key
+                })
+            || run.epoch.as_i64() != Some(agent.epoch)
         {
             return Err(invalid());
         }
@@ -563,6 +581,22 @@ mod tests {
             "activeExecution":{"runId":"run-1","attemptId":null}
         }))
         .expect("agent record parses");
+        for raw in ["{", r#"{"agent":"worker"}"#, r#"{"id":false}"#] {
+            connection.execute("INSERT INTO runtime_execution_runs VALUES ('run-1','worker','default',4,NULL,NULL,1.0,?1)", [raw]).unwrap();
+            assert!(
+                matches!(WorkItemsRepository::submission_identity(&connection, &agent), Err(StoreError::InvalidStoredObject { table: "runtime_agents", ref id }) if id == "worker")
+            );
+            connection
+                .execute("DELETE FROM runtime_execution_runs", [])
+                .unwrap();
+        }
+        connection.execute("INSERT INTO runtime_execution_runs VALUES ('run-1','worker','default',4,NULL,NULL,1.0,?1)", [r#"{"id":"foreign"}"#]).unwrap();
+        assert!(
+            matches!(WorkItemsRepository::submission_identity(&connection, &agent), Err(StoreError::InvalidStoredObject { table: "runtime_execution_runs", ref id }) if id == "foreign")
+        );
+        connection
+            .execute("DELETE FROM runtime_execution_runs", [])
+            .unwrap();
         for record in [
             json!({"id":"run-1","agent":"worker","accountKey":"default","epoch":4,"created":1.0}),
             json!({"id":"run-1","agent":"worker","accountKey":"default","epoch":4,"status":"running","created":1.0,"latestAttemptId":5}),
