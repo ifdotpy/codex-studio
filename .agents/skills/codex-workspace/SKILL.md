@@ -67,6 +67,7 @@ Read [native Layr](references/layr-native.md) or [Layr VM](references/layr.md) f
 Use only workspace choices that the current tool schema exposes.
 Use `server` with an absolute remote `cwd` for native work on a paired machine.
 After a lost reply, use `orchestration_request` to recover the saved result.
+Read-only tool calls have no saved receipt after delivery; repeat the read instead.
 `applied` confirms the operation receipt, not worker completion. Check current
 registry states before counting workers. Use a new spawn ID only after
 `not_applied` proves the earlier batch did not create workers.

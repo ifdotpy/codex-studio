@@ -335,7 +335,7 @@ pub(super) async fn dispatch_with_ports(
                 "accountKey":context.account, "connectionId":context.connection,
                 "supervisor":{"generation":context.generation},
                 "created":chrono::Utc::now().timestamp_millis() as f64 / 1000.0, "updated":now,
-                "readOnly":services::read_only(&call.name,&call.args),
+                "readOnly":services::read_only(&call.name,&call.args.to_string()),
                 "stage":"queued", "outcome":"pending", "cancelRequested":false
             });
             if let Some(alias) = &call.alias {
