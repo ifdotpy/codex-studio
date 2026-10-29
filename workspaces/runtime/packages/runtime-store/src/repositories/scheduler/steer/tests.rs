@@ -427,6 +427,21 @@ fn claim_refuses_every_ineligible_agent_state() {
 }
 
 #[test]
+fn unclean_restart_does_not_release_a_reserved_steer() {
+    let mut connection = database();
+    claim(&mut connection, "s1").expect("claims");
+    settle(&mut connection, SchedulerRepository::hold_unclean_steers);
+    settle(&mut connection, |tx| {
+        SchedulerRepository::abandon_steers(tx, "acct", 8)
+    });
+    assert_eq!(
+        statuses(&connection),
+        ["uncertain", "uncertain", "pending", "uncertain"]
+    );
+    assert_eq!(open_receipts(&connection), 1);
+}
+
+#[test]
 fn restart_before_submission_returns_the_reservation() {
     let mut connection = database();
     claim(&mut connection, "s1").expect("claims");
