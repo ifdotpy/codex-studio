@@ -1343,3 +1343,39 @@ fn stored_sql(path: &Path, name: &str) -> String {
 fn temporary_state() -> tempfile::TempDir {
     tempfile::tempdir().expect("temporary state directory creates")
 }
+
+#[tokio::test]
+async fn analytics_marker_projection_is_checked_during_store_open() {
+    let root = tempfile::tempdir().expect("isolated state");
+    drop(
+        RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("fresh store"),
+    );
+    let analytics = Connection::open(root.path().join("analytics.sqlite3")).expect("analytics");
+    analytics
+        .execute(
+            "INSERT OR REPLACE INTO analytics_meta(key,value) VALUES('fileMigrationV1',?1)",
+            [r#"{"phase":"pending","phase":"complete","other":[1,2]}"#],
+        )
+        .expect("marker");
+    drop(analytics);
+    drop(
+        RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("complete marker"),
+    );
+    let analytics = Connection::open(root.path().join("analytics.sqlite3")).expect("analytics");
+    analytics
+        .execute(
+            "UPDATE analytics_meta SET value=?1 WHERE key='fileMigrationV1'",
+            [r#"{"phase":"complete","phase":null}"#],
+        )
+        .expect("marker");
+    drop(analytics);
+    let error = match RuntimeStore::open(Some(root.path())).await {
+        Ok(_) => panic!("incomplete marker admitted"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("file migration is not complete"));
+}

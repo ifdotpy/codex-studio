@@ -545,6 +545,13 @@ fn verify_payload_migration(connection: &Connection) -> StoreResult<PayloadMigra
     }
 }
 
+// A partial startup view. Full JSON admission happens first so unknown fields,
+// duplicate keys, number overflow and nesting retain their previous behavior.
+#[derive(serde::Deserialize)]
+struct AnalyticsFileMigrationMarker {
+    phase: Option<String>,
+}
+
 fn verify_analytics_migration(canvas: &Connection, analytics: &Connection) -> StoreResult<()> {
     let legacy_analytics_table: Option<String> = canvas
         .query_row(
@@ -586,7 +593,13 @@ fn verify_analytics_migration(canvas: &Connection, analytics: &Connection) -> St
             &format!("marker is invalid JSON: {error}"),
         )
     })?;
-    if decoded.get("phase").and_then(Value::as_str) != Some("complete") {
+    let complete = decoded.is_object()
+        && serde_json::from_value::<AnalyticsFileMigrationMarker>(decoded)
+            .ok()
+            .and_then(|marker| marker.phase)
+            .as_deref()
+            == Some("complete");
+    if !complete {
         return Err(object_mismatch(
             "analytics.sqlite3",
             "analytics_meta.fileMigrationV1",
@@ -627,6 +640,75 @@ mod tests {
         verify_payload_migration,
     };
     use rusqlite::Connection;
+
+    #[test]
+    fn analytics_marker_admission_preserves_legacy_json_and_error_order() {
+        let canvas = Connection::open_in_memory().expect("fixture operation");
+        let analytics = Connection::open_in_memory().expect("fixture operation");
+        assert!(super::verify_analytics_migration(&canvas, &analytics).is_ok());
+        analytics
+            .execute_batch("CREATE TABLE analytics_meta(key TEXT, value TEXT)")
+            .expect("fixture operation");
+        assert!(super::verify_analytics_migration(&canvas, &analytics).is_ok());
+        let missing_column = Connection::open_in_memory().expect("fixture database");
+        missing_column
+            .execute_batch("CREATE TABLE analytics_meta(key TEXT)")
+            .expect("fixture schema");
+        assert!(
+            super::verify_analytics_migration(&canvas, &missing_column)
+                .expect_err("missing value column")
+                .to_string()
+                .contains("value")
+        );
+        let depth = format!(
+            "{{\"phase\":\"complete\",\"other\":{}0{}}}",
+            "[".repeat(130),
+            "]".repeat(130)
+        );
+        for (marker, outcome) in [
+            ("{\"phase\":\"complete\"}".to_owned(), "ok"),
+            ("{\"phase\":false,\"phase\":\"complete\"}".to_owned(), "ok"),
+            (
+                "{\"phase\":\"complete\",\"phase\":null}".to_owned(),
+                "file migration is not complete",
+            ),
+            ("null".to_owned(), "file migration is not complete"),
+            ("[]".to_owned(), "file migration is not complete"),
+            ("{\"phase\":3}".to_owned(), "file migration is not complete"),
+            (
+                "{\"phase\":\"complete\",\"other\":1e999}".to_owned(),
+                "marker is invalid JSON",
+            ),
+            (depth, "marker is invalid JSON"),
+            ("{".to_owned(), "marker is invalid JSON"),
+        ] {
+            analytics
+                .execute("DELETE FROM analytics_meta", [])
+                .expect("fixture operation");
+            analytics
+                .execute(
+                    "INSERT INTO analytics_meta VALUES('fileMigrationV1', ?1)",
+                    [&marker],
+                )
+                .expect("fixture operation");
+            let result = super::verify_analytics_migration(&canvas, &analytics);
+            if outcome == "ok" {
+                assert!(result.is_ok(), "{marker}");
+            } else {
+                assert!(
+                    result.unwrap_err().to_string().contains(outcome),
+                    "{marker}"
+                );
+            }
+        }
+        canvas
+            .execute_batch("CREATE TABLE analytics_legacy(id INTEGER)")
+            .expect("fixture operation");
+        let error = super::verify_analytics_migration(&canvas, &analytics)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("legacy analytics table"), "{error}");
+    }
 
     #[test]
     fn receipt_schema_verifier_sees_generated_query_columns() {
