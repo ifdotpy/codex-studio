@@ -48,10 +48,10 @@ pub mod retained_frame;
 mod steer;
 mod stopped_turns;
 pub(crate) mod store;
-pub use store::hold_invalid_agent_record;
-pub use store::{get_notification, put_notification};
 #[cfg(any(test, feature = "test-support"))]
 pub use store::attach_provider_stream_for_test;
+pub use store::hold_invalid_agent_record;
+pub use store::{get_notification, put_notification};
 pub use studio_runtime_schema::persistence::ProviderScope;
 pub use studio_runtime_store::account_state::{ScopeError, current_provider_scope};
 mod submission;
@@ -5044,13 +5044,22 @@ impl Worker {
             for event in exit.undelivered {
                 self.event(event).await?;
             }
-            self.event(SessionEvent { journal: None, outcomes }).await?;
+            self.event(SessionEvent {
+                journal: None,
+                outcomes,
+            })
+            .await?;
             Ok(())
-        }.await;
+        }
+        .await;
         for (_, reply) in std::mem::take(&mut self.vm_notification_waiters) {
             let _sent = reply.send(Err(retained::PortError::Unknown));
         }
-        let drain = if drain.is_ok() { self.flush().await } else { drain };
+        let drain = if drain.is_ok() {
+            self.flush().await
+        } else {
+            drain
+        };
         let account = self.account.clone();
         let generation = self.generation.0;
         let (cleanup_error, recovery, provider_result) = match exit.adapter {

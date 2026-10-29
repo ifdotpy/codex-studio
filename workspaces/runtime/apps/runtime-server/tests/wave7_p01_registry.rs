@@ -63,8 +63,15 @@ impl Fixture {
     }
     async fn enqueue(&self, index: usize, id: &str) {
         let agent_id = self.agents[index]["id"].as_str().unwrap().to_owned();
-        let event_id = if id.len() == 36 { id.to_owned() } else { studio_runtime_schema::persistence::RequestIdentity::issue_root() };
-        self.event_ids.lock().unwrap().insert(format!("annotation:{id}"), format!("annotation:{event_id}"));
+        let event_id = if id.len() == 36 {
+            id.to_owned()
+        } else {
+            studio_runtime_schema::persistence::RequestIdentity::issue_root()
+        };
+        self.event_ids
+            .lock()
+            .unwrap()
+            .insert(format!("annotation:{id}"), format!("annotation:{event_id}"));
         self.store
             .transaction_with(move |tx| {
                 annotate(
@@ -86,7 +93,13 @@ impl Fixture {
     }
 
     fn event_status(&self, id: &str) -> String {
-        let id = self.event_ids.lock().unwrap().get(id).cloned().unwrap_or_else(|| id.to_owned());
+        let id = self
+            .event_ids
+            .lock()
+            .unwrap()
+            .get(id)
+            .cloned()
+            .unwrap_or_else(|| id.to_owned());
         self.store
             .test_reader()
             .unwrap()
@@ -1421,7 +1434,8 @@ async fn accepted_http_message_wakes_retained_worker_and_receipt_replay_does_not
     let stop = Shutdown::default();
     let task = tokio::spawn(registry.run(wake, Arc::new(Notify::new()), stop.clone()));
     let message_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
-    let body = json!({"room":fixture.agents[0]["id"],"id":message_id,"text":"committed through HTTP"});
+    let body =
+        json!({"room":fixture.agents[0]["id"],"id":message_id,"text":"committed through HTTP"});
     for _ in 0..2 {
         let request = Request::builder()
             .method("POST")
@@ -1449,12 +1463,7 @@ async fn accepted_http_message_wakes_retained_worker_and_receipt_replay_does_not
         .unwrap();
     assert_eq!(account, "account:default");
     assert_eq!(request["method"], "turn/start");
-    wait_for_durable_event_status(
-        &fixture,
-        &message_id,
-        "delivered",
-    )
-    .await;
+    wait_for_durable_event_status(&fixture, &message_id, "delivered").await;
     wait_for_durable_agent_status(
         &fixture,
         fixture.agents[0]["id"].as_str().unwrap(),
@@ -3105,7 +3114,10 @@ async fn host_start_reattaches_existing_launch_and_delivers_http_input() {
     assert!(wire_read(&mut peer).await["error"].is_null());
     wire_send(&mut peer,json!({"requestId":1,"action":"open","handle":"account:default","generation":1,"command":launch.command,"env":launch.environment,"cwd":launch.cwd})).await;
     let opened = wire_read(&mut peer).await;
-    assert!(opened["error"].is_null(), "supervisor fixture open failed: {opened}");
+    assert!(
+        opened["error"].is_null(),
+        "supervisor fixture open failed: {opened}"
+    );
     let pid = opened["result"]["pid"].as_u64().unwrap() as u32;
     let generation = opened["result"]["generation"].as_u64().unwrap();
     supervisor.native.push(pid);
@@ -3203,9 +3215,7 @@ async fn host_start_reattaches_existing_launch_and_delivers_http_input() {
         .store
         .test_reader()
         .unwrap()
-        .prepare(
-            "SELECT payload FROM publication_audit ORDER BY id",
-        )
+        .prepare("SELECT payload FROM publication_audit ORDER BY id")
         .unwrap()
         .query_map([], |row| row.get(0))
         .unwrap()
@@ -3485,11 +3495,7 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
     let message_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
     assert_eq!(
         app.clone()
-            .oneshot(direct_message_post(
-                &agent_id,
-                &message_id,
-                "split-stream"
-            ))
+            .oneshot(direct_message_post(&agent_id, &message_id, "split-stream"))
             .await
             .unwrap()
             .status(),
@@ -3682,11 +3688,7 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
     let restart_message_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
     assert_eq!(
         app.clone()
-            .oneshot(direct_message_post(
-                &agent_id,
-                &restart_message_id,
-                "wait",
-            ))
+            .oneshot(direct_message_post(&agent_id, &restart_message_id, "wait",))
             .await
             .unwrap()
             .status(),

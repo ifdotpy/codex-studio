@@ -344,7 +344,10 @@ fn terminal(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<(
         LegacyTerminalDelivery::Present(TerminalInputDelivery::Sent) => false,
         LegacyTerminalDelivery::Missing
             if terminal.is_some()
-                && matches!(value.status.as_deref(), Some("running" | "exited" | "closed")) =>
+                && matches!(
+                    value.status.as_deref(),
+                    Some("running" | "exited" | "closed")
+                ) =>
         {
             true
         }

@@ -252,8 +252,11 @@ mod tests {
             .expect("spawn");
         let pid = Pid::from_raw(child.id().try_into().expect("pid fits")).expect("nonzero pid");
         // Wait for the exit without reaping, as a fast command does before its owner reaps it.
-        let exited = waitid(WaitId::Pid(pid), WaitIdOptions::EXITED | WaitIdOptions::NOWAIT)
-            .expect("wait for exit");
+        let exited = waitid(
+            WaitId::Pid(pid),
+            WaitIdOptions::EXITED | WaitIdOptions::NOWAIT,
+        )
+        .expect("wait for exit");
         assert!(exited.is_some());
         let before = priority_diagnostics();
         ChildPriority::Background.apply_after_spawn(&child);

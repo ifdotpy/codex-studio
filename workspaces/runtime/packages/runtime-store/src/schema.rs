@@ -476,13 +476,13 @@ fn object_mismatch(database: &str, object: &str, reason: &str) -> StoreError {
 }
 
 fn is_bootstrap_table(requirements: &SchemaRequirements, table: &TableRequirement) -> bool {
-    requirements
-        .bootstrap_tables
-        .iter()
-        .any(|bootstrap| {
-            bootstrap.name == table.name
-                && table.columns.iter().all(|column| bootstrap.columns.contains(column))
-        })
+    requirements.bootstrap_tables.iter().any(|bootstrap| {
+        bootstrap.name == table.name
+            && table
+                .columns
+                .iter()
+                .all(|column| bootstrap.columns.contains(column))
+    })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
