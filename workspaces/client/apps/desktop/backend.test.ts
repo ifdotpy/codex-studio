@@ -429,18 +429,7 @@ test("Rust startup consumes the desktop identity and restart environment contrac
   assert.deepEqual(retired, retiredRestartKeys);
 });
 
-test("recovery field names match the native serde owners", () => {
-  const rust = readFileSync(
-    path.join(
-      repositoryRoot,
-      "workspaces/client/packages/client-core/src/startup.rs",
-    ),
-    "utf8",
-  );
-  const source = readFileSync(
-    path.join(import.meta.dirname, "restart-environment.ts"),
-    "utf8",
-  );
+function assertRecoveryParity(rust: string, source: string) {
   const saved = rust.match(/struct SavedRecovery \{([\s\S]*?)\n\}/)?.[1];
   const enabled = rust.match(
     /pub struct EnabledRecovery \{([\s\S]*?)\n\}/,
@@ -451,6 +440,31 @@ test("recovery field names match the native serde owners", () => {
   assert.ok(saved, "SavedRecovery owns startup fields");
   assert.ok(enabled, "EnabledRecovery owns enabled");
   assert.ok(supervisor, "SupervisorRecovery owns attach fields");
+  assert.match(
+    rust,
+    /#\[serde\(rename_all = "camelCase"\)\]\s*struct SavedRecovery \{/,
+  );
+  assert.match(
+    rust,
+    /#\[serde\(rename_all = "camelCase"\)\]\s*pub struct SupervisorRecovery \{/,
+  );
+  assert.match(
+    rust,
+    /#\[derive\(Deserialize\)\]\s*pub struct EnabledRecovery \{/,
+  );
+  for (const fields of [saved, supervisor, enabled]) {
+    assert.doesNotMatch(
+      fields,
+      /#\[serde\([^\]]*\b(?:rename|alias)\s*(?:=|\()/,
+    );
+  }
+  const attachFields = [
+    ...supervisor.matchAll(/(?:pub )?(\w+): [^,\n]+,/g),
+  ].map((match) =>
+    match[1]!.replace(/_([a-z])/g, (_, letter: string) => letter.toUpperCase()),
+  );
+  assert.deepEqual(attachFields, ["supervisorEnabled"]);
+
   assert.match(saved, /supervisor_enabled: SupervisorEnabled/);
   assert.match(supervisor, /supervisor_enabled: SupervisorEnabled/);
   assert.match(enabled, /enabled: Option<bool>/);
@@ -492,4 +506,59 @@ test("recovery field names match the native serde owners", () => {
   ]);
   for (const field of nativeFields)
     assert.ok(desktopFields.has(field), `SavedRecovery is missing ${field}`);
+}
+
+function recoverySources() {
+  return {
+    rust: readFileSync(
+      path.join(
+        repositoryRoot,
+        "workspaces/client/packages/client-core/src/startup.rs",
+      ),
+      "utf8",
+    ),
+    source: readFileSync(
+      path.join(import.meta.dirname, "restart-environment.ts"),
+      "utf8",
+    ),
+  };
+}
+
+test("recovery field names match the native serde owners", () => {
+  const { rust, source } = recoverySources();
+  assertRecoveryParity(rust, source);
+});
+
+test("recovery parity rejects changes to serde wire names", () => {
+  const { rust, source } = recoverySources();
+  for (const name of ["SavedRecovery", "SupervisorRecovery"]) {
+    const original = `#[serde(rename_all = "camelCase")]\n${name === "SavedRecovery" ? "" : "pub "}struct ${name}`;
+    assert.ok(rust.includes(original));
+    const mutated = rust.replace(
+      original,
+      `${name === "SavedRecovery" ? "" : "pub "}struct ${name}`,
+    );
+    assert.throws(
+      () => assertRecoveryParity(mutated, source),
+      `${name} missing rename_all`,
+    );
+  }
+  for (const name of [
+    "SavedRecovery",
+    "SupervisorRecovery",
+    "EnabledRecovery",
+  ]) {
+    const field =
+      name === "EnabledRecovery"
+        ? "pub enabled:"
+        : `${name === "SupervisorRecovery" ? "pub " : ""}supervisor_enabled:`;
+    const start = rust.indexOf(`struct ${name} {`);
+    const index = rust.indexOf(field, start);
+    assert.ok(start >= 0 && index > start);
+    const mutated = `${rust.slice(0, index)}#[serde(rename = "other")]\n    ${rust.slice(index)}`;
+    assert.throws(
+      () => assertRecoveryParity(mutated, source),
+      `${name} renamed field`,
+    );
+  }
 });
