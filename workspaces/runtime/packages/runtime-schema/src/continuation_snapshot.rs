@@ -1,13 +1,16 @@
 //! Typed persisted continuation snapshot. The snapshot schema owns the wire shape.
+use crate::queue_command::Field;
 use crate::{
     json_object::JsonObject, provider_kind::ProviderKind, recovery_record::SafeInteger,
     shared_values::MAX_SAFE_INTEGER, stored_record::StoredJsonInteger,
 };
-use serde::{Deserialize, Deserializer, de::Error};
-use serde_json::Value;
+use serde::{Deserialize, Deserializer, Serialize, de::Error};
+use serde_json::{Number, Value};
 use std::collections::BTreeMap;
 
 /// A JSON string limited in Unicode code points.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(transparent)]
 pub struct BoundedString<const MIN: usize, const MAX: usize>(String);
 impl<const MIN: usize, const MAX: usize> BoundedString<MIN, MAX> {
     pub fn as_str(&self) -> &str {
@@ -25,6 +28,8 @@ impl<'de, const MIN: usize, const MAX: usize> Deserialize<'de> for BoundedString
         }
     }
 }
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(transparent)]
 pub struct BoundedVec<T, const MAX: usize>(Vec<T>);
 impl<T, const MAX: usize> BoundedVec<T, MAX> {
     pub fn as_slice(&self) -> &[T] {
@@ -59,34 +64,41 @@ impl<'de> Deserialize<'de> for FiniteNumber {
     }
 }
 /// Nonnegative time, bounded to the shared safe integer maximum.
-pub struct BoundedNumber(f64);
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct BoundedNumber(Number);
 impl BoundedNumber {
     pub fn get(&self) -> f64 {
-        self.0
+        self.0.as_f64().expect("bounded JSON number")
     }
 }
 impl<'de> Deserialize<'de> for BoundedNumber {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let n = f64::deserialize(d)?;
-        if (0.0..=MAX_SAFE_INTEGER as f64).contains(&n) {
-            Ok(Self(n))
+        let number = Number::deserialize(d)?;
+        if number
+            .as_f64()
+            .is_some_and(|n| (0.0..=MAX_SAFE_INTEGER as f64).contains(&n))
+        {
+            Ok(Self(number))
         } else {
             Err(D::Error::custom("number out of range"))
         }
     }
 }
 /// Creation timestamp must be positive.
-pub struct PositiveNumber(f64);
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct PositiveNumber(Number);
 impl PositiveNumber {
     pub fn get(&self) -> f64 {
-        self.0
+        self.0.as_f64().expect("positive JSON number")
     }
 }
 impl<'de> Deserialize<'de> for PositiveNumber {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let n = BoundedNumber::deserialize(d)?.0;
-        if n > 0.0 {
-            Ok(Self(n))
+        let n = BoundedNumber::deserialize(d)?;
+        if n.get() > 0.0 {
+            Ok(Self(n.0))
         } else {
             Err(D::Error::custom("number must be positive"))
         }
@@ -109,12 +121,21 @@ fn required_nullable<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
 }
 
 pub type ContinuationSnapshotRecord = JsonObject<ContinuationSnapshot>;
-#[derive(Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ContinuationRecord {
     Usage(UsageContinuation),
     Capacity(CapacityContinuation),
     Auth(AuthWaitReceipt),
+}
+impl ContinuationRecord {
+    pub fn id(&self) -> &str {
+        match self {
+            Self::Usage(record) => record.id.as_str(),
+            Self::Capacity(record) => record.id.as_str(),
+            Self::Auth(record) => record.id.as_str(),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -139,7 +160,7 @@ pub struct ContinuationSnapshot {
     pub work: Option<BTreeMap<String, WakeWork>>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AuthWaitReceipt {
     pub account_key: BoundedString<1, 4096>,
@@ -163,29 +184,41 @@ pub struct AuthWaitReceipt {
     pub extra: BTreeMap<String, Value>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CapacityContinuation {
-    pub accepted_turn_id: Option<BoundedString<1, 4096>>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub accepted_turn_id: Field<BoundedString<1, 4096>>,
     pub account_key: BoundedString<1, 4096>,
     pub attempt: SafeInteger,
     #[serde(deserialize_with = "crate::string_enum::deserialize")]
     pub cause: CapacityContinuationCause,
-    pub claimed_at: Option<BoundedNumber>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub claimed_at: Field<BoundedNumber>,
     pub cwd: BoundedString<0, 1048576>,
-    pub due_at: Option<BoundedNumber>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub due_at: Field<BoundedNumber>,
     pub epoch: SafeInteger,
     pub id: BoundedString<1, 4096>,
     pub max_attempts: SafeInteger,
-    pub reason: Option<BoundedString<0, 1048576>>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub reason: Field<BoundedString<0, 1048576>>,
     pub settings: BTreeMap<String, Value>,
     #[serde(deserialize_with = "crate::string_enum::deserialize")]
     pub status: CapacityContinuationStatus,
-    #[serde(default, deserialize_with = "optional_nonnull")]
+    #[serde(
+        default,
+        deserialize_with = "optional_nonnull",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub task_claims: Option<BoundedVec<BoundedString<1, 4096>, 4096>>,
     pub thread_id: BoundedString<1, 4096>,
     pub turn_id: BoundedString<1, 4096>,
-    #[serde(default, deserialize_with = "optional_nonnull")]
+    #[serde(
+        default,
+        deserialize_with = "optional_nonnull",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub waits: Option<SafeInteger>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
@@ -242,20 +275,32 @@ pub struct ContinuationAgent {
     pub extra: BTreeMap<String, Value>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContinuationAttempt {
-    pub action: Option<String>,
-    #[serde(default, deserialize_with = "optional_nonnull")]
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub action: Field<String>,
+    #[serde(
+        default,
+        deserialize_with = "optional_nonnull",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub active_at_reservation: Option<bool>,
-    pub capacity_retry_id: Option<BoundedString<1, 4096>>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub capacity_retry_id: Field<BoundedString<1, 4096>>,
     pub epoch: SafeInteger,
-    #[serde(default, deserialize_with = "optional_nonnull")]
+    #[serde(
+        default,
+        deserialize_with = "optional_nonnull",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub events: Option<BoundedVec<BoundedString<1, 4096>, 4096>>,
     pub id: BoundedString<1, 4096>,
-    pub observed_turn_id: Option<BoundedString<1, 4096>>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub observed_turn_id: Field<BoundedString<1, 4096>>,
     pub submitted: bool,
-    pub turn_id: Option<BoundedString<1, 4096>>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub turn_id: Field<BoundedString<1, 4096>>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
@@ -369,26 +414,44 @@ pub struct SyncEntity {
     seq: StoredJsonInteger,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageContinuation {
     pub account_key: BoundedString<1, 4096>,
-    #[serde(default, deserialize_with = "optional_nonnull")]
+    #[serde(
+        default,
+        deserialize_with = "optional_nonnull",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub auth_attempt: Option<SafeInteger>,
-    pub auth_refresh_marker: Option<BoundedString<0, 1048576>>,
-    #[serde(default, deserialize_with = "optional_string_enum")]
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub auth_refresh_marker: Field<BoundedString<0, 1048576>>,
+    #[serde(
+        default,
+        deserialize_with = "optional_string_enum",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub cause: Option<UsageContinuationCause>,
-    pub due_at: Option<BoundedNumber>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub due_at: Field<BoundedNumber>,
     pub epoch: SafeInteger,
     pub failed_at: BoundedNumber,
     pub id: BoundedString<1, 4096>,
-    pub planned_at: Option<BoundedNumber>,
-    pub proof_at: Option<BoundedNumber>,
-    pub reason: Option<BoundedString<0, 1048576>>,
-    pub reset_at: Option<BoundedNumber>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub planned_at: Field<BoundedNumber>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub proof_at: Field<BoundedNumber>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub reason: Field<BoundedString<0, 1048576>>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub reset_at: Field<BoundedNumber>,
     #[serde(deserialize_with = "crate::string_enum::deserialize")]
     pub status: UsageContinuationStatus,
-    #[serde(default, deserialize_with = "optional_nonnull")]
+    #[serde(
+        default,
+        deserialize_with = "optional_nonnull",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub task_claims: Option<BoundedVec<BoundedString<1, 4096>, 4096>>,
     pub thread_id: BoundedString<1, 4096>,
     pub turn_id: BoundedString<1, 4096>,
@@ -454,19 +517,19 @@ pub struct WorkResult {
     pub extra: BTreeMap<String, Value>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AuthWaitReceiptCause {
     #[serde(rename = "claude_auth_probe")]
     ClaudeAuthProbe,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AuthWaitReceiptError {
     #[serde(rename = "Cannot read Claude Code sign-in status")]
     CannotReadClaudeCodeSignInStatus,
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AuthWaitReceiptStatus {
     #[serde(rename = "auth_probe_wait")]
     AuthProbeWait,
@@ -476,7 +539,7 @@ pub enum AuthWaitReceiptStatus {
     Cancelled,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CapacityContinuationCause {
     #[serde(rename = "serverOverloaded")]
     ServerOverloaded,
@@ -494,7 +557,7 @@ pub enum CapacityContinuationCause {
     DiskFull,
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CapacityContinuationStatus {
     #[serde(rename = "scheduled")]
     Scheduled,
@@ -575,6 +638,19 @@ mod tests {
     use super::*;
     use serde_json::json;
     use sha2::{Digest, Sha256};
+
+    #[test]
+    fn continuation_record_owners_preserve_numbers_presence_and_extensions() {
+        let usage = json!({"id":"u","accountKey":"a","threadId":"t","epoch":1.0,"turnId":"v","status":"scheduled","cause":"auth","failedAt":100,"dueAt":null,"proofAt":3.0,"extension":{"a":[1,null]}});
+        let capacity = json!({"id":"c","accountKey":"a","threadId":"t","epoch":1.0,"turnId":"v","status":"scheduled","cause":"serverOverloaded","cwd":"","settings":{},"attempt":1.0,"maxAttempts":3,"claimedAt":null,"extension":{"a":[1,null]}});
+        let u = UsageContinuation::deserialize(usage.clone()).unwrap();
+        let c = CapacityContinuation::deserialize(capacity.clone()).unwrap();
+        assert_eq!(json!(u), usage);
+        assert_eq!(json!(c), capacity);
+        let auth = json!({"id":"a","agent":"a","accountKey":"x","status":"auth_probe_wait","cause":"claude_auth_probe","error":"Cannot read Claude Code sign-in status","createdAt":1,"dueAt":null,"source":{},"attempt":{"id":"x","epoch":1.0,"submitted":false,"action":null},"inputs":[],"accountPin":{},"taskClaims":[],"future":true});
+        let a = AuthWaitReceipt::deserialize(auth.clone()).unwrap();
+        assert_eq!(json!(a), auth);
+    }
 
     #[test]
     fn continuation_schema_parity() {

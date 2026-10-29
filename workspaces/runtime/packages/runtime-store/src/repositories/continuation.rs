@@ -199,6 +199,26 @@ impl ContinuationRepository {
             .get("id")
             .and_then(Value::as_str)
             .ok_or(StoreError::RecordContract("continuation id"))?;
+        Self::put_serialized_record(db, table, agent, id, r)
+    }
+
+    /// Persist a continuation that has already passed the decision snapshot boundary.
+    pub fn put_checked_record(
+        db: &Connection,
+        table: ContinuationTable,
+        agent: &str,
+        record: &studio_runtime_schema::continuation_snapshot::ContinuationRecord,
+    ) -> StoreResult<()> {
+        Self::put_serialized_record(db, table, agent, record.id(), record)
+    }
+
+    fn put_serialized_record(
+        db: &Connection,
+        table: ContinuationTable,
+        agent: &str,
+        id: &str,
+        record: &impl serde::Serialize,
+    ) -> StoreResult<()> {
         let owner: Option<String> = db
             .query_row(
                 &format!("SELECT agent FROM {} WHERE id=?1", table.name()),
@@ -212,7 +232,7 @@ impl ContinuationRepository {
                 id: id.into(),
             });
         }
-        db.execute(&format!("INSERT INTO {}(id,agent,record) VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET record=excluded.record",table.name()),params![id,agent,serde_json::to_string(r)?])?;
+        db.execute(&format!("INSERT INTO {}(id,agent,record) VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET record=excluded.record",table.name()),params![id,agent,serde_json::to_string(record)?])?;
         Ok(())
     }
     pub fn put_agent(db: &Connection, r: &Value) -> StoreResult<()> {

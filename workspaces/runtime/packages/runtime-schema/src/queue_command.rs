@@ -23,6 +23,12 @@ impl<T> Field<T> {
             Self::Value(value) => Some(value),
         }
     }
+    pub fn as_ref(&self) -> Option<&T> {
+        self.value()
+    }
+    pub fn is_some(&self) -> bool {
+        matches!(self, Self::Value(_))
+    }
 }
 impl<'de, T: Deserialize<'de>> Deserialize<'de> for Field<T> {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {

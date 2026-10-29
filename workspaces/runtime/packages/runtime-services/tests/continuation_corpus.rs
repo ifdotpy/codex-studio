@@ -2,6 +2,19 @@ use serde_json::{Value, json};
 use studio_runtime_services::{capacity_retry, continuation::Snapshot};
 
 #[test]
+fn capacity_wait_accepts_usage_record_with_matching_embedded_id() {
+    let retry = json!({"id":"same","accountKey":"default","threadId":"thread","epoch":1,"turnId":"turn","status":"scheduled","cause":"serverOverloaded","cwd":"","settings":{},"attempt":1,"maxAttempts":4});
+    let usage = json!({"id":"same","accountKey":"default","threadId":"thread","epoch":1,"turnId":"turn","status":"scheduled","cause":"auth","failedAt":10});
+    let snapshot = Snapshot::from_records(json!({"agent":{"id":"a","rootId":"a","epoch":1,"status":"failed","provider":"codex","capacityRetry":retry},"record":usage})).unwrap();
+    let decision =
+        capacity_retry::transition(&snapshot, capacity_retry::Action::Wait("wait"), 20.0).unwrap();
+    let record = decision.record.unwrap();
+    assert_eq!(record["cause"], "auth");
+    assert_eq!(record["status"], "scheduled");
+    assert_eq!(record["waits"], 1);
+}
+
+#[test]
 fn typed_continuation_snapshot_matches_schema_shapes() {
     let schema: Value = serde_json::from_str(include_str!(
         "../../runtime-schema/src/schemas/persisted-continuation-snapshot.schema.json"

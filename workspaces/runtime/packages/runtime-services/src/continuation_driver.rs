@@ -94,10 +94,13 @@ fn apply(
     // Validate all resulting stored records with the same constructor used for reads.
     let mut validation = serde_json::json!({"agent":d.agent.as_ref().unwrap_or(&snapshot.agent),"record":d.record.as_ref().or(snapshot.record.as_ref()),"events":d.events,"ancestors":snapshot.ancestors,"claims":snapshot.claims});
     validation["metadata"] = serde_json::json!(d.metadata);
-    Snapshot::from_records(validation)?;
-    if let Some(record) = &d.record {
+    let checked = Snapshot::from_records(validation)?;
+    if d.record.is_some() {
         fault.at(Boundary::BeforeRecord)?;
-        ContinuationRepository::put_record(tx, table, snapshot.agent_id(), record)?;
+        let record = checked.checked_record().ok_or(ContinuationError::Store(
+            studio_runtime_store::StoreError::RecordContract("continuation id"),
+        ))?;
+        ContinuationRepository::put_checked_record(tx, table, snapshot.agent_id(), record)?;
         fault.at(Boundary::AfterRecord)?;
     }
     for effect in &d.effects {

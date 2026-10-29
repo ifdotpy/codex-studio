@@ -6,7 +6,8 @@ use serde::{Deserialize, Deserializer, de::Error};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[serde(transparent)]
 pub struct SafeInteger(StoredJsonInteger);
 #[derive(Clone, Debug)]
 pub struct NonnegativeInteger(f64);

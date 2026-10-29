@@ -110,6 +110,88 @@ impl Fault for StopAt {
 fn observation() -> usage_resume::LimitsObservation {
     usage_resume::LimitsObservation::from_record(json!({"accountKey":"default","at":1000.0,"data":{"rateLimits":{"primary":{"usedPercent":10.0,"resetsAt":2000.0}}}}),None).expect("observation")
 }
+
+#[tokio::test]
+async fn oversized_proposed_reason_is_rejected_only_during_apply_without_writes() {
+    let (_dir, store) = seeded("capacity").await;
+    let before = {
+        let db = store.test_reader().unwrap();
+        db.query_row(
+            "SELECT record FROM runtime_capacity_retries WHERE id='retry'",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .unwrap()
+    };
+    let result = continuation_driver::drive(
+        &store,
+        "a",
+        ContinuationTable::Capacity,
+        Some("retry"),
+        1000.0,
+        |snapshot| {
+            let reason = "x".repeat(1_048_577);
+            let decision = studio_runtime_services::capacity_retry::transition(
+                snapshot,
+                studio_runtime_services::capacity_retry::Action::Wait(&reason),
+                1000.0,
+            )?;
+            assert!(
+                decision.record.is_some(),
+                "standalone decision admits proposal"
+            );
+            Ok(decision)
+        },
+    )
+    .await;
+    assert!(matches!(result, Err(ContinuationError::Invalid(_))));
+    let db = store.test_reader().unwrap();
+    let after: String = db
+        .query_row(
+            "SELECT record FROM runtime_capacity_retries WHERE id='retry'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(before, after);
+}
+
+#[tokio::test]
+async fn checked_decision_write_preserves_opaque_evidence_and_number_kinds() {
+    let (_dir, store) = seeded("capacity").await;
+    store.transaction_with(|tx| {
+        tx.execute("UPDATE runtime_capacity_retries SET record=json_set(record,'$.attempt',json('1.0'),'$.claimedAt',null,'$.future',json('{\"v\":[1,null]}')) WHERE id='retry'", [])?;
+        Ok::<_, studio_runtime_store::StoreError>(())
+    }).await.unwrap();
+    continuation_driver::drive(
+        &store,
+        "a",
+        ContinuationTable::Capacity,
+        Some("retry"),
+        1000.0,
+        |snapshot| {
+            studio_runtime_services::capacity_retry::transition(
+                snapshot,
+                studio_runtime_services::capacity_retry::Action::Wait("wait"),
+                1000.0,
+            )
+        },
+    )
+    .await
+    .unwrap();
+    let db = store.test_reader().unwrap();
+    let raw: String = db
+        .query_row(
+            "SELECT record FROM runtime_capacity_retries WHERE id='retry'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let row: Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(row["attempt"], json!(1.0));
+    assert!(row.get("claimedAt").is_none());
+    assert_eq!(row["future"], json!({"v":[1,null]}));
+}
 #[test]
 fn stored_limits_observation_accepts_legacy_mutation_envelope_keys() {
     let legacy = json!({

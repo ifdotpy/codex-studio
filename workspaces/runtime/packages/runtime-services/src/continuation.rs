@@ -153,6 +153,9 @@ impl Snapshot {
             ContinuationRecord::Auth(r) => r.id.as_str(),
         })
     }
+    pub(crate) fn checked_record(&self) -> Option<&ContinuationRecord> {
+        self.typed.0.record.as_ref()
+    }
     pub(crate) fn record_account(&self) -> Option<&str> {
         self.typed.0.record.as_ref().map(|r| match r {
             ContinuationRecord::Usage(r) => r.account_key.as_str(),
