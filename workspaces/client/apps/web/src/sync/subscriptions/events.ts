@@ -18,6 +18,7 @@ export const {
   watchResourceChanges,
   watchResourceConnection,
   watchTokenRateEvents,
+  watchLiveDeltas,
   acknowledgeEntitySequences,
 } = subscriptions;
 export const defaultSubscriptions = subscriptions;

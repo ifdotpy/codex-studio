@@ -18,6 +18,7 @@ mod journal_cost;
 mod journal_publication;
 mod late_thread_reply;
 mod limits_updates;
+mod live_deltas;
 mod login_completion;
 mod manual_release_closure;
 #[cfg(unix)]
