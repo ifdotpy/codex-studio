@@ -270,11 +270,11 @@ fn public_organization_metadata_keeps_pins_and_excludes_private_identity() {
         .find(|a| a.id.as_str() == Some(key.as_str()))
         .expect("registered account is listed");
     assert_eq!(
-        serde_json::to_value(&account.organization).expect("organization"),
+        json!(&account.organization),
         json!({"name":"Expected organization","idSuffix":"12345678"})
     );
     assert_eq!(
-        serde_json::to_value(&account.organization_mismatch).expect("organization mismatch")["observed"],
+        json!(&account.organization_mismatch)["observed"],
         json!({"name":"Observed organization","idSuffix":"87654321"})
     );
     let public = serde_json::to_string(account).expect("public account serializes");

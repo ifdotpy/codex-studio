@@ -709,11 +709,11 @@ impl ModelCatalogService {
             .filter(|account| account.is_object())
             .filter_map(|account| CatalogAccount::deserialize(account).ok())
             .collect();
-        self.retain_catalog_accounts(accounts);
+        self.retain_catalog_accounts(&accounts);
     }
 
     pub fn retain_public_accounts(&self, accounts: &[crate::account_policy::PublicAccount]) {
-        let accounts = accounts
+        let accounts: Vec<CatalogAccount> = accounts
             .iter()
             .filter_map(|account| {
                 Some(CatalogAccount {
@@ -723,10 +723,10 @@ impl ModelCatalogService {
                 })
             })
             .collect();
-        self.retain_catalog_accounts(accounts);
+        self.retain_catalog_accounts(&accounts);
     }
 
-    fn retain_catalog_accounts(&self, accounts: Vec<CatalogAccount>) {
+    fn retain_catalog_accounts(&self, accounts: &[CatalogAccount]) {
         let mut retired = Vec::new();
         if let Ok(mut profiles) = self.0.accounts.lock() {
             let retained = accounts

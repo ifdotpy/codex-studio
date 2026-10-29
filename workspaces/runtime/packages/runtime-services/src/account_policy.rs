@@ -739,13 +739,12 @@ mod tests {
         },"logins":{}});
         let state = AccountPolicyState::from_startup(Some(registry.to_string().as_bytes()), [])
             .expect("valid registry");
-        let public =
-            serde_json::to_value(&state.accounts().accounts[0]).expect("serialize projection");
+        let public = json!(&state.accounts().accounts[0]);
         assert_eq!(public, registry["accounts"]["default"]);
         assert!(public.get("plan").is_none());
         assert_eq!(public["email"], Value::Null);
         let reparsed: super::PublicAccount =
-            serde_json::from_value(public).expect("public fixture");
+            serde::Deserialize::deserialize(public).expect("public fixture");
         assert!(reparsed == state.accounts().accounts[0]);
     }
 
@@ -757,11 +756,8 @@ mod tests {
             json!({"id":"a","provider":"codex","home":"","deleted":null,"duplicateOf":null}),
         ] {
             let account: super::PublicAccount =
-                serde_json::from_value(row.clone()).expect("tolerant public row");
-            assert_eq!(
-                serde_json::to_value(account).expect("serialize public row"),
-                row
-            );
+                serde::Deserialize::deserialize(row.clone()).expect("tolerant public row");
+            assert_eq!(json!(account), row);
         }
     }
 

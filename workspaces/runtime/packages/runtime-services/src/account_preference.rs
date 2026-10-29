@@ -362,7 +362,7 @@ mod tests {
                 unknown["provider"] = provider;
             }
             let unknown: crate::account_policy::PublicAccount =
-                serde_json::from_value(unknown).expect("fixture");
+                serde::Deserialize::deserialize(unknown).expect("fixture");
             assert!(!can_start(&unknown));
             let accounts = [
                 unknown,
@@ -397,7 +397,7 @@ mod tests {
         for case in cases {
             let name = case["name"].as_str().expect("name");
             let accounts: Vec<crate::account_policy::PublicAccount> =
-                serde_json::from_value(case["accounts"].clone()).expect("accounts");
+                serde::Deserialize::deserialize(case["accounts"].clone()).expect("accounts");
             let project = case.get("project").filter(|value| !value.is_null());
             let actual = new_chat_default(
                 &accounts,

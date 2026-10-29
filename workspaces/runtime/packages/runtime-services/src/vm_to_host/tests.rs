@@ -186,7 +186,7 @@ async fn fixture(status: &str, free: fn(&Path) -> Option<u64>, needed: u64) -> F
     let accounts = vec![
         json!({"id":"claude-account","provider":"claude","claudeOptions":{"configDir":root.join("claude")}}),
         json!({"id":"codex-account","provider":"codex","home":root.join("codex")}),
-    ].into_iter().map(|row| serde_json::from_value(row).expect("account fixture")).collect();
+    ].into_iter().map(|row| serde::Deserialize::deserialize(row).expect("account fixture")).collect();
     let host = Arc::new(Host {
         guest: guest.clone(),
         files: files.clone(),

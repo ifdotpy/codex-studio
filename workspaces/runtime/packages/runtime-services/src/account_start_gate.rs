@@ -995,7 +995,7 @@ mod tests {
             json!({"provider":"codex","startThrottle":{"burst":2,"pauseSeconds":5}}),
             json!({"provider":"unknown","startThrottle":null}),
         ] {
-            let public = serde_json::from_value(row.clone()).expect("public account");
+            let public = serde::Deserialize::deserialize(row.clone()).expect("public account");
             assert_eq!(
                 StartThrottle::of_public_account(&public),
                 StartThrottle::of_record(&row),

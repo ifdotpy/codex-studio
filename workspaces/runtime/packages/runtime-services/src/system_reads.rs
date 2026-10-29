@@ -424,7 +424,7 @@ mod tests {
                 json!({"id":"z","provider":"claude","status":"","label":"","email":null,"plan":null,"home":"/private/profile","credentials":{"accessToken":"must-not-leak"}}),
                 json!({"id":"a","provider":"codex","disconnected":true,"label":"A"}),
                 json!({"id":"other","provider":"unsupported"}),
-            ].into_iter().map(|account| serde_json::from_value(account).expect("public account fixture")).collect(),
+            ].into_iter().map(|account| serde::Deserialize::deserialize(account).expect("public account fixture")).collect(),
             archived_accounts: vec![],
             default_account_key: json!("a"),
             default_account_groups: Vec::new(),
