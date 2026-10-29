@@ -1651,7 +1651,7 @@ mod tests {
 
     fn setup_refresh_fake_script(refresh_succeeds: bool) -> String {
         let service_status = if refresh_succeeds {
-            "printf '{\"installed\":true,\"site\":\"https://desk.example\",\"at\":\"/tmp/disk\",\"program\":\"%s\"}\\n' \"$0\""
+            "printf '{\"installed\":true,\"site\":\"https://desk.example\",\"at\":\"%s.disk\",\"program\":\"%s\"}\\n' \"$0\" \"$0\""
         } else {
             "exit 92"
         };
@@ -1988,7 +1988,10 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        assert_eq!(mac, json!({"unlocked":true,"disk":"/tmp/disk/project-one"}));
+        assert_eq!(
+            mac,
+            json!({"unlocked":true,"disk":state.path().join("layr-desk.disk/project-one")})
+        );
         assert_eq!(receiver.borrow_and_update().revision, 1);
         owner.shutdown().await.unwrap();
     }
@@ -2002,7 +2005,7 @@ mod tests {
 if [ "$1" = deploy ]; then
  printf '%s\n' 'progress' '{"site":"ignored","site":"https://desk.example/"}'
 elif [ "$1" = service ]; then
- printf '{"installed":true,"site":"https://desk.example","at":"/tmp/disk","program":"%s"}\n' "$0"
+ printf '{"installed":true,"site":"https://desk.example","at":"%s.disk","program":"%s"}\n' "$0" "$0"
  exit 7
 elif [ "$1" = status ]; then
  printf '%s\n' '{"projects":[null,{"name":"project-one","unlocked":false},{"name":"project-one","unlocked":"bad"},{"name":"project-one","unlocked":true}]}'
@@ -2044,7 +2047,10 @@ else exit 94; fi"#;
             .unwrap(),
         )
         .unwrap();
-        assert_eq!(mac, json!({"unlocked":true,"disk":"/tmp/disk/project-one"}));
+        assert_eq!(
+            mac,
+            json!({"unlocked":true,"disk":state.path().join("layr-desk.disk/project-one")})
+        );
         assert_eq!(
             std::fs::read_to_string(state.path().join("layr-desk.calls"))
                 .unwrap()

@@ -155,6 +155,10 @@ const ANALYTICS_ITEMS_MENTIONS: &[(&str, &str)] = &[
         "projected table list for tests",
     ),
     (
+        "packages/runtime-services/src/analytics.rs",
+        "historical analytics test seeds and updates main.analytics_items",
+    ),
+    (
         "packages/runtime-services/src/stored_text_compaction.rs",
         "dictionary samples from main.analytics_items",
     ),

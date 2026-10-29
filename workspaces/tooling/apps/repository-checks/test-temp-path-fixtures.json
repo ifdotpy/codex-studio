@@ -106,12 +106,10 @@
     "(staging / \"directory\" / \"link\").symlink_to(\"/tmp\")"
   ],
   "workspaces/runtime/packages/runtime-http/src/routes/host_secrets.rs": [
-    "\"printf '{\\\"installed\\\":true,\\\"site\\\":\\\"https://desk.example\\\",\\\"at\\\":\\\"/tmp/disk\\\",\\\"program\\\":\\\"%s\\\"}\\\\n' \\\"$0\\\"\"",
     "br#\"{\"projectId\":\"p1\",\"source\":\"/tmp/Project One\"}\"#,",
     "br#\"{\"projectId\":\"p1\",\"source\":\"/tmp/Project One\"}\"#,",
     "\"if [ \\\"$1\\\" = unlock ]; then\\n  [ \\\"$2\\\" = --site ] && [ \\\"$3\\\" = https://desk.example/ ] || exit 91\\n  [ \\\"$4\\\" = --project ] && [ \\\"$5\\\" = project-one ] && [ \\\"$6\\\" = --paper-file ] && [ \\\"$7\\\" = - ] || exit 92\\n  [ \\\"$(cat)\\\" = 'fixture paper words' ] || exit 93\\nelif [ \\\"$1\\\" = service ] && [ \\\"$2\\\" = status ]; then\\n  printf '%s\\\\n' '{\\\"installed\\\":true,\\\"site\\\":\\\"https://desk.example\\\",\\\"at\\\":\\\"/tmp\\\"}'\\nelif [ \\\"$1\\\" = status ] && [ \\\"$2\\\" = --site ] && [ \\\"$3\\\" = https://desk.example/ ] && [ \\\"$4\\\" = --json ]; then\\n  printf '%s\\\\n' '{\\\"projects\\\":[{\\\"name\\\":\\\"project-one\\\",\\\"unlocked\\\":true}]}'\\nelse\\n  exit 94\\nfi\",",
-    "assert_eq!(mac, json!({\"unlocked\":true,\"disk\":\"/tmp/project-one\"}));",
-    "assert_eq!(mac, json!({\"unlocked\":true,\"disk\":\"/tmp/disk/project-one\"}));"
+    "assert_eq!(mac, json!({\"unlocked\":true,\"disk\":\"/tmp/project-one\"}));"
   ],
   "workspaces/runtime/packages/runtime-process/src/provider_task_tests.rs": [
     "state_dir: PathBuf::from(\"/tmp/state\"),"

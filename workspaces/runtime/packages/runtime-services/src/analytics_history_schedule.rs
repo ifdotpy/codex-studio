@@ -1398,7 +1398,7 @@ mod tests {
         schedule
             .refresh_ordered(&[10], &[actor])
             .expect("valid roster");
-        valid["threadId"] = json!({"invalid":true});
+        valid["model"] = json!({"invalid":true});
         let invalid = studio_runtime_store::AgentRecord::from_value(valid)
             .expect("store accepts extra field");
         assert!(schedule.update_rows(&[(10, Some(invalid))]).is_err());
