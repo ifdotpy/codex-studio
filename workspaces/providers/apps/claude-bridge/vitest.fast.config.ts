@@ -53,6 +53,8 @@ export default {
       "steer.test.ts",
       "stop-receipts.test.ts",
       // Final stream accounting, deferred result totals and explicit unfinished-response gaps.
+      // Prepared on-return summaries: receipts, fork proof, and exact apply checks.
+      "idle-summary.test.ts",
       "usage.test.ts",
       "usage-bridge.test.ts",
       "usage-events.test.ts",
