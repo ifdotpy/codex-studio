@@ -366,6 +366,32 @@ mod tests {
     use super::check_sync_entities;
 
     #[test]
+    fn graph_agent_state_check_preserves_duplicate_and_row_identity_rules() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch("CREATE TABLE graph_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL);")
+            .unwrap();
+        for (id, raw) in [
+            ("", r#"{"id":"old","id":"","opaque":[1]}"#),
+            ("wrong", r#"{"id":"other"}"#),
+            ("null", r#"{"id":null}"#),
+        ] {
+            connection
+                .execute("INSERT INTO graph_agents VALUES(?1,?2)", [id, raw])
+                .unwrap();
+        }
+        let report = super::check_table::<crate::GraphAgentRecord>(&connection).unwrap();
+        assert_eq!(report.row_count, 3);
+        assert_eq!(report.rejected_count, 2);
+        assert!(
+            report
+                .failures
+                .iter()
+                .any(|f| f.pointer == "/id" && f.keyword == "rowKey")
+        );
+    }
+
+    #[test]
     fn sync_state_check_validates_unfiltered_rows_and_tombstones() {
         let connection = Connection::open_in_memory().expect("in-memory database opens");
         connection
