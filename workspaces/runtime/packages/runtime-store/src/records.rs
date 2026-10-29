@@ -1140,14 +1140,18 @@ mod terminal_typed_tests {
         );
     }
 }
-record_newtype!(
-    UsageResumeRecord,
-    String,
-    table = "runtime_usage_resumes",
-    schema = "PersistedUsageResumeRecord",
-    key = External,
-    query = UsageResumeRecovery
-);
+pub use studio_runtime_schema::usage_resume_record::UsageResumeRecord;
+impl JsonRecord for UsageResumeRecord {
+    type Id = String;
+    const TABLE: &'static str = "runtime_usage_resumes";
+    const SCHEMA: &'static str = "PersistedUsageResumeRecord";
+    const KEY_MODE: RecordKeyMode = RecordKeyMode::External;
+    const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::UsageResumeRecovery;
+    const TYPED_SHAPE: bool = true;
+    fn record_key(&self) -> Option<&String> {
+        None
+    }
+}
 /// Checked operational fields plus the original extensible record. Retaining
 /// the original JSON preserves omission, nulls and historical extension fields.
 #[derive(Clone, Debug, PartialEq)]

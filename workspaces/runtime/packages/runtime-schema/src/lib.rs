@@ -59,6 +59,7 @@ pub mod transcript_record;
 pub mod usage;
 pub mod usage_limits;
 pub mod workspace_operation;
+pub mod usage_resume_record;
 
 pub use delivery::DeliveryMoment;
 pub use provider_kind::ProviderKind;

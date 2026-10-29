@@ -530,7 +530,7 @@ pub enum ContinuationEventStatus {
     Cancelled,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, Deserialize)]
 pub enum UsageContinuationCause {
     #[serde(rename = "usage_limit")]
     UsageLimit,
@@ -540,7 +540,7 @@ pub enum UsageContinuationCause {
     Auth,
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, Deserialize)]
 pub enum UsageContinuationStatus {
     #[serde(rename = "scheduled")]
     Scheduled,
