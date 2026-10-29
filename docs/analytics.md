@@ -103,6 +103,22 @@ usage ledger checks retained identity metadata. The cost-index migration adds a
 covering group lookup without rebuilding usage or cost facts; journal replacement
 adjusts only contributions that actually change.
 
+### Session cost precision and journals
+
+Owner decision 2026-10-28: incremental floating-point totals are rebuilt at
+startup and every 10,000 group updates per root to reset drift. The target
+precision is two decimal places, tested on a copy of live data; it is not an
+unconditional mathematical guarantee. Roots with accepted journal replacements
+use a full recomputation to preserve their replacement rules.
+
+The reader assumes a provider journal is append-only until it is truncated or
+replaced. Before reading only appended bytes, it hashes the final 4 KiB at the
+previous end and rebuilds if that boundary has changed. An in-place rewrite
+outside that boundary followed by growth is outside the assumption. The
+[cost reader](../workspaces/runtime/packages/runtime-services/src/costs.rs) owns
+the cache and boundary check. When file identity is unavailable, the reader
+rebuilds on change.
+
 Claude response usage retains the one-hour subset of prompt-cache writes in
 [`UsageTokens`](../workspaces/runtime/packages/runtime-schema/src/usage.rs).
 Session estimates, reconciliation, and account journal scans price that subset

@@ -400,6 +400,9 @@ impl CostRootHintState {
             | "analytics_notifications"
             | "analytics_limits"
             | "analytics_meta"
+            | "analytics_usage_revision_clock"
+            | "analytics_usage_revisions"
+            | "analytics_cost_group_revisions"
             | "sqlite_sequence" => {}
             "analytics_usage_roots" if !deleted => {
                 if let (Some(rows), Some(rowid)) = (&mut self.rows, rowid) {
