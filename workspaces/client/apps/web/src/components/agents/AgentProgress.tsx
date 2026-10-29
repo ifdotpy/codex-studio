@@ -8,6 +8,9 @@ const PROGRESS_CLOCK_INTERVAL_MS = 1000;
 export function progressElapsed(startedAt: number, nowSeconds: number) {
   const seconds = Math.max(0, Math.floor(nowSeconds - startedAt));
   const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  if (hours >= 24) return `${Math.floor(hours / 24)}d ${hours % 24}h`;
+  if (hours) return `${hours}h ${minutes % 60}m`;
   return minutes ? `${minutes}m ${seconds % 60}s` : `${seconds}s`;
 }
 

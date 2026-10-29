@@ -71,4 +71,19 @@ describe("agent-list progress", () => {
     ).toBe("");
     expect(progressElapsed(100, 90)).toBe("0s");
   });
+  it("uses hours above an hour and days above a day", () => {
+    const cases: [number, string][] = [
+      [59, "59s"],
+      [60, "1m 0s"],
+      [3599, "59m 59s"],
+      [3600, "1h 0m"],
+      [1141 * 60 + 50, "19h 1m"],
+      [2002 * 60 + 5, "1d 9h"],
+      [86_399, "23h 59m"],
+      [86_400, "1d 0h"],
+      [4229 * 60 + 48, "2d 22h"],
+    ];
+    for (const [seconds, label] of cases)
+      expect(progressElapsed(1000, 1000 + seconds)).toBe(label);
+  });
 });
