@@ -145,6 +145,7 @@ enum ToolKind {
 struct ToolCall {
     name: String,
     kind: ToolKind,
+    watch_action: Option<crate::managed_status_watch::WatchAction>,
     args: Value,
     id: String,
     call: String,
@@ -168,6 +169,16 @@ impl ToolCall {
         if !args.is_object() {
             return Err(CallbackError::Invalid("Tool arguments must be an object"));
         }
+        let watch_action = if name == "orchestration_watch" {
+            Some(
+                serde_json::from_str::<crate::managed_status_watch::WatchActionInput>(
+                    &args.to_string(),
+                )?
+                .action,
+            )
+        } else {
+            None
+        };
         let call = match input.params.get("callId") {
             Some(Value::String(value)) => value.clone(),
             Some(Value::Number(value)) => value.to_string(),
@@ -230,6 +241,7 @@ impl ToolCall {
         Ok(Self {
             name,
             kind,
+            watch_action,
             args,
             id,
             call,
@@ -335,7 +347,7 @@ pub(super) async fn dispatch_with_ports(
                 "accountKey":context.account, "connectionId":context.connection,
                 "supervisor":{"generation":context.generation},
                 "created":chrono::Utc::now().timestamp_millis() as f64 / 1000.0, "updated":now,
-                "readOnly":services::read_only(&call.name,&call.args),
+                "readOnly":services::read_only(&call.name,&call.args.to_string(),call.watch_action),
                 "stage":"queued", "outcome":"pending", "cancelRequested":false
             });
             if let Some(alias) = &call.alias {
@@ -621,7 +633,10 @@ async fn run_claimed(
         .dispatch_managed(
             Arc::clone(store),
             &actor,
-            &call.name,
+            crate::managed_host_tools::ManagedTool {
+                name: &call.name,
+                watch_action: call.watch_action,
+            },
             &call.args,
             &call.id,
             now,
@@ -1005,6 +1020,7 @@ mod local_failure_tests {
         ToolCall {
             name: "orchestration_search".into(),
             kind: ToolKind::Search,
+            watch_action: None,
             args: json!({}),
             id: "thread:call".into(),
             call: "call".into(),

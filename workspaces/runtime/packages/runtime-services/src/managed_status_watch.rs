@@ -946,7 +946,6 @@ impl<T> RuleField<T> {
 #[derive(Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 struct ManagedRuleWire {
-    action: RuleField<String>,
     id: RuleField<String>,
     kind: RuleField<String>,
     path: RuleField<String>,
@@ -994,26 +993,38 @@ fn rule_empty_text(field: &RuleField<String>, maximum: usize) -> Result<String, 
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WatchAction {
+    List,
+    #[default]
+    Save,
+    Pause,
+    Resume,
+    Delete,
+}
+
+#[derive(serde::Deserialize)]
+pub struct WatchActionInput {
+    #[serde(default)]
+    pub action: WatchAction,
+}
+
 pub async fn rules(
     store: &RuntimeStore,
-    actor_id: &str,
-    actor_epoch: u64,
+    actor: (&str, u64),
+    action: WatchAction,
     data: Option<&Value>,
     request_id: &str,
     now: f64,
     files: &impl RuleWatchFiles,
 ) -> Result<RulesActionResult, RulesServiceError> {
+    let (actor_id, actor_epoch) = actor;
     if !now.is_finite() {
         return Err(RulesServiceError::Invalid("time"));
     }
     let wire = data.map(|value| <studio_runtime_schema::json_object::JsonObject<ManagedRuleWire> as serde::Deserialize>::deserialize(value).map(|wire| wire.0).map_err(|_| RulesServiceError::Invalid("rule"))).transpose()?;
-    let action = wire
-        .as_ref()
-        .and_then(|wire| wire.action.value())
-        .map(String::as_str)
-        .unwrap_or(if data.is_none() { "list" } else { "save" })
-        .to_owned();
-    if action == "list" || data.is_none() {
+    if action == WatchAction::List {
         let read_actor = actor_id.to_owned();
         let value = store
             .read_async("runtime-services/managed_status_watch", move |connection| {
@@ -1047,7 +1058,13 @@ pub async fn rules(
         });
     }
 
-    let action = crate::rules::RuleActionName::parse(&action);
+    let action = match action {
+        WatchAction::List => return Err(RulesServiceError::UnknownAction),
+        WatchAction::Save => Some(crate::rules::RuleActionName::Save),
+        WatchAction::Pause => Some(crate::rules::RuleActionName::Pause),
+        WatchAction::Resume => Some(crate::rules::RuleActionName::Resume),
+        WatchAction::Delete => Some(crate::rules::RuleActionName::Delete),
+    };
     let body = wire.ok_or(RulesServiceError::Invalid("rule"))?;
     if request_id.is_empty() || request_id.chars().count() > 200 {
         return Err(RulesServiceError::Invalid("request id"));
@@ -1571,7 +1588,7 @@ fn cwd(agent: &AgentRecord) -> Result<&str, RulesServiceError> {
 mod tests {
     use super::{
         LocalRuleWatchFiles, MODEL_STATUS_HISTORY, RuleWatchFiles, RulesServiceError, StatusError,
-        model_directory, rules,
+        WatchAction, model_directory, rules,
     };
     use rusqlite::params;
     use serde_json::{Value, json};
@@ -1847,9 +1864,17 @@ mod tests {
             (json!({"event":"bad","command":false}), "Unknown event type"),
         ] {
             let request = studio_runtime_schema::persistence::RequestIdentity::issue_root();
-            let error = rules(&store, "lead", 3, Some(&input), &request, 100.0, &Files)
-                .await
-                .expect_err("invalid input");
+            let error = rules(
+                &store,
+                ("lead", 3),
+                WatchAction::Save,
+                Some(&input),
+                &request,
+                100.0,
+                &Files,
+            )
+            .await
+            .expect_err("invalid input");
             assert!(
                 matches!(error, RulesServiceError::Invalid(message) if message == expected),
                 "{error:?}"
@@ -1862,9 +1887,17 @@ mod tests {
         let (_directory, store) = fixture().await;
         let request = studio_runtime_schema::persistence::RequestIdentity::issue_root();
         let input = json!({"kind":"low_workers", "command":false, "name":false});
-        let error = rules(&store, "queued", 4, Some(&input), &request, 100.0, &Files)
-            .await
-            .expect_err("not lead");
+        let error = rules(
+            &store,
+            ("queued", 4),
+            WatchAction::Save,
+            Some(&input),
+            &request,
+            100.0,
+            &Files,
+        )
+        .await
+        .expect_err("not lead");
         assert!(matches!(
             error,
             RulesServiceError::Invalid("Only an orchestrator can own a low-worker alert")
@@ -1876,9 +1909,17 @@ mod tests {
         let (_directory, store) = fixture().await;
         let request = studio_runtime_schema::persistence::RequestIdentity::issue_root();
         let value = json!({"name":"watch", "kind":true, "event":[], "at":"invalid", "stallTimeoutSeconds":null, "stall_timeout_seconds":1});
-        let saved = rules(&store, "lead", 3, Some(&value), &request, 100.0, &Files)
-            .await
-            .expect("legacy defaults");
+        let saved = rules(
+            &store,
+            ("lead", 3),
+            WatchAction::Save,
+            Some(&value),
+            &request,
+            100.0,
+            &Files,
+        )
+        .await
+        .expect("legacy defaults");
         assert_eq!(saved.value["kind"], "interval");
         assert_eq!(saved.value["event"], "worker_completed");
         assert_eq!(saved.value["at"], 160.0);
@@ -1886,8 +1927,8 @@ mod tests {
         let invalid = json!({"kind":"file","path":"notes.txt","name":false});
         let error = rules(
             &store,
-            "lead",
-            3,
+            ("lead", 3),
+            WatchAction::Save,
             Some(&invalid),
             &request,
             100.0,
@@ -1909,8 +1950,8 @@ mod tests {
             json!({"kind":"file","name":"watch","path":"notes.txt","intervalSeconds":30});
         let first = rules(
             &store,
-            "lead",
-            3,
+            ("lead", 3),
+            WatchAction::Save,
             Some(&generated),
             &generated_request,
             100.0,
@@ -1920,8 +1961,8 @@ mod tests {
         .expect("save generated rule");
         let replay = rules(
             &store,
-            "lead",
-            3,
+            ("lead", 3),
+            WatchAction::Save,
             Some(&generated),
             &generated_request,
             101.0,
@@ -1937,8 +1978,8 @@ mod tests {
         assert!(
             rules(
                 &store,
-                "lead",
-                3,
+                ("lead", 3),
+                WatchAction::Save,
                 Some(&explicit_save),
                 &generated_request,
                 101.0,
@@ -1953,8 +1994,8 @@ mod tests {
         save["id"] = json!("rule-fixed");
         let saved = rules(
             &store,
-            "lead",
-            3,
+            ("lead", 3),
+            WatchAction::Save,
             Some(&save),
             &save_request,
             100.0,
@@ -1967,8 +2008,8 @@ mod tests {
         assert!(
             rules(
                 &store,
-                "lead",
-                3,
+                ("lead", 3),
+                WatchAction::Save,
                 Some(&mismatched),
                 &save_request,
                 102.0,
@@ -2002,8 +2043,8 @@ mod tests {
             .expect("seed cancellation monitor");
         let paused = rules(
             &store,
-            "lead",
-            3,
+            ("lead", 3),
+            WatchAction::Pause,
             Some(&json!({"action":"pause","id":"rule-fixed"})),
             &pause_request,
             100.0,
@@ -2039,8 +2080,8 @@ mod tests {
         let resumed_request = studio_runtime_schema::persistence::RequestIdentity::issue_root();
         rules(
             &store,
-            "lead",
-            3,
+            ("lead", 3),
+            WatchAction::Resume,
             Some(&json!({"action":"resume","id":"rule-fixed"})),
             &resumed_request,
             102.0,
@@ -2050,8 +2091,8 @@ mod tests {
         .expect("later rule mutation");
         let replay = rules(
             &store,
-            "lead",
-            3,
+            ("lead", 3),
+            WatchAction::Pause,
             Some(&json!({"action":"pause","id":"rule-fixed"})),
             &pause_request,
             103.0,
@@ -2084,8 +2125,8 @@ mod tests {
         assert!(
             rules(
                 &store,
-                "lead",
-                3,
+                ("lead", 3),
+                WatchAction::Pause,
                 Some(&json!({"action":"pause","id":"rule-fixed"})),
                 &pause_request,
                 104.0,
@@ -2376,8 +2417,8 @@ mod tests {
         assert!(
             rules(
                 &store,
-                "lead",
-                3,
+                ("lead", 3),
+                WatchAction::Save,
                 Some(&file_rule),
                 &studio_runtime_schema::persistence::RequestIdentity::issue_root(),
                 100.0,
@@ -2406,8 +2447,8 @@ mod tests {
         assert!(
             rules(
                 &store,
-                "lead",
-                3,
+                ("lead", 3),
+                WatchAction::Save,
                 Some(&interval_rule),
                 &studio_runtime_schema::persistence::RequestIdentity::issue_root(),
                 100.0,
@@ -2436,8 +2477,8 @@ mod tests {
         assert!(
             rules(
                 &store,
-                "lead",
-                3,
+                ("lead", 3),
+                WatchAction::Save,
                 Some(&json!({"id":"rule-write-fail","kind":"interval","name":"rule"})),
                 &studio_runtime_schema::persistence::RequestIdentity::issue_root(),
                 100.0,

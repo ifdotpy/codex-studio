@@ -580,7 +580,7 @@ impl crate::managed_host_tools::PostCommitPort for ProductionPorts {
         &'a self,
         store: std::sync::Arc<studio_runtime_store::RuntimeStore>,
         actor: &'a crate::managed_host_tools::Actor,
-        tool: &'a str,
+        tool: crate::managed_host_tools::ManagedTool<'a>,
         args: &'a Value,
         request_id: &'a str,
         now: f64,
@@ -596,8 +596,9 @@ impl crate::managed_host_tools::PostCommitPort for ProductionPorts {
                 store,
                 actor,
                 context: &self.context,
-                tool,
+                tool: tool.name,
                 args,
+                watch_action: tool.watch_action,
                 request_id,
                 now,
                 ports: &self.runtime_ports,
@@ -735,7 +736,14 @@ impl From<crate::coordination::CoordinationError> for CallbackError {
         }
     }
 }
-pub(super) fn read_only(name: &str, args: &Value) -> bool {
+pub(super) fn read_only(
+    name: &str,
+    args: &str,
+    watch_action: Option<crate::managed_status_watch::WatchAction>,
+) -> bool {
+    if name == "orchestration_watch" {
+        return watch_action == Some(crate::managed_status_watch::WatchAction::List);
+    }
     #[derive(serde::Deserialize)]
     struct Arguments {
         action: Option<String>,
@@ -747,7 +755,7 @@ pub(super) fn read_only(name: &str, args: &Value) -> bool {
         <serde::de::IgnoredAny as serde::Deserialize>::deserialize(deserializer)?;
         Ok(true)
     }
-    let Ok(args) = <Arguments as serde::Deserialize>::deserialize(args) else {
+    let Ok(args) = serde_json::from_str::<Arguments>(args) else {
         return false;
     };
     let action = args.action.as_deref().unwrap_or("list");
@@ -766,7 +774,6 @@ pub(super) fn read_only(name: &str, args: &Value) -> bool {
         && action != "cancel"
         || name == "orchestration_task" && matches!(action, "list" | "get" | "read" | "history")
         || name == "orchestration_request" && matches!(action, "list" | "get")
-        || name == "orchestration_watch" && action == "list"
         || name == "orchestration_complaint" && action == "read"
         || name == "orchestration_agent_manage"
             && matches!(
@@ -1374,6 +1381,7 @@ mod read_only_tests {
             ("orchestration_request", r#"{"action":"cancel"}"#, false),
             ("orchestration_watch", r#"{"action":"list"}"#, true),
             ("orchestration_watch", r#"{"action":"save"}"#, false),
+            ("orchestration_watch", r#"{"kind":"interval"}"#, false),
             ("orchestration_complaint", r#"{"action":"read"}"#, true),
             ("orchestration_complaint", r#"{"action":"respond"}"#, false),
             (
@@ -1385,8 +1393,26 @@ mod read_only_tests {
             ("orchestration_servers", r#"{"action":"list"}"#, true),
             ("orchestration_servers", r#"{"action":"fetch"}"#, false),
         ] {
-            let value = serde_json::from_str(args).expect("fixture JSON");
-            assert_eq!(super::read_only(name, &value), expected, "{name} {args}");
+            let watch_action = if name == "orchestration_watch" {
+                Some(
+                    serde_json::from_str::<crate::managed_status_watch::WatchActionInput>(args)
+                        .unwrap()
+                        .action,
+                )
+            } else {
+                None
+            };
+            assert_eq!(
+                super::read_only(name, args, watch_action),
+                expected,
+                "{name} {args}"
+            );
         }
+        assert!(
+            serde_json::from_str::<crate::managed_status_watch::WatchActionInput>(
+                r#"{"action":"unexpected"}"#
+            )
+            .is_err()
+        );
     }
 }
