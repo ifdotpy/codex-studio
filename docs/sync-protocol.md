@@ -251,6 +251,28 @@ use. Adding a separate query cache is unnecessary for this contract. The Rust HT
 owns SSE framing; the renderer and server compare the same generated schema
 identity before continuing with live updates.
 
+### Live text
+
+Model text reaches the open chat before its durable item does. The account worker
+buffers provider deltas and writes them to SQLite at most every 750 ms. After the
+journal commit of a delta, the worker also sends it, in memory and without a timer,
+to every sync stream. A stream forwards it as a `live-delta` event only when it has
+the transcript of that agent subscribed. The event is not a resource frame: it has no
+revision, no `Last-Event-ID`, and no replay.
+
+- Fields (`ResourceLiveDeltaEvent` in OpenAPI): `agentId`, `itemId` (the durable
+  transcript item id), `offset` (item text length in Unicode scalars before `text`),
+  and `text`.
+- Each stream has a bounded receiver (256 deltas). A slow stream skips the deltas it
+  missed. The durable item carries that text; a lost delta is harmless.
+- The renderer keeps live text in memory only. It shows `durable.slice(0, offset)` plus
+  the live run while the durable item is shorter than the run and at least `offset`
+  long. The durable item wins when it is at least as long. A gap in `offset` starts a
+  new run.
+- Only assistant message text is live. Reasoning text has no durable item, and tool
+  output is a bounded tail that has no stable offset. Both stay on the durable path.
+- The 200 ms spacing of resource and token-rate frames does not apply to this event.
+
 ### Subscription and notification
 
 A same-origin EventSource requests `/api/sync/stream?protocol=4&resources=...`.
