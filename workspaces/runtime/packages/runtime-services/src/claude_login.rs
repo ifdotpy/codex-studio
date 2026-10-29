@@ -148,7 +148,9 @@ impl LoginSnapshot {
                 if account.is_none() && signature == request_hash => {}
             LoginFlow::Reauthenticate { account_key, .. }
                 if signature.is_none() && account == Some(account_key) => {}
-            _ => return Err(LoginError::Conflict),
+            LoginFlow::Add { .. } | LoginFlow::Reauthenticate { .. } => {
+                return Err(LoginError::Conflict);
+            }
         }
         Ok(self.receipt())
     }

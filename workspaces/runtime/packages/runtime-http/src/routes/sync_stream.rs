@@ -380,10 +380,8 @@ async fn sync_stream(
         &view,
         reason,
         typed_resources(&view.resources),
-        initial_entity_sequence,
-        None,
-        initial_draft_sequence,
-        None,
+        (initial_entity_sequence, None),
+        (initial_draft_sequence, None),
     ) {
         Ok(event) => event,
         Err(error) => return error.into_response(),
@@ -595,7 +593,32 @@ pub(super) async fn append_progress_frames(
                 };
                 value
             }
-            _ => continue,
+            ResourceRef::AccountsResource(_)
+            | ResourceRef::CostsResource(_)
+            | ResourceRef::DesktopResource(_)
+            | ResourceRef::DraftsResource(_)
+            | ResourceRef::LimitsResource(_)
+            | ResourceRef::ModelsResource(_)
+            | ResourceRef::MultiServerResource(_)
+            | ResourceRef::QueueResource(_)
+            | ResourceRef::ReceiptsResource(_)
+            | ResourceRef::RoomResource(_)
+            | ResourceRef::SessionCostResource(_)
+            | ResourceRef::StateResource(_)
+            | ResourceRef::TaskResource(_)
+            | ResourceRef::TasksResource(_)
+            | ResourceRef::TerminalResource(_)
+            | ResourceRef::TerminalsResource(_)
+            | ResourceRef::TranscriptResource(_)
+            | ResourceRef::TranscriptsResource(_)
+            | ResourceRef::VoiceResource(_)
+            | ResourceRef::WorkspaceResource(_)
+            | ResourceRef::AgentDetailResource(_)
+            | ResourceRef::MonitorsResource(_)
+            | ResourceRef::ProcessesResource(_)
+            | ResourceRef::WorkResource(_)
+            | ResourceRef::ComplaintResource(_)
+            | ResourceRef::TerminalOutputResource(_) => continue,
         };
         let payload = json!({
             "protocol": SYNC_PROTOCOL_VERSION,
@@ -1366,10 +1389,8 @@ async fn subscription_frame(state: &mut ResourceStream, update: SubscriptionChan
             &view,
             ResourceChangeEventReason::Initial,
             typed_resources(&view.resources),
-            state.entity_sequence,
-            None,
-            state.draft_sequence,
-            None,
+            (state.entity_sequence, None),
+            (state.draft_sequence, None),
         )
         .ok()?;
         attach_initial_entries(http_state, &mut event, &update.since)
@@ -1556,10 +1577,8 @@ async fn next_frame(
                 &view,
                 reason,
                 resources,
-                sequence,
-                batch,
-                draft_sequence,
-                draft_changes,
+                (sequence, batch),
+                (draft_sequence, draft_changes),
             )
             .ok()?;
             attach_transcript_changes(&mut event, transcript_updates);
@@ -1688,10 +1707,8 @@ fn resource_changes_event(
     view: &ResourceChanges<SubscribedResource>,
     reason: ResourceChangeEventReason,
     resources: Vec<ResourceRef>,
-    sequence: i64,
-    mut changes: Option<EntityChangeBatch>,
-    draft_sequence: i64,
-    mut draft_changes: Option<DraftChangeBatch>,
+    (sequence, mut changes): (i64, Option<EntityChangeBatch>),
+    (draft_sequence, mut draft_changes): (i64, Option<DraftChangeBatch>),
 ) -> Result<ResourceChangeEvent, ApiError> {
     let resource_versions = resources
         .iter()
@@ -1798,10 +1815,8 @@ fn resource_event(
             },
             serde_json::from_value(json!(reason)).expect("fixture reason"),
             typed_resources(&fixture_resources(resources)),
-            entity_sequence,
-            None,
-            0,
-            None,
+            (entity_sequence, None),
+            (0, None),
         )
         .expect("typed fixture event"),
     )
@@ -2296,7 +2311,7 @@ mod tests {
         let receipt = json!({"id":"agent", "request_id":request_id, "status":"failed", "error":"The title could not be generated. Try /rename again."});
         let view = ResourceChanges {
             cursor: state.sync_changes.snapshot(),
-            resources: fixture_resources(&[resource.clone()]),
+            resources: fixture_resources(std::slice::from_ref(&resource)),
             versions: vec![1],
             entity_reset: false,
             overflow: false,
@@ -2483,7 +2498,7 @@ mod tests {
         let resource = json!({"kind":"auth-progress","requestId":id});
         let view = ResourceChanges {
             cursor: state.sync_changes.snapshot(),
-            resources: fixture_resources(&[resource.clone()]),
+            resources: fixture_resources(std::slice::from_ref(&resource)),
             versions: vec![1],
             entity_reset: false,
             overflow: false,
@@ -2587,10 +2602,8 @@ mod tests {
             &view,
             ResourceChangeEventReason::Change,
             typed_resources(&view.resources),
-            2,
-            Some(changes),
-            2,
-            Some(drafts),
+            (2, Some(changes)),
+            (2, Some(drafts)),
         )
         .expect("event");
         let entities = event.resource_versions[0]
@@ -3403,8 +3416,8 @@ mod tests {
                 &mut stream,
                 SubscriptionChange {
                     generation: 1,
-                    resources: fixture_resources(&[resource.clone()]),
-                    added: fixture_resources(&[resource.clone()]),
+                    resources: fixture_resources(std::slice::from_ref(&resource)),
+                    added: fixture_resources(std::slice::from_ref(&resource)),
                     token_rates: None,
                     since,
                 },
@@ -3572,8 +3585,8 @@ mod tests {
                 &mut state,
                 SubscriptionChange {
                     generation,
-                    resources: fixture_resources(&[resource.clone()]),
-                    added: fixture_resources(&[resource.clone()]),
+                    resources: fixture_resources(std::slice::from_ref(&resource)),
+                    added: fixture_resources(std::slice::from_ref(&resource)),
                     token_rates: None,
                     since: BTreeMap::new(),
                 },
@@ -4018,11 +4031,11 @@ mod tests {
         assert_eq!(first, second);
         assert!(matches!(
             left["open"],
-            TranscriptStreamUpdate::Snapshot { snapshot: _, .. }
+            TranscriptStreamUpdate::Snapshot { .. }
         ));
         assert!(matches!(
             right["open"],
-            TranscriptStreamUpdate::Snapshot { snapshot: _, .. }
+            TranscriptStreamUpdate::Snapshot { .. }
         ));
         store.transaction(|tx| {
             tx.execute("UPDATE runtime_items SET record=json_set(record,'$.text','after') WHERE id='answer'", [])?;
@@ -5189,8 +5202,8 @@ mod tests {
             &mut state,
             SubscriptionChange {
                 generation: 1,
-                resources: fixture_resources(&[resource.clone()]),
-                added: fixture_resources(&[resource.clone()]),
+                resources: fixture_resources(std::slice::from_ref(&resource)),
+                added: fixture_resources(std::slice::from_ref(&resource)),
                 token_rates: None,
                 since: BTreeMap::new(),
             },

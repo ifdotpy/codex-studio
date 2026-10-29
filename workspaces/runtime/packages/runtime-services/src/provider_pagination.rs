@@ -35,7 +35,7 @@ pub fn next_cursor(cursor: &Cursor) -> Result<Option<&str>, InvalidCursor> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     #[test]
     fn cursor_accepts_only_null_or_nonempty_strings() {
@@ -53,7 +53,11 @@ mod tests {
                 serde_json::Value::String(ref s) if !s.is_empty() => {
                     assert_eq!(next_cursor(&cursor).expect("valid"), Some(s.as_str()));
                 }
-                _ => assert!(next_cursor(&cursor).is_err()),
+                Value::Bool(_)
+                | Value::Number(_)
+                | Value::String(_)
+                | Value::Array(_)
+                | Value::Object(_) => assert!(next_cursor(&cursor).is_err()),
             }
         }
     }

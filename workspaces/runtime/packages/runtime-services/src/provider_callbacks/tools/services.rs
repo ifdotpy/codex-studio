@@ -1217,55 +1217,6 @@ fn paginate(
     )
 }
 
-#[cfg(test)]
-mod pagination_tests {
-    use super::*;
-    use base64::Engine;
-
-    #[test]
-    fn cursor_preserves_object_offsets_extras_and_scope() {
-        let rows = vec![json!("one"), json!("two"), json!("three")];
-        let first = paginate(
-            rows.clone(),
-            &rows,
-            &json!({"limit":1}),
-            json!("scope"),
-            None,
-        )
-        .expect("first page");
-        let revision = first["revision"].as_str().expect("revision");
-        let cursor = |text: String| base64::engine::general_purpose::URL_SAFE.encode(text);
-        let page = |text: String, scope: Value| {
-            paginate(
-                rows.clone(),
-                &rows,
-                &json!({"limit":1,"cursor":cursor(text)}),
-                scope,
-                None,
-            )
-        };
-        let extra = format!(r#"{{"offset":1,"revision":"{revision}","extra":true}}"#);
-        let result = page(extra, json!("scope")).expect("extra fields are accepted");
-        assert_eq!(result["items"], json!(["two"]));
-        for value in [
-            format!(r#"[1,"{revision}"]"#),
-            format!(r#"{{"offset":1.0,"revision":"{revision}"}}"#),
-            format!(r#"{{"offset":-1,"revision":"{revision}"}}"#),
-            format!(r#"{{"offset":4,"revision":"{revision}"}}"#),
-            format!(r#"{{"offset":1,"revision":"{revision}","offset":null}}"#),
-        ] {
-            assert!(page(value, json!("scope")).is_err());
-        }
-        assert!(
-            page(
-                format!(r#"{{"offset":1,"revision":"{revision}"}}"#),
-                json!("other")
-            )
-            .is_err()
-        );
-    }
-}
-
 pub(super) fn payload_selection(
     tx: &Transaction<'_>,
     snapshot: &CallbackSnapshot,
@@ -1327,4 +1278,53 @@ fn request_action(args: &Value) -> Result<tool_requests::Action<'_>, CallbackErr
         "cancel" => tool_requests::Action::Cancel(text(args, "request_id")?),
         _ => return Err(CallbackError::Invalid("Invalid request action")),
     })
+}
+
+#[cfg(test)]
+mod pagination_tests {
+    use super::*;
+    use base64::Engine;
+
+    #[test]
+    fn cursor_preserves_object_offsets_extras_and_scope() {
+        let rows = vec![json!("one"), json!("two"), json!("three")];
+        let first = paginate(
+            rows.clone(),
+            &rows,
+            &json!({"limit":1}),
+            json!("scope"),
+            None,
+        )
+        .expect("first page");
+        let revision = first["revision"].as_str().expect("revision");
+        let cursor = |text: String| base64::engine::general_purpose::URL_SAFE.encode(text);
+        let page = |text: String, scope: Value| {
+            paginate(
+                rows.clone(),
+                &rows,
+                &json!({"limit":1,"cursor":cursor(text)}),
+                scope,
+                None,
+            )
+        };
+        let extra = format!(r#"{{"offset":1,"revision":"{revision}","extra":true}}"#);
+        let result = page(extra, json!("scope")).expect("extra fields are accepted");
+        assert_eq!(result["items"], json!(["two"]));
+        for value in [
+            format!(r#"[1,"{revision}"]"#),
+            format!(r#"{{"offset":1.0,"revision":"{revision}"}}"#),
+            format!(r#"{{"offset":-1,"revision":"{revision}"}}"#),
+            format!(r#"{{"offset":4,"revision":"{revision}"}}"#),
+            format!(r#"{{"offset":1,"revision":"{revision}","offset":null}}"#),
+        ] {
+            assert!(page(value, json!("scope")).is_err());
+        }
+        assert!(
+            page(
+                format!(r#"{{"offset":1,"revision":"{revision}"}}"#),
+                json!("other")
+            )
+            .is_err()
+        );
+    }
 }

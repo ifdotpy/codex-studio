@@ -706,7 +706,7 @@ impl<S: TerminalSession> TerminalDriver<S> {
                         if record.status() != Some("closed") {
                             record.set_status("exited");
                         }
-                        record.set_exit_code(code.map(i64::from));
+                        record.set_exit_code(code);
                         record
                             .set("updated", json!(updated_at))
                             .map_err(StoreError::from)?;

@@ -84,7 +84,7 @@ impl ResourceIdentity for Value {
 }
 
 impl ResourceKind {
-    fn is_entity(&self) -> bool {
+    fn is_entity(self) -> bool {
         matches!(
             self,
             Self::State

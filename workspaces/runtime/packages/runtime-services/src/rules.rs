@@ -250,25 +250,25 @@ impl RuleKind {
     pub fn minimum(&self) -> Option<&serde_json::Number> {
         match self {
             Self::LowWorkers { minimum, .. } => minimum.as_ref(),
-            _ => None,
+            Self::Interval | Self::Once | Self::File { .. } | Self::Event => None,
         }
     }
     pub fn duration(&self) -> Option<&serde_json::Number> {
         match self {
             Self::LowWorkers { duration, .. } => duration.as_ref(),
-            _ => None,
+            Self::Interval | Self::Once | Self::File { .. } | Self::Event => None,
         }
     }
     pub fn stall(&self) -> i64 {
         match self {
             Self::File { stall, .. } => *stall,
-            _ => 0,
+            Self::Interval | Self::Once | Self::Event | Self::LowWorkers { .. } => 0,
         }
     }
     pub fn liveness(&self) -> &str {
         match self {
             Self::File { liveness, .. } => liveness,
-            _ => "",
+            Self::Interval | Self::Once | Self::Event | Self::LowWorkers { .. } => "",
         }
     }
 }

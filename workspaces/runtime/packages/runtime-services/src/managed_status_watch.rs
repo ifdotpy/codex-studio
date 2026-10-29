@@ -981,7 +981,7 @@ fn rule_text(
 fn rule_empty_text(field: &RuleField<String>, maximum: usize) -> Result<String, RulesServiceError> {
     match field {
         RuleField::Missing | RuleField::Null => Ok(String::new()),
-        _ => rule_text(field, "text", maximum, true),
+        RuleField::Value(_) | RuleField::Invalid => rule_text(field, "text", maximum, true),
     }
 }
 
@@ -1389,8 +1389,10 @@ fn check_save(
         RuleField::Missing | RuleField::Null => {
             Ok("Check this event and continue the original task.".to_owned())
         }
-        _ => rule_text(&body.text, "an instruction", RULE_TEXT_MAX_CHARS, false)
-            .map_err(|_| crate::rules::RuleSaveError::Text),
+        RuleField::Value(_) | RuleField::Invalid => {
+            rule_text(&body.text, "an instruction", RULE_TEXT_MAX_CHARS, false)
+                .map_err(|_| crate::rules::RuleSaveError::Text)
+        }
     };
     crate::rules::CheckedRuleSave::new(
         crate::rules::RuleSaveInput {

@@ -179,7 +179,7 @@ impl Snapshot {
     pub(crate) fn usage_record(&self) -> Option<&UsageContinuation> {
         match self.typed.0.record.as_ref()? {
             ContinuationRecord::Usage(record) => Some(record),
-            _ => None,
+            ContinuationRecord::Capacity(_) | ContinuationRecord::Auth(_) => None,
         }
     }
     pub(crate) fn record_failed_at(&self) -> Option<f64> {
@@ -210,7 +210,7 @@ impl Snapshot {
     pub(crate) fn capacity_record(&self) -> Option<&CapacityContinuation> {
         match self.typed.0.record.as_ref()? {
             ContinuationRecord::Capacity(record) => Some(record),
-            _ => None,
+            ContinuationRecord::Usage(_) | ContinuationRecord::Auth(_) => None,
         }
     }
     pub(crate) fn status(&self) -> Option<WaitStatus> {

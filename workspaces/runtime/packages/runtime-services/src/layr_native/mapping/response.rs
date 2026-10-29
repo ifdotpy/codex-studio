@@ -16,7 +16,7 @@ impl Text {
     fn get(&self) -> Option<&str> {
         match self {
             Self::String(value) => Some(value),
-            _ => None,
+            Self::Other(_) | Self::Missing => None,
         }
     }
 }
@@ -33,7 +33,7 @@ impl Time {
     fn get(&self) -> i64 {
         match self {
             Self::Integer(value) => *value,
-            _ => 0,
+            Self::Other(_) | Self::Missing => 0,
         }
     }
 }
@@ -76,7 +76,7 @@ impl Lines {
         match self {
             Self::Array(lines) => lines.iter().find_map(|entry| match entry {
                 LineEntry::Line(line) if line.name.get() == Some("main") => Some(line),
-                _ => None,
+                LineEntry::Line(_) | LineEntry::Other(_) => None,
             }),
             Self::Other(_) => None,
         }
@@ -116,7 +116,7 @@ impl StateEntry {
         match self {
             Self::State(state) => match &state.layers {
                 Caches::Missing => state.caches.has_entries(),
-                layers => layers.has_entries(),
+                layers @ (Caches::Object(_) | Caches::Other(_)) => layers.has_entries(),
             },
             Self::Other(_) => false,
         }
