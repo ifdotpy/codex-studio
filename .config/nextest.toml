@@ -84,7 +84,8 @@ inherits = "ci"
 # Reviewer permissions stay read-only under yolo across preparation, turns, and monitors.
 default-filter = '''
     (package(=studio-runtime-services) & kind(lib) & test(/^account_driver::tests::vm_/)) |
-    (package(=studio-runtime-server) & kind(lib) & test(/^host_runtime::codex_vm_auth_tests::/)) |
+    (package(=studio-runtime-server) & kind(lib) & (test(/^host_runtime::codex_vm_auth_tests::/) | test(/^host_runtime::launch_profile_tests::/))) |
+    (package(=studio-runtime-services) & kind(lib) & test(/^provider_adapter::tests::checked_private_profile_launch_keeps_pin_options_and_refusal_order$/)) |
     (package(studio-client-core) & test(/^draft_replication::tests::/)) |
     (package(studio-runtime-schema) & test(/^(request_record|graph_agent_record)::tests::/)) |
     (package(studio-runtime-store) & kind(lib) & test(/request_typed_tests::|execution_run_table_preserves_evidence_and_checks_physical_identity|graph_agent/)) |
@@ -358,7 +359,7 @@ default-filter = '''
     | (package(=studio-runtime-schema) & kind(lib) & (test(task_command::tests::task_commands_validate_variants_and_keep_presence_and_opaque_results) | test(task_command_schema_matches_owner_and_transport_variants)))
     | (package(=studio-runtime-schema) & kind(lib) & test(contracts::tests::transfer_notices_use_the_provider_identity_contract))
     | (package(=studio-runtime-schema) & kind(lib) & (test(usage::ledger::typed_analytics_tests::ledger_deserialization_rejects_mismatched_observation_identity) | test(process_controls::) | test(contracts::tests::account_limit_consumers_share_checked_fields_and_open_vendor_windows)))
-    | (package(=studio-runtime-services) & kind(lib) & (test(costs::tests::usage_reconciliation_rejects_invalid_cache_write_subset) | test(account_session_runtime::limits_freshness_tests::limits_ingress_preserves_vendor_windows_and_rejects_invalid_consumed_fields) | test(account_policy::tests::) | test(claude_bridge::options_tests::public_options_match_legacy_bridge_projection)))
+    | (package(=studio-runtime-services) & kind(lib) & (test(costs::tests::usage_reconciliation_rejects_invalid_cache_write_subset) | test(account_session_runtime::limits_freshness_tests::limits_ingress_preserves_vendor_windows_and_rejects_invalid_consumed_fields) | test(account_policy::tests::) | test(claude_bridge::options_tests::public_options_match_legacy_bridge_projection) | test(claude_bridge::options_tests::launch_projection_preserves_literal_pending_and_credential_pin)))
     | (package(=studio-runtime-store) & kind(lib) & test(repositories::account_state::tests::))
     | (package(=studio-runtime-http) & kind(lib) & (test(routes::catalog::tests::limits_route_preserves_checked_fields_and_vendor_extensions) | test(routes::host_secrets::tests::vault_pull_rejects_malformed_success_counters) | test(routes::host_secrets::tests::vault_pull_preserves_integral_decimal_command_counters)))
     | (package(=studio-runtime-http) & kind(test) & binary(=integration) & (test(process_controls::process_receipt_cannot_certify_a_missing_result) | test(process_controls::process_receipt_and_replay_preserve_retained_result_payload) | test(process_controls::process_command_legacy_nulls_keep_exact_replay_signature) | test(process_controls::process_identity_numeric_spelling_is_not_normalized_into_authority)))
@@ -424,7 +425,8 @@ platform = 'cfg(target_os = "linux")'
 # Reviewer permissions stay read-only under yolo across preparation, turns, and monitors.
 default-filter = '''
     (package(=studio-runtime-services) & kind(lib) & test(/^account_driver::tests::vm_/)) |
-    (package(=studio-runtime-server) & kind(lib) & test(/^host_runtime::codex_vm_auth_tests::/)) |
+    (package(=studio-runtime-server) & kind(lib) & (test(/^host_runtime::codex_vm_auth_tests::/) | test(/^host_runtime::launch_profile_tests::/))) |
+    (package(=studio-runtime-services) & kind(lib) & test(/^provider_adapter::tests::checked_private_profile_launch_keeps_pin_options_and_refusal_order$/)) |
     (package(studio-client-core) & test(/^draft_replication::tests::/)) |
     (package(studio-runtime-schema) & test(/^(request_record|graph_agent_record)::tests::/)) |
     (package(studio-runtime-store) & kind(lib) & test(/request_typed_tests::|execution_run_table_preserves_evidence_and_checks_physical_identity|graph_agent/)) |
@@ -698,7 +700,7 @@ default-filter = '''
     | (package(=studio-runtime-schema) & kind(lib) & (test(task_command::tests::task_commands_validate_variants_and_keep_presence_and_opaque_results) | test(task_command_schema_matches_owner_and_transport_variants)))
     | (package(=studio-runtime-schema) & kind(lib) & test(contracts::tests::transfer_notices_use_the_provider_identity_contract))
     | (package(=studio-runtime-schema) & kind(lib) & (test(usage::ledger::typed_analytics_tests::ledger_deserialization_rejects_mismatched_observation_identity) | test(process_controls::) | test(contracts::tests::account_limit_consumers_share_checked_fields_and_open_vendor_windows)))
-    | (package(=studio-runtime-services) & kind(lib) & (test(costs::tests::usage_reconciliation_rejects_invalid_cache_write_subset) | test(account_session_runtime::limits_freshness_tests::limits_ingress_preserves_vendor_windows_and_rejects_invalid_consumed_fields) | test(account_policy::tests::) | test(claude_bridge::options_tests::public_options_match_legacy_bridge_projection)))
+    | (package(=studio-runtime-services) & kind(lib) & (test(costs::tests::usage_reconciliation_rejects_invalid_cache_write_subset) | test(account_session_runtime::limits_freshness_tests::limits_ingress_preserves_vendor_windows_and_rejects_invalid_consumed_fields) | test(account_policy::tests::) | test(claude_bridge::options_tests::public_options_match_legacy_bridge_projection) | test(claude_bridge::options_tests::launch_projection_preserves_literal_pending_and_credential_pin)))
     | (package(=studio-runtime-store) & kind(lib) & test(repositories::account_state::tests::))
     | (package(=studio-runtime-http) & kind(lib) & (test(routes::catalog::tests::limits_route_preserves_checked_fields_and_vendor_extensions) | test(routes::host_secrets::tests::vault_pull_rejects_malformed_success_counters) | test(routes::host_secrets::tests::vault_pull_preserves_integral_decimal_command_counters)))
     | (package(=studio-runtime-http) & kind(test) & binary(=integration) & (test(process_controls::process_receipt_cannot_certify_a_missing_result) | test(process_controls::process_receipt_and_replay_preserve_retained_result_payload) | test(process_controls::process_command_legacy_nulls_keep_exact_replay_signature) | test(process_controls::process_identity_numeric_spelling_is_not_normalized_into_authority)))

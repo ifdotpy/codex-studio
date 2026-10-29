@@ -2,7 +2,7 @@
 use serde::{Deserialize, Deserializer};
 use serde_json::{Map, Number, Value};
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClaudeOptionsRecord {
     #[serde(default, deserialize_with = "optional_integer")]
@@ -15,7 +15,7 @@ pub struct ClaudeOptionsRecord {
     pub extensions: Map<String, Value>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct ClaudeCustomModelRecord {
     pub id: String,
     pub label: String,
