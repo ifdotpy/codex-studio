@@ -54,8 +54,14 @@ fn load(db: &Connection, id: &str) -> Result<Option<Map<String, Value>>, String>
         )
         .optional()
         .map_err(|e| e.to_string())?;
-    raw.map(|raw| serde_json::from_str::<Map<String, Value>>(&raw).map_err(|e| e.to_string()))
-        .transpose()
+    raw.map(|raw| decode_record(id, &raw)).transpose()
+}
+fn decode_record(id: &str, raw: &str) -> Result<Map<String, Value>, String> {
+    let record: Map<String, Value> = serde_json::from_str(raw).map_err(|e| e.to_string())?;
+    if record.get("id").and_then(Value::as_str) != Some(id) {
+        return Err("Invalid recording identity.".into());
+    }
+    Ok(record)
 }
 fn put(db: &Connection, id: &str, row: &Map<String, Value>) -> Result<(), String> {
     db.execute(
@@ -74,16 +80,15 @@ fn remove(db: &Connection, id: &str) -> Result<(), String> {
 }
 fn all(db: &Connection) -> Result<Vec<Map<String, Value>>, String> {
     let mut statement = db
-        .prepare("SELECT document FROM client_dictation_recordings")
+        .prepare("SELECT id,document FROM client_dictation_recordings")
         .map_err(|e| e.to_string())?;
     let rows = statement
-        .query_map([], |r| r.get::<_, String>(0))
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
         .map_err(|e| e.to_string())?;
     let mut result = vec![];
-    for raw in rows {
-        result.push(
-            serde_json::from_str(&raw.map_err(|e| e.to_string())?).map_err(|e| e.to_string())?,
-        );
+    for row in rows {
+        let (id, raw) = row.map_err(|e| e.to_string())?;
+        result.push(decode_record(&id, &raw)?);
     }
     Ok(result)
 }
@@ -304,6 +309,53 @@ mod tests {
         let db = Connection::open_in_memory().unwrap();
         initialize(&db).unwrap();
         db
+    }
+    #[test]
+    fn corrupt_record_identity_cannot_delete_another_recording_or_its_audio() {
+        let mut db = database();
+        call(
+            &mut db,
+            "dictation.chunk",
+            json!({"row":{"id":"victim","chatId":"chat"},"index":0,"base64":"AAA="}),
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO client_dictation_recordings(id,document) VALUES('poison',?1)",
+            [json!({"id":"victim","chatId":"chat","deletedAt":1}).to_string()],
+        )
+        .unwrap();
+        assert!(call(&mut db, "dictation.deleted", json!({"chatId":"chat"})).is_err());
+        let records: i64 = db
+            .query_row(
+                "SELECT count(*) FROM client_dictation_recordings",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let chunks: i64 = db
+            .query_row(
+                "SELECT count(*) FROM client_dictation_chunks WHERE id='victim'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!((records, chunks), (2, 1));
+        assert!(call(&mut db, "dictation.list", json!({"chatId":"chat"})).is_err());
+        db.execute(
+            "UPDATE client_dictation_recordings SET document=?1 WHERE id='poison'",
+            [json!({"chatId":"chat","deletedAt":1}).to_string()],
+        )
+        .unwrap();
+        assert!(call(&mut db, "dictation.deleted", json!({"chatId":"chat"})).is_err());
+        assert_eq!(
+            db.query_row(
+                "SELECT count(*) FROM client_dictation_chunks WHERE id='victim'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
     }
     #[test]
     fn recordings_keep_order_scope_undo_and_late_attempt_rules() {
