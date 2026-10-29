@@ -8,6 +8,7 @@ pub(super) use studio_runtime_services::queue_write::{is_live, queue_snapshot};
 
 pub(super) fn api_error(error: QueueWriteError) -> ApiError {
     match error {
+        QueueWriteError::RequestResult(error) => error.into(),
         QueueWriteError::InvalidRequest(message) | QueueWriteError::Conflict(message) => {
             ApiError::new(StatusCode::BAD_REQUEST, message)
         }

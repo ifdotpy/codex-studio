@@ -11,31 +11,7 @@ pub use monitor::{
 pub(crate) const MONITOR_RECORD_SCHEMA_PATH: &str =
     "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-monitor-record.schema.json";
 
-/// Why work needs attention. The service owns classification and publication.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-#[schemars(rename = "StudioErrorKind")]
-pub enum Kind {
-    MonitorOutcomeLost,
-    MonitorNotRecorded,
-    InputUnconfirmed,
-    InputUncertain,
-    InputStuck,
-    TurnDisconnected,
-    WorkspaceFailed,
-    HttpFailure,
-    RecoveryFailed,
-    StoredRecordInvalid,
-    UnclassifiedFailure,
-    /// A running turn whose provider is silent while no tool runs.
-    TurnStalled,
-    /// An owner message that waits while its chat does not start.
-    InputNotStarted,
-    /// Chats that wait for an account session that does not start.
-    SessionNotStarted,
-    /// A usage resume, capacity retry or account transfer that did not move.
-    ScheduleStalled,
-}
+pub use crate::persistence::IncidentKind as Kind;
 
 /// Severity of an app error or local log entry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]

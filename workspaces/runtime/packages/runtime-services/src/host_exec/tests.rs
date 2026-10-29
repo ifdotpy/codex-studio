@@ -243,6 +243,7 @@ impl Fixture {
             agent: actor.to_owned(),
             account: "default".into(),
             connection: "connection".into(),
+            stream_id: "default".into(),
             generation: 7,
             epoch: 3,
             thread: record["threadId"].as_str().unwrap().to_owned(),
@@ -293,17 +294,21 @@ impl Fixture {
     }
 
     async fn receipt(&self, actor: &str, call_id: &str) -> Value {
-        let index = agents()
-            .iter()
-            .position(|record| record["id"] == actor)
-            .unwrap();
-        let id = format!("thread-{index}:{call_id}");
+        let actor = actor.to_owned();
+        let call_id = call_id.to_owned();
         self.store
             .read_async("test", move |tx| {
-                studio_runtime_store::system_reads::get(tx, "runtime_tool_requests", &id)
+                let (id, raw, rpc): (String, String, String) = tx.query_row(
+                    "SELECT id,record,json_extract(record,'$.rpcId') FROM runtime_tool_requests WHERE kind='managed_tool' AND agent=?1 AND json_extract(record,'$.callId')=?2",
+                    rusqlite::params![actor, call_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )?;
+                let record = studio_runtime_store::system_reads::decode("runtime_tool_requests", &id, &raw)?;
+                assert_eq!(uuid::Uuid::parse_str(&id).unwrap().get_version_num(), 7);
+                assert_eq!(rpc, format!("rpc-{call_id}"));
+                Ok::<_, studio_runtime_store::StoreError>(record)
             })
             .await
-            .unwrap()
             .unwrap()
     }
 }
@@ -626,30 +631,42 @@ fn only_vm_writers_get_the_host_exec_definition() {
 async fn an_interrupted_host_exec_receipt_names_its_operation() {
     let (_directory, store) = store().await;
     let id = operation(LEAD, "build");
+    let task_root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
     let receipt = json!({
-        "id": "thread-0:call-1", "agent": LEAD, "threadId": "thread-0", "turnId": "turn-0",
+        "id": task_root, "agent": LEAD, "threadId": "thread-0", "turnId": "turn-0",
         "epoch": 3, "accountKey": "default", "connectionId": "connection", "callId": "call-1",
         "tool": TOOL, "signature": "signature", "readOnly": false, "stage": "running",
         "outcome": "pending", "cancelRequested": false, "created": 10.0, "updated": 10.0,
         "hostExecRequest": {"requestId": id, "params": {"agentId": LEAD, "action": "execute",
             "operationId": id}, "timeout": 3960.0},
     });
+    let owner_id = task_root.clone();
     store
-        .transaction_with(move |tx| -> Result<(), studio_runtime_store::StoreError> {
-            tx.execute(
-                "INSERT INTO runtime_tool_requests(id,record) VALUES(?1,?2)",
-                rusqlite::params!["thread-0:call-1", receipt.to_string()],
-            )?;
-            Ok(())
-        })
+        .transaction_with(
+            move |tx| -> Result<(), crate::tool_requests::ToolRequestError> {
+                let mut record = crate::tool_requests::admission::reserve(
+                    tx,
+                    receipt,
+                    "call-1",
+                    "thread-0:",
+                    None,
+                )?;
+                assert!(crate::tool_requests::admission::claim(&mut record, 20.0)?);
+                tx.execute(
+                    "UPDATE runtime_tool_requests SET record=?1 WHERE id=?2",
+                    rusqlite::params![record.to_string(), owner_id],
+                )?;
+                Ok(())
+            },
+        )
         .await
         .unwrap();
     crate::provider_callbacks::recover_tool_requests_on_startup(&store, 30.0)
         .await
         .unwrap();
     let result = store
-        .read_async("test", |tx| {
-            studio_runtime_store::system_reads::get(tx, "runtime_tool_results", "thread-0:call-1")
+        .read_async("test", move |tx| {
+            crate::tool_requests::saved_result(tx, &task_root)
         })
         .await
         .unwrap()

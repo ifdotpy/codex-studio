@@ -5625,11 +5625,15 @@ version = "0.1.0"
 dependencies = [
  "data-encoding",
  "jsonschema 0.60.0",
+ "rusqlite",
  "schemars 1.2.3",
  "serde",
  "serde_json",
  "sha2 0.11.1",
+ "strum",
  "studio-client-domain",
+ "thiserror 2.0.21",
+ "uuid",
 ]
 
 [[package]]
@@ -5704,6 +5708,7 @@ dependencies = [
  "studio-runtime-process",
  "studio-runtime-providers",
  "studio-runtime-schema",
+ "studio-runtime-services",
  "studio-runtime-store",
  "subtle",
  "sysinfo",
@@ -5726,9 +5731,11 @@ dependencies = [
  "data-encoding",
  "inventory",
  "rusqlite",
+ "schemars 1.2.3",
  "serde",
  "serde_json",
  "sha2 0.11.1",
+ "strum",
  "studio-runtime-providers",
  "studio-runtime-schema",
  "studio-runtime-store",

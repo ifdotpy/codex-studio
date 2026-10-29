@@ -927,8 +927,8 @@ pub(crate) async fn spawn_agents(
             signals.push(crate::managed_host_tools::WakeSignal::new("worker-driver"));
         }
         Ok(crate::managed_host_tools::OperationResult {
-            value: json!({"requestId":request_id,"agents":children,"delivery":"Results wake you automatically. Finish your turn while waiting."}),
             signals,
+            ..crate::managed_host_tools::OperationResult::reply(&json!({"requestId":request_id,"agents":children,"delivery":"Results wake you automatically. Finish your turn while waiting."}))
         })
     }).await.map_err(Error::from)?;
     Ok(crate::managed_host_tools::DispatchedOperation::Applied(
@@ -1325,6 +1325,7 @@ fn map_create_error(error: crate::agents_create::CreateError) -> Error {
         | crate::agents_create::CreateError::Stale
         | crate::agents_create::CreateError::CurrentAccountExcluded
         | crate::agents_create::CreateError::InFlight
+        | crate::agents_create::CreateError::Request(_)
         | crate::agents_create::CreateError::InvalidStoredObject { .. } => Error::Refused,
     }
 }
@@ -1351,6 +1352,7 @@ fn map_recheck_error(
         | crate::agents_create::MutationError::Stale
         | crate::agents_create::MutationError::CurrentAccountExcluded
         | crate::agents_create::MutationError::InFlight
+        | crate::agents_create::MutationError::Request(_)
         | crate::agents_create::MutationError::InvalidStoredObject { .. } => {
             crate::managed_host_tools::Error::Stale
         }
@@ -1464,10 +1466,7 @@ pub(crate) async fn request_review(
             crate::managed_host_tools::Error::Invalid("This request id has different content")
         })?;
         return Ok(crate::managed_host_tools::DispatchedOperation::Applied(
-            crate::managed_host_tools::OperationResult {
-                value,
-                signals: Vec::new(),
-            },
+            crate::managed_host_tools::OperationResult::reply(&value),
         ));
     }
     let account_key = parent_value
@@ -1584,6 +1583,7 @@ pub(crate) async fn request_review(
             let response =
                 crate::native_review::reserve(tx, &plan, &creator).map_err(
                     |error| match error {
+                        crate::native_actions::NativeError::Expired => crate::managed_host_tools::Error::Expired,
                         crate::native_actions::NativeError::Store(error) => {
                             crate::managed_host_tools::Error::Store(error)
                         }
@@ -1603,8 +1603,8 @@ pub(crate) async fn request_review(
         .map_err(Error::from)?;
     Ok(crate::managed_host_tools::DispatchedOperation::Applied(
         crate::managed_host_tools::OperationResult {
-            value,
             signals: vec![crate::managed_host_tools::WakeSignal::new("worker-driver")],
+            ..crate::managed_host_tools::OperationResult::reply(&value)
         },
     ))
 }

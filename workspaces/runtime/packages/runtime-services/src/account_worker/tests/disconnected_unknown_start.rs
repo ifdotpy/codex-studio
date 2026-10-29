@@ -58,6 +58,7 @@ async fn unknown_start_then_disconnect(state: &State, generation: u64) -> (Peer,
                 1,
             )
             .await?;
+            let submission_operation = operation.clone();
             assert!(
                 store::submitted(
                     &store,
@@ -80,14 +81,20 @@ async fn unknown_start_then_disconnect(state: &State, generation: u64) -> (Peer,
                 )
                 .await?
             );
-            // Historical envelopes may omit optional preparation fields.
-            crate::scheduler::lifecycle_transaction(&store, |tx| {
-                let changed = tx.execute(
-                    "UPDATE runtime_operation_receipts SET result=json_remove(result,'$.context.thread') \
-                     WHERE signature='submitted' AND json_extract(result,'$.context.method')='turn/start'",
-                    [],
-                )?;
-                assert_eq!(changed, 1);
+            // Preparation details are optional current metadata; omitting them
+            // never changes the admitted turn/start or authorizes another send.
+            crate::scheduler::lifecycle_transaction(&store, move |tx| {
+                let mut row = studio_runtime_store::outbox::Outbox::get::<store::ProviderCall>(
+                    tx,
+                    &submission_operation,
+                )?
+                .expect("submitted start obligation");
+                let store::ProviderCall::Account(call) = &mut row.payload else {
+                    panic!("account start")
+                };
+                assert_eq!(call.context.method, Method::TurnStart);
+                call.context.thread = None;
+                studio_runtime_store::outbox::Outbox::put(tx, &row)?;
                 Ok(())
             })
             .await?;

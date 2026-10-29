@@ -46,6 +46,12 @@ struct RadioCorpus {
     /// Holds the project folder that the `create` case makes.
     _projects: tempfile::TempDir,
 }
+#[derive(serde::Deserialize)]
+struct LegacyReceipt {
+    id: String,
+    signature: String,
+    result: String,
+}
 fn corpus() -> RadioCorpus {
     let bytes =
         crate::media_auth_fixtures::state_bytes(include_str!("wave7_p19/initial-state.json"));
@@ -175,6 +181,21 @@ async fn seed(store: &RuntimeStore, snapshot: &Value) {
     store
         .transaction(move |db| {
             for (table, rows) in snapshot.as_object().expect("snapshot") {
+                if table == "operation_receipts" {
+                    db.execute("DELETE FROM request_results", [])?;
+                    let receipts: Vec<LegacyReceipt> = serde_json::from_value(rows.clone()).expect("receipts");
+                    for row in receipts {
+                        let reply: Box<serde_json::value::RawValue> = serde_json::from_str(&row.result).expect("saved reply");
+                        let envelope = studio_runtime_store::request_results::ResultEnvelope {
+                            actor: None, reply, references: Vec::new(),
+                        };
+                        db.execute(
+                            "INSERT INTO request_results(id,signature,result,created) VALUES(?1,?2,?3,?4)",
+                            rusqlite::params![row.id, row.signature, serde_json::to_string(&envelope).expect("envelope"), chrono::Utc::now().timestamp_millis()],
+                        )?;
+                    }
+                    continue;
+                }
                 let table_name = match table.as_str() {
                     "sync_entities" => "sync_entities".to_owned(),
                     "sidebar_order" => "runtime_sidebar_order".to_owned(),
@@ -215,6 +236,11 @@ fn state(store: &RuntimeStore, tables: &Value) -> Value {
     super::agent_view_fixtures::assert_agent_view_projections(&db);
     let mut result = serde_json::Map::new();
     for table in tables.as_object().expect("tables").keys() {
+        if table == "operation_receipts" {
+            // Replay and conflict checks below exercise the current request_results owner.
+            result.insert(table.clone(), json!([]));
+            continue;
+        }
         let order = if table == "chat_messages" {
             "seq"
         } else if table == "sync_entities" {
@@ -243,6 +269,11 @@ fn state(store: &RuntimeStore, tables: &Value) -> Value {
             .query_map([], |row| {
                 let mut value = serde_json::Map::new();
                 for (index, column) in columns.iter().enumerate() {
+                    if table == "agents"
+                        && ["hold_status", "hold_incident"].contains(&column.as_str())
+                    {
+                        continue;
+                    }
                     let v: SqlValue = row.get(index)?;
                     value.insert(
                         column.clone(),
@@ -268,6 +299,11 @@ fn normalize(value: &mut Value) {
     match value {
         Value::Object(map) => {
             for (key, value) in map.iter_mut() {
+                if ["agents", "rooms"].contains(&key.as_str())
+                    && let Some(rows) = value.as_array_mut()
+                {
+                    rows.sort_by_key(|row| row["id"].as_str().unwrap_or_default().to_owned());
+                }
                 if key == "sync_entities"
                     && let Some(rows) = value.as_array_mut()
                 {
@@ -335,7 +371,7 @@ async fn run(store: std::sync::Arc<RuntimeStore>, case: &Value) -> Result<Value,
     // Binding callers resolve the client path to a project key before SQL.
     let project_key = host_key(case["body"]["path"].as_str().expect("project path"));
     match mode.as_str() {
-        "convert" => studio_runtime_services::peer_conversion::convert(std::sync::Arc::clone(&store), &case["body"]).await,
+        "convert" => studio_runtime_services::peer_conversion::convert(std::sync::Arc::clone(&store), &case["body"]).await.map(|reply| serde_json::from_slice(&serde_json::to_vec(&reply).expect("serialize reply")).expect("reply")),
         "project" => studio_runtime_services::projects::write(
             std::sync::Arc::clone(&store),
             case["body"].clone(),
@@ -353,9 +389,11 @@ async fn run(store: std::sync::Arc<RuntimeStore>, case: &Value) -> Result<Value,
             {
                 let path = case["body"]["path"].as_str().expect("project path");
                 fs::create_dir_all(path).expect("project directory");
-                let values: [Value; 2] = serde_json::from_value(case["drafts"].clone()).expect("Python drafts");
-                let drafts = values.map(|value| AgentRecord::from_value(value).expect("checked Python agent draft"));
-                radio_runtime::create_with(std::sync::Arc::clone(&store), &case["body"], Box::new(Creation(drafts))).await
+                let [first, second] = case["drafts"].as_array().expect("Python drafts").as_slice() else {
+                    panic!("expected two Python drafts");
+                };
+                let drafts = [first, second].map(|value| AgentRecord::from_value(value.clone()).expect("checked Python agent draft"));
+                radio_runtime::create_with(std::sync::Arc::clone(&store), &case["body"], Box::new(Creation(drafts))).await.map(|reply| serde_json::from_str(&serde_json::to_string(&reply).expect("reply encodes")).expect("reply decodes"))
             }
         },
         "project-binding" => store.transaction_with(move |db| {
@@ -390,7 +428,7 @@ async fn run(store: std::sync::Arc<RuntimeStore>, case: &Value) -> Result<Value,
             )?;
             Ok(Value::Null)
         }).await,
-        _ => radio_runtime::manage(std::sync::Arc::clone(&store), &case["body"]).await,
+        _ => radio_runtime::manage(std::sync::Arc::clone(&store), &case["body"]).await.map(|reply| serde_json::from_str(&serde_json::to_string(&reply).expect("reply encodes")).expect("reply decodes")),
     }
 }
 #[tokio::test]
@@ -434,6 +472,34 @@ async fn python_written_radio_corpus_and_restart_replay() {
         let root = tempfile::tempdir().expect("radio state directory");
         copy_template(&corpus, root.path());
         let store = std::sync::Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
+        let mut case = original_case.clone();
+        if let Some(old) = case["body"]["request_id"].as_str().map(str::to_owned) {
+            let fresh = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+            if case["mode"] == "create" {
+                let old_namespace = uuid::Uuid::new_v5(
+                    &uuid::Uuid::NAMESPACE_URL,
+                    format!("codex-studio:radio:{old}").as_bytes(),
+                );
+                let new_namespace = uuid::Uuid::new_v5(
+                    &uuid::Uuid::NAMESPACE_URL,
+                    format!("codex-studio:radio:{fresh}").as_bytes(),
+                );
+                for index in [b"0", b"1"] {
+                    replace_text(
+                        &mut case,
+                        &uuid::Uuid::new_v5(&old_namespace, index).to_string(),
+                        &uuid::Uuid::new_v5(&new_namespace, index).to_string(),
+                    );
+                }
+                replace_text(
+                    &mut case,
+                    &old_namespace.to_string(),
+                    &new_namespace.to_string(),
+                );
+            }
+            replace_text(&mut case, &old, &fresh);
+        }
+        let original_case = &case;
         seed(&store, &original_case["before"]).await;
         let result = run(std::sync::Arc::clone(&store), original_case).await;
         assert_eq!(
@@ -447,6 +513,7 @@ async fn python_written_radio_corpus_and_restart_replay() {
         }
         let mut actual = state(&store, &original_case["before"]);
         let mut expected = original_case["after"].clone();
+        expected["operation_receipts"] = json!([]);
         normalize(&mut actual);
         normalize(&mut expected);
         assert_eq!(actual, expected, "{}", original_case["name"]);
@@ -517,14 +584,17 @@ async fn python_written_radio_corpus_and_restart_replay() {
 // across tables, then cross each operation's restart boundary once.
 async fn failpoints_rollback_then_restart(name: &str, tables: &[&str]) {
     let corpus = corpus();
-    let case = corpus
+    let mut case = corpus
         .cases
         .iter()
         .find(|case| case["name"] == name)
-        .expect("case");
+        .expect("case")
+        .clone();
     let root = tempfile::tempdir().expect("radio state directory");
     copy_template(&corpus, root.path());
     let store = std::sync::Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
+    case["body"]["request_id"] =
+        json!(studio_runtime_schema::persistence::RequestIdentity::issue_root());
     seed(&store, &case["before"]).await;
     let before = database_rows(&store);
     for table in tables {
@@ -534,7 +604,7 @@ async fn failpoints_rollback_then_restart(name: &str, tables: &[&str]) {
             Ok(())
         }).await.expect("failpoint");
         assert!(
-            run(std::sync::Arc::clone(&store), case).await.is_err(),
+            run(std::sync::Arc::clone(&store), &case).await.is_err(),
             "{name} {table} reached"
         );
         assert_eq!(
@@ -557,7 +627,7 @@ async fn failpoints_rollback_then_restart(name: &str, tables: &[&str]) {
             .expect("restart after rollback"),
     );
     assert_eq!(database_rows(&store), before, "rollback survives restart");
-    run(std::sync::Arc::clone(&store), case)
+    run(std::sync::Arc::clone(&store), &case)
         .await
         .expect("retry after rollback");
     let committed = database_rows(&store);
@@ -567,7 +637,7 @@ async fn failpoints_rollback_then_restart(name: &str, tables: &[&str]) {
             .await
             .expect("restart after commit"),
     );
-    run(std::sync::Arc::clone(&store), case)
+    run(std::sync::Arc::clone(&store), &case)
         .await
         .expect("retry after lost response");
     assert_eq!(
@@ -586,14 +656,14 @@ macro_rules! radio_failpoints {
     )+};
 }
 radio_failpoints! {
-    create_rollback_and_restart: "create" => ["runtime_agents", "runtime_rooms", "sync_entities", "runtime_operation_receipts"],
-    convert_rollback_and_restart: "convert" => ["runtime_projects", "runtime_agents", "sync_entities", "runtime_operation_receipts"],
-    stop_rollback_and_restart: "stop-pending" => ["runtime_events", "runtime_rooms", "sync_entities", "runtime_operation_receipts"],
+    create_rollback_and_restart: "create" => ["runtime_agents", "runtime_rooms", "sync_entities", "request_results"],
+    convert_rollback_and_restart: "convert" => ["runtime_projects", "runtime_agents", "sync_entities", "request_results"],
+    stop_rollback_and_restart: "stop-pending" => ["runtime_events", "runtime_rooms", "sync_entities", "request_results"],
     interrupt_rollback_and_restart: "interrupt" => ["runtime_rooms", "sync_entities"],
     floor_rollback_and_restart: "floor" => ["runtime_events", "runtime_rooms", "sync_entities"],
     binding_rollback_and_restart: "binding" => ["runtime_rooms", "sync_entities"],
     answer_rollback_and_restart: "answer" => ["runtime_chat_messages", "runtime_rooms", "sync_entities"],
-    send_rollback_and_restart: "send" => ["runtime_chat_messages", "runtime_rooms", "sync_entities", "runtime_operation_receipts"],
+    send_rollback_and_restart: "send" => ["runtime_chat_messages", "runtime_rooms", "sync_entities", "request_results"],
 }
 
 fn database_rows(store: &RuntimeStore) -> Vec<(String, Vec<Vec<SqlValue>>)> {
@@ -855,9 +925,14 @@ impl radio_runtime::RadioCreation for Creation {
         &mut self,
         _body: &Value,
         _path: &Path,
-        _ids: [AgentId; 2],
+        ids: [AgentId; 2],
     ) -> Result<[AgentRecord; 2], ProjectsError> {
-        Ok(self.0.clone())
+        let mut drafts = self.0.clone();
+        for (draft, id) in drafts.iter_mut().zip(ids) {
+            draft.id = id.clone();
+            draft.root_id = id;
+        }
+        Ok(drafts)
     }
     fn recheck(
         &mut self,

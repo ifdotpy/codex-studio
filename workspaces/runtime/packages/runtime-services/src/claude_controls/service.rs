@@ -307,6 +307,7 @@ pub enum FailureEvidence {
     NotApplied,
 }
 pub trait ControlStorage: Send + Sync {
+    fn replay(&self, request: ControlRequest) -> ControlFuture<'_, Option<Result<Value>>>;
     fn execution_key(&self, request: &ControlRequest) -> String {
         format!("{:p}:{}", self, request.id())
     }
@@ -332,8 +333,12 @@ pub trait ControlStorage: Send + Sync {
         expected: ControlSnapshot,
         request: ControlRequest,
     ) -> ControlFuture<'_, Value>;
-    fn failed(&self, expected: ControlSnapshot, evidence: FailureEvidence)
-    -> ControlFuture<'_, ()>;
+    fn failed(
+        &self,
+        expected: ControlSnapshot,
+        evidence: FailureEvidence,
+        error: ControlError,
+    ) -> ControlFuture<'_, ()>;
 }
 pub struct Controls {
     store: Arc<dyn ControlStorage>,
@@ -347,6 +352,9 @@ impl Controls {
         let _running =
             crate::checkpoints::RestoreExecution::acquire(self.store.execution_key(&request))
                 .map_err(|_| ControlError::Busy)?;
+        if let Some(result) = self.store.replay(request.clone()).await? {
+            return result;
+        }
         let binding = self.session.binding();
         let mut snapshot = self.store.reserve(request.clone(), binding.clone()).await?;
         if snapshot.agent.account_key != binding.account {
@@ -364,7 +372,7 @@ impl Controls {
         let result = self
             .perform(&request, &binding, &mut snapshot, &mut uncertain)
             .await;
-        if result.is_err() {
+        if let Err(error) = &result {
             let evidence = if matches!(&result, Err(ControlError::NotSent)) {
                 FailureEvidence::NotSent
             } else if matches!(
@@ -377,7 +385,7 @@ impl Controls {
             } else {
                 FailureEvidence::BeforeSubmission
             };
-            self.store.failed(snapshot, evidence).await?;
+            self.store.failed(snapshot, evidence, error.clone()).await?;
         }
         result
     }
@@ -388,20 +396,7 @@ impl Controls {
         snapshot: &mut ControlSnapshot,
         uncertain: &mut bool,
     ) -> Result<Value> {
-        let attempt = snapshot
-            .saved
-            .as_ref()
-            .and_then(|op| op.get("controlAttempt"))
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
-        let transport_request = if attempt == 0 {
-            request.request_id().to_owned()
-        } else {
-            format!(
-                "claude-retry:{}",
-                request_signature(&json!([request.request_id(), attempt]))
-            )
-        };
+        let transport_request = request.request_id().to_owned();
         let scope = ControlScope {
             agent: snapshot.agent.id.clone(),
             epoch: snapshot.epoch(),
@@ -699,12 +694,7 @@ impl Controls {
                     .and_then(Value::as_str)
                     .filter(|t| !t.is_empty() && t.len() <= 1024)
                     .ok_or(ControlError::Request)?;
-                let mut scope = scope;
                 let thread = thread.ok_or(ControlError::Request)?;
-                // The task identity is stable even when a client omits request_id.
-                scope.request_id.get_or_insert_with(|| {
-                    format!("stop-task:{}", request_signature(&json!([thread, task])))
-                });
                 let request_id = scope.request_id.clone().ok_or(ControlError::Request)?;
                 match self
                     .bound_call(

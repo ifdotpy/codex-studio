@@ -81,7 +81,6 @@ it("persists server-only selections via HTTP, restores an SSE projection after r
         [other]: fields[other],
       }),
     },
-    { requestId: expect.stringMatching(/^ui-preferences:[0-9a-f]{64}$/) },
   );
   expect(readModelChoices(remote)).toEqual({});
   expect(readPreferenceFields("server", local)[other]).toEqual(fields[other]);
@@ -155,8 +154,8 @@ it("keeps newer rapid edits while an earlier request is in flight and clock-corr
   });
   await expectState(storage, "saved");
   expect(post).toHaveBeenCalledTimes(2);
-  expect(required(required(post.mock.calls[1])[2])?.requestId).not.toBe(
-    required(required(post.mock.calls[0])[2])?.requestId,
+  expect(required(post.mock.calls[1])[1]).not.toEqual(
+    required(post.mock.calls[0])[1],
   );
   expect(readModelChoices(storage)).toEqual({
     ...astra,
@@ -294,8 +293,8 @@ it.each(["edit", "retry"] as const)(
           required(post.mock.calls[0]),
         );
       else {
-        expect(required(required(post.mock.calls[2])[2])?.requestId).not.toBe(
-          required(required(post.mock.calls[0])[2])?.requestId,
+        expect(required(post.mock.calls[2])[1]).not.toEqual(
+          required(post.mock.calls[0])[1],
         );
         expect(readModelChoices(storage)).toEqual({
           "claude:opus": "blacklisted",

@@ -386,6 +386,8 @@ async fn generic_provider_requests_reject_foreign_and_unknown_receipts() {
             .provider_request(ProviderRequest {
                 account: "default".into(),
                 operation: "fixture:generic-request".into(),
+                root_request_id: studio_runtime_schema::persistence::RequestIdentity::issue_root(),
+                admitted_request: None,
                 actor: None,
                 expected_scope: Some(expected_scope),
                 deleted_actor_session: None,

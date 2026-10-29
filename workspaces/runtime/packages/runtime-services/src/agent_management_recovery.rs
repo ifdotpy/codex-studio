@@ -1,6 +1,7 @@
 //! Manual worker recovery and tool release through the retained account owner.
 use crate::account_session_runtime::{
-    AccountSessionPort, ConnectionScope, ProviderRequest, ProviderResponse, RequestCertainty,
+    AccountSessionError, AccountSessionPort, ConnectionScope, ProviderRequest, ProviderResponse,
+    RequestCertainty,
 };
 use crate::account_worker::retained::RequestActor;
 use crate::managed_host_tools::{
@@ -10,9 +11,25 @@ use rusqlite::Transaction;
 use serde_json::{Value, json};
 use std::sync::Arc;
 use studio_runtime_providers::Method;
-use studio_runtime_store::{
-    AgentId, AgentRecord, AgentRepository, EventWriteRepository, RuntimeStore, truthy,
+use studio_runtime_schema::persistence::{
+    NativeReleasePhase, OutboxKind, OutboxStatus, OwnerKind, RecoveryReceiptStatus,
+    RequestIdentity, ToolRequestOutcome,
 };
+use studio_runtime_store::outbox::{Outbox, OutboxRow};
+use studio_runtime_store::request_results::{AdmittedRequest, RequestResults, ResultEnvelope};
+use studio_runtime_store::{
+    AgentId, AgentRecord, AgentRepository, NativeReleaseScope, RuntimeStore, truthy,
+};
+
+pub(crate) fn stored_scope(scope: &ConnectionScope) -> NativeReleaseScope {
+    NativeReleaseScope {
+        account: scope.account.clone(),
+        provider: studio_runtime_schema::persistence::ProviderScope {
+            connection: scope.connection.clone(),
+            generation: scope.generation,
+        },
+    }
+}
 
 const TOOL_MEMORY_LOSS: &str = "JavaScript code cells and MCP tool memory end when the native session closes. The transcript and receipts stay. No user input is replayed.";
 /// Operation ID prefix reserved for an explicitly authorized native tool reset.
@@ -20,12 +37,53 @@ pub(crate) const MANUAL_RELEASE_PREFIX: &str = "manual-release:";
 
 /// Authority captured by one explicit lead request. The account worker checks
 /// this record again in the transaction that applies recovered state.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AuthorizedRecoveryRequest {
     pub lead: Value,
     pub target: Value,
     pub request_id: String,
     pub signature: String,
+    pub root_request_id: String,
+    pub admission: AdmittedRequest,
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct ManualReply {
+    outcome: ToolRequestOutcome,
+    value: Value,
+}
+impl ManualReply {
+    fn from_receipt(receipt: &crate::recovery::RecoveryReceipt) -> Self {
+        use crate::recovery::RecoveryReceipt;
+        Self {
+            outcome: match receipt {
+                RecoveryReceipt::Applied(_) => ToolRequestOutcome::Applied,
+                RecoveryReceipt::Rejected(_) => ToolRequestOutcome::NotApplied,
+                RecoveryReceipt::Unknown(_) => ToolRequestOutcome::Unknown,
+            },
+            value: receipt.value().clone(),
+        }
+    }
+    fn into_receipt(self) -> Result<crate::recovery::RecoveryReceipt, Error> {
+        use crate::recovery::RecoveryReceipt;
+        Ok(match self.outcome {
+            ToolRequestOutcome::Applied => RecoveryReceipt::Applied(self.value),
+            ToolRequestOutcome::NotApplied => RecoveryReceipt::Rejected(self.value),
+            ToolRequestOutcome::Unknown => RecoveryReceipt::Unknown(self.value),
+            ToolRequestOutcome::Pending => return Err(Error::Stale),
+        })
+    }
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ManualManagement {
+    authorization: AuthorizedRecoveryRequest,
+    reply: ManualReply,
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_millis() as i64)
 }
 
 pub(crate) struct AuthorizedRecoveryEffects {
@@ -99,8 +157,13 @@ fn authorize(tx: &Transaction<'_>, actor: &Value, target: &str) -> Result<(Value
 
 impl AuthorizedRecoveryRequest {
     pub(crate) fn current(&self, tx: &Transaction<'_>) -> Result<bool, Error> {
-        if EventWriteRepository::receipt(tx, &self.request_id)?
-            .is_none_or(|receipt| receipt.signature != self.signature)
+        if Outbox::get::<ManualManagement>(tx, &self.request_id)
+            .map_err(studio_runtime_store::StoreError::from)?
+            .is_none_or(|row| {
+                row.kind != OutboxKind::ManagedTool
+                    || row.signature != self.signature
+                    || row.payload.authorization != *self
+            })
         {
             return Ok(false);
         }
@@ -171,30 +234,43 @@ fn blocker(tx: &Transaction<'_>, worker: &Value) -> Result<Option<&'static str>,
 /// Interpret the status of an existing durable receipt written before typed outcomes.
 pub(crate) fn decode_saved_recovery_receipt(value: Value) -> crate::recovery::RecoveryReceipt {
     use crate::recovery::RecoveryReceipt;
-    match value["status"].as_str() {
-        Some("unknown" | "unconfirmed") => RecoveryReceipt::Unknown(value),
-        Some("blocked" | "skipped" | "superseded" | "history_missing") => {
-            RecoveryReceipt::Rejected(value)
+    match value["status"]
+        .as_str()
+        .and_then(|status| status.parse::<RecoveryReceiptStatus>().ok())
+    {
+        Some(RecoveryReceiptStatus::Unknown | RecoveryReceiptStatus::Unconfirmed) | None => {
+            RecoveryReceipt::Unknown(value)
         }
-        _ => RecoveryReceipt::Applied(value),
+        Some(
+            RecoveryReceiptStatus::Blocked
+            | RecoveryReceiptStatus::Skipped
+            | RecoveryReceiptStatus::Superseded
+            | RecoveryReceiptStatus::HistoryMissing,
+        ) => RecoveryReceipt::Rejected(value),
+        Some(
+            RecoveryReceiptStatus::InputRestored
+            | RecoveryReceiptStatus::Held
+            | RecoveryReceiptStatus::Reconciled
+            | RecoveryReceiptStatus::Adopted
+            | RecoveryReceiptStatus::Accepted
+            | RecoveryReceiptStatus::Checked
+            | RecoveryReceiptStatus::Released,
+        ) => RecoveryReceipt::Applied(value),
     }
 }
 
 fn result(receipt: crate::recovery::RecoveryReceipt) -> DispatchedOperation {
     use crate::recovery::RecoveryReceipt;
     match receipt {
-        RecoveryReceipt::Applied(value) => DispatchedOperation::Applied(OperationResult {
-            value,
-            signals: vec![],
-        }),
-        RecoveryReceipt::Rejected(value) => DispatchedOperation::Rejected(OperationResult {
-            value,
-            signals: vec![],
-        }),
-        RecoveryReceipt::Unknown(value) => DispatchedOperation::Unknown(OperationResult {
-            value,
-            signals: vec![],
-        }),
+        RecoveryReceipt::Applied(value) => {
+            DispatchedOperation::Applied(OperationResult::reply(&value))
+        }
+        RecoveryReceipt::Rejected(value) => {
+            DispatchedOperation::Rejected(OperationResult::reply(&value))
+        }
+        RecoveryReceipt::Unknown(value) => {
+            DispatchedOperation::Unknown(OperationResult::reply(&value))
+        }
     }
 }
 
@@ -208,9 +284,9 @@ enum ReleaseStatus {
 fn release_result(status: ReleaseStatus, reason: Option<&str>) -> crate::recovery::RecoveryReceipt {
     use crate::recovery::RecoveryReceipt;
     let name = match status {
-        ReleaseStatus::Released => "released",
-        ReleaseStatus::Blocked => "blocked",
-        ReleaseStatus::Unknown => "unknown",
+        ReleaseStatus::Released => NativeReleasePhase::Released.as_str(),
+        ReleaseStatus::Blocked => NativeReleasePhase::Blocked.as_str(),
+        ReleaseStatus::Unknown => NativeReleasePhase::Unknown.as_str(),
     };
     let mut value = json!({"status":name,"loss":TOOL_MEMORY_LOSS});
     if let Some(reason) = reason {
@@ -223,20 +299,71 @@ fn release_result(status: ReleaseStatus, reason: Option<&str>) -> crate::recover
     }
 }
 
-fn read_saved(tx: &Transaction<'_>, id: &str, signature: &str) -> Result<Option<Value>, Error> {
-    EventWriteRepository::receipt(tx, id)?
-        .map(|receipt| {
-            if receipt.signature != signature {
-                return Err(Error::Invalid("This request id has different content"));
-            }
-            serde_json::from_str(&receipt.result)
-                .map_err(|_| Error::Invalid("Invalid manual management receipt"))
-        })
-        .transpose()
+fn read_pending(
+    tx: &Transaction<'_>,
+    id: &str,
+    signature: &str,
+) -> Result<Option<crate::recovery::RecoveryReceipt>, Error> {
+    if let Some(row) =
+        Outbox::get::<ManualManagement>(tx, id).map_err(studio_runtime_store::StoreError::from)?
+    {
+        if row.kind != OutboxKind::ManagedTool || row.signature != signature {
+            return Err(Error::Invalid("This request id has different content"));
+        }
+        return row.payload.reply.into_receipt().map(Some);
+    }
+    Ok(None)
 }
 
-fn save(tx: &Transaction<'_>, id: &str, signature: &str, value: &Value) -> Result<(), Error> {
-    EventWriteRepository::replace_receipt(tx, id, signature, &value.to_string())?;
+fn save(
+    tx: &Transaction<'_>,
+    auth: &AuthorizedRecoveryRequest,
+    receipt: &crate::recovery::RecoveryReceipt,
+) -> Result<(), Error> {
+    let reply = ManualReply::from_receipt(receipt);
+    if reply.outcome == ToolRequestOutcome::Unknown {
+        Outbox::put(
+            tx,
+            &OutboxRow {
+                id: auth.request_id.clone(),
+                kind: OutboxKind::ManagedTool,
+                owner_kind: OwnerKind::Agent,
+                owner_id: auth.target["id"].as_str().ok_or(Error::Stale)?.into(),
+                request_id: Some(auth.request_id.clone()),
+                signature: auth.signature.clone(),
+                status: OutboxStatus::Unknown,
+                account: Some(
+                    auth.target["accountKey"]
+                        .as_str()
+                        .unwrap_or("default")
+                        .into(),
+                ),
+                stream_id: None,
+                generation: None,
+                ordinal: None,
+                next_at: None,
+                payload: ManualManagement {
+                    authorization: auth.clone(),
+                    reply,
+                },
+                created: auth.admission.created(),
+            },
+        )
+        .map_err(studio_runtime_store::StoreError::from)?;
+    } else {
+        RequestResults::settle(
+            tx,
+            &auth.admission,
+            &ResultEnvelope {
+                actor: auth.lead["id"].as_str().map(str::to_owned),
+                reply,
+                references: vec![],
+            },
+        )
+        .map_err(studio_runtime_store::StoreError::from)?;
+        Outbox::delete_settled(tx, &auth.request_id, &auth.signature)
+            .map_err(studio_runtime_store::StoreError::from)?;
+    }
     Ok(())
 }
 
@@ -280,22 +407,25 @@ pub(crate) async fn execute(
     let signature = crate::event_write::request_signature(
         &json!({"actor":actor["id"],"epoch":actor["epoch"],"args":args}),
     );
-    let receipt_id = format!(
-        "manual-management:{}:{}:{request_id}",
-        actor["id"].as_str().ok_or(Error::Stale)?,
-        actor["epoch"]
-    );
-    let id = receipt_id.clone();
+    let root_request_id = request_id.to_owned();
     let sig = signature.clone();
     let initial = store.transaction_with(move |tx| {
         let resolved = crate::provider_callbacks::tools::services::manage::resolved_args(tx, &actor, &args).map_err(|_| Error::Invalid("Unknown managed agent"))?;
         let target = resolved["agent_id"].as_str().ok_or(Error::Invalid("Supply agent_id"))?;
         let (lead, mut worker) = authorize(tx, &actor, target)?;
-        if let Some(saved) = read_saved(tx, &id, &sig)? { return Ok((None, decode_saved_recovery_receipt(saved))); }
-        let auth = AuthorizedRecoveryRequest { lead: stable(&lead), target: stable(&worker), request_id: id.clone(), signature: sig.clone() };
+        let epoch=lead["epoch"].to_string();
+        let authority = [lead["id"].as_str().ok_or(Error::Stale)?, &epoch];
+        if let Ok(identity) = RequestIdentity::new("manual-management", &authority, &root_request_id, &[])
+            && let Some(saved) = read_pending(tx, identity.id(), &sig)? { return Ok((None, saved)); }
+        let admission=match crate::event_write::begin_request::<ManualReply>(tx,crate::event_write::RequestKey::new("manual-management",&authority,&root_request_id),&sig,now_ms()).map_err(studio_runtime_store::StoreError::from)? {
+            crate::event_write::CallerAdmission::Fresh(token)=>token,
+            crate::event_write::CallerAdmission::Replay(reply)=>return Ok((None,reply.into_receipt()?)),
+        };
+        let id=admission.id().to_owned();
+        let auth = AuthorizedRecoveryRequest { lead: stable(&lead), target: stable(&worker), request_id:id.clone(),signature:sig.clone(),root_request_id,admission };
         if recovery {
             let pending = json!({"status":"unconfirmed","next":"Inspect the worker. Do not replay input with an unknown outcome."});
-            save(tx, &id, &sig, &pending)?;
+            save(tx,&auth,&crate::recovery::RecoveryReceipt::Unknown(pending.clone()))?;
             return Ok((Some((auth, Value::Null)), crate::recovery::RecoveryReceipt::Unknown(pending)));
         }
         if worker["provider"].as_str().unwrap_or("codex") != "codex" || worker["executionMode"].as_str().is_some_and(|mode| mode != "native") {
@@ -304,20 +434,20 @@ pub(crate) async fn execute(
         let previous = &worker["nativeRelease"];
         if truthy(previous.get("resetPending")) || (previous["closedAt"].as_f64().is_none() && matches!(previous["phase"].as_str(), Some("unknown" | "unsubscribing" | "checking"))) {
             let value = release_result(ReleaseStatus::Unknown, Some("The previous release still needs exact native closure"));
-            save(tx, &id, &sig, value.value())?;
+            save(tx,&auth,&value)?;
             return Ok((None, value));
         }
         if let Some(reason) = blocker(tx, &worker)? {
             let value = release_result(ReleaseStatus::Blocked, Some(reason));
-            save(tx, &id, &sig, value.value())?;
+            save(tx,&auth,&value)?;
             return Ok((None, value));
         }
         if !worker["threadId"].as_str().is_some_and(|thread| !thread.is_empty()) { return Err(Error::Invalid("The worker has no native thread")); }
         let operation = format!("{MANUAL_RELEASE_PREFIX}{}", studio_runtime_store::sha256_hex(id.as_bytes()));
-        worker["nativeRelease"] = json!({"id":operation,"phase":"checking","at":now,"threadId":worker["threadId"],"accountKey":worker["accountKey"].as_str().unwrap_or("default"),"targetEpoch":worker["epoch"],"targetRootId":worker["rootId"],"targetParentId":worker["parentId"],"resetPending":true,"resetReason":reason,"resetBy":auth.lead["id"],"resetActorEpoch":auth.lead["epoch"],"authorization":auth});
+        worker["nativeRelease"] = json!({"id":operation,"phase":NativeReleasePhase::Checking,"at":now,"threadId":worker["threadId"],"accountKey":worker["accountKey"].as_str().unwrap_or("default"),"targetEpoch":worker["epoch"],"targetRootId":worker["rootId"],"targetParentId":worker["parentId"],"resetPending":true,"resetReason":reason,"resetBy":auth.lead["id"],"resetActorEpoch":auth.lead["epoch"],"authorization":auth});
         put(tx, worker.clone())?;
         let pending = release_result(ReleaseStatus::Unknown, Some("The manual release has not returned a result"));
-        save(tx, &id, &sig, pending.value())?;
+        save(tx,&auth,&pending)?;
         Ok((Some((auth, worker["nativeRelease"].clone())), pending))
     }).await?;
     let Some((auth, mut release)) = initial.0 else {
@@ -329,6 +459,7 @@ pub(crate) async fn execute(
             Ok(value) => value,
             // The account worker still owns a possible late result. A lost
             // transport response must not finalize its pending receipt.
+            Err(AccountSessionError::Expired) => return Err(Error::Expired),
             Err(_) => return Ok(result(initial.1)),
         };
         return finish_recovery(&store, &auth, value).await.map(result);
@@ -342,7 +473,7 @@ pub(crate) async fn execute(
             &store,
             &auth,
             &release,
-            Arc::clone(&session),
+            (Arc::clone(&session), None),
             release_result(
                 ReleaseStatus::Blocked,
                 Some("The owning account is offline"),
@@ -352,10 +483,10 @@ pub(crate) async fn execute(
         )
         .await;
     };
-    release["scope"] = serde_json::to_value(&scope).map_err(|_| Error::Stale)?;
     release["connectionId"] = json!(scope.connection);
     let frozen = release.clone();
     let frozen_auth = auth.clone();
+    let scope_for_store = stored_scope(&scope);
     store
         .transaction_with(move |tx| {
             if !frozen_auth.current(tx)? {
@@ -366,36 +497,41 @@ pub(crate) async fn execute(
                 .ok_or(Error::Stale)?
                 .value();
             if worker["nativeRelease"]["id"] != frozen["id"]
-                || worker["nativeRelease"]["phase"] != "checking"
+                || worker["nativeRelease"]["phase"] != NativeReleasePhase::Checking.as_str()
             {
                 return Err(Error::Stale);
             }
             worker["nativeRelease"] = frozen;
-            put(tx, worker)
+            let mut worker =
+                AgentRecord::from_value(worker).map_err(studio_runtime_store::StoreError::from)?;
+            worker.native_release.as_mut().ok_or(Error::Stale)?.scope = Some(scope_for_store);
+            AgentRepository::put(tx, &worker)?;
+            Ok(())
         })
         .await?;
     let inspection = inspect(session.as_ref(), &auth, &release, &scope).await;
     let unloaded = match inspection {
         Ok(value) => value,
-        Err(reason) => {
+        Err(Error::Invalid(reason)) => {
             return finish_release(
                 &store,
                 &auth,
                 &release,
-                Arc::clone(&session),
+                (Arc::clone(&session), Some(&scope)),
                 release_result(ReleaseStatus::Blocked, Some(reason)),
                 false,
                 false,
             )
             .await;
         }
+        Err(error) => return Err(error),
     };
     if unloaded {
         return finish_release(
             &store,
             &auth,
             &release,
-            Arc::clone(&session),
+            (Arc::clone(&session), Some(&scope)),
             release_result(ReleaseStatus::Released, None),
             false,
             true,
@@ -415,24 +551,52 @@ pub(crate) async fn execute(
                 .ok_or(Error::Stale)?
                 .value();
             if worker["nativeRelease"]["id"] != release_before["id"]
-                || worker["nativeRelease"]["phase"] != "checking"
+                || worker["nativeRelease"]["phase"] != NativeReleasePhase::Checking.as_str()
                 || blocker(tx, &worker)?.is_some()
             {
                 return Err(Error::Stale);
             }
-            worker["nativeRelease"]["phase"] = json!("unsubscribing");
+            worker["nativeRelease"]["phase"] = json!(NativeReleasePhase::Unsubscribing);
             worker["nativeRelease"]["submittedAt"] = json!(now);
-            worker["nativeRelease"]["scope"] =
-                serde_json::to_value(frozen_scope).map_err(|_| Error::Stale)?;
-            put(tx, worker)
+            let provider_admission = crate::account_worker::retained::reserve_provider_call(
+                tx,
+                &auth_before.admission,
+                crate::account_worker::retained::ProviderCallIntent {
+                    root_request_id: auth_before.root_request_id.clone(),
+                    admitted_request: None,
+                    scope: frozen_scope.clone(),
+                    operation: format!(
+                        "{}:unsubscribe",
+                        release_before["id"].as_str().ok_or(Error::Stale)?
+                    ),
+                    actor: Some(RequestActor {
+                        agent: target.into(),
+                        epoch: auth_before.target["epoch"].as_i64().ok_or(Error::Stale)?,
+                    }),
+                    transfer: None,
+                    deleted_actor_session: None,
+                    method: Method::ThreadUnsubscribe,
+                    params: json!({"threadId":release_before["threadId"]}),
+                },
+            )
+            .map_err(|_| Error::Unavailable("provider-session/request-admission"))?;
+            let mut worker =
+                AgentRecord::from_value(worker).map_err(studio_runtime_store::StoreError::from)?;
+            worker
+                .native_release
+                .as_mut()
+                .ok_or(Error::Stale)?
+                .admitted_request = Some(provider_admission.clone());
+            AgentRepository::put(tx, &worker)?;
+            Ok(provider_admission)
         })
         .await;
-    if admission.is_err() {
+    let Ok(provider_admission) = admission else {
         return finish_release(
             &store,
             &auth,
             &release,
-            Arc::clone(&session),
+            (Arc::clone(&session), Some(&scope)),
             release_result(
                 ReleaseStatus::Blocked,
                 Some("The lead or worker changed during inspection"),
@@ -441,12 +605,12 @@ pub(crate) async fn execute(
             false,
         )
         .await;
-    }
+    };
     let outcome = request(
         session.as_ref(),
         &auth,
         &release,
-        &scope,
+        (&scope, Some(&provider_admission)),
         Method::ThreadUnsubscribe,
         "unsubscribe",
         json!({"threadId":release["threadId"]}),
@@ -461,13 +625,14 @@ pub(crate) async fn execute(
         {
             (ReleaseStatus::Released, body["status"] == "notLoaded")
         }
+        Err(Error::Expired) => return Err(Error::Expired),
         _ => (ReleaseStatus::Unknown, false),
     };
     finish_release(
         &store,
         &auth,
         &release,
-        Arc::clone(&session),
+        (Arc::clone(&session), Some(&scope)),
         release_result(status, None),
         true,
         closed,
@@ -483,15 +648,21 @@ pub(crate) async fn finish_recovery(
     let auth = auth.clone();
     store
         .transaction_with(move |tx| {
-            let saved = read_saved(tx, &auth.request_id, &auth.signature)?.ok_or(Error::Stale)?;
+            let saved = match read_pending(tx, &auth.request_id, &auth.signature)? {
+                Some(saved) => saved,
+                None => {
+                    let saved = RequestResults::admitted_result(tx, &auth.admission)
+                        .map_err(studio_runtime_store::StoreError::from)?
+                        .ok_or(Error::Stale)?;
+                    let saved: ResultEnvelope<ManualReply> = serde_json::from_str(&saved.result)
+                        .map_err(studio_runtime_store::StoreError::from)?;
+                    saved.reply.into_receipt()?
+                }
+            };
             // The account worker can finish after the callback caller disappears.
             // Its committed result, not a retry's transport state, remains the receipt.
-            if saved["manualRecoveryComplete"] == true {
-                return Ok(if &saved == receipt.value() {
-                    receipt
-                } else {
-                    decode_saved_recovery_receipt(saved)
-                });
+            if saved.value()["manualRecoveryComplete"] == true {
+                return Ok(saved);
             }
             let mut receipt = if receipt.value().is_object() {
                 receipt
@@ -499,7 +670,7 @@ pub(crate) async fn finish_recovery(
                 crate::recovery::RecoveryReceipt::Unknown(json!({"status":"unconfirmed"}))
             };
             receipt.value_mut()["manualRecoveryComplete"] = json!(true);
-            save(tx, &auth.request_id, &auth.signature, receipt.value())?;
+            save(tx, &auth, &receipt)?;
             Ok(receipt)
         })
         .await
@@ -509,27 +680,36 @@ async fn request(
     session: &dyn AccountSessionPort,
     auth: &AuthorizedRecoveryRequest,
     release: &Value,
-    scope: &ConnectionScope,
+    authority: (&ConnectionScope, Option<&AdmittedRequest>),
     method: Method,
     suffix: &str,
     params: Value,
-) -> Result<Value, &'static str> {
+) -> Result<Value, Error> {
+    let (scope, admitted) = authority;
     let operation = format!(
         "{}:{suffix}",
-        release["id"].as_str().ok_or("Invalid release identity")?
+        release["id"]
+            .as_str()
+            .ok_or(Error::Invalid("Invalid release identity"))?
     );
     let receipt = session
         .provider_request(ProviderRequest {
+            root_request_id: if method == Method::ThreadUnsubscribe {
+                auth.root_request_id.clone()
+            } else {
+                String::new()
+            },
+            admitted_request: admitted.cloned(),
             account: scope.account.clone(),
             operation: operation.clone(),
             actor: Some(RequestActor {
                 agent: auth.target["id"]
                     .as_str()
-                    .ok_or("Invalid worker identity")?
+                    .ok_or(Error::Invalid("Invalid worker identity"))?
                     .into(),
                 epoch: auth.target["epoch"]
                     .as_i64()
-                    .ok_or("Invalid worker epoch")?,
+                    .ok_or(Error::Invalid("Invalid worker epoch"))?,
             }),
             expected_scope: Some(scope.clone()),
             deleted_actor_session: None,
@@ -538,7 +718,14 @@ async fn request(
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(10),
         })
         .await
-        .map_err(|_| "The native result is not confirmed")?;
+        .map_err(|error| match error {
+            AccountSessionError::Expired => Error::Expired,
+            AccountSessionError::Requires(_)
+            | AccountSessionError::Refused(_)
+            | AccountSessionError::InvalidResponse(_)
+            | AccountSessionError::Persistence
+            | AccountSessionError::Unknown => Error::Invalid("The native result is not confirmed"),
+        })?;
     if receipt.operation != operation
         || receipt.scope != *scope
         || receipt.certainty() != RequestCertainty::Written
@@ -547,11 +734,13 @@ async fn request(
             .is_some_and(|ticket| ticket.method == method && ticket.generation == scope.generation)
         || session.current_scope(&scope.account).as_ref() != Some(scope)
     {
-        return Err("The native result is not confirmed");
+        return Err(Error::Invalid("The native result is not confirmed"));
     }
     match receipt.into_response() {
         Some(ProviderResponse::Reply(value)) => Ok(value),
-        Some(ProviderResponse::Rejected(_)) | None => Err("The native result is not confirmed"),
+        Some(ProviderResponse::Rejected(_)) | None => {
+            Err(Error::Invalid("The native result is not confirmed"))
+        }
     }
 }
 
@@ -560,25 +749,29 @@ async fn inspect(
     auth: &AuthorizedRecoveryRequest,
     release: &Value,
     scope: &ConnectionScope,
-) -> Result<bool, &'static str> {
+) -> Result<bool, Error> {
     let thread = &release["threadId"];
     let body = request(
         session,
         auth,
         release,
-        scope,
+        (scope, None),
         Method::ThreadRead,
         "thread",
         json!({"threadId":thread,"includeTurns":false}),
     )
     .await?;
     if body["thread"]["id"] != *thread {
-        return Err("The native thread identity changed");
+        return Err(Error::Invalid("The native thread identity changed"));
     }
     match body["thread"]["status"]["type"].as_str() {
         Some("notLoaded") => return Ok(true),
         Some("idle") if !truthy(body["thread"]["status"].get("activeFlags")) => {}
-        _ => return Err("The native thread is active or its status is unknown"),
+        _ => {
+            return Err(Error::Invalid(
+                "The native thread is active or its status is unknown",
+            ));
+        }
     }
     for (method, suffix, params) in [
         (
@@ -588,9 +781,20 @@ async fn inspect(
         ),
         (Method::ThreadQueueList, "queue", json!({"threadId":thread})),
     ] {
-        let body = request(session, auth, release, scope, method, suffix, params).await?;
+        let body = request(
+            session,
+            auth,
+            release,
+            (scope, None),
+            method,
+            suffix,
+            params,
+        )
+        .await?;
         if !body["data"].as_array().is_some_and(Vec::is_empty) || truthy(body.get("nextCursor")) {
-            return Err("Native commands or input still hold this session");
+            return Err(Error::Invalid(
+                "Native commands or input still hold this session",
+            ));
         }
     }
     session
@@ -600,7 +804,16 @@ async fn inspect(
             std::time::Instant::now() + std::time::Duration::from_secs(10),
         )
         .await
-        .map_err(|_| "The native notification barrier is not confirmed")?;
+        .map_err(|error| match error {
+            AccountSessionError::Expired => Error::Expired,
+            AccountSessionError::Requires(_)
+            | AccountSessionError::Refused(_)
+            | AccountSessionError::InvalidResponse(_)
+            | AccountSessionError::Persistence
+            | AccountSessionError::Unknown => {
+                Error::Invalid("The native notification barrier is not confirmed")
+            }
+        })?;
     Ok(false)
 }
 
@@ -608,13 +821,15 @@ async fn finish_release(
     store: &RuntimeStore,
     auth: &AuthorizedRecoveryRequest,
     release: &Value,
-    session: Arc<dyn AccountSessionPort>,
+    authority: (Arc<dyn AccountSessionPort>, Option<&ConnectionScope>),
     mut value: crate::recovery::RecoveryReceipt,
     submitted: bool,
     closed: bool,
 ) -> Result<DispatchedOperation, Error> {
+    let (session, scope) = authority;
     let auth = auth.clone();
     let release = release.clone();
+    let scope = scope.cloned();
     let now = release["at"].as_f64().ok_or(Error::Stale)?;
     let value = store
         .transaction_with(move |tx| {
@@ -626,12 +841,9 @@ async fn finish_release(
                 return Err(Error::Stale);
             }
             let current = auth.current(tx)?
-                && (release["scope"].is_null()
-                    || serde_json::from_value::<ConnectionScope>(release["scope"].clone())
-                        .ok()
-                        .is_some_and(|scope| {
-                            session.current_scope(&scope.account).as_ref() == Some(&scope)
-                        }));
+                && scope.as_ref().is_none_or(|scope| {
+                    session.current_scope(&scope.account).as_ref() == Some(scope)
+                });
             if !current {
                 value = release_result(
                     if submitted {
@@ -644,13 +856,17 @@ async fn finish_release(
             }
             let closed = closed && current;
             let confirmed_close = closed || worker["nativeRelease"]["closedAt"].as_f64().is_some();
-            worker["nativeRelease"]["phase"] = value.value()["status"].clone();
+            let phase: NativeReleasePhase = value.value()["status"]
+                .as_str()
+                .and_then(|status| status.parse().ok())
+                .ok_or(Error::Stale)?;
+            worker["nativeRelease"]["phase"] = json!(phase.as_str());
             worker["nativeRelease"]["resetPending"] = json!(submitted && !confirmed_close);
             if closed {
                 worker["nativeRelease"]["closedAt"] = json!(now);
             }
             put(tx, worker)?;
-            save(tx, &auth.request_id, &auth.signature, value.value())?;
+            save(tx, &auth, &value)?;
             Ok(value)
         })
         .await?;
@@ -669,6 +885,11 @@ pub(crate) fn authorize_release(
     let Some(worker) = AgentRepository::get(tx, &AgentId::from(actor.agent.as_str()))? else {
         return Ok(false);
     };
+    let saved_scope = worker
+        .native_release
+        .as_ref()
+        .and_then(|release| release.scope.as_ref())
+        .cloned();
     let worker = worker.value();
     let release = &worker["nativeRelease"];
     let Ok(auth) =
@@ -680,9 +901,9 @@ pub(crate) fn authorize_release(
         && worker["epoch"].as_i64() == Some(actor.epoch)
         && auth.current(tx)?
         && blocker(tx, &worker)?.is_none()
-        && release["phase"] == "unsubscribing"
+        && release["phase"] == NativeReleasePhase::Unsubscribing.as_str()
         && release["resetPending"] == true
-        && release["scope"] == serde_json::to_value(scope).map_err(|_| Error::Stale)?
+        && saved_scope.as_ref() == Some(&stored_scope(scope))
         && release["id"]
             .as_str()
             .is_some_and(|id| operation == format!("{id}:unsubscribe"))
@@ -698,18 +919,52 @@ mod tests {
     use serde_json::json;
     use std::sync::Mutex;
     use studio_runtime_providers::{Method, RequestId, RequestTicket};
+    use studio_runtime_schema::persistence::RequestIdentity;
     use studio_runtime_store::{AgentId, AgentRecord, AgentRepository};
 
+    async fn execute(
+        store: Arc<RuntimeStore>,
+        session: Arc<dyn AccountSessionPort>,
+        actor: &Actor,
+        args: &Value,
+        label: &str,
+        now: f64,
+    ) -> Result<DispatchedOperation, Error> {
+        type Roots = std::collections::BTreeMap<(std::path::PathBuf, String), String>;
+        static ROOTS: std::sync::LazyLock<Mutex<Roots>> =
+            std::sync::LazyLock::new(|| Mutex::new(Roots::new()));
+        let root = ROOTS
+            .lock()
+            .expect("request roots")
+            .entry((store.state_dir().to_path_buf(), label.into()))
+            .or_insert_with(RequestIdentity::issue_root)
+            .clone();
+        super::execute(store, session, actor, args, &root, now).await
+    }
+
+    #[test]
+    fn malformed_recovery_status_never_claims_an_applied_result() {
+        assert!(matches!(
+            decode_saved_recovery_receipt(json!({"status":"invented"})),
+            crate::recovery::RecoveryReceipt::Unknown(_)
+        ));
+    }
+
+    #[derive(PartialEq)]
+    enum Scenario {
+        Unknown,
+        Unloaded,
+        StopLead,
+        ChangeWorkerEpoch,
+        CloseBeforeReply,
+        RecoverUnknown,
+        Terminal,
+    }
     struct Session {
         store: Arc<RuntimeStore>,
         calls: Mutex<Vec<(Method, String)>>,
-        unknown: bool,
-        unloaded: bool,
-        stop_lead: bool,
-        change_worker_epoch: bool,
-        close_before_reply: bool,
-        recover_unknown: bool,
-        terminal: bool,
+        scenarios: Vec<Scenario>,
+        expired: Option<Method>,
         recoveries: Mutex<Vec<AuthorizedRecoveryRequest>>,
     }
     impl Session {
@@ -737,7 +992,7 @@ mod tests {
         ) -> AccountSessionFuture<'a, crate::recovery::RecoveryReceipt> {
             self.recoveries.lock().expect("recoveries").push(request);
             Box::pin(async move {
-                if self.recover_unknown {
+                if self.scenarios.contains(&Scenario::RecoverUnknown) {
                     Err(crate::account_session_runtime::AccountSessionError::Unknown)
                 } else {
                     Ok(crate::recovery::RecoveryReceipt::Unknown(
@@ -770,6 +1025,8 @@ mod tests {
                         scope: Self::scope(),
                         expected_scope: request.expected_scope.clone(),
                         operation: request.operation.clone(),
+                        root_request_id: request.root_request_id.clone(),
+                        admitted_request: request.admitted_request.clone(),
                         actor: request.actor.clone(),
                         transfer: None,
                         deleted_actor_session: request.deleted_actor_session.clone(),
@@ -787,6 +1044,9 @@ mod tests {
                     .lock()
                     .expect("calls")
                     .push((request.method, request.operation.clone()));
+                if self.expired == Some(request.method) {
+                    return Err(AccountSessionError::Expired);
+                }
                 if request.method == Method::ThreadUnsubscribe {
                     let actor = request.actor.clone().expect("worker identity");
                     let operation = request.operation.clone();
@@ -827,23 +1087,24 @@ mod tests {
                         })
                         .await
                         .expect("retained release authority");
-                    if self.close_before_reply {
+                    if self.scenarios.contains(&Scenario::CloseBeforeReply) {
                         self.store
                             .transaction(|tx| {
                                 let mut worker =
                                     AgentRepository::get(tx, &AgentId::from("worker-00000000"))?
                                         .expect("worker");
-                                let release =
-                                    worker.extra.get_mut("nativeRelease").expect("release");
-                                release["closedAt"] = json!(11.0);
-                                release["resetPending"] = json!(false);
+                                let release = worker.native_release.as_mut().expect("release");
+                                release.extra.insert("closedAt".into(), json!(11.0));
+                                release.extra.insert("resetPending".into(), json!(false));
                                 AgentRepository::put(tx, &worker)
                             })
                             .await
                             .expect("exact native close before reply");
                     }
                 }
-                if self.change_worker_epoch && request.method == Method::ThreadQueueList {
+                if self.scenarios.contains(&Scenario::ChangeWorkerEpoch)
+                    && request.method == Method::ThreadQueueList
+                {
                     self.store
                         .transaction(|tx| {
                             let mut worker =
@@ -855,7 +1116,9 @@ mod tests {
                         .await
                         .expect("worker epoch changes during inspection");
                 }
-                if self.stop_lead && request.method == Method::ThreadQueueList {
+                if self.scenarios.contains(&Scenario::StopLead)
+                    && request.method == Method::ThreadQueueList
+                {
                     self.store
                         .transaction(|tx| {
                             let mut lead =
@@ -870,9 +1133,11 @@ mod tests {
                 }
                 let body = match request.method {
                     Method::ThreadRead => {
-                        json!({"thread":{"id":"worker-thread","status":{"type":if self.unloaded {"notLoaded"} else {"idle"}}}})
+                        json!({"thread":{"id":"worker-thread","status":{"type":if self.scenarios.contains(&Scenario::Unloaded) {"notLoaded"} else {"idle"}}}})
                     }
-                    Method::ThreadBackgroundTerminalsList if self.terminal => {
+                    Method::ThreadBackgroundTerminalsList
+                        if self.scenarios.contains(&Scenario::Terminal) =>
+                    {
                         json!({"data":[{"id":"live-command"}],"nextCursor":null})
                     }
                     Method::ThreadBackgroundTerminalsList | Method::ThreadQueueList => {
@@ -1021,7 +1286,8 @@ mod tests {
                         panic!("unexpected native mutation or read: {method:?}")
                     }
                 };
-                let unknown = self.unknown && request.method == Method::ThreadUnsubscribe;
+                let unknown = self.scenarios.contains(&Scenario::Unknown)
+                    && request.method == Method::ThreadUnsubscribe;
                 let ticket = RequestTicket {
                     id: RequestId::String(request.operation.clone()),
                     generation: 1,
@@ -1069,13 +1335,8 @@ mod tests {
         let session = Session {
             store: Arc::clone(&store),
             calls: Mutex::new(Vec::new()),
-            unknown: false,
-            unloaded: false,
-            stop_lead: false,
-            change_worker_epoch: false,
-            close_before_reply: false,
-            recover_unknown: false,
-            terminal: false,
+            scenarios: Vec::new(),
+            expired: None,
             recoveries: Mutex::new(vec![]),
         };
         (directory, store, actor, session)
@@ -1094,6 +1355,80 @@ mod tests {
             })
             .await
             .expect("worker read")
+    }
+
+    #[tokio::test]
+    async fn manual_recovery_replays_exact_public_key_before_identity_validation() {
+        let (_directory, store, actor, session) = fixture().await;
+        let args = json!({"action":"recover","agent_id":"worker-00000000"});
+        let signature = crate::event_write::request_signature(&json!({
+            "actor":"lead-00000000","epoch":1,"args":args
+        }));
+        let saved = ResultEnvelope {
+            actor: Some("lead-00000000".to_owned()),
+            reply: ManualReply {
+                outcome: ToolRequestOutcome::Applied,
+                value: json!({"status":"checked"}),
+            },
+            references: vec![],
+        };
+        let v7 = RequestIdentity::issue_root();
+        let saved_v7 = v7.clone();
+        store.transaction(move |tx| {
+            for id in ["legacy-public-id", saved_v7.as_str()] {
+                tx.execute("INSERT INTO request_results(id,signature,result,created) VALUES(?1,?2,?3,?4)",
+                    rusqlite::params![id,signature,serde_json::to_string(&saved)?,now_ms()])?;
+            }
+            tx.execute("INSERT INTO runtime_orchestration_settings(id,record) VALUES('global',json_object('expired_before_ms',?1)) ON CONFLICT(id) DO UPDATE SET record=json_set(record,'$.expired_before_ms',?1)", [now_ms() + 1])?;
+            Ok(())
+        }).await.expect("migrated exact reply");
+        let session = Arc::new(session);
+        for id in ["legacy-public-id", v7.as_str()] {
+            let reply =
+                super::execute(Arc::clone(&store), session.clone(), &actor, &args, id, 10.0)
+                    .await
+                    .expect("exact reply replays before identity validation");
+            assert_eq!(reply.result().test_value()["status"], "checked");
+        }
+        assert!(session.calls.lock().expect("calls").is_empty());
+        assert!(session.recoveries.lock().expect("recoveries").is_empty());
+    }
+
+    #[tokio::test]
+    async fn manual_release_propagates_expiry_without_renewing_the_obligation() {
+        for method in [Method::ThreadRead, Method::ThreadUnsubscribe] {
+            let (_directory, store, actor, mut session) = fixture().await;
+            session.expired = Some(method);
+            let session = Arc::new(session);
+            assert!(matches!(
+                execute(
+                    Arc::clone(&store),
+                    session.clone(),
+                    &actor,
+                    &args(),
+                    "expired",
+                    10.0
+                )
+                .await,
+                Err(Error::Expired)
+            ));
+            let calls = session.calls.lock().expect("calls").len();
+            store
+                .transaction(|tx| {
+                    RequestResults::gc(
+                        tx,
+                        now_ms() + studio_runtime_schema::persistence::REQUEST_RESULT_TTL_MS + 1,
+                    )
+                    .map_err(studio_runtime_store::StoreError::from)?;
+                    Ok(())
+                })
+                .await
+                .expect("expire ingress without deleting the pending owner");
+            execute(store, session.clone(), &actor, &args(), "expired", 11.0)
+                .await
+                .expect("retry reads unresolved owner");
+            assert_eq!(session.calls.lock().expect("calls").len(), calls);
+        }
     }
 
     #[tokio::test]
@@ -1130,14 +1465,37 @@ mod tests {
                 let (lead, target) = authorize(tx, &actor.record().value(), "worker-00000000")?;
                 let raw = AgentRepository::get_raw(tx, &AgentId::from("worker-00000000"))?
                     .expect("raw worker");
-                save(tx, "guard-test", "test", &json!({"status":"unconfirmed"}))?;
+                let root = RequestIdentity::issue_root();
+                let crate::event_write::CallerAdmission::Fresh(admission) =
+                    crate::event_write::begin_request::<ManualReply>(
+                        tx,
+                        crate::event_write::RequestKey::new(
+                            "manual-management",
+                            &["lead-00000000", "0"],
+                            &root,
+                        ),
+                        "test",
+                        now_ms(),
+                    )
+                    .map_err(studio_runtime_store::StoreError::from)?
+                else {
+                    panic!("fresh admission")
+                };
+                let auth = AuthorizedRecoveryRequest {
+                    lead,
+                    target,
+                    request_id: admission.id().into(),
+                    signature: "test".into(),
+                    root_request_id: root,
+                    admission,
+                };
+                save(
+                    tx,
+                    &auth,
+                    &crate::recovery::RecoveryReceipt::Unknown(json!({"status":"unconfirmed"})),
+                )?;
                 Ok::<_, Error>((
-                    AuthorizedRecoveryRequest {
-                        lead,
-                        target,
-                        request_id: "guard-test".into(),
-                        signature: "test".into(),
-                    },
+                    auth,
                     RecoverySnapshot::from_record(serde_json::from_str(&raw).expect("worker JSON"))
                         .expect("snapshot"),
                 ))
@@ -1182,14 +1540,14 @@ mod tests {
         let (_directory, store, actor, session) = fixture().await;
         store.transaction(|tx| {
             let mut worker = AgentRepository::get(tx, &AgentId::from("worker-00000000"))?.expect("worker");
-            worker.extra.insert("nativeRelease".into(), json!({"id":"old-release","phase":"resumed","closedAt":5.0,"resetPending":false,"targetEpoch":3,"threadId":"worker-thread","accountKey":"default"}));
+            worker.native_release = Some(serde_json::from_str(r#"{"id":"old-release","phase":"resumed","closedAt":5.0,"resetPending":false,"targetEpoch":3,"threadId":"worker-thread","accountKey":"default"}"#).unwrap());
             AgentRepository::put(tx, &worker)
         }).await.expect("native close followed by resume");
         let session = Arc::new(session);
         let checked = execute(store, session.clone(), &actor, &args(), "new-reset", 10.0)
             .await
             .expect("new reset");
-        assert_eq!(checked.result().value["status"], "released");
+        assert_eq!(checked.result().test_value()["status"], "released");
         assert_eq!(
             session.unsubscribes(),
             1,
@@ -1200,7 +1558,7 @@ mod tests {
     #[tokio::test]
     async fn a_lost_recovery_response_does_not_overwrite_the_workers_late_result() {
         let (_directory, store, actor, mut session) = fixture().await;
-        session.recover_unknown = true;
+        session.scenarios.push(Scenario::RecoverUnknown);
         let session = Arc::new(session);
         let args = json!({"action":"recover","agent_id":"worker-00000000"});
         let lost = execute(
@@ -1213,7 +1571,7 @@ mod tests {
         )
         .await
         .expect("unknown response");
-        assert_eq!(lost.result().value["status"], "unconfirmed");
+        assert_eq!(lost.result().test_value()["status"], "unconfirmed");
         let auth = session.recoveries.lock().expect("recoveries")[0].clone();
         finish_recovery(
             &store,
@@ -1227,7 +1585,7 @@ mod tests {
         let replay = execute(store, session.clone(), &actor, &args, "late-recovery", 11.0)
             .await
             .expect("durable late result");
-        assert_eq!(replay.result().value["status"], "checked");
+        assert_eq!(replay.result().test_value()["status"], "checked");
         assert_eq!(session.recoveries.lock().expect("recoveries").len(), 1);
         assert!(session.calls.lock().expect("native calls").is_empty());
     }
@@ -1253,7 +1611,7 @@ mod tests {
             )
             .await
             .expect("manual recovery");
-            assert_eq!(checked.result().value["status"], "unconfirmed");
+            assert_eq!(checked.result().test_value()["status"], "unconfirmed");
         }
         assert_eq!(session.recoveries.lock().expect("recoveries").len(), 1);
         assert!(session.calls.lock().expect("native calls").is_empty());
@@ -1285,15 +1643,15 @@ mod tests {
         )
         .await
         .expect("manual reset");
-        assert_eq!(first.result().value["status"], "released");
+        assert_eq!(first.result().test_value()["status"], "released");
         assert!(
-            first.result().value["loss"]
+            first.result().test_value()["loss"]
                 .as_str()
                 .expect("loss warning")
                 .contains("JavaScript")
         );
         assert!(
-            first.result().value["loss"]
+            first.result().test_value()["loss"]
                 .as_str()
                 .expect("loss warning")
                 .contains("MCP")
@@ -1314,7 +1672,7 @@ mod tests {
         )
         .await
         .expect("lost response replay");
-        assert_eq!(first.result().value, replay.result().value);
+        assert_eq!(first.result().test_value(), replay.result().test_value());
         assert_eq!(session.unsubscribes(), 1);
         let mut changed = args();
         changed["reason"] = json!("Changed request content");
@@ -1329,7 +1687,7 @@ mod tests {
     #[tokio::test]
     async fn an_unknown_manual_tool_reset_is_not_sent_again() {
         let (_directory, store, actor, mut session) = fixture().await;
-        session.unknown = true;
+        session.scenarios.push(Scenario::Unknown);
         let session = Arc::new(session);
         let first = execute(
             Arc::clone(&store),
@@ -1345,7 +1703,7 @@ mod tests {
             first,
             crate::managed_host_tools::DispatchedOperation::Unknown(_)
         ));
-        assert_eq!(first.result().value["status"], "unknown");
+        assert_eq!(first.result().test_value()["status"], "unknown");
         for request in ["unknown-1", "unknown-2"] {
             let result = execute(
                 Arc::clone(&store),
@@ -1357,7 +1715,7 @@ mod tests {
             )
             .await
             .expect("inspect uncertain release");
-            assert_eq!(result.result().value["status"], "unknown");
+            assert_eq!(result.result().test_value()["status"], "unknown");
         }
         assert_eq!(session.unsubscribes(), 1);
         assert_eq!(worker(&store).await["nativeRelease"]["resetPending"], true);
@@ -1366,7 +1724,7 @@ mod tests {
     #[tokio::test]
     async fn manual_tool_reset_rechecks_the_lead_after_native_reads() {
         let (_directory, store, actor, mut session) = fixture().await;
-        session.stop_lead = true;
+        session.scenarios.push(Scenario::StopLead);
         let session = Arc::new(session);
         let result = execute(
             Arc::clone(&store),
@@ -1377,14 +1735,16 @@ mod tests {
             10.0,
         )
         .await;
-        assert!(result.is_err() || result.expect("result").result().value["status"] == "blocked");
+        assert!(
+            result.is_err() || result.expect("result").result().test_value()["status"] == "blocked"
+        );
         assert_eq!(session.unsubscribes(), 0);
     }
 
     #[tokio::test]
     async fn manual_tool_reset_refuses_a_changed_worker_epoch_after_inspection() {
         let (_directory, store, actor, mut session) = fixture().await;
-        session.change_worker_epoch = true;
+        session.scenarios.push(Scenario::ChangeWorkerEpoch);
         let session = Arc::new(session);
         let checked = execute(
             store,
@@ -1396,7 +1756,7 @@ mod tests {
         )
         .await
         .expect("refused reset");
-        assert_eq!(checked.result().value["status"], "blocked");
+        assert_eq!(checked.result().test_value()["status"], "blocked");
         assert_eq!(session.unsubscribes(), 0);
     }
 
@@ -1434,7 +1794,7 @@ mod tests {
     #[tokio::test]
     async fn a_native_close_before_unsubscribe_reply_keeps_the_reset_hold_clear() {
         let (_directory, store, actor, mut session) = fixture().await;
-        session.close_before_reply = true;
+        session.scenarios.push(Scenario::CloseBeforeReply);
         let session = Arc::new(session);
         let checked = execute(
             Arc::clone(&store),
@@ -1446,7 +1806,7 @@ mod tests {
         )
         .await
         .expect("unsubscribe result");
-        assert_eq!(checked.result().value["status"], "released");
+        assert_eq!(checked.result().test_value()["status"], "released");
         let current = worker(&store).await;
         assert_eq!(current["nativeRelease"]["resetPending"], false);
         assert_eq!(current["nativeRelease"]["closedAt"], 11.0);
@@ -1456,7 +1816,9 @@ mod tests {
     async fn manual_tool_reset_keeps_native_commands_and_uncertain_input() {
         for native_command in [false, true] {
             let (_directory, store, actor, mut session) = fixture().await;
-            session.terminal = native_command;
+            if native_command {
+                session.scenarios.push(Scenario::Terminal);
+            }
             if !native_command {
                 store.transaction(|tx| {
                     tx.execute("INSERT INTO runtime_events(id,agent,epoch,kind,text,status,created) VALUES('unknown-input','worker-00000000',3,'followup','original input','uncertain',1)", [])?;
@@ -1474,7 +1836,7 @@ mod tests {
             )
             .await
             .expect("blocked reset");
-            assert_eq!(result.result().value["status"], "blocked");
+            assert_eq!(result.result().test_value()["status"], "blocked");
             assert_eq!(session.unsubscribes(), 0);
         }
     }
@@ -1482,7 +1844,7 @@ mod tests {
     #[tokio::test]
     async fn a_confirmed_native_closure_needs_no_unsubscribe() {
         let (_directory, store, actor, mut session) = fixture().await;
-        session.unloaded = true;
+        session.scenarios.push(Scenario::Unloaded);
         let session = Arc::new(session);
         let result = execute(
             Arc::clone(&store),
@@ -1494,7 +1856,7 @@ mod tests {
         )
         .await
         .expect("confirmed closure");
-        assert_eq!(result.result().value["status"], "released");
+        assert_eq!(result.result().test_value()["status"], "released");
         let current = worker(&store).await;
         assert_eq!(current["nativeRelease"]["resetPending"], false);
         assert_eq!(current["nativeRelease"]["closedAt"], 10.0);

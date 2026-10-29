@@ -6,6 +6,59 @@ use crate::StoreResult;
 use crate::records::{MonitorRecord, Table};
 use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
 
+#[derive(Clone, Debug, serde::Deserialize, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MonitorOperation {
+    pub agent: String,
+    pub epoch: i64,
+    pub account_key: String,
+    pub connection_id: String,
+    #[serde(flatten)]
+    pub evidence: MonitorOperationEvidence,
+}
+
+#[derive(Clone, Debug, Default, serde::Deserialize, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MonitorOperationEvidence {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present"
+    )]
+    pub root_request_id: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present"
+    )]
+    pub provider_generation: Option<u64>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present"
+    )]
+    pub provider_request: Option<crate::request_results::AdmittedRequest>,
+}
+
+impl PartialEq for MonitorOperationEvidence {
+    fn eq(&self, other: &Self) -> bool {
+        // The historical thread is retained for reading, not operation identity.
+        self.root_request_id == other.root_request_id
+            && self.provider_generation == other.provider_generation
+            && self.provider_request == other.provider_request
+    }
+}
+
+fn present<'de, D, T>(deserializer: D) -> std::result::Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
 /// Compatibility name for callers that used the pre-typed monitor wrapper.
 pub type StoredMonitor = MonitorRecord;
 
@@ -166,6 +219,24 @@ inventory::submit! {
 mod tests {
     use super::{MonitorsRepository, QUEUED_STREAM_INDEX, STUDIO_ERROR_INDEX};
     use rusqlite::Connection;
+
+    #[test]
+    fn historical_thread_is_readable_but_does_not_change_operation_identity() {
+        let base = r#"{"agent":"a","epoch":1,"accountKey":"default","connectionId":"c"}"#;
+        let historical = r#"{"agent":"a","epoch":1,"accountKey":"default","connectionId":"c","threadId":"thread"}"#;
+        let original: super::MonitorOperation = serde_json::from_str(base).unwrap();
+        let saved: super::MonitorOperation = serde_json::from_str(historical).unwrap();
+        assert_eq!(original, saved);
+        assert_eq!(
+            crate::projection_value(&saved),
+            serde_json::from_str::<serde_json::Value>(historical).unwrap()
+        );
+        assert_eq!(
+            serde_json::from_str::<super::MonitorOperation>(r#"{"agent":"a","epoch":1,"accountKey":"default","connectionId":"c","threadId":null}"#).unwrap(),
+            original
+        );
+        assert!(serde_json::from_str::<super::MonitorOperation>(r#"{"agent":"a","epoch":1,"accountKey":"default","connectionId":"c","unexpected":true}"#).is_err());
+    }
 
     /// The index build runs at every store open, also on older states that
     /// may hold malformed monitor rows. It must succeed there, be a no-op when

@@ -55,7 +55,9 @@ impl PairedExchange for SignedBrowserExchange {
                 .await
                 .unwrap_or(DeliveryOutcome::Unknown);
             Ok(match outcome {
-                DeliveryOutcome::Applied(value) => ExchangeOutcome::Applied(value),
+                DeliveryOutcome::Applied(value) => ExchangeOutcome::Applied(
+                    serde_json::from_str(value.value.get()).map_err(|_| BrowserError::Exchange)?,
+                ),
                 DeliveryOutcome::NotApplied(error) => ExchangeOutcome::NotApplied(error),
                 DeliveryOutcome::Unknown => ExchangeOutcome::Unknown,
                 DeliveryOutcome::PreEffectWaiting => ExchangeOutcome::Unknown,

@@ -83,3 +83,10 @@ export type PostResult<Path extends ApiPathsFor<"post">> = ApiSuccessBodyFor<
 export type PostBody<Path extends ApiPathsFor<"post">> = NonNullable<
   OperationRequestBodyContent<ApiOperation<Path, "post">>
 >;
+
+/** The API facade supplies the native action's persisted mutation identity. */
+export type PostInput<Path extends ApiPostPath> =
+  | PostBody<Path>
+  | (Path extends "/api/native-command"
+      ? Omit<PostBody<Path>, "request_id">
+      : never);

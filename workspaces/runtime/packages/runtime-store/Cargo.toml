@@ -15,7 +15,8 @@ rusqlite = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
-studio-runtime-schema = { path = "../runtime-schema" }
+strum = { workspace = true }
+studio-runtime-schema = { path = "../runtime-schema", features = ["sqlite"] }
 studio-runtime-providers = { path = "../runtime-providers" }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
@@ -24,6 +25,7 @@ tokio = { workspace = true }
 zstd-safe = { workspace = true }
 
 [dev-dependencies]
+schemars.workspace = true
 studio-runtime-store = { path = ".", features = ["test-support"] }
 tempfile = { workspace = true }
 

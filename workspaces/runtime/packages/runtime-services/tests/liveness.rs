@@ -57,7 +57,7 @@ async fn stored_state(store: &RuntimeStore) -> Vec<String> {
             for table in [
                 "runtime_agents",
                 "runtime_events",
-                "runtime_operation_receipts",
+                "request_results",
                 "runtime_usage_resumes",
                 "runtime_capacity_retries",
                 "runtime_account_transfers",
@@ -149,7 +149,7 @@ async fn an_exact_manual_delivery_hold_keeps_stall_detection_without_waking_or_s
                     "inFlight":true,"turnEpoch":3,"threadId":"thread","turnId":"turn",
                     "accountKey":"account","provider":"codex","cwd":cwd,
                     "created":now - 1000.0,"activity":{"at":now - 700.0},
-                    "startAttempt":{"id":format!("attempt-{id}"),"epoch":3,"accountKey":"account",
+                    "startAttempt":{"id":format!("attempt-{id}"),"epoch":3,"accountKey":"account","events":[],
                         "threadId":"thread","turnId":"turn","submitted":true,
                         "requestTicket":"ticket","connectionGeneration":7}
                 }))?;
@@ -167,6 +167,7 @@ async fn an_exact_manual_delivery_hold_keeps_stall_detection_without_waking_or_s
                         json!("stale")
                     };
                 }
+                studio_runtime_store::ExecutionHistoryRepository::record_current(tx, &mut agent)?;
                 AgentRepository::put(tx, &agent)?;
                 if id == "stopped" {
                     assert!(SchedulerRepository::stop_agent(

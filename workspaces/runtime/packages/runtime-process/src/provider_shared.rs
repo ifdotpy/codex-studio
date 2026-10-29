@@ -5,7 +5,7 @@ use crate::protocol::{
     RetireCommandRequest, WriteRequest,
 };
 use crate::{
-    BackendIdentity, OperationId, SUPERVISOR_PROTOCOL_V2, SupervisorAction, SupervisorError,
+    BackendIdentity, OperationId, SUPERVISOR_PROTOCOL_VERSION, SupervisorAction, SupervisorError,
     SupervisorHandle, SupervisorHandshakeV2, SupervisorHandshakeV2Result,
 };
 use serde::{Deserialize, Serialize};
@@ -312,7 +312,7 @@ pub(crate) fn initialized_operation_id(
 
 pub(crate) fn handshake_request_v2(identity: &BackendIdentity) -> SupervisorHandshakeV2 {
     SupervisorHandshakeV2 {
-        protocol: SUPERVISOR_PROTOCOL_V2,
+        protocol: SUPERVISOR_PROTOCOL_VERSION,
         state_dir: identity.state_dir.clone(),
         backend_id: Some(identity.backend_id.clone()),
         probe: false,
@@ -323,15 +323,15 @@ pub(crate) fn handshake_request_v2(identity: &BackendIdentity) -> SupervisorHand
 pub(crate) fn validate_handshake_v2(response: &str) -> Result<(), SupervisorError> {
     let value: SupervisorHandshakeV2Result = serde_json::from_str(response)?;
     let received = value.protocol;
-    if value.ok && received == Some(SUPERVISOR_PROTOCOL_V2) {
+    if value.ok && received == Some(SUPERVISOR_PROTOCOL_VERSION) {
         Ok(())
     } else {
         Err(SupervisorError::ProtocolMismatch {
-            expected: SUPERVISOR_PROTOCOL_V2,
+            expected: SUPERVISOR_PROTOCOL_VERSION,
             received,
             detail: value
                 .error
-                .unwrap_or_else(|| "supervisor did not confirm protocol v2".to_owned()),
+                .unwrap_or_else(|| "supervisor did not confirm the required protocol".to_owned()),
         })
     }
 }

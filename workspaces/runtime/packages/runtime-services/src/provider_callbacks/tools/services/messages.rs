@@ -4,6 +4,30 @@ use crate::submit_gates::{
 };
 use std::collections::BTreeMap;
 use studio_runtime_schema::delivery::DeliveryMoment;
+use studio_runtime_schema::persistence::{DeliveryStatus, RecipientDelivery};
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChatSendReply {
+    id: String,
+    room: String,
+    deliveries: BTreeMap<String, RecipientDelivery>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    refused: Option<BTreeMap<String, String>>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+enum UserRecipient {
+    #[serde(rename = "user")]
+    User,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UserSendReply {
+    id: String,
+    room: String,
+    recipient: UserRecipient,
+}
+
 use studio_runtime_store::{AgentId, AgentRepository, SyncDocumentsRepository};
 
 fn message_agents(
@@ -267,7 +291,7 @@ pub(super) fn send(
     args: &Value,
     id: &str,
     now: f64,
-) -> Result<Value, CallbackError> {
+) -> Result<Box<serde_json::value::RawValue>, CallbackError> {
     send_as_actor(
         tx,
         snapshot.actor(),
@@ -285,7 +309,7 @@ pub(crate) fn send_remote_worker(
     args: &Value,
     id: &str,
     now: f64,
-) -> Result<Value, CallbackError> {
+) -> Result<Box<serde_json::value::RawValue>, CallbackError> {
     let actor = records::get(tx, "runtime_agents", sender)?
         .ok_or(CallbackError::Invalid("The remote worker is unavailable"))?;
     if actor["id"] != sender
@@ -305,7 +329,7 @@ fn send_as_actor(
     id: &str,
     now: f64,
     resolve_direct: bool,
-) -> Result<Value, CallbackError> {
+) -> Result<Box<serde_json::value::RawValue>, CallbackError> {
     let mut resolved_args = args.clone();
     let prepared = if let Some(supplied) = args["target"].as_str().filter(|target| {
         resolve_direct
@@ -457,7 +481,7 @@ fn send_as_actor(
     };
     let directory = crate::sync_entity_context::RoomDirectory::resolve(agents, projects)?;
     let broadcast = target == "broadcast";
-    let mut refused = serde_json::Map::new();
+    let mut refused = BTreeMap::new();
     let mut first_refusal = None;
     let mut admitted = Vec::with_capacity(recipients.len());
     for recipient in recipients {
@@ -487,7 +511,7 @@ fn send_as_actor(
                 ));
                 refused.insert(
                     recipient_id.into(),
-                    json!(crate::managed_host_tools::Error::StoredAt(location.clone()).to_string()),
+                    crate::managed_host_tools::Error::StoredAt(location.clone()).to_string(),
                 );
                 first_refusal.get_or_insert(location);
                 continue;
@@ -517,6 +541,18 @@ fn send_as_actor(
     }
     let recipients = admitted;
     let room_id = text(&room, "id")?.to_owned();
+    let signature = event_write::request_signature(args);
+    let admitted = match event_write::begin_request::<ChatSendReply>(
+        tx,
+        event_write::RequestKey::new("agent_message", &[who], id),
+        &signature,
+        chrono::Utc::now().timestamp_millis(),
+    )? {
+        event_write::CallerAdmission::Replay(reply) => {
+            return serde_json::value::to_raw_value(&reply).map_err(Into::into);
+        }
+        event_write::CallerAdmission::Fresh(admitted) => admitted,
+    };
     if let Some(mut previous) = records::get(tx, "runtime_rooms", &room_id)? {
         if studio_runtime_store::ProjectsRepository::room_retired(&previous) {
             return Err(CallbackError::Invalid(
@@ -544,7 +580,7 @@ fn send_as_actor(
     {
         SyncDocumentsRepository::put_entity(tx, "room", &room_id, view, false)?;
     }
-    let mut deliveries = serde_json::Map::new();
+    let mut deliveries: BTreeMap<String, RecipientDelivery> = BTreeMap::new();
     for recipient in recipients {
         let recipient_id = recipient
             .id
@@ -590,21 +626,30 @@ fn send_as_actor(
         }
         deliveries.insert(
             recipient_id.into(),
-            json!(if active { "queued" } else { "stored_only" }),
+            RecipientDelivery {
+                status: if active {
+                    DeliveryStatus::Queued
+                } else {
+                    DeliveryStatus::StoredOnly
+                },
+                error: None,
+            },
         );
     }
     tx.execute("INSERT INTO runtime_chat_messages(id,room,sender,text,created,deliveries) VALUES(?1,?2,?3,?4,?5,?6)",params![id,room_id,who,message,now,json!(deliveries).to_string()])?;
     let view = crate::sync_views::room_entity_view(&room, &directory.for_room(tx, &room, true)?)
         .ok_or_else(|| CallbackError::Stored(room_id.clone()))?;
     SyncDocumentsRepository::put_entity(tx, "room", &room_id, view, false)?;
-    let mut result = json!({"id":id,"room":room_id,"deliveries":deliveries});
+    let result = ChatSendReply {
+        id: id.to_owned(),
+        room: room_id,
+        deliveries,
+        refused: (!refused.is_empty()).then_some(refused),
+    };
     // A broadcast member that was not checked is named with its refusal.
     // The receipt keeps it, so a replay of this request reports it again.
-    if !refused.is_empty() {
-        result["refused"] = Value::Object(refused);
-    }
-    event_write::save_receipt(tx, Some(id), &event_write::request_signature(args), &result)?;
-    Ok(result)
+    event_write::settle_request(tx, &admitted, Some(who), &result)?;
+    serde_json::value::to_raw_value(&result).map_err(Into::into)
 }
 
 /// Python `codex_user_messages.send_to_user`: a lead's message to the user is a
@@ -618,7 +663,7 @@ fn send_to_user(
     text: &str,
     id: &str,
     now: f64,
-) -> Result<Value, CallbackError> {
+) -> Result<Box<serde_json::value::RawValue>, CallbackError> {
     let key = crate::event_write::python_strip(id);
     if id.chars().count() > 200 || key.is_empty() {
         return Err(CallbackError::Invalid(
@@ -635,20 +680,24 @@ fn send_to_user(
     }
     let signature =
         event_write::request_signature(&json!({"sender":who,"target":"user","text":text}));
-    if let Some(saved) = event_write::read_receipt(
+    let admitted = match event_write::begin_request::<UserSendReply>(
         tx,
-        Some(key),
+        event_write::RequestKey::new("user_message", &[who], key),
         &signature,
-        "runtime_operation_receipts",
-        key,
-        |saved| saved["recipient"] == "user" && saved["id"].is_string(),
+        chrono::Utc::now().timestamp_millis(),
     )? {
-        return Ok(saved);
-    }
+        event_write::CallerAdmission::Replay(reply) => {
+            return serde_json::value::to_raw_value(&reply).map_err(Into::into);
+        }
+        event_write::CallerAdmission::Fresh(admitted) => admitted,
+    };
     let message = crate::notification_dispatch::submit_user_message(tx, actor, key, text, now)
         .map_err(|error| match error {
             crate::notification_dispatch::NotificationDispatchError::Store(error) => {
                 CallbackError::Store(error)
+            }
+            crate::notification_dispatch::NotificationDispatchError::RequestResult(error) => {
+                error.into()
             }
             crate::notification_dispatch::NotificationDispatchError::ConflictingInput => {
                 CallbackError::Invalid("This complaint id has different content")
@@ -674,9 +723,13 @@ fn send_to_user(
                 CallbackError::Invalid("A complaint needs an existing lead")
             }
         })?;
-    let result = json!({"id":message["id"],"room":format!("user:{who}"),"recipient":"user"});
-    event_write::save_receipt(tx, Some(key), &signature, &result)?;
-    Ok(result)
+    let result = UserSendReply {
+        id: super::text(&message, "id")?.to_owned(),
+        room: format!("user:{who}"),
+        recipient: UserRecipient::User,
+    };
+    event_write::settle_request(tx, &admitted, Some(who), &result)?;
+    serde_json::value::to_raw_value(&result).map_err(Into::into)
 }
 
 fn radio_guard_error(error: crate::projects::ProjectsError) -> CallbackError {
@@ -698,6 +751,7 @@ fn map_federation_error(
     use crate::federation_messaging::FederationMessageError as FederationError;
     match error {
         FederationError::Store(error) => CallbackError::Store(error),
+        FederationError::RequestResult(error) => error.into(),
         FederationError::Unavailable(dependency) => CallbackError::Dependency(dependency),
         FederationError::Invalid(_)
         | FederationError::Forbidden(_)
@@ -912,6 +966,28 @@ pub(super) fn resolve_prefix(
 #[cfg(test)]
 mod prefix_tests {
     use super::{CallbackError, resolve_prefix};
+
+    #[test]
+    fn message_receipts_round_trip_existing_wire_shapes() {
+        for raw in [
+            r#"{"id":"m","room":"private:a:b","deliveries":{"b":{"status":"queued","error":null}}}"#,
+            r#"{"id":"m","room":"broadcast:a","deliveries":{},"refused":{"b":"invalid"}}"#,
+        ] {
+            let reply: super::ChatSendReply = serde_json::from_str(raw).unwrap();
+            let encoded = serde_json::to_string(&reply).unwrap();
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&encoded).unwrap(),
+                serde_json::from_str::<serde_json::Value>(raw).unwrap()
+            );
+        }
+        let raw = r#"{"id":"m","room":"user:a","recipient":"user"}"#;
+        let reply: super::UserSendReply = serde_json::from_str(raw).unwrap();
+        let encoded = serde_json::to_string(&reply).unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&encoded).unwrap(),
+            serde_json::from_str::<serde_json::Value>(raw).unwrap()
+        );
+    }
 
     #[test]
     fn visible_agent_prefix_requires_eight_characters_and_unique_match() {

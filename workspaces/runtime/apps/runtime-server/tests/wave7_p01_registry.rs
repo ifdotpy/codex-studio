@@ -43,6 +43,7 @@ struct Fixture {
     store: Arc<RuntimeStore>,
     agents: Value,
     changes: watch::Receiver<u64>,
+    event_ids: Mutex<BTreeMap<String, String>>,
 }
 impl Fixture {
     async fn new() -> Self {
@@ -57,11 +58,13 @@ impl Fixture {
             store,
             agents,
             changes,
+            event_ids: Mutex::new(BTreeMap::new()),
         }
     }
     async fn enqueue(&self, index: usize, id: &str) {
         let agent_id = self.agents[index]["id"].as_str().unwrap().to_owned();
-        let event_id = id.to_owned();
+        let event_id = if id.len() == 36 { id.to_owned() } else { studio_runtime_schema::persistence::RequestIdentity::issue_root() };
+        self.event_ids.lock().unwrap().insert(format!("annotation:{id}"), format!("annotation:{event_id}"));
         self.store
             .transaction_with(move |tx| {
                 annotate(
@@ -83,6 +86,7 @@ impl Fixture {
     }
 
     fn event_status(&self, id: &str) -> String {
+        let id = self.event_ids.lock().unwrap().get(id).cloned().unwrap_or_else(|| id.to_owned());
         self.store
             .test_reader()
             .unwrap()
@@ -706,6 +710,10 @@ async fn seed_radio_interrupt(fixture: &Fixture, snapshot: &Value) {
         .store
         .transaction(move |db| {
             for (table, rows) in snapshot.as_object().unwrap() {
+                // Historical ingress receipts are already retired in a current store.
+                if table == "operation_receipts" {
+                    continue;
+                }
                 let table_name = match table.as_str() {
                     "sync_entities" => "sync_entities".to_owned(),
                     "sidebar_order" => "runtime_sidebar_order".to_owned(),
@@ -803,6 +811,8 @@ async fn closing_worker_does_not_invent_a_transfer_deadline_expiry() {
     let mut pending = Vec::new();
     for index in 0..=COMMAND_CAPACITY {
         let mut request = broker.transfer_request(TransferProviderRequest {
+            root_request_id: studio_runtime_schema::persistence::RequestIdentity::issue_root(),
+            admitted_request: None,
             transfer_id: "closing-transfer".into(),
             member: "member".into(),
             source_account: "default".into(),
@@ -821,6 +831,8 @@ async fn closing_worker_does_not_invent_a_transfer_deadline_expiry() {
         pending.push(request);
     }
     let mut ordinary = broker.request(ProviderRequest {
+        root_request_id: studio_runtime_schema::persistence::RequestIdentity::issue_root(),
+        admitted_request: None,
         account: "default".into(),
         operation: "model-list:closing-worker".into(),
         actor: None,
@@ -979,7 +991,7 @@ async fn production_reconcile_admits_radio_queue_event_to_retained_worker() {
     if turn_write.is_err() {
         let db = fixture.store.test_reader().unwrap();
         let mut statement = db
-            .prepare("SELECT id,result FROM runtime_operation_receipts ORDER BY rowid DESC LIMIT 8")
+            .prepare("SELECT id,result FROM request_results ORDER BY rowid DESC LIMIT 8")
             .unwrap();
         let receipts = statement
             .query_map([], |row| {
@@ -1198,7 +1210,8 @@ async fn legacy_image_rows_finish_without_provider_launch_or_row_loss() {
         })
         .await
         .unwrap();
-    fixture.enqueue(0, "image-workspace-refused").await;
+    let event_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    fixture.enqueue(0, &event_id).await;
     let (launcher, mut writes) = scripted();
     let mut registry = AccountRegistry::new(
         fixture.store.clone(),
@@ -1223,8 +1236,8 @@ async fn legacy_image_rows_finish_without_provider_launch_or_row_loss() {
     let db = fixture.store.test_reader().unwrap();
     let event_status: String = db
         .query_row(
-            "SELECT status FROM runtime_events WHERE id='annotation:image-workspace-refused'",
-            [],
+            "SELECT status FROM runtime_events WHERE id=?1",
+            [format!("annotation:{event_id}")],
             |row| row.get(0),
         )
         .unwrap();
@@ -1251,8 +1264,8 @@ async fn legacy_image_rows_finish_without_provider_launch_or_row_loss() {
     let db = fixture.store.test_reader().unwrap();
     let event_status: String = db
         .query_row(
-            "SELECT status FROM runtime_events WHERE id='annotation:image-workspace-refused'",
-            [],
+            "SELECT status FROM runtime_events WHERE id=?1",
+            [format!("annotation:{event_id}")],
             |row| row.get(0),
         )
         .unwrap();
@@ -1407,7 +1420,8 @@ async fn accepted_http_message_wakes_retained_worker_and_receipt_replay_does_not
     .unwrap();
     let stop = Shutdown::default();
     let task = tokio::spawn(registry.run(wake, Arc::new(Notify::new()), stop.clone()));
-    let body = json!({"room":fixture.agents[0]["id"],"id":"b2ba3b37-4ef4-467d-b215-155c09c088e6","text":"committed through HTTP"});
+    let message_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    let body = json!({"room":fixture.agents[0]["id"],"id":message_id,"text":"committed through HTTP"});
     for _ in 0..2 {
         let request = Request::builder()
             .method("POST")
@@ -1437,7 +1451,7 @@ async fn accepted_http_message_wakes_retained_worker_and_receipt_replay_does_not
     assert_eq!(request["method"], "turn/start");
     wait_for_durable_event_status(
         &fixture,
-        "b2ba3b37-4ef4-467d-b215-155c09c088e6",
+        &message_id,
         "delivered",
     )
     .await;
@@ -1521,7 +1535,35 @@ mod runtime_shutdown;
 
 /// Keep the ordinary account-worker setup, replacing only its provider port
 /// with the real supervisor adapter connected to a deterministic Unix peer.
+async fn fixture_supervisor_store(
+    root: &std::path::Path,
+    account: &str,
+    seed: i64,
+) -> Arc<RuntimeStore> {
+    static NEXT_ACCOUNT_STATE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let path = root.join(format!(
+        "account-state-{}",
+        NEXT_ACCOUNT_STATE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::create_dir(&path).unwrap();
+    let store = Arc::new(RuntimeStore::open(Some(&path)).await.unwrap());
+    let account = account.to_owned();
+    store
+        .transaction(move |tx| {
+            studio_runtime_store::account_state::ensure_account(tx, &account)?;
+            tx.execute(
+                "UPDATE runtime_account_state SET next_generation=?1 WHERE account=?2",
+                rusqlite::params![seed, account],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    store
+}
+
 struct SupervisorDetachLauncher {
+    store: Arc<RuntimeStore>,
     scripted: Arc<Scripted>,
     root: PathBuf,
 }
@@ -1564,9 +1606,10 @@ async fn callback_only_saved_reply_starts_its_account_without_any_pending_input(
     let encoded = format!("{response}\n");
     let saved = json!({"version":1,"handle":"account:default","generation":7,"pid":1,
         "frame":encoded,"sha256":studio_runtime_store::sha256_hex(encoded.as_bytes()),
-        "authority":{"context":{"agent":"managed-actor","account":"default","connection":"original-connection",
+        "authority":{"context":{"agent":"managed-actor","account":"default","stream_id":"default","connection":"original-connection",
             "generation":7,"epoch":0,"thread":"retained-thread","turn":"retained-turn"},"root":"managed-actor","provider":"claude",
             "parent":null,"role":"implementer","isLead":true,"executionMode":null,"moving":false}});
+    let saved_response = response.clone();
     store.transaction(move |tx| {
         let actor = json!({"id":"managed-actor","rootId":"managed-actor","epoch":0,"status":"running","autoWake":true,"inFlight":true,
             "provider":"claude","accountKey":"default","threadId":"retained-thread","turnId":"retained-turn","parentId":null,"role":"implementer","isLead":true,
@@ -1576,14 +1619,25 @@ async fn callback_only_saved_reply_starts_its_account_without_any_pending_input(
                 "requestTicket":"retained-start","connectionGeneration":7,"connectionId":"reattached-connection"}});
         tx.execute("INSERT INTO runtime_agents(id,record) VALUES ('managed-actor',?1)", [actor.to_string()])?;
         tx.execute("INSERT INTO runtime_events(id,agent,epoch,kind,text,status,created,turn_id) VALUES ('delivered-input','managed-actor',0,'user','original input','delivered',1.0,'retained-turn')", [])?;
+        tx.execute("INSERT INTO runtime_account_state(account,next_generation,journal_ack,recovery_required,streams) VALUES ('default',7,0,0,'null') ON CONFLICT(account) DO UPDATE SET next_generation=7", [])?;
         let accepted = json!({"account":"default","journalScope":"default","generation":7,"cursor":1,
             "requestId":"saved-tool-reply","method":"item/tool/call",
             "frame":"{\"id\":\"saved-tool-reply\",\"method\":\"item/tool/call\",\"params\":{\"threadId\":\"retained-thread\",\"turnId\":\"retained-turn\",\"callId\":\"saved-spawn\",\"tool\":\"orchestration_spawn\",\"arguments\":{}}}\n",
             "actor":null,"epoch":null});
-        for (phase, value) in [("accepted",accepted),("submitted",saved),("recoverable",json!(true))] {
-            studio_runtime_store::EventWriteRepository::put_receipt(tx,
-                &format!("account-worker:callback:default:7:1:{phase}"), phase, &value.to_string())?;
-        }
+        use studio_runtime_providers::{decode_journal_value, DecodedJournalPayload};
+        use studio_runtime_services::provider_callbacks::{self, CallbackContext, FrameAdmission};
+        use studio_runtime_schema::persistence::{RequestIdentity, ToolRequestKind, ToolRequestStatus};
+        let context = CallbackContext { agent: "managed-actor".into(), account: "default".into(), stream_id: "default".into(), connection: "original-connection".into(), generation: 7, epoch: 0, thread: "retained-thread".into(), turn: "retained-turn".into() };
+        let request: Value = serde_json::from_str(accepted["frame"].as_str().unwrap()).unwrap();
+        let DecodedJournalPayload::Frame(request) = decode_journal_value(1, 7, &request).payload else { panic!("request frame") };
+        let DecodedJournalPayload::Frame(reply) = decode_journal_value(1, 7, &saved_response).payload else { panic!("response frame") };
+        let identity = provider_callbacks::save_frame_response(tx, &context, &request, &reply).unwrap();
+        assert_eq!(provider_callbacks::begin_frame(tx, "default", 7, &identity.operation_id(), &reply).unwrap(), FrameAdmission::Send);
+        let key = provider_callbacks::callback_origin_key(&context, &identity.rpc_id);
+        let owner: String = tx.query_row("SELECT id FROM runtime_tool_requests WHERE origin_key=?1", [&key], |row| row.get(0))?;
+        let task_id = RequestIdentity::issue_root();
+        let task = json!({"id":task_id,"kind":ToolRequestKind::ProviderCallback,"originKey":"callback:default:7:1","status":ToolRequestStatus::Running,"updated":1,"payload":{"accepted":accepted,"submitted":{"handle":saved["handle"],"generation":7,"pid":1,"response_key":key,"sha256":saved["sha256"],"authority":saved["authority"]},"recovery_authorized":true,"recovery_attempted":false,"request_fingerprint":studio_runtime_store::sha256_hex(accepted["frame"].as_str().unwrap().as_bytes()),"root_request_id":owner}});
+        tx.execute("INSERT INTO runtime_tool_requests(id,record) VALUES (?1,?2)", [&task_id, &task.to_string()])?;
         Ok(())
     }).await.unwrap();
     let db = store.test_reader().unwrap();
@@ -1623,7 +1677,7 @@ async fn callback_only_saved_reply_starts_its_account_without_any_pending_input(
         loop {
             let reader = store.test_reader().unwrap();
             let refused: bool = reader.query_row(
-                "SELECT EXISTS(SELECT 1 FROM runtime_operation_receipts WHERE id='account-worker:callback:default:7:1:unknown')", [], |row| row.get(0)).unwrap();
+                "SELECT EXISTS(SELECT 1 FROM runtime_tool_requests WHERE origin_key='callback:default:7:1' AND status='unknown')", [], |row| row.get(0)).unwrap();
             assert!(
                 !refused,
                 "the saved callback must retain valid actor authority through startup recovery"
@@ -1640,7 +1694,7 @@ async fn callback_only_saved_reply_starts_its_account_without_any_pending_input(
         .unwrap_or_else(|_| {
             let db = store.test_reader().unwrap();
             let phases: Vec<(String, String)> = db
-                .prepare("SELECT signature,result FROM runtime_operation_receipts WHERE id LIKE 'account-worker:callback:default:7:1:%' ORDER BY id")
+                .prepare("SELECT origin_key,record FROM runtime_tool_requests WHERE origin_key='callback:default:7:1'")
                 .unwrap()
                 .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
                 .unwrap()
@@ -1658,7 +1712,7 @@ async fn callback_only_saved_reply_starts_its_account_without_any_pending_input(
     tokio::time::timeout(TEST_HANG_GUARD, async {
         loop {
             let remaining = store.test_reader().unwrap().query_row(
-                "SELECT count(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:callback:default:7:1:%'", [], |row| row.get::<_, i64>(0)).unwrap();
+                "SELECT count(*) FROM runtime_outbox WHERE kind='provider_callback' AND account='default'", [], |row| row.get::<_, i64>(0)).unwrap();
             if remaining == 0 { break; }
             changes.changed().await.unwrap();
         }
@@ -1692,7 +1746,8 @@ impl AccountLauncher for SupervisorDetachLauncher {
                         backend_id: studio_runtime_process::BackendId("detach-budget".into()),
                         state_dir: self.root.clone(),
                     },
-                ),
+                )
+                .with_account_store(self.store.clone()),
             );
             Ok(launch)
         })
@@ -1706,13 +1761,14 @@ async fn backend_shutdown_reports_both_supervisor_detach_timeouts() {
 
     tokio::time::timeout(TEST_HANG_GUARD, async {
         let fixture = Fixture::new().await;
-        fixture.enqueue(0, "detach-timeout").await;
+        fixture.enqueue(0, &studio_runtime_schema::persistence::RequestIdentity::issue_root()).await;
         let listener =
             tokio::net::UnixListener::bind(fixture._root.path().join("supervisor.sock")).unwrap();
         let (scripted, _writes) = scripted_with_unknown_writes(false);
         let runtime = host_runtime::HostRuntime::with_launcher(
             fixture.store.clone(),
             Arc::new(SupervisorDetachLauncher {
+                store: fixture_supervisor_store(fixture._root.path(), "default", 6).await,
                 scripted,
                 root: fixture._root.path().into(),
             }),
@@ -1724,7 +1780,7 @@ async fn backend_shutdown_reports_both_supervisor_detach_timeouts() {
         let (socket, _) = listener.accept().await.unwrap();
         let mut control = BufReader::new(socket);
         wire_read(&mut control).await;
-        wire_send(&mut control, json!({"ok":true,"protocol":2})).await;
+        wire_send(&mut control, json!({"ok":true,"protocol":3})).await;
         let status = wire_read(&mut control).await;
         assert_eq!(status["action"], "status");
         wire_send(
@@ -1742,7 +1798,7 @@ async fn backend_shutdown_reports_both_supervisor_detach_timeouts() {
         let (socket, _) = listener.accept().await.unwrap();
         let mut events = BufReader::new(socket);
         wire_read(&mut events).await;
-        wire_send(&mut events, json!({"ok":true,"protocol":2})).await;
+        wire_send(&mut events, json!({"ok":true,"protocol":3})).await;
         assert_eq!(wire_read(&mut events).await["action"], "nextBatch");
         let state = studio_runtime_http::HttpState::new(
             "token".into(),
@@ -1969,7 +2025,7 @@ fn seed_backlog_rows(
                 INSERT INTO runtime_events(id, agent, kind, text, status, created, epoch)
                 SELECT printf('00000000-0000-4000-8000-%012d', seq.i),
                        printf('00000000-0000-4000-8000-%012d', seq.i),
-                       'annotation', 'fixture', 'pending', 0, json_extract(source.record, '$.epoch')
+                       'user', 'fixture', 'pending', 0, json_extract(source.record, '$.epoch')
                 FROM seq CROSS JOIN source"
         ),
         (count as i64, source),
@@ -2071,7 +2127,7 @@ async fn account_backlog_rejects_invalid_stored_account() {
     fixture.store.transaction(move |tx| {
         let raw: String = tx.query_row("SELECT record FROM runtime_agents WHERE id=?1", [&source], |row| row.get(0))?;
         tx.execute("INSERT INTO runtime_agents(id,record) VALUES('bad-account-key',json_set(?1,'$.id','bad-account-key','$.accountKey',7))", [raw])?;
-        tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES('bad-account-key-event','bad-account-key','annotation','fixture','pending',0,json_extract((SELECT record FROM runtime_agents WHERE id='bad-account-key'),'$.epoch'))", [])?;
+        tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES('bad-account-key-event','bad-account-key','user','fixture','pending',0,json_extract((SELECT record FROM runtime_agents WHERE id='bad-account-key'),'$.epoch'))", [])?;
         Ok(())
     }).await.unwrap();
     assert!(matches!(
@@ -2131,7 +2187,7 @@ async fn saturated_wake_lane_does_not_starve_eligible_agent_after_blocked_prefix
         .unwrap();
     assert_eq!(launcher.opened.lock().unwrap().len(), 2);
     let db = fixture.store.test_reader().unwrap();
-    let blocked: i64 = db.query_row("SELECT count(*) FROM runtime_events WHERE kind='annotation' AND text='fixture' AND status='pending'",[],|r|r.get(0)).unwrap();
+    let blocked: i64 = db.query_row("SELECT count(*) FROM runtime_events WHERE kind='user' AND text='fixture' AND status='pending'",[],|r|r.get(0)).unwrap();
     assert_eq!(blocked, 48);
 }
 
@@ -2344,7 +2400,7 @@ async fn provider_input_barrier(root: &std::path::Path, backend_id: &str) -> Val
     );
     wire_send(
         &mut peer,
-        json!({"protocol":studio_runtime_process::SUPERVISOR_PROTOCOL_V2,"stateDir":root,"backendId":backend_id}),
+        json!({"protocol":studio_runtime_process::SUPERVISOR_PROTOCOL_VERSION,"stateDir":root,"backendId":backend_id}),
     )
     .await;
     let attached = wire_read(&mut peer).await;
@@ -2405,7 +2461,8 @@ async fn every_launch_signature_field_matches_frozen_appserver_contract() {
                 backend_id: studio_runtime_process::BackendId("fixture".into()),
                 state_dir: root.path().into(),
             },
-        );
+        )
+        .with_account_store(fixture_supervisor_store(root.path(), "default", 0).await);
         let preparing = tokio::spawn(async move {
             factory
                 .prepare(
@@ -2423,10 +2480,10 @@ async fn every_launch_signature_field_matches_frozen_appserver_contract() {
         let (peer, _) = listener.accept().await.unwrap();
         let mut peer = tokio::io::BufReader::new(peer);
         let hello = wire_read(&mut peer).await;
-        assert_eq!(hello["protocol"], 2);
+        assert_eq!(hello["protocol"], 3);
         assert_eq!(hello["stateDir"], root.path().to_string_lossy().as_ref());
         assert_eq!(hello["backendId"], "fixture");
-        wire_send(&mut peer, json!({"ok":true,"protocol":2})).await;
+        wire_send(&mut peer, json!({"ok":true,"protocol":3})).await;
         let status = wire_read(&mut peer).await;
         wire_send(
             &mut peer,
@@ -2554,7 +2611,8 @@ async fn running_app_server_started_with_the_frozen_command_reattaches() {
         .unwrap()
     };
     let factory =
-        studio_runtime_process::provider_task::SupervisorProviderTaskFactory::new(identity.clone());
+        studio_runtime_process::provider_task::SupervisorProviderTaskFactory::new(identity.clone())
+            .with_account_store(fixture_supervisor_store(&root, "default", 0).await);
     let attach = |handle: ProviderHandle, launch: ProviderLaunchSpec| {
         let factory = &factory;
         async move {
@@ -2665,7 +2723,8 @@ async fn supervised_child_observes_explicit_and_inherited_working_directories() 
     };
     supervisor_ready::wait(&mut supervisor.child, identity.clone(), &stderr);
     let factory =
-        studio_runtime_process::provider_task::SupervisorProviderTaskFactory::new(identity);
+        studio_runtime_process::provider_task::SupervisorProviderTaskFactory::new(identity)
+            .with_account_store(fixture_supervisor_store(root.path(), "default", 0).await);
     let explicit = root.path().join("explicit-cwd");
     std::fs::create_dir(&explicit).unwrap();
     for (name, working_dir) in [("explicit", Some(explicit.clone())), ("inherited", None)] {
@@ -2983,6 +3042,10 @@ async fn host_start_reattaches_existing_launch_and_delivers_http_input() {
         return;
     }
     let fixture = Fixture::new().await;
+    fixture.store.transaction(|tx| {
+        tx.execute_batch("CREATE TABLE publication_audit(id TEXT PRIMARY KEY,payload TEXT NOT NULL); CREATE TRIGGER capture_publication AFTER INSERT ON runtime_outbox WHEN NEW.kind='publication' BEGIN INSERT OR REPLACE INTO publication_audit VALUES(NEW.id,NEW.payload); END;")?;
+        Ok(())
+    }).await.unwrap();
     let (accounts, home) = account_driver(fixture._root.path());
     std::fs::write(
         home.join("auth.json"),
@@ -3036,13 +3099,13 @@ async fn host_start_reattaches_existing_launch_and_delivers_http_input() {
     );
     wire_send(
         &mut peer,
-        json!({"protocol":studio_runtime_process::SUPERVISOR_PROTOCOL_V2,"stateDir":fixture._root.path(),"backendId":"reattach-fixture"}),
+        json!({"protocol":studio_runtime_process::SUPERVISOR_PROTOCOL_VERSION,"stateDir":fixture._root.path(),"backendId":"reattach-fixture"}),
     )
     .await;
     assert!(wire_read(&mut peer).await["error"].is_null());
-    wire_send(&mut peer,json!({"requestId":1,"action":"open","handle":"account:default","command":launch.command,"env":launch.environment,"cwd":launch.cwd})).await;
+    wire_send(&mut peer,json!({"requestId":1,"action":"open","handle":"account:default","generation":1,"command":launch.command,"env":launch.environment,"cwd":launch.cwd})).await;
     let opened = wire_read(&mut peer).await;
-    assert!(opened["error"].is_null(), "supervisor fixture open failed");
+    assert!(opened["error"].is_null(), "supervisor fixture open failed: {opened}");
     let pid = opened["result"]["pid"].as_u64().unwrap() as u32;
     let generation = opened["result"]["generation"].as_u64().unwrap();
     supervisor.native.push(pid);
@@ -3071,7 +3134,7 @@ async fn host_start_reattaches_existing_launch_and_delivers_http_input() {
     .await
     .unwrap();
     let app = studio_runtime_http::router(state.clone()).unwrap();
-    let body = json!({"room":fixture.agents[0]["id"],"id":"65f07ce1-42b9-42a3-b42e-8710a0c54617","text":"host composition cutover"});
+    let body = json!({"room":fixture.agents[0]["id"],"id":studio_runtime_schema::persistence::RequestIdentity::issue_root(),"text":"host composition cutover"});
     let initial_revision = state.sync_changes_handle().snapshot().revision;
     let mut changes = state.sync_changes_handle().subscribe();
     let request = axum::http::Request::builder()
@@ -3141,7 +3204,7 @@ async fn host_start_reattaches_existing_launch_and_delivers_http_input() {
         .test_reader()
         .unwrap()
         .prepare(
-            "SELECT result FROM runtime_operation_receipts WHERE id LIKE 'account-worker:notification-publication:default:%:pending' ORDER BY id",
+            "SELECT payload FROM publication_audit ORDER BY id",
         )
         .unwrap()
         .query_map([], |row| row.get(0))
@@ -3253,7 +3316,8 @@ async fn host_start_reattaches_existing_launch_and_delivers_http_input() {
             backend_id: studio_runtime_process::BackendId("verify-cutover".into()),
             state_dir: fixture._root.path().into(),
         },
-    );
+    )
+    .with_account_store(fixture.store.clone());
     let retained = factory
         .prepare(
             ProviderHandle::for_account("default"),
@@ -3418,11 +3482,12 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
     .unwrap();
     let app = studio_runtime_http::router(state.clone()).unwrap();
     let mut changes = state.sync_changes_handle().subscribe();
+    let message_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
     assert_eq!(
         app.clone()
             .oneshot(direct_message_post(
                 &agent_id,
-                "086cc3e3-68a8-429f-9ec1-895aad72f181",
+                &message_id,
                 "split-stream"
             ))
             .await
@@ -3530,6 +3595,7 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
         serde_json::from_str(include_str!("fixtures/claude-stream-items.json")).unwrap();
     // The input includes runtime instructions; compare its complete persisted text.
     expected[0]["text"] = transcript["items"][0]["text"].clone();
+    expected[0]["id"] = json!(message_id);
     assert_eq!(normalize_ids(rust_items, &agent_id), expected);
     // Human text and Studio instructions retain separate origins, but only
     // the final SDK message queries. The prefix's zero-turn receipt must not
@@ -3580,7 +3646,7 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
         app.clone()
             .oneshot(direct_message_post(
                 &agent_id,
-                "af0f4452-3117-4d5a-b011-4f67d4efe18f",
+                &studio_runtime_schema::persistence::RequestIdentity::issue_root(),
                 "orchestration-peers",
             ))
             .await
@@ -3590,7 +3656,7 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
     );
     wait_for_durable_agent_status(&fixture, &agent_id, "completed").await;
     let managed_calls: i64 = fixture.store.test_reader().unwrap().query_row(
-        "SELECT count(*) FROM runtime_tool_requests WHERE json_extract(record,'$.agent')=?1 AND json_extract(record,'$.tool')='orchestration_peers' AND json_extract(record,'$.stage')='completed' AND json_extract(record,'$.result.success')=1",
+        "SELECT count(*) FROM runtime_tool_requests t JOIN request_results r ON r.id=json_extract(t.record,'$.admitted.id') WHERE json_extract(t.record,'$.agent')=?1 AND json_extract(t.record,'$.tool')='orchestration_peers' AND json_extract(t.record,'$.stage')='completed' AND json_extract(r.result,'$.reply.success')=1",
         [&agent_id],
         |row| row.get(0),
     ).unwrap();
@@ -3613,11 +3679,12 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
         })
         .await
         .unwrap();
+    let restart_message_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
     assert_eq!(
         app.clone()
             .oneshot(direct_message_post(
                 &agent_id,
-                "a19e61c8-6156-4874-b8d8-9111b0a49fc4",
+                &restart_message_id,
                 "wait",
             ))
             .await
@@ -3666,7 +3733,7 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
                 && record["restartRecovery"]["stage"] == "held"
                 && record["contextRepairWait"]["scope"] == "native"
                 && record["contextRepairWait"]["events"]
-                    == json!(["a19e61c8-6156-4874-b8d8-9111b0a49fc4"]);
+                    == json!([restart_message_id]);
             // A held input may also stop as interrupted without auto-wake when
             // the restart notice reaches the agent before native repair starts.
             let held_interrupted = record["status"] == "interrupted"
@@ -3705,8 +3772,8 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
         .test_reader()
         .unwrap()
         .query_row(
-            "SELECT status FROM runtime_events WHERE id='a19e61c8-6156-4874-b8d8-9111b0a49fc4'",
-            [],
+            "SELECT status FROM runtime_events WHERE id=?1",
+            [&restart_message_id],
             |row| row.get(0),
         )
         .unwrap();
@@ -3814,7 +3881,7 @@ async fn direct_launch_mode_completes_http_turn_and_reaps_child() {
     .unwrap();
     let app = studio_runtime_http::router(state.clone()).unwrap();
     let agent_id = fixture.agents[0]["id"].as_str().unwrap();
-    let body = json!({"room":agent_id,"id":"65f07ce1-42b9-42a3-b42e-8710a0c54618","text":"direct mode turn"});
+    let body = json!({"room":agent_id,"id":studio_runtime_schema::persistence::RequestIdentity::issue_root(),"text":"direct mode turn"});
     let mut changes = state.sync_changes_handle().subscribe();
     let post = || {
         axum::http::Request::builder()
@@ -3966,10 +4033,10 @@ async fn direct_generation_and_journal_identity_survive_backend_restart() {
         .store
         .transaction_with(|tx| {
             tx.execute_batch(
-                "CREATE TABLE direct_journal_audit(id TEXT PRIMARY KEY,result TEXT NOT NULL);
-                 CREATE TRIGGER capture_direct_journal AFTER INSERT ON runtime_operation_receipts
-                 WHEN NEW.id LIKE 'account-worker:journal:default:%'
-                 BEGIN INSERT OR REPLACE INTO direct_journal_audit VALUES(NEW.id,NEW.result); END;",
+                "CREATE TABLE direct_journal_audit(id TEXT PRIMARY KEY,generation INTEGER NOT NULL,result TEXT NOT NULL);
+                 CREATE TRIGGER capture_direct_journal AFTER INSERT ON runtime_outbox
+                 WHEN NEW.kind='journal_entry' AND NEW.stream_id='default'
+                 BEGIN INSERT OR REPLACE INTO direct_journal_audit VALUES(NEW.id,NEW.generation,NEW.payload); END;",
             )?;
             Ok::<(), StoreError>(())
         })
@@ -4023,7 +4090,7 @@ async fn direct_generation_and_journal_identity_survive_backend_restart() {
         app.clone()
             .oneshot(direct_message_post(
                 agent_id,
-                "9e63d185-cf3f-4938-8205-064d1bd02411",
+                &studio_runtime_schema::persistence::RequestIdentity::issue_root(),
                 "first backend generation",
             ))
             .await
@@ -4061,7 +4128,7 @@ async fn direct_generation_and_journal_identity_survive_backend_restart() {
         app.clone()
             .oneshot(direct_message_post(
                 second_agent_id,
-                "9e63d185-cf3f-4938-8205-064d1bd02412",
+                &studio_runtime_schema::persistence::RequestIdentity::issue_root(),
                 "restarted backend generation",
             ))
             .await
@@ -4157,7 +4224,7 @@ async fn direct_child_sigkill_settles_unknown_without_resend() {
     .unwrap();
     let app = studio_runtime_http::router(state.clone()).unwrap();
     let agent_id = fixture.agents[0]["id"].as_str().unwrap();
-    let body = json!({"room":agent_id,"id":"a1eabc96-5d2b-4fe0-bcbc-18a93c539b17","text":"crash in flight"});
+    let body = json!({"room":agent_id,"id":studio_runtime_schema::persistence::RequestIdentity::issue_root(),"text":"crash in flight"});
     let post = || {
         axum::http::Request::builder()
             .method("POST")
@@ -4322,7 +4389,7 @@ async fn direct_child_crash_before_turn_write_retries_queued_input_once() {
     .with_account_driver(accounts.clone());
     let app = studio_runtime_http::router(state.clone()).unwrap();
     let agent_id = fixture.agents[0]["id"].as_str().unwrap();
-    let body = json!({"room":agent_id,"id":"50ba7350-4055-437d-946f-9a44d87caa38","text":"queued before provider ready"});
+    let body = json!({"room":agent_id,"id":studio_runtime_schema::persistence::RequestIdentity::issue_root(),"text":"queued before provider ready"});
     let post = || {
         axum::http::Request::builder()
             .method("POST")
@@ -4432,12 +4499,12 @@ fn direct_generation(store: &RuntimeStore) -> u64 {
         .test_reader()
         .unwrap()
         .query_row(
-            "SELECT result FROM runtime_operation_receipts WHERE id='account-worker:direct-generation:default:next'",
+            "SELECT connection_generation FROM runtime_account_state WHERE account='default'",
             [],
-            |row| row.get::<_, String>(0),
+            |row| row.get::<_, i64>(0),
         )
         .unwrap();
-    serde_json::from_str(&raw).unwrap()
+    u64::try_from(raw).unwrap()
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -4503,13 +4570,11 @@ fn direct_agent_debug(store: &RuntimeStore, agent_id: &str) -> String {
 #[cfg(target_os = "linux")]
 fn direct_journal_rows(store: &RuntimeStore, generation: u64) -> Vec<(String, String)> {
     let db = store.test_reader().unwrap();
-    let prefix = format!("account-worker:journal:default:{generation}:");
-    let upper = format!("{prefix}~");
     let mut query = db
-        .prepare("SELECT id,result FROM direct_journal_audit WHERE id>=?1 AND id<?2 ORDER BY id")
+        .prepare("SELECT id,result FROM direct_journal_audit WHERE generation=?1 ORDER BY id")
         .unwrap();
     query
-        .query_map((prefix.as_str(), upper.as_str()), |row| {
+        .query_map([i64::try_from(generation).unwrap()], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })
         .unwrap()
@@ -4768,6 +4833,7 @@ async fn backend_restart_keeps_live_work_and_ends_the_stopped_turn_once() {
         store: store.clone(),
         agents: agents.clone(),
         changes: _changes,
+        event_ids: Mutex::new(BTreeMap::new()),
     };
     fixture.enqueue(0, "a-input").await;
     fixture.enqueue(1, "b-input").await;

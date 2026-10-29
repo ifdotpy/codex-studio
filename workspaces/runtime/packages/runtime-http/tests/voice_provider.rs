@@ -50,7 +50,7 @@ impl VoiceRequestPort for RecordingPort {
     fn request<'a>(
         &'a self,
         scope: VoiceConnectionScope,
-        operation_id: String,
+        operation: studio_runtime_services::voice_runtime::VoiceOperation,
         method: Method,
         params: Value,
         deadline: Instant,
@@ -64,7 +64,7 @@ impl VoiceRequestPort for RecordingPort {
             self.calls
                 .lock()
                 .expect("record requests")
-                .push((operation_id, method, params));
+                .push((operation.id, method, params));
             VoiceRequestReceipt {
                 certainty: VoiceWriteCertainty::Written,
             }
@@ -124,9 +124,9 @@ async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, Arc<RecordingPort>)
             ("approve-http", "ready", None),
         ] {
             tx.execute(
-                "INSERT INTO voice_sessions(id,agent,created,native_thread,account_key,connection_id,state) \
-                 VALUES(?1,'voice-http-agent',1,?2,'voice-http-account','voice-http-connection',?3)",
-                rusqlite::params![id, native, state],
+                "INSERT INTO voice_sessions(id,agent,created,native_thread,account_key,connection_id,provider_scope,state) \
+                 VALUES(?1,'voice-http-agent',1,?2,'voice-http-account','voice-http-connection',?4,?3)",
+                rusqlite::params![id, native, state, json!({"connection":"voice-http-connection","generation":1}).to_string()],
             )?;
         }
         tx.execute(
@@ -164,6 +164,8 @@ async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, Arc<RecordingPort>)
              VALUES('approval-transcript','voice-http-agent','approve-http','user','разрешаю','','','{}',1)",
             [],
         )?;
+        studio_runtime_store::account_state::ensure_account(tx, "voice-http-account")?;
+        tx.execute("UPDATE runtime_account_state SET connection_generation=1,connection_id='voice-http-connection',next_generation=2 WHERE account='voice-http-account'", [])?;
         Ok(())
     })
     .await

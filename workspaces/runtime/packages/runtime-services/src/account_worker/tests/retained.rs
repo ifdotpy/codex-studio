@@ -2,6 +2,7 @@ use super::*;
 use crate::account_session_runtime::{
     AccountSessionError, AccountSessionPort, ProviderRequest, SessionReceipt,
 };
+use crate::account_worker::retained::storage::TransportRequestExt;
 use crate::account_worker::retained::{
     PortError, RequestActor, RequestResult, RetainedSessionPort, SessionRequest,
 };
@@ -16,9 +17,16 @@ use std::sync::{Arc, Mutex};
 /// Maximum wait for a first-pass fixture result; unit: elapsed duration.
 const FIRST_PASS_TEST_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 
+type RecordedRequest = (
+    String,
+    Value,
+    String,
+    Option<studio_runtime_store::request_results::AdmittedRequest>,
+);
+
 struct ResetBrokerSession {
     port: RetainedSessionPort,
-    requests: Arc<Mutex<Vec<(String, Value)>>>,
+    requests: Arc<Mutex<Vec<RecordedRequest>>>,
     lose_response: Arc<tokio::sync::Notify>,
 }
 
@@ -56,11 +64,15 @@ impl AccountSessionPort for ResetBrokerSession {
         request: ProviderRequest,
     ) -> crate::account_session_runtime::AccountSessionFuture<'_, SessionReceipt> {
         Box::pin(async move {
-            self.requests
-                .lock()
-                .unwrap()
-                .push((request.operation.clone(), request.params.clone()));
+            self.requests.lock().unwrap().push((
+                request.operation.clone(),
+                request.params.clone(),
+                request.root_request_id.clone(),
+                request.admitted_request.clone(),
+            ));
             let call = SessionRequest {
+                root_request_id: request.root_request_id,
+                admitted_request: request.admitted_request,
                 scope: self.port.scope().clone(),
                 expected_scope: request.expected_scope,
                 operation: request.operation,
@@ -78,6 +90,7 @@ impl AccountSessionPort for ResetBrokerSession {
             }
             .map_err(|error| match error {
                 PortError::Unknown => AccountSessionError::Unknown,
+                PortError::Expired => AccountSessionError::Expired,
                 PortError::Identity
                 | PortError::ScopeMismatch
                 | PortError::Invalid
@@ -92,8 +105,34 @@ impl AccountSessionPort for ResetBrokerSession {
     }
 }
 
+async fn retained_schema(state: &State) {
+    state
+        .bridge
+        .store
+        .transaction(|tx| {
+            studio_runtime_store::receipt_schema::create(tx)?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+}
+
+fn retained_root(operation: &str) -> String {
+    static ROOTS: std::sync::OnceLock<Mutex<std::collections::HashMap<String, String>>> =
+        std::sync::OnceLock::new();
+    ROOTS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap()
+        .entry(operation.into())
+        .or_insert_with(studio_runtime_schema::persistence::RequestIdentity::issue_root)
+        .clone()
+}
+
 fn request(state: &State, port: &RetainedSessionPort, operation: &str) -> SessionRequest {
     SessionRequest {
+        root_request_id: retained_root(operation),
+        admitted_request: None,
         scope: port.scope().clone(),
         expected_scope: None,
         operation: operation.into(),
@@ -109,12 +148,98 @@ fn request(state: &State, port: &RetainedSessionPort, operation: &str) -> Sessio
     }
 }
 
+fn durable_request(state: &State, port: &RetainedSessionPort, operation: &str) -> SessionRequest {
+    let mut call = request(state, port, operation);
+    call.method = Method::ThreadCompactStart;
+    call.params = json!({"threadId":"fake-thread-0"});
+    call
+}
+
+fn manual_fixture_id(label: &str) -> studio_runtime_schema::persistence::RequestIdentity {
+    studio_runtime_schema::persistence::RequestIdentity::new(
+        "manual-management",
+        &["lead-00000000", "1"],
+        &retained_root(label),
+        &[],
+    )
+    .unwrap()
+}
+
+fn seed_manual_authorization(
+    tx: &studio_runtime_store::Transaction<'_>,
+    lead: Value,
+    target: Value,
+    label: &str,
+    signature: &str,
+) -> Result<crate::agent_management_recovery::AuthorizedRecoveryRequest, StoreError> {
+    use studio_runtime_schema::persistence::{
+        OutboxKind, OutboxStatus, OwnerKind, ToolRequestOutcome,
+    };
+    use studio_runtime_store::{
+        outbox::{Outbox, OutboxRow},
+        request_results::{Admission, RequestResults},
+    };
+    let identity = manual_fixture_id(label);
+    let admission = match RequestResults::admit(
+        tx,
+        &identity,
+        signature,
+        chrono::Utc::now().timestamp_millis(),
+    )? {
+        Admission::Fresh(admission) => admission,
+        Admission::Replay(_) => panic!("fresh fixture admission"),
+    };
+    let auth = crate::agent_management_recovery::AuthorizedRecoveryRequest {
+        lead,
+        target,
+        request_id: admission.id().into(),
+        signature: signature.into(),
+        root_request_id: retained_root(label),
+        admission,
+    };
+    Outbox::put(
+        tx,
+        &OutboxRow {
+            id: auth.request_id.clone(),
+            kind: OutboxKind::ManagedTool,
+            owner_kind: OwnerKind::Agent,
+            owner_id: auth.target["id"].as_str().unwrap().into(),
+            request_id: Some(auth.request_id.clone()),
+            signature: signature.into(),
+            status: OutboxStatus::Unknown,
+            account: Some("default".into()),
+            stream_id: None,
+            generation: None,
+            ordinal: None,
+            next_at: None,
+            created: auth.admission.created(),
+            payload: json!({"authorization":auth,"reply":{"outcome":ToolRequestOutcome::Unknown,"value":{"status":"unconfirmed"}}}),
+        },
+    )?;
+    Ok(auth)
+}
+
+async fn new_manual_authorization(
+    state: &State,
+    auth: &crate::agent_management_recovery::AuthorizedRecoveryRequest,
+    label: &'static str,
+    signature: &'static str,
+) -> crate::agent_management_recovery::AuthorizedRecoveryRequest {
+    let lead = auth.lead.clone();
+    let target = auth.target.clone();
+    state
+        .bridge
+        .store
+        .transaction(move |tx| seed_manual_authorization(tx, lead, target, label, signature))
+        .await
+        .unwrap()
+}
+
 async fn manual_start_authorization(
     state: &State,
     scope: &ConnectionScope,
     restart: bool,
 ) -> crate::agent_management_recovery::AuthorizedRecoveryRequest {
-    use crate::agent_management_recovery::AuthorizedRecoveryRequest;
     let scope = scope.clone();
     let target_id = state.agent.clone();
     let epoch = state.epoch;
@@ -143,14 +268,14 @@ async fn manual_start_authorization(
         }
         AgentRepository::put(tx, &AgentRecord::from_value(target.clone())?)?;
         tx.execute("UPDATE runtime_events SET status='uncertain',error='Unknown native input outcome' WHERE id='annotation:input'", [])?;
-        EventWriteRepository::replace_receipt(tx, "manual-no-replay", "signature", "{\"status\":\"unconfirmed\"}")?;
-        Ok(AuthorizedRecoveryRequest { lead, target, request_id:"manual-no-replay".into(), signature:"signature".into() })
+        seed_manual_authorization(tx,lead,target,"manual-no-replay","signature")
     }).await.expect("manual recovery intent")
 }
 
 #[tokio::test]
 async fn manual_recovery_absence_never_makes_the_original_input_schedulable() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     worker_barrier(&worker).await;
@@ -195,6 +320,7 @@ async fn manual_recovery_absence_never_makes_the_original_input_schedulable() {
 
 async fn manual_active_start_case(restart: bool) {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     worker_barrier(&worker).await;
@@ -255,6 +381,7 @@ async fn manual_active_start_case(restart: bool) {
 #[tokio::test]
 async fn manual_recovery_reads_new_native_history_for_a_new_request_identity() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     worker_barrier(&worker).await;
@@ -270,21 +397,8 @@ async fn manual_recovery_reads_new_native_history_for_a_new_request_identity() {
         .await
         .expect("first read task")
         .expect("unconfirmed first read");
-    auth.request_id = "new-manual-history-request".into();
-    auth.signature = "new-signature".into();
-    state
-        .bridge
-        .store
-        .transaction(|tx| {
-            EventWriteRepository::replace_receipt(
-                tx,
-                "new-manual-history-request",
-                "new-signature",
-                "{\"status\":\"unconfirmed\"}",
-            )
-        })
-        .await
-        .expect("new explicit manual request");
+    auth = new_manual_authorization(&state, &auth, "new-manual-history-request", "new-signature")
+        .await;
     let mut second = tokio::spawn(async move { port.recover_managed_agent(auth).await });
     let next = tokio::select! {
         wire = peer.write("thread/turns/list") => Some(wire),
@@ -312,6 +426,7 @@ async fn manual_recovery_accepts_a_live_exact_start_and_tracks_its_terminal_noti
 #[tokio::test]
 async fn manual_recovery_accepts_a_restart_exact_start_and_tracks_its_terminal_notice() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     worker_barrier(&worker).await;
@@ -369,21 +484,13 @@ async fn manual_recovery_accepts_a_restart_exact_start_and_tracks_its_terminal_n
     // A new explicit request must read new history, not replay the active result.
     let mut terminal_auth = auth;
     terminal_auth.target = held;
-    terminal_auth.request_id = "manual-terminal-proof".into();
-    terminal_auth.signature = "terminal-signature".into();
-    state
-        .bridge
-        .store
-        .transaction(|tx| {
-            EventWriteRepository::replace_receipt(
-                tx,
-                "manual-terminal-proof",
-                "terminal-signature",
-                "{\"status\":\"unconfirmed\"}",
-            )
-        })
-        .await
-        .expect("new explicit manual request");
+    terminal_auth = new_manual_authorization(
+        &state,
+        &terminal_auth,
+        "manual-terminal-proof",
+        "terminal-signature",
+    )
+    .await;
     let sender = port.clone();
     let terminal_request = terminal_auth.clone();
     let terminal =
@@ -421,16 +528,10 @@ async fn manual_recovery_accepts_a_restart_exact_start_and_tracks_its_terminal_n
     );
     assert_eq!(&evidence["terminalReceipt"]["result"], accepted.value());
     for (receipt, turn_field) in [("startResult", "accepted"), ("terminal", "turn")] {
+        assert_eq!(evidence["outcomes"][receipt]["input"]["agent"], state.agent);
+        assert_eq!(evidence["outcomes"][receipt]["input"]["epoch"], state.epoch);
         assert_eq!(
-            evidence["attempt"]["receipts"][receipt]["input"]["agent"],
-            state.agent
-        );
-        assert_eq!(
-            evidence["attempt"]["receipts"][receipt]["input"]["epoch"],
-            state.epoch
-        );
-        assert_eq!(
-            evidence["attempt"]["receipts"][receipt]["input"][turn_field],
+            evidence["outcomes"][receipt]["input"][turn_field],
             "manual-running-turn"
         );
     }
@@ -484,21 +585,33 @@ async fn manual_recovery_accepts_a_restart_exact_start_and_tracks_its_terminal_n
 async fn manual_restart_settlement_evidence(state: &State) -> Value {
     state.bridge.store.transaction(|tx| {
         let mut receipts = Vec::new();
-        for id in ["manual-no-replay", "manual-terminal-proof"] {
-            let receipt = EventWriteRepository::receipt(tx, id)?.expect("exact manual receipt");
-            receipts.push(json!({"signature":receipt.signature,"result":serde_json::from_str::<Value>(&receipt.result)?}));
+        for (label,signature) in [("manual-no-replay","signature"),("manual-terminal-proof","terminal-signature")] {
+            let identity=manual_fixture_id(label);
+            let result=if let Some(row)=studio_runtime_store::request_results::RequestResults::replay(tx,identity.id(),signature,chrono::Utc::now().timestamp_millis())? {
+                serde_json::from_str::<Value>(&row.result)?["reply"]["value"].clone()
+            } else {
+                let row=studio_runtime_store::outbox::Outbox::get::<Value>(tx,identity.id())?.expect("current manual owner");
+                row.payload["reply"]["value"].clone()
+            };
+            receipts.push(json!({"signature":signature,"result":result}));
         }
         let events = tx.prepare("SELECT id,agent,epoch,status,turn_id FROM runtime_events WHERE id IN ('annotation:input','annotation:new-input') ORDER BY id")?
             .query_map([], |row| Ok(json!({"id":row.get::<_,String>(0)?,"agent":row.get::<_,String>(1)?,"epoch":row.get::<_,i64>(2)?,"status":row.get::<_,String>(3)?,"turn":row.get::<_,Option<String>>(4)?})))?
             .collect::<Result<Vec<_>,_>>()?;
-        let attempt = studio_runtime_store::ExecutionHistoryRepository::attempt(tx, "manual-unknown-attempt")?.expect("exact original attempt");
-        Ok::<_,StoreError>(json!({"activeReceipt":receipts[0],"terminalReceipt":receipts[1],"events":events,"attempt":attempt}))
+        let attempt=studio_runtime_store::ExecutionHistoryRepository::attempt(tx,"manual-unknown-attempt")?.expect("exact original attempt");
+        let mut outcomes=serde_json::Map::new();
+        for (name,kind) in [("startResult",studio_runtime_schema::persistence::ExecutionReceiptKind::StartResult),("terminal",studio_runtime_schema::persistence::ExecutionReceiptKind::Terminal)] {
+            let saved=studio_runtime_store::ExecutionHistoryRepository::receipt::<serde_json::Value>(tx,"manual-unknown-attempt",kind)?.expect("exact execution result");
+            outcomes.insert(name.into(),json!({"input":saved.input,"result":saved.result}));
+        }
+        Ok::<_,StoreError>(json!({"activeReceipt":receipts[0],"terminalReceipt":receipts[1],"events":events,"attempt":attempt.snapshot,"outcomes":outcomes}))
     }).await.expect("manual settlement evidence")
 }
 
 #[tokio::test]
 async fn retained_mcp_reconnect_binds_actor_thread_scope_and_replays_once() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
@@ -547,13 +660,14 @@ async fn retained_mcp_reconnect_binds_actor_thread_scope_and_replays_once() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn reset_service_recovers_lost_response_through_retained_worker_once() {
+async fn reset_service_holds_lost_response_without_resending() {
     let broker_state = tempfile::tempdir().unwrap();
     let broker_root = broker_state.path().to_path_buf();
     let broker_store = studio_runtime_store::RuntimeStore::open(Some(&broker_root))
         .await
         .unwrap();
-    let bridge = test_bridge(Arc::new(broker_store)).await;
+    let reset_store = Arc::new(broker_store);
+    let bridge = test_bridge(reset_store.clone()).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(bridge).await;
     let port = worker.retained_session();
@@ -564,23 +678,13 @@ async fn reset_service_recovers_lost_response_through_retained_worker_once() {
         requests: requests.clone(),
         lose_response: lose_response.clone(),
     });
-    let request_id = "11000000-0000-4000-8000-000000000020";
+    let request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
     let body = json!({
         "account_key":"default",
         "account_id":"account-A",
         "credit_id":"credit-A",
         "request_id":request_id
     });
-
-    // Keep the reset record store separate from the worker fixture's runtime
-    // lock, then reopen it below to model the service process restarting.
-    let reset_state = tempfile::tempdir().unwrap();
-    let reset_root = reset_state.path().to_path_buf();
-    let reset_store = Arc::new(
-        studio_runtime_store::RuntimeStore::open(Some(&reset_root))
-            .await
-            .unwrap(),
-    );
     let first_session = session.clone();
     let first_body = body.clone();
     let first_store = reset_store.clone();
@@ -616,95 +720,41 @@ async fn reset_service_recovers_lost_response_through_retained_worker_once() {
     lose_response.notify_one();
     let uncertain = first.await.unwrap().unwrap();
     assert_eq!(uncertain["outcome"], "uncertain");
-    drop(reset_store);
-
-    // Opening the durable service store again models recovery after a process restart.
-    let reset_store = Arc::new(
-        studio_runtime_store::RuntimeStore::open(Some(&reset_root))
-            .await
-            .unwrap(),
-    );
-    let retry_session = session.clone();
-    let retry_body = body.clone();
-    let retry = tokio::spawn(async move {
-        crate::limit_reset::consume_reset(&reset_store, retry_session.as_ref(), &retry_body)
-            .await
-            .unwrap()
-    });
-    let retry_wire = peer.next_write().await;
-    assert_eq!(
-        retry_wire.value["method"],
-        "account/rateLimitResetCredit/consume"
-    );
-    assert_eq!(
-        retry_wire.value["params"]["idempotencyKey"], charge_key,
-        "the provider charge identity survives restart"
-    );
-    let new_charge = charges.insert(
-        retry_wire.value["params"]["idempotencyKey"]
-            .as_str()
-            .unwrap()
-            .to_owned(),
-    );
-    assert!(
-        !new_charge,
-        "the fake provider sees a replay of the same charge key"
-    );
-    assert!(
-        retry_wire
-            .receipt
-            .send(CommandReceipt::Written {
-                remote_id: None,
-                duplicate: false,
-            })
-            .is_ok()
-    );
-    peer.reply(&retry_wire.value, json!({"outcome":"alreadyRedeemed"}))
-        .await;
-    let recovered = retry.await.unwrap();
-    assert_eq!(recovered["outcome"], "alreadyRedeemed");
+    let saved_before: String = reset_store
+        .test_reader()
+        .unwrap()
+        .query_row(
+            "SELECT record FROM runtime_limit_reset_attempts WHERE id=?1",
+            [&request_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let saved: Value = serde_json::from_str(&saved_before).unwrap();
+    assert_eq!(saved["status"], "uncertain");
+    assert_eq!(saved["certainty"], "unknown");
+    assert_eq!(saved["transport_attempts"], 1);
+    let retry = crate::limit_reset::consume_reset(&reset_store, session.as_ref(), &body)
+        .await
+        .unwrap();
+    assert_eq!(retry["outcome"], "uncertain");
+    let saved_after: String = reset_store
+        .test_reader()
+        .unwrap()
+        .query_row(
+            "SELECT record FROM runtime_limit_reset_attempts WHERE id=?1",
+            [&request_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(saved_after, saved_before, "retry preserves the held attempt");
+    worker_barrier(&worker).await;
+    if let Ok(wire) = peer.writes.try_recv() {
+        assert_eq!(wire.value["method"], "account/rateLimitResetCredit/consume");
+        assert_eq!(wire.value["params"]["idempotencyKey"], charge_key);
+        panic!("same reset call and idempotency key was resent");
+    }
+    assert_eq!(requests.lock().unwrap().len(), 1);
     assert_eq!(charges.len(), 1, "exactly one fake provider charge");
-
-    let recorded = requests.lock().unwrap().clone();
-    assert_eq!(recorded.len(), 2);
-    assert_eq!(recorded[0].1, recorded[1].1);
-    assert_eq!(recorded[0].0, format!("limit-reset:{charge_key}:1"));
-    assert_eq!(recorded[1].0, format!("limit-reset:{charge_key}:2"));
-
-    // The first broker operation remains Unknown. Recovery used a fresh transport
-    // identity, and replaying or rebinding either identity cannot send another write.
-    let old = SessionRequest {
-        scope: port.scope().clone(),
-        expected_scope: None,
-        operation: recorded[0].0.clone(),
-        actor: None,
-        transfer: None,
-        deleted_actor_session: None,
-        method: Method::AccountRateLimitResetCreditConsume,
-        params: recorded[0].1.clone(),
-        deadline: (tokio::time::Instant::now() + std::time::Duration::from_secs(60)).into_std(),
-    };
-    assert_eq!(
-        port.request(old.clone()).await.unwrap().result,
-        RequestResult::Unknown
-    );
-    let mut changed_key = old.clone();
-    changed_key.params["idempotencyKey"] = json!("11000000-0000-4000-8000-000000000021");
-    assert_eq!(
-        port.request(changed_key).await.unwrap_err(),
-        PortError::Invalid
-    );
-    let mut changed_body = SessionRequest {
-        operation: recorded[1].0.clone(),
-        params: recorded[1].1.clone(),
-        ..old
-    };
-    changed_body.params["creditId"] = json!("credit-B");
-    assert_eq!(
-        port.request(changed_body).await.unwrap_err(),
-        PortError::Identity
-    );
-    assert!(peer.writes.try_recv().is_err());
     worker.shutdown().await.unwrap();
 }
 
@@ -714,7 +764,7 @@ async fn recovered_publications(state: &State) -> Vec<(String, String)> {
         .run(|store| async move {
             let db = store.test_reader()?;
             let mut statement = db.prepare(
-                "SELECT json_extract(result,'$.effect.Recovered.identity'), json_extract(result,'$.effect.Recovered.observation.method') FROM runtime_operation_receipts WHERE id LIKE 'account-worker:notification-publication:default:%:pending' AND json_extract(result,'$.effect.Recovered.identity') IS NOT NULL ORDER BY id",
+                "SELECT json_extract(payload,'$.effect.Recovered.identity'), json_extract(payload,'$.effect.Recovered.observation.method') FROM runtime_outbox WHERE account='default' AND kind='publication' AND json_extract(payload,'$.effect.Recovered.identity') IS NOT NULL ORDER BY id",
             )?;
             let rows = statement
                 .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
@@ -779,14 +829,30 @@ impl crate::notification_runtime_effects::NotificationPostCommitSink
 #[tokio::test]
 async fn retained_reply_replays_without_resending_and_rejects_changed_payload() {
     let state = State::new().await;
+    retained_schema(&state).await;
+
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
-    let call = request(&state, &port, "history-1");
+    let call = durable_request(&state, &port, "history-1");
     let sender = port.clone();
     let first = call.clone();
     let task = tokio::spawn(async move { sender.request(first).await });
-    let wire = peer.write("thread/read").await;
+    let wire = peer.write("thread/compact/start").await;
+    state
+        .bridge
+        .store
+        .transaction(|tx| {
+            let outstanding: i64 = tx.query_row(
+                "SELECT count(*) FROM runtime_outbox WHERE kind='provider_call'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(outstanding, 1, "one typed call owns the pending attempt");
+            Ok(())
+        })
+        .await
+        .unwrap();
     peer.reply(&wire, json!({"thread":{"id":"fake-thread-0"}}))
         .await;
     let receipt = task.await.unwrap().unwrap();
@@ -794,9 +860,31 @@ async fn retained_reply_replays_without_resending_and_rejects_changed_payload() 
         receipt.result,
         RequestResult::Reply(json!({"thread":{"id":"fake-thread-0"}}))
     );
+    worker_barrier(&worker).await;
+    state.bridge.store.transaction(|tx| {
+        let outstanding:i64=tx.query_row("SELECT count(*) FROM runtime_outbox WHERE kind='provider_call' AND id LIKE 'retained:%'",[],|row|row.get(0))?;
+        let final_results:i64=tx.query_row("SELECT count(*) FROM request_results WHERE json_extract(result,'$.reply.call.operation')='history-1' AND json_extract(result,'$.reply.ack.stream_id')='default'",[],|row|row.get(0))?;
+        assert_eq!(outstanding,0,"a final call retires its transport payload");
+        assert_eq!(final_results,1,"the exact response owns committed ACK provenance");
+        Ok(())
+    }).await.unwrap();
+    state
+        .bridge
+        .store
+        .transaction(|tx| {
+            studio_runtime_store::receipt_migration_contract::seed_expired_before_ms(
+                tx,
+                chrono::Utc::now().timestamp_millis(),
+            )
+            .expect("advance only the fresh-admission watermark");
+            Ok(())
+        })
+        .await
+        .unwrap();
     assert_eq!(
         port.request(call.clone()).await.unwrap().result,
-        receipt.result
+        receipt.result,
+        "a retained reply uses its created TTL after the ingress watermark advances"
     );
     let mut altered = call;
     altered.params["limit"] = json!(2);
@@ -811,13 +899,15 @@ async fn retained_reply_replays_without_resending_and_rejects_changed_payload() 
 #[tokio::test]
 async fn concurrent_retained_operation_conflict_does_not_kill_worker() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
-    let mut first = request(&state, &port, "import:fixture:read");
-    first.actor = None;
+    let mut first = durable_request(&state, &port, "import:fixture:read");
+    first.method = Method::ThreadStart;
+    first.params = json!({"cwd":"/first"});
     let mut conflicting = first.clone();
-    conflicting.params["threadId"] = json!("other-source-thread");
+    conflicting.params["cwd"] = json!("/other");
 
     // Make both valid callers compete for the same durable operation identity.
     let start = Arc::new(tokio::sync::Barrier::new(3));
@@ -835,9 +925,8 @@ async fn concurrent_retained_operation_conflict_does_not_kill_worker() {
     });
     start.wait().await;
 
-    let write = peer.write("thread/read").await;
-    let source_thread = write["params"]["threadId"].as_str().unwrap();
-    peer.reply(&write, json!({"thread":{"id":source_thread}}))
+    let write = peer.write("thread/start").await;
+    peer.reply(&write, json!({"thread":{"id":"fake-thread-0"}}))
         .await;
     let outcomes = [first_task.await.unwrap(), conflicting_task.await.unwrap()];
     assert_eq!(
@@ -864,9 +953,9 @@ async fn concurrent_retained_operation_conflict_does_not_kill_worker() {
     // The identity conflict belongs to one caller; the account owner remains
     // available to service another retained request on the same session.
     let health_port = port.clone();
-    let health_request = request(&state, &port, "post-conflict-health-check");
+    let health_request = durable_request(&state, &port, "post-conflict-health-check");
     let health = tokio::spawn(async move { health_port.request(health_request).await });
-    let health_write = peer.write("thread/read").await;
+    let health_write = peer.write("thread/compact/start").await;
     peer.reply(&health_write, json!({"thread":{"id":"fake-thread-0"}}))
         .await;
     assert!(matches!(
@@ -880,10 +969,11 @@ async fn concurrent_retained_operation_conflict_does_not_kill_worker() {
 #[tokio::test]
 async fn concurrent_exact_retained_requests_keep_uncertainty_and_replay_once() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
-    let call = request(&state, &port, "import:fixture:exact-read");
+    let call = durable_request(&state, &port, "import:fixture:exact-read");
     let start = Arc::new(tokio::sync::Barrier::new(3));
     let first_start = Arc::clone(&start);
     let first_port = port.clone();
@@ -901,7 +991,7 @@ async fn concurrent_exact_retained_requests_keep_uncertainty_and_replay_once() {
     });
     start.wait().await;
 
-    let write = peer.write("thread/read").await;
+    let write = peer.write("thread/compact/start").await;
     peer.reply(&write, json!({"thread":{"id":"fake-thread-0"}}))
         .await;
     let outcomes = [first_task.await.unwrap(), retry_task.await.unwrap()];
@@ -943,10 +1033,11 @@ async fn concurrent_exact_retained_requests_keep_uncertainty_and_replay_once() {
 #[tokio::test]
 async fn retained_checkpointed_not_sent_retries_with_the_same_ticket_once() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
-    let call = request(&state, &port, "voice:delete-stop:session-1");
+    let call = durable_request(&state, &port, "voice:delete-stop:session-1");
 
     let sender = port.clone();
     let first_call = call.clone();
@@ -982,10 +1073,11 @@ async fn retained_checkpointed_not_sent_retries_with_the_same_ticket_once() {
 #[tokio::test]
 async fn retained_retry_lost_response_replays_unknown_without_another_send() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
-    let call = request(&state, &port, "retry-lost-response");
+    let call = durable_request(&state, &port, "retry-lost-response");
 
     let sender = port.clone();
     let first_call = call.clone();
@@ -1019,11 +1111,30 @@ async fn retained_retry_lost_response_replays_unknown_without_another_send() {
 
 #[tokio::test]
 async fn retained_uncheckpointed_not_sent_is_unknown_and_not_retried() {
+    mismatched_not_sent_is_held("$.payload.outcome.cursor", json!(1)).await;
+}
+
+#[tokio::test]
+async fn retained_not_sent_with_wrong_stream_is_unknown_and_not_retried() {
+    mismatched_not_sent_is_held(
+        "$.payload.outcome.committed_ack.stream_id",
+        json!("other-stream"),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn retained_not_sent_with_wrong_generation_is_unknown_and_not_retried() {
+    mismatched_not_sent_is_held("$.payload.outcome.committed_ack.generation", json!(2)).await;
+}
+
+async fn mismatched_not_sent_is_held(path: &'static str, value: Value) {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
-    let call = request(&state, &port, "uncheckpointed-not-sent");
+    let call = durable_request(&state, &port, "uncheckpointed-not-sent");
     let sender = port.clone();
     let first_call = call.clone();
     let first = tokio::spawn(async move { sender.request(first_call).await });
@@ -1031,33 +1142,61 @@ async fn retained_uncheckpointed_not_sent_is_unknown_and_not_retried() {
     assert!(first_wire.receipt.send(CommandReceipt::NotSent).is_ok());
     assert_eq!(first.await.unwrap().unwrap().result, RequestResult::NotSent);
 
-    state.bridge.run(|store| async move {
+    let expected = value.clone();
+    state.bridge.run(move |store| async move {
         store.transaction(move |tx| {
             tx.execute(
-                "UPDATE runtime_operation_receipts SET result=json_set(result,'$.cursor',1) WHERE id LIKE 'account-worker:retained:default:%:result' AND json_extract(result,'$.result')='NotSent'",
-                [],
+                "UPDATE runtime_outbox SET payload=json_set(payload,?1,json(?2)),status='unknown' WHERE kind='provider_call' AND json_extract(payload,'$.family')='retained' AND json_extract(payload,'$.payload.outcome.result')='NotSent'",
+                (path, value.to_string()),
             )?;
             Ok(())
         }).await?;
         Ok(())
     }).await.unwrap();
     assert_eq!(
-        port.request(call).await.unwrap().result,
+        tokio::time::timeout(FIRST_PASS_TEST_DEADLINE, port.request(call))
+            .await
+            .expect("no retry")
+            .unwrap()
+            .result,
         RequestResult::Unknown
     );
     assert!(peer.writes.try_recv().is_err());
+    state
+        .bridge
+        .store
+        .transaction_with(move |tx| {
+            let key = studio_runtime_schema::provider_call_contract::transport_key("default", "uncheckpointed-not-sent");
+            assert!(crate::account_worker::retained::storage::record_outcome(
+                tx, &key, None, Some(RequestResult::Reply(json!({"accepted":true}))), 99,
+            )?.is_none());
+            crate::account_worker::retained::storage::checkpoint_covered(
+                tx,
+                "default",
+                1,
+                u64::MAX,
+            )?;
+            let (status, actual): (String, String) = tx.query_row(
+                "SELECT status,json_quote(json_extract(payload,?1)) FROM runtime_outbox WHERE kind='provider_call' AND json_extract(payload,'$.family')='retained' AND json_extract(payload,'$.payload.outcome.result')='NotSent'",
+                [path], |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(status, "unknown");
+            assert_eq!(serde_json::from_str::<Value>(&actual).unwrap(), expected);
+            Ok::<_, WorkerError>(())
+        })
+        .await
+        .unwrap();
     worker.shutdown().await.unwrap();
 }
 
 #[tokio::test]
 async fn retained_retry_intent_crash_before_transport_replays_unknown_without_sending() {
-    use crate::account_worker::retained::Call;
-
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut first_peer = Peer::new();
     let mut first_worker = first_peer.worker(state.bridge.clone()).await;
     let first_port = first_worker.retained_session();
-    let call = request(&state, &first_port, "crash-before-retry-transport");
+    let call = durable_request(&state, &first_port, "crash-before-retry-transport");
     let sender = first_port.clone();
     let first_call = call.clone();
     let first = tokio::spawn(async move { sender.request(first_call).await });
@@ -1075,11 +1214,10 @@ async fn retained_retry_intent_crash_before_transport_replays_unknown_without_se
         .run(move |store| async move {
             store
                 .transaction_with(move |tx| {
-                    let prior = crate::account_worker::store::receipt(tx, &key, "submitted")?
-                        .ok_or_else(|| crate::account_worker::WorkerError::Capacity)?;
-                    let call: Call = serde_json::from_value(prior["call"].clone())
-                        .map_err(|_| crate::account_worker::WorkerError::Capacity)?;
-                    let request = crate::account_worker::store::decode(&prior["request"])?;
+                    let prior = crate::account_worker::retained::storage::recorded_call(tx, &key)?
+                        .ok_or(WorkerError::Capacity)?;
+                    let call = prior.call;
+                    let request = prior.request.ok_or(WorkerError::Capacity)?.recovered();
                     Ok((call, request))
                 })
                 .await
@@ -1104,7 +1242,7 @@ async fn retained_retry_intent_crash_before_transport_replays_unknown_without_se
     let second_port = second_worker.retained_session();
     assert_eq!(
         second_port
-            .request(request(&state, &second_port, &call.operation))
+            .request(durable_request(&state, &second_port, &call.operation))
             .await
             .unwrap()
             .result,
@@ -1117,14 +1255,15 @@ async fn retained_retry_intent_crash_before_transport_replays_unknown_without_se
 #[tokio::test]
 async fn retained_written_receipt_replays_after_reconnect_without_sending() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut first_peer = Peer::identity("default", 1, None);
     let mut first_worker = first_peer.worker(state.bridge.clone()).await;
     let first_port = first_worker.retained_session();
-    let original = request(&state, &first_port, "branch:fixture:fork");
+    let original = durable_request(&state, &first_port, "branch:fixture:fork");
     let sender = first_port.clone();
     let pending = original.clone();
     let task = tokio::spawn(async move { sender.request(pending).await });
-    let wire = first_peer.write("thread/read").await;
+    let wire = first_peer.write("thread/compact/start").await;
     first_peer
         .reply(&wire, json!({"thread":{"id":"fake-thread-0"}}))
         .await;
@@ -1158,10 +1297,8 @@ async fn retained_written_receipt_replays_after_reconnect_without_sending() {
     );
 
     let mut changed_method = replay.clone();
-    changed_method.method = Method::ThreadTurnsList;
-    changed_method.params = json!({
-        "threadId":"fake-thread-0","limit":10,"sortDirection":"desc","itemsView":"full"
-    });
+    changed_method.method = Method::ThreadRollback;
+    changed_method.params = json!({"threadId":"fake-thread-0","numTurns":1});
     assert_eq!(
         second_port.request(changed_method).await.unwrap_err(),
         PortError::Identity
@@ -1184,15 +1321,16 @@ async fn retained_written_receipt_replays_after_reconnect_without_sending() {
 #[tokio::test]
 async fn reconnect_churn_keeps_checkpoints_bounded_by_retained_generations() {
     let state = State::new().await;
+    retained_schema(&state).await;
     for generation in 1..=8 {
         let mut peer = Peer::identity("default", generation, None);
         let mut worker = peer.worker(state.bridge.clone()).await;
         let port = worker.retained_session();
         let operation = format!("retained-generation-{generation}");
-        let pending = request(&state, &port, &operation);
+        let pending = durable_request(&state, &port, &operation);
         let sender = port.clone();
         let task = tokio::spawn(async move { sender.request(pending).await });
-        let wire = peer.write("thread/read").await;
+        let wire = peer.write("thread/compact/start").await;
         peer.reply(&wire, json!({"thread":{"id":"fake-thread-0"}}))
             .await;
         let receipt = task.await.unwrap().unwrap();
@@ -1202,12 +1340,12 @@ async fn reconnect_churn_keeps_checkpoints_bounded_by_retained_generations() {
         let (retained_generations, checkpoints) = state.bridge.run(|store| async move {
             let db = store.test_reader()?;
             let retained_generations = db.query_row(
-                "SELECT COUNT(DISTINCT json_extract(result,'$.call.scope.generation')) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:retained:default:%:submitted'",
+                "SELECT COUNT(DISTINCT json_extract(result,'$.reply.call.scope.generation')) FROM request_results WHERE json_extract(result,'$.reply.call.operation') LIKE 'retained-generation-%'",
                 [],
                 |row| row.get::<_, i64>(0),
             )?;
             let checkpoints = db.query_row(
-                "SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:cursor:default:%:ack'",
+                "SELECT COUNT(*) FROM runtime_account_state WHERE account='default'",
                 [],
                 |row| row.get::<_, i64>(0),
             )?;
@@ -1228,14 +1366,15 @@ async fn reconnect_churn_keeps_checkpoints_bounded_by_retained_generations() {
 #[tokio::test]
 async fn retained_actor_request_answer_after_same_generation_restart_is_recorded_once() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut first_peer = Peer::identity("default", 1, None);
     let mut first_worker = first_peer.worker(state.bridge.clone()).await;
     let first_port = first_worker.retained_session();
-    let original = request(&state, &first_port, "monitor:restart-answer");
+    let original = durable_request(&state, &first_port, "monitor:restart-answer");
     let sender = first_port.clone();
     let pending = original.clone();
     let task = tokio::spawn(async move { sender.request(pending).await });
-    let wire = first_peer.write("thread/read").await;
+    let wire = first_peer.write("thread/compact/start").await;
     first_worker.shutdown().await.unwrap();
     let _lost_waiter = task.await;
 
@@ -1264,14 +1403,15 @@ async fn retained_actor_request_answer_after_same_generation_restart_is_recorded
 #[tokio::test]
 async fn retained_unknown_receipt_stays_unknown_after_reconnect_without_sending() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut first_peer = Peer::identity("default", 1, None);
     let mut first_worker = first_peer.worker(state.bridge.clone()).await;
     let first_port = first_worker.retained_session();
-    let original = request(&state, &first_port, "branch:unknown:fork");
+    let original = durable_request(&state, &first_port, "branch:unknown:fork");
     let sender = first_port.clone();
     let pending = original.clone();
     let task = tokio::spawn(async move { sender.request(pending).await });
-    let _wire = first_peer.write("thread/read").await;
+    let _wire = first_peer.write("thread/compact/start").await;
     first_worker.shutdown().await.unwrap();
     let _request_result = task.await;
 
@@ -1293,46 +1433,36 @@ async fn retained_unknown_receipt_stays_unknown_after_reconnect_without_sending(
 #[tokio::test]
 async fn crash_before_checkpoint_replays_unknown_without_resending_durable_reply() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
-    let call = request(&state, &port, "crash-before-checkpoint");
+    let call = durable_request(&state, &port, "crash-before-checkpoint");
     let sender = port.clone();
     let task_call = call.clone();
     let task = tokio::spawn(async move { sender.request(task_call).await });
-    let _original_wire = peer.write("thread/read").await;
+    let _original_wire = peer.write("thread/compact/start").await;
 
-    // Model a crash after the provider result's journal transaction committed,
-    // but before the generation checkpoint could include that cursor.
+    // A durable positive reply without its committed journal prefix stays
+    // uncertain to replay until the exact ACK evidence commits.
     let operation = call.operation.clone();
     let key = format!(
         "retained:default:{}",
         studio_runtime_store::sha256_hex(operation.as_bytes())
     );
-    let saved_result = serde_json::to_value(RequestResult::Reply(
-        json!({"thread":{"id":"fake-thread-0"}}),
-    ))
-    .unwrap();
     state
         .bridge
-        .run(move |store| async move {
-            store.transaction_with::<_, StoreError>(move |tx| {
-                tx.execute(
-                    "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'result',?2)",
-                    rusqlite::params![
-                        format!("account-worker:{key}:result"),
-                        json!({"result":saved_result,"cursor":2}).to_string()
-                    ],
-                )?;
-                tx.execute(
-                    "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'settled',?2)",
-                    rusqlite::params![
-                        format!("account-worker:{}:settled", store::journal_operation("default", 1, 2)),
-                        json!({"cursor":2,"digest":"fixture","ready":true,"committed":true}).to_string()
-                    ],
-                )?;
-                Ok(())
-            }).await?;
+        .store
+        .transaction_with::<_, WorkerError>(move |tx| {
+            crate::account_worker::retained::storage::record_outcome(
+                tx,
+                &key,
+                None,
+                Some(RequestResult::Reply(
+                    json!({"thread":{"id":"fake-thread-0"}}),
+                )),
+                2,
+            )?;
             Ok(())
         })
         .await
@@ -1359,6 +1489,7 @@ async fn crash_before_checkpoint_replays_unknown_without_resending_durable_reply
 #[tokio::test]
 async fn retained_request_rejects_a_stale_expected_connection_before_dispatch() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
@@ -1377,6 +1508,7 @@ async fn retained_request_rejects_a_stale_expected_connection_before_dispatch() 
 #[tokio::test]
 async fn actorless_account_read_only_allows_non_refreshing_voice_shape() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
@@ -1412,7 +1544,7 @@ fn retained_receipt_count(state: &State) -> i64 {
         .test_reader()
         .expect("reader")
         .query_row(
-            "SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:retained:%'",
+            "SELECT (SELECT count(*) FROM runtime_outbox WHERE kind='provider_call' AND id LIKE 'retained:%')+(SELECT count(*) FROM request_results WHERE json_type(result,'$.reply.call')='object')",
             [],
             |row| row.get(0),
         )
@@ -1428,6 +1560,7 @@ async fn diagnostics_probe_of_each_provider_replies_without_a_receipt() {
     use crate::provider_adapter::adapter;
     use studio_runtime_providers::ProviderKind;
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
@@ -1499,6 +1632,7 @@ async fn seed_restart_input(state: &State, fail_terminal_settlement: bool) {
 
 async fn restart_history_case(outcome: &str) {
     let state = State::new().await;
+    retained_schema(&state).await;
     seed_restart_input(&state, outcome == "terminal_failure").await;
 
     let mut peer = Peer::new();
@@ -1703,6 +1837,7 @@ async fn seed_empty_recovered_message(state: &State) {
 
 async fn connection_completion_failure(case: ConnectionCompletionFailure) {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::identity("default", 2, None);
     let mut worker = peer.worker(state.bridge.clone()).await;
     worker_barrier(&worker).await;
@@ -1795,6 +1930,7 @@ enum RestartRefusal {
 async fn restart_isolation_case(refusal: RestartRefusal) {
     let invalid_scan = matches!(refusal, RestartRefusal::Scan);
     let state = State::new().await;
+    retained_schema(&state).await;
     seed_restart_input(&state, false).await;
     if matches!(refusal, RestartRefusal::HistoryText) {
         seed_empty_recovered_message(&state).await;
@@ -1934,6 +2070,7 @@ async fn restart_isolation_case(refusal: RestartRefusal) {
 #[tokio::test]
 async fn startup_first_pass_reports_fatal_store_failure() {
     let state = State::new().await;
+    retained_schema(&state).await;
     seed_restart_input(&state, false).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
@@ -2109,6 +2246,7 @@ async fn startup_first_pass_continues_restart_with_missing_message_text() {
 
 async fn restart_turn_text_compatibility(text: Option<&str>) {
     let state = State::new().await;
+    retained_schema(&state).await;
     seed_restart_turn(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
@@ -2295,6 +2433,7 @@ async fn seed_idle_agents_before(state: &State, count: usize) {
 #[tokio::test]
 async fn startup_first_pass_reaches_a_restart_turn_after_the_first_scan_page() {
     let state = State::new().await;
+    retained_schema(&state).await;
     seed_idle_agents_before(&state, crate::recovery_runtime::MAX_SCAN_JOBS + 8).await;
     seed_restart_turn(&state).await;
     let mut peer = Peer::new();
@@ -2322,6 +2461,7 @@ async fn startup_first_pass_reaches_a_restart_turn_after_the_first_scan_page() {
 #[tokio::test]
 async fn startup_first_pass_finishes_a_completed_restart_turn_without_new_input() {
     let state = State::new().await;
+    retained_schema(&state).await;
     seed_restart_turn(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
@@ -2409,6 +2549,7 @@ async fn seed_adopted_turn_checked_while_running(state: &State) {
 #[tokio::test]
 async fn a_new_connection_rechecks_an_adopted_turn_that_its_one_check_saw_running() {
     let state = State::new().await;
+    retained_schema(&state).await;
     seed_adopted_turn_checked_while_running(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
@@ -2448,6 +2589,7 @@ async fn a_new_connection_rechecks_an_adopted_turn_that_its_one_check_saw_runnin
 #[tokio::test]
 async fn restart_terminal_commit_before_wake_converges_on_next_worker_start() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let agent_id = state.agent.clone();
     let epoch = state.epoch;
     state
@@ -2617,14 +2759,15 @@ async fn restart_terminal_commit_before_wake_converges_on_next_worker_start() {
 #[tokio::test]
 async fn retained_lost_waiter_preserves_unknown_until_exact_late_reply() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
-    let call = request(&state, &port, "lost-control");
+    let call = durable_request(&state, &port, "lost-control");
     let sender = port.clone();
     let first = call.clone();
     let task = tokio::spawn(async move { sender.request(first).await });
-    let wire = peer.write("thread/read").await;
+    let wire = peer.write("thread/compact/start").await;
     task.abort();
     let _ignored = task.await;
     assert_eq!(
@@ -2644,16 +2787,17 @@ async fn retained_lost_waiter_preserves_unknown_until_exact_late_reply() {
 #[tokio::test]
 async fn retained_stale_scope_settles_unknown_and_epoch_expiry_refuses_before_write() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
-    let mut call = request(&state, &port, "scope");
+    let mut call = durable_request(&state, &port, "scope");
     call.scope.generation += 1;
     assert_eq!(port.request(call).await.unwrap_err(), PortError::Unknown);
-    let mut call = request(&state, &port, "epoch");
+    let mut call = durable_request(&state, &port, "epoch");
     call.actor.as_mut().expect("actor-bound request").epoch += 1;
     assert_eq!(port.request(call).await.unwrap_err(), PortError::Identity);
-    let mut call = request(&state, &port, "expired");
+    let mut call = durable_request(&state, &port, "expired");
     call.deadline = tokio::time::Instant::now().into_std();
     assert_eq!(port.request(call).await.unwrap_err(), PortError::NotSent);
     worker.shutdown().await.unwrap();
@@ -2662,10 +2806,11 @@ async fn retained_stale_scope_settles_unknown_and_epoch_expiry_refuses_before_wr
 #[tokio::test]
 async fn stale_retained_request_after_restart_settles_unknown_without_resend() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let old_peer = Peer::new();
     let mut old_worker = old_peer.worker(state.bridge.clone()).await;
     let old_port = old_worker.retained_session();
-    let stale_request = request(&state, &old_port, "restart-without-submission");
+    let stale_request = durable_request(&state, &old_port, "restart-without-submission");
     old_worker.shutdown().await.unwrap();
 
     let mut replacement_peer = Peer::new();
@@ -2688,6 +2833,7 @@ async fn stale_retained_request_after_restart_settles_unknown_without_resend() {
 #[tokio::test]
 async fn retained_authorization_refuses_deleted_agent() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
@@ -2727,6 +2873,8 @@ fn monitor_request(
     params: Value,
 ) -> SessionRequest {
     SessionRequest {
+        root_request_id: studio_runtime_schema::persistence::RequestIdentity::issue_root(),
+        admitted_request: None,
         scope: port.scope().clone(),
         expected_scope: Some(port.scope().clone()),
         operation,
@@ -2792,6 +2940,7 @@ async fn config_read_fixture(state: &State, port: &RetainedSessionPort) -> Sessi
 #[tokio::test]
 async fn monitor_completion_config_read_finishes_before_an_unrelated_journal_checkpoint() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
@@ -2819,12 +2968,7 @@ async fn monitor_completion_config_read_finishes_before_an_unrelated_journal_che
         .run(|store| async move {
             store
                 .transaction_with::<_, WorkerError>(|tx| {
-                    store::replace(
-                        tx,
-                        &store::journal_operation("default", 1, 1),
-                        "settled",
-                        json!({"cursor":1,"digest":"held-entry","ready":false,"committed":true}),
-                    )
+                    studio_runtime_store::outbox::Outbox::put(tx,&studio_runtime_store::outbox::OutboxRow{id:store::journal_operation("default",1,1),kind:studio_runtime_schema::persistence::OutboxKind::JournalEntry,owner_kind:studio_runtime_schema::persistence::OwnerKind::Account,owner_id:"default".into(),request_id:None,signature:"held-entry".into(),status:studio_runtime_schema::persistence::OutboxStatus::Pending,account:Some("default".into()),stream_id:Some("default".into()),generation:Some(1),ordinal:Some(1),next_at:Some(0),created:1,payload:json!({"cursor":1,"digest":"held-entry","ready":false,"committed":true})}).map_err(|error|WorkerError::PreparationRefused(error.to_string()))
                 })
                 .await
         })
@@ -2847,7 +2991,7 @@ async fn monitor_completion_config_read_finishes_before_an_unrelated_journal_che
         .bridge
         .run(|store| async move {
             store
-                .transaction_with::<_, WorkerError>(|tx| store::checkpoint(tx, "default", 1))
+                .transaction_with::<_, WorkerError>(|tx| Ok(store::checkpoint(tx, "default", 1)?))
                 .await
         })
         .await
@@ -2865,59 +3009,13 @@ async fn monitor_completion_config_read_finishes_before_an_unrelated_journal_che
 }
 
 #[tokio::test]
-async fn monitor_completion_config_read_retries_legacy_unknown_and_lost_reply() {
+async fn monitor_completion_config_read_retries_lost_reply_without_replay_storage() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
     let call = config_read_fixture(&state, &port).await;
-    let old = call.clone();
-    // A receipt from the old durable ConfigRead path must not hold a start.
-    state
-        .bridge
-        .run(move |store| async move {
-            store
-                .transaction_with::<_, WorkerError>(move |tx| {
-                    let key = format!(
-                        "retained:default:{}",
-                        studio_runtime_store::sha256_hex(old.operation.as_bytes())
-                    );
-                    let request = crate::provider_session_task::RecoveredRequest {
-                        ticket: studio_runtime_providers::RequestTicket {
-                            generation: 1,
-                            id: studio_runtime_providers::RequestId::String(key.clone()),
-                            method: Method::ConfigRead,
-                        },
-                        operation_id: OperationId(key.clone()),
-                        thread_id: None,
-                        lightweight: true,
-                        deadline_ms: 0,
-                        unknown: true,
-                        remote_id: None,
-                    };
-                    store::replace(
-                        tx,
-                        &key,
-                        "submitted",
-                        json!({
-                            "call": {
-                                "scope": old.scope,
-                                "operation": old.operation,
-                                "actor": old.actor,
-                                "transfer": null,
-                                "deleted_actor_session": null,
-                                "method": "config/read",
-                                "params": old.params
-                            },
-                            "request": store::record(&request)
-                        }),
-                    )?;
-                    store::replace(tx, &key, "result", json!({"cursor":0,"result":"Unknown"}))
-                })
-                .await
-        })
-        .await
-        .unwrap();
     worker.shutdown().await.unwrap();
     let mut peer = Peer::identity("default", 2, None);
     let mut worker = peer.worker(state.bridge.clone()).await;
@@ -2959,6 +3057,7 @@ async fn monitor_completion_config_read_retries_legacy_unknown_and_lost_reply() 
 #[tokio::test]
 async fn monitor_completion_config_read_preserves_the_command_unknown_receipt() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
@@ -2998,6 +3097,7 @@ async fn monitor_completion_config_read_preserves_the_command_unknown_receipt() 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn tool_monitor_on_a_non_default_account_reaches_its_provider() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let agent = state.agent.clone();
     let epoch = state.epoch;
     let cwd = state.record().await["cwd"].as_str().unwrap().to_owned();
@@ -3103,18 +3203,24 @@ async fn tool_monitor_on_a_non_default_account_reaches_its_provider() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn transferred_monitor_cancel_uses_the_original_command_and_settles_its_exit() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
     let actor = state.agent.clone();
     let epoch = state.epoch;
     let scope = port.scope().clone();
+    let root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
     let operation = crate::monitor_policy::Operation {
         agent: actor.clone(),
         epoch,
         account_key: scope.account.clone(),
         connection_id: scope.connection.clone(),
-        evidence: Default::default(),
+        evidence: crate::monitor_policy::OperationEvidence {
+            root_request_id: Some(root.clone()),
+            provider_generation: Some(scope.generation),
+            ..Default::default()
+        },
     };
     let saved_operation = operation.clone();
     let cwd = state.record().await["cwd"].as_str().unwrap().to_owned();
@@ -3128,13 +3234,14 @@ async fn transferred_monitor_cancel_uses_the_original_command_and_settles_its_ex
             Ok(())
         }).await
     }).await.unwrap();
-    let exec = monitor_request(
+    let mut exec = monitor_request(
         &state,
         &port,
         "monitor:transfer-watch".into(),
         Method::CommandExec,
         json!({"command":["/bin/sh","-c","true"],"cwd":cwd,"processId":"transfer-watch"}),
     );
+    exec.root_request_id = root;
     let sender = port.clone();
     let mut running = tokio::spawn(async move { sender.request(exec).await });
     let exec_wire = monitor_write(&mut peer, &mut running, "command/exec").await;
@@ -3360,39 +3467,49 @@ async fn transferred_monitor_cancel_uses_the_original_command_and_settles_its_ex
 #[tokio::test]
 async fn deleted_voice_stop_requires_the_exact_committed_session() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
     let actor = state.agent.clone();
     let epoch = state.epoch;
     let scope = port.scope().clone();
-    let receipt_id = format!("agent-delete-voice:{actor}:{epoch}");
-    let session = json!({
-        "sessionId":"voice-session-7",
-        "agentId":actor,
-        "epoch":epoch,
-        "accountKey":scope.account,
-        "threadId":"fake-thread-0",
-        "connectionId":scope.connection,
-        "generation":scope.generation
-    });
-    let actor_for_store = actor.clone();
-    state.bridge.run(move |store| async move {
-        store.transaction_with(move |tx| {
-            tx.execute(
-                "UPDATE runtime_agents SET record=json_set(record,'$.deletedAt',1) WHERE id=?1",
-                [&actor_for_store],
-            )?;
-            tx.execute(
-                "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'voice-delete',?2)",
-                rusqlite::params![receipt_id, json!({"agent":actor_for_store,"epoch":epoch,"voiceEndSessions":[session]}).to_string()],
-            )?;
-            Ok::<(), studio_runtime_store::StoreError>(())
-        }).await?;
-        Ok(())
+    let root = retained_root("voice:delete-stop:voice-session-7");
+    let fixture_scope = scope.clone();
+    let fixture_actor = actor.clone();
+    let fixture_root = root.clone();
+    let token=state.bridge.store.transaction_with(move |tx| {
+        use studio_runtime_schema::persistence::{RequestIdentity,OutboxKind,OutboxStatus,OwnerKind};
+        use studio_runtime_store::{request_results::{RequestResults,Admission},outbox::{Outbox,OutboxRow}};
+        let identity=RequestIdentity::new("voice-delete-fixture",&[&fixture_actor],&fixture_root,&[]).unwrap();
+        let owner=match RequestResults::admit(tx,&identity,"voice-delete",chrono::Utc::now().timestamp_millis()).map_err(|error|WorkerError::PreparationRefused(error.to_string()))?{Admission::Fresh(owner)=>owner,Admission::Replay(_)=>return Err(WorkerError::Capacity)};
+        let intent=crate::account_worker::retained::ProviderCallIntent {root_request_id:fixture_root.clone(),admitted_request:None,scope:fixture_scope.clone(),operation:"voice:delete-stop:voice-session-7".into(),actor:Some(RequestActor{agent:fixture_actor.clone(),epoch}),transfer:None,deleted_actor_session:Some("voice-session-7".into()),method:Method::ThreadRealtimeStop,params:json!({"threadId":"fake-thread-0"})};
+        let token=crate::account_worker::retained::reserve_provider_call(tx,&owner,intent)?;
+        let effect = studio_runtime_store::VoiceEffect {
+            session_id: "voice-session-7".into(),
+            agent: fixture_actor.clone(),
+            epoch,
+            account: fixture_scope.account.clone(),
+            thread: "fake-thread-0".into(),
+            disposition: studio_runtime_store::VoiceEffectDisposition::Deleted { epoch },
+            authority: studio_runtime_store::VoiceEffectAuthority::Admitted {
+                scope: studio_runtime_schema::persistence::ProviderScope {
+                    connection: fixture_scope.connection.clone(),
+                    generation: fixture_scope.generation,
+                },
+                root_request_id: fixture_root,
+                owner: owner.clone(),
+                admission: token.clone(),
+                outcome: studio_runtime_schema::persistence::VoiceStopOutcome::NotSent,
+            },
+        };
+        Outbox::put(tx,&OutboxRow {id:Outbox::effect_id(owner.id(), OutboxKind::VoiceDelete, OwnerKind::Agent, &fixture_actor, &["voice-session-7"]),kind:OutboxKind::VoiceDelete,owner_kind:OwnerKind::Agent,owner_id:fixture_actor.clone(),request_id:Some(token.id().into()),signature:"voice-agent-delete-v1".into(),status:OutboxStatus::Pending,account:None,stream_id:None,generation:None,ordinal:None,next_at:Some(0),created:owner.created(),payload:effect}).map_err(|error|WorkerError::PreparationRefused(error.to_string()))?;
+        tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.deletedAt',1) WHERE id=?1",[&fixture_actor])?;
+        Ok::<_,WorkerError>(token)
     }).await.unwrap();
-
     let mut call = request(&state, &port, "voice:delete-stop:voice-session-7");
+    call.root_request_id = root;
+    call.admitted_request = Some(token);
     call.method = Method::ThreadRealtimeStop;
     call.params = json!({"threadId":"fake-thread-0"});
     call.expected_scope = Some(scope.clone());
@@ -3430,6 +3547,7 @@ async fn repeated_retained_history_reads_observe_fresh_provider_state() {
     };
 
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let retained = worker.retained_session();
@@ -3514,6 +3632,7 @@ async fn repeated_retained_history_reads_observe_fresh_provider_state() {
 #[tokio::test]
 async fn retained_barrier_waits_for_committed_journal_without_owning_bridge() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
@@ -3542,7 +3661,7 @@ async fn retained_barrier_waits_for_committed_journal_without_owning_bridge() {
 }
 
 #[tokio::test]
-async fn connection_recovery_history_receipt_survives_worker_restart_without_resend() {
+async fn connection_recovery_history_is_read_again_after_worker_restart() {
     use crate::{
         account_worker::retained::consumers::HistoryPort,
         recovery_history::{HistoryMethod, HistoryReceipt},
@@ -3550,6 +3669,7 @@ async fn connection_recovery_history_receipt_survives_worker_restart_without_res
     };
 
     let state = State::new().await;
+    retained_schema(&state).await;
     let before = state.record().await;
     let recovery_id = crate::recovery_policy::connection_recovery_id(&before);
     crate::account_worker::connection_recovery::begin_request(
@@ -3605,16 +3725,18 @@ async fn connection_recovery_history_receipt_survives_worker_restart_without_res
         recovery_id.clone(),
     );
     let deadline = (tokio::time::Instant::now() + std::time::Duration::from_secs(60)).into_std();
-    let mut second_history = second_history;
-    let replay: HistoryReceipt = second_history
-        .request(&second_scope, HistoryMethod::Thread, params, deadline)
-        .await
-        .unwrap();
+    let replay = tokio::spawn(async move {
+        let mut history = second_history;
+        history.request(&second_scope, HistoryMethod::Thread, params, deadline).await
+    });
+    let request = second_peer.write("thread/read").await;
+    second_peer.reply(&request, expected).await;
+    let replay: HistoryReceipt = replay.await.unwrap().unwrap();
     assert_eq!(replay.body, first_receipt.body);
-    assert_eq!(replay.scope.generation, 1);
+    assert_eq!(replay.scope.generation, 2);
     assert!(
         second_peer.writes.try_recv().is_err(),
-        "saved history receipt must not be resent"
+        "recovery read sends no mutation"
     );
     let agent = state.record().await;
     assert_eq!(agent["connectionRecovery"]["requestId"], recovery_id);
@@ -3625,6 +3747,7 @@ async fn connection_recovery_history_receipt_survives_worker_restart_without_res
 #[tokio::test]
 async fn connection_recovery_repeated_request_returns_saved_status_without_history_read() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let before = state.record().await;
     let recovery_id = crate::recovery_policy::connection_recovery_id(&before);
     let agent_id = state.agent.clone();
@@ -3725,6 +3848,7 @@ async fn recovery_reconcile_wait_does_not_hold_store_bridge_permit() {
     }
 
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let start = state.start(&mut peer, &worker).await;
@@ -3824,15 +3948,16 @@ async fn recovery_reconcile_wait_does_not_hold_store_bridge_permit() {
 #[tokio::test]
 async fn retained_reply_failure_cannot_publish_a_positive_receipt() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
-    let call = request(&state, &port, "failed-journal");
+    let call = durable_request(&state, &port, "failed-journal");
     let sender = port.clone();
     let first = call.clone();
     let waiter = tokio::spawn(async move { sender.request(first).await });
-    let wire = peer.write("thread/read").await;
-    state.bridge.run(|s| async move { s.transaction_with(move |tx| { tx.execute_batch("CREATE TRIGGER fail_journal BEFORE INSERT ON runtime_operation_receipts WHEN NEW.id LIKE 'account-worker:journal:%' BEGIN SELECT RAISE(ABORT,'journal failed'); END;")?; Ok(()) }).await }).await.unwrap();
+    let wire = peer.write("thread/compact/start").await;
+    state.bridge.run(|s| async move { s.transaction_with(move |tx| { tx.execute_batch("CREATE TRIGGER fail_journal BEFORE INSERT ON runtime_outbox WHEN NEW.kind='journal_entry' BEGIN SELECT RAISE(ABORT,'journal failed'); END;")?; Ok(()) }).await }).await.unwrap();
     peer.frame(json!({"id":wire["id"],"result":{"thread":{"id":"fake-thread-0"}}}))
         .await;
     assert_eq!(waiter.await.unwrap().unwrap_err(), PortError::Unknown);
@@ -3862,6 +3987,7 @@ async fn retained_reply_failure_cannot_publish_a_positive_receipt() {
 #[tokio::test]
 async fn retained_committed_callback_keeps_exact_response_and_sends_once() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
@@ -3870,17 +3996,28 @@ async fn retained_committed_callback_keeps_exact_response_and_sends_once() {
         body: ResponseBody::Result(json!({"answer":"approved"})),
         fields: Default::default(),
     };
+    let callback_context = crate::provider_callbacks::CallbackContext {
+        agent: state.agent.clone(),
+        account: port.scope().account.clone(),
+        stream_id: port.scope().account.clone(),
+        connection: port.scope().connection.clone(),
+        generation: port.scope().generation,
+        epoch: state.epoch.try_into().unwrap(),
+        thread: "fake-thread-0".into(),
+        turn: "turn".into(),
+    };
+    let response = frame.clone();
+    let operation=state.bridge.store.transaction_with(move |tx| {
+        let input=Frame::Request(studio_runtime_providers::RequestFrame{id:RequestId::String("native-callback".into()),method:Method::ItemToolCall,params:Some(json!({"threadId":"fake-thread-0","turnId":"turn","tool":"test","arguments":{}})),fields:Default::default()});
+        crate::provider_callbacks::save_frame_response(tx,&callback_context,&input,&response).map(|identity|identity.operation_id())
+    }).await.unwrap();
+    let first_operation = operation.clone();
     let deadline = (tokio::time::Instant::now() + std::time::Duration::from_secs(60)).into_std();
     let sender = port.clone();
     let first = frame.clone();
     let task = tokio::spawn(async move {
         sender
-            .submit_committed_frame(
-                sender.scope(),
-                "canonical-operation".into(),
-                first,
-                deadline,
-            )
+            .submit_committed_frame(sender.scope(), first_operation, first, deadline)
             .await
     });
     let wire = peer.next_write().await;
@@ -3896,7 +4033,7 @@ async fn retained_committed_callback_keeps_exact_response_and_sends_once() {
     );
     assert_eq!(task.await.unwrap().unwrap(), WriteOutcome::Written);
     assert_eq!(
-        port.submit_committed_frame(port.scope(), "canonical-operation".into(), frame, deadline)
+        port.submit_committed_frame(port.scope(), operation, frame, deadline)
             .await
             .unwrap(),
         WriteOutcome::Written
@@ -3908,11 +4045,12 @@ async fn retained_committed_callback_keeps_exact_response_and_sends_once() {
 #[tokio::test]
 async fn retained_deadline_during_intent_never_writes_after_expiry() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
     *state.bridge.faults.pause_operation.lock().unwrap() = Some("retained_submitted".into());
-    let mut call = request(&state, &port, "expires-in-queue");
+    let mut call = durable_request(&state, &port, "expires-in-queue");
     let deadline = tokio::time::Instant::from_std(call.deadline);
     let sender = port.clone();
     let first = call.clone();
@@ -3961,10 +4099,11 @@ async fn retained_deadline_during_intent_never_writes_after_expiry() {
 #[tokio::test]
 async fn retained_response_before_write_receipt_stays_positive() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
-    let call = request(&state, &port, "reply-before-write");
+    let call = durable_request(&state, &port, "reply-before-write");
     let sender = port.clone();
     let first = call.clone();
     let waiter = tokio::spawn(async move { sender.request(first).await });
@@ -4003,13 +4142,14 @@ async fn claude_adapter_uses_retained_scoped_control_and_invalidates_on_stop() {
         ControlInvocation, ControlReply, ControlScope, ControlSession,
     };
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let session = std::sync::Arc::new(worker.claude_session().unwrap());
     let scope = ControlScope {
         agent: state.agent.clone(),
         epoch: state.epoch.try_into().unwrap(),
-        request_id: Some("stop-task-request".into()),
+        request_id: Some(retained_root("stop-task-request")),
     };
     let copy = session.clone();
     let call_scope = scope.clone();
@@ -4019,7 +4159,7 @@ async fn claude_adapter_uses_retained_scoped_control_and_invalidates_on_stop() {
             ControlInvocation::StopTask {
                 thread_id: "fake-thread-0".into(),
                 task_id: "task".into(),
-                request_id: "stop-task-request".into(),
+                request_id: retained_root("stop-task-request"),
             },
         )
         .await
@@ -4030,7 +4170,7 @@ async fn claude_adapter_uses_retained_scoped_control_and_invalidates_on_stop() {
         matches!(task.await.unwrap().unwrap(), ControlReply::StopTask(result) if result == json!({"status":"stopped"}))
     );
     assert!(
-        matches!(session.call_scoped(scope.clone(), ControlInvocation::StopTask { thread_id: "fake-thread-0".into(), task_id: "task".into(), request_id: "stop-task-request".into() }).await.unwrap(), ControlReply::StopTask(result) if result == json!({"status":"stopped"}))
+        matches!(session.call_scoped(scope.clone(), ControlInvocation::StopTask { thread_id: "fake-thread-0".into(), task_id: "task".into(), request_id: retained_root("stop-task-request") }).await.unwrap(), ControlReply::StopTask(result) if result == json!({"status":"stopped"}))
     );
     worker.shutdown().await.unwrap();
     assert!(
@@ -4057,6 +4197,7 @@ async fn claude_adapter_distinguishes_not_sent_from_unknown() {
         ("unknown", CommandReceipt::Unknown, "unknown"),
     ] {
         let state = State::new().await;
+        retained_schema(&state).await;
         let mut peer = Peer::new();
         peer.wire = studio_runtime_providers::ProviderKind::Claude.wire();
         let mut resources = test_resources().unwrap();
@@ -4076,7 +4217,7 @@ async fn claude_adapter_distinguishes_not_sent_from_unknown() {
         let scope = ControlScope {
             agent: state.agent.clone(),
             epoch: state.epoch.try_into().unwrap(),
-            request_id: Some(request_id.into()),
+            request_id: Some(retained_root(request_id)),
         };
         let task = tokio::spawn(async move {
             session
@@ -4085,7 +4226,7 @@ async fn claude_adapter_distinguishes_not_sent_from_unknown() {
                     ControlInvocation::StopTask {
                         thread_id: "fake-thread-0".into(),
                         task_id: "task".into(),
-                        request_id: request_id.into(),
+                        request_id: retained_root(request_id),
                     },
                 )
                 .await
@@ -4113,13 +4254,15 @@ async fn claude_rewind_negative_proof_requires_both_original_identities() {
         ("original", "other", false),
     ] {
         let state = State::new().await;
+        retained_schema(&state).await;
         let mut peer = Peer::new();
         let mut worker = peer.worker(state.bridge.clone()).await;
         let session = worker.claude_session().unwrap();
+        let root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
         let scope = ControlScope {
             agent: state.agent.clone(),
             epoch: state.epoch.try_into().unwrap(),
-            request_id: Some("transport".into()),
+            request_id: Some(root.clone()),
         };
         let task = tokio::spawn(async move {
             session
@@ -4130,7 +4273,7 @@ async fn claude_rewind_negative_proof_requires_both_original_identities() {
                         request_id: serde_json::from_value(json!("original")).unwrap(),
                         turn_id: serde_json::from_value(json!("turn")).unwrap(),
                         restore_files: true,
-                        transport_request_id: "transport".into(),
+                        transport_request_id: root,
                     },
                 )
                 .await
@@ -4155,6 +4298,7 @@ async fn claude_rewind_negative_proof_requires_both_original_identities() {
 #[tokio::test]
 async fn retained_claude_mutation_waits_while_lightweight_read_can_progress() {
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     peer.wire = studio_runtime_providers::ProviderKind::Claude.wire();
     let mut resources = test_resources().unwrap();
@@ -4230,6 +4374,7 @@ async fn manual_recovery_owner_to_callback_keeps_unknown_and_exact_replay() {
     };
     use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId};
     let state = State::new().await;
+    retained_schema(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     worker_barrier(&worker).await;
@@ -4247,6 +4392,7 @@ async fn manual_recovery_owner_to_callback_keeps_unknown_and_exact_replay() {
         .await
         .unwrap();
     let context = CallbackContext {
+        stream_id: "default".into(),
         agent: "lead-00000000".into(),
         account: "default".into(),
         connection: port.scope().connection.clone(),
@@ -4339,17 +4485,319 @@ async fn manual_recovery_owner_to_callback_keeps_unknown_and_exact_replay() {
     };
     assert_eq!(first.body, replay.body);
     assert_eq!(session.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
-    let records = studio_runtime_store::system_reads::all(
-        &store.test_reader().unwrap(),
-        "runtime_tool_requests",
-    )
-    .unwrap();
-    let record = records
-        .iter()
-        .find(|record| record["callId"] == "owner-recovery")
+    let db = store.test_reader().unwrap();
+    let id: String = db.query_row(
+        "SELECT id FROM runtime_tool_requests WHERE kind='managed_tool' AND json_extract(record,'$.callId')=?1",
+        ["owner-recovery"],
+        |row| row.get(0),
+    ).unwrap();
+    let record = studio_runtime_store::system_reads::get(&db, "runtime_tool_requests", &id)
+        .unwrap()
         .unwrap();
     assert_eq!(record["deliveryCertainty"], "unknown");
-    assert_eq!(record["result"]["success"], false);
+    let result = crate::tool_requests::saved_result(&db, &id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(result["success"], false);
     assert_eq!(state.event_status("input").await, "uncertain");
     worker.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn retained_expired_root_refuses_before_any_provider_write() {
+    let state = State::new().await;
+    retained_schema(&state).await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let port = worker.retained_session();
+    let mut call = durable_request(&state, &port, "expired-call");
+    let issued = chrono::Utc::now().timestamp_millis()
+        - studio_runtime_schema::persistence::REQUEST_RESULT_TTL_MS;
+    call.root_request_id =
+        uuid::Uuid::from_u128(((issued as u128) << 80) | (7 << 76) | (2 << 62) | 1).to_string();
+    assert_eq!(port.request(call).await.unwrap_err(), PortError::Expired);
+    assert!(peer.writes.try_recv().is_err());
+    worker.shutdown().await.unwrap();
+}
+
+#[derive(Clone, Copy)]
+enum MalformedMonitorWitness {
+    Reply,
+    Owner,
+}
+
+async fn malformed_monitor_keeps_proof_without_blocking_other_agent(case: MalformedMonitorWitness) {
+    use studio_runtime_schema::persistence::{OutboxKind, OutboxStatus};
+    use studio_runtime_schema::provider_call_contract::{CommittedAck, transport_key};
+    use studio_runtime_store::outbox::Outbox;
+    let state = State::new().await;
+    retained_schema(&state).await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let port = worker.retained_session();
+    let cwd = state.record().await["cwd"].as_str().unwrap().to_owned();
+    let operation = "monitor:held-proof";
+    let call = monitor_request(
+        &state,
+        &port,
+        operation.into(),
+        Method::CommandExec,
+        json!({"processId":"held-proof","command":["true"],"cwd":cwd}),
+    );
+    let actor = state.agent.clone();
+    let epoch = state.epoch;
+    let scope = port.scope().clone();
+    let root = call.root_request_id.clone();
+    state.bridge.store.transaction(move |tx| {
+        let mut other=AgentRepository::get(tx,&AgentId::from(actor.as_str()))?.unwrap().value();
+        other["id"]=json!("other-ack-agent");other["threadId"]=json!("other-ack-thread");
+        AgentRepository::put(tx,&studio_runtime_store::AgentRecord::from_value(other)?)?;
+        tx.execute("INSERT INTO runtime_monitors(id,record) VALUES('held-proof',?1)",[json!({"id":"held-proof","agent":actor,"epoch":epoch,"cwd":cwd,"command":"true","status":"running","operation":{"agent":actor,"epoch":epoch,"accountKey":scope.account,"connectionId":scope.connection,"providerGeneration":scope.generation,"rootRequestId":root}}).to_string()])?;
+        Ok(())
+    }).await.unwrap();
+    let sender = port.clone();
+    let first = call.clone();
+    let mut task = tokio::spawn(async move { sender.request(first).await });
+    let wire = monitor_write(&mut peer, &mut task, "command/exec").await;
+    if matches!(case, MalformedMonitorWitness::Owner) {
+        state.bridge.store.transaction(|tx| {tx.execute("UPDATE runtime_monitors SET record=json_set(record,'$.operation','malformed-owner') WHERE id='held-proof'",[])?;Ok(())}).await.unwrap();
+    }
+    let raw = match case {
+        MalformedMonitorWitness::Reply => json!({"malformed":"missing exit evidence"}),
+        MalformedMonitorWitness::Owner => json!({"exitCode":0}),
+    };
+    let held_cursor = peer.frame(json!({"id":wire["id"],"result":raw})).await;
+    peer.acknowledged(held_cursor).await;
+    task.await.unwrap().unwrap();
+    let mut other = durable_request(&state, &port, "other-agent-ack");
+    other.root_request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    other.actor.as_mut().unwrap().agent = "other-ack-agent".into();
+    other.params["threadId"] = json!("other-ack-thread");
+    let sender = port.clone();
+    let mut second = tokio::spawn(async move { sender.request(other).await });
+    let wire = monitor_write(&mut peer, &mut second, "thread/compact/start").await;
+    let next_cursor = peer
+        .frame(json!({"id":wire["id"],"result":{"accepted":true}}))
+        .await;
+    peer.acknowledged(next_cursor).await;
+    second.await.unwrap().unwrap();
+    worker_barrier(&worker).await;
+    let key = transport_key("default", operation);
+    let lookup = key.clone();
+    state
+        .bridge
+        .store
+        .transaction_with(move |tx| {
+            let row = Outbox::get::<crate::account_worker::store::ProviderCall>(tx, &lookup)
+                .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?
+                .unwrap();
+            assert_eq!(row.status, OutboxStatus::Unknown);
+            assert_eq!(row.next_at, None);
+            let crate::account_worker::store::ProviderCall::Retained(payload) = row.payload else {
+                panic!("retained owner")
+            };
+            let outcome = payload.outcome.unwrap();
+            assert_eq!(outcome.result, RequestResult::Reply(raw));
+            assert_eq!(
+                outcome.committed_ack,
+                Some(CommittedAck {
+                    stream_id: "default".into(),
+                    generation: 1,
+                    cursor: held_cursor
+                })
+            );
+            assert!(
+                store::checkpoint(tx, "default", 1)? >= next_cursor,
+                "another agent's prefix advances"
+            );
+            let pending = Outbox::pending::<crate::account_worker::store::ProviderCall>(
+                tx,
+                OutboxKind::ProviderCall,
+                i64::MAX,
+                u32::MAX,
+            )
+            .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
+            assert!(
+                pending.iter().all(|row| row.id != lookup),
+                "held proof is never a send selector"
+            );
+            Ok::<_, WorkerError>(())
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        port.request(call).await.unwrap().result,
+        RequestResult::Unknown
+    );
+    assert!(
+        peer.writes.try_recv().is_err(),
+        "held completion is never resent"
+    );
+    worker.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn retained_malformed_monitor_reply_does_not_block_another_agent_ack() {
+    malformed_monitor_keeps_proof_without_blocking_other_agent(MalformedMonitorWitness::Reply)
+        .await;
+}
+
+#[tokio::test]
+async fn retained_malformed_monitor_owner_keeps_unknown_proof_without_resending() {
+    malformed_monitor_keeps_proof_without_blocking_other_agent(MalformedMonitorWitness::Owner)
+        .await;
+}
+
+#[tokio::test]
+async fn retained_vm_thread_start_provenance_survives_next_generation_attach() {
+    use studio_runtime_schema::persistence::{OutboxStatus, RequestIdentity};
+    use studio_runtime_schema::provider_call_contract::{
+        CommittedAck, RetainedOutcome, RetainedReply, transport_key,
+    };
+    use studio_runtime_store::{
+        outbox::Outbox,
+        request_results::{Admission, RequestResults, ResultEnvelope},
+    };
+    let state = State::new().await;
+    retained_schema(&state).await;
+    let actor = state.agent.clone();
+    let epoch = state.epoch;
+    let fixture_actor = actor.clone();
+    let operation = "vm-thread-start-provenance";
+    let key = transport_key("default", operation);
+    let fixture_key = key.clone();
+    let root = retained_root(operation);
+    let admitted = state
+        .bridge
+        .store
+        .transaction_with(move |tx| {
+            let mut agent =
+                AgentRepository::get(tx, &AgentId::from(fixture_actor.as_str()))?.unwrap();
+            agent.extra.insert("executionMode".into(), json!("vm"));
+            agent.extra.insert(
+                "providerStream".into(),
+                json!({"generation":7,"connection":"old-vm-connection","ack":12,"streams":null}),
+            );
+            AgentRepository::put(tx, &agent)?;
+            let identity =
+                RequestIdentity::new("vm-thread-start-fixture", &[&fixture_actor], &root, &[])
+                    .unwrap();
+            let owner = match RequestResults::admit(
+                tx,
+                &identity,
+                "fixture",
+                chrono::Utc::now().timestamp_millis(),
+            )? {
+                Admission::Fresh(owner) => owner,
+                Admission::Replay(_) => panic!("fresh owner"),
+            };
+            let call = crate::account_worker::retained::ProviderCallIntent {
+                root_request_id: root,
+                admitted_request: None,
+                scope: ConnectionScope {
+                    account: "default".into(),
+                    connection: "old-vm-connection".into(),
+                    generation: 7,
+                },
+                operation: operation.into(),
+                actor: Some(RequestActor {
+                    agent: fixture_actor.clone(),
+                    epoch,
+                }),
+                transfer: None,
+                deleted_actor_session: None,
+                method: Method::ThreadStart,
+                params: json!({"ephemeral":true}),
+            };
+            let admitted = crate::account_worker::retained::reserve_provider_call(tx, &owner, call)
+                .expect("valid retained VM reservation");
+            let mut row =
+                Outbox::get::<crate::account_worker::store::ProviderCall>(tx, &fixture_key)?
+                    .unwrap();
+            let crate::account_worker::store::ProviderCall::Retained(payload) = &mut row.payload
+            else {
+                panic!("retained owner")
+            };
+            let request = crate::provider_session_task::RecoveredRequest {
+                ticket: studio_runtime_providers::RequestTicket {
+                    generation: 7,
+                    id: RequestId::String(fixture_key.clone()),
+                    method: Method::ThreadStart,
+                },
+                operation_id: OperationId(fixture_key),
+                thread_id: None,
+                lightweight: true,
+                deadline_ms: 1000,
+                unknown: true,
+                remote_id: None,
+            };
+            payload.request =
+                Some(crate::account_worker::retained::storage::TransportRequest::from(&request));
+            payload.written = true;
+            payload.outcome = Some(RetainedOutcome {
+                result: RequestResult::Reply(json!({"thread":{"id":"started-vm-thread"}})),
+                cursor: 12,
+                committed_ack: None,
+            });
+            row.status = OutboxStatus::Unknown;
+            row.next_at = None;
+            Outbox::put(tx, &row)?;
+            Ok::<_, StoreError>(admitted)
+        })
+        .await
+        .unwrap();
+    store::attach_provider_stream(
+        &state.bridge.store,
+        "default",
+        Some(&actor),
+        8,
+        "new-vm-connection",
+    )
+    .await
+    .unwrap();
+    let expected_actor = actor.clone();
+    state
+        .bridge
+        .store
+        .transaction(move |tx| {
+            let agent = AgentRepository::get(tx, &AgentId::from(actor.as_str()))?.unwrap();
+            assert_eq!(agent.extra["providerStream"]["generation"], 8);
+            assert_eq!(agent.extra["providerStream"]["ack"], 0);
+            assert_eq!(
+                agent.extra["providerStream"]["connection"],
+                "new-vm-connection"
+            );
+            let provenance = &agent.extra["threadProvenance"]["started-vm-thread"];
+            assert_eq!(
+                provenance["actor"],
+                json!({"agent":expected_actor,"epoch":epoch})
+            );
+            assert_eq!(
+                provenance["scope"],
+                json!({"account":"default","connection":"old-vm-connection","generation":7})
+            );
+            assert_eq!(provenance["operation"], operation);
+            assert!(Outbox::get::<crate::account_worker::store::ProviderCall>(tx, &key)?.is_none());
+            let saved = RequestResults::replay(
+                tx,
+                admitted.id(),
+                admitted.signature(),
+                chrono::Utc::now().timestamp_millis(),
+            )?
+            .unwrap();
+            let envelope: ResultEnvelope<
+                RetainedReply<Method, studio_runtime_store::request_results::AdmittedRequest>,
+            > = serde_json::from_str(&saved.result)?;
+            assert_eq!(
+                envelope.reply.ack,
+                CommittedAck {
+                    stream_id: crate::account_worker::vm_journal_scope("default", &expected_actor),
+                    generation: 7,
+                    cursor: 12
+                }
+            );
+            Ok(())
+        })
+        .await
+        .unwrap();
 }

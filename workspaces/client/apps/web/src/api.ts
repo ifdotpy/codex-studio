@@ -31,6 +31,7 @@ import type {
   GetResult,
   PostResult,
   PostBody,
+  PostInput,
 } from "./apiTypes";
 export type {
   ApiGetPath,
@@ -38,6 +39,7 @@ export type {
   GetResult,
   PostResult,
   PostBody,
+  PostInput,
 } from "./apiTypes";
 
 import type { paths } from "./generated/api";
@@ -702,7 +704,7 @@ export function createApiScope(options: ApiScopeOptions) {
 
   async function post<Path extends PathsFor<"post">>(
     path: Path,
-    body: PostBody<Path>,
+    body: PostInput<Path>,
     options: PostOptions = {},
   ): Promise<PostResult<Path>> {
     if (schemaMismatch) throw new ApiSchemaMismatchError();
@@ -716,7 +718,16 @@ export function createApiScope(options: ApiScopeOptions) {
     try {
       const fetchOptions = {
         parseAs: "json" as const,
-        body,
+        body:
+          path === "/api/native-command" && mutation
+            ? ({
+                ...(body as Omit<
+                  PostBody<"/api/native-command">,
+                  "request_id"
+                >),
+                request_id: mutation.requestId,
+              } satisfies PostBody<"/api/native-command">)
+            : body,
         ...(controller.signal ? { signal: controller.signal } : {}),
         headers: {
           "Content-Type": "application/json",
@@ -833,7 +844,7 @@ export function createApiScope(options: ApiScopeOptions) {
 
   const syncPost = <Path extends PathsFor<"post">>(
     path: Path,
-    body: PostBody<Path>,
+    body: PostInput<Path>,
     options?: Omit<PostOptions, "timeoutMs">,
   ) => post(path, body, { ...options, timeoutMs: 15000 });
 

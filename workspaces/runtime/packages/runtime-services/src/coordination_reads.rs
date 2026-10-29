@@ -7,6 +7,7 @@ use crate::{
 use rusqlite::{OptionalExtension, Transaction};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
+use studio_runtime_schema::persistence::{DeliveryStatus, EventStatus, RecipientDelivery};
 use studio_runtime_store::{SyncDocumentsRepository, system_reads as records};
 
 pub fn delivery_receipts(
@@ -34,16 +35,22 @@ pub fn delivery_receipts(
         WHERE e.agent=?1 AND e.kind='user' AND e.id IN (SELECT value FROM json_each(?2))",
     )?;
     let items = statement
-        .query_map(rusqlite::params![agent, json!(ids).to_string()], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, Option<String>>(2)?,
-                row.get::<_, Option<String>>(3)?,
-                row.get::<_, Option<String>>(4)?,
-                row.get::<_, Option<String>>(5)?,
-            ))
-        })?
+        .query_map(
+            rusqlite::params![
+                agent,
+                serde_json::to_string(ids).map_err(studio_runtime_store::StoreError::from)?
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                ))
+            },
+        )?
         .map(|row| {
             let (id, status, error, metadata, item_id, item) = row?;
             let mut event = records::validate(
@@ -76,13 +83,35 @@ pub fn delivery_receipts(
     Ok(json!({"agent":agent,"items":items}))
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatRead {
+    pub room: Value,
+    pub messages: Vec<ChatMessage>,
+    pub next_before: Option<i64>,
+    pub next_after: Option<i64>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatMessage {
+    pub seq: i64,
+    pub id: String,
+    pub room: String,
+    pub sender: String,
+    pub text: String,
+    pub created: f64,
+    pub deliveries: BTreeMap<String, RecipientDelivery>,
+    pub sender_name: Value,
+}
+
 pub fn chat_read(
     connection: &Transaction<'_>,
     room_id: &str,
     before: Option<i64>,
     after: Option<i64>,
     requested_limit: i64,
-) -> Result<Value, CoordinationError> {
+) -> Result<ChatRead, CoordinationError> {
     if before.is_some() && after.is_some() {
         return Err(CoordinationError::InvalidRequest("Use one message cursor"));
     }
@@ -123,16 +152,37 @@ pub fn chat_read(
         let ids = selection
             .query_map(
                 rusqlite::params![
-                    json!(members).to_string(),
-                    json!(context.projects()).to_string(),
-                    json!(rooms).to_string(),
+                    serde_json::to_string(&members)
+                        .map_err(studio_runtime_store::StoreError::from)?,
+                    serde_json::to_string(context.projects())
+                        .map_err(studio_runtime_store::StoreError::from)?,
+                    serde_json::to_string(&rooms)
+                        .map_err(studio_runtime_store::StoreError::from)?,
                     root_id
                 ],
                 |row| row.get::<_, String>(0),
             )?
             .collect::<Result<Vec<_>, _>>()?;
         (
-            json!({"id":room_id,"name":root.name,"members":members}),
+            Value::Object(serde_json::Map::from_iter([
+                ("id".into(), Value::String(room_id.to_owned())),
+                (
+                    "name".into(),
+                    root.name
+                        .value_or(None)
+                        .cloned()
+                        .map_or(Value::Null, Value::String),
+                ),
+                (
+                    "members".into(),
+                    Value::Array(
+                        members
+                            .iter()
+                            .map(|id| Value::String((*id).to_owned()))
+                            .collect(),
+                    ),
+                ),
+            ])),
             ids,
         )
     } else {
@@ -178,7 +228,15 @@ pub fn chat_read(
     let mut names = context
         .agents()
         .iter()
-        .filter_map(|a| Some((a.id.clone()?, json!(a.name))))
+        .filter_map(|a| {
+            Some((
+                a.id.clone()?,
+                a.name
+                    .value_or(None)
+                    .cloned()
+                    .map_or(Value::Null, Value::String),
+            ))
+        })
         .collect::<BTreeMap<_, _>>();
     for person in room["remoteMembers"].as_array().into_iter().flatten() {
         if let Some(id) = person["id"].as_str().filter(|_| truthy(person.get("name"))) {
@@ -196,89 +254,83 @@ pub fn chat_read(
         ))?;
         let rows = statement.query_map(
             rusqlite::params![
-                json!(room_ids).to_string(),
+                serde_json::to_string(&room_ids).map_err(studio_runtime_store::StoreError::from)?,
                 before,
                 after,
                 (limit + 1) as i64
             ],
             |row| {
-                Ok(
-                    json!({"seq":row.get::<_,i64>(0)?,"id":row.get::<_,String>(1)?,
-                "room":row.get::<_,String>(2)?,"sender":row.get::<_,String>(3)?,
-                "text":row.get::<_,String>(4)?,"created":row.get::<_,f64>(5)?,
-                "deliveries":row.get::<_,String>(6)?}),
-                )
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, f64>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
             },
         )?;
         let mut page_bytes = 0usize;
         let mut more = false;
         for row in rows {
-            let mut message = row?;
-            let id = message["id"].as_str().unwrap_or_default().to_owned();
-            let sender = message["sender"].as_str().unwrap_or_default().to_owned();
-            let deliveries = message["deliveries"].as_str().unwrap_or_default();
+            let (seq, id, message_room, sender, text, created, deliveries) = row?;
             if messages.len() == limit {
                 more = true;
                 break;
             }
-            page_bytes +=
-                message["text"].as_str().unwrap_or_default().len() + deliveries.len() + 256;
+            page_bytes += text.len() + deliveries.len() + 256;
             if !messages.is_empty() && page_bytes > 1_000_000 {
                 more = true;
                 break;
             }
-            message["deliveries"] = serde_json::from_str(deliveries)
-                .map_err(|_| records::invalid("runtime_chat_messages", &id))?;
-            let mut message = records::validate("runtime_chat_messages", &id, message)?;
-            let deliveries = &mut message["deliveries"];
-            if let Some(states) = deliveries.as_object_mut() {
-                for (recipient, status) in states.iter_mut() {
-                    if status.as_str() != Some("queued") {
-                        continue;
-                    }
-                    if let Some(event) = connection
-                        .query_row(
-                            "SELECT status FROM runtime_events WHERE id=?1",
-                            [format!("chat:{id}:{recipient}")],
-                            |row| row.get::<_, String>(0),
-                        )
-                        .optional()?
-                        && matches!(
-                            event.as_str(),
-                            "delivered" | "failed" | "cancelled" | "stored_only"
-                        )
-                    {
-                        let event_id = format!("chat:{id}:{recipient}");
-                        records::validate(
-                            "runtime_events",
-                            &event_id,
-                            json!({"id":event_id,"status":event}),
-                        )?;
-                        *status = Value::String(event);
-                    }
-                }
+            let deliveries = message_deliveries(connection, &id, &deliveries)?;
+            if !(1..=studio_runtime_schema::shared_values::MAX_SAFE_INTEGER).contains(&seq)
+                || !created.is_finite()
+            {
+                return Err(records::invalid("runtime_chat_messages", &id).into());
             }
-            message["senderName"] = names.get(&sender).cloned().unwrap_or(json!(sender));
-            messages.push(message);
+            let sender_name = names
+                .get(&sender)
+                .cloned()
+                .unwrap_or_else(|| Value::String(sender.clone()));
+            messages.push(ChatMessage {
+                seq,
+                id,
+                room: message_room,
+                sender,
+                text,
+                created,
+                deliveries,
+                sender_name,
+            });
         }
         if after.is_none() {
             messages.reverse();
         }
         let next_before = (after.is_none() && more)
-            .then(|| messages.first().map(|m| &m["seq"]))
+            .then(|| messages.first().map(|m| m.seq))
             .flatten();
         let next_after = (if after.is_some() {
             more
         } else {
             before.is_some()
         })
-        .then(|| messages.last().map(|m| &m["seq"]))
+        .then(|| messages.last().map(|m| m.seq))
         .flatten();
-        return Ok(
-            json!({"room":room,"messages":messages,"nextBefore":next_before,"nextAfter":next_after}),
-        );
+        return Ok(ChatRead {
+            room,
+            messages,
+            next_before,
+            next_after,
+        });
     }
-    Ok(json!({"room":room,"messages":[],"nextBefore":null,"nextAfter":null}))
+    Ok(ChatRead {
+        room,
+        messages,
+        next_before: None,
+        next_after: None,
+    })
 }
 
 pub fn delete_room(
@@ -317,5 +369,100 @@ pub fn delete_room(
 impl From<rusqlite::Error> for CoordinationError {
     fn from(error: rusqlite::Error) -> Self {
         Self::Store(error.into())
+    }
+}
+
+fn message_deliveries(
+    connection: &rusqlite::Connection,
+    id: &str,
+    deliveries: &str,
+) -> Result<BTreeMap<String, RecipientDelivery>, studio_runtime_store::StoreError> {
+    let mut deliveries: BTreeMap<String, RecipientDelivery> = serde_json::from_str(deliveries)
+        .map_err(|_| records::invalid("runtime_chat_messages", id))?;
+    for (recipient, delivery) in &mut deliveries {
+        if delivery.status != DeliveryStatus::Queued {
+            continue;
+        }
+        if let Some(event) = connection
+            .query_row(
+                "SELECT status,error FROM runtime_events WHERE id=?1",
+                [format!("chat:{id}:{recipient}")],
+                |row| {
+                    Ok((
+                        row.get::<_, EventStatus>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                    ))
+                },
+            )
+            .optional()?
+        {
+            let status = match event.0 {
+                EventStatus::Delivered => DeliveryStatus::Delivered,
+                EventStatus::Failed => DeliveryStatus::Failed,
+                EventStatus::Cancelled => DeliveryStatus::Cancelled,
+                EventStatus::StoredOnly => DeliveryStatus::StoredOnly,
+                EventStatus::Pending
+                | EventStatus::Reserved
+                | EventStatus::Dispatching
+                | EventStatus::Uncertain => continue,
+            };
+            let event_id = format!("chat:{id}:{recipient}");
+            records::validate(
+                "runtime_events",
+                &event_id,
+                Value::Object(serde_json::Map::from_iter([
+                    ("id".into(), Value::String(event_id.clone())),
+                    ("status".into(), Value::String(event.0.as_str().into())),
+                    (
+                        "error".into(),
+                        event.1.clone().map_or(Value::Null, Value::String),
+                    ),
+                ])),
+            )?;
+            delivery.status = status;
+            delivery.error = event.1;
+        }
+    }
+    Ok(deliveries)
+}
+
+#[cfg(test)]
+mod delivery_tests {
+    use super::*;
+
+    #[test]
+    fn typed_deliveries_reconcile_terminal_errors_without_rewriting_active_events() {
+        let db = rusqlite::Connection::open_in_memory().expect("database");
+        db.execute_batch(
+            "CREATE TABLE runtime_events(id TEXT,status TEXT,error TEXT);
+            INSERT INTO runtime_events VALUES('chat:m:failed','failed','provider refused'),
+            ('chat:m:active','reserved',NULL),('chat:m:done','delivered',NULL);",
+        )
+        .expect("events");
+        let saved = json!({
+            "failed":{"status":"queued","error":null},
+            "active":{"status":"queued","error":null},
+            "done":{"status":"accepted","error":"saved"}
+        });
+        let deliveries = message_deliveries(&db, "m", &saved.to_string()).expect("typed states");
+        assert_eq!(deliveries["failed"].status, DeliveryStatus::Failed);
+        assert_eq!(
+            deliveries["failed"].error.as_deref(),
+            Some("provider refused")
+        );
+        assert_eq!(deliveries["active"].status, DeliveryStatus::Queued);
+        assert_eq!(deliveries["done"].status, DeliveryStatus::Accepted);
+        assert_eq!(deliveries["done"].error.as_deref(), Some("saved"));
+    }
+
+    #[test]
+    fn delivery_reader_rejects_flat_and_unknown_states() {
+        let db = rusqlite::Connection::open_in_memory().expect("database");
+        for saved in [
+            json!({"a":"queued"}),
+            json!({"a":{"status":"future","error":null}}),
+        ] {
+            assert!(message_deliveries(&db, "m", &saved.to_string()).is_err());
+        }
     }
 }

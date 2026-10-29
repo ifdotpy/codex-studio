@@ -15,6 +15,7 @@ import {
 
 import type { RxDocument } from "rxdb";
 import type { PostBody, PostResult } from "../api";
+import { DeliveryStatusValues } from "../generated/persistence";
 
 import { syncDatabase, type SyncDocument } from "./client";
 
@@ -128,7 +129,17 @@ function validStoredReceipt(value: unknown, id: string) {
     (deliveries == null ||
       (typeof deliveries === "object" &&
         !Array.isArray(deliveries) &&
-        Object.values(deliveries).every((item) => typeof item === "string")))
+        Object.values(deliveries).every(
+          (item) =>
+            item !== null &&
+            typeof item === "object" &&
+            !Array.isArray(item) &&
+            "status" in item &&
+            DeliveryStatusValues.some((status) => status === item.status) &&
+            (!("error" in item) ||
+              item.error === null ||
+              typeof item.error === "string"),
+        )))
   );
 }
 

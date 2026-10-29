@@ -1383,16 +1383,12 @@ mod tests {
         store
             .transaction(move |transaction| {
                 transaction.execute(
-                    "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3)",
+                    "INSERT INTO request_results(id,signature,result,created) VALUES(?1,?2,?3,1)",
                     ("operation", "signature", "{}"),
                 )?;
                 transaction.execute(
-                    "INSERT INTO runtime_native_action_receipts(id,signature,receipt,outcome) VALUES(?1,?2,?3,?4)",
-                    ("native", "signature", "{}", "accepted"),
-                )?;
-                transaction.execute(
-                    "INSERT INTO runtime_access_receipts(client,request_id,hash,session,status,record) VALUES(?1,?2,?3,?4,?5,?6)",
-                    ("client", "request", "hash", "session", "complete", "{}"),
+                    "INSERT INTO runtime_outbox(id,kind,owner_kind,owner_id,signature,status,payload,created) VALUES(?1,'native_action','agent','agent',?2,'pending',?3,1)",
+                    ("native", "signature", "{}"),
                 )?;
                 Ok(())
             })
@@ -1410,7 +1406,7 @@ mod tests {
         for (table, statement) in [
             (
                 "runtime_events",
-                "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES('event','agent','message','text','done',1,1)",
+                "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES('event','agent','agent_message','text','delivered',1,1)",
             ),
             (
                 "runtime_event_meta",
@@ -1442,12 +1438,12 @@ mod tests {
         store
             .transaction(move |transaction| {
                 transaction.execute(
-                    "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3)",
+                    "INSERT INTO request_results(id,signature,result,created) VALUES(?1,?2,?3,1)",
                     ("operation", "signature", "{}"),
                 )?;
                 transaction.execute(
                     "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES(?1,?2,?3,?4,?5,?6,?7)",
-                    ("event", "agent", "message", "text", "done", 1, 1),
+                    ("event", "agent", "agent_message", "text", "delivered", 1, 1),
                 )?;
                 Ok(())
             })

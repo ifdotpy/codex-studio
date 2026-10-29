@@ -10,7 +10,7 @@ use studio_runtime_store::RuntimeStore;
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Fixture {
-    canvas_sql: String,
+    pub canvas_sql: String,
     signing_identity: Box<serde_json::value::RawValue>,
     pub data: Value,
 }
@@ -29,6 +29,19 @@ pub fn fixture() -> &'static Fixture {
         serde_json::from_str(include_str!("fixture.json")).expect("frozen multi-server fixture")
     })
 }
+/// Decode each typed corpus directly from the frozen fixture bytes.
+// shared test module; unused in runtime-http
+#[allow(dead_code)]
+pub fn typed_data<T: serde::de::DeserializeOwned>() -> T {
+    #[derive(serde::Deserialize)]
+    struct Data<T> {
+        data: T,
+    }
+    serde_json::from_str::<Data<T>>(include_str!("fixture.json"))
+        .expect("typed frozen fixture")
+        .data
+}
+
 pub async fn store() -> (tempfile::TempDir, Arc<RuntimeStore>) {
     let root = test_directory();
     let store = Arc::new(
@@ -38,7 +51,20 @@ pub async fn store() -> (tempfile::TempDir, Arc<RuntimeStore>) {
     );
     store
         .transaction_with(|tx| {
-            tx.execute_batch(&fixture().canvas_sql)?;
+            // Receipt rows in the frozen snapshot predate the cutover. Tests
+            // create current receipt owners through their caller or migrate
+            // the individual legacy row they exercise.
+            let sql = fixture()
+                .canvas_sql
+                .lines()
+                .filter(|line| {
+                    !line.contains("runtime_access_receipts")
+                        && !line.starts_with("INSERT INTO \"runtime_server_inbox\"")
+                        && !line.starts_with("INSERT INTO \"runtime_server_outbox\"")
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            tx.execute_batch(&sql)?;
             Ok::<_, studio_runtime_store::StoreError>(())
         })
         .await
@@ -70,7 +96,7 @@ pub fn signing_identity() -> &'static studio_runtime_services::remote_transport:
     })
 }
 /// Request fields shared by the service corpus and HTTP caller; cases also carry expectations.
-#[derive(serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct FixtureRequest {
     pub method: String,
     pub target: String,
@@ -79,14 +105,26 @@ pub struct FixtureRequest {
 }
 
 pub fn request(case: &Value) -> Result<SignedRequest, AccessError> {
-    let case: FixtureRequest = serde_json::from_value(case.clone()).expect("fixture request");
+    let headers: Vec<(String, String)> = case["headers"]
+        .as_array()
+        .expect("headers")
+        .iter()
+        .map(|header| {
+            let pair = header.as_array().expect("header pair");
+            (
+                pair[0].as_str().expect("header name").to_owned(),
+                pair[1].as_str().expect("header value").to_owned(),
+            )
+        })
+        .collect();
     SignedRequest::from_headers(
-        &case.method,
-        &case.target,
-        &case.headers,
-        case.raw.as_bytes(),
+        case["method"].as_str().expect("method"),
+        case["target"].as_str().expect("target"),
+        &headers,
+        case["raw"].as_str().expect("raw").as_bytes(),
     )
 }
+
 pub struct Owner;
 impl OwnerLookup for Owner {
     fn observe<'a>(
@@ -123,14 +161,16 @@ pub fn rows(store: &RuntimeStore) -> Value {
         "runtime_access_clients",
         "runtime_access_invites",
         "runtime_access_nonces",
-        "runtime_access_receipts",
+        "request_results",
+        "runtime_outbox",
         "runtime_access_audit",
         "runtime_server_inbox",
         "runtime_server_outbox",
     ] {
         let sql=match table {
             "runtime_access_nonces"=>"SELECT json_array(client,nonce,created) FROM runtime_access_nonces ORDER BY client,nonce".to_owned(),
-            "runtime_access_receipts"=>"SELECT json_array(client,request_id,hash,session,status,record) FROM runtime_access_receipts ORDER BY client,request_id".to_owned(),
+            "request_results"=>"SELECT json_array(id,signature,result,created) FROM request_results ORDER BY id".to_owned(),
+            "runtime_outbox"=>"SELECT json_array(id,kind,status,payload) FROM runtime_outbox ORDER BY id".to_owned(),
             "runtime_access_audit"=>"SELECT json_array(seq,client,actor,action,created) FROM runtime_access_audit ORDER BY seq".to_owned(),
             "runtime_server_inbox"=>"SELECT json_array(id,signature,state,result,created_at,completed_at,principal,actor) FROM runtime_server_inbox ORDER BY id".to_owned(),
             "runtime_server_outbox"=>"SELECT json_array(id,server,body,state,result,fingerprint,attempts,created_at,completed_at) FROM runtime_server_outbox ORDER BY id".to_owned(),

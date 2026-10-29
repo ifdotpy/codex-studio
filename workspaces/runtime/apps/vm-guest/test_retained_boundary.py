@@ -20,11 +20,11 @@ class RetainedBoundary(unittest.TestCase):
         self.assertIsNone(process_start_time(0))
 
     def test_native_protocol_matches_the_rust_owner(self):
-        from native import SUPERVISOR_PROTOCOL_V2
+        from native import SUPERVISOR_PROTOCOL_VERSION
         owner = Path(__file__).resolve().parents[2] / 'packages/runtime-providers/src/supervisor_protocol.rs'
-        version = re.search(r'pub const SUPERVISOR_PROTOCOL_V2: u64 = (\d+);', owner.read_text())
+        version = re.search(r'pub const SUPERVISOR_PROTOCOL_VERSION: u64 = (\d+);', owner.read_text())
         self.assertIsNotNone(version)
-        self.assertEqual(SUPERVISOR_PROTOCOL_V2, int(version.group(1)))
+        self.assertEqual(SUPERVISOR_PROTOCOL_VERSION, int(version.group(1)))
 
 if __name__ == '__main__':
     unittest.main()

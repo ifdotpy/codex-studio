@@ -1129,6 +1129,9 @@ fn publish_work_metadata(
             Some(raw) => serde_json::from_str(&raw)?,
             None => crate::work_write::current_submission_refusal(transaction, record).map_err(
                 |error| match error {
+                    crate::work_write::WorkWriteError::Expired => {
+                        studio_runtime_store::request_results::RequestResultError::Expired.into()
+                    }
                     crate::work_write::WorkWriteError::Store(error) => error,
                     other @ crate::work_write::WorkWriteError::Event(_)
                     | other @ crate::work_write::WorkWriteError::NotImplemented(_)
@@ -2621,6 +2624,8 @@ pub async fn push_preferences(
             | other @ StoreError::SchemaObjectMismatch { .. }
             | other @ StoreError::Sqlite(_)
             | other @ StoreError::CommitOutcomeUnknown(_)
+            | other @ StoreError::RequestResult(_)
+            | other @ StoreError::Outbox(_)
             | other @ StoreError::Json(_)
             | other @ StoreError::InvalidStoredObject { .. }
             | other @ StoreError::SchemaValidation(_)

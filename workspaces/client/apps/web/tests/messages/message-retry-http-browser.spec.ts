@@ -18,6 +18,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { requestId } from "studio-claude-bridge/request-id.ts";
 test("message retry http browser", async ({ page: runnerPage }) => {
   const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const state = await mkdtemp(join(tmpdir(), "studio-retry-http-"));
@@ -104,7 +105,8 @@ test("message retry http browser", async ({ page: runnerPage }) => {
       await page.waitForFunction(() => !!window.outbox);
     };
     await mount();
-    const id = crypto.randomUUID();
+    const id = requestId();
+    assert.equal(id[14], "7", "the persisted intent starts with a UUIDv7");
     const body: import("./helpers.ts").MessageRequest = {
       id,
       room: lead.id,
@@ -159,6 +161,51 @@ test("message retry http browser", async ({ page: runnerPage }) => {
       counts,
       [1, 1],
       "The runtime and message history each contain one stored message",
+    );
+    await page.unroute("**/api/messages");
+    let expiredAttempts = 0;
+    const expired = { ...body, id: "00000000-0001-7000-8000-000000000000" };
+    await page.route("**/api/messages", async (route) => {
+      assert.deepEqual(requestBody(route), expired);
+      expiredAttempts++;
+      const response = await route.fetch();
+      assert.equal(response.status(), 410);
+      await route.fulfill({ response });
+    });
+    const sendExpired = () =>
+      page.evaluate(async (body) => {
+        try {
+          await window.retrySendSend(body);
+          return "accepted";
+        } catch (error) {
+          return String(error);
+        }
+      }, expired);
+    assert.match(await sendExpired(), /expired/i);
+    await mount();
+    await page.waitForFunction(
+      (id) =>
+        window.outbox.entries.some(
+          (entry) => entry.id === id && entry.status === "failed",
+        ),
+      expired.id,
+    );
+    await page.clock.fastForward(16_000);
+    assert.match(await sendExpired(), /expired/i);
+    assert.equal(
+      expiredAttempts,
+      1,
+      "expiry and reload never resend or replace the ID",
+    );
+    assert.equal(
+      required(
+        queryFixtureDatabase(
+          state,
+          "SELECT COUNT(*) AS n FROM runtime_events WHERE id=?",
+          expired.id,
+        )[0],
+      ).n,
+      0,
     );
     expect(errors).toEqual([]);
     console.log(

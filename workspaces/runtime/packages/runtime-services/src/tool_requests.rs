@@ -1,16 +1,22 @@
 //! Durable tool receipt actions shared by HTTP and future provider callback callers.
 pub(crate) mod admission;
+mod callback_storage;
 pub(crate) mod lifecycle;
 pub(crate) mod prepared;
 use crate::event_write::truthy;
+pub use callback_storage::{CallbackTask, delete_callback, get_callback, put_callback};
 use lifecycle::terminal;
-use rusqlite::{Transaction, params};
+use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
+use studio_runtime_schema::persistence::{ExecutionEffectKind, ExecutionEffectStatus};
+use studio_runtime_store::request_results::{AdmittedRequest, RequestResults, ResultEnvelope};
 use studio_runtime_store::{StoreError, system_reads as records};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ToolRequestError {
+    #[error(transparent)]
+    RequestResult(#[from] studio_runtime_store::request_results::RequestResultError),
     #[error("{0}")]
     InvalidRequest(&'static str),
     #[error("Not implemented: requires {0}")]
@@ -34,6 +40,86 @@ pub enum Action<'a> {
 }
 const TABLE: &str = "runtime_tool_requests";
 const PAYLOAD: &str = "payload-store/tool-request-recovery";
+
+fn admitted(task: &Value) -> Result<AdmittedRequest, ToolRequestError> {
+    let value = &task["admitted"];
+    let fields = value
+        .as_object()
+        .filter(|fields| fields.len() == 3)
+        .ok_or_else(|| records::invalid(TABLE, text(task, "id")))?;
+    let id = fields
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| records::invalid(TABLE, text(task, "id")))?;
+    let signature = fields
+        .get("signature")
+        .and_then(Value::as_str)
+        .ok_or_else(|| records::invalid(TABLE, text(task, "id")))?;
+    let created = fields
+        .get("created")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| records::invalid(TABLE, text(task, "id")))?;
+    Ok(AdmittedRequest::from_persisted_fields(
+        id.to_owned(),
+        signature.to_owned(),
+        created,
+    ))
+}
+
+/// Read the exact original tool reply; expiry never authorizes another dispatch.
+pub fn saved_result(
+    connection: &studio_runtime_store::Connection,
+    id: &str,
+) -> Result<Option<Value>, ToolRequestError> {
+    let Some(task) = records::get(connection, TABLE, id)? else {
+        return Ok(None);
+    };
+    if !terminal(&task)? {
+        return Ok(task.get("result").cloned());
+    }
+    let admitted = admitted(&task)?;
+    let now = crate::event_write::unix_time()
+        .map_err(|_| ToolRequestError::InvalidRequest("Invalid request clock"))?;
+    let row = RequestResults::replay(
+        connection,
+        admitted.id(),
+        admitted.signature(),
+        (now * 1000.0) as i64,
+    )?;
+    row.map(|row| {
+        serde_json::from_str::<ResultEnvelope<studio_runtime_store::ToolResultRecord>>(&row.result)
+            .map(|result| result.reply.into_value())
+            .map_err(StoreError::from)
+            .map_err(Into::into)
+    })
+    .transpose()
+}
+
+/// Settle only an already admitted task. Completing old work is allowed after TTL.
+pub fn settle_result(
+    tx: &Transaction<'_>,
+    id: &str,
+    result: &Value,
+) -> Result<(), ToolRequestError> {
+    let task = records::get(tx, TABLE, id)?
+        .ok_or(ToolRequestError::InvalidRequest("Unknown tool task"))?;
+    if !terminal(&task)? {
+        return Ok(());
+    }
+    let admitted = admitted(&task)?;
+    RequestResults::settle(
+        tx,
+        &admitted,
+        &ResultEnvelope {
+            actor: task["agent"].as_str().map(str::to_owned),
+            reply: studio_runtime_store::ToolResultRecord::from_value(result.clone())
+                .map_err(StoreError::from)?,
+            references: Vec::new(),
+        },
+    )?;
+    tx.execute("UPDATE runtime_tool_requests SET record=json_remove(record,'$.result','$._payloadBlobs') WHERE id=?1",[id])?;
+    Ok(())
+}
 
 pub fn execute(
     tx: &Transaction<'_>,
@@ -65,6 +151,9 @@ fn execute_with_payload_recovery(
 ) -> Result<Value, ToolRequestError> {
     let actor = crate::event_write::checked_agent(tx, actor_id).map_err(|e| match e {
         crate::event_write::EventWriteError::Store(e) => ToolRequestError::Store(e),
+        crate::event_write::EventWriteError::RequestResult(error) => {
+            ToolRequestError::RequestResult(error)
+        }
         crate::event_write::EventWriteError::InvalidStoredObject { object, id } => {
             ToolRequestError::Store(records::invalid(object, &id))
         }
@@ -146,26 +235,16 @@ fn execute_with_payload_recovery(
         }
         save(tx, &record, &actor, payloads)?;
     }
-    if !cancel {
-        if !terminal(&record)?
-            && record.get("operationResult").is_none()
-            && let Some(result) = operation_result(tx, text(&record, "id"))?
-        {
-            record["operationApplied"] = json!(true);
-            record["operationResult"] = result;
-            record["evidenceSource"] = json!("operation_receipt");
-        }
-        if let Some(ids) = record["agentIds"].as_array().filter(|ids| !ids.is_empty()) {
-            let states=ids.iter().map(|id| {
+    if !cancel && let Some(ids) = record["agentIds"].as_array().filter(|ids| !ids.is_empty()) {
+        let states=ids.iter().map(|id| {
                 let child=records::get(tx,"runtime_agents",id.as_str().unwrap_or_default())?;
                 Ok::<Value,StoreError>(match child.filter(|child|child["parentId"]==actor_id) {
                     Some(child)=>json!({"id":id,"name":child["name"],"status":child["status"],"turnId":child["turnId"],"model":child["model"],"deleted":truthy(child.get("deletedAt"))}),
                     None=>json!({"id":id,"absent":true}),
                 })
             }).collect::<Result<Vec<_>,_>>()?;
-            record["agents"] = json!(states);
-            record["registryObservedAt"] = json!(now);
-        }
+        record["agents"] = json!(states);
+        record["registryObservedAt"] = json!(now);
     }
     if payloads.is_none()
         && let Some(result) = record.get_mut("result")
@@ -194,7 +273,7 @@ impl PayloadAccess for DiskPayloads<'_> {
 /// Maximum requests in the recovery list, measured in receipt rows.
 const REQUEST_LIST_LIMIT: i64 = 50;
 fn list_records(tx: &Transaction<'_>, actor: &str) -> Result<Vec<Value>, ToolRequestError> {
-    let mut statement = tx.prepare_cached("SELECT id,record FROM runtime_tool_requests WHERE json_extract(record,'$.agent')=?1 ORDER BY json_extract(record,'$.updated') DESC LIMIT ?2")?;
+    let mut statement = tx.prepare_cached("SELECT id,record FROM runtime_tool_requests WHERE agent=?1 AND kind='managed_tool' ORDER BY updated DESC LIMIT ?2")?;
     let rows = statement.query_map(params![actor, REQUEST_LIST_LIMIT], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     })?;
@@ -205,38 +284,74 @@ fn list_records(tx: &Transaction<'_>, actor: &str) -> Result<Vec<Value>, ToolReq
     .collect()
 }
 
-pub(crate) fn resolve(
-    tx: &Transaction<'_>,
+pub fn resolve(
+    tx: &studio_runtime_store::Connection,
     actor: &str,
     id: &str,
 ) -> Result<Option<Value>, ToolRequestError> {
-    if let Some(record) = records::get(tx, TABLE, id)?.filter(|r| r["agent"] == actor) {
-        return Ok(Some(record));
+    match resolve_raw(tx, actor, id)? {
+        Selection::Found(key, raw) => Ok(Some(records::decode(TABLE, &key, &raw)?)),
+        Selection::Missing => Ok(None),
+        Selection::Ambiguous => Ok(Some(
+            json!({"id":id,"stage":"ambiguous","outcome":"unknown","message":"Use the canonical request id from list; this short id names several requests."}),
+        )),
+    }
+}
+
+pub fn resolve_admission(
+    tx: &studio_runtime_store::Connection,
+    actor: &str,
+    id: &str,
+) -> Result<Option<AdmittedRequest>, ToolRequestError> {
+    #[derive(serde::Deserialize)]
+    struct Admission {
+        admitted: AdmittedRequest,
+    }
+    match resolve_raw(tx, actor, id)? {
+        Selection::Found(_, raw) => Ok(Some(
+            serde_json::from_str::<Admission>(&raw)
+                .map_err(StoreError::from)?
+                .admitted,
+        )),
+        Selection::Missing => Ok(None),
+        Selection::Ambiguous => Err(ToolRequestError::InvalidRequest("Ambiguous tool request")),
+    }
+}
+
+enum Selection {
+    Found(String, String),
+    Missing,
+    Ambiguous,
+}
+fn resolve_raw(
+    tx: &studio_runtime_store::Connection,
+    actor: &str,
+    id: &str,
+) -> Result<Selection, ToolRequestError> {
+    if !records::exists(tx, TABLE)? {
+        return Ok(Selection::Missing);
+    }
+    let get = |key: &str| -> Result<Option<String>, ToolRequestError> {
+        Ok(tx.query_row("SELECT record FROM runtime_tool_requests WHERE id=?1 AND json_extract(record,'$.agent')=?2", params![key, actor], |row| row.get(0)).optional()?)
+    };
+    if let Some(raw) = get(id)? {
+        return Ok(Selection::Found(id.to_owned(), raw));
     }
     let mut statement = tx.prepare_cached(
-        "SELECT request FROM runtime_tool_request_aliases WHERE agent=?1 AND alias=?2 LIMIT 2",
+        "SELECT id FROM runtime_tool_requests WHERE agent=?1 AND EXISTS(SELECT 1 FROM json_each(record,'$.aliases') WHERE value=?2) LIMIT 2",
     )?;
     let aliases = statement
         .query_map(params![actor, id], |row| row.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?;
-    for request in &aliases {
-        records::validate(
-            "runtime_tool_request_aliases",
-            id,
-            json!({"agent":actor,"alias":id,"request":request}),
-        )?;
-    }
     if aliases.len() > 1 {
-        return Ok(Some(
-            json!({"id":id,"stage":"ambiguous","outcome":"unknown","message":"Use the canonical request id from list; this short id names several requests."}),
-        ));
+        return Ok(Selection::Ambiguous);
     }
-    aliases
-        .first()
-        .map(|id| records::get(tx, TABLE, id).map(|r| r.filter(|r| r["agent"] == actor)))
-        .transpose()
-        .map(Option::flatten)
-        .map_err(Into::into)
+    match aliases.first() {
+        Some(key) => {
+            Ok(get(key)?.map_or(Selection::Missing, |raw| Selection::Found(key.clone(), raw)))
+        }
+        None => Ok(Selection::Missing),
+    }
 }
 
 fn refresh(
@@ -264,7 +379,7 @@ fn refresh(
         let root = payloads.ok_or(ToolRequestError::RequiresDependency(PAYLOAD))?;
         *record = root.resolve(record)?;
     }
-    let saved = records::get(tx, "runtime_tool_results", text(record, "id"))?;
+    let saved = saved_result(tx, text(record, "id"))?;
     let has_saved_payload = saved
         .as_ref()
         .is_some_and(|result| truthy(result.get("_payloadBlobs")));
@@ -279,6 +394,9 @@ fn refresh(
         return Ok(());
     }
     if is_terminal {
+        if let Some(result) = saved {
+            record["result"] = result;
+        }
         populate_spawned_agent_ids(record);
         return Ok(());
     }
@@ -303,7 +421,7 @@ fn refresh(
         // it passes the result to finish_tool_request (codex_tool_requests.py:301-307, 512-520).
         expire(&mut result, now);
     }
-    let committed = operation_result(tx, text(record, "id"))?.is_some();
+    let committed = record["operationApplied"] == true || record["deliveryCertainty"] == "written";
     if lifecycle::settle(record, &result, committed)? {
         // Store the same recovered value used for settlement. This keeps an
         // unchanged externalized unknown result from comparing unequal on the
@@ -433,9 +551,6 @@ fn relocation_error(error: crate::relocation::RelocationError) -> ToolRequestErr
     }
 }
 
-fn operation_result(tx: &Transaction<'_>, id: &str) -> Result<Option<Value>, ToolRequestError> {
-    records::get(tx, "runtime_operation_receipts", id).map_err(Into::into)
-}
 fn save(
     tx: &Transaction<'_>,
     record: &Value,
@@ -459,23 +574,28 @@ fn save(
     if let Some((root, decision)) = decision.as_ref() {
         root.publish(&decision.writes)?;
     }
-    reconcile_effect(tx, "tool_requests", persisted, actor)?;
+    reconcile_effect(tx, ExecutionEffectKind::ToolRequests, persisted, actor)?;
     tx.execute(
         "UPDATE runtime_tool_requests SET record=?1 WHERE id=?2",
         params![persisted.to_string(), id],
     )?;
+    if terminal(persisted)?
+        && let Some(result) = record.get("result")
+    {
+        settle_result(tx, id, result)?;
+    }
     Ok(())
 }
 pub(crate) fn reconcile_effect(
     tx: &Transaction<'_>,
-    kind: &str,
+    kind: ExecutionEffectKind,
     record: &Value,
     actor: &Value,
 ) -> Result<(), StoreError> {
     if !records::exists(tx, "runtime_execution_effects")? {
         return Ok(());
     }
-    let key = format!("{kind}:{}", text(record, "id"));
+    let key = format!("{}:{}", kind.as_str(), text(record, "id"));
     let old = records::get(tx, "runtime_execution_effects", &key)?;
     let mut run = old
         .as_ref()
@@ -524,7 +644,13 @@ pub(crate) fn reconcile_effect(
         return Ok(());
     };
     let run_id = old.as_ref().map(|v| &v["runId"]).unwrap_or(&run["id"]);
-    let value = json!({"id":key,"runId":run_id,"kind":kind,"referenceId":record["id"],"attemptId":old.as_ref().map(|v|&v["attemptId"]).unwrap_or(&run["latestAttemptId"]),"requestId":record.get("request_id").filter(|v|truthy(Some(v))).or_else(||record.get("callId")).or_else(||record.get("requestId")),"status":record.get("stage").unwrap_or(&record["status"]),"outcome":record["outcome"],"resultReference":if truthy(record.get("finished")){record["id"].clone()}else{Value::Null}});
+    let status: ExecutionEffectStatus = record
+        .get("stage")
+        .unwrap_or(&record["status"])
+        .as_str()
+        .and_then(|value| value.parse().ok())
+        .ok_or_else(|| records::invalid("runtime_execution_effects", &key))?;
+    let value = json!({"id":key,"runId":run_id,"kind":kind,"referenceId":record["id"],"attemptId":old.as_ref().map(|v|&v["attemptId"]).unwrap_or(&run["latestAttemptId"]),"requestId":record.get("request_id").filter(|v|truthy(Some(v))).or_else(||record.get("callId")).or_else(||record.get("requestId")),"status":status,"outcome":record["outcome"],"resultReference":if truthy(record.get("finished")){record["id"].clone()}else{Value::Null}});
     records::validate("runtime_execution_effects", &key, value.clone())?;
     if old.as_ref() != Some(&value) {
         tx.execute("INSERT INTO runtime_execution_effects(id,run,kind,reference,record) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(id) DO UPDATE SET record=excluded.record",params![key,run_id.as_str(),kind,record["id"].as_str(),value.to_string()])?;
@@ -556,5 +682,58 @@ pub fn expire(result: &mut Value, now: f64) {
         .is_some_and(|expiry| now >= expiry)
     {
         *result = json!({"success":true,"contentItems":[{"type":"inputText","text":json!({"outcome":"unknown","expired":true,"detail":"The command output has expired. Do not run the command again."}).to_string()}]});
+    }
+}
+
+#[cfg(test)]
+mod admission_lookup_tests {
+    use super::*;
+
+    #[test]
+    fn direct_and_alias_lookup_preserve_ownership_and_ambiguity() {
+        let db = studio_runtime_store::Connection::open_in_memory().unwrap();
+        assert!(
+            resolve_admission(&db, "agent", "missing")
+                .unwrap()
+                .is_none()
+        );
+        db.execute_batch(
+            "CREATE TABLE runtime_tool_requests(id TEXT PRIMARY KEY, agent TEXT, record TEXT)",
+        )
+        .unwrap();
+        for (id, agent, aliases) in [
+            ("one", "agent", "[\"shared\",\"unique\"]"),
+            ("two", "agent", "[\"shared\",\"one\"]"),
+            ("other", "other", "[\"unique\"]"),
+        ] {
+            let raw = format!(
+                r#"{{"id":"{id}","agent":"{agent}","aliases":{aliases},"admitted":{{"id":"admitted-{id}","signature":"sig","created":1}}}}"#
+            );
+            db.execute(
+                "INSERT INTO runtime_tool_requests VALUES(?1,?2,?3)",
+                params![id, agent, raw],
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            resolve_admission(&db, "agent", "one")
+                .unwrap()
+                .unwrap()
+                .id(),
+            "admitted-one"
+        );
+        assert_eq!(
+            resolve_admission(&db, "agent", "unique")
+                .unwrap()
+                .unwrap()
+                .id(),
+            "admitted-one"
+        );
+        assert!(resolve_admission(&db, "agent", "other").unwrap().is_none());
+        assert!(resolve_admission(&db, "agent", "shared").is_err());
+        assert_eq!(
+            resolve(&db, "agent", "shared").unwrap().unwrap()["stage"],
+            "ambiguous"
+        );
     }
 }

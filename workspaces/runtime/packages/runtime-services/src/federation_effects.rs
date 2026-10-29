@@ -100,24 +100,13 @@ impl FederationAction {
     }
 }
 
-pub(crate) fn snapshot(
-    tx: &Transaction<'_>,
-    peer: &str,
-    room: &str,
-    message: &str,
-    now: f64,
-) -> Result<Snapshot> {
+pub(crate) fn snapshot(tx: &Transaction<'_>, peer: &str, room: &str, now: f64) -> Result<Snapshot> {
     Snapshot::checked(
-        core::SnapshotKeys {
-            peer,
-            room,
-            message,
-        },
+        core::SnapshotKeys { peer, room },
         Repo::record(tx, Table::Settings, "global", peer)?
             .unwrap_or_else(|| json!({"enabled":false})),
         Repo::record(tx, Table::Peer, peer, peer)?.ok_or(Error::Forbidden("unknown peer"))?,
         Repo::record(tx, Table::Room, room, peer)?,
-        Repo::record(tx, Table::Inbox, message, peer)?,
         Repo::room_rate(tx, peer, room, now)?,
     )
 }
@@ -167,7 +156,7 @@ pub async fn handle(
     let raw = request.raw.to_vec();
     let identity_for_effect = Arc::clone(&identity);
     let result=store.transaction_with(move |tx| {
-        let state=snapshot(tx,&peer_id,"","",now)?;
+        let state=snapshot(tx,&peer_id,"",now)?;
         state.authorize(matches!(action,FederationAction::Status))?;
         if let (Some(observed),Some(expected))=(&observed,&state.peer.whois_user)
             && observed.to_lowercase()!=expected.to_lowercase() { return Err(Error::Forbidden("origin identity mismatch")); }
@@ -183,7 +172,10 @@ pub async fn handle(
         check_identity(tx,identity_for_effect.as_ref())?;
         match action {
             FederationAction::Pair => Err(Error::Invalid("action")),
-            FederationAction::Message=>receive_locked(tx,&peer_id,&body["envelope"],now),
+            FederationAction::Message=>{
+                let receipt = receive_locked(tx,&peer_id,&body["envelope"],now)?;
+                Ok(json!({"protocol":receipt.protocol,"messageId":receipt.message_id,"accepted":receipt.accepted,"room":receipt.room,"sequence":receipt.sequence.map_or(Value::Null, Value::from)}))
+            },
             FederationAction::Pull=>pull_locked(tx,&peer_id,&body,&identity_for_effect,now),
             FederationAction::Status=>Ok(json!({"protocol":PROTOCOL,"approved":state.peer.allowed(),"revoked":state.peer.revoked()})),
         }
@@ -383,16 +375,21 @@ pub async fn receive(
     peer: &str,
     envelope: &Value,
     now: f64,
-) -> Result<Value> {
+) -> Result<core::MessageReceipt> {
     let peer = peer.to_owned();
     let envelope = envelope.clone();
     store
         .transaction_with(move |tx| receive_locked(tx, &peer, &envelope, now))
         .await
 }
-fn receive_locked(tx: &Transaction<'_>, peer: &str, envelope: &Value, now: f64) -> Result<Value> {
+fn receive_locked(
+    tx: &Transaction<'_>,
+    peer: &str,
+    envelope: &Value,
+    now: f64,
+) -> Result<core::MessageReceipt> {
     let message = core::checked_envelope(envelope)?;
-    let state = snapshot(tx, peer, &message.room, &message.id, now)?;
+    let state = snapshot(tx, peer, &message.room, now)?;
     state.authorize(false)?;
     if message.sender_server != peer {
         return Err(Error::Forbidden("sender identity mismatch"));
@@ -403,6 +400,22 @@ fn receive_locked(tx: &Transaction<'_>, peer: &str, envelope: &Value, now: f64) 
         &message.signature,
     )?;
     consume_nonce(tx, peer, &message.nonce, message.timestamp, now as i64)?;
+    let hash = core::envelope_hash(envelope)?;
+    use crate::event_write::{CallerAdmission, RequestKey, begin_request};
+    let raw = studio_runtime_store::multi_server_delivery::remote_result_key(
+        "federation-inbox",
+        &[peer],
+        &message.id,
+    );
+    let admitted = match begin_request::<core::MessageReceipt>(
+        tx,
+        RequestKey::new("federation-inbox", &[peer], &message.request_id).raw(&raw),
+        &hash,
+        chrono::Utc::now().timestamp_millis(),
+    )? {
+        CallerAdmission::Fresh(admitted) => admitted,
+        CallerAdmission::Replay(saved) => return Ok(saved),
+    };
     let mut decision = core::decide_receive(&state, envelope, now)?;
     if let Some(chat) = &decision.chat {
         // The inbox is authoritative for replay. A pre-existing chat without its inbox
@@ -418,7 +431,7 @@ fn receive_locked(tx: &Transaction<'_>, peer: &str, envelope: &Value, now: f64) 
             return Err(Error::Conflict("chat exists without its inbox receipt"));
         }
         tx.execute("INSERT INTO runtime_chat_messages(id,room,sender,text,created,deliveries) VALUES(?1,?2,?3,?4,?5,'{}')",params![chat.id,chat.room,chat.sender,chat.text,chat.created]).map_err(StoreError::from)?;
-        decision.receipt["sequence"] = json!(tx.last_insert_rowid());
+        decision.receipt.sequence = Some(tx.last_insert_rowid());
         for member in &chat.recipients {
             let agent = AgentRepository::get(tx, &AgentId::from(member.as_str()))?
                 .ok_or(Error::Invalid("room.localMembers"))?;
@@ -451,9 +464,14 @@ fn receive_locked(tx: &Transaction<'_>, peer: &str, envelope: &Value, now: f64) 
         save_room(tx, peer, room)?;
     }
     if let Some(inbox) = &mut decision.inbox {
-        inbox["receipt"] = decision.receipt.clone();
+        inbox["requestId"] = json!(message.request_id);
+        inbox
+            .as_object_mut()
+            .ok_or(Error::Invalid("inbox"))?
+            .remove("receipt");
         Repo::put(tx, Table::Inbox, &message.id, peer, inbox)?;
     }
+    crate::event_write::settle_request(tx, &admitted, None, &decision.receipt)?;
     Ok(decision.receipt)
 }
 
@@ -476,7 +494,7 @@ pub(crate) fn save_room(tx: &Transaction<'_>, peer: &str, room: &Value) -> Resul
 }
 
 pub(crate) fn outbound(item: &Value, identity: &RemoteIdentity, now: i64) -> Result<Value> {
-    let mut envelope = json!({"protocol":PROTOCOL,"senderServer":identity.id(),"id":item["id"],"kind":item["kind"],"room":item["room"],"payload":item["payload"],"created":item["created"],"timestamp":now,"nonce":transport::new_nonce()?});
+    let mut envelope = json!({"protocol":PROTOCOL,"senderServer":identity.id(),"id":item["id"],"requestId":item["requestId"],"kind":item["kind"],"room":item["room"],"payload":item["payload"],"created":item["created"],"timestamp":now,"nonce":transport::new_nonce()?});
     envelope["signature"] =
         json!(identity.sign(&transport::federation_message_signing_bytes(&envelope)?));
     core::checked_envelope(&envelope)?;
@@ -491,7 +509,7 @@ pub async fn pull(store: Arc<RuntimeStore>, peer: &str, body: &Value, now: f64) 
     let identity = Arc::new(identity);
     store
         .transaction_with(move |tx| {
-            snapshot(tx, &peer, "", "", now)?.authorize(false)?;
+            snapshot(tx, &peer, "", now)?.authorize(false)?;
             check_identity(tx, &identity)?;
             pull_locked(tx, &peer, &body, &identity, now)
         })
@@ -530,8 +548,8 @@ fn pull_locked(
     }
     let mut receipts = Vec::new();
     for (id, mut item) in Repo::batch(tx, Table::Inbox, peer, now)? {
-        receipts.push(json!({"id":id,"hash":item["hash"]}));
-        item["ack"] = json!("sent");
+        receipts.push(json!({"id":id,"hash":item["hash"],"requestId":item["requestId"]}));
+        item["ack"] = json!(studio_runtime_schema::persistence::FederationAckState::Sent);
         Repo::put(tx, Table::Inbox, &id, peer, &item)?;
     }
     Ok(json!({"protocol":PROTOCOL,"messages":messages,"acks":receipts,"acknowledged":acknowledged}))
@@ -542,24 +560,33 @@ pub(crate) fn acknowledge_outbox(
     peer: &str,
     ack: &Value,
     now: f64,
-    publish_delivery: bool,
+    _publish_delivery: bool,
 ) -> Result<bool> {
     let id = ack["id"].as_str().ok_or(Error::Invalid("ack.id"))?;
     let hash = ack["hash"].as_str().ok_or(Error::Invalid("ack.hash"))?;
-    let Some(mut item) = Repo::record(tx, Table::Outbox, id, peer)? else {
-        return Ok(false);
+    let root = ack["requestId"]
+        .as_str()
+        .ok_or(Error::Invalid("ack.requestId"))?;
+    let Some(item) = Repo::record(tx, Table::Outbox, id, peer)? else {
+        let key = studio_runtime_store::multi_server_delivery::remote_result_key(
+            "federation-outbox",
+            &[peer],
+            root,
+        );
+        return Ok(
+            crate::event_write::replay_request::<core::FederationDeliveryReply>(
+                tx,
+                &key,
+                hash,
+                chrono::Utc::now().timestamp_millis(),
+            )?
+            .is_some_and(|saved| saved.reply.ack.id == id && saved.reply.ack.hash == hash),
+        );
     };
-    if item["hash"] != hash {
+    if item["hash"] != hash || item["requestId"] != root {
         return Ok(false);
     }
-    item["status"] = json!("delivered");
-    item["delivered"] = json!(now);
-    item["error"] = Value::Null;
-    Repo::put(tx, Table::Outbox, id, peer, &item)?;
-    if !publish_delivery {
-        return Ok(true);
-    }
-    if item["kind"] == "room-accept" {
+    if item["kind"] == core::MessageKind::RoomAccept.as_str() {
         let room_id = item["room"].as_str().ok_or(Error::Invalid("outbox.room"))?;
         if let Some(mut room) = Repo::record(tx, Table::Room, room_id, peer)?
             && room["peerId"] == peer
@@ -580,17 +607,90 @@ pub(crate) fn acknowledge_outbox(
         .optional()
         .map_err(StoreError::from)?;
     if let Some(raw) = raw {
-        let mut deliveries: Value = serde_json::from_str(&raw).map_err(StoreError::from)?;
-        let object = deliveries
-            .as_object_mut()
-            .ok_or(Error::Invalid("chat.deliveries"))?;
-        object.insert(format!("remote:{peer}"), json!("delivered"));
+        let mut deliveries: std::collections::BTreeMap<
+            String,
+            studio_runtime_schema::persistence::RecipientDelivery,
+        > = serde_json::from_str(&raw).map_err(StoreError::from)?;
+        deliveries.insert(
+            format!("remote:{peer}"),
+            studio_runtime_schema::persistence::RecipientDelivery {
+                status: studio_runtime_schema::persistence::DeliveryStatus::Delivered,
+                error: None,
+            },
+        );
         tx.execute(
             "UPDATE runtime_chat_messages SET deliveries=?1 WHERE id=?2",
-            params![transport::canonical_json(&deliveries)?, id],
+            params![
+                serde_json::to_string(&deliveries).map_err(StoreError::from)?,
+                id
+            ],
         )
         .map_err(StoreError::from)?;
     }
+    let admission = item["admission"]
+        .as_object()
+        .filter(|v| v.len() == 3)
+        .ok_or(Error::Invalid("outbox.admission"))?;
+    let admitted = studio_runtime_store::request_results::AdmittedRequest::from_persisted_fields(
+        admission
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or(Error::Invalid("outbox.admission.id"))?
+            .to_owned(),
+        admission
+            .get("signature")
+            .and_then(Value::as_str)
+            .ok_or(Error::Invalid("outbox.admission.signature"))?
+            .to_owned(),
+        admission
+            .get("created")
+            .and_then(Value::as_i64)
+            .ok_or(Error::Invalid("outbox.admission.created"))?,
+    );
+    let receipt = ack
+        .get("receipt")
+        .map(|value| {
+            Ok::<_, Error>(core::MessageReceipt {
+                protocol: value
+                    .get("protocol")
+                    .and_then(Value::as_u64)
+                    .and_then(|v| u32::try_from(v).ok())
+                    .ok_or(Error::Invalid("ack.receipt.protocol"))?,
+                message_id: value
+                    .get("messageId")
+                    .and_then(Value::as_str)
+                    .ok_or(Error::Invalid("ack.receipt.messageId"))?
+                    .to_owned(),
+                accepted: value
+                    .get("accepted")
+                    .and_then(Value::as_bool)
+                    .ok_or(Error::Invalid("ack.receipt.accepted"))?,
+                room: value
+                    .get("room")
+                    .and_then(Value::as_str)
+                    .ok_or(Error::Invalid("ack.receipt.room"))?
+                    .to_owned(),
+                sequence: match value.get("sequence") {
+                    None | Some(Value::Null) => None,
+                    Some(v) => Some(v.as_i64().ok_or(Error::Invalid("ack.receipt.sequence"))?),
+                },
+            })
+        })
+        .transpose()?;
+    let reply = core::FederationDeliveryReply {
+        ack: core::FederationAck {
+            id: id.to_owned(),
+            hash: hash.to_owned(),
+            request_id: root.to_owned(),
+        },
+        receipt,
+    };
+    crate::event_write::settle_request(tx, &admitted, None, &reply)?;
+    tx.execute(
+        "DELETE FROM runtime_federation_outbox WHERE id=?1 AND peer_id=?2",
+        params![id, peer],
+    )
+    .map_err(StoreError::from)?;
     Ok(true)
 }
 
@@ -616,7 +716,7 @@ pub(crate) async fn reconcile(
     let response = response.clone();
     store
         .transaction_with(move |tx| {
-            let state = snapshot(tx, &peer, "", "", now)?;
+            let state = snapshot(tx, &peer, "", now)?;
             state.authorize(false)?;
             if state.peer.public_key != expected_key {
                 return Err(Error::Conflict("peer key changed"));
@@ -635,7 +735,8 @@ pub(crate) async fn reconcile(
                 if let Some(mut item) = Repo::record(tx, Table::Inbox, id, &peer)?
                     && item["hash"] == ack["hash"]
                 {
-                    item["ack"] = json!("confirmed");
+                    item["ack"] =
+                        json!(studio_runtime_schema::persistence::FederationAckState::Confirmed);
                     Repo::put(tx, Table::Inbox, id, &peer, &item)?;
                 }
             }

@@ -28,6 +28,27 @@ fn record(store: &RuntimeStore, id: &str) -> Value {
 }
 
 #[test]
+fn recovery_without_start_is_readable_only_when_closed() {
+    let root = fixtures::tempdir();
+    let case = running(&fixtures::corpus(root.path()));
+    let mut record = case["before"].clone();
+    record["reattachRecovery"] = json!({"accountKey":"account","epoch":2,"status":"not_reattachable","proof":"legacy","error":"nested","finished":null});
+    assert!(MonitorSnapshot::checked(record.clone(), case["actor"].clone()).is_ok());
+    record["reattachRecovery"]["error"] = Value::Null;
+    assert!(MonitorSnapshot::checked(record.clone(), case["actor"].clone()).is_ok());
+    record["reattachRecovery"]["unexpected"] = json!(true);
+    assert!(MonitorSnapshot::checked(record.clone(), case["actor"].clone()).is_err());
+    record["reattachRecovery"]
+        .as_object_mut()
+        .unwrap()
+        .remove("unexpected");
+    for status in ["running", "starting"] {
+        record["reattachRecovery"]["status"] = json!(status);
+        assert!(MonitorSnapshot::checked(record.clone(), case["actor"].clone()).is_err());
+    }
+}
+
+#[test]
 fn stall_probe_generation_requires_start_but_inactive_residue_is_readable() {
     let root = fixtures::tempdir();
     let case = running(&fixtures::corpus(root.path()));

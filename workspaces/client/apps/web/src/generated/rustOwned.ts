@@ -14,6 +14,17 @@ export interface components {
       /** Format: uint16 */
       status?: number | null | undefined;
     };
+    /** @enum {string} */
+    DeliveryStatus:
+      | "queued"
+      | "stored_only"
+      | "accepted"
+      | "sent"
+      | "cancelled"
+      | "pending"
+      | "delivered"
+      | "failed"
+      | "uncertain";
     /** @description Committed draft view and its native workspace metadata. */
     DraftSnapshot: {
       conflicts: components["schemas"]["DraftVersion"][];
@@ -142,6 +153,11 @@ export interface components {
           /** @constant */
           type: "channel";
         };
+    /** @description One recipient's delivery state. Error text is separate from the closed status. */
+    RecipientDelivery: {
+      error: string | null;
+      status: components["schemas"]["DeliveryStatus"];
+    };
     RecoveryStatus: {
       blocked: string | null;
       degraded: boolean;
@@ -202,6 +218,18 @@ export interface components {
 export type $defs = Record<string, never>;
 export type operations = Record<string, never>;
 
+export const DeliveryStatus = {
+  queued: "queued",
+  stored_only: "stored_only",
+  accepted: "accepted",
+  sent: "sent",
+  cancelled: "cancelled",
+  pending: "pending",
+  delivered: "delivered",
+  failed: "failed",
+  uncertain: "uncertain",
+} as const;
+export type DeliveryStatus = components["schemas"]["DeliveryStatus"];
 export const Durability = {
   "sqlite-full-sync-per-request": "sqlite-full-sync-per-request",
 } as const;
@@ -219,6 +247,7 @@ export type MarkdownNode = components["schemas"]["MarkdownNode"];
 export type MarkdownSentence = components["schemas"]["MarkdownSentence"];
 export type MarkdownTree = components["schemas"]["MarkdownTree"];
 export type NativeVoiceEvent = components["schemas"]["NativeVoiceEvent"];
+export type RecipientDelivery = components["schemas"]["RecipientDelivery"];
 export type RecoveryStatus = components["schemas"]["RecoveryStatus"];
 export type ReplyTimingDiagnostic =
   components["schemas"]["ReplyTimingDiagnostic"];

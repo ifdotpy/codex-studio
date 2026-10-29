@@ -611,12 +611,28 @@ async fn session_reply(
             value,
         ));
     }
+    let admission = if call.method == Method::ThreadUnsubscribe {
+        driver::provider_admission(
+            context.store,
+            context.transfer,
+            context.agent,
+            &call.operation,
+        )
+        .await?
+    } else {
+        driver::ProviderAdmission {
+            root_request_id: String::new(),
+            admitted_request: None,
+        }
+    };
     let mut last_receipt = None;
     for attempt in 0..2 {
         let receipt = (if let Some(thread_id) = &call.transfer_source_thread {
             context
                 .session
                 .transfer_provider_request(TransferProviderRequest {
+                    root_request_id: admission.root_request_id.clone(),
+                    admitted_request: admission.admitted_request.clone(),
                     transfer_id: context.transfer.into(),
                     member: context.agent.into(),
                     source_account: context.account.into(),
@@ -632,6 +648,8 @@ async fn session_reply(
             context
                 .session
                 .provider_request(ProviderRequest {
+                    root_request_id: admission.root_request_id.clone(),
+                    admitted_request: admission.admitted_request.clone(),
                     account: context.account.into(),
                     operation: call.operation.clone(),
                     actor: call.actor.clone(),
@@ -644,6 +662,7 @@ async fn session_reply(
                 .await
         })
         .map_err(|error| match error {
+            AccountSessionError::Expired => TransferError::Expired,
             AccountSessionError::Requires(name) => TransferError::Requires(name),
             AccountSessionError::Refused(_)
             | AccountSessionError::InvalidResponse(_)
@@ -1018,6 +1037,7 @@ impl TransferExecutor for AccountTransferExecutor {
                 if self.session.current_scope(source_account).is_none() {
                     self.session.ensure_session(source_account).await.map_err(
                         |error| match error {
+                            AccountSessionError::Expired => TransferError::Expired,
                             AccountSessionError::Requires(name) => TransferError::Requires(name),
                             AccountSessionError::Refused(_)
                             | AccountSessionError::InvalidResponse(_)
@@ -1388,7 +1408,16 @@ impl TransferTransport for AccountTransferExecutor {
             let Some(method) = parsed else {
                 return Err(TransferError::Refused("Invalid transfer method"));
             };
+            let admission = driver::provider_admission(
+                &self.store,
+                &ticket.operation,
+                &ticket.agent,
+                &ticket.request,
+            )
+            .await?;
             let request = ProviderRequest {
+                root_request_id: admission.root_request_id,
+                admitted_request: admission.admitted_request,
                 account: ticket.account.clone(),
                 operation: ticket.request.clone(),
                 actor: Some(crate::account_worker::retained::RequestActor {
@@ -1404,6 +1433,7 @@ impl TransferTransport for AccountTransferExecutor {
             let session_receipt = self.session.provider_request(request).await;
             match session_receipt {
                 Ok(receipt) => Ok(TransferDispatch::Receipt(receipt)),
+                Err(AccountSessionError::Expired) => Err(TransferError::Expired),
                 Err(AccountSessionError::Requires(name)) => Err(TransferError::Requires(name)),
                 Err(AccountSessionError::Refused(reason)) => Err(TransferError::Refused(reason)),
                 Err(
@@ -1964,6 +1994,8 @@ mod retained_executor_tests {
                 assert_eq!(request.thread_id, "source-thread");
                 crate::account_worker::retained::validate(
                     &crate::account_worker::retained::SessionRequest {
+                        root_request_id: request.root_request_id.clone(),
+                        admitted_request: request.admitted_request.clone(),
                         scope: request.expected_scope.clone(),
                         expected_scope: Some(request.expected_scope.clone()),
                         operation: request.operation.clone(),
@@ -2693,10 +2725,15 @@ mod retained_executor_tests {
             store
                 .transaction_with_error(|tx| {
                     let mut row = AgentRepository::get(tx, &AgentId::from("lead"))?.unwrap();
-                    row.extra.insert(
-                        "nativeRelease".into(),
-                        json!({"phase":"unknown","resetPending":true}),
-                    );
+                    row.native_release = Some(studio_runtime_store::NativeRelease {
+                        admitted_request: None,
+                        scope: None,
+                        extra: [
+                            ("phase".into(), json!("unknown")),
+                            ("resetPending".into(), json!(true)),
+                        ]
+                        .into(),
+                    });
                     AgentRepository::put(tx, &row)
                 })
                 .await
@@ -2719,7 +2756,7 @@ mod retained_executor_tests {
             store
                 .transaction_with_error(|tx| {
                     let mut row = AgentRepository::get(tx, &AgentId::from("lead"))?.unwrap();
-                    row.extra.remove("nativeRelease");
+                    row.native_release = None;
                     AgentRepository::put(tx, &row)
                 })
                 .await

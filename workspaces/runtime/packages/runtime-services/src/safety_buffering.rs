@@ -28,58 +28,18 @@ const ACTIVE_STAGES: &[SafetyRetryStage] = &[
     SafetyRetryStage::Unknown,
 ];
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SafetyRetryStage {
-    Turns,
-    Items,
-    Interrupt,
-    VerifyTurns,
-    VerifyItems,
-    Fork,
-    Start,
-    Running,
-    Unknown,
-    Failed,
-    Cancelled,
-}
-
-impl SafetyRetryStage {
-    fn parse(value: &Value) -> Result<Self, SafetyBufferingError> {
-        match value.as_str() {
-            Some("turns") => Ok(Self::Turns),
-            Some("items") => Ok(Self::Items),
-            Some("interrupt") => Ok(Self::Interrupt),
-            Some("verify_turns") => Ok(Self::VerifyTurns),
-            Some("verify_items") => Ok(Self::VerifyItems),
-            Some("fork") => Ok(Self::Fork),
-            Some("start") => Ok(Self::Start),
-            Some("running") => Ok(Self::Running),
-            Some("unknown") => Ok(Self::Unknown),
-            Some("failed") => Ok(Self::Failed),
-            Some("cancelled") => Ok(Self::Cancelled),
-            _ => Err(SafetyBufferingError::InvalidStoredState),
-        }
-    }
-
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Turns => "turns",
-            Self::Items => "items",
-            Self::Interrupt => "interrupt",
-            Self::VerifyTurns => "verify_turns",
-            Self::VerifyItems => "verify_items",
-            Self::Fork => "fork",
-            Self::Start => "start",
-            Self::Running => "running",
-            Self::Unknown => "unknown",
-            Self::Failed => "failed",
-            Self::Cancelled => "cancelled",
-        }
-    }
+pub use studio_runtime_schema::persistence::SafetyRetryStage;
+fn parse_stage(value: &Value) -> Result<SafetyRetryStage, SafetyBufferingError> {
+    value
+        .as_str()
+        .and_then(|stage| stage.parse().ok())
+        .ok_or(SafetyBufferingError::InvalidStoredState)
 }
 
 #[derive(Debug, Error, Eq, PartialEq)]
 pub enum SafetyBufferingError {
+    #[error("Request id expired")]
+    Expired,
     #[error("Invalid stored safety retry state")]
     InvalidStoredState,
     #[error("This retry belongs to an earlier account or agent state")]
@@ -235,7 +195,7 @@ pub fn decide_action(
         return Err(SafetyBufferingError::InvalidChoice);
     }
     if let Some(receipt) = existing {
-        let stage = SafetyRetryStage::parse(
+        let stage = parse_stage(
             receipt
                 .get("stage")
                 .ok_or(SafetyBufferingError::InvalidStoredState)?,
@@ -328,7 +288,7 @@ pub fn active(agent: &Value) -> Result<bool, SafetyBufferingError> {
     else {
         return Ok(false);
     };
-    let stage = SafetyRetryStage::parse(
+    let stage = parse_stage(
         receipt
             .get("stage")
             .ok_or(SafetyBufferingError::InvalidStoredState)?,
@@ -398,7 +358,7 @@ pub fn decide_restart(
     {
         return Ok(None);
     }
-    let stage = SafetyRetryStage::parse(
+    let stage = parse_stage(
         operation
             .get("stage")
             .ok_or(SafetyBufferingError::InvalidStoredState)?,

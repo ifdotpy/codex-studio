@@ -44,6 +44,7 @@ pub async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, CallbackContext
     let context = CallbackContext {
         agent: data["agents"][0]["id"].as_str().unwrap().into(),
         account: "default".into(),
+        stream_id: "default".into(),
         connection: "connection".into(),
         generation: 7,
         epoch: 3,
@@ -124,28 +125,11 @@ pub async fn pending(store: &Arc<RuntimeStore>, context: &CallbackContext) -> (S
     let decision = dispatch(Arc::clone(store), context, &frame, 10.0)
         .await
         .unwrap();
-    bind_journal(store, &decision, context, &RequestId::Number(42), 1)
-        .await
-        .unwrap();
     let CallbackDecision::Pending(id) = decision else {
         panic!("pending")
     };
     (id, frame)
 }
-pub async fn checkpoint(store: &RuntimeStore, context: &CallbackContext, cursor: u64) -> usize {
-    let account = context.account.clone();
-    let generation = context.generation;
-    store.transaction_with::<_, CallbackError>(move |tx| {
-        tx.execute(
-            "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'ack',?2) ON CONFLICT(id) DO UPDATE SET result=excluded.result",
-            rusqlite::params![format!("account-worker:cursor:{account}:{generation}:ack"),cursor.to_string()],
-        )?;
-        retire_checkpointed(tx, &account, generation)
-    })
-    .await
-    .unwrap()
-}
-
 pub fn actor(store: &RuntimeStore, context: &CallbackContext) -> Value {
     studio_runtime_store::agent_volatile::merged_record(
         &store.test_reader().unwrap(),
@@ -166,20 +150,6 @@ pub async fn put_actor(store: &RuntimeStore, value: &Value) {
         .await
         .unwrap();
 }
-pub async fn ack(store: &RuntimeStore, context: &CallbackContext, cursor: u64) {
-    let account = context.account.clone();
-    let generation = context.generation;
-    store.transaction_with::<_, CallbackError>(move |tx| {
-        tx.execute(
-            "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'ack',?2) ON CONFLICT(id) DO UPDATE SET result=excluded.result",
-            rusqlite::params![format!("account-worker:cursor:{account}:{generation}:ack"),cursor.to_string()],
-        )?;
-        Ok(())
-    })
-    .await
-    .unwrap();
-}
-
 pub fn logical_snapshot(store: &RuntimeStore) -> Value {
     snapshot_rows(store, true)
 }
@@ -198,16 +168,21 @@ fn snapshot_rows(store: &RuntimeStore, logical: bool) -> Value {
         .unwrap();
     let mut result = serde_json::Map::new();
     for name in tables {
-        // Logical rows show each agent with its volatile fields (format
-        // 2026-10-20), as a Python state stores it.
+        // The frozen oracle compares domain writes. Transport obligations and their
+        // cached results have dedicated assertions; physical snapshots include all rows.
+        // Merge volatile agent fields to match the Python domain record.
         if logical
-            && (name == "runtime_operation_receipts"
-                || name == studio_runtime_store::agent_volatile::AGENT_VOLATILE_TABLE
+            && (matches!(
+                name.as_str(),
+                "runtime_outbox" | "request_results" | "runtime_tool_requests"
+            ) || name == studio_runtime_store::agent_volatile::AGENT_VOLATILE_TABLE
                 || (name.starts_with("sync_") && name != "sync_entities"))
         {
             continue;
         }
-        let sql = if logical && name == "sync_entities" {
+        let sql = if logical && name == "runtime_agents" {
+            "SELECT id,record FROM runtime_agents".to_owned()
+        } else if logical && name == "sync_entities" {
             "SELECT collection,id,payload,deleted FROM sync_entities WHERE collection NOT IN ('agentSummary','agentDetail')".to_owned()
         } else {
             studio_runtime_store::agent_columns::select_declared_sql(&connection, &name).unwrap()
@@ -299,11 +274,12 @@ pub fn assert_writes(before: &Value, store: &RuntimeStore, expected: &Value) {
 }
 
 pub async fn seed_admission(store: &RuntimeStore, before: &Value) {
-    // Current Rust cards always carry a durable admission receipt. Keep the
+    // Current Rust cards always carry a durable callback owner. Keep the
     // frozen failure corpus focused on answer delivery rather than Python cutover.
     let context = CallbackContext {
         agent: before["agent"].as_str().unwrap().into(),
         account: before["accountKey"].as_str().unwrap().into(),
+        stream_id: before["accountKey"].as_str().unwrap().into(),
         connection: before["connectionId"].as_str().unwrap().into(),
         generation: before["supervisor"]["generation"].as_u64().unwrap(),
         epoch: before["epoch"].as_u64().unwrap(),
@@ -313,17 +289,28 @@ pub async fn seed_admission(store: &RuntimeStore, before: &Value) {
             .unwrap_or_default()
             .into(),
     };
-    let identity = ReplyIdentity {
-        context,
-        rpc_id: serde_json::from_value(before["rpcId"].clone()).unwrap(),
-        attempt: String::new(),
+    let request =
+        json!({"id": before["rpcId"], "method": before["method"], "params": before["params"]});
+    let studio_runtime_providers::DecodedJournalPayload::Frame(frame) =
+        studio_runtime_providers::decode_journal_value(1, context.generation, &request).payload
+    else {
+        panic!("callback request frame")
     };
-    let admission_key = format!("{}card", identity.operation_id());
-    let admission = json!({"identity":identity,"card":before["id"],"journalCursor":1});
-    store.transaction(move |tx| {
-        tx.execute("INSERT OR REPLACE INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'provider-callback',?2)", rusqlite::params![admission_key, admission.to_string()])?;
-        Ok(())
-    }).await.unwrap();
+    let card = before["id"].as_str().unwrap().to_owned();
+    store
+        .transaction_with::<_, CallbackError>(move |tx| {
+            admit_callback_request(tx, &context, &frame)?;
+            let rpc_id = serde_json::from_value(request["id"].clone())?;
+            let key = callback_origin_key(&context, &rpc_id);
+            let mut owner =
+                studio_runtime_services::tool_requests::get_callback::<CallbackOwner>(tx, &key)?
+                    .unwrap();
+            owner.payload.card = Some(card);
+            studio_runtime_services::tool_requests::put_callback(tx, &owner)?;
+            Ok(())
+        })
+        .await
+        .unwrap();
 }
 
 /// Import the exact Python-observed before rows for each logical write. The
@@ -378,15 +365,6 @@ pub async fn seed_case(store: &RuntimeStore, case: &Value) {
         .await
         .unwrap();
 }
-pub async fn retire(store: &RuntimeStore, context: &CallbackContext) -> usize {
-    let account = context.account.clone();
-    let generation = context.generation;
-    store
-        .transaction_with(move |tx| retire_checkpointed(tx, &account, generation))
-        .await
-        .unwrap()
-}
-
 fn first_difference(actual: &Value, expected: &Value, path: &str) -> String {
     if let (Some(a), Some(e)) = (actual.as_object(), expected.as_object()) {
         for key in a.keys().chain(e.keys()) {
@@ -433,9 +411,14 @@ fn insert_row(
         })
         .collect();
     let slots = vec!["?"; values.len()].join(",");
+    let columns = if table == "runtime_agents" {
+        "(id,record)"
+    } else {
+        ""
+    };
     tx.execute(
         &format!(
-            "INSERT OR REPLACE INTO \"{}\" VALUES({slots})",
+            "INSERT OR REPLACE INTO \"{}\"{columns} VALUES({slots})",
             table.replace('"', "\"\"")
         ),
         rusqlite::params_from_iter(values),

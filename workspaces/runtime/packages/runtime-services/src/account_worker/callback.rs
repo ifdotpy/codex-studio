@@ -40,6 +40,10 @@ pub(super) async fn vm_codex_refresh_response(
     resolver: Option<
         std::sync::Arc<dyn crate::account_worker::preparation::VmProviderLaunchResolver>,
     >,
+    source: Option<(
+        String,
+        studio_runtime_store::request_results::AdmittedRequest,
+    )>,
 ) -> Option<Frame> {
     if !is_vm_codex_refresh_request(frame) {
         return None;
@@ -76,6 +80,9 @@ pub(super) async fn vm_codex_refresh_response(
     let Some(resolver) = resolver else {
         return Some(failed());
     };
+    let Some((root_request_id, admitted_request)) = source else {
+        return Some(failed());
+    };
     let result = resolver
         .refresh_codex(
             account.to_owned(),
@@ -83,6 +90,8 @@ pub(super) async fn vm_codex_refresh_response(
             emitting_actor.to_owned(),
             actor_epoch,
             generation,
+            root_request_id,
+            admitted_request,
         )
         .await;
     let Ok(payload) = result else {
@@ -341,7 +350,6 @@ pub(super) async fn native_response(
     store: &Arc<RuntimeStore>,
     account: &str,
     generation: u64,
-    cursor: u64,
     frame: &Frame,
     now: f64,
 ) -> CallbackHandled {
@@ -380,9 +388,7 @@ pub(super) async fn native_response(
             ));
         }
     };
-    match crate::provider_callbacks::admit_native(Arc::clone(store), &context, frame, cursor, now)
-        .await
-    {
+    match crate::provider_callbacks::admit_native(Arc::clone(store), &context, frame, now).await {
         Ok(crate::provider_callbacks::NativeAdmission::Answer(body)) => {
             CallbackHandled::Answer(Frame::Response {
                 id: request.id.clone(),
@@ -435,6 +441,30 @@ pub(super) struct ManagedReplyAuthority {
     is_lead: bool,
     execution_mode: Option<String>,
     moving: bool,
+}
+
+#[cfg(test)]
+impl ManagedReplyAuthority {
+    pub(super) fn for_test(
+        context: crate::provider_callbacks::CallbackContext,
+        root: String,
+        moving: bool,
+    ) -> Self {
+        Self {
+            context,
+            root,
+            provider: "claude".into(),
+            parent: None,
+            role: Some("implementer".into()),
+            is_lead: true,
+            execution_mode: None,
+            moving,
+        }
+    }
+
+    pub(super) fn context_for_test(&self) -> &crate::provider_callbacks::CallbackContext {
+        &self.context
+    }
 }
 
 impl ManagedReplyAuthority {
@@ -514,7 +544,7 @@ pub(super) fn managed_reply_authority_in(
     }))
 }
 
-fn callback_context_in(
+pub(super) fn callback_context_in(
     db: &rusqlite::Connection,
     account: &str,
     generation: u64,
@@ -556,6 +586,11 @@ fn callback_context_in(
     Ok(Some(crate::provider_callbacks::CallbackContext {
         agent: agent_id.to_owned(),
         account: account.to_owned(),
+        stream_id: if agent["executionMode"] == "vm" {
+            super::vm_journal_scope(account, agent_id)
+        } else {
+            account.to_owned()
+        },
         connection: connection.to_owned(),
         generation,
         epoch,
@@ -839,6 +874,8 @@ mod vm_auth_tests {
             actor_id: String,
             actor_epoch: i64,
             generation: u64,
+            _root_request_id: String,
+            _source: studio_runtime_store::request_results::AdmittedRequest,
         ) -> VmProviderAuthFuture<'_> {
             let calls = Arc::clone(&self.calls);
             Box::pin(async move {
@@ -856,6 +893,31 @@ mod vm_auth_tests {
                 }))
             })
         }
+    }
+
+    async fn source() -> Option<(
+        String,
+        studio_runtime_store::request_results::AdmittedRequest,
+    )> {
+        use studio_runtime_schema::persistence::RequestIdentity;
+        use studio_runtime_store::request_results::{Admission, RequestResults};
+        let directory = tempfile::tempdir().unwrap();
+        let store = studio_runtime_store::RuntimeStore::open(Some(directory.path()))
+            .await
+            .unwrap();
+        let root = RequestIdentity::issue_root();
+        let identity = RequestIdentity::new("callback", &["account-key"], &root, &[]).unwrap();
+        let Admission::Fresh(admitted) = store
+            .transaction(move |tx| {
+                RequestResults::admit(tx, &identity, "refresh", identity.issued_ms())
+                    .map_err(studio_runtime_store::StoreError::from)
+            })
+            .await
+            .unwrap()
+        else {
+            panic!("fresh callback");
+        };
+        Some((root, admitted))
     }
 
     fn refresh_request() -> Frame {
@@ -883,6 +945,7 @@ mod vm_auth_tests {
             7,
             &refresh_request(),
             Some(resolver),
+            source().await,
         )
         .await
         .expect("refresh response");
@@ -916,6 +979,7 @@ mod vm_auth_tests {
             7,
             &refresh_request(),
             Some(resolver),
+            source().await,
         )
         .await
         .expect("failure response");
@@ -945,6 +1009,7 @@ mod vm_auth_tests {
             7,
             &refresh_request(),
             Some(resolver),
+            source().await,
         )
         .await
         .expect("failed response for stale actor");

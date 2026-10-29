@@ -4,7 +4,6 @@ import {
   setPreferenceWriteStatus,
 } from "./uiPreferenceStatus";
 import type { syncPost } from "../api";
-import { sha256Hex } from "../sha256";
 import { onResume } from "./resume";
 import {
   acknowledgePreferenceFields,
@@ -68,14 +67,9 @@ export function createUiPreferenceBridge(
             continue;
           try {
             setPreferenceWriteStatus(storage, scope, { state: "saving" });
-            const body = { scope, fields };
-            const digest = await sha256Hex(
-              new TextEncoder().encode(canonicalPreferenceJson(body)),
-            );
-            if (!active) return;
-            const requestId = "ui-preferences:" + digest;
-            const result = await post("/api/sync/preferences", body, {
-              requestId,
+            const result = await post("/api/sync/preferences", {
+              scope,
+              fields,
             });
             if (!active) return;
             confirmed[scope] = canonicalPreferenceJson(result.fields);

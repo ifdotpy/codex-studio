@@ -404,10 +404,11 @@ async fn live_permissions_claude_rejection_keeps_confirmed_rollback_evidence() {
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let session = worker.claude_session().unwrap();
+    let request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
     let scope = ControlScope {
         agent: state.agent.clone(),
         epoch: state.epoch.try_into().unwrap(),
-        request_id: Some("live-failure".into()),
+        request_id: Some(request_id.clone()),
     };
     let task = tokio::spawn(async move {
         session
@@ -416,7 +417,7 @@ async fn live_permissions_claude_rejection_keeps_confirmed_rollback_evidence() {
                 ControlInvocation::Settings {
                     thread_id: "fake-thread-0".into(),
                     settings: serde_json::from_value(json!({"permissionMode":"plan"})).unwrap(),
-                    request_id: "live-failure".into(),
+                    request_id,
                 },
             )
             .await

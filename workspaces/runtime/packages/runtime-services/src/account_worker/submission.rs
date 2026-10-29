@@ -37,7 +37,7 @@ pub(super) enum Committed {
     /// finishes the commit inline. Carries the launch lookup's result.
     Vm(
         Box<Commit>,
-        Result<Option<preparation::VmProviderLaunchRequest>, WorkerError>,
+        Box<Result<Option<preparation::VmProviderLaunchRequest>, WorkerError>>,
     ),
     /// The FULL submitted commit returned; only the write remains.
     Ready(Box<Ready>),
@@ -76,7 +76,7 @@ impl Commit {
                 // The worker completes the effect after the VM commit.
                 let mut commit = self;
                 commit.effect = None;
-                return Ok(Committed::Vm(Box::new(commit), launch));
+                return Ok(Committed::Vm(Box::new(commit), Box::new(launch)));
             }
         }
         let control = self.control.clone();
@@ -181,6 +181,7 @@ async fn vm_launch_request(
     generation: u64,
 ) -> Result<Option<preparation::VmProviderLaunchRequest>, WorkerError> {
     let agent_id = intent.agent_id.clone();
+    let attempt_id = intent.attempt_id.clone();
     let lookup_id = agent_id.clone();
     let intent_cwd = intent.cwd.clone();
     let account_key = intent.account_key.clone();
@@ -235,6 +236,10 @@ async fn vm_launch_request(
                         .filter(|value| value.starts_with('/'))
                         .unwrap_or(crate::linux_vm_provider::DEFAULT_GUEST_HOME);
                     Ok(Some(preparation::VmProviderLaunchRequest {
+                        root_request_id: store::execution_admission(connection, &attempt_id)?.0,
+                        source: store::execution_admission(connection, &attempt_id)?.1,
+                        final_effect: studio_runtime_store::ExecutionHistoryRepository::vm_credential_refresh_admission(connection,&attempt_id)?,
+                        attempt_id: attempt_id.clone(),
                         agent_id: record.id.0,
                         epoch: record.epoch,
                         generation,

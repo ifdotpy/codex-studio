@@ -7,6 +7,10 @@ use studio_runtime_store::{RuntimeStore, StoreError};
 fn corpus() -> Value {
     serde_json::from_str(include_str!("fixtures/process-controls.json")).unwrap()
 }
+fn parse_request_fixture(value: &Value) -> studio_runtime_schema::process_controls::Request {
+    let raw = serde_json::value::RawValue::from_string(value.to_string()).unwrap();
+    studio_runtime_schema::process_controls::Request::parse(&raw).unwrap()
+}
 #[tokio::test]
 async fn leaf_listing_does_not_decode_unrelated_agents() {
     let root = tempfile::tempdir().unwrap();
@@ -165,12 +169,7 @@ async fn action_receipt_replays_without_dispatch_and_rejects_identity_reuse() {
     let c = connections.clone();
     let result = store
         .transaction_with(move |tx| {
-            process_controls::claim(
-                tx,
-                &studio_runtime_schema::process_controls::Request::parse(r).unwrap(),
-                &c,
-                1.0,
-            )
+            process_controls::claim(tx, &parse_request_fixture(&r), &c, 1.0)
         })
         .await
         .unwrap();
@@ -179,17 +178,12 @@ async fn action_receipt_replays_without_dispatch_and_rejects_identity_reuse() {
     let c = connections.clone();
     let replay = store
         .transaction_with(move |tx| {
-            process_controls::claim(
-                tx,
-                &studio_runtime_schema::process_controls::Request::parse(r).unwrap(),
-                &c,
-                2.0,
-            )
+            process_controls::claim(tx, &parse_request_fixture(&r), &c, 2.0)
         })
         .await
         .unwrap();
     assert!(
-        matches!(replay,process_controls::Claim::Replay(ref result) if result["status"]=="uncertain")
+        matches!(replay,process_controls::Claim::Replay(ref result) if result.status == studio_runtime_schema::process_controls::ProcessActionStatus::Uncertain)
     );
     let mut r = request.clone();
     r["epoch"] = json!(4);
@@ -197,7 +191,7 @@ async fn action_receipt_replays_without_dispatch_and_rejects_identity_reuse() {
         store
             .transaction_with(move |tx| process_controls::claim(
                 tx,
-                &studio_runtime_schema::process_controls::Request::parse(r).unwrap(),
+                &parse_request_fixture(&r),
                 &connections,
                 3.0
             ))

@@ -165,7 +165,9 @@ async fn directories(
                 ));
             }
         };
-        return super::generated_json::<crate::generated::DirectoriesResponse>(value).map(Json);
+        return serde_json::from_str::<crate::generated::DirectoriesResponse>(value.value.get())
+            .map(Json)
+            .map_err(ApiError::json);
     }
     let path = query
         .typed_value("path")

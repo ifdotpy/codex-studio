@@ -474,7 +474,7 @@ impl CompletionWriter for RestartInputCompletion {
         };
         agent.extra.remove("contextRepairWait");
         agent.extra.remove("nativeFailureHold");
-        agent.extra.remove("startOutcomeHold");
+        agent.start_outcome_hold = None;
         agent.extra.insert("autoWake".into(), json!(true));
         agent.extra.insert("error".into(), Value::Null);
         if let Some(marker) = agent.extra.get_mut("restartRecovery") {

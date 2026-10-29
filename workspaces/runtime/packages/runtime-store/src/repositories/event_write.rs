@@ -11,18 +11,14 @@ use crate::records::{
 use crate::schema::{SchemaRequirements, TableRequirement};
 use crate::{AgentRepository, QueueEvent, StoreError, StoreResult};
 
-/// Receipt prefix for per-agent holds on schema-invalid persisted rows.
-pub const INVALID_AGENT_HOLD_RECEIPT_PREFIX: &str = "account-worker:invalid-agent-hold:";
-pub const INVALID_AGENT_HOLD_RECEIPT_SIGNATURE: &str = "invalid-agent-hold-v1";
-
 const TABLES: &[TableRequirement] = &[
     TableRequirement {
         name: "runtime_annotations",
         columns: &["id", "record"],
     },
     TableRequirement {
-        name: "runtime_operation_receipts",
-        columns: &["id", "signature", "result"],
+        name: "request_results",
+        columns: &["id", "signature", "result", "created"],
     },
     TableRequirement {
         name: "runtime_events",
@@ -52,12 +48,6 @@ inventory::submit! {
         repository: "event_write",
         requirements: &REQUIREMENTS,
     }
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct EventWriteReceipt {
-    pub signature: String,
-    pub result: String,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -141,49 +131,6 @@ impl EventWriteRepository {
             });
         }
         Table::<AnnotationRecord>::new(connection).validate(&record)
-    }
-
-    pub fn receipt(connection: &Connection, id: &str) -> StoreResult<Option<EventWriteReceipt>> {
-        Ok(connection
-            .query_row_cached(
-                "SELECT signature,result FROM runtime_operation_receipts WHERE id=?1",
-                [id],
-                |row| {
-                    Ok(EventWriteReceipt {
-                        signature: row.get(0)?,
-                        result: row.get(1)?,
-                    })
-                },
-            )
-            .optional()?)
-    }
-
-    pub fn put_receipt(
-        connection: &Connection,
-        id: &str,
-        signature: &str,
-        result: &str,
-    ) -> StoreResult<()> {
-        connection.execute_cached(
-            "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,?2,?3)",
-            params![id, signature, result],
-        )?;
-        Ok(())
-    }
-
-    /// Save a receipt, replacing the signature and result of an earlier one.
-    pub fn replace_receipt(
-        connection: &Connection,
-        id: &str,
-        signature: &str,
-        result: &str,
-    ) -> StoreResult<()> {
-        connection.execute_cached(
-            "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,?2,?3) \
-             ON CONFLICT(id) DO UPDATE SET signature=excluded.signature,result=excluded.result",
-            params![id, signature, result],
-        )?;
-        Ok(())
     }
 
     pub fn event_exists(connection: &Connection, id: &str) -> StoreResult<bool> {
@@ -325,7 +272,6 @@ impl EventWriteRepository {
                     "lastCompletedTurn",
                     "lastCompletedTurnStatus",
                     "lastCompletedTurnError",
-                    "startOutcomeHold",
                     "lastAnswer",
                     "disconnectRecovery",
                     "restartRecovery",
@@ -342,6 +288,11 @@ impl EventWriteRepository {
                     } else {
                         value.remove(key);
                     }
+                }
+                if let Some(hold) = &agent.start_outcome_hold {
+                    value.insert("startOutcomeHold".to_owned(), crate::projection_value(hold));
+                } else {
+                    value.remove("startOutcomeHold");
                 }
             }
             value != &before
@@ -502,11 +453,12 @@ mod tests {
             .expect("volatile agent table creates");
         connection
             .execute(
-                "INSERT INTO runtime_agents VALUES('a',?1)",
+                "INSERT INTO runtime_agents(id,record) VALUES('a',?1)",
                 [
                     json!({"id":"a","provider":"codex","rootId":"a","name":"Agent","status":"running","epoch":2,
                 "inFlight":true,"turnId":"turn-1","lastAnswer":"",
                 "disconnectRecovery":{"epoch":2,"turnId":"turn-1"},
+                "startOutcomeHold":{"stage":"held","reason":"pending"},
                 "restartRecovery":{"stage":"held"}})
                     .to_string(),
                 ],
@@ -535,6 +487,10 @@ mod tests {
         assert_eq!(value["status"], "running");
         assert_eq!(value["inFlight"], true);
         assert_eq!(value["turnId"], "turn-1");
+        assert_eq!(
+            value["startOutcomeHold"],
+            json!({"stage":"held","reason":"pending"})
+        );
         assert_eq!(
             (
                 &value["lastAnswer"],

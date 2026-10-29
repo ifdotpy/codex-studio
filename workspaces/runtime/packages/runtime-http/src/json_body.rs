@@ -72,7 +72,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_object_keys_use_the_last_value() {
+    fn generic_value_parser_keeps_the_last_duplicate_key() {
         let value = parse_bounded(br#"{"value":1,"value":2}"#, 1024)
             .expect("duplicate keys are valid JSON input");
         assert_eq!(value, serde_json::json!({"value": 2}));

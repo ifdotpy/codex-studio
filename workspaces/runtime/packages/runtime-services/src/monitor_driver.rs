@@ -24,6 +24,8 @@ pub enum Submission {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum NotSentReason {
+    /// A permanently expired request cannot be retried.
+    Expired,
     /// A temporary transport refusal; retry the same durable operation after backoff.
     #[default]
     Transient,
@@ -189,7 +191,7 @@ pub(crate) async fn input_http(
                 })
                 .await?;
             // The terminal refusal is durable before an HTTP error escapes.
-            outcome.replay()?;
+            crate::monitor_http_input::replay_status(outcome)?;
             return Ok(None);
         }
     };
@@ -211,6 +213,10 @@ pub(crate) async fn input_http(
     let submitted = port.submit(&operation, &effect).await;
     let outcome = match &submitted {
         Submission::Written => None,
+        Submission::NotSent {
+            reason: NotSentReason::Expired,
+            ..
+        } => Some(InputOutcome::Expired),
         Submission::NotSent { error, .. } => Some(InputOutcome::Rejected(error.clone())),
         Submission::Unknown => Some(InputOutcome::Unknown(
             "Input outcome unknown; do not repeat it".into(),
@@ -243,6 +249,10 @@ pub async fn input(
     // callback calls settle_input after its reply is known.
     let outcome = match &result {
         Submission::Written => None,
+        Submission::NotSent {
+            reason: NotSentReason::Expired,
+            ..
+        } => Some(InputOutcome::Expired),
         Submission::NotSent { error, .. } => Some(InputOutcome::Rejected(error.clone())),
         Submission::Unknown => Some(InputOutcome::Unknown(
             "Input outcome unknown; do not repeat it".into(),
@@ -310,6 +320,7 @@ pub async fn cancel_checked(
                     source.as_ref(),
                 )
                 .map_err(|error| match error {
+                    crate::process_controls::Error::Expired => MonitorError::Expired,
                     crate::process_controls::Error::Store(error) => MonitorError::Store(error),
                     crate::process_controls::Error::Invalid(message) => {
                         MonitorError::Refused(message)
@@ -355,7 +366,7 @@ pub async fn cancel_checked(
                 Some(NotSentReason::MonitorMissing),
             ),
             Submission::NotSent {
-                reason: NotSentReason::SessionMissing,
+                reason: NotSentReason::SessionMissing | NotSentReason::Expired,
                 error,
             } => ("unknown", Some(error.clone()), None),
             Submission::Unknown => (
@@ -560,6 +571,10 @@ pub fn reserve_cancel(
     } else {
         None
     };
+    if operation.is_some() && decision.record.get("cancelRootRequestId").is_none() {
+        decision.record["cancelRootRequestId"] =
+            json!(studio_runtime_schema::persistence::RequestIdentity::issue_root());
+    }
     monitor_runtime::apply(tx, &snapshot, &actor, &decision, now)?;
     Ok::<_, MonitorError>((decision.response, operation))
 }

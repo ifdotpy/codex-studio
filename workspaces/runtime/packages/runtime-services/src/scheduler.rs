@@ -527,7 +527,7 @@ pub(crate) fn settle_terminal_in_transaction(
     if let Some(saved) = ExecutionHistoryRepository::replay(
         transaction,
         &identity.attempt_id,
-        "terminalInput",
+        studio_runtime_schema::persistence::ExecutionReceiptKind::TerminalInput,
         &input,
     )? {
         return saved
@@ -637,7 +637,7 @@ pub(crate) fn settle_terminal_in_transaction(
         ExecutionHistoryRepository::save_receipt(
             transaction,
             &identity.attempt_id,
-            "terminalInput",
+            studio_runtime_schema::persistence::ExecutionReceiptKind::TerminalInput,
             input,
             serde_json::json!(result),
         )?;
@@ -1501,9 +1501,14 @@ mod child_turn_parent_tests {
         );
         store
             .transaction(move |tx| {
-                let attempt = ExecutionHistoryRepository::attempt(tx, &intent.attempt_id)?
-                    .expect("attempt retained");
-                assert!(attempt["receipts"].get("terminalInput").is_none());
+                assert!(
+                    ExecutionHistoryRepository::receipt::<serde_json::Value>(
+                        tx,
+                        &intent.attempt_id,
+                        studio_runtime_schema::persistence::ExecutionReceiptKind::TerminalInput
+                    )?
+                    .is_none()
+                );
                 Ok(())
             })
             .await

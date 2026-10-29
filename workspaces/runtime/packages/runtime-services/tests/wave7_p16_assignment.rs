@@ -24,7 +24,7 @@ fn database() -> Connection {
     ] {
         connection
             .execute(
-                "INSERT INTO runtime_agents VALUES (?1,?2)",
+                "INSERT INTO runtime_agents(id,record) VALUES (?1,?2)",
                 rusqlite::params![agent["id"].as_str().expect("agent id"), agent.to_string()],
             )
             .expect("agent row inserts");

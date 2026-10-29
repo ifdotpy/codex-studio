@@ -89,6 +89,8 @@ async fn cost_interest(
             studio_runtime_store::StoreError::RecordContract("unknown cost account") => {
                 ApiError::new(StatusCode::BAD_REQUEST, "Unknown cost account")
             }
+            studio_runtime_store::StoreError::RequestResult(error) => error.into(),
+            studio_runtime_store::StoreError::Outbox(error) => error.into(),
             error @ studio_runtime_store::StoreError::StateDirectory(_)
             | error @ studio_runtime_store::StoreError::AlreadyOwned
             | error @ studio_runtime_store::StoreError::MissingDatabase(_)
@@ -133,6 +135,11 @@ async fn reset_limits(
 fn reset_error(error: studio_runtime_services::limit_reset::ResetError) -> ApiError {
     use studio_runtime_services::limit_reset::ResetError;
     match error {
+        ResetError::Request(error) => error.into(),
+        ResetError::Worker(_) => ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "The reset-credit request outcome is unknown. Inspect this request before retrying.",
+        ),
         ResetError::Invalid(message) => ApiError::new(StatusCode::BAD_REQUEST, message),
         ResetError::Provider(message) => ApiError::new(StatusCode::SERVICE_UNAVAILABLE, message),
         ResetError::Store(error) => ApiError::stored(error),
@@ -488,7 +495,7 @@ mod tests {
             "account_key":"default",
             "account_id":"account-A",
             "credit_id":"credit-A",
-            "request_id":"11000000-0000-4000-8000-000000000005"
+            "request_id":uuid::Uuid::now_v7().to_string()
         });
         let first = app
             .clone()

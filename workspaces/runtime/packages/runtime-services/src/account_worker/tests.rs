@@ -53,8 +53,10 @@ use std::{
     sync::{Arc, atomic::AtomicUsize},
 };
 use studio_runtime_process::{EventCursor, ProviderLaunchSpec, provider_seam::*};
+use studio_runtime_schema::persistence::{OutboxKind, OutboxStatus, OwnerKind};
+use studio_runtime_store::AgentRecord;
+use studio_runtime_store::outbox::Outbox;
 use studio_runtime_store::path_identity::CanonicalPath;
-use studio_runtime_store::{AgentRecord, EventWriteRepository};
 use tokio::sync::oneshot;
 
 fn test_resources() -> Result<preparation::PreparationResources, WorkerError> {
@@ -840,6 +842,9 @@ impl State {
     /// The fixture state in a new folder under `base`.
     async fn new_at(base: PathBuf) -> Self {
         let root = base.join(format!("worker-{}", uuid::Uuid::new_v4()));
+        Self::new_with_root(root).await
+    }
+    async fn new_with_root(root: PathBuf) -> Self {
         let agent = FIXTURE_AGENT_ID.to_owned();
         let epoch = FIXTURE_AGENT_EPOCH;
         let store = Arc::new(seed_fixture_root(&root).await);
@@ -896,19 +901,28 @@ impl State {
             .run(move |store| async move {
                 store
                     .transaction_with(move |tx| {
-                        annotate(
+                        // This fixture seeds domain input; public annotation ingress has its own UUID witnesses.
+                        let owner = AgentRepository::get(tx, &AgentId::from(agent.as_str()))?
+                            .expect("fixture agent");
+                        let created = super::now();
+                        studio_runtime_store::EventWriteRepository::put_annotation(
                             tx,
-                            AnnotationWrite {
-                                agent_id: agent,
-                                id: Some(id.clone()),
-                                path: "README.md".into(),
-                                line: 1,
-                                text: id.clone(),
-                                turn_id: None,
-                                signature: id,
-                            },
+                            &id,
+                            &json!({
+                                "id":id,"agent":agent,"rootId":owner.root_id.0,
+                                "path":"README.md","line":1,"text":id,"created":created,
+                            }),
+                        )?;
+                        crate::event_write::enqueue_event(
+                            tx,
+                            &owner,
+                            format!("annotation:{id}"),
+                            "user",
+                            format!("Review comment at README.md:1\n{id}"),
+                            created,
                         )
-                        .map_err(|e| StoreError::SchemaMismatch(e.to_string()))
+                        .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
+                        Ok::<_, StoreError>(())
                     })
                     .await?;
                 Ok(())
@@ -1018,7 +1032,7 @@ impl State {
                 store
                     .transaction_with(move |tx| {
                         assert!(
-                            store::receipt(tx, &operation, "submitted")?.is_some(),
+                            store::account_submission(tx, &operation)?.is_some(),
                             "Submitted must commit before transport admission"
                         );
                         Ok::<_, WorkerError>(())
@@ -1161,7 +1175,7 @@ async fn invalid_agent_record_is_held_without_stopping_other_agent_dispatch() {
                         tx,
                         AnnotationWrite {
                             agent_id: write_good_id.clone(),
-                            id: Some("valid-neighbor-input".into()),
+                            id: Some(studio_runtime_schema::persistence::RequestIdentity::issue_root()),
                             path: "README.md".into(),
                             line: 1,
                             text: "valid neighbor input".into(),
@@ -1216,19 +1230,13 @@ async fn invalid_agent_record_is_held_without_stopping_other_agent_dispatch() {
                     [&bad_id],
                     |row| row.get(0),
                 )?;
-                let receipt_id = format!(
-                    "{}{bad_id}",
-                    studio_runtime_store::INVALID_AGENT_HOLD_RECEIPT_PREFIX
-                );
                 let diagnostic: String = db.query_row(
-                    "SELECT result FROM runtime_operation_receipts WHERE id=?1 AND json_valid(result)",
-                    [receipt_id],
-                    |row| row.get(0),
+                    "SELECT hold_incident FROM runtime_agents WHERE id=?1",
+                    [&bad_id], |row| row.get(0),
                 )?;
                 let json_extract_safe: bool = db.query_row(
-                    "SELECT json_extract(result,'$.held')=1 AND json_extract(result,'$.diagnostic') IS NOT NULL FROM runtime_operation_receipts WHERE id=?1",
-                    [format!("{}{bad_id}", studio_runtime_store::INVALID_AGENT_HOLD_RECEIPT_PREFIX)],
-                    |row| row.get(0),
+                    "SELECT hold_status='invalid' AND hold_incident IS NOT NULL FROM runtime_agents WHERE id=?1",
+                    [&bad_id], |row| row.get(0),
                 )?;
                 let projected: String = db.query_row(
                     "SELECT payload FROM sync_entities WHERE collection='agent' AND id=?1",
@@ -1242,7 +1250,7 @@ async fn invalid_agent_record_is_held_without_stopping_other_agent_dispatch() {
         .expect("read original agent row and separate hold");
     assert!(
         json_extract_safe,
-        "held receipt remains safe for JSON SQL consumers"
+        "held owner remains safe for SQL consumers"
     );
     let projected: Value = serde_json::from_str(&projected).expect("held agent projection JSON");
     assert_eq!(projected["value"]["status"], "failed");
@@ -1259,12 +1267,7 @@ async fn invalid_agent_record_is_held_without_stopping_other_agent_dispatch() {
         "held row bytes remain untouched"
     );
     let held: Value = serde_json::from_str(&stored_record).expect("original JSON row");
-    let receipt_result: Value =
-        serde_json::from_str(&diagnostic).expect("held result remains valid JSON");
-    assert_eq!(receipt_result["held"], true);
-    let message = receipt_result["diagnostic"]
-        .as_str()
-        .expect("diagnostic text");
+    let message = diagnostic;
     assert!(
         message.contains(&format!("runtime_agents/{bad_id}")),
         "{message}"
@@ -1365,6 +1368,8 @@ async fn invalid_agent_hold_rechecks_the_same_field_before_publishing() {
         | error @ StoreError::SchemaObjectMismatch { .. }
         | error @ StoreError::Sqlite(_)
         | error @ StoreError::CommitOutcomeUnknown(_)
+        | error @ StoreError::RequestResult(_)
+        | error @ StoreError::Outbox(_)
         | error @ StoreError::Json(_)
         | error @ StoreError::InvalidStoredObject { .. }
         | error @ StoreError::SchemaValidation(_)
@@ -1399,14 +1404,11 @@ async fn invalid_agent_hold_rechecks_the_same_field_before_publishing() {
     let reader = store.test_reader().expect("read connection opens");
     let receipt: bool = reader
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM runtime_operation_receipts WHERE id=?1)",
-            [format!(
-                "{}racy",
-                studio_runtime_store::INVALID_AGENT_HOLD_RECEIPT_PREFIX
-            )],
+            "SELECT hold_status!='clear' FROM runtime_agents WHERE id='racy'",
+            [],
             |row| row.get(0),
         )
-        .expect("hold receipt query succeeds");
+        .expect("hold query succeeds");
     assert!(!receipt, "a repaired row must not receive a stale hold");
     assert!(
         AgentRepository::get(&reader, &AgentId::from("racy"))
@@ -1456,7 +1458,9 @@ async fn unresolved_receipt_for_held_invalid_agent_does_not_block_recovery() {
                         StoreError::InvalidSyncObjectField {
                             pointer, reason, ..
                         } => Ok((pointer, reason)),
-                        error @ StoreError::StateDirectory(_) | error @ StoreError::AlreadyOwned | error @ StoreError::MissingDatabase(_) | error @ StoreError::UnsafeStateDirectory | error @ StoreError::SchemaMismatch(_) | error @ StoreError::InvalidSyncObject { .. } | error @ StoreError::InvalidStoredRecord { .. } | error @ StoreError::SchemaObjectMismatch { .. } | error @ StoreError::Sqlite(_) | error @ StoreError::CommitOutcomeUnknown(_) | error @ StoreError::Json(_) | error @ StoreError::InvalidStoredObject { .. } | error @ StoreError::SchemaValidation(_) | error @ StoreError::RecordContract(_) | error @ StoreError::WriterPoisoned | error @ StoreError::WriterActorInitialization(_) | error @ StoreError::WriterActorControl(_) | error @ StoreError::CommitActorOutcomeUnknown(_) | error @ StoreError::Migration { .. } | error @ StoreError::ReadTaskFailed => Err(error),
+                        error @ StoreError::StateDirectory(_) | error @ StoreError::AlreadyOwned | error @ StoreError::MissingDatabase(_) | error @ StoreError::UnsafeStateDirectory | error @ StoreError::SchemaMismatch(_) | error @ StoreError::InvalidSyncObject { .. } | error @ StoreError::InvalidStoredRecord { .. } | error @ StoreError::SchemaObjectMismatch { .. } | error @ StoreError::Sqlite(_) | error @ StoreError::CommitOutcomeUnknown(_) | error @ StoreError::RequestResult(_)
+        | error @ StoreError::Outbox(_)
+        | error @ StoreError::Json(_) | error @ StoreError::InvalidStoredObject { .. } | error @ StoreError::SchemaValidation(_) | error @ StoreError::RecordContract(_) | error @ StoreError::WriterPoisoned | error @ StoreError::WriterActorInitialization(_) | error @ StoreError::WriterActorControl(_) | error @ StoreError::CommitActorOutcomeUnknown(_) | error @ StoreError::Migration { .. } | error @ StoreError::ReadTaskFailed => Err(error),
                     }
                 }).await?;
                 store::hold_invalid_agent_record(
@@ -1467,30 +1471,35 @@ async fn unresolved_receipt_for_held_invalid_agent_does_not_block_recovery() {
                     "runtime_agents/rootId invalid",
                 ).await?;
                 store.transaction(move |tx| {
-                    let context = json!({
-                        "intent": {
-                            "agent_id": agent_id, "epoch": 1, "attempt_id": "uncertain-start",
-                            "account_key": "default", "provider": "codex",
-                            "thread_id": "fake-thread-0", "cwd": null, "model": null,
-                            "events": [], "radio_authorized": false
+                    let context = Pending {
+                        intent: TurnIntent {
+                            agent_id, epoch: 1, attempt_id: "uncertain-start".into(),
+                            account_key: "default".into(), provider: studio_runtime_providers::ProviderKind::Codex,
+                            thread_id: Some("fake-thread-0".into()), cwd: None, model: None,
+                            events: vec![], radio_authorized: false,
                         },
-                        "method": "thread/start", "operation": "uncertain-start"
-                    });
-                    let result = json!({"context":context,"request":{}});
-                    tx.execute(
-                        "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,'submitted',?2)",
-                        rusqlite::params![
-                            "account-worker:account:default:uncertain-start:submitted",
-                            result.to_string()
-                        ],
-                    )?;
+                        method: Method::ThreadStart, operation: "uncertain-start".into(),
+                        thread: None, compiled: None,
+                    };
+                    let request = studio_runtime_schema::provider_call_contract::TransportRequest {
+                        id: studio_runtime_providers::RequestId::String("uncertain-start".into()), generation: 1,
+                        method: Method::ThreadStart, operation: "uncertain-start".into(), thread: None,
+                        lightweight: false, deadline: 60_000, unknown: true, remote_id: None,
+                    };
+                    studio_runtime_store::outbox::Outbox::put(tx, &studio_runtime_store::outbox::OutboxRow {
+                        id: "uncertain-start".into(), kind: studio_runtime_schema::persistence::OutboxKind::ProviderCall,
+                        owner_kind: studio_runtime_schema::persistence::OwnerKind::Agent, owner_id: context.intent.agent_id.clone(),
+                        account: Some("default".into()), stream_id: Some("default".into()), generation: Some(1),
+                        request_id: None, signature: "held-call".into(), status: studio_runtime_schema::persistence::OutboxStatus::Unknown,
+                        ordinal: None, next_at: None, created: 1,
+                        payload: store::ProviderCall::Account(Box::new(store::AccountCall { context, request, written: None, restarted: false })),
+                    })?;
                     Ok(())
                 }).await?;
 
                 let recovered = store::recover(&store, "default", Generation(1), true).await?;
                 let unresolved: i64 = store.test_reader()?.query_row(
-                    "SELECT COUNT(*) FROM runtime_operation_receipts \
-                     WHERE id='account-worker:account:default:uncertain-start:submitted'",
+                    "SELECT COUNT(*) FROM runtime_outbox WHERE id='uncertain-start' AND kind='provider_call' AND status='unknown'",
                     [],
                     |row| row.get(0),
                 )?;
@@ -1899,8 +1908,8 @@ fn callback_records(state: &State) -> i64 {
         .test_reader()
         .expect("reader")
         .query_row(
-            "SELECT count(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:callback:%:accepted'",
-            [],
+            "SELECT count(*) FROM runtime_tool_requests WHERE kind=?1 AND status!=?2 AND origin_key LIKE 'callback:%'",
+            rusqlite::params![studio_runtime_schema::persistence::ToolRequestKind::ProviderCallback, studio_runtime_schema::persistence::ToolRequestStatus::Completed],
             |row| row.get(0),
         )
         .expect("callback records")
@@ -1912,7 +1921,7 @@ async fn callbacks_retired(state: &State) {
     let changed = Arc::new(tokio::sync::Notify::new());
     let observer = changed.clone();
     state.bridge.store.add_table_change_observer(
-        studio_runtime_store::ObservedTable::OperationReceipts,
+        studio_runtime_store::ObservedTable::RuntimeToolRequests,
         move || observer.notify_one(),
     );
     tokio::time::timeout(std::time::Duration::from_secs(120), async {
@@ -1960,8 +1969,16 @@ async fn unsupported_callback(method: &str) {
                             let operation = format!("callback:default:1:{cursor}");
                             Ok((
                                 store::checkpoint(tx, "default", 1)?,
-                                store::receipt(tx, &operation, "accepted")?.is_some(),
-                                store::receipt(tx, &operation, "submitted")?.is_some(),
+                                crate::tool_requests::get_callback::<
+                                    callback_record::CallbackObligation,
+                                >(tx, &operation)
+                                .map_err(|e| StoreError::SchemaMismatch(e.to_string()))?
+                                .is_some_and(|task| task.status != studio_runtime_schema::persistence::ToolRequestStatus::Completed),
+                                crate::tool_requests::get_callback::<
+                                    callback_record::CallbackObligation,
+                                >(tx, &operation)
+                                .map_err(|e| StoreError::SchemaMismatch(e.to_string()))?
+                                .is_some_and(|task| task.payload.submitted.is_some()),
                             ))
                         })
                         .await
@@ -1982,7 +1999,7 @@ async fn unsupported_callback(method: &str) {
     assert_eq!(
         record_phases(&state).await,
         (cursor, false, false),
-        "a written answer retires its record"
+        "a written answer retires its outstanding obligation"
     );
     worker.shutdown().await.unwrap();
 }
@@ -2077,6 +2094,8 @@ impl crate::provider_callbacks::tools::StatusWatchPort for SameAccountProviderSt
 
             let scope = self.session.scope().clone();
             let request = super::retained::SessionRequest {
+                root_request_id: String::new(),
+                admitted_request: None,
                 scope: scope.clone(),
                 expected_scope: Some(scope),
                 operation: "managed-callback-same-account-provider-request".into(),
@@ -2434,11 +2453,17 @@ async fn scenario_callback_unknown_write_is_not_resent_on_replay() {
             store
                 .transaction_with(|tx| {
                     let operation = "callback:default:1:1";
-                    Ok(["accepted", "submitted", "unknown"].map(|phase| {
-                        store::receipt(tx, operation, phase)
-                            .expect("callback phase")
-                            .is_some()
-                    }))
+                    let task = crate::tool_requests::get_callback::<
+                        callback_record::CallbackObligation,
+                    >(tx, operation)
+                    .map_err(|e| StoreError::SchemaMismatch(e.to_string()))?
+                    .expect("uncertain callback owner");
+                    Ok([
+                        true,
+                        task.payload.submitted.is_some(),
+                        task.status
+                            == studio_runtime_schema::persistence::ToolRequestStatus::Unknown,
+                    ])
                 })
                 .await
         })
@@ -3156,7 +3181,7 @@ async fn rejected_start_restarts_without_unresolved_transport_receipts() {
     worker.shutdown().await.unwrap();
     let peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
-    let unresolved = state.bridge.run(move |store| async move { Ok(store.test_reader()?.query_row("SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:account:%:submitted'", [], |r|r.get::<_,i64>(0))?) }).await.unwrap();
+    let unresolved = state.bridge.run(move |store| async move { Ok(store.test_reader()?.query_row("SELECT COUNT(*) FROM runtime_outbox WHERE kind='provider_call' AND json_extract(payload,'$.family')='account'", [], |r|r.get::<_,i64>(0))?) }).await.unwrap();
     assert_eq!(unresolved, 0);
     assert_ne!(state.event_status("input").await, "uncertain");
     worker.shutdown().await.unwrap();
@@ -3252,7 +3277,17 @@ async fn acknowledged_journal_prefix_is_compacted() {
         let tx = reader.transaction().unwrap();
         assert_eq!(store::checkpoint(&tx, "default", 1).unwrap(), cursor);
     }
-    let rows = state.bridge.run(move |store| async move { Ok(store.test_reader()?.query_row("SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:journal:%'", [], |r|r.get::<_,i64>(0))?) }).await.unwrap();
+    let rows = state
+        .bridge
+        .run(move |store| async move {
+            Ok(store.test_reader()?.query_row(
+                "SELECT COUNT(*) FROM runtime_outbox WHERE account='default' AND kind=?1",
+                [OutboxKind::JournalEntry],
+                |r| r.get::<_, i64>(0),
+            )?)
+        })
+        .await
+        .unwrap();
     assert_eq!(rows, 0);
     worker.shutdown().await.unwrap();
 }
@@ -3359,12 +3394,14 @@ async fn committed_batch_replay_after_mid_batch_ack_loss_is_exactly_once() {
             .bridge
             .run(move |store| async move {
                 store.transaction_with(move |tx| {
-                    let metadata = store::receipt(tx, "streams:default", "metadata")?
-                        .unwrap_or_else(|| json!({"entries": [], "closed": []}));
+                    let saved = studio_runtime_store::account_state::streams(tx,"default")?
+                        .map(|raw|serde_json::from_str::<Value>(&raw)).transpose().map_err(StoreError::from)?
+                        .unwrap_or_else(||json!({"metadata":{"entries":[],"closed":[]}}));
+                    let metadata = &saved["metadata"];
                     Ok(json!({
                         "entries": metadata["entries"],
                         "closed": metadata["closed"],
-                        "pending": store::receipt(tx, "streams:default", "pending")?,
+                        "pending": pending_stream_batch(tx)?,
                         "delta": metadata["post_commit"][0]["AnalyticsStream"]["observation"]["params"]["delta"],
                     }))
                 }).await
@@ -3477,6 +3514,33 @@ async fn callback_replay_waits_for_initialization_before_admission() {
     worker.shutdown().await.unwrap();
 }
 
+fn pending_stream_batch(
+    tx: &studio_runtime_store::Transaction<'_>,
+) -> Result<Option<Value>, WorkerError> {
+    let row = Outbox::get::<Value>(tx, "streams:default").map_err(StoreError::from)?;
+    Ok(row.map(|row| {
+        assert_eq!(row.kind, OutboxKind::StreamFlush);
+        assert_eq!(row.status, OutboxStatus::Pending);
+        assert_eq!(row.owner_kind, OwnerKind::Account);
+        assert_eq!(row.owner_id, "default");
+        assert_eq!(row.stream_id.as_deref(), Some("default"));
+        row.payload
+    }))
+}
+
+fn current_stream_base_count(tx: &studio_runtime_store::Connection) -> Result<usize, WorkerError> {
+    let Some(raw) = studio_runtime_store::account_state::streams(tx, "default")? else {
+        return Ok(0);
+    };
+    let saved: Value = serde_json::from_str(&raw).map_err(StoreError::from)?;
+    Ok(saved["metadata"]["entries"]
+        .as_array()
+        .expect("current stream entries")
+        .iter()
+        .filter(|entry| !entry["base"].is_null())
+        .count())
+}
+
 async fn scenario_durable_stream_batch_recovers_before_flush() {
     let state = State::new().await;
     let mut peer = Peer::new();
@@ -3489,9 +3553,7 @@ async fn scenario_durable_stream_batch_recovers_before_flush() {
         .bridge
         .run(move |store| async move {
             store
-                .transaction_with(move |tx| {
-                    Ok(store::receipt(tx, "streams:default", "pending")?.is_some())
-                })
+                .transaction_with(move |tx| Ok(pending_stream_batch(tx)?.is_some()))
                 .await
         })
         .await
@@ -3514,7 +3576,7 @@ async fn scenario_durable_stream_batch_recovers_before_flush() {
     peer.acknowledged(complete).await;
     let (text,pending,bases) = state.bridge.run(move |store| async move { store.transaction_with(move |tx| {
         let text:String = tx.query_row("SELECT json_extract(record,'$.text') FROM runtime_items WHERE json_extract(record,'$.id') LIKE '%:stream'", [], |row| row.get(0))?;
-        Ok((text,store::receipt(tx,"streams:default","pending")?.is_some(),tx.query_row("SELECT COUNT(*) FROM runtime_operation_receipts WHERE signature='stream-base'",[],|row| row.get::<_,i64>(0))?))
+        Ok((text,pending_stream_batch(tx)?.is_some(),current_stream_base_count(tx)?))
     }).await }).await.unwrap();
     assert_eq!(text, "durable delta");
     assert!(!pending);
@@ -3550,7 +3612,7 @@ async fn unrelated_store_failure_after_enqueue_keeps_write_unknown() {
     .expect("admitted command receipt remains withheld");
     state.bridge.run(move |store| async move {
         store.transaction_with(move |tx| {
-            tx.execute_batch("CREATE TRIGGER fail_journal BEFORE INSERT ON runtime_operation_receipts WHEN NEW.id LIKE 'account-worker:journal:%' BEGIN SELECT RAISE(ABORT,'unrelated journal failure'); END;")?;
+            tx.execute_batch(&format!("CREATE TRIGGER fail_journal BEFORE INSERT ON runtime_outbox WHEN NEW.kind='{}' BEGIN SELECT RAISE(ABORT,'unrelated journal failure'); END;",OutboxKind::JournalEntry.as_str()))?;
             Ok(())
         }).await
     }).await.unwrap();
@@ -3601,6 +3663,28 @@ async fn scenario_stream_base_survives_replaced_visible_item() {
     );
     let started = peer.frame(json!({"method":"item/started","params":{"threadId":"fake-thread-0","turnId":"turn","item":{"id":"base","type":"agentMessage","text":"replacement"}}})).await;
     peer.acknowledged(started).await;
+    let preserved = state
+        .bridge
+        .run(|store| async move {
+            let raw =
+                studio_runtime_store::account_state::streams(&store.test_reader()?, "default")?
+                    .expect("current stream owner");
+            let saved: Value = serde_json::from_str(&raw).map_err(StoreError::from)?;
+            Ok(saved["metadata"]["entries"]
+                .as_array()
+                .expect("stream entries")
+                .iter()
+                .filter(|entry| entry["key"]["item"] == "base")
+                .map(|entry| entry["base"].clone())
+                .collect::<Vec<_>>())
+        })
+        .await
+        .expect("persisted stream base");
+    assert_eq!(
+        preserved,
+        vec![json!("a".repeat(64 * 1024))],
+        "the current stream owns the exact base before later deltas"
+    );
     let delta = peer.frame(json!({"method":"item/agentMessage/delta","params":{"threadId":"fake-thread-0","turnId":"turn","itemId":"base","delta":"tail"}})).await;
     peer.acknowledged(delta).await;
     let completed = peer.frame(json!({"method":"item/completed","params":{"threadId":"fake-thread-0","turnId":"turn","item":{"id":"base","type":"agentMessage","text":""}}})).await;
@@ -3616,11 +3700,7 @@ async fn scenario_stream_base_survives_replaced_visible_item() {
                     |r| r.get::<_, studio_runtime_store::stored_text::StoredText>(0),
                 )?
                 .into_string();
-            let bases: i64 = db.query_row(
-                "SELECT COUNT(*) FROM runtime_operation_receipts WHERE signature='stream-base'",
-                [],
-                |r| r.get(0),
-            )?;
+            let bases = current_stream_base_count(&db)?;
             Ok((text, bases))
         })
         .await
@@ -3854,7 +3934,7 @@ async fn bookkeeping_rows_stay_bounded_across_completed_turns() {
         let cursor=peer.frame(json!({"method":"turn/completed","params":{"threadId":"fake-thread-0","turn":{"id":format!("turn-{turn}"),"status":"completed"}}})).await;
         peer.acknowledged(cursor).await;
         worker_barrier(&worker).await;
-        let count=state.bridge.run(move |store| async move { Ok(store.test_reader()?.query_row("SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:%'",[],|r|r.get::<_,i64>(0))?) }).await.unwrap();
+        let count=state.bridge.run(move |store| async move { Ok(store.test_reader()?.query_row("SELECT (SELECT COUNT(*) FROM runtime_outbox WHERE account='default')+(SELECT COUNT(*) FROM runtime_account_state WHERE account='default')",[],|r|r.get::<_,i64>(0))?) }).await.unwrap();
         assert!(count <= 4, "turn {turn}: retained {count} worker rows");
         assert_eq!(state.event_status(&input).await, "delivered");
         assert_eq!(
@@ -3990,24 +4070,38 @@ async fn stream_base_and_metadata_rollback_together() {
     peer.acknowledged(delta).await;
     peer.phase("forcing stream transaction rollback");
     state.bridge.run(move |store| async move { store.transaction_with(move |tx| {
-        tx.execute_batch("CREATE TRIGGER fail_stream_metadata BEFORE UPDATE ON runtime_operation_receipts WHEN NEW.id='account-worker:streams:default:metadata' BEGIN SELECT RAISE(ABORT,'crash after base write before metadata'); END;")?;
+        tx.execute_batch("CREATE TRIGGER fail_stream_metadata BEFORE UPDATE OF streams ON runtime_account_state WHEN NEW.account='default' BEGIN SELECT RAISE(ABORT,'crash before stream owner commit'); END;")?;
         Ok(())
     }).await }).await.unwrap();
     let frame = json!({"method":"item/started","params":{"threadId":"fake-thread-0","turnId":"turn","item":{"id":"atomic","type":"agentMessage","text":"replacement"}}});
     peer.frame(frame.clone()).await;
     assert!(worker.completion().await.is_err());
-    state.bridge.run(move |store| async move { store.transaction_with(move |tx| {
-        // The delta batch was flushed before this transaction; its stored item
-        // holds the flushed text, so no base row exists. A failed item/started
-        // rolls back the base it preserves together with the snapshot and the
-        // stream metadata, leaving the flushed item intact.
-        assert_eq!(tx.query_row("SELECT COUNT(*) FROM runtime_operation_receipts WHERE signature='stream-base'",[],|row|row.get::<_,i64>(0))?,0);
-        let body=tx.query_row("SELECT body FROM runtime_item_fulltext WHERE id LIKE '%:atomic'",[],|row|row.get::<_,studio_runtime_store::stored_text::StoredText>(0))?.into_string();
-        assert_eq!(body,"x".repeat(store::STREAM_FLUSH_BYTES));
-        assert_eq!(store::receipt(tx,"cursor:default:1","ack")?,Some(json!(delta)));
-        tx.execute_batch("DROP TRIGGER fail_stream_metadata")?;
-        Ok(())
-    }).await }).await.unwrap();
+    state
+        .bridge
+        .run(move |store| async move {
+            store
+                .transaction_with(move |tx| {
+                    // The delta batch was flushed before this transaction; its stored item
+                    // holds the flushed text, so metadata has no preserved base. A failed item/started
+                    // rolls back the base it preserves together with the snapshot and the
+                    // stream metadata, leaving the flushed item intact.
+                    assert_eq!(current_stream_base_count(tx)?, 0);
+                    let body = tx
+                        .query_row(
+                            "SELECT body FROM runtime_item_fulltext WHERE id LIKE '%:atomic'",
+                            [],
+                            |row| row.get::<_, studio_runtime_store::stored_text::StoredText>(0),
+                        )?
+                        .into_string();
+                    assert_eq!(body, "x".repeat(store::STREAM_FLUSH_BYTES));
+                    assert_eq!(store::checkpoint(tx, "default", 1)?, delta);
+                    tx.execute_batch("DROP TRIGGER fail_stream_metadata")?;
+                    Ok(())
+                })
+                .await
+        })
+        .await
+        .unwrap();
     let mut peer = Peer::new();
     peer.trace.store(true, std::sync::atomic::Ordering::Relaxed);
     peer.phase("restarting worker after rollback");
@@ -4508,6 +4602,8 @@ impl preparation::VmProviderLaunchResolver for VmTurnResolver {
         _actor_id: String,
         _actor_epoch: i64,
         _generation: u64,
+        _root_request_id: String,
+        _source: studio_runtime_store::request_results::AdmittedRequest,
     ) -> preparation::VmProviderAuthFuture<'_> {
         let reconnect_generation = self.reconnect_generation.clone();
         Box::pin(async move {
@@ -5343,6 +5439,11 @@ async fn vm_journal_cannot_settle_a_sibling_actors_attempt() {
         })
         .await
         .unwrap();
+    for actor in ["vm-actor", "vm-sibling"] {
+        store::attach_provider_stream(&store, "default", Some(actor), 31, "fixture-connection")
+            .await
+            .unwrap();
+    }
     let frame = Frame::Notification(studio_runtime_providers::NotificationFrame {
         method: Method::TurnCompleted,
         params: Some(json!({
@@ -5678,6 +5779,8 @@ async fn retained_vm_reply_uses_its_actor_cursor_when_host_cursor_is_zero() {
     let retained = worker.retained_session();
     let receipt = retained
         .request(super::retained::SessionRequest {
+            root_request_id: String::new(),
+            admitted_request: None,
             scope: retained.scope().clone(),
             expected_scope: None,
             operation: "vm-retained-thread-read-cursor-one".into(),
@@ -5784,8 +5887,11 @@ async fn retained_unknown_replay_precedes_changed_vm_session_fence() {
 
     guest.state.lock().unwrap().unknown_write_once = true;
     let retained = worker.retained_session();
+    let root_request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
     let make_request =
         |scope: crate::recovery_history::ConnectionScope| super::retained::SessionRequest {
+            root_request_id: root_request_id.clone(),
+            admitted_request: None,
             scope,
             expected_scope: None,
             operation: "vm-unknown-profile-change".into(),
@@ -5795,7 +5901,7 @@ async fn retained_unknown_replay_precedes_changed_vm_session_fence() {
             }),
             transfer: None,
             deleted_actor_session: None,
-            method: Method::ThreadRead,
+            method: Method::ThreadCompactStart,
             params: json!({"threadId":"fake-thread-0"}),
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(10),
         };
@@ -6103,33 +6209,15 @@ async fn vm_worker_restart_reconciles_uncertain_provider_start_without_resending
     worker_barrier(&first_worker).await;
     let first_recovery = state.record().await;
     assert_eq!(first_recovery["status"], "starting", "{first_recovery}");
-    let agent_id = state.agent.clone();
-    let receipt_id = format!(
-        "linux-vm-provider-start:{agent_id}:{}",
-        first_recovery["epoch"].as_i64().expect("VM actor epoch")
-    );
-    let receipt = state
-        .bridge
-        .run(move |store| async move {
-            let connection = store.test_reader()?;
-            Ok(EventWriteRepository::receipt(&connection, &receipt_id)?
-                .expect("uncertain start keeps its durable reservation"))
-        })
-        .await
-        .expect("read provider start receipt");
-    let receipt_prefix = format!(
-        "agent={agent_id};epoch={};launch=",
-        first_recovery["epoch"].as_i64().expect("VM actor epoch")
-    );
-    assert!(
-        receipt
-            .signature
-            .strip_prefix(&receipt_prefix)
-            .is_some_and(|fingerprint| fingerprint.len() == 64)
-    );
+    let launch = &first_recovery["vmLaunch"];
+    assert_eq!(launch["identity"]["epoch"], first_recovery["epoch"]);
+    assert_eq!(launch["status"], "submitted");
     assert_eq!(
-        serde_json::from_str::<Value>(&receipt.result).unwrap()["phase"],
-        "reserved"
+        launch["identity"]["launchFingerprint"]
+            .as_str()
+            .expect("launch signature")
+            .len(),
+        64
     );
     {
         let guest_state = guest.state.lock().unwrap();
@@ -6437,7 +6525,7 @@ async fn preparation_commit_rechecks_workspace_settings_and_input() {
                 },
             ).await?, "{mutation}");
             scheduler::lifecycle_transaction_with(&store, move |tx| {
-                assert!(store::receipt(tx, &operation, "submitted")?.is_none());
+                assert!(store::account_submission(tx, &operation)?.is_none());
                 let row = AgentRepository::get(tx, &AgentId::from(agent.as_str()))?.unwrap().value();
                 assert_ne!(row["startAttempt"]["settingsFixed"], true, "freeze must roll back: {mutation}");
                 let meta = studio_runtime_store::NotificationDispatchRepository::event_metadata(tx, "annotation:input")?;
@@ -6740,7 +6828,7 @@ async fn a_new_backend_process_still_classifies_the_old_generation_as_a_restart(
 }
 
 #[tokio::test]
-async fn thread_request_lost_with_its_provider_retries_without_duplicate_input() {
+async fn thread_request_lost_with_its_provider_remains_held() {
     let state = State::new().await;
     let parent = adopt_parent(&state).await;
     let mut peer = Peer::new();
@@ -6750,8 +6838,7 @@ async fn thread_request_lost_with_its_provider_retries_without_duplicate_input()
     provider_exits(&peer, &mut worker).await;
 
     let record = state.record().await;
-    assert_eq!(record["status"], "queued");
-    assert!(record["startAttempt"].is_null());
+    assert_eq!(record["status"], "failed");
     assert_eq!(state.event_status("input").await, "pending");
     assert_eq!(child_stop_notices(&state, &parent).await, 0);
     assert!(
@@ -6762,19 +6849,17 @@ async fn thread_request_lost_with_its_provider_retries_without_duplicate_input()
     let mut next = Peer::identity("default", 2, None);
     let mut replacement = next.worker(state.bridge.clone()).await;
     state.wake(&replacement).await;
-    let start = next.write_turn_start().await;
-    next.accepted(&start).await;
-    assert_eq!(state.event_status("input").await, "delivered");
     worker_barrier(&replacement).await;
+    assert_eq!(state.event_status("input").await, "pending");
     assert!(
         next.writes.try_recv().is_err(),
-        "the input is submitted once"
+        "Unknown is never resent automatically"
     );
     replacement.shutdown().await.unwrap();
 }
 
 #[tokio::test]
-async fn thread_start_lost_before_turn_submission_retries_attempt_once() {
+async fn thread_start_lost_before_turn_submission_remains_held() {
     let state = State::new().await;
     let parent = adopt_parent(&state).await;
     let agent_id = state.agent.clone();
@@ -6802,24 +6887,18 @@ async fn thread_start_lost_before_turn_submission_retries_attempt_once() {
     provider_exits(&peer, &mut worker).await;
 
     let record = state.record().await;
-    assert_eq!(record["status"], "queued");
-    assert!(record["startAttempt"].is_null());
+    assert_eq!(record["status"], "failed");
     assert_eq!(state.event_status("input").await, "pending");
     assert_eq!(child_stop_notices(&state, &parent).await, 0);
 
     let mut next = Peer::identity("default", 2, None);
     let mut replacement = next.worker(state.bridge.clone()).await;
     state.wake(&replacement).await;
-    let thread_start = next.write("thread/start").await;
-    next.reply(&thread_start, json!({"thread":{"id":"fake-thread-0"}}))
-        .await;
-    let turn_start = next.write("turn/start").await;
-    next.accepted(&turn_start).await;
-    assert_eq!(state.event_status("input").await, "delivered");
     worker_barrier(&replacement).await;
+    assert_eq!(state.event_status("input").await, "pending");
     assert!(
         next.writes.try_recv().is_err(),
-        "the unsubmitted input is delivered once after thread creation"
+        "Unknown is never resent automatically"
     );
     replacement.shutdown().await.unwrap();
 }

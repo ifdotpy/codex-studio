@@ -7,8 +7,51 @@ use rusqlite::Connection;
 const AGENT: &str = "agent";
 const ACCOUNT: &str = "acct";
 
+#[test]
+fn execution_outcome_reads_current_attempt_and_rejects_malformed_values() {
+    for (outcome, accepted) in [
+        (json!("unknown"), true),
+        (json!(null), false),
+        (json!("invented"), false),
+    ] {
+        let mut connection = database();
+        let agent = agent_from(
+            json!({"status":"running","startAttempt":{"id":"attempt","epoch":0,"submitted":true,"events":[],"executionOutcome":outcome}}),
+        );
+        let transaction = connection.transaction().expect("transaction");
+        assert_eq!(
+            crate::ExecutionHistoryRepository::record(&transaction, &agent).is_ok(),
+            accepted
+        );
+        let saved: i64 = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM runtime_execution_attempts",
+                [],
+                |row| row.get(0),
+            )
+            .expect("attempt count");
+        assert_eq!(saved, i64::from(accepted));
+        if accepted {
+            let status: String = transaction
+                .query_row(
+                    "SELECT json_extract(record,'$.submission') FROM runtime_execution_attempts",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("submission");
+            assert_eq!(status, "unknown");
+        }
+    }
+}
+
 fn database() -> Connection {
     let mut connection = Connection::open_in_memory().expect("memory database opens");
+    crate::receipt_schema::create(&connection).expect("receipt schema");
+    connection
+        .execute_batch(
+            "CREATE TABLE runtime_orchestration_settings(id TEXT PRIMARY KEY,record TEXT);",
+        )
+        .expect("settings");
     connection
         .execute_batch(crate::agent_columns::agent_table_sql())
         .expect("agents table creates");
@@ -20,7 +63,6 @@ fn database() -> Connection {
              CREATE TABLE runtime_completed_turns(id TEXT PRIMARY KEY);
              CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,text TEXT,status TEXT,
                created REAL,epoch INTEGER,turn_id TEXT,error TEXT);
-             CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL);
              CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,
@@ -86,6 +128,81 @@ fn with<T>(connection: &mut Connection, change: impl FnOnce(&Transaction<'_>) ->
     let result = change(&transaction);
     transaction.commit().expect("transaction commits");
     result
+}
+
+#[test]
+fn same_thread_host_and_vm_attempts_resolve_only_for_the_exact_actor() {
+    let connection = database();
+    for (id, mode) in [("host", "native"), ("guest", "vm")] {
+        put(
+            &connection,
+            json!({"id":id,"rootId":id,"status":"running","executionMode":mode,
+            "autoWake":true,"inFlight":true,"turnEpoch":0,"turnId":"turn",
+            "startAttempt":{"id":format!("attempt-{id}"),"epoch":0,"events":[],"submitted":true,
+                "accountKey":ACCOUNT,"threadId":"thread","turnId":"turn","connectionGeneration":7,"requestTicket":format!("ticket-{id}")}}),
+        );
+    }
+    assert_eq!(
+        SchedulerRepository::find_attempt_for_thread(
+            &connection,
+            ACCOUNT,
+            7,
+            "thread",
+            Some("turn")
+        )
+        .expect("unscoped lookup"),
+        (true, None)
+    );
+    for id in ["host", "guest"] {
+        let attempt = SchedulerRepository::find_attempt_for_actor(
+            &connection,
+            id,
+            ACCOUNT,
+            7,
+            "thread",
+            Some("turn"),
+        )
+        .expect("actor-scoped lookup")
+        .expect("own attempt");
+        assert_eq!(attempt.agent_id, id);
+        assert_eq!(attempt.attempt_id, format!("attempt-{id}"));
+        assert!(
+            SchedulerRepository::find_attempt_for_actor(
+                &connection,
+                id,
+                ACCOUNT,
+                8,
+                "thread",
+                Some("turn")
+            )
+            .expect("generation fence")
+            .is_none()
+        );
+        assert!(
+            SchedulerRepository::find_attempt_for_actor(
+                &connection,
+                id,
+                ACCOUNT,
+                7,
+                "thread",
+                Some("other-turn")
+            )
+            .expect("turn fence")
+            .is_none()
+        );
+    }
+    assert!(
+        SchedulerRepository::find_attempt_for_actor(
+            &connection,
+            "other",
+            ACCOUNT,
+            7,
+            "thread",
+            None
+        )
+        .expect("actor fence")
+        .is_none()
+    );
 }
 
 #[test]
@@ -630,12 +747,12 @@ fn rejected_start(error: Value) -> (Value, (String, Option<String>)) {
             [],
         )
         .expect("event writes");
-    connection
-        .execute(
-            "INSERT INTO runtime_execution_attempts VALUES('start','run','{\"id\":\"start\",\"epoch\":0,\"runId\":\"run\",\"events\":[\"input\"],\"submission\":\"submitted\"}')",
-            [],
-        )
-        .expect("attempt writes");
+    with(&mut connection, |tx| {
+        let agent = AgentRepository::get(tx, &AgentId::from(AGENT))
+            .expect("agent reads")
+            .expect("agent");
+        crate::ExecutionHistoryRepository::record(tx, &agent).expect("attempt admission");
+    });
     let settled = with(&mut connection, |tx| {
         SchedulerRepository::settle_start_rejected_provider(
             tx, AGENT, 0, "start", "ticket", ACCOUNT, 1, "thread", error,
@@ -791,11 +908,23 @@ fn a_turn_outcome_settles_every_run_that_bound_the_turn() {
     );
     // The same outcome again is a replay; a different one is a conflict.
     with(&mut connection, |tx| {
-        crate::ExecutionHistoryRepository::terminal(tx, AGENT, "turn-shared", "completed", None)
+        crate::ExecutionHistoryRepository::terminal(
+            tx,
+            AGENT,
+            "turn-shared",
+            studio_runtime_schema::persistence::ExecutionStatus::Completed,
+            None,
+        )
     })
     .expect("a repeated outcome is accepted");
     let conflict = with(&mut connection, |tx| {
-        crate::ExecutionHistoryRepository::terminal(tx, AGENT, "turn-shared", "failed", None)
+        crate::ExecutionHistoryRepository::terminal(
+            tx,
+            AGENT,
+            "turn-shared",
+            studio_runtime_schema::persistence::ExecutionStatus::Failed,
+            None,
+        )
     });
     assert!(
         matches!(&conflict, Err(StoreError::InvalidSyncObject { scope, id })
@@ -856,7 +985,13 @@ fn stored_incident_runs_that_share_a_turn_settle_without_an_edit() {
             .expect("incident run writes");
     }
     with(&mut connection, |tx| {
-        crate::ExecutionHistoryRepository::terminal(tx, AGENT, "01a15bfb", "interrupted", None)
+        crate::ExecutionHistoryRepository::terminal(
+            tx,
+            AGENT,
+            "01a15bfb",
+            studio_runtime_schema::persistence::ExecutionStatus::Interrupted,
+            None,
+        )
     })
     .expect("the incident turn settles");
     let runs = turn_runs(&connection, "01a15bfb");
@@ -966,18 +1101,14 @@ fn terminal_claude_error_keeps_only_bounded_failure_metadata() {
     let saved = stored(&connection);
     assert_eq!(saved["lastCompletedTurnError"]["claudeFailure"], metadata);
     assert_eq!(saved["error"]["codexErrorInfo"], "unauthorized");
-    let receipts: String = connection
-        .query_row(
-            "SELECT record FROM runtime_execution_attempts WHERE id='attempt'",
-            [],
-            |r| r.get(0),
-        )
-        .expect("execution attempt reads");
-    let receipt: Value = serde_json::from_str(&receipts).expect("execution receipt");
-    assert_eq!(
-        receipt["receipts"]["terminal"]["input"]["nativeError"]["claudeFailure"],
-        metadata
-    );
-    assert!(!receipts.contains("secret"));
+    let receipt = crate::ExecutionHistoryRepository::receipt::<serde_json::Value>(
+        &connection,
+        "attempt",
+        ExecutionReceiptKind::Terminal,
+    )
+    .expect("receipt reads")
+    .expect("terminal receipt");
+    assert_eq!(receipt.input["nativeError"]["claudeFailure"], metadata);
+    assert!(!receipt.input.to_string().contains("secret"));
     assert!(!saved.to_string().contains("secret"));
 }

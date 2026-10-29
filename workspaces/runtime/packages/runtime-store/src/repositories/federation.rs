@@ -3,7 +3,12 @@
 use crate::schema::{SchemaRequirements, TableRequirement};
 use crate::{StoreError, StoreResult};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use serde::Deserialize;
 use serde_json::{Map, Value, json};
+use studio_runtime_schema::persistence::{
+    DeliveryStatus, FederationDeliveryState, FederationMessageKind, RecipientDelivery,
+    RequestIdentity,
+};
 
 const TABLES: &[TableRequirement] = &[
     TableRequirement {
@@ -45,6 +50,27 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FederationRepository;
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OutboxRecord {
+    id: String,
+    #[serde(rename = "kind")]
+    _kind: FederationMessageKind,
+    #[serde(rename = "room")]
+    _room: String,
+    #[serde(rename = "payload")]
+    _payload: Map<String, Value>,
+    #[serde(rename = "created")]
+    _created: f64,
+    #[serde(rename = "nextAt")]
+    _next_at: f64,
+    #[serde(rename = "attempts")]
+    _attempts: u64,
+    #[serde(default, rename = "error")]
+    _error: Option<String>,
+    status: FederationDeliveryState,
+}
+
 impl FederationRepository {
     pub fn snapshot(connection: &Connection) -> StoreResult<Value> {
         let settings = record(connection, "runtime_federation_settings", "global")?
@@ -66,46 +92,20 @@ impl FederationRepository {
             .map(|(id, v)| project(id, v, "runtime_federation_rooms", ROOM_FIELDS))
             .collect::<StoreResult<Vec<_>>>()?;
         // Validate every stored outbox record, including records excluded from the queue count.
-        let outbox = records(connection, "runtime_federation_outbox", "")?;
+        let mut statement =
+            connection.prepare_cached("SELECT id,record FROM runtime_federation_outbox")?;
+        let outbox = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
         let mut queued = 0;
-        for (id, value) in outbox {
-            if value.get("id").and_then(Value::as_str) != Some(id.as_str()) {
+        for row in outbox {
+            let (id, raw) = row?;
+            let value: OutboxRecord = serde_json::from_str(&raw)
+                .map_err(|_| invalid("runtime_federation_outbox", &id, "record"))?;
+            if value.id != id {
                 return Err(invalid("runtime_federation_outbox", &id, "id"));
             }
-            for field in ["kind", "room"] {
-                if !value.get(field).is_some_and(Value::is_string) {
-                    return Err(invalid("runtime_federation_outbox", &id, field));
-                }
-            }
-            if !value.get("payload").is_some_and(Value::is_object) {
-                return Err(invalid("runtime_federation_outbox", &id, "payload"));
-            }
-            for field in ["created", "nextAt"] {
-                if value
-                    .get(field)
-                    .and_then(Value::as_f64)
-                    .is_none_or(|n| !n.is_finite())
-                {
-                    return Err(invalid("runtime_federation_outbox", &id, field));
-                }
-            }
-            if value.get("attempts").and_then(Value::as_u64).is_none() {
-                return Err(invalid("runtime_federation_outbox", &id, "attempts"));
-            }
-            if value
-                .get("error")
-                .is_some_and(|v| !v.is_null() && !v.is_string())
-            {
-                return Err(invalid("runtime_federation_outbox", &id, "error"));
-            }
-            let status = value
-                .get("status")
-                .and_then(Value::as_str)
-                .ok_or_else(|| invalid("runtime_federation_outbox", &id, "status"))?;
-            if !["queued", "delivered"].contains(&status) {
-                return Err(invalid("runtime_federation_outbox", &id, "status"));
-            }
-            if status == "queued" {
+            if value.status == FederationDeliveryState::Queued {
                 queued += 1;
             }
         }
@@ -194,7 +194,11 @@ impl FederationRepository {
                     "DELETE FROM runtime_federation_outbox WHERE id=?1",
                     [&out_id],
                 )?;
-                tx.execute("UPDATE runtime_chat_messages SET deliveries=json_set(deliveries,?1,'cancelled') WHERE id=?2",params![format!("$.remote:{id}"),out_id])?;
+                let delivery = RecipientDelivery {
+                    status: DeliveryStatus::Cancelled,
+                    error: None,
+                };
+                tx.execute("UPDATE runtime_chat_messages SET deliveries=json_set(deliveries,?1,json(?3)) WHERE id=?2",params![format!("$.remote:{id}"),out_id,serde_json::to_string(&delivery)?])?;
             }
         }
         let mut stmt=tx.prepare_cached("SELECT id,record FROM runtime_federation_rooms WHERE json_extract(record,'$.peerId')=?1")?;
@@ -448,12 +452,11 @@ impl FederationRepository {
             &digest[20..32]
         );
         let kind = if approve {
-            "room-accept"
+            FederationMessageKind::RoomAccept
         } else {
-            "room-invite"
+            FederationMessageKind::RoomInvite
         };
         let payload = json!({"room":room_id,"participants":room["localParticipants"],"shareNames":share_names,"shareStatus":share_status});
-        let queued = json!({"id":message_id,"kind":kind,"room":room_id,"payload":payload,"created":now,"status":"queued","attempts":0,"nextAt":0,"error":null});
         let existing = record(tx, "runtime_federation_outbox", &message_id)?;
         if let Some(existing) = existing {
             if existing.get("kind") != Some(&json!(kind))
@@ -464,6 +467,26 @@ impl FederationRepository {
                 ));
             }
         } else {
+            let root = RequestIdentity::issue_root();
+            let immutable = json!({"protocol":studio_runtime_schema::federation_limits::PROTOCOL_VERSION,"senderServer":state_id,"id":message_id,"kind":kind,"room":room_id,"payload":payload,"created":now});
+            let signature =
+                super::multi_server_delivery::federation_envelope_signature(&immutable)?;
+            let admission = match super::multi_server_delivery::admit_remote(
+                tx,
+                "federation-outbox",
+                &[&peer_state],
+                &root,
+                &signature,
+                (now * 1000.0) as i64,
+            )? {
+                crate::request_results::Admission::Fresh(admitted) => admitted,
+                crate::request_results::Admission::Replay(_) => {
+                    return Err(StoreError::RecordContract(
+                        "new federation delivery already settled",
+                    ));
+                }
+            };
+            let queued = json!({"id":message_id,"requestId":root,"admission":admission,"kind":kind,"room":room_id,"payload":payload,"created":now,"status":FederationDeliveryState::Queued,"attempts":0,"nextAt":0,"error":null});
             let (count, bytes) = super::federation_messaging::queued_outbox_size(tx, &peer_state)?;
             if count >= studio_runtime_schema::federation_limits::MAX_QUEUE_ROWS
                 || bytes + queued.to_string().len() as u64
@@ -593,6 +616,22 @@ fn now() -> StoreResult<f64> {
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| StoreError::SchemaMismatch(e.to_string()))?
         .as_secs_f64())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::OutboxRecord;
+    use studio_runtime_schema::persistence::FederationDeliveryState;
+
+    #[test]
+    fn outbox_record_accepts_persisted_shape_and_rejects_unknown_kind() {
+        let raw = r#"{"id":"message","kind":"chat-message","room":"room","payload":{},"created":1.5,"nextAt":0,"attempts":0,"status":"queued","error":null,"requestId":"request"}"#;
+        let record: OutboxRecord = serde_json::from_str(raw).expect("valid outbox");
+        assert_eq!(record.status, FederationDeliveryState::Queued);
+        assert!(
+            serde_json::from_str::<OutboxRecord>(&raw.replace("chat-message", "unknown")).is_err()
+        );
+    }
 }
 
 inventory::submit! {

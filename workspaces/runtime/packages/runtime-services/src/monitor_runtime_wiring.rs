@@ -969,6 +969,7 @@ impl MonitorRuntime {
                 | error @ MonitorError::InvalidDeliveryIdentity(_)
                 | error @ MonitorError::InvalidOutputReceipt(_)
                 | error @ MonitorError::TaskFailed
+                | error @ MonitorError::Expired
                 | error @ MonitorError::InputOutcomeUnknown
                 | error @ MonitorError::Refused(_)
                 | error @ MonitorError::Unavailable(_)
@@ -1057,6 +1058,10 @@ impl MonitorRuntime {
         };
         if !matches!(submitted, Submission::Written) {
             return Err(match submitted {
+                Submission::NotSent {
+                    reason: monitor_driver::NotSentReason::Expired,
+                    ..
+                } => MonitorError::Expired,
                 Submission::NotSent { .. } => MonitorError::Refused("Monitor input rejected"),
                 Submission::Written | Submission::Unknown => MonitorError::InputOutcomeUnknown,
             });
@@ -1171,6 +1176,7 @@ impl MonitorRuntime {
                             | MonitorError::InvalidDeliveryIdentity(_)
                             | MonitorError::InvalidOutputReceipt(_)
                             | MonitorError::TaskFailed
+                            | MonitorError::Expired
                             | MonitorError::InputOutcomeUnknown
                             | MonitorError::Refused(_)
                             | MonitorError::Unavailable(_)
@@ -2202,7 +2208,7 @@ mod tests {
         store.transaction_with(|tx| {
             tx.execute("INSERT INTO runtime_monitors(id,record) VALUES ('watch',?1)",
                 [serde_json::json!({"id":"watch","agent":"owner","epoch":0,"status":"running","outputEventIds":["event"]}).to_string()])?;
-            tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES ('event','owner','message','invalid','pending',0,0)", [])?;
+            tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES ('event','owner','user','invalid','pending',0,0)", [])?;
             Ok::<_,studio_runtime_store::StoreError>(())
         }).await.unwrap();
         let runtime = MonitorRuntime::new(store, port, Arc::new(Notify::new()));

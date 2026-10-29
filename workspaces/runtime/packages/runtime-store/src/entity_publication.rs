@@ -191,12 +191,12 @@ pub struct StudioErrorSources {
     pub agents: BTreeSet<String>,
     pub monitors: BTreeSet<String>,
     pub events: BTreeSet<String>,
-    /// `runtime_operation_receipts` ids, which include dismissals.
-    pub receipts: BTreeSet<String>,
+    /// `runtime_error_incidents` ids, which include dismissals.
+    pub incidents: BTreeSet<String>,
     /// An agent, monitor or event row was deleted; its id is gone.
     pub rows_removed: bool,
-    /// A receipt row was deleted; its id is gone.
-    pub receipts_removed: bool,
+    /// A diagnostic row was deleted; its id is gone.
+    pub incidents_removed: bool,
 }
 
 impl StudioErrorSources {
@@ -204,9 +204,9 @@ impl StudioErrorSources {
         self.agents.is_empty()
             && self.monitors.is_empty()
             && self.events.is_empty()
-            && self.receipts.is_empty()
+            && self.incidents.is_empty()
             && !self.rows_removed
-            && !self.receipts_removed
+            && !self.incidents_removed
     }
 }
 
@@ -226,7 +226,7 @@ enum Source {
     /// Read only by the Studio error list.
     Monitor,
     /// Read only by the Studio error list (dismissals).
-    Receipt,
+    Incident,
 }
 
 impl Source {
@@ -244,7 +244,7 @@ impl Source {
             "runtime_assets" => Some(Self::QueueAsset),
             "user_terminals" => Some(Self::Terminal),
             "runtime_monitors" => Some(Self::Monitor),
-            "runtime_operation_receipts" => Some(Self::Receipt),
+            "runtime_error_incidents" => Some(Self::Incident),
             _ => None,
         }
     }
@@ -275,7 +275,7 @@ impl Source {
             Self::QueueAsset => "runtime_assets",
             Self::Terminal => "user_terminals",
             Self::Monitor => "runtime_monitors",
-            Self::Receipt => "runtime_operation_receipts",
+            Self::Incident => "runtime_error_incidents",
         }
     }
 }
@@ -364,7 +364,7 @@ pub(crate) fn pending(
                 .query_row(
                     &match source {
                         Source::QueueAsset => "SELECT json_extract(record,'$.agent') FROM runtime_assets WHERE rowid=?1".to_owned(),
-                        Source::Agent | Source::Request | Source::Event | Source::EventMeta | Source::Item | Source::Plan | Source::Annotation | Source::Task | Source::Work | Source::Terminal | Source::Monitor | Source::Receipt => format!("SELECT id FROM {} WHERE rowid=?1", source.table()),
+                        Source::Agent | Source::Request | Source::Event | Source::EventMeta | Source::Item | Source::Plan | Source::Annotation | Source::Task | Source::Work | Source::Terminal | Source::Monitor | Source::Incident => format!("SELECT id FROM {} WHERE rowid=?1", source.table()),
                     },
                     [row_id],
                     |row| row.get::<_, String>(0),
@@ -436,13 +436,13 @@ pub(crate) fn pending(
             (Source::Agent, Some(id)) => studio_errors.agents.insert(id.clone()),
             (Source::Monitor, Some(id)) => studio_errors.monitors.insert(id.clone()),
             (Source::Event, Some(id)) => studio_errors.events.insert(id.clone()),
-            (Source::Receipt, Some(id)) => studio_errors.receipts.insert(id.clone()),
+            (Source::Incident, Some(id)) => studio_errors.incidents.insert(id.clone()),
             (Source::Agent | Source::Monitor | Source::Event, None) => {
                 studio_errors.rows_removed = true;
                 false
             }
-            (Source::Receipt, None) => {
-                studio_errors.receipts_removed = true;
+            (Source::Incident, None) => {
+                studio_errors.incidents_removed = true;
                 false
             }
             _ => false,
@@ -527,7 +527,7 @@ pub(crate) fn pending(
             Source::Annotation => pending.annotations.insert(id),
             Source::Task => pending.tasks.insert(id),
             Source::Work => pending.work.insert(id),
-            Source::QueueAsset | Source::Terminal | Source::Monitor | Source::Receipt => false,
+            Source::QueueAsset | Source::Terminal | Source::Monitor | Source::Incident => false,
         };
     }
     pending.work_changes = work_changes

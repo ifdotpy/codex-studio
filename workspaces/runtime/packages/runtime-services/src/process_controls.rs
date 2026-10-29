@@ -9,12 +9,17 @@ use studio_runtime_schema::process_controls::{
     ProcessActionResult, ProcessActionStatus, ProcessControlRequest, ProcessEntry, ProcessOutcome,
     ProcessReceipt, Request,
 };
-use studio_runtime_store::{StoreError, Transaction};
+use studio_runtime_store::{
+    ProcessActionKind, ProcessActionPhase, ProcessActionRecord, StoreError, Transaction,
+};
 
 use crate::account_session_runtime::ConnectionScope;
+use crate::event_write::{CallerAdmission, RequestKey, begin_request};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("Request id expired")]
+    Expired,
     #[error("{0}")]
     Invalid(&'static str),
     #[error(transparent)]
@@ -580,13 +585,14 @@ pub fn validate_stop_response(
 }
 
 pub enum Claim {
-    Replay(Value),
+    Replay(ProcessActionResult),
     New {
-        record: Value,
+        record: Box<ProcessActionRecord>,
         targets: Vec<Value>,
         result: ProcessActionResult,
     },
 }
+
 pub fn claim(
     tx: &Transaction<'_>,
     request: &Request,
@@ -612,7 +618,6 @@ pub fn claim(
             "The process owner changed. Refresh the process list",
         ));
     }
-    let action = text(request, "action", "");
     let mut targets = Vec::new();
     let mut entries = Vec::new();
     let response = if matches!(
@@ -682,6 +687,7 @@ pub fn claim(
                     outcome: ProcessOutcome::Stale {
                         error: error.into(),
                     },
+                    extra: Default::default(),
                 });
             } else if let Some(process) = found {
                 entries.push(ProcessEntry {
@@ -690,6 +696,7 @@ pub fn claim(
                     source: Some(text(process, "source", "").to_owned()),
                     generation: Some(text(process, "generation", "").to_owned()),
                     outcome: ProcessOutcome::Pending,
+                    extra: Default::default(),
                 });
                 targets.push(process.clone());
             }
@@ -701,22 +708,78 @@ pub fn claim(
         status: ProcessActionStatus::Uncertain,
         processes: entries,
         response: None,
+        extra: Default::default(),
     };
-    let record = json!({"requestId":id,"signature":signature,"phase":"dispatching","scopeAgent":scope,"scopeAccountKey":request["accountKey"],"scopeEpoch":request["epoch"],"action":action,"responseTarget":response,"processes":result.processes,"created":now,"result":result});
+    let root_request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    let admitted = match begin_request::<ProcessActionResult>(
+        tx,
+        RequestKey::new(
+            "process-action",
+            &[
+                scope,
+                text(request, "accountKey", ""),
+                &request["epoch"].to_string(),
+            ],
+            &root_request_id,
+        )
+        .operation(&[id]),
+        &signature,
+        chrono::Utc::now().timestamp_millis(),
+    )
+    .map_err(StoreError::from)?
+    {
+        CallerAdmission::Fresh(admitted) => {
+            admitted.derive_result("process-action", &[id], &signature)
+        }
+        CallerAdmission::Replay(_) => {
+            return Err(Error::Store(StoreError::RequestResult(
+                studio_runtime_store::request_results::RequestResultError::Conflict {
+                    id: root_request_id,
+                },
+            )));
+        }
+    };
+    let record = ProcessActionRecord {
+        request_id: id.into(),
+        root_request_id,
+        admitted_request: admitted,
+        signature: signature.clone(),
+        phase: ProcessActionPhase::Dispatching,
+        scope_agent: scope.into(),
+        scope_account_key: text(request, "accountKey", "").into(),
+        scope_epoch: request["epoch"]
+            .as_number()
+            .cloned()
+            .ok_or(Error::Invalid("Invalid process epoch"))?,
+        action: match command {
+            ProcessControlRequest::StopSelected { .. } => ProcessActionKind::StopSelected,
+            ProcessControlRequest::StopOwned { .. } => ProcessActionKind::StopOwned,
+            ProcessControlRequest::StopResponse { .. } => ProcessActionKind::StopResponse,
+            ProcessControlRequest::BackgroundCommand { .. } => ProcessActionKind::BackgroundCommand,
+        },
+        response_target: response,
+        processes: result.processes.clone(),
+        created: now,
+        result: result.clone(),
+    };
     tx.execute(
         "INSERT INTO runtime_process_actions(id,signature,record) VALUES(?,?,?)",
-        params![id, signature, canonical(&record)],
+        params![
+            id,
+            signature,
+            serde_json::to_string(&record).map_err(StoreError::from)?
+        ],
     )
     .map_err(StoreError::from)?;
     Ok(Claim::New {
-        record,
+        record: Box::new(record),
         targets,
         result,
     })
 }
 /// Reuse a durable action before any fresh native observation. Changed content
 /// under the same request ID remains an error, including after a lost response.
-pub fn replay(tx: &Transaction<'_>, request: &Value) -> Result<Option<Value>, Error> {
+pub fn replay(tx: &Transaction<'_>, request: &Value) -> Result<Option<ProcessActionResult>, Error> {
     let prior: Option<(String, String)> = tx
         .query_row(
             "SELECT signature,record FROM runtime_process_actions WHERE id=?",
@@ -733,68 +796,160 @@ pub fn replay(tx: &Transaction<'_>, request: &Value) -> Result<Option<Value>, Er
             "This process action ID has different content",
         ));
     }
-    let record: Value = serde_json::from_str(&raw).map_err(StoreError::from)?;
-    decode_result(&record).map(Some)
+    let record: ProcessActionRecord = serde_json::from_str(&raw).map_err(StoreError::from)?;
+    Ok(Some(record.result))
 }
-pub fn save(tx: &Transaction<'_>, record: &Value) -> Result<(), Error> {
+pub fn save(tx: &Transaction<'_>, record: &ProcessActionRecord) -> Result<(), Error> {
     tx.execute(
         "UPDATE runtime_process_actions SET record=? WHERE id=?",
-        params![canonical(record), text(record, "requestId", "")],
+        params![
+            serde_json::to_string(record).map_err(StoreError::from)?,
+            record.request_id
+        ],
     )
     .map_err(StoreError::from)?;
     Ok(())
-}
-fn decode_result(record: &Value) -> Result<Value, Error> {
-    let result = record["result"].clone();
-    ProcessActionResult::validate(&result).map_err(StoreError::from)?;
-    Ok(result)
 }
 pub fn receipt(connection: &Connection, query: &Value) -> Result<ProcessReceipt, Error> {
     let exists:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_process_actions')",[],|r|r.get(0)).map_err(StoreError::from)?;
     if !exists {
         return input_receipt(connection, query);
     }
-    let record = raw(
-        connection,
-        "runtime_process_actions",
-        text(query, "requestId", ""),
-    )?;
+    let record: Option<String> = connection
+        .query_row(
+            "SELECT record FROM runtime_process_actions WHERE id=?",
+            [text(query, "requestId", "")],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(StoreError::from)?;
+    let record: Option<ProcessActionRecord> = record
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(StoreError::from)?;
     if let Some(record) = record
-        && record["scopeAgent"] == query["agent"]
-        && record["scopeAccountKey"] == query["accountKey"]
-        && record["scopeEpoch"] == query["epoch"]
+        && record.scope_agent == query["agent"]
+        && record.scope_account_key == query["accountKey"]
+        && query["epoch"].as_number() == Some(&record.scope_epoch)
     {
-        return ProcessReceipt::found(record["result"].clone())
-            .map_err(StoreError::from)
-            .map_err(Error::from);
+        return Ok(ProcessReceipt::found(record.result));
     }
     input_receipt(connection, query)
 }
 fn input_receipt(connection: &Connection, query: &Value) -> Result<ProcessReceipt, Error> {
-    let value =
-        crate::monitor_http_input::read(connection, query).map_err(|error| match error {
-            crate::monitor_policy::MonitorError::Store(error) => Error::Store(error),
-            crate::monitor_policy::MonitorError::InvalidStored { .. }
-            | crate::monitor_policy::MonitorError::InvalidResultReceipt(_)
-            | crate::monitor_policy::MonitorError::InvalidDeliveryIdentity(_)
-            | crate::monitor_policy::MonitorError::InvalidOutputReceipt(_)
-            | crate::monitor_policy::MonitorError::TaskFailed
-            | crate::monitor_policy::MonitorError::Refused(_)
-            | crate::monitor_policy::MonitorError::InputOutcomeUnknown
-            | crate::monitor_policy::MonitorError::Unavailable(_)
-            | crate::monitor_policy::MonitorError::ProviderRequest { .. }
-            | crate::monitor_policy::MonitorError::ConfigurationRejected { .. }
-            | crate::monitor_policy::MonitorError::ConfigurationReceipt { .. }
-            | crate::monitor_policy::MonitorError::Event(_)
-            | crate::monitor_policy::MonitorError::Rules(_)
-            | crate::monitor_policy::MonitorError::Io(_) => {
-                Error::Invalid("Invalid monitor input receipt")
-            }
-        })?;
-    if value["found"] != true {
-        return Ok(ProcessReceipt::not_found());
+    crate::monitor_http_input::read(connection, query).map_err(|error| match error {
+        crate::monitor_policy::MonitorError::Expired => Error::Expired,
+        crate::monitor_policy::MonitorError::Store(error) => Error::Store(error),
+        crate::monitor_policy::MonitorError::InvalidStored { .. }
+        | crate::monitor_policy::MonitorError::InvalidResultReceipt(_)
+        | crate::monitor_policy::MonitorError::InvalidDeliveryIdentity(_)
+        | crate::monitor_policy::MonitorError::InvalidOutputReceipt(_)
+        | crate::monitor_policy::MonitorError::TaskFailed
+        | crate::monitor_policy::MonitorError::Refused(_)
+        | crate::monitor_policy::MonitorError::InputOutcomeUnknown
+        | crate::monitor_policy::MonitorError::Unavailable(_)
+        | crate::monitor_policy::MonitorError::ProviderRequest { .. }
+        | crate::monitor_policy::MonitorError::ConfigurationRejected { .. }
+        | crate::monitor_policy::MonitorError::ConfigurationReceipt { .. }
+        | crate::monitor_policy::MonitorError::Event(_)
+        | crate::monitor_policy::MonitorError::Rules(_)
+        | crate::monitor_policy::MonitorError::Io(_) => {
+            Error::Invalid("Invalid monitor input receipt")
+        }
+    })
+}
+
+#[cfg(test)]
+mod claim_identity_tests {
+    use super::*;
+    use studio_runtime_schema::persistence::RequestIdentity;
+    use studio_runtime_store::request_results::RequestResults;
+
+    #[test]
+    fn raw_request_keeps_the_existing_canonical_signature() {
+        let raw = serde_json::value::RawValue::from_string(r#"{"action":"stop_owned","requestId":"request","agent":"owner","accountKey":"acct","epoch":1.0,"processes":[{"key":"key","generation":"gen","agent":"owner","accountKey":"acct","epoch":1.0}],"responseTarget":null}"#.into()).expect("fixture JSON");
+        let request = Request::parse(&raw).expect("request");
+        assert_eq!(
+            digest(request.raw()),
+            "b16654521805af453f0fc6e0b9f42fb54887c3b20eb1fb103b50e05a645497f8"
+        );
     }
-    ProcessReceipt::found(value["result"].clone())
-        .map_err(StoreError::from)
-        .map_err(Error::from)
+
+    #[test]
+    fn process_claim_reuses_its_admitted_token_after_expiry_without_another_effect() {
+        let mut db = Connection::open_in_memory().expect("database");
+        db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT,parent_id TEXT,deleted_at REAL);
+            CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT);
+            CREATE INDEX runtime_monitor_agent_status ON runtime_monitors(id);
+            CREATE TABLE runtime_tasks(id TEXT PRIMARY KEY,record TEXT);
+            CREATE INDEX runtime_task_agent_created_id ON runtime_tasks(id);
+            CREATE TABLE runtime_process_actions(id TEXT PRIMARY KEY,signature TEXT,record TEXT);
+            CREATE TABLE runtime_orchestration_settings(id TEXT PRIMARY KEY,record TEXT);
+            CREATE TABLE effects(count INTEGER);
+            INSERT INTO effects VALUES(0);")
+            .expect("claim tables");
+        studio_runtime_store::receipt_schema::create(&db).expect("receipt schema");
+        let owner = json!({"id":"owner","epoch":3,"accountKey":"account","inFlight":true,
+            "threadId":"thread","turnId":"turn"});
+        db.execute(
+            "INSERT INTO runtime_agents(id,record) VALUES('owner',?1)",
+            [owner.to_string()],
+        )
+        .expect("owner");
+        let raw = serde_json::value::RawValue::from_string(
+            json!({"action":"stop_response","requestId":"opaque-action-id",
+            "agent":"owner","accountKey":"account","epoch":3,"responseTarget":{
+                "agent":"owner","accountKey":"account","epoch":3,"connectionId":"connection",
+                "threadId":"thread","turnId":"turn"}})
+            .to_string(),
+        )
+        .expect("fixture JSON");
+        let request = Request::parse(&raw).expect("request");
+        let connections = Connections::from([("owner".into(), "connection".into())]);
+        let tx = db.transaction().expect("transaction");
+        let Claim::New { record, .. } =
+            claim(&tx, &request, &connections, 1.0).expect("fresh claim")
+        else {
+            panic!("first claim must be new");
+        };
+        let root = &record.root_request_id;
+        RequestIdentity::new("process-action", &[], root, &[]).expect("UUIDv7 root");
+        assert_eq!(record.request_id, "opaque-action-id");
+        tx.execute("UPDATE effects SET count=count+1", [])
+            .expect("first dispatch");
+        let token = record.admitted_request.clone();
+        let after_ttl =
+            token.created() + studio_runtime_schema::persistence::REQUEST_RESULT_TTL_MS + 1;
+        RequestResults::gc(&tx, after_ttl).expect("expire fresh ingress");
+        assert!(
+            RequestIdentity::new("process-action", &[], root, &[])
+                .expect("identity")
+                .validate(
+                    after_ttl,
+                    RequestResults::expired_before_ms(&tx).expect("floor")
+                )
+                .is_err()
+        );
+        assert!(matches!(
+            claim(&tx, &request, &connections, after_ttl as f64 / 1000.0)
+                .expect("admitted replay never reenters ingress"),
+            Claim::Replay(_)
+        ));
+        let persisted: String = tx
+            .query_row(
+                "SELECT record FROM runtime_process_actions WHERE id='opaque-action-id'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("owner record");
+        let persisted: ProcessActionRecord = serde_json::from_str(&persisted).expect("record");
+        assert_eq!(&persisted.root_request_id, root);
+        assert_eq!(persisted.admitted_request, token);
+        assert_eq!(
+            tx.query_row("SELECT count FROM effects", [], |row| row.get::<_, i64>(0))
+                .expect("effects"),
+            1
+        );
+    }
 }

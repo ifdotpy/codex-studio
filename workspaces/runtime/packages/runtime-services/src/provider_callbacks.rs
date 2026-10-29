@@ -5,10 +5,10 @@
 //! HTTP monitor input has no caller identity; its retry contract remains an
 //! open owner decision and the HTTP entry point refuses it by name.
 mod cards;
-mod model;
+pub(crate) mod model;
 mod projection;
 mod recovery;
-mod storage;
+pub(crate) mod storage;
 pub(crate) mod tools;
 pub use crate::managed_child_create::{
     ManagedCreationEnvironment, ManagedCreationEnvironmentError,
@@ -29,11 +29,11 @@ pub use recovery::{
     revalidate_unresolved_context_tool_receipts,
 };
 use serde_json::{Value, json};
-#[cfg(test)]
-pub(crate) use storage::reply_key;
 pub use storage::{
-    DeliveryOutcome, bind_journal, delivery, prepared_replies, retire_checkpointed,
-    submission_ready,
+    CallbackBody, CallbackOwner, CallbackResponse, DeliveryOutcome, FrameAdmission,
+    admit_callback_request, begin_frame, callback_admission, callback_origin_key, delivery,
+    pending_callback_count, prepared_replies, record_frame_outcome, reserve_credential_refresh,
+    response_frame, save_frame_response, settle_response, submission_ready,
 };
 use studio_runtime_providers::{Frame, ResponseBody};
 use studio_runtime_store::RuntimeStore;

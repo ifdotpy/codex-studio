@@ -1,6 +1,5 @@
 //! Bounded read-only history port. The account worker supplies reads after its
 //! journal barrier; no recovery operation may load a thread or submit input.
-use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
@@ -12,12 +11,8 @@ const MAX_PAGES: usize = 128;
 const MAX_ITEMS: usize = 4096;
 pub(crate) const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ConnectionScope {
-    pub account: String,
-    pub connection: String,
-    pub generation: u64,
-}
+pub use studio_runtime_schema::provider_call_contract::ConnectionScope;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HistoryMethod {
     Thread,

@@ -15,13 +15,123 @@ use studio_runtime_services::{
     monitor_runtime_wiring::{Delivery, MonitorEvent, MonitorRuntime},
 };
 use studio_runtime_store::{
-    AgentRecord, AgentRepository, MonitorRecord, MonitorsRepository,
-    NotificationDispatchRepository, RuleRecord, RulesRepository, RuntimeStore, Table,
+    AgentRecord, AgentRepository, MonitorRecord, MonitorsRepository, RuleRecord, RulesRepository,
+    RuntimeStore, Table,
 };
 use tokio::sync::Notify;
 
 use crate::monitor_runtime_support as support;
 use support::Port;
+fn input_request_id(label: &str) -> String {
+    static ISSUED: std::sync::OnceLock<u128> = std::sync::OnceLock::new();
+    let issued = *ISSUED.get_or_init(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_millis()
+    });
+    let digest = studio_runtime_store::sha256_hex(label.as_bytes());
+    let suffix = u64::from_str_radix(&digest[..15], 16).expect("digest");
+    uuid::Uuid::from_u128((issued << 80) | (7 << 76) | (2 << 62) | u128::from(suffix)).to_string()
+}
+async fn input_schema(store: &RuntimeStore) {
+    store
+        .transaction(|tx| {
+            studio_runtime_store::receipt_schema::create(tx)?;
+            Ok(())
+        })
+        .await
+        .expect("target schema");
+}
+
+#[tokio::test]
+async fn migrated_monitor_inputs_remain_visible_through_process_receipt() {
+    use serde::{Deserialize, Serialize};
+    use studio_runtime_schema::persistence::MonitorInputStatus;
+    #[derive(Serialize)]
+    struct LegacyReceipt {
+        monitor: String,
+        operation: studio_runtime_store::MonitorOperation,
+        status: MonitorInputStatus,
+    }
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Query<'a> {
+        request_id: &'a str,
+        agent: &'a str,
+        account_key: &'a str,
+        epoch: i64,
+    }
+    #[derive(Deserialize)]
+    struct ReadReceipt {
+        found: bool,
+        result: ReadResult,
+    }
+    #[derive(Deserialize)]
+    struct ReadResult {
+        response: ReadResponse,
+    }
+    #[derive(Deserialize)]
+    struct ReadResponse {
+        status: String,
+    }
+    let root = fixtures::tempdir();
+    let case = running(&fixtures::corpus(root.path()));
+    let store = fixtures::store(root.path(), "migration").await;
+    fixtures::seed(&store, &case).await;
+    let path = store.root().to_owned();
+    drop(store);
+    let db = rusqlite::Connection::open(path.join("canvas.sqlite3")).expect("old store");
+    db.execute_batch("DELETE FROM runtime_payload_migrations WHERE name LIKE 'receipts:%'; CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL);").expect("pre-cutover source");
+    for (id, status) in [
+        ("pending-input", MonitorInputStatus::Pending),
+        ("unknown-input", MonitorInputStatus::Unknown),
+    ] {
+        let receipt = LegacyReceipt {
+            monitor: "f8fc5c50-e4e4-50bc-8ff5-885105058c9d".into(),
+            operation: studio_runtime_store::MonitorOperation {
+                agent: "agent".into(),
+                epoch: 2,
+                account_key: "default".into(),
+                connection_id: "connection".into(),
+                evidence: Default::default(),
+            },
+            status,
+        };
+        db.execute(
+            "INSERT INTO runtime_operation_receipts VALUES(?1,'http-input-v1:hash',?2)",
+            rusqlite::params![
+                format!("monitor-http-input:{id}"),
+                serde_json::to_string(&receipt).expect("source receipt")
+            ],
+        )
+        .expect("source");
+    }
+    drop(db);
+    let store = RuntimeStore::open(Some(&path))
+        .await
+        .expect("migrate input");
+    for (id, expected) in [("pending-input", "pending"), ("unknown-input", "unknown")] {
+        let query = serde_json::to_value(Query {
+            request_id: id,
+            agent: "agent",
+            account_key: "default",
+            epoch: 2,
+        })
+        .expect("query");
+        let receipt = studio_runtime_services::process_controls::receipt(
+            &store.test_reader().expect("read"),
+            &query,
+        )
+        .expect("caller");
+        let result: ReadReceipt =
+            serde_json::from_value(serde_json::to_value(receipt).expect("response"))
+                .expect("typed response");
+        assert!(result.found);
+        assert_eq!(result.result.response.status, expected);
+    }
+}
+
 fn record(store: &RuntimeStore, id: &str) -> Value {
     MonitorsRepository::get(&store.test_reader().expect("read"), id)
         .expect("get")
@@ -296,7 +406,24 @@ async fn transient_rule_submit_failure_reconciles_the_saved_launch_identity() {
 
     assert!(runtime.tick(now + 1.0).await.is_err());
     assert_eq!(rule_record(&store, &rule_id)["inFlight"], true);
-    let reserved = rule_record(&store, &rule_id)["launchIntent"].clone();
+    let reserved_json: String = store
+        .test_reader()
+        .expect("read")
+        .query_row(
+            "SELECT json_extract(record, '$.launchIntent') FROM runtime_rules WHERE id=?1",
+            [&rule_id],
+            |row| row.get(0),
+        )
+        .expect("saved launch intent");
+    #[derive(serde::Deserialize)]
+    struct Reserved {
+        #[serde(flatten)]
+        check: studio_runtime_services::rules_engine::RuleCheck,
+        #[serde(flatten)]
+        extra: std::collections::BTreeMap<String, Value>,
+    }
+    let reserved: Reserved = serde_json::from_str(&reserved_json).expect("typed launch intent");
+    assert!(reserved.extra.is_empty());
     assert!(runtime.last_tick_error().is_some());
 
     *port
@@ -310,10 +437,7 @@ async fn transient_rule_submit_failure_reconciles_the_saved_launch_identity() {
     assert!(runtime.last_tick_error().is_none());
     let launches = port.rule_checks.lock().expect("rule checks");
     assert_eq!(launches.len(), 1);
-    assert_eq!(
-        serde_json::to_value(&launches[0]).expect("check JSON"),
-        reserved
-    );
+    assert_eq!(launches[0], reserved.check);
 }
 
 #[tokio::test]
@@ -1115,6 +1239,7 @@ async fn http_input_retry_after_ack_replays_one_logical_input() {
     let cases = fixtures::corpus(root.path());
     let case = running(&cases);
     let store = Arc::new(fixtures::store(root.path(), "http-input-replay").await);
+    input_schema(&store).await;
     fixtures::seed(&store, &case).await;
     let id = case["before"]["id"].as_str().expect("monitor id");
     let mut monitor = record(&store, id);
@@ -1134,7 +1259,7 @@ async fn http_input_retry_after_ack_replays_one_logical_input() {
     };
     // A lost HTTP success must not authorize another stdin write.
     runtime
-        .input_http(id, "lost-http-success", &input, 2000.0)
+        .input_http(id, &input_request_id("lost-http-success"), &input, 2000.0)
         .await
         .expect("first input acknowledged");
     let first = record(&store, id)["lastInputAttempt"]["id"]
@@ -1142,7 +1267,7 @@ async fn http_input_retry_after_ack_replays_one_logical_input() {
         .expect("first ticket")
         .to_owned();
     runtime
-        .input_http(id, "lost-http-success", &input, 2001.0)
+        .input_http(id, &input_request_id("lost-http-success"), &input, 2001.0)
         .await
         .expect("same logical input replays its acknowledgement");
     let second = record(&store, id)["lastInputAttempt"]["id"]
@@ -1166,6 +1291,7 @@ async fn http_input_busy_sequence_records_a_refusal_and_preserves_prior_receipts
     let mut case = running(&fixtures::corpus(root.path()));
     case["before"]["interactive"] = json!(true);
     let store = Arc::new(fixtures::store(root.path(), "http-input-busy").await);
+    input_schema(&store).await;
     fixtures::seed(&store, &case).await;
     let id = case["before"]["id"]
         .as_str()
@@ -1180,7 +1306,7 @@ async fn http_input_busy_sequence_records_a_refusal_and_preserves_prior_receipts
         close_stdin: false,
     };
     runtime
-        .input_http(&id, "previous-ack", &input, 2000.0)
+        .input_http(&id, &input_request_id("previous-ack"), &input, 2000.0)
         .await
         .expect("previous input acknowledged");
     let entered = Arc::new(Notify::new());
@@ -1189,18 +1315,23 @@ async fn http_input_busy_sequence_records_a_refusal_and_preserves_prior_receipts
     let (active_runtime, active_id, active_input) = (runtime.clone(), id.clone(), input.clone());
     let active = tokio::spawn(async move {
         active_runtime
-            .input_http(&active_id, "active-request", &active_input, 2001.0)
+            .input_http(
+                &active_id,
+                &input_request_id("active-request"),
+                &active_input,
+                2001.0,
+            )
             .await
     });
     entered.notified().await;
     let busy = runtime
-        .input_http(&id, "busy-fresh-request", &input, 2002.0)
+        .input_http(&id, &input_request_id("busy-fresh-request"), &input, 2002.0)
         .await;
     let pending = runtime
-        .input_http(&id, "active-request", &input, 2002.0)
+        .input_http(&id, &input_request_id("active-request"), &input, 2002.0)
         .await;
     let acknowledged = runtime
-        .input_http(&id, "previous-ack", &input, 2002.0)
+        .input_http(&id, &input_request_id("previous-ack"), &input, 2002.0)
         .await;
     release
         .send(())
@@ -1227,26 +1358,32 @@ async fn http_input_busy_sequence_records_a_refusal_and_preserves_prior_receipts
         acknowledged.is_ok(),
         "prior acknowledgement replays while another request holds the sequence"
     );
-    let query = json!({"requestId":"busy-fresh-request","agent":case["actor"]["id"],"accountKey":case["actor"]["accountKey"],"epoch":case["actor"]["epoch"]});
+    let query = json!({"requestId":input_request_id("busy-fresh-request"),"agent":case["actor"]["id"],"accountKey":case["actor"]["accountKey"],"epoch":case["actor"]["epoch"]});
     let receipt = studio_runtime_services::process_controls::receipt(
         &store.test_reader().expect("read"),
         &query,
     )
     .expect("read durable refusal");
-    let receipt = serde_json::to_value(receipt).expect("receipt JSON");
+    let studio_runtime_schema::process_controls::ProcessReceipt::Found(receipt) = receipt else {
+        panic!("refusal must commit before HTTP failure");
+    };
+    let Some(studio_runtime_schema::process_controls::ProcessResponse::MonitorInput(response)) =
+        &receipt.result.response
+    else {
+        panic!("monitor input response");
+    };
     assert_eq!(
-        receipt["found"], true,
-        "refusal must commit before HTTP failure"
+        response.status,
+        studio_runtime_schema::process_controls::MonitorInputStatus::Rejected
     );
-    assert_eq!(receipt["result"]["response"]["status"], "rejected");
     assert_eq!(
         record(&store, &id)["lastInputAttempt"]["id"],
-        "http:active-request",
+        format!("http:{}", input_request_id("active-request")),
         "busy request never reserves an inputAttempt"
     );
     assert!(
         runtime
-            .input_http(&id, "busy-fresh-request", &input, 2003.0)
+            .input_http(&id, &input_request_id("busy-fresh-request"), &input, 2003.0)
             .await
             .is_err()
     );
@@ -1255,7 +1392,12 @@ async fn http_input_busy_sequence_records_a_refusal_and_preserves_prior_receipts
         2
     );
     runtime
-        .input_http(&id, "fresh-intent-after-refusal", &input, 2004.0)
+        .input_http(
+            &id,
+            &input_request_id("fresh-intent-after-refusal"),
+            &input,
+            2004.0,
+        )
         .await
         .expect("confirmed refusal permits a new intentional identity");
     assert_eq!(
@@ -1278,6 +1420,7 @@ async fn http_input_receipts_survive_restart_and_refuse_uncertain_or_changed_con
         let mut case = running(&fixtures::corpus(root.path()));
         case["before"]["interactive"] = json!(true);
         let store = Arc::new(fixtures::store(root.path(), boundary).await);
+        input_schema(&store).await;
         fixtures::seed(&store, &case).await;
         let id = case["before"]["id"].as_str().expect("monitor id");
         let port = Arc::new(Port::default());
@@ -1298,7 +1441,7 @@ async fn http_input_receipts_survive_restart_and_refuse_uncertain_or_changed_con
         }
         if boundary == "settlement-rollback" {
             store.transaction(|tx| {
-                tx.execute_batch("CREATE TRIGGER refuse_input_receipt BEFORE UPDATE ON runtime_operation_receipts WHEN NEW.id LIKE 'monitor-http-input:%' BEGIN SELECT RAISE(ABORT,'fixture receipt failure'); END")?;
+                tx.execute_batch("CREATE TRIGGER refuse_input_receipt BEFORE INSERT ON request_results BEGIN SELECT RAISE(ABORT,'fixture receipt failure'); END")?;
                 Ok(())
             }).await.expect("inject exact settlement failure");
         }
@@ -1308,15 +1451,20 @@ async fn http_input_receipts_survive_restart_and_refuse_uncertain_or_changed_con
             cols: None,
             close_stdin: false,
         };
+        let request_id = uuid::Uuid::now_v7().to_string();
         let result = runtime(&store, &port)
-            .input_http(id, "same-request", &input, 2000.0)
+            .input_http(id, &request_id, &input, 2000.0)
             .await;
         assert_eq!(
             result.is_ok(),
             boundary == "acknowledged",
             "{boundary}: {result:?}"
         );
-        assert_eq!(port.submitted.lock().expect("native writes").len(), 1);
+        assert_eq!(
+            port.submitted.lock().expect("native writes").len(),
+            1,
+            "{boundary}: {result:?}"
+        );
         let saved = record(&store, id);
         if boundary == "settlement-rollback" {
             assert_eq!(
@@ -1334,9 +1482,7 @@ async fn http_input_receipts_survive_restart_and_refuse_uncertain_or_changed_con
         );
         let fresh_port = Arc::new(Port::default());
         let restarted = runtime(&store, &fresh_port);
-        let replay = restarted
-            .input_http(id, "same-request", &input, 2001.0)
-            .await;
+        let replay = restarted.input_http(id, &request_id, &input, 2001.0).await;
         assert_eq!(
             replay.is_ok(),
             boundary == "acknowledged",
@@ -1354,7 +1500,7 @@ async fn http_input_receipts_survive_restart_and_refuse_uncertain_or_changed_con
         };
         assert!(
             restarted
-                .input_http(id, "same-request", &changed, 2002.0)
+                .input_http(id, &request_id, &changed, 2002.0)
                 .await
                 .is_err()
         );
@@ -1367,14 +1513,14 @@ async fn http_input_receipts_survive_restart_and_refuse_uncertain_or_changed_con
         );
         if matches!(boundary, "acknowledged" | "rejected" | "not-sent") {
             restarted
-                .input_http(id, "new-intentional-request", &input, 2003.0)
+                .input_http(id, &uuid::Uuid::now_v7().to_string(), &input, 2003.0)
                 .await
                 .expect("fresh identity permits deliberate identical input");
             assert_eq!(fresh_port.submitted.lock().expect("fresh write").len(), 1);
         } else {
             assert!(
                 restarted
-                    .input_http(id, "different-request", &input, 2003.0)
+                    .input_http(id, &uuid::Uuid::now_v7().to_string(), &input, 2003.0)
                     .await
                     .is_err()
             );
@@ -1393,14 +1539,14 @@ async fn http_input_receipts_survive_restart_and_refuse_uncertain_or_changed_con
                 &store,
                 id,
                 &operation,
-                "http:same-request",
+                &format!("http:{request_id}"),
                 studio_runtime_services::monitor_policy::InputOutcome::Acknowledged,
                 2004.0,
             )
             .await
             .expect("late exact native callback resolves the uncertainty");
             restarted
-                .input_http(id, "same-request", &input, 2005.0)
+                .input_http(id, &request_id, &input, 2005.0)
                 .await
                 .expect("replay the late durable acknowledgement without native I/O");
             assert!(
@@ -1480,14 +1626,16 @@ async fn output_queue_enforces_capacity_and_preserves_terminal_reserve_atomicall
     let rejected_id = id.to_owned();
     let rejected_account = account.to_owned();
     let rejected_chunk = chunk.clone();
+    let rejected_identity =
+        studio_runtime_services::notification_dispatch::ProviderDeliveryIdentity {
+            provider_handle: format!("account:{account}"),
+            generation: 7,
+            cursor: 126,
+        };
+    let stored_identity = rejected_identity.clone();
     let rejected = store
         .transaction_with::<_, studio_runtime_services::notification_dispatch::NotificationDispatchError>(move |tx| {
-            NotificationDispatchRepository::put_notification_receipt(
-                tx,
-                "provider-notification-capacity",
-                "same-notification",
-                "settled",
-            )?;
+            studio_runtime_services::account_worker::put_notification(tx,&rejected_identity,studio_runtime_services::notification_dispatch::NotificationSettlement {signature:"same-notification".into(),outcome:studio_runtime_services::notification_dispatch::DispatchOutcome::Written})?;
             monitor_event_queue::enqueue_output_in_transaction(
                 tx, &rejected_id, &rejected_account, 7, 126, &rejected_chunk,
             )?;
@@ -1501,16 +1649,13 @@ async fn output_queue_enforces_capacity_and_preserves_terminal_reserve_atomicall
     assert_eq!(record(&store, id), before);
     let receipt = store
         .transaction_with(move |tx| {
-            NotificationDispatchRepository::notification_receipt(
-                tx,
-                "provider-notification-capacity",
-            )
+            studio_runtime_services::account_worker::get_notification(tx, &stored_identity)
         })
         .await
         .expect("read notification receipt");
     assert!(
         receipt.is_none(),
-        "failed queue append rolls back its receipt"
+        "failed queue append rolls back its journal settlement"
     );
 
     let operation = serde_json::from_value(case["before"]["operation"].clone()).expect("operation");
@@ -1609,8 +1754,16 @@ async fn bounded_probes_preserve_room_for_the_largest_exit_receipt() {
     let store = fixtures::store(root.path(), "probe-terminal-reserve").await;
     fixtures::seed(&store, &case).await;
     let id = case["before"]["id"].as_str().expect("id");
-    let operation =
-        serde_json::from_value(case["before"]["operation"].clone()).expect("monitor operation");
+    let operation_json: String = store
+        .test_reader()
+        .expect("read")
+        .query_row(
+            "SELECT json_extract(record, '$.operation') FROM runtime_monitors WHERE id=?1",
+            [id],
+            |row| row.get(0),
+        )
+        .expect("saved operation");
+    let operation = serde_json::from_str(&operation_json).expect("monitor operation");
     let id_for_queue_reset = id.to_owned();
     store
         .transaction_with(move |tx| {

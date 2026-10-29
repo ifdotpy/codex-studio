@@ -184,20 +184,23 @@ struct Plan {
     project_id: Option<String>,
 }
 
+use studio_runtime_schema::persistence::VmToHostReply;
+
 /// Move one chat tree. A repeat with the same request ID returns the saved result.
 pub async fn move_to_host(
     store: &RuntimeStore,
     host: &Arc<Host>,
     agent_id: &str,
     request_id: &str,
-) -> Result<Value> {
+) -> Result<VmToHostReply> {
     if request_id.is_empty() || request_id.len() > 200 {
         return Err(refused("Supply a request ID"));
     }
     let key = format!("vm-to-host:{request_id}");
+    let root = request_id.to_owned();
     let signature =
         event_write::request_signature(&json!({"operation":"vm-to-host","id":agent_id}));
-    let saved = replay(store, &key, &signature).await?;
+    let saved = replay(store, &key, request_id, &signature).await?;
     if let Some(result) = saved {
         return Ok(result);
     }
@@ -218,16 +221,19 @@ pub async fn move_to_host(
     let id = agent_id.to_owned();
     store
         .transaction_with_error(move |tx| {
-            if let Some(result) = event_write::read_receipt(
+            let admitted = match event_write::begin_request::<VmToHostReply>(
                 tx,
-                Some(&key),
+                event_write::RequestKey::new("vm-to-host", &["owner-api"], &root).raw(&key),
                 &signature,
-                "runtime_operation_receipts",
-                &key,
-                |_| true,
-            )? {
-                return Ok(result);
-            }
+                chrono::Utc::now().timestamp_millis(),
+            )
+            .map_err(|error| receipt_error(&error))?
+            {
+                event_write::CallerAdmission::Fresh(admitted) => admitted,
+                event_write::CallerAdmission::Replay(result) => {
+                    return Ok(result);
+                }
+            };
             let current = admit(tx, &id)?;
             if current.host_path != plan.host_path || !same_chats(&current.members, &plan.members) {
                 return Err(refused("The chat changed during the move. Try again"));
@@ -240,35 +246,49 @@ pub async fn move_to_host(
                     &AgentRecord::from_value(record.clone()).map_err(StoreError::from)?,
                 )?;
                 crate::agents_create::publish_agent(tx, &record)?;
-                moved.push(record["id"].clone());
+                moved.push(record["id"].as_str().unwrap_or_default().to_owned());
             }
-            let result = json!({"id":id,"executionMode":"native","workspaceMode":"shared",
-                "cwd":plan.host_path,"movedAgents":moved});
-            event_write::save_receipt(tx, Some(&key), &signature, &result)?;
+            let result = VmToHostReply {
+                id,
+                execution_mode: "native".into(),
+                workspace_mode: "shared".into(),
+                cwd: plan.host_path,
+                moved_agents: moved,
+            };
+            event_write::settle_request(tx, &admitted, Some("owner-api"), &result)
+                .map_err(|error| receipt_error(&error))?;
             Ok(result)
         })
         .await
 }
 
-async fn replay(store: &RuntimeStore, key: &str, signature: &str) -> Result<Option<Value>> {
-    let (key, signature) = (key.to_owned(), signature.to_owned());
+fn receipt_error(error: &studio_runtime_store::request_results::RequestResultError) -> MoveError {
+    if matches!(
+        error,
+        studio_runtime_store::request_results::RequestResultError::Conflict { .. }
+    ) {
+        refused("This request ID belongs to another move")
+    } else {
+        failed(error.to_string())
+    }
+}
+
+async fn replay(
+    store: &RuntimeStore,
+    key: &str,
+    root: &str,
+    signature: &str,
+) -> Result<Option<VmToHostReply>> {
+    let (key, root, signature) = (key.to_owned(), root.to_owned(), signature.to_owned());
     store
         .read_async("runtime-services/vm-to-host", move |tx| {
-            event_write::read_receipt(
+            event_write::saved_request::<VmToHostReply>(
                 tx,
-                Some(&key),
+                event_write::RequestKey::new("vm-to-host", &["owner-api"], &root).raw(&key),
                 &signature,
-                "runtime_operation_receipts",
-                &key,
-                |_| true,
+                chrono::Utc::now().timestamp_millis(),
             )
-            .map_err(|error| {
-                if matches!(error, event_write::EventWriteError::Conflict(_)) {
-                    refused("This request ID belongs to another move")
-                } else {
-                    failed(error.to_string())
-                }
-            })
+            .map_err(|error| receipt_error(&error))
         })
         .await
 }

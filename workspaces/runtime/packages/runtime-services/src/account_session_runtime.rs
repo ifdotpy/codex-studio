@@ -28,6 +28,8 @@ pub type AccountSessionFuture<'a, T> =
 
 #[derive(Debug, Error)]
 pub enum AccountSessionError {
+    #[error("Request id expired")]
+    Expired,
     #[error("Not implemented: requires {0}")]
     Requires(&'static str),
     #[error("{0}")]
@@ -59,6 +61,10 @@ pub enum ProviderResponse {
 /// only allow-listed read methods may omit an actor.
 #[derive(Clone)]
 pub struct ProviderRequest {
+    /// Stable root persisted by the owner before admitting this provider obligation.
+    pub root_request_id: String,
+    /// Exact effect admission, when the owning transaction already admitted the call.
+    pub admitted_request: Option<studio_runtime_store::request_results::AdmittedRequest>,
     pub account: String,
     pub operation: String,
     pub actor: Option<RequestActor>,
@@ -75,6 +81,8 @@ pub struct ProviderRequest {
 /// transfer member, independent of the agent's already adopted destination account.
 #[derive(Clone)]
 pub struct TransferProviderRequest {
+    pub root_request_id: String,
+    pub admitted_request: Option<studio_runtime_store::request_results::AdmittedRequest>,
     pub transfer_id: String,
     pub member: String,
     pub source_account: String,
@@ -988,7 +996,7 @@ impl AccountSessionRuntime {
     async fn exchange(
         &self,
         account: &str,
-        _for_login: bool,
+        root_request_id: String,
         operation: String,
         method: &'static str,
         params: Value,
@@ -1006,6 +1014,8 @@ impl AccountSessionRuntime {
             tokio::time::timeout_at(
                 deadline,
                 session.request(ProviderRequest {
+                    root_request_id,
+                    admitted_request: None,
                     account: account.to_owned(),
                     operation: operation.clone(),
                     actor: None,
@@ -1588,7 +1598,7 @@ impl AccountSessionPort for AccountSessionRuntime {
                             let response = runtime
                                 .exchange(
                                     account,
-                                    request.account_key.is_some(),
+                                    request.login_id.clone(),
                                     request.login_id.clone(),
                                     "account/login/start",
                                     serde_json::json!({"type":"chatgptDeviceCode"}),
@@ -1721,7 +1731,7 @@ impl AccountSessionPort for AccountSessionRuntime {
                     let response = runtime
                         .exchange(
                             account,
-                            receipt.get("reauthAccountKey").is_some(),
+                            request.to_owned(),
                             format!("{request}:cancel"),
                             "account/login/cancel",
                             serde_json::json!({"loginId":receipt["loginId"]}),
@@ -1825,6 +1835,8 @@ async fn read_limits_with_freshness(
         let receipt = AccountSessionPort::provider_request(
             runtime,
             ProviderRequest {
+                root_request_id: studio_runtime_schema::persistence::RequestIdentity::issue_root(),
+                admitted_request: None,
                 account: account.to_owned(),
                 operation: operation.clone(),
                 actor: None,
@@ -2298,7 +2310,7 @@ mod persistence_tests {
         assert_eq!(stored_workspace(&store), before);
         assert!(cache.lock().unwrap().is_empty());
         assert_eq!(store.test_reader().unwrap().query_row(
-            "SELECT COUNT(*) FROM runtime_operation_receipts WHERE signature='limits-observation'", [], |row| row.get::<_, i64>(0),
+            "SELECT COUNT(*) FROM runtime_account_state WHERE limits_observation IS NOT NULL", [], |row| row.get::<_, i64>(0),
         ).unwrap(), 0, "failed publication rolls back the private observation too");
     }
 }
@@ -2617,10 +2629,8 @@ mod limits_runtime_tests {
             .test_reader()
             .unwrap()
             .query_row(
-                "SELECT result FROM runtime_operation_receipts WHERE id=?1",
-                [studio_runtime_store::account_state::limits_observation_key(
-                    "default",
-                )],
+                "SELECT limits_observation FROM runtime_account_state WHERE account=?1",
+                ["default"],
                 |row| row.get(0),
             )
             .unwrap();
@@ -2857,8 +2867,9 @@ mod limits_runtime_tests {
             true,
         )
         .await;
+        let login_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
         let request = LoginRequest {
-            login_id: "11000000-0000-4000-8000-000000000009".into(),
+            login_id: login_id.clone(),
             account_key: Some("default".into()),
             email: None,
             label: None,
@@ -2900,7 +2911,7 @@ mod limits_runtime_tests {
         let replay = AccountSessionPort::login(
             fixture.runtime.as_ref(),
             LoginRequest {
-                login_id: "11000000-0000-4000-8000-000000000009".into(),
+                login_id,
                 account_key: Some("default".into()),
                 email: None,
                 label: None,

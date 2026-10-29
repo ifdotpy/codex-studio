@@ -27,6 +27,10 @@ async fn seeded<T: serde::de::DeserializeOwned>(
     let statements = seed
         .statements
         .join("\n")
+        .replace(
+            "INSERT OR REPLACE INTO \"runtime_agents\" VALUES(",
+            "INSERT OR REPLACE INTO \"runtime_agents\"(id,record) VALUES(",
+        )
         .replace("${ROOT}", &state.0.to_string_lossy().replace('\'', "''"));
     store
         .transaction(move |tx| {
@@ -65,6 +69,86 @@ async fn fixture() -> (TemporaryState, RuntimeStore, String, i64, Vec<String>) {
 }
 
 #[tokio::test]
+async fn send_now_recovers_unsent_batch_after_result_gc() {
+    let (_state, store, agent, epoch, events) = fixture().await;
+    let attempt = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    let intent = claim_intent(&store, &agent, epoch, &attempt, 10.0)
+        .await
+        .expect("claim")
+        .expect("pending batch");
+    settle_start_outcome(
+        &store,
+        &intent,
+        TurnStart::Blocked {
+            reason: "preparation failed".into(),
+        },
+    )
+    .await
+    .expect("settle unsent");
+    let target = events[0].clone();
+    let request = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    let claim_agent = agent.clone();
+    store
+        .transaction_with(move |tx| {
+            let current = AgentRepository::get(tx, &AgentId::from(agent.as_str()))?.expect("agent");
+            assert!(
+                studio_runtime_store::SchedulerRepository::proven_unsent_pending_batch(
+                    tx, &current, &target
+                )?
+            );
+            let mut changed = current;
+            changed.extra.get_mut("startAttempt").expect("attempt")["observedTurnId"] =
+                json!("other-turn");
+            assert!(
+                !studio_runtime_store::SchedulerRepository::proven_unsent_pending_batch(
+                    tx, &changed, &target
+                )?
+            );
+            changed.extra.get_mut("startAttempt").expect("attempt")["observedTurnId"] = Value::Null;
+            changed.extra.get_mut("startAttempt").expect("attempt")["executionOutcome"] =
+                json!("unknown");
+            assert!(
+                !studio_runtime_store::SchedulerRepository::proven_unsent_pending_batch(
+                    tx, &changed, &target
+                )?
+            );
+            tx.execute("UPDATE request_results SET created=0", [])?;
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_millis() as i64;
+            assert!(studio_runtime_store::request_results::RequestResults::gc(tx, now)? > 0);
+            use studio_runtime_schema::queue_command::{Field, QueueCommand, QueueTarget};
+            let body = QueueCommand::SendNow(QueueTarget {
+                agent: Field::Missing,
+                expected_text: Field::Missing,
+                expected_revision: Field::Missing,
+                id: Field::Missing,
+                message_id: Field::Value(target.clone()),
+                request_id: Field::Value(request.clone()),
+            });
+            studio_runtime_services::queue_write::action(
+                tx,
+                &agent,
+                &body,
+                "send-now-after-gc",
+                |tx, agent| studio_runtime_services::queue_write::queue_snapshot(tx, agent),
+            )
+            .expect("durably unsent batch remains retryable");
+            Ok::<(), studio_runtime_store::StoreError>(())
+        })
+        .await
+        .expect("queue transaction");
+    let next = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    assert!(
+        claim_intent(&store, &claim_agent, epoch, &next, 11.0)
+            .await
+            .expect("retry claim")
+            .is_some()
+    );
+}
+
+#[tokio::test]
 async fn pending_selection_matches_python_and_claims_rust_event_write_events() {
     let (_state, store, agent, epoch, fixture) = fixture().await;
     let intent = claim_intent(&store, &agent, epoch, "python-attempt", 10.0)
@@ -89,13 +173,15 @@ async fn pending_selection_matches_python_and_claims_rust_event_write_events() {
         .await
         .expect("unsent restores pending");
     let event_agent = agent.clone();
+    let annotation_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    let written_id = annotation_id.clone();
     store
         .transaction(move |tx| {
             annotate(
                 tx,
                 AnnotationWrite {
                     agent_id: event_agent,
-                    id: Some("rust-written".into()),
+                    id: Some(written_id),
                     path: "README.md".into(),
                     line: 1,
                     text: "scheduler annotation".into(),
@@ -116,7 +202,7 @@ async fn pending_selection_matches_python_and_claims_rust_event_write_events() {
         .expect("input");
     assert_eq!(
         intent.events.last().map(|e| e.id.as_str()),
-        Some("annotation:rust-written")
+        Some(format!("annotation:{annotation_id}").as_str())
     );
     assert!(
         mark_submitted_for_provider(&store, &intent, "accepted-request", 1, "test-connection")

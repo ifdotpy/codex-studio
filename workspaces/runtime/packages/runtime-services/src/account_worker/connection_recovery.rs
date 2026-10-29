@@ -347,7 +347,8 @@ fn stream_store_error(
         super::WorkerError::Recovery(_) => {
             crate::notification_dispatch::NotificationDispatchError::invalid()
         }
-        super::WorkerError::Scheduler(_)
+        super::WorkerError::Expired
+        | super::WorkerError::Scheduler(_)
         | super::WorkerError::Session(_)
         | super::WorkerError::Notification(_)
         | super::WorkerError::PreparationRefused(_)

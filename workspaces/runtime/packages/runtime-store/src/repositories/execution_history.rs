@@ -1,8 +1,60 @@
 //! Execution evidence shares the lifecycle transaction; no commits or provider retries here.
+use crate::request_results::{
+    Admission, AdmittedRequest, RequestResultError, RequestResults, ResultEnvelope,
+};
 use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
 use crate::{AgentRecord, StoreError, StoreResult};
 use rusqlite::{OptionalExtension, Transaction, params};
+use serde::Deserialize;
+use serde_json::value::RawValue;
 use serde_json::{Value, json};
+use studio_runtime_schema::persistence::{
+    AttemptSubmission, ExecutionReceiptKind, ExecutionStatus, RequestIdentity,
+};
+
+pub struct AttemptReceipt<I> {
+    pub input: I,
+    pub result: Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutionRun {
+    pub id: String,
+    pub agent: String,
+    pub account_key: String,
+    pub epoch: i64,
+    pub created: f64,
+    pub status: ExecutionStatus,
+    pub thread_id: Option<String>,
+    pub turn_id: Option<String>,
+    pub first_attempt_id: Option<String>,
+    pub root_attempt_id: Option<String>,
+    pub latest_attempt_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutionAttempt {
+    #[serde(flatten)]
+    pub start: crate::StartAttemptView,
+    pub run_id: String,
+    #[serde(default, deserialize_with = "submission")]
+    pub submission: Option<AttemptSubmission>,
+    pub turn_status: Option<ExecutionStatus>,
+    pub input_identity: Option<Box<RawValue>>,
+    pub claim_result: Option<Box<RawValue>>,
+    pub provider_submission: Option<Box<RawValue>>,
+    pub terminal_repair: Option<Box<RawValue>>,
+    #[serde(skip)]
+    pub snapshot: Option<Box<RawValue>>,
+}
+
+fn submission<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<AttemptSubmission>, D::Error> {
+    AttemptSubmission::deserialize(deserializer).map(Some)
+}
 
 const TABLES: &[TableRequirement] = &[
     TableRequirement {
@@ -34,12 +86,124 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     bootstrap_connection_functions: &[],
 };
 pub struct ExecutionHistoryRepository;
+#[derive(Clone, Copy)]
+enum VmAdmission {
+    AuthBootstrap,
+    CredentialRefresh,
+}
+impl VmAdmission {
+    fn path(self) -> &'static str {
+        match self {
+            Self::AuthBootstrap => "$.vm_auth_bootstrap_admission",
+            Self::CredentialRefresh => "$.vm_credential_refresh_admission",
+        }
+    }
+}
 impl ExecutionHistoryRepository {
+    pub fn vm_auth_bootstrap_admission(
+        db: &rusqlite::Connection,
+        id: &str,
+    ) -> StoreResult<Option<AdmittedRequest>> {
+        Self::admission_at(db, id, VmAdmission::AuthBootstrap.path())
+    }
+    pub fn vm_credential_refresh_admission(
+        db: &rusqlite::Connection,
+        id: &str,
+    ) -> StoreResult<Option<AdmittedRequest>> {
+        Self::admission_at(db, id, VmAdmission::CredentialRefresh.path())
+    }
+    pub fn set_vm_auth_bootstrap_admission(
+        tx: &Transaction<'_>,
+        id: &str,
+        source: &AdmittedRequest,
+        admitted: &AdmittedRequest,
+    ) -> StoreResult<()> {
+        Self::set_vm_admission(tx, id, VmAdmission::AuthBootstrap, source, admitted)
+    }
+    pub fn set_vm_credential_refresh_admission(
+        tx: &Transaction<'_>,
+        id: &str,
+        source: &AdmittedRequest,
+        admitted: &AdmittedRequest,
+    ) -> StoreResult<()> {
+        Self::set_vm_admission(tx, id, VmAdmission::CredentialRefresh, source, admitted)
+    }
+    fn admission_at(
+        db: &rusqlite::Connection,
+        id: &str,
+        path: &str,
+    ) -> StoreResult<Option<AdmittedRequest>> {
+        db.query_row(
+            "SELECT json_extract(record,?1) FROM runtime_execution_attempts WHERE id=?2",
+            params![path, id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten()
+        .map(|raw| serde_json::from_str(&raw).map_err(StoreError::from))
+        .transpose()
+    }
+    fn set_vm_admission(
+        tx: &Transaction<'_>,
+        id: &str,
+        kind: VmAdmission,
+        source: &AdmittedRequest,
+        admitted: &AdmittedRequest,
+    ) -> StoreResult<()> {
+        if Self::admission(tx, id)?.as_ref() != Some(source) {
+            return Err(Self::invalid("runtime_execution_attempts", id));
+        }
+        if let Some(saved) = Self::admission_at(tx, id, kind.path())? {
+            return if saved == *admitted {
+                Ok(())
+            } else {
+                Err(Self::invalid("runtime_execution_attempts", id))
+            };
+        }
+        let changed = tx.execute(
+            "UPDATE runtime_execution_attempts SET record=json_set(record,?1,json(?2)) WHERE id=?3",
+            params![kind.path(), serde_json::to_string(admitted)?, id],
+        )?;
+        if changed != 1 {
+            return Err(Self::invalid("runtime_execution_attempts", id));
+        }
+        Ok(())
+    }
+    /// Domain settlement survives response-cache expiry and never grants a fresh dispatch.
+    pub fn start_settled(db: &rusqlite::Connection, id: &str) -> StoreResult<bool> {
+        let row=db.query_row("SELECT json_extract(record,'$.submission'),json_extract(record,'$.executionOutcome'),json_extract(record,'$.turnStatus') FROM runtime_execution_attempts WHERE id=?1",[id],|row|Ok((row.get::<_,AttemptSubmission>(0)?,row.get::<_,Option<ExecutionStatus>>(1)?,row.get::<_,Option<ExecutionStatus>>(2)?))).optional()?;
+        let Some((submission, outcome, turn)) = row else {
+            return Ok(false);
+        };
+        Ok(matches!(
+            submission,
+            AttemptSubmission::Accepted | AttemptSubmission::Observed | AttemptSubmission::Rejected
+        ) || matches!(
+            outcome,
+            Some(
+                ExecutionStatus::Unsent
+                    | ExecutionStatus::Accepted
+                    | ExecutionStatus::Observed
+                    | ExecutionStatus::Rejected
+            )
+        ) || outcome.is_some_and(execution_terminal)
+            || turn.is_some_and(execution_terminal))
+    }
+    pub fn record_current(tx: &Transaction<'_>, agent: &mut AgentRecord) -> StoreResult<()> {
+        Self::record(tx, agent)?;
+        if let Some((run, attempt)) = Self::current_pointer(tx, agent)? {
+            agent.set_active_execution_run_id(&run)?;
+            agent.set_active_execution_attempt_id(attempt.as_deref())?;
+        } else {
+            agent.extra.remove("activeExecution");
+        }
+        Ok(())
+    }
     /// Immutable lifecycle results live with the attempt whose identity they settle.
     pub fn replay(
         tx: &Transaction<'_>,
         id: &str,
-        kind: &str,
+        kind: ExecutionReceiptKind,
         input: &Value,
     ) -> StoreResult<Option<Value>> {
         match Self::saved_result(tx, id, kind, input)? {
@@ -56,7 +220,7 @@ impl ExecutionHistoryRepository {
     pub fn replay_settled(
         tx: &Transaction<'_>,
         id: &str,
-        kind: &str,
+        kind: ExecutionReceiptKind,
         input: &Value,
     ) -> StoreResult<Option<Value>> {
         Ok(Self::saved_result(tx, id, kind, input)?
@@ -66,67 +230,179 @@ impl ExecutionHistoryRepository {
     fn saved_result(
         tx: &Transaction<'_>,
         id: &str,
-        kind: &str,
+        kind: ExecutionReceiptKind,
         input: &Value,
     ) -> StoreResult<Option<(bool, Value)>> {
-        let Some(saved) = Self::attempt(tx, id)? else {
+        let Some(receipt) = Self::receipt::<Value>(tx, id, kind)? else {
             return Ok(None);
         };
-        let Some(receipt) = saved.get("receipts").and_then(|r| r.get(kind)) else {
+        Ok(Some((receipt.input == *input, receipt.result)))
+    }
+    pub fn admission(db: &rusqlite::Connection, id: &str) -> StoreResult<Option<AdmittedRequest>> {
+        Self::admission_at(db, id, "$.admission")
+    }
+    /// Read exact cached suboperation evidence; the execution record carries no response bodies.
+    pub fn receipt<I: serde::de::DeserializeOwned>(
+        db: &rusqlite::Connection,
+        id: &str,
+        kind: ExecutionReceiptKind,
+    ) -> StoreResult<Option<AttemptReceipt<I>>> {
+        let Some(admission) = Self::admission(db, id)? else {
             return Ok(None);
         };
-        let result = receipt
-            .get("result")
-            .cloned()
-            .ok_or_else(|| Self::invalid("runtime_execution_attempts", id))?;
-        Ok(Some((receipt.get("input") == Some(input), result)))
+        let key = admission.derive_result("execution-attempt-result", &[kind.as_str()], "");
+        let signature: Option<String> = db
+            .query_row(
+                "SELECT signature FROM request_results WHERE id=?1",
+                [key.id()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(signature) = signature else {
+            return Ok(None);
+        };
+        let token =
+            admission.derive_result("execution-attempt-result", &[kind.as_str()], &signature);
+        let saved = RequestResults::admitted_result(db, &token).map_err(StoreError::from)?;
+        saved
+            .map(|saved| {
+                let envelope: ResultEnvelope<Value> = serde_json::from_str(&saved.result)?;
+                Ok(AttemptReceipt {
+                    input: serde_json::from_str(&signature)?,
+                    result: envelope.reply,
+                })
+            })
+            .transpose()
     }
     pub fn save_receipt(
         tx: &Transaction<'_>,
         id: &str,
-        kind: &str,
+        kind: ExecutionReceiptKind,
         input: Value,
         result: Value,
     ) -> StoreResult<()> {
-        if let Some(previous) = Self::replay(tx, id, kind, &input)? {
-            return if previous == result {
-                Ok(())
-            } else {
-                Err(Self::invalid("runtime_execution_attempts", id))
-            };
-        }
-        let path = format!("$.receipts.{kind}");
-        let changed = tx.execute(
-            "UPDATE runtime_execution_attempts SET record=json_set(record,?1,json(?2)) WHERE id=?3",
-            params![path, json!({"input":input,"result":result}).to_string(), id],
-        )?;
-        if changed != 1 {
+        let admission = Self::admission(tx, id)?
+            .ok_or_else(|| Self::invalid("runtime_execution_attempts", id))?;
+        let admitted = admission.derive_result(
+            "execution-attempt-result",
+            &[kind.as_str()],
+            &input.to_string(),
+        );
+        let envelope = ResultEnvelope {
+            actor: None,
+            reply: result,
+            references: vec![id.into()],
+        };
+        let saved =
+            RequestResults::settle(tx, &admitted, &envelope).map_err(|error| match error {
+                RequestResultError::Conflict { .. } => {
+                    Self::invalid("runtime_execution_attempts", id)
+                }
+                other @ (RequestResultError::Expired
+                | RequestResultError::Sql(_)
+                | RequestResultError::Json(_)
+                | RequestResultError::Identity(_)) => StoreError::from(other),
+            })?;
+        if serde_json::from_str::<ResultEnvelope<Value>>(&saved.result)? != envelope {
             return Err(Self::invalid("runtime_execution_attempts", id));
         }
         Ok(())
     }
-    pub fn attempt(tx: &Transaction<'_>, id: &str) -> StoreResult<Option<Value>> {
+    pub fn attempt(tx: &rusqlite::Connection, id: &str) -> StoreResult<Option<ExecutionAttempt>> {
         tx.query_row(
             "SELECT record FROM runtime_execution_attempts WHERE id=?1",
             [id],
             |r| r.get::<_, String>(0),
         )
         .optional()?
-        .map(|s| decode("runtime_execution_attempts", id, &s))
+        .map(|s| {
+            let mut attempt: ExecutionAttempt = serde_json::from_str(&s)
+                .map_err(|_| Self::invalid("runtime_execution_attempts", id))?;
+            if attempt.start.id.as_deref() != Some(id)
+                || attempt.start.epoch.is_none()
+                || attempt.start.events.is_none()
+            {
+                return Err(Self::invalid("runtime_execution_attempts", id));
+            }
+            attempt.snapshot = Some(serde_json::from_str(&s)?);
+            Ok(attempt)
+        })
         .transpose()
     }
-    /// The newest created run of this actor, across every account and epoch.
-    /// Filtering scope first could select stale evidence after an account move.
-    pub fn latest_run(tx: &Transaction<'_>, agent: &str) -> StoreResult<Option<Value>> {
+    /// Read the current execution by its owner pointer. History order never grants authority.
+    pub fn current_run(
+        tx: &Transaction<'_>,
+        agent: &AgentRecord,
+    ) -> StoreResult<Option<ExecutionRun>> {
+        let Ok(Some(pointer)) = agent.active_execution() else {
+            return Ok(None);
+        };
+        let Some(id) = pointer.run_id.as_deref() else {
+            return Ok(None);
+        };
         tx.query_row(
-            "SELECT id,record FROM runtime_execution_runs WHERE agent=?1 ORDER BY created DESC,rowid DESC LIMIT 1",
-            [agent],
-            |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?)),
-        ).optional()?.map(|(id,raw)|{
-            let run=decode("runtime_execution_runs",&id,&raw)?;
-            if run["agent"]!=agent {return Err(Self::invalid("runtime_execution_runs",&id));}
+            "SELECT record FROM runtime_execution_runs WHERE id=?1",
+            [id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|raw| {
+            let run: ExecutionRun = serde_json::from_str(&raw)
+                .map_err(|_| Self::invalid("runtime_execution_runs", id))?;
+            if run.id != id || run.agent != agent.id.0 || !run.created.is_finite() {
+                return Err(Self::invalid("runtime_execution_runs", id));
+            }
             Ok(run)
-        }).transpose()
+        })
+        .transpose()
+    }
+
+    pub(crate) fn current_pointer(
+        tx: &Transaction<'_>,
+        agent: &AgentRecord,
+    ) -> StoreResult<Option<(String, Option<String>)>> {
+        let start = agent
+            .start_attempt()
+            .map_err(|_| Self::invalid("runtime_agents", &agent.id.0))?;
+        let pointer = if let Some(id) = start.as_ref().and_then(|attempt| attempt.id.as_deref()) {
+            Self::attempt(tx, id)?.map(|attempt| (attempt.run_id, Some(id.to_owned())))
+        } else {
+            agent
+                .active_execution()
+                .map_err(|_| Self::invalid("runtime_agents", &agent.id.0))?
+                .map(|pointer| (pointer.run_id, pointer.attempt_id))
+                .map(|(run, attempt)| {
+                    run.map(|run| (run, attempt))
+                        .ok_or_else(|| Self::invalid("runtime_agents", &agent.id.0))
+                })
+                .transpose()?
+        };
+        let Some((run, attempt)) = pointer else {
+            return Ok(None);
+        };
+        let scope = tx
+            .query_row(
+                "SELECT agent,account,epoch FROM runtime_execution_runs WHERE id=?1",
+                [&run],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                },
+            )
+            .optional()?
+            .ok_or_else(|| Self::invalid("runtime_execution_runs", &run))?;
+        let account = agent
+            .extra
+            .get("accountKey")
+            .and_then(Value::as_str)
+            .unwrap_or("default");
+        Ok(
+            (scope.0 == agent.id.0 && scope.1 == account && scope.2 == agent.epoch)
+                .then_some((run, attempt)),
+        )
     }
     pub(crate) fn invalid(table: &str, id: &str) -> StoreError {
         StoreError::InvalidSyncObject {
@@ -135,14 +411,15 @@ impl ExecutionHistoryRepository {
         }
     }
     pub fn reject_attempt(tx: &Transaction<'_>, id: &str, error: &str) -> StoreResult<()> {
-        if let Some(mut saved) = Self::attempt(tx, id)?
-            && !matches!(saved["submission"].as_str(), Some("accepted" | "observed"))
+        if let Some(saved) = Self::attempt(tx, id)?
+            && !matches!(
+                saved.submission,
+                Some(AttemptSubmission::Accepted | AttemptSubmission::Observed)
+            )
         {
-            saved["submission"] = json!("rejected");
-            saved["error"] = json!(error);
             tx.execute(
-                "UPDATE runtime_execution_attempts SET record=?1 WHERE id=?2",
-                params![saved.to_string(), id],
+                "UPDATE runtime_execution_attempts SET record=json_set(record,'$.submission',?1,'$.error',?2) WHERE id=?3",
+                params![AttemptSubmission::Rejected, error, id],
             )?;
         }
         Ok(())
@@ -169,13 +446,13 @@ impl ExecutionHistoryRepository {
         )?;
         usize::try_from(count).map_err(|_| Self::invalid("runtime_execution_attempts", id))
     }
-    pub fn save_claim(
+    pub fn save_claim<T: serde::Serialize>(
         tx: &Transaction<'_>,
         id: &str,
-        identity: &Value,
+        identity: &T,
         result: &Value,
     ) -> StoreResult<()> {
-        tx.execute("UPDATE runtime_execution_attempts SET record=json_set(record,'$.inputIdentity',json(?1),'$.claimResult',json(?2)) WHERE id=?3",params![identity.to_string(),result.to_string(),id])?;
+        tx.execute("UPDATE runtime_execution_attempts SET record=json_set(record,'$.inputIdentity',json(?1),'$.claimResult',json(?2)) WHERE id=?3",params![serde_json::to_string(identity)?,result.to_string(),id])?;
         Ok(())
     }
     /// Reflect a claimed/submitted/accepted attempt, including Python-written existing runs.
@@ -207,7 +484,7 @@ impl ExecutionHistoryRepository {
             |r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).optional()?.map(|(id,raw)|decode("runtime_execution_runs",&id,&raw)).transpose()?;
         let mut run = run.unwrap_or_else(||json!({"id":format!("run:{id}"),"agent":agent.id.0,"accountKey":account,
             "epoch":attempt["epoch"],"threadId":thread,"turnId":null,"created":attempt.get("created").cloned().unwrap_or_else(||json!(now())),
-            "status":"pending","firstAttemptId":null,"rootAttemptId":null,"latestAttemptId":null}));
+            "status":ExecutionStatus::Pending,"firstAttemptId":null,"rootAttemptId":null,"latestAttemptId":null}));
         if run["agent"] != agent.id.0 || run["accountKey"] != account || !run["id"].is_string() {
             return Err(invalid(run["id"].as_str().unwrap_or(id)));
         }
@@ -216,17 +493,30 @@ impl ExecutionHistoryRepository {
             .filter(|v| v.is_string())
             .or_else(|| attempt.get("observedTurnId").filter(|v| v.is_string()));
         let evidence = if attempt["turnId"].is_string() {
-            "accepted"
+            AttemptSubmission::Accepted
         } else if turn.is_some() {
-            "observed"
+            AttemptSubmission::Observed
         } else {
-            attempt["executionOutcome"].as_str().unwrap_or(
-                if submitted == super::scheduler::StartSubmission::Submitted {
-                    "unknown"
-                } else {
-                    "unsent"
-                },
-            )
+            attempt
+                .get("executionOutcome")
+                .map(|value| {
+                    let status = value.as_str().ok_or_else(|| {
+                        <serde_json::Error as serde::de::Error>::custom(
+                            "execution outcome must be a string",
+                        )
+                    })?;
+                    AttemptSubmission::deserialize(serde::de::value::StrDeserializer::<
+                        serde_json::Error,
+                    >::new(status))
+                })
+                .transpose()?
+                .unwrap_or(
+                    if submitted == super::scheduler::StartSubmission::Submitted {
+                        AttemptSubmission::Unknown
+                    } else {
+                        AttemptSubmission::Unsent
+                    },
+                )
         };
         if let Some(turn) = turn {
             run["turnId"] = turn.clone();
@@ -240,7 +530,18 @@ impl ExecutionHistoryRepository {
         }
         run["latestAttemptId"] = json!(id);
         if !terminal(&run["status"]) {
-            run["status"] = json!(if turn.is_some() { "running" } else { evidence });
+            run["status"] = json!(if turn.is_some() {
+                ExecutionStatus::Running
+            } else {
+                match evidence {
+                    AttemptSubmission::Accepted => ExecutionStatus::Accepted,
+                    AttemptSubmission::Observed => ExecutionStatus::Observed,
+                    AttemptSubmission::Pending => ExecutionStatus::Pending,
+                    AttemptSubmission::Rejected => ExecutionStatus::Rejected,
+                    AttemptSubmission::Unknown => ExecutionStatus::Unknown,
+                    AttemptSubmission::Unsent => ExecutionStatus::Unsent,
+                }
+            });
         }
         for key in [
             "disconnectRecovery",
@@ -259,36 +560,84 @@ impl ExecutionHistoryRepository {
                 run[key] = marker.clone();
             }
         }
-        let mut saved = attempt.clone();
+        let mut saved: std::collections::BTreeMap<String, Box<RawValue>> =
+            serde_json::from_str(&attempt.to_string())?;
         if let Some(previous) = Self::attempt(tx, id)? {
-            for key in ["inputIdentity", "claimResult", "receipts"] {
+            let previous: std::collections::BTreeMap<String, Box<RawValue>> = serde_json::from_str(
+                previous
+                    .snapshot
+                    .as_ref()
+                    .ok_or_else(|| Self::invalid("runtime_execution_attempts", id))?
+                    .get(),
+            )?;
+            for key in [
+                "inputIdentity",
+                "claimResult",
+                "terminalRepair",
+                "admission",
+                "rootRequestId",
+                "providerSubmission",
+                "firstEventId",
+                "vm_auth_bootstrap_admission",
+                "vm_credential_refresh_admission",
+            ] {
                 if let Some(value) = previous.get(key) {
-                    saved[key] = value.clone();
+                    saved.insert(key.to_owned(), value.clone());
                 }
             }
         }
-        saved["runId"] = run["id"].clone();
-        saved["submission"] = json!(evidence);
-        saved["prepareAttemptId"] = agent
-            .extra
-            .get("prepareAttempt")
-            .cloned()
-            .unwrap_or(Value::Null);
-        saved["turnStatus"] = if terminal(&run["status"]) {
-            run["status"].clone()
-        } else {
-            Value::Null
-        };
-        saved["resultRunId"] = if terminal(&run["status"]) {
-            run["id"].clone()
-        } else {
-            Value::Null
-        };
+        if !saved.contains_key("admission") {
+            let root = RequestIdentity::issue_root();
+            let identity = RequestIdentity::new("execution-attempt", &[&agent.id.0], &root, &[id])
+                .map_err(crate::request_results::RequestResultError::from)
+                .map_err(StoreError::from)?;
+            let signature =
+                json!({"agent":agent.id.0,"epoch":agent.epoch,"attempt":id}).to_string();
+            let admission =
+                match RequestResults::admit(tx, &identity, &signature, (now() * 1000.0) as i64)
+                    .map_err(StoreError::from)?
+                {
+                    Admission::Fresh(admitted) => admitted,
+                    Admission::Replay(_) => {
+                        return Err(Self::invalid("runtime_execution_attempts", id));
+                    }
+                };
+            saved.insert(
+                "admission".into(),
+                serde_json::value::to_raw_value(&admission)?,
+            );
+            saved.insert(
+                "rootRequestId".into(),
+                serde_json::value::to_raw_value(&root)?,
+            );
+        }
+        let run_id = run
+            .get("id")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| invalid(id))?;
+        let terminal = run.get("status").is_some_and(terminal);
+        saved.insert("runId".into(), serde_json::value::to_raw_value(&run_id)?);
+        saved.insert(
+            "submission".into(),
+            serde_json::value::to_raw_value(&evidence)?,
+        );
+        saved.insert(
+            "prepareAttemptId".into(),
+            serde_json::value::to_raw_value(&agent.extra.get("prepareAttempt"))?,
+        );
+        saved.insert(
+            "turnStatus".into(),
+            serde_json::value::to_raw_value(&run.get("status").filter(|_| terminal))?,
+        );
+        saved.insert(
+            "resultRunId".into(),
+            serde_json::value::to_raw_value(&terminal.then_some(run_id))?,
+        );
         save_run(tx, &run)?;
         tx.execute("INSERT INTO runtime_execution_attempts(id,run,record) VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET run=excluded.run,record=excluded.record",
-            params![id,run["id"].as_str(),saved.to_string()])?;
+            params![id,run_id,serde_json::to_string(&saved)?])?;
         tx.execute("INSERT OR IGNORE INTO runtime_execution_inputs(run,event) SELECT ?1,value FROM json_each(?2)",
-            params![run["id"].as_str(),attempt["events"].to_string()])?;
+            params![run_id,attempt["events"].to_string()])?;
         Ok(())
     }
     fn record_recovery(tx: &Transaction<'_>, agent: &AgentRecord) -> StoreResult<()> {
@@ -300,12 +649,11 @@ impl ExecutionHistoryRepository {
             )
             .optional()?
             .flatten();
-        let turn = agent
+        let run_id = agent
             .extra
-            .get("turnId")
-            .or_else(|| agent.extra.get("lastCompletedTurn"))
-            .and_then(Value::as_str);
-        let row:Option<(String,String)> = tx.query_row("SELECT id,record FROM runtime_execution_runs WHERE id=(SELECT run FROM runtime_execution_attempts WHERE id=?1) OR (agent=?2 AND account=?3 AND thread IS ?4 AND turn=?5) ORDER BY created DESC LIMIT 1",params![previous,agent.id.0,agent.extra.get("accountKey").and_then(Value::as_str).unwrap_or("default"),agent.extra.get("threadId").and_then(Value::as_str),turn],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+            .get("activeExecution")
+            .and_then(|pointer| pointer["runId"].as_str());
+        let row:Option<(String,String)> = tx.query_row("SELECT id,record FROM runtime_execution_runs WHERE id=coalesce(?1,(SELECT run FROM runtime_execution_attempts WHERE id=?2))",params![run_id,previous],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
         let Some((id, raw)) = row else {
             return Ok(());
         };
@@ -348,7 +696,7 @@ impl ExecutionHistoryRepository {
         tx: &Transaction<'_>,
         agent_id: &str,
         turn_id: &str,
-        status: &str,
+        status: ExecutionStatus,
         error: Option<&Value>,
     ) -> StoreResult<()> {
         let mut stmt = tx.prepare_cached("SELECT r.id,r.record FROM runtime_execution_runs r JOIN runtime_agents a ON a.id=r.agent WHERE r.agent=?1 AND r.turn=?2 AND r.account=a.account_key AND r.thread IS a.thread_id ORDER BY r.created,r.id")?;
@@ -365,7 +713,7 @@ impl ExecutionHistoryRepository {
             let run = decode("runtime_execution_runs", id, raw)?;
             if !terminal(&run["status"]) {
                 open.push(run);
-            } else if run["status"] != status
+            } else if run["status"] != json!(status)
                 || run.get("error").unwrap_or(&Value::Null) != error.unwrap_or(&Value::Null)
             {
                 return Err(Self::invalid("runtime_execution_runs", id));
@@ -393,9 +741,15 @@ fn save_run(tx: &Transaction<'_>, run: &Value) -> StoreResult<()> {
     Ok(())
 }
 fn terminal(status: &Value) -> bool {
+    ExecutionStatus::deserialize(status).is_ok_and(execution_terminal)
+}
+fn execution_terminal(status: ExecutionStatus) -> bool {
     matches!(
-        status.as_str(),
-        Some("completed" | "failed" | "interrupted" | "cancelled")
+        status,
+        ExecutionStatus::Completed
+            | ExecutionStatus::Failed
+            | ExecutionStatus::Interrupted
+            | ExecutionStatus::Cancelled
     )
 }
 fn invalid(id: &str) -> StoreError {
@@ -416,28 +770,25 @@ fn decode(table: &str, id: &str, raw: &str) -> StoreResult<Value> {
     let valid = record.is_object()
         && record["id"] == id
         && record["epoch"].is_i64()
-        && if table == "runtime_execution_runs" {
-            ["agent", "accountKey", "status"]
-                .iter()
-                .all(|key| record[*key].is_string())
-                && record["created"].as_f64().is_some_and(f64::is_finite)
-                && [
-                    "threadId",
-                    "turnId",
-                    "firstAttemptId",
-                    "rootAttemptId",
-                    "latestAttemptId",
-                ]
-                .iter()
-                .all(|key| record[*key].is_null() || record[*key].is_string())
-        } else {
-            record["runId"].is_string()
-                && record["events"]
-                    .as_array()
-                    .is_some_and(|ids| ids.iter().all(Value::is_string))
-                && record.get("claimResult").is_none_or(Value::is_object)
-                && record.get("inputIdentity").is_none_or(Value::is_array)
-        };
+        && ["agent", "accountKey", "status"]
+            .iter()
+            .all(|key| record[*key].is_string())
+        && record["status"].as_str().is_some_and(|status| {
+            ExecutionStatus::deserialize(
+                serde::de::value::StrDeserializer::<serde_json::Error>::new(status),
+            )
+            .is_ok()
+        })
+        && record["created"].as_f64().is_some_and(f64::is_finite)
+        && [
+            "threadId",
+            "turnId",
+            "firstAttemptId",
+            "rootAttemptId",
+            "latestAttemptId",
+        ]
+        .iter()
+        .all(|key| record[*key].is_null() || record[*key].is_string());
     if !valid {
         return Err(invalid());
     }
@@ -445,3 +796,229 @@ fn decode(table: &str, id: &str, raw: &str) -> StoreResult<Value> {
 }
 
 inventory::submit! { crate::repositories::SchemaRegistration { repository: "execution_history", requirements: &REQUIREMENTS } }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn execution_views_preserve_stored_opaque_payloads() {
+        let mut db = rusqlite::Connection::open_in_memory().expect("database");
+        db.execute_batch(
+            "CREATE TABLE runtime_execution_attempts(id TEXT PRIMARY KEY,run TEXT,record TEXT);
+            CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,record TEXT);",
+        )
+        .expect("history schema");
+        let attempt = r#"{"id":"attempt","runId":"run","epoch":1,"events":["event"],"inputIdentity":[ { "text": "hello" } ],"claimResult":{ "metadata": {"custom":true} },"providerSubmission":{"response": [1, 2]},"terminalRepair":{"note": "preserve"},"extension":{"future":true}}"#;
+        let run = r#"{"id":"run","agent":"agent","accountKey":"default","epoch":1,"status":"completed","created":1.0,"threadId":"source","latestAttemptId":"attempt"}"#;
+        db.execute(
+            "INSERT INTO runtime_execution_attempts VALUES('attempt','run',?1)",
+            [attempt],
+        )
+        .expect("stored attempt");
+        db.execute("INSERT INTO runtime_execution_runs VALUES('run',?1)", [run])
+            .expect("stored run");
+        let saved = ExecutionHistoryRepository::attempt(&db, "attempt")
+            .expect("read")
+            .expect("attempt");
+        assert_eq!(saved.snapshot.as_ref().unwrap().get(), attempt);
+        assert_eq!(
+            saved.input_identity.as_ref().unwrap().get(),
+            r#"[ { "text": "hello" } ]"#
+        );
+        assert_eq!(
+            saved.claim_result.as_ref().unwrap().get(),
+            r#"{ "metadata": {"custom":true} }"#
+        );
+        assert_eq!(
+            saved.provider_submission.as_ref().unwrap().get(),
+            r#"{"response": [1, 2]}"#
+        );
+        assert_eq!(
+            saved.terminal_repair.as_ref().unwrap().get(),
+            r#"{"note": "preserve"}"#
+        );
+        let agent = AgentRecord::from_value(json!({"id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"idle","activeExecution":{"runId":"run","attemptId":"attempt"}})).expect("agent");
+        let tx = db.transaction().expect("transaction");
+        let saved_run = ExecutionHistoryRepository::current_run(&tx, &agent)
+            .expect("read")
+            .expect("run");
+        assert_eq!(saved_run.latest_attempt_id.as_deref(), Some("attempt"));
+        assert_eq!(saved_run.thread_id.as_deref(), Some("source"));
+    }
+
+    #[test]
+    fn current_execution_pointer_follows_account_and_epoch_but_preserves_source_thread() {
+        let mut db = rusqlite::Connection::open_in_memory().expect("database");
+        db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT);
+            CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,agent TEXT,account TEXT,epoch INTEGER,record TEXT);
+            CREATE TABLE runtime_execution_attempts(id TEXT PRIMARY KEY,run TEXT,record TEXT);").expect("owners");
+        let run = json!({"id":"run","agent":"agent","accountKey":"default","epoch":1,"status":"completed","created":1.0,"threadId":"source","turnId":"turn","firstAttemptId":null,"rootAttemptId":null,"latestAttemptId":null});
+        db.execute(
+            "INSERT INTO runtime_execution_runs VALUES('run','agent','default',1,?1)",
+            [run.to_string()],
+        )
+        .expect("history");
+        let tx = db.transaction().expect("transaction");
+        let pointer = json!({"runId":"run","attemptId":null});
+        let mut agent=AgentRecord::from_value(json!({"id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"idle","threadId":"destination","activeExecution":pointer})).expect("current owner");
+        ExecutionHistoryRepository::record_current(&tx, &mut agent).expect("same account/epoch");
+        assert_eq!(
+            agent.extra["activeExecution"], pointer,
+            "a repaired thread retains its source execution identity"
+        );
+        agent.epoch = 2;
+        ExecutionHistoryRepository::record_current(&tx, &mut agent).expect("epoch advances");
+        assert!(!agent.extra.contains_key("activeExecution"));
+        agent.epoch = 1;
+        agent.extra.insert("activeExecution".into(), pointer);
+        agent
+            .extra
+            .insert("accountKey".into(), json!("another-account"));
+        ExecutionHistoryRepository::record_current(&tx, &mut agent).expect("account advances");
+        assert!(!agent.extra.contains_key("activeExecution"));
+        assert_eq!(
+            tx.query_row("SELECT COUNT(*) FROM runtime_execution_runs", [], |row| row
+                .get::<_, i64>(0))
+                .expect("history retained"),
+            1
+        );
+    }
+
+    #[test]
+    fn attempt_replay_lives_in_request_results_and_keeps_exact_outcome() {
+        let mut db = rusqlite::Connection::open_in_memory().expect("database");
+        crate::receipt_schema::create(&db).expect("receipt schema");
+        db.execute_batch("CREATE TABLE runtime_orchestration_settings(id TEXT PRIMARY KEY,record TEXT);
+            CREATE TABLE runtime_execution_attempts(id TEXT PRIMARY KEY,run TEXT,record TEXT);
+            INSERT INTO runtime_execution_attempts VALUES('attempt','run','{\"id\":\"attempt\",\"runId\":\"run\",\"epoch\":1,\"events\":[]}');")
+            .expect("execution owner");
+        let tx = db.transaction().expect("transaction");
+        let root = RequestIdentity::issue_root();
+        let identity = RequestIdentity::new("execution-attempt", &["agent"], &root, &["attempt"])
+            .expect("identity");
+        let Admission::Fresh(admission) =
+            RequestResults::admit(&tx, &identity, "attempt", (now() * 1000.0) as i64)
+                .expect("admission")
+        else {
+            panic!("fresh")
+        };
+        tx.execute(
+            "UPDATE runtime_execution_attempts SET record=json_set(record,'$.admission',json(?1))",
+            [serde_json::to_string(&admission).expect("token")],
+        )
+        .expect("persist admission");
+        let final_effect = admission.derive_result("provider-call", &["bootstrap"], "fingerprint");
+        ExecutionHistoryRepository::set_vm_auth_bootstrap_admission(
+            &tx,
+            "attempt",
+            &admission,
+            &final_effect,
+        )
+        .expect("reserve exact source");
+        assert_eq!(
+            ExecutionHistoryRepository::vm_auth_bootstrap_admission(&tx, "attempt")
+                .expect("final pointer"),
+            Some(final_effect.clone())
+        );
+        ExecutionHistoryRepository::set_vm_auth_bootstrap_admission(
+            &tx,
+            "attempt",
+            &admission,
+            &final_effect,
+        )
+        .expect("same final pointer");
+        let wrong_source = admission.derive_result("wrong-source", &[], "different");
+        assert!(
+            ExecutionHistoryRepository::set_vm_auth_bootstrap_admission(
+                &tx,
+                "attempt",
+                &wrong_source,
+                &final_effect
+            )
+            .is_err()
+        );
+        assert!(
+            ExecutionHistoryRepository::set_vm_auth_bootstrap_admission(
+                &tx,
+                "attempt",
+                &admission,
+                &wrong_source
+            )
+            .is_err()
+        );
+        tx.execute("UPDATE runtime_execution_attempts SET record=json_set(record,'$.submission','unknown') WHERE id='attempt'",[]).expect("unknown start");
+        assert!(
+            !ExecutionHistoryRepository::start_settled(&tx, "attempt")
+                .expect("unknown stays unresolved")
+        );
+        for status in ["accepted", "observed", "rejected"] {
+            tx.execute("UPDATE runtime_execution_attempts SET record=json_set(record,'$.submission',?1) WHERE id='attempt'",[status]).expect("settled owner");
+            assert!(
+                ExecutionHistoryRepository::start_settled(&tx, "attempt")
+                    .expect("settlement is domain proof")
+            );
+        }
+        let input = json!({"agent":"agent","epoch":1,"input":{"reason":"held"}});
+        let reply = json!({"bound":true,"interrupt":false});
+        ExecutionHistoryRepository::save_receipt(
+            &tx,
+            "attempt",
+            ExecutionReceiptKind::StartResult,
+            input.clone(),
+            reply.clone(),
+        )
+        .expect("settle");
+        assert_eq!(
+            ExecutionHistoryRepository::replay(
+                &tx,
+                "attempt",
+                ExecutionReceiptKind::StartResult,
+                &input
+            )
+            .expect("replay"),
+            Some(reply)
+        );
+        assert_eq!(
+            ExecutionHistoryRepository::replay_settled(
+                &tx,
+                "attempt",
+                ExecutionReceiptKind::StartResult,
+                &json!({"changed":true})
+            )
+            .expect("stale settlement"),
+            Some(json!(false))
+        );
+        assert!(
+            ExecutionHistoryRepository::replay(
+                &tx,
+                "attempt",
+                ExecutionReceiptKind::StartResult,
+                &json!({"changed":true})
+            )
+            .is_err()
+        );
+        assert!(matches!(
+            ExecutionHistoryRepository::save_receipt(
+                &tx,
+                "attempt",
+                ExecutionReceiptKind::StartResult,
+                json!({"changed":true}),
+                json!(false),
+            ),
+            Err(StoreError::InvalidSyncObject { scope, id })
+                if scope == "runtime_execution_attempts" && id == "attempt"
+        ));
+        assert!(tx.query_row("SELECT json_type(record,'$.receipts') IS NULL FROM runtime_execution_attempts WHERE id='attempt'", [], |row| row.get::<_, bool>(0)).expect("receipts removed"));
+        let count: i64 = tx
+            .query_row("SELECT COUNT(*) FROM request_results", [], |row| row.get(0))
+            .expect("results");
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn execution_decode_rejects_an_unknown_status() {
+        let run = json!({"id":"run","agent":"agent","accountKey":"default","epoch":1,"status":"invented","created":1.0});
+        assert!(decode("runtime_execution_runs", "run", &run.to_string()).is_err());
+    }
+}

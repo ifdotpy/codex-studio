@@ -42,6 +42,53 @@ struct Native {
 }
 
 struct MalformedState(Mutex<Vec<String>>);
+struct UnknownState(std::sync::atomic::AtomicUsize);
+impl ControlSession for UnknownState {
+    fn binding(&self) -> ControlBinding {
+        ControlBinding::new("account".into(), "connection".into(), 1).expect("binding")
+    }
+    fn call_scoped(
+        &self,
+        _: ControlScope,
+        invocation: ControlInvocation,
+    ) -> ControlFuture<'_, ControlReply> {
+        assert!(matches!(invocation, ControlInvocation::State { .. }));
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Box::pin(async { Err(ControlError::Unknown) })
+    }
+}
+
+#[tokio::test]
+async fn early_unknown_does_not_finalize_the_control_request() {
+    let root = tempfile::tempdir().unwrap();
+    let cwd = root.path().join("cwd");
+    let state = root.path().join("state");
+    std::fs::create_dir(&cwd).unwrap();
+    std::fs::create_dir(&state).unwrap();
+    seed_state(&state, &cwd).await;
+    let store = Arc::new(RuntimeStore::open(Some(&state)).await.unwrap());
+    let native = Arc::new(UnknownState(std::sync::atomic::AtomicUsize::new(0)));
+    let controls = Controls::new(
+        Arc::new(StoredControls::new(store.clone(), Arc::new(|_| {}))),
+        native.clone(),
+    );
+    let request = || {
+        serde_json::from_str(r#"{"action":"settings","id":"agent","request_id":"early-unknown","settings":{"thinking":false}}"#).unwrap()
+    };
+    assert!(matches!(
+        controls.execute(request()).await,
+        Err(ControlError::Unknown)
+    ));
+    let db = store.test_reader().unwrap();
+    let final_response: Option<String> = db.query_row("SELECT json_extract(record,'$.finalResponse') FROM runtime_workspace_operations WHERE json_extract(record,'$.requestId')='early-unknown'", [], |row| row.get(0)).unwrap();
+    assert!(final_response.is_none());
+    drop(db);
+    assert!(matches!(
+        controls.execute(request()).await,
+        Err(ControlError::Unknown)
+    ));
+    assert_eq!(native.0.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
 impl ControlSession for MalformedState {
     fn binding(&self) -> ControlBinding {
         ControlBinding::new("account".into(), "connection".into(), 1).expect("binding")
@@ -384,15 +431,16 @@ async fn stored_control_replay_and_unknown_never_repeat_native_write() {
             ("stop_task", json!("thread")),
         ] {
             let agent = json!({"id":"agent","rootId":"agent","epoch":2,"cwd":"/fixture","provider":"claude","accountKey":"account","threadId":thread,"status":"paused"});
-            let body = json!({"id":"agent","action":action,"task_id":"task"});
+            let body = json!({"id":"agent","action":action,"task_id":"task","request_id":studio_runtime_schema::persistence::RequestIdentity::issue_root()});
             service
                 .read_or_stop(&agent, &body, None)
                 .await
                 .expect("read action");
         }
 
+        let request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
         let request = || {
-            serde_json::from_value::<ControlRequest>(json!({"id":"agent","action":"rollback","request_id":"control-one","turn_id":"two"})).expect("valid fixture")
+            serde_json::from_value::<ControlRequest>(json!({"id":"agent","action":"rollback","request_id":request_id,"turn_id":"two"})).expect("valid fixture")
         };
         let first = service.execute(request()).await;
         assert_eq!(
@@ -463,6 +511,12 @@ impl Cut {
     }
 }
 impl ControlStorage for Cut {
+    fn replay(
+        &self,
+        request: ControlRequest,
+    ) -> ControlFuture<'_, Option<Result<Value, ControlError>>> {
+        self.inner.replay(request)
+    }
     fn reserve(
         &self,
         request: ControlRequest,
@@ -517,10 +571,11 @@ impl ControlStorage for Cut {
         &self,
         expected: studio_runtime_services::claude_controls::ControlSnapshot,
         evidence: FailureEvidence,
+        error: ControlError,
     ) -> ControlFuture<'_, ()> {
         Box::pin(async move {
             self.at("failed", false).await;
-            self.inner.failed(expected, evidence).await?;
+            self.inner.failed(expected, evidence, error).await?;
             self.at("failed", true).await;
             Ok(())
         })
@@ -901,12 +956,18 @@ async fn stale_failure_cannot_clear_a_newer_durable_submission() {
     let submitted=adapter.submitted(stale.clone(),request,NativeProof::Rollback { state: serde_json::from_value(json!({"tasks":[],"turns":[{"id":"one","status":"completed","canRestoreFiles":true},{"id":"two","status":"completed","canRestoreFiles":true},{"id":"three","status":"completed","canRestoreFiles":true}]})).expect("state"), queue: serde_json::from_value(json!({"data":[]})).expect("queue") }).await.expect("rewind submission persists");
     assert!(matches!(
         adapter
-            .failed(stale.clone(), FailureEvidence::BeforeSubmission)
+            .failed(
+                stale.clone(),
+                FailureEvidence::BeforeSubmission,
+                ControlError::Request
+            )
             .await,
         Err(ControlError::Changed)
     ));
     assert!(matches!(
-        adapter.failed(stale, FailureEvidence::NotSent).await,
+        adapter
+            .failed(stale, FailureEvidence::NotSent, ControlError::NotSent)
+            .await,
         Err(ControlError::Changed)
     ));
     let agent = AgentRepository::get(
@@ -920,7 +981,11 @@ async fn stale_failure_cannot_clear_a_newer_durable_submission() {
     assert!(!agent["workspaceReservationId"].is_null());
     // Even a caller that reports certainty cannot discard durable submitted evidence.
     adapter
-        .failed(submitted, FailureEvidence::BeforeSubmission)
+        .failed(
+            submitted,
+            FailureEvidence::BeforeSubmission,
+            ControlError::Request,
+        )
         .await
         .expect("failure settlement succeeds");
     let agent = AgentRepository::get(
@@ -1085,11 +1150,11 @@ async fn quota_preparation_refusal_releases_and_retries_after_fresh_idle_proof()
         Arc::new(StoredControls::new(store.clone(), Arc::new(|_| {}))),
         native.clone(),
     );
-    let request = || {
-        serde_json::from_value::<ControlRequest>(json!({"id":"agent","action":"rollback","turn_id":"two","request_id":"quota-refusal","restore_files":true})).expect("rollback request parses")
+    let request = |id: &str| {
+        serde_json::from_value::<ControlRequest>(json!({"id":"agent","action":"rollback","turn_id":"two","request_id":id,"restore_files":true})).expect("rollback request parses")
     };
     assert!(matches!(
-        controls.execute(request()).await,
+        controls.execute(request("quota-refusal")).await,
         Err(ControlError::RewindNotApplied(_))
     ));
     let agent = AgentRepository::get(
@@ -1113,7 +1178,11 @@ async fn quota_preparation_refusal_releases_and_retries_after_fresh_idle_proof()
         .await
         .expect("quota retry fixture writes");
     assert!(matches!(
-        controls.execute(request()).await,
+        controls.execute(request("quota-refusal")).await,
+        Err(ControlError::RewindNotApplied(_))
+    ));
+    assert!(matches!(
+        controls.execute(request("quota-retry")).await,
         Err(ControlError::Busy)
     ));
     assert_eq!(native.attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
@@ -1126,14 +1195,14 @@ async fn quota_preparation_refusal_releases_and_retries_after_fresh_idle_proof()
         .expect("fresh idle proof writes");
     assert_eq!(
         controls
-            .execute(request())
+            .execute(request("quota-retry"))
             .await
             .expect("rewind retry succeeds")["filesRestored"],
         true
     );
     assert_eq!(
         controls
-            .execute(request())
+            .execute(request("quota-retry"))
             .await
             .expect("rewind replay succeeds")["filesRestored"],
         true

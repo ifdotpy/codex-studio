@@ -197,8 +197,7 @@ struct Room {
     active: Option<ActiveTurn>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RadioStatus {
     Idle,
     Waiting,
@@ -333,13 +332,14 @@ impl RadioAuthorizationSnapshot {
                 .ok_or_else(|| invalid(format!("{location}/radio")))?;
             let direct = nullable_bool(radio, "direct", &format!("{location}/radio"), false)?;
             let team_id = required_string(radio, "teamId", &format!("{location}/radio"))?;
-            let status = serde_json::from_value::<RadioStatus>(
-                radio
-                    .get("status")
-                    .cloned()
-                    .ok_or_else(|| invalid(format!("{location}/radio/status")))?,
-            )
-            .map_err(|_| invalid(format!("{location}/radio/status")))?;
+            let status = match radio.get("status").and_then(Value::as_str) {
+                Some("idle") => RadioStatus::Idle,
+                Some("waiting") => RadioStatus::Waiting,
+                Some("speaking") => RadioStatus::Speaking,
+                Some("stopping") => RadioStatus::Stopping,
+                Some("blocked") => RadioStatus::Blocked,
+                _ => return Err(invalid(format!("{location}/radio/status"))),
+            };
             let active = match radio.get("active") {
                 None | Some(Value::Null) => None,
                 Some(value) if value.is_object() => Some(ActiveTurn {

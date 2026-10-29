@@ -30,8 +30,135 @@ use rusqlite::Connection;
 const AGENT: &str = "agent";
 const TURN: &str = "turn-1";
 
+fn wire_stage_round_trip(stage: &str) {
+    let mut db = database();
+    if matches!(stage, "reserved" | "held") {
+        claim(&mut db, "wire").expect("claim");
+    } else {
+        submit(&mut db, "wire");
+    }
+    let id = receipt_id(AGENT, "wire");
+    let raw: String = db
+        .query_row(
+            "SELECT payload FROM runtime_outbox WHERE id=?1",
+            [&id],
+            |row| row.get(0),
+        )
+        .expect("payload");
+    let mut value: Value = serde_json::from_str(&raw).expect("stored JSON");
+    value["stage"] = json!(stage);
+    let legacy = value.to_string();
+    let payload = serde_json::from_str::<SteerWire>(&legacy)
+        .expect("wire")
+        .into_payload(serde_json::value::RawValue::from_string(legacy.clone()).unwrap())
+        .expect("stage");
+    let encoded = serde_json::to_string(&payload).expect("encoded");
+    assert_eq!(serde_json::from_str::<Value>(&encoded).unwrap(), value);
+}
+
+#[test]
+fn wire_reserved_round_trip() {
+    wire_stage_round_trip("reserved");
+}
+#[test]
+fn wire_submitted_round_trip() {
+    wire_stage_round_trip("submitted");
+}
+#[test]
+fn wire_unconfirmed_round_trip() {
+    wire_stage_round_trip("unconfirmed");
+}
+#[test]
+fn wire_held_round_trip() {
+    wire_stage_round_trip("held");
+}
+
+#[test]
+fn invalid_stage_fields_report_the_receipt_identity() {
+    let mut db = database();
+    submit(&mut db, "invalid-wire");
+    let id = receipt_id(AGENT, "invalid-wire");
+    db.execute(
+        "UPDATE runtime_outbox SET payload=json_remove(payload,'$.generation') WHERE id=?1",
+        [&id],
+    )
+    .unwrap();
+    assert!(
+        matches!(load(&db, &id), Err(StoreError::InvalidStoredObject { table, id: found }) if table == "runtime_outbox" && found == id)
+    );
+}
+
+#[test]
+fn stored_steer_round_trips_and_incomplete_submission_is_held() {
+    let mut connection = database();
+    submit(&mut connection, "sample");
+    let raw: String = connection
+        .query_row(
+            "SELECT payload FROM runtime_outbox WHERE id=?1",
+            [receipt_id(AGENT, "sample")],
+            |row| row.get(0),
+        )
+        .expect("stored receipt");
+    let payload = serde_json::from_str::<SteerWire>(&raw)
+        .expect("read stored receipt")
+        .into_payload(serde_json::value::RawValue::from_string(raw.clone()).unwrap())
+        .expect("valid stored receipt");
+    let encoded = serde_json::to_string(&payload).expect("write stored receipt");
+    assert_eq!(
+        serde_json::from_str::<Value>(&raw).unwrap(),
+        serde_json::from_str::<Value>(&encoded).unwrap()
+    );
+    let incomplete = raw.replace("\"generation\":7", "\"generation\":null");
+    assert_ne!(raw, incomplete);
+    assert!(
+        serde_json::from_str::<SteerWire>(&incomplete)
+            .unwrap()
+            .into_payload(serde_json::value::RawValue::from_string(incomplete.clone()).unwrap())
+            .is_err()
+    );
+    connection.execute(
+        "UPDATE runtime_outbox SET status='unknown',payload=json_set(payload,'$.stage','held','$.generation',NULL) WHERE id=?1",
+        [receipt_id(AGENT, "sample")],
+    ).expect("hold incomplete evidence");
+    let id = receipt_id(AGENT, "sample");
+    let before: String = connection
+        .query_row(
+            "SELECT payload FROM runtime_outbox WHERE id=?1",
+            [&id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    settle(&mut connection, |tx| {
+        let held = load(tx, &id)?.expect("held receipt");
+        store(tx, &id, &held)
+    });
+    let after: String = connection
+        .query_row(
+            "SELECT payload FROM runtime_outbox WHERE id=?1",
+            [&id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        before, after,
+        "held evidence remains byte-for-byte unchanged"
+    );
+    settle(&mut connection, |tx| {
+        SchedulerRepository::abandon_steers(tx, "acct", 8)
+    });
+    terminal(&mut connection, &[]);
+    assert_eq!(statuses(&connection), SENT);
+    assert_eq!(open_receipts(&connection), 1);
+}
+
 fn database() -> Connection {
     let mut connection = Connection::open_in_memory().expect("memory database opens");
+    crate::receipt_schema::create(&connection).expect("receipt schema");
+    connection
+        .execute_batch(
+            "CREATE TABLE runtime_orchestration_settings(id TEXT PRIMARY KEY,record TEXT);",
+        )
+        .expect("settings");
     connection
         .execute_batch(
             &crate::agent_columns::fixture_sql("CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,agent TEXT,account TEXT,epoch INTEGER,thread TEXT,turn TEXT,created REAL,record TEXT);
@@ -41,7 +168,6 @@ fn database() -> Connection {
              CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,text TEXT,status TEXT,
                created REAL,epoch INTEGER,turn_id TEXT,error TEXT);
-             CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL);
              CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,
                PRIMARY KEY(collection,id));
@@ -103,6 +229,14 @@ fn running() -> AgentRecord {
         extra.insert(key.to_owned(), value);
     }
     AgentRecord {
+        title_job: None,
+        start_outcome_hold: None,
+        fired_events: Default::default(),
+        native_review_thread: None,
+        vm_launch: None,
+        credential_copy: None,
+        vm_auth_bootstrap: None,
+        native_release: None,
         id: AgentId::from(AGENT),
         root_id: AgentId::from(AGENT),
         epoch: 4,
@@ -141,7 +275,7 @@ fn statuses(connection: &Connection) -> Vec<String> {
 fn open_receipts(connection: &Connection) -> i64 {
     connection
         .query_row(
-            "SELECT COUNT(*) FROM runtime_operation_receipts WHERE signature=?1",
+            "SELECT COUNT(*) FROM runtime_outbox WHERE signature=?1",
             [STEER_RECEIPT_SIGNATURE],
             |row| row.get(0),
         )
@@ -244,7 +378,7 @@ fn explicitly_identified_codex_and_claude_turns_are_steered() {
 #[test]
 fn claim_refuses_every_ineligible_agent_state() {
     type Change = fn(&mut AgentRecord);
-    let cases: [(&str, Change); 6] = [
+    let cases: [(&str, Change); 8] = [
         ("queued", |a| a.status = AgentStatus::Queued),
         ("rejected-this-turn", |a| {
             a.extra.insert("steerRejectedTurnId".into(), json!(TURN));
@@ -254,6 +388,12 @@ fn claim_refuses_every_ineligible_agent_state() {
         }),
         ("unbound-turn", |a| {
             a.extra.get_mut("startAttempt").expect("attempt")["turnId"] = Value::Null;
+        }),
+        ("action", |a| {
+            a.extra.get_mut("startAttempt").expect("attempt")["action"] = json!("compact");
+        }),
+        ("invalid-action", |a| {
+            a.extra.get_mut("startAttempt").expect("attempt")["action"] = Value::Null;
         }),
         ("held", |a| {
             a.extra.insert("nativeFailureHold".into(), json!(true));
@@ -531,7 +671,7 @@ fn steer_written_after_the_reported_turn_end_returns_once() {
     submit(&mut connection, "s1");
     let submitted_at = connection
         .query_row(
-            "SELECT json_extract(result,'$.submittedAt') FROM runtime_operation_receipts",
+            "SELECT json_extract(payload,'$.submittedAt') FROM runtime_outbox",
             [],
             |row| row.get::<_, f64>(0),
         )
@@ -559,7 +699,7 @@ fn steer_unconfirmed_by_a_closed_transport_returns_when_written_after_the_end() 
     assert_eq!(statuses(&connection), UNCONFIRMED);
     let submitted_at: f64 = connection
         .query_row(
-            "SELECT json_extract(result,'$.submittedAt') FROM runtime_operation_receipts",
+            "SELECT json_extract(payload,'$.submittedAt') FROM runtime_outbox",
             [],
             |row| row.get(0),
         )
@@ -581,7 +721,7 @@ fn steer_unconfirmed_by_a_closed_transport_returns_when_written_after_the_end() 
         .expect("user change writes");
     let submitted_at: f64 = connection
         .query_row(
-            "SELECT json_extract(result,'$.submittedAt') FROM runtime_operation_receipts",
+            "SELECT json_extract(payload,'$.submittedAt') FROM runtime_outbox",
             [],
             |row| row.get(0),
         )
@@ -919,26 +1059,34 @@ fn frozen_projection_survives_response_loss_and_rejects_payload_changes() {
     let mut connection = database();
     submit(&mut connection, "frozen");
     let projection = json!({"operation":"frozen","compiled":{"text":"bounded evidence"}});
-    for _ in 0..2 {
-        settle(&mut connection, |tx| {
-            SchedulerRepository::freeze_steer_submission(tx, AGENT, "frozen", &projection)
-        });
-    }
-    let changed = with(&mut connection, |tx| {
-        SchedulerRepository::freeze_steer_submission(
-            tx,
-            AGENT,
-            "frozen",
-            &json!({"compiled":"changed"}),
-        )
+    let frozen = serde_json::value::to_raw_value(&projection).expect("projection JSON");
+    settle(&mut connection, |tx| {
+        assert!(
+            SchedulerRepository::freeze_steer_submission(tx, AGENT, "frozen", &frozen)?.is_none()
+        );
+        Ok(())
     });
-    assert!(changed.is_err(), "a retry cannot rewrite frozen content");
+    let changed =
+        serde_json::value::to_raw_value(&json!({"compiled":"changed"})).expect("changed JSON");
+    let previous = with(&mut connection, |tx| {
+        SchedulerRepository::freeze_steer_submission(tx, AGENT, "frozen", &changed)
+    })
+    .expect("frozen projection")
+    .expect("previous projection");
+    assert_eq!(
+        previous.get(),
+        frozen.get(),
+        "a retry cannot rewrite frozen content"
+    );
     settle(&mut connection, |tx| {
         SchedulerRepository::steer_response(tx, AGENT, "frozen", "unknown")
     });
     terminal(&mut connection, &[]);
     let ack = acknowledge(&mut connection).expect("late acknowledgement");
-    assert_eq!(ack.prepared_submission, Some(projection));
+    assert_eq!(
+        ack.prepared_submission.as_deref().map(|value| value.get()),
+        Some(frozen.get())
+    );
     assert_eq!(ack.event_ids, ["u1", "u2", "u4"]);
     assert_eq!(open_receipts(&connection), 0);
 }

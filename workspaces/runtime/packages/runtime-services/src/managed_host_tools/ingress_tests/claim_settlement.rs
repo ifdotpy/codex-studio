@@ -55,18 +55,16 @@ impl crate::provider_callbacks::RuntimeChildCreationPort for ScriptedChildCreati
             self.entered.notify_one();
             match self.script {
                 SpawnScript::Refuse => Err(Error::Invalid("Supply 1 to 64 agents")),
-                SpawnScript::WrittenRejection => Ok(
-                    crate::managed_host_tools::DispatchedOperation::Rejected(OperationResult {
-                        value: json!({"reason":"provider rejected"}),
-                        signals: Vec::new(),
-                    }),
-                ),
-                SpawnScript::OpaqueApplied => Ok(
-                    crate::managed_host_tools::DispatchedOperation::Applied(OperationResult {
-                        value: json!({"outcome":"unknown"}),
-                        signals: Vec::new(),
-                    }),
-                ),
+                SpawnScript::WrittenRejection => {
+                    Ok(crate::managed_host_tools::DispatchedOperation::Rejected(
+                        OperationResult::reply(&json!({"reason":"provider rejected"})),
+                    ))
+                }
+                SpawnScript::OpaqueApplied => {
+                    Ok(crate::managed_host_tools::DispatchedOperation::Applied(
+                        OperationResult::reply(&json!({"outcome":"unknown"})),
+                    ))
+                }
                 SpawnScript::CatalogUnavailable => Err(Error::Unavailable(
                     crate::model_catalog::MODEL_CATALOG_DEPENDENCY,
                 )),
@@ -95,10 +93,10 @@ impl crate::provider_callbacks::RuntimeChildCreationPort for ScriptedChildCreati
                     self.release.notified().await;
                     Ok(crate::managed_host_tools::DispatchedOperation::Applied(
                         OperationResult {
-                            value: json!({"requestId":request_id,"agents":[]}),
                             signals: vec![crate::managed_host_tools::WakeSignal::new(
                                 "account-worker",
                             )],
+                            ..OperationResult::reply(&json!({"requestId":request_id,"agents":[]}))
                         },
                     ))
                 }
@@ -183,21 +181,32 @@ async fn ports_with_wake(
     )
 }
 
-fn request_row(store: &RuntimeStore, call_id: &str) -> Value {
-    studio_runtime_store::system_reads::all(&store.test_reader().unwrap(), "runtime_tool_requests")
-        .unwrap()
-        .into_iter()
-        .find(|row| row["callId"] == call_id)
-        .unwrap()
+#[derive(serde::Deserialize, serde::Serialize)]
+pub(super) struct RequestWithAdmission {
+    pub admitted: studio_runtime_store::request_results::AdmittedRequest,
+    #[serde(flatten)]
+    pub fields: serde_json::Map<String, Value>,
+}
+
+pub(super) fn request_with_admission(store: &RuntimeStore, call_id: &str) -> RequestWithAdmission {
+    let raw: String = store.test_reader().unwrap().query_row(
+        "SELECT record FROM runtime_tool_requests WHERE kind='managed_tool' AND json_extract(record,'$.callId')=?1",
+        [call_id], |row| row.get(0),
+    ).unwrap();
+    serde_json::from_str(&raw).unwrap()
+}
+
+pub(super) fn request_row(store: &RuntimeStore, call_id: &str) -> Value {
+    let connection = store.test_reader().unwrap();
+    let (id, raw): (String, String) = connection.query_row(
+        "SELECT id,record FROM runtime_tool_requests WHERE kind='managed_tool' AND json_extract(record,'$.callId')=?1",
+        [call_id], |row| Ok((row.get(0)?, row.get(1)?)),
+    ).unwrap();
+    studio_runtime_store::system_reads::decode("runtime_tool_requests", &id, &raw).unwrap()
 }
 
 fn saved_result(store: &RuntimeStore, id: &str) -> Option<Value> {
-    studio_runtime_store::system_reads::get(
-        &store.test_reader().unwrap(),
-        "runtime_tool_results",
-        id,
-    )
-    .unwrap()
+    crate::tool_requests::saved_result(&store.test_reader().unwrap(), id).unwrap()
 }
 
 fn assert_terminal(store: &RuntimeStore, call_id: &str, outcome: &str, certainty: Option<&str>) {
@@ -205,15 +214,17 @@ fn assert_terminal(store: &RuntimeStore, call_id: &str, outcome: &str, certainty
     assert_eq!(row["stage"], "failed", "{call_id}: {row}");
     assert_eq!(row["outcome"], outcome, "{call_id}: {row}");
     assert!(row["finished"].is_number(), "{call_id}: {row}");
-    assert_eq!(row["result"]["success"], false, "{call_id}: {row}");
+    let result = saved_result(store, row["id"].as_str().unwrap()).unwrap();
+    assert_eq!(result["success"], false, "{call_id}: {result}");
     if let Some(certainty) = certainty {
         assert_eq!(row["deliveryCertainty"], certainty, "{call_id}: {row}");
     }
-    assert_eq!(
-        saved_result(store, row["id"].as_str().unwrap()).as_ref(),
-        Some(&row["result"]),
-        "{call_id}: a replay answers from the saved result"
-    );
+    if outcome != "unknown" {
+        assert!(
+            row.get("result").is_none(),
+            "completed replies have one owner"
+        );
+    }
 }
 
 async fn replay_returns_saved_result(
@@ -258,7 +269,7 @@ async fn opaque_payload_does_not_change_fresh_applied_outcome() {
         &context,
         call_id,
         "orchestration_spawn",
-        json!({"agents":[]}),
+        &json!({"agents":[]}),
     );
     let decision = dispatch_with_managed_tools(
         Arc::clone(&store),
@@ -272,7 +283,10 @@ async fn opaque_payload_does_not_change_fresh_applied_outcome() {
     assert!(matches!(decision, CallbackDecision::Answer(_)));
     let row = request_row(&store, call_id);
     assert_eq!(row["deliveryCertainty"], "written");
-    assert_eq!(row["result"]["success"], true);
+    assert_eq!(
+        saved_result(&store, row["id"].as_str().unwrap()).unwrap()["success"],
+        true
+    );
 }
 
 #[tokio::test]
@@ -284,7 +298,7 @@ async fn written_rejection_settles_and_replays_exactly() {
         &context,
         call_id,
         "orchestration_spawn",
-        json!({"agents":[]}),
+        &json!({"agents":[]}),
     );
     let decision = dispatch_with_managed_tools(
         Arc::clone(&store),
@@ -342,7 +356,7 @@ async fn proven_pre_write_refusals_settle_not_applied() {
             json!({}),
         ),
     ] {
-        let frame = call(&context, call_id, tool, args);
+        let frame = call(&context, call_id, tool, &args);
         let decision = dispatch_with_managed_tools(
             Arc::clone(&store),
             &context,
@@ -367,7 +381,7 @@ async fn transient_catalog_refusal_settles_not_applied_with_retry_guidance() {
         &context,
         call_id,
         "orchestration_spawn",
-        json!({"agents":[{"name":"Worker","prompt":"Task"}],"request_id":"catalog-try-1"}),
+        &json!({"agents":[{"name":"Worker","prompt":"Task"}],"request_id":RequestIdentity::issue_root()}),
     );
     let decision = dispatch_with_managed_tools(
         Arc::clone(&store),
@@ -381,7 +395,8 @@ async fn transient_catalog_refusal_settles_not_applied_with_retry_guidance() {
     assert!(matches!(decision, CallbackDecision::Answer(_)));
     assert_terminal(&store, call_id, "not_applied", Some("not_sent"));
     let row = request_row(&store, call_id);
-    let text = row["result"]["contentItems"][0]["text"]
+    let result = saved_result(&store, row["id"].as_str().unwrap()).unwrap();
+    let text = result["contentItems"][0]["text"]
         .as_str()
         .expect("refusal text");
     assert!(
@@ -403,7 +418,7 @@ async fn possible_effects_settle_unknown_and_never_redispatch() {
             &context,
             call_id,
             "orchestration_spawn",
-            json!({"agents":[{"name":"Worker","prompt":"Task"}]}),
+            &json!({"agents":[{"name":"Worker","prompt":"Task"}]}),
         );
         let first = dispatch_with_managed_tools(
             Arc::clone(&store),
@@ -440,7 +455,7 @@ async fn rolled_back_local_execution_settles_not_applied() {
         &context,
         "settle-local-refused",
         "orchestration_search",
-        json!({"query":"fixture"}),
+        &json!({"query":"fixture"}),
     );
     let ports = shared_ports(
         crate::provider_callbacks::managed_tool_ports(
@@ -495,7 +510,7 @@ async fn dropped_dispatch_settles_unknown() {
         &context,
         call_id,
         "orchestration_spawn",
-        json!({"agents":[{"name":"Worker","prompt":"Task"}]}),
+        &json!({"agents":[{"name":"Worker","prompt":"Task"}]}),
     );
     let ports = ports_for(&store, &context, &frame, &creation).await;
     let entered = creation.entered.notified();
@@ -523,7 +538,7 @@ async fn startup_recovery_settles_stuck_rows_and_unblocks_context_repair() {
         &context,
         call_id,
         "orchestration_spawn",
-        json!({"agents":[{"name":"Worker","prompt":"Task"}]}),
+        &json!({"agents":[{"name":"Worker","prompt":"Task"}]}),
     );
     // Seed the live symptom: a claimed spawn whose process died mid-dispatch
     // (no runtime to run the guard), plus a reserved row never claimed.
@@ -565,17 +580,12 @@ async fn startup_recovery_settles_stuck_rows_and_unblocks_context_repair() {
         (Some("running"), Some("pending"))
     );
     let mut queued = running.clone();
-    queued["id"] = json!(format!("{}-queued", running["id"].as_str().unwrap()));
     queued["callId"] = json!("settle-startup-queued");
     queued["stage"] = json!("queued");
     queued.as_object_mut().unwrap().remove("started");
-    let queued_id = queued["id"].as_str().unwrap().to_owned();
     store
         .transaction_with::<_, StoreError>(move |tx| {
-            tx.execute(
-                "INSERT INTO runtime_tool_requests(id,record) VALUES(?1,?2)",
-                params![queued_id, queued.to_string()],
-            )?;
+            seed_tool_request(tx, queued);
             Ok(())
         })
         .await
@@ -635,7 +645,7 @@ async fn connection_recovery_leaves_an_in_flight_dispatch_to_record_its_real_out
         &context,
         call_id,
         "orchestration_spawn",
-        json!({"agents":[{"name":"Worker","prompt":"Task"}]}),
+        &json!({"agents":[{"name":"Worker","prompt":"Task"}]}),
     );
     let wake = Arc::new(tokio::sync::Notify::new());
     let ports = ports_with_wake(&store, &context, &frame, &creation, Arc::clone(&wake)).await;
@@ -679,12 +689,13 @@ async fn connection_recovery_leaves_an_in_flight_dispatch_to_record_its_real_out
         .await
         .expect("the real outcome's wake signal is released");
     let settled = request_row(&store, call_id);
-    assert_eq!(settled["result"]["success"], true, "{settled}");
-    assert_eq!(settled["deliveryCertainty"], "written", "{settled}");
     assert_eq!(
-        saved_result(&store, settled["id"].as_str().unwrap()).as_ref(),
-        Some(&settled["result"])
+        saved_result(&store, settled["id"].as_str().unwrap()).unwrap()["success"],
+        true,
+        "{settled}"
     );
+    assert_eq!(settled["deliveryCertainty"], "written", "{settled}");
+    assert!(settled.get("result").is_none(), "completed task stays slim");
 
     // Once the owner is gone, the settled row is no longer recovery's work.
     crate::provider_callbacks::recover_connection(
@@ -708,7 +719,7 @@ async fn connection_recovery_settles_a_claim_without_an_in_process_owner() {
         &context,
         call_id,
         "orchestration_spawn",
-        json!({"agents":[{"name":"Worker","prompt":"Task"}]}),
+        &json!({"agents":[{"name":"Worker","prompt":"Task"}]}),
     );
     // Seed a running claim whose dispatcher is gone without its drop guard.
     let ports = ports_for(&store, &context, &frame, &creation).await;
@@ -728,19 +739,25 @@ async fn connection_recovery_settles_a_claim_without_an_in_process_owner() {
     let row_id = id.clone();
     store
         .transaction_with::<_, StoreError>(move |tx| {
-            let mut row =
-                studio_runtime_store::system_reads::get(tx, "runtime_tool_requests", &row_id)?
-                    .unwrap();
-            row["stage"] = json!("running");
-            row["outcome"] = json!("pending");
-            row.as_object_mut().unwrap().remove("finished");
-            row.as_object_mut().unwrap().remove("result");
-            row.as_object_mut().unwrap().remove("deliveryCertainty");
+            let raw: String = tx.query_row(
+                "SELECT record FROM runtime_tool_requests WHERE id=?1",
+                [&row_id],
+                |row| row.get(0),
+            )?;
+            let mut row: RequestWithAdmission = serde_json::from_str(&raw)?;
+            row.fields.insert("stage".into(), json!("running"));
+            row.fields.insert("outcome".into(), json!("pending"));
+            row.fields.remove("finished");
+            row.fields.remove("result");
+            row.fields.remove("deliveryCertainty");
             tx.execute(
                 "UPDATE runtime_tool_requests SET record=?1 WHERE id=?2",
-                params![row.to_string(), row_id],
+                params![serde_json::to_string(&row)?, row_id],
             )?;
-            tx.execute("DELETE FROM runtime_tool_results WHERE id=?1", [&row_id])?;
+            tx.execute(
+                "DELETE FROM request_results WHERE id=?1",
+                [row.admitted.id()],
+            )?;
             Ok(())
         })
         .await
@@ -770,7 +787,7 @@ async fn failed_finalize_still_records_the_real_operation_and_wakes_its_owner() 
         &context,
         call_id,
         "orchestration_spawn",
-        json!({"agents":[{"name":"Worker","prompt":"Task"}]}),
+        &json!({"agents":[{"name":"Worker","prompt":"Task"}]}),
     );
     let wake = Arc::new(tokio::sync::Notify::new());
     let ports = ports_with_wake(&store, &context, &frame, &creation, Arc::clone(&wake)).await;
@@ -814,10 +831,14 @@ async fn failed_finalize_still_records_the_real_operation_and_wakes_its_owner() 
         .await
         .expect("the recorded operation's wake signal is released");
     let settled = request_row(&store, call_id);
-    assert_eq!(settled["result"]["success"], true, "{settled}");
+    assert_eq!(
+        saved_result(&store, &id).unwrap()["success"],
+        true,
+        "{settled}"
+    );
     assert_eq!(settled["deliveryCertainty"], "written", "{settled}");
     assert!(settled["finished"].is_number(), "{settled}");
-    assert_eq!(saved_result(&store, &id).as_ref(), Some(&settled["result"]));
+    assert!(settled.get("result").is_none(), "completed task stays slim");
     assert_eq!(creation.calls.load(Ordering::SeqCst), 1);
 }
 
@@ -871,7 +892,7 @@ async fn managed_recovery_callback_uses_typed_receipt_and_replays() {
             &context,
             &call_id,
             "orchestration_agent_manage",
-            json!({"action":"recover","agent_id":target}),
+            &json!({"action":"recover","agent_id":target}),
         );
         let session = Arc::new(ScriptedRecoverySession {
             receipt,
@@ -913,7 +934,11 @@ async fn managed_recovery_callback_uses_typed_receipt_and_replays() {
         };
         let row = request_row(&store, &call_id);
         assert_eq!(row["deliveryCertainty"], certainty, "{label}: {row}");
-        assert_eq!(row["result"]["success"], success, "{label}: {row}");
+        assert_eq!(
+            saved_result(&store, row["id"].as_str().unwrap()).unwrap()["success"],
+            success,
+            "{label}: {row}"
+        );
         let replay = dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 21.0, ports)
             .await
             .unwrap();

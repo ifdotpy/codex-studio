@@ -14,14 +14,6 @@ impl StoredControls {
         Self { store, unload }
     }
 }
-fn store_error(_: studio_runtime_store::StoreError) -> ControlError {
-    ControlError::Unavailable
-}
-impl From<studio_runtime_store::StoreError> for ControlError {
-    fn from(error: studio_runtime_store::StoreError) -> Self {
-        store_error(error)
-    }
-}
 fn current(tx: &Transaction<'_>, expected: &ControlSnapshot) -> Result<ControlSnapshot> {
     let operation = expected.operation.as_ref().ok_or(ControlError::Changed)?;
     let (agent, saved) =
@@ -50,6 +42,21 @@ fn now() -> f64 {
         .map_or(0.0, |v| v.as_secs_f64())
 }
 impl ControlStorage for StoredControls {
+    fn replay(&self, request: ControlRequest) -> ControlFuture<'_, Option<Result<Value>>> {
+        let store = self.store.clone();
+        Box::pin(async move {
+            store
+                .read_async("claude-control/replay", move |db| {
+                    let Some((agent, operation)) =
+                        Repository::load(db, request.id(), &request.operation_id())?
+                    else {
+                        return Err(ControlError::Changed);
+                    };
+                    ControlSnapshot::from_records(agent, operation)?.replay(&request)
+                })
+                .await
+        })
+    }
     fn execution_key(&self, request: &ControlRequest) -> String {
         format!("{}:{}", self.store.state_dir().display(), request.id())
     }
@@ -202,6 +209,7 @@ impl ControlStorage for StoredControls {
                     let current = current(tx, &expected)?;
                     let writes = current.complete(&request, now())?;
                     Repository::apply(tx, &writes.agent, &writes.operation, &writes.removed)?;
+                    Repository::set_final(tx, &request.operation_id(), &ControlOutcome::Ok)?;
                     Ok::<_, ControlError>(writes.result)
                 })
                 .await?;
@@ -215,6 +223,7 @@ impl ControlStorage for StoredControls {
         &self,
         expected: ControlSnapshot,
         evidence: FailureEvidence,
+        error: ControlError,
     ) -> ControlFuture<'_, ()> {
         let store = self.store.clone();
         Box::pin(async move {
@@ -279,6 +288,9 @@ impl ControlStorage for StoredControls {
                             .remove("workspaceReservationId");
                     }
                     Repository::apply(tx, &agent, &operation, &[])?;
+                    if !unknown && !matches!(error, ControlError::Unknown | ControlError::NotSent) {
+                        Repository::set_final(tx, &op.id, &ControlOutcome::Err(error))?;
+                    }
                     Ok(())
                 })
                 .await

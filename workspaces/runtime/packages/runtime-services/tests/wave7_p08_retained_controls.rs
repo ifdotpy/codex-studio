@@ -269,6 +269,12 @@ async fn replaced_generation_and_unscoped_or_unrecognized_calls_never_reach_the_
 }
 struct NoWrites;
 impl ControlStorage for NoWrites {
+    fn replay(
+        &self,
+        _: studio_runtime_services::claude_controls::ControlRequest,
+    ) -> ControlFuture<'_, Option<Result<Value, ControlError>>> {
+        panic!("read must not write")
+    }
     fn reserve(
         &self,
         _: studio_runtime_services::claude_controls::ControlRequest,
@@ -303,6 +309,7 @@ impl ControlStorage for NoWrites {
         &self,
         _: studio_runtime_services::claude_controls::ControlSnapshot,
         _: FailureEvidence,
+        _: ControlError,
     ) -> ControlFuture<'_, ()> {
         panic!("read must not write")
     }
@@ -311,6 +318,7 @@ impl ControlStorage for NoWrites {
 async fn controls_caller_supplies_scope_and_bounds_the_retained_request_deadline() {
     let agent = json!({"id":"agent","rootId":"agent","provider":"claude","epoch":2,"accountKey":"account","cwd":"/fixture","status":"paused","threadId":"thread"});
     for fault in ["none", "deadline"] {
+        let request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
         let port = port(fault);
         let controls = Controls::new(
             Arc::new(NoWrites),
@@ -319,7 +327,7 @@ async fn controls_caller_supplies_scope_and_bounds_the_retained_request_deadline
         let result = controls
             .read_or_stop(
                 &agent,
-                &json!({"action":"stop_task","task_id":"task"}),
+                &json!({"action":"stop_task","task_id":"task","request_id":request_id}),
                 None,
             )
             .await;
@@ -330,8 +338,7 @@ async fn controls_caller_supplies_scope_and_bounds_the_retained_request_deadline
         assert_eq!(calls[0].identity.scope.epoch, 2);
         assert_eq!(
             calls[0].identity.scope.request_id.as_deref(),
-            // SHA-256 of the Python JSON text `["thread", "task"]`.
-            Some("stop-task:e26e670c92bf185ae6ad6f81b8eb96770944cd906f864ebfd7a13e65f1377e00")
+            Some(request_id.as_str())
         );
     }
 }
@@ -343,17 +350,17 @@ async fn opaque_stop_ids_have_distinct_stable_request_identities() {
         Arc::new(NoWrites),
         Arc::new(RetainedClaudeSession::new(port.clone())),
     );
+    let first = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    let second = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    let third = studio_runtime_schema::persistence::RequestIdentity::issue_root();
     for (thread, task, request) in [
-        ("a:b", "c", None),
-        ("a", "b:c", None),
-        ("a:b", "c", None),
-        ("a:b", "c", Some("caller-request")),
+        ("a:b", "c", &first),
+        ("a", "b:c", &second),
+        ("a:b", "c", &first),
+        ("a:b", "c", &third),
     ] {
         let agent = json!({"id":"agent","rootId":"agent","provider":"claude","epoch":2,"accountKey":"account","cwd":"/fixture","status":"paused","threadId":thread});
-        let mut body = json!({"action":"stop_task","task_id":task});
-        if let Some(request) = request {
-            body["request_id"] = json!(request);
-        }
+        let body = json!({"action":"stop_task","task_id":task,"request_id":request});
         controls
             .read_or_stop(&agent, &body, None)
             .await
@@ -363,15 +370,15 @@ async fn opaque_stop_ids_have_distinct_stable_request_identities() {
     assert_eq!(calls.len(), 4);
     assert_ne!(
         calls[0].identity.scope.request_id, calls[1].identity.scope.request_id,
-        "colon concatenation collision witness"
+        "distinct requests retain their supplied identities"
     );
     assert_eq!(
         calls[0].identity.scope.request_id, calls[2].identity.scope.request_id,
-        "same tuple replays the same identity"
+        "the same request retains its identity"
     );
     assert_eq!(
         calls[3].identity.scope.request_id.as_deref(),
-        Some("caller-request")
+        Some(third.as_str())
     );
     assert_eq!(
         calls[0].invocation.params(),

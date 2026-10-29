@@ -1,5 +1,6 @@
 use crate::CachedSql;
 use rusqlite::Connection;
+use studio_runtime_schema::persistence::HoldStatus;
 
 use crate::StoreResult;
 use crate::records::{AgentId, AgentRecord, AgentRepository, Table};
@@ -63,7 +64,13 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
         triggers: TRANSCRIPT_TRIGGERS,
     }],
     connection_functions: &[],
-    bootstrap_tables: &[crate::agent_volatile::TABLE_REQUIREMENT],
+    bootstrap_tables: &[
+        crate::agent_volatile::TABLE_REQUIREMENT,
+        TableRequirement {
+            name: "runtime_agents",
+            columns: &["hold_status", "hold_incident"],
+        },
+    ],
     bootstrap_triggers: &crate::agent_volatile::TRIGGER_REQUIREMENTS,
     bootstrap_connection_functions: &[],
 };
@@ -97,25 +104,43 @@ impl AgentRepository {
 
     pub fn put(connection: &Connection, record: &AgentRecord) -> StoreResult<()> {
         Table::<AgentRecord>::new(connection).put(record)?;
-        let has_receipts: bool = connection.query_row_cached(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_operation_receipts')",
-            [],
-            |row| row.get(0),
-        )?;
-        if has_receipts {
-            connection.execute_cached(
-                "DELETE FROM runtime_operation_receipts WHERE id=?1 AND signature=?2",
-                rusqlite::params![
-                    format!(
-                        "{}{}",
-                        crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX,
-                        record.id.0
-                    ),
-                    crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE
-                ],
-            )?;
-        }
+        Self::hold(connection, &record.id.0, HoldStatus::Clear, None)?;
         Ok(())
+    }
+
+    /// Quarantine is independent of record decoding, including malformed JSON.
+    pub fn hold(
+        connection: &Connection,
+        id: &str,
+        status: HoldStatus,
+        incident: Option<&str>,
+    ) -> StoreResult<()> {
+        connection.execute_cached(
+            "UPDATE runtime_agents SET hold_status=?2,hold_incident=?3 WHERE id=?1",
+            rusqlite::params![id, status, incident],
+        )?;
+        Ok(())
+    }
+
+    pub fn event_fired(connection: &Connection, root: &str, event: &str) -> StoreResult<bool> {
+        let agent = Self::get(connection, &AgentId::from(root))?
+            .ok_or(crate::StoreError::RecordContract("missing event root"))?;
+        Ok(agent.fired_events.contains(event))
+    }
+
+    /// The root owns every fired name for its lifetime; first insertion wins.
+    pub fn fire_event(
+        tx: &rusqlite::Transaction<'_>,
+        root: &str,
+        event: &str,
+    ) -> StoreResult<bool> {
+        let mut agent = Self::get(tx, &AgentId::from(root))?
+            .ok_or(crate::StoreError::RecordContract("missing event root"))?;
+        if !agent.fired_events.insert(event.to_owned()) {
+            return Ok(false);
+        }
+        Self::put(tx, &agent)?;
+        Ok(true)
     }
 }
 inventory::submit! {
@@ -131,6 +156,28 @@ mod invalid_agent_repair_tests {
     use serde_json::json;
 
     #[test]
+    fn receipt_domain_quarantine_does_not_decode_malformed_agent() {
+        let db = rusqlite::Connection::open_in_memory().expect("database");
+        db.execute_batch(&format!(
+            "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT,hold_status TEXT {},hold_incident TEXT); INSERT INTO runtime_agents(id,record,hold_status) VALUES('broken','malformed','clear')",
+            studio_runtime_schema::persistence::enum_check::<HoldStatus>("hold_status")
+        )).expect("owner shape");
+        AgentRepository::hold(&db, "broken", HoldStatus::Invalid, Some("incident"))
+            .expect("independent quarantine");
+        let state: (HoldStatus, String, String) = db
+            .query_row(
+                "SELECT hold_status,hold_incident,record FROM runtime_agents WHERE id='broken'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("scalar authority");
+        assert_eq!(
+            state,
+            (HoldStatus::Invalid, "incident".into(), "malformed".into())
+        );
+    }
+
+    #[test]
     fn valid_agent_repair_clears_the_invalid_record_hold() {
         let mut connection = crate::fresh_state::test_canvas();
         let agent = AgentRecord::from_value(json!({
@@ -138,25 +185,37 @@ mod invalid_agent_repair_tests {
         }))
         .expect("valid repair record");
         AgentRepository::put(&connection, &agent).expect("seed agent");
-        connection
-            .execute(
-                "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,?2,'{}')",
-                rusqlite::params![
-                    format!("{}agent", crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX),
-                    crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE
-                ],
-            )
+        AgentRepository::hold(&connection, "agent", HoldStatus::Invalid, Some("incident"))
             .expect("seed hold");
         let tx = connection.transaction().expect("repair transaction");
         AgentRepository::put(&tx, &agent).expect("typed repair saves and clears hold");
         tx.commit().expect("repair commits atomically");
-        let remaining: i64 = connection
+        let status: HoldStatus = connection
             .query_row(
-                "SELECT COUNT(*) FROM runtime_operation_receipts WHERE id=?1",
-                [format!("{}agent", crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX)],
+                "SELECT hold_status FROM runtime_agents WHERE id='agent'",
+                [],
                 |row| row.get(0),
             )
-            .expect("hold receipt count reads");
-        assert_eq!(remaining, 0);
+            .expect("hold");
+        assert_eq!(status, HoldStatus::Clear);
+    }
+    #[test]
+    fn receipt_domain_fired_event_set_retains_all_names_and_rolls_back() {
+        let mut db = crate::fresh_state::test_canvas();
+        let root = AgentRecord::from_value(
+            json!({"id":"root","rootId":"root","provider":"codex","epoch":1,"status":"idle"}),
+        )
+        .expect("root");
+        AgentRepository::put(&db, &root).expect("save");
+        let tx = db.transaction().expect("tx");
+        assert!(AgentRepository::fire_event(&tx, "root", "one").expect("first"));
+        assert!(AgentRepository::fire_event(&tx, "root", "two").expect("second"));
+        assert!(!AgentRepository::fire_event(&tx, "root", "one").expect("replay"));
+        tx.commit().expect("commit");
+        assert!(AgentRepository::event_fired(&db, "root", "one").expect("one"));
+        let tx = db.transaction().expect("tx");
+        assert!(AgentRepository::fire_event(&tx, "root", "three").expect("three"));
+        tx.rollback().expect("rollback");
+        assert!(!AgentRepository::event_fired(&db, "root", "three").expect("not fired"));
     }
 }

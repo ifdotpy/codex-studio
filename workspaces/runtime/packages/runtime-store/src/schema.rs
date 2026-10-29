@@ -6,6 +6,124 @@ use sha2::{Digest, Sha256};
 
 use crate::{StoreError, StoreResult};
 
+/// Current receipt-owner query columns. The JSON record owns domain state;
+/// only quarantine remains independent so malformed agent JSON can be held.
+pub(crate) fn receipt_owner_columns() -> Vec<(&'static str, &'static str, String)> {
+    use studio_runtime_schema::persistence::*;
+    let generated = |_name: &str, path: &str, check: String| {
+        format!(
+            "TEXT GENERATED ALWAYS AS (CASE WHEN json_valid(record) THEN record->>'$.{path}' END) VIRTUAL {check}"
+        )
+    };
+    vec![
+        ("runtime_agents", "hold_status", format!("TEXT NOT NULL DEFAULT '{}' {}", HoldStatus::Clear.as_str(), enum_check::<HoldStatus>("hold_status"))),
+        ("runtime_agents", "hold_incident", "TEXT".into()),
+        ("runtime_agents", "title_status", generated("title_status", "titleJob.status", enum_check::<TitleStatus>("title_status"))),
+        ("runtime_agents", "vm_launch_status", generated("vm_launch_status", "vmLaunch.status", enum_check::<WorkEffectStatus>("vm_launch_status"))),
+        ("runtime_agents", "idle_episode_outcome", generated("idle_episode_outcome", "idleCompactionEpisode.outcome", enum_check::<IdleEpisodeOutcome>("idle_episode_outcome"))),
+        ("runtime_agents", "provider_stream_generation", "INTEGER GENERATED ALWAYS AS (CASE WHEN json_valid(record) THEN record->>'$.providerStream.generation' END) VIRTUAL".into()),
+        ("runtime_agents", "provider_stream_ack", "INTEGER GENERATED ALWAYS AS (CASE WHEN json_valid(record) THEN record->>'$.providerStream.ack' END) VIRTUAL".into()),
+        ("runtime_work", "status", generated("status", "status", enum_check::<WorkStatus>("status"))),
+        ("runtime_work", "archive_status", generated("archive_status", "archiveIntent.status", enum_check::<WorkEffectStatus>("archive_status"))),
+        ("runtime_work", "archive_next_at", "REAL GENERATED ALWAYS AS (CASE WHEN json_valid(record) THEN COALESCE(record->>'$.archiveIntent.nextAttemptAt',0) END) VIRTUAL".into()),
+        ("runtime_work", "vm_submit_status", generated("vm_submit_status", "vmSubmit.status", enum_check::<WorkEffectStatus>("vm_submit_status"))),
+        ("runtime_work", "vm_accept_status", generated("vm_accept_status", "vmAccept.status", enum_check::<WorkEffectStatus>("vm_accept_status"))),
+        ("runtime_tool_requests", "agent", "TEXT GENERATED ALWAYS AS (CASE WHEN json_valid(record) THEN CASE record->>'$.kind' WHEN 'managed_tool' THEN record->>'$.agent' WHEN 'provider_callback' THEN record->>'$.payload.identity.context.agent' END END) VIRTUAL".into()),
+        ("runtime_tool_requests", "kind", generated("kind", "kind", enum_check::<ToolRequestKind>("kind"))),
+        ("runtime_tool_requests", "status", format!("TEXT GENERATED ALWAYS AS (CASE WHEN json_valid(record) THEN CASE record->>'$.kind' WHEN '{}' THEN record->>'$.stage' WHEN '{}' THEN record->>'$.status' END END) VIRTUAL {}",ToolRequestKind::ManagedTool.as_str(),ToolRequestKind::ProviderCallback.as_str(),enum_check::<ToolRequestStatus>("status"))),
+        ("runtime_tool_requests", "request_id", "TEXT GENERATED ALWAYS AS (CASE WHEN json_valid(record) THEN CASE record->>'$.kind' WHEN 'managed_tool' THEN record->>'$.admitted.id' WHEN 'provider_callback' THEN record->>'$.id' END END) VIRTUAL".into()),
+        ("runtime_tool_requests", "origin_key", generated("origin_key", "originKey", String::new())),
+        ("runtime_tool_requests", "updated", "INTEGER GENERATED ALWAYS AS (CASE WHEN json_valid(record) THEN record->>'$.updated' END) VIRTUAL".into()),
+        ("runtime_execution_runs", "status", generated("status", "status", enum_check::<ExecutionStatus>("status"))),
+        ("runtime_execution_attempts", "submission", generated("submission", "submission", enum_check::<AttemptSubmission>("submission"))),
+        ("runtime_execution_attempts", "turn_status", generated("turn_status", "turnStatus", enum_check::<ExecutionStatus>("turn_status"))),
+        ("runtime_execution_effects", "status", generated("status", "status", enum_check::<ExecutionEffectStatus>("status"))),
+        ("runtime_execution_nodes", "status", generated("status", "status", enum_check::<ExecutionNodeStatus>("status"))),
+        ("runtime_projects", "removal_reason", generated("removal_reason", "removal.reason", enum_check::<ProjectRemovalReason>("removal_reason"))),
+    ]
+}
+
+pub(crate) fn prepare_receipt_holds(connection: &Connection) -> StoreResult<()> {
+    for (table, name, definition) in receipt_owner_columns()
+        .into_iter()
+        .filter(|(_, name, _)| matches!(*name, "hold_status" | "hold_incident"))
+    {
+        let exists: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_xinfo(?1) WHERE name=?2)",
+            params![table, name],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            connection.execute_batch(&format!(
+                "ALTER TABLE {table} ADD COLUMN {name} {definition}"
+            ))?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn prepare_callback_origin(connection: &Connection) -> rusqlite::Result<()> {
+    let exists: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='runtime_tool_requests')",
+        [], |row| row.get(0),
+    )?;
+    if !exists {
+        return Ok(());
+    }
+    let exists: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_xinfo('runtime_tool_requests') WHERE name='origin_key')",
+        [], |row| row.get(0),
+    )?;
+    if !exists {
+        let (_, _, definition) = receipt_owner_columns()
+            .into_iter()
+            .find(|(table, name, _)| *table == "runtime_tool_requests" && *name == "origin_key")
+            .expect("callback origin schema");
+        connection.execute_batch(&format!(
+            "ALTER TABLE runtime_tool_requests ADD COLUMN origin_key {definition}"
+        ))?;
+    }
+    connection.execute_batch("CREATE UNIQUE INDEX IF NOT EXISTS runtime_tool_request_origin ON runtime_tool_requests(origin_key) WHERE origin_key IS NOT NULL")
+}
+
+pub(crate) fn prepare_receipt_owners(connection: &Connection) -> StoreResult<()> {
+    for (table, name, definition) in receipt_owner_columns() {
+        if !table_exists(connection, table)? {
+            continue;
+        }
+        let exists: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_xinfo(?1) WHERE name=?2)",
+            params![table, name],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            connection.execute_batch(&format!(
+                "ALTER TABLE {table} ADD COLUMN {name} {definition}"
+            ))?;
+        }
+    }
+    prepare_callback_origin(connection)?;
+    let old_archive_index: Option<String> = connection
+        .query_row(
+            "SELECT sql FROM sqlite_schema WHERE name='runtime_work_archive_due'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if old_archive_index.is_some_and(|sql| !sql.contains("archive_next_at")) {
+        connection.execute_batch("DROP INDEX runtime_work_archive_due")?;
+    }
+    connection.execute_batch(
+        "CREATE INDEX IF NOT EXISTS runtime_agent_holds ON runtime_agents(id) WHERE hold_status!='clear';
+         CREATE INDEX IF NOT EXISTS runtime_work_archive_due ON runtime_work(archive_next_at,id) WHERE archive_status IN ('pending','retryable','unknown');
+         CREATE INDEX IF NOT EXISTS runtime_tool_request_current_actor ON runtime_tool_requests(agent,updated DESC,id);
+         CREATE INDEX IF NOT EXISTS runtime_tool_request_current_status ON runtime_tool_requests(status,agent,id);
+         CREATE UNIQUE INDEX IF NOT EXISTS runtime_execution_terminal_source ON runtime_execution_attempts(json_extract(record,'$.terminalRepair.source.accountKey'),json_extract(record,'$.terminalRepair.source.threadId'),json_extract(record,'$.terminalRepair.proof.turnId')) WHERE json_type(record,'$.terminalRepair')='object';"
+    )?;
+    crate::StartupRecoveryRepository::prepare_indexes(connection)?;
+    Ok(())
+}
+
 pub(crate) fn verify(canvas_path: &Path, analytics_path: &Path) -> StoreResult<()> {
     verify_core(canvas_path, analytics_path)?;
     verify_bootstrap(&open_read_only(canvas_path)?)
@@ -361,7 +479,10 @@ fn is_bootstrap_table(requirements: &SchemaRequirements, table: &TableRequiremen
     requirements
         .bootstrap_tables
         .iter()
-        .any(|bootstrap| bootstrap.name == table.name)
+        .any(|bootstrap| {
+            bootstrap.name == table.name
+                && table.columns.iter().all(|column| bootstrap.columns.contains(column))
+        })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -487,7 +608,7 @@ fn table_columns(
     connection: &Connection,
     table: &str,
 ) -> StoreResult<std::collections::HashSet<String>> {
-    let mut statement = connection.prepare(&format!("PRAGMA table_info(\"{table}\")"))?;
+    let mut statement = connection.prepare(&format!("PRAGMA table_xinfo(\"{table}\")"))?;
     Ok(statement
         .query_map([], |row| row.get::<_, String>(1))?
         .collect::<Result<std::collections::HashSet<_>, _>>()?)
@@ -506,6 +627,14 @@ mod tests {
         verify_payload_migration,
     };
     use rusqlite::Connection;
+
+    #[test]
+    fn receipt_schema_verifier_sees_generated_query_columns() {
+        let db = rusqlite::Connection::open_in_memory().expect("database");
+        db.execute_batch("CREATE TABLE target(record TEXT, status TEXT GENERATED ALWAYS AS (json_extract(record,'$.status')) VIRTUAL)").expect("query column");
+        super::require_columns(&db, "canvas.sqlite3", "target", &["record", "status"])
+            .expect("generated columns are ordinary target schema requirements");
+    }
 
     #[test]
     fn persisted_and_federation_json_keep_distinct_unicode_formats() {

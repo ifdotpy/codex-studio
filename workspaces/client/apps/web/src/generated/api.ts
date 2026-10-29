@@ -3843,6 +3843,13 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
+    /** AdmittedRequest */
+    AdmittedRequest: {
+      /** Format: int64 */
+      created: number;
+      id: string;
+      signature: string;
+    };
     /** AgentActivity */
     AgentActivity: {
       /**
@@ -9934,7 +9941,7 @@ export interface components {
       created: number;
       /** Deliveries */
       deliveries: {
-        [key: string]: string;
+        [key: string]: components["schemas"]["RecipientDelivery"];
       };
       /** Id */
       id: string;
@@ -10799,6 +10806,7 @@ export interface components {
       action: "stop_task";
       /** Id */
       id: string;
+      request_id: string;
       /** Task Id */
       task_id: string;
     };
@@ -12242,6 +12250,17 @@ export interface components {
       | "steer"
       | "after_tool"
       | "after_turn";
+    /** @enum {string} */
+    DeliveryStatus:
+      | "queued"
+      | "stored_only"
+      | "accepted"
+      | "sent"
+      | "cancelled"
+      | "pending"
+      | "delivered"
+      | "failed"
+      | "uncertain";
     /** DesktopEntityDto */
     DesktopEntityDto: {
       /** Application */
@@ -13577,6 +13596,8 @@ export interface components {
       hash: string;
       /** Id */
       id: string;
+      /** Format: uuid */
+      requestId: string;
     };
     /** FederationAckResult */
     FederationAckResult: {
@@ -13584,6 +13605,8 @@ export interface components {
       hash: string;
       /** Id */
       id: string;
+      /** Format: uuid */
+      requestId: string;
     };
     /** FederationIdentity */
     FederationIdentity: {
@@ -14587,7 +14610,7 @@ export interface components {
       author: string;
       /** Deliveries */
       deliveries: {
-        [key: string]: string;
+        [key: string]: components["schemas"]["RecipientDelivery"];
       };
       /**
        * Error
@@ -15634,6 +15657,11 @@ export interface components {
       action: components["schemas"]["NativeCommandAction"];
       /** Id */
       id: string;
+      /**
+       * Format: uuid
+       * @description UUIDv7 mutation root, retained across command retries.
+       */
+      request_id: string;
       /**
        * Text
        * @default null
@@ -17292,6 +17320,8 @@ export interface components {
       requestId: string;
       response?: components["schemas"]["ProcessResponse"] | null | undefined;
       status: components["schemas"]["ProcessActionStatus"];
+    } & {
+      [key: string]: unknown;
     };
     /** @enum {string} */
     ProcessActionStatus: "completed" | "partial" | "uncertain";
@@ -18924,6 +18954,11 @@ export interface components {
        * @enum {string}
        */
       kind: "receipts";
+    };
+    /** @description One recipient's delivery state. Error text is separate from the closed status. */
+    RecipientDelivery: {
+      error?: string | null | undefined;
+      status: components["schemas"]["DeliveryStatus"];
     };
     /**
      * RecoveryConnectionGeneration
@@ -21429,8 +21464,48 @@ export interface components {
     };
     /** ServerOperationRequest */
     ServerOperationRequest: {
-      /** Action */
-      action: string;
+      /** @enum {string} */
+      action:
+        | "event"
+        | "input"
+        | "message"
+        | "move_send"
+        | "move_status"
+        | "location_info"
+        | "location_matches"
+        | "stop"
+        | "exec_event"
+        | "projects"
+        | "projects.changed"
+        | "folders"
+        | "git"
+        | "export"
+        | "chunk"
+        | "exec_read"
+        | "exec_input"
+        | "exec_cancel"
+        | "release"
+        | "update.offer"
+        | "update.export"
+        | "update.chunk"
+        | "update.release"
+        | "task"
+        | "complaint"
+        | "context"
+        | "directory"
+        | "chat_read"
+        | "move_manage"
+        | "move_interrupt"
+        | "move_spawn"
+        | "exec"
+        | "exec_receipt"
+        | "browser_callback"
+        | "add_location"
+        | "remove_location"
+        | "move_validate"
+        | "move_begin";
+      /** @description Scoped suboperation tuple; empty for a single-step request. */
+      operation: string[];
       /**
        * Payload
        * @description The cross-server service validates the action-specific payload.
@@ -21690,6 +21765,11 @@ export interface components {
        * @constant
        */
       protocol: 1;
+      /**
+       * Format: uuid
+       * @description UUIDv7 mutation root, issued once and retained across delivery retries.
+       */
+      requestId: string;
       /** Room */
       room: string;
       /** Senderserver */
@@ -22382,7 +22462,7 @@ export interface components {
       /** Deliveries */
       deliveries?:
         | {
-            [key: string]: string;
+            [key: string]: components["schemas"]["RecipientDelivery"];
           }
         | null
         | undefined;
@@ -39552,6 +39632,18 @@ export const DeliveryMomentInput = {
   after_turn: "after_turn",
 } as const;
 export type DeliveryMomentInput = components["schemas"]["DeliveryMomentInput"];
+export const DeliveryStatus = {
+  queued: "queued",
+  stored_only: "stored_only",
+  accepted: "accepted",
+  sent: "sent",
+  cancelled: "cancelled",
+  pending: "pending",
+  delivered: "delivered",
+  failed: "failed",
+  uncertain: "uncertain",
+} as const;
+export type DeliveryStatus = components["schemas"]["DeliveryStatus"];
 export const ExecutionAction = {
   review: "review",
   compact: "compact",
