@@ -27,6 +27,7 @@ import {
   pruneLogs,
   recipePlan,
   retestCommand,
+  retestEnvironment,
   typescriptProjects,
   unsafeRustFindings,
 } from "../facade.ts";
@@ -1901,5 +1902,31 @@ test("STUDIO_RETEST=1 switches only the Rust workspace step", () => {
     assert.equal(retest.options?.allowZeroTests, true);
   } finally {
     delete process.env.STUDIO_RETEST;
+  }
+});
+
+test("the retest step spawns the instrumented supervisor build", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "retest-env-"));
+  const savedPath = process.env.PATH;
+  try {
+    writeFileSync(path.join(dir, "layr"), "#!/bin/sh\n", { mode: 0o755 });
+    process.env.PATH = dir;
+    const env = retestEnvironment("/line");
+    rmSync(path.dirname(env.LAYR_ROOT!), { recursive: true, force: true });
+    assert.equal(
+      env.STUDIO_SUPERVISOR_BINARY,
+      path.join(
+        "/line",
+        "target",
+        "retest",
+        "debug",
+        process.platform === "win32"
+          ? "codex-process-supervisor.exe"
+          : "codex-process-supervisor",
+      ),
+    );
+  } finally {
+    process.env.PATH = savedPath;
+    rmSync(dir, { recursive: true, force: true });
   }
 });

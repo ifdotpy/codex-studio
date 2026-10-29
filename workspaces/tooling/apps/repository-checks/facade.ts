@@ -920,7 +920,9 @@ function rustTests(step: GateStep): GateStep {
 
 // Tests see an empty layr store. Only layr calls made outside a test (no
 // LAYR_RETEST_PROFILE_DIR) get the real store, through a shim first on PATH.
-function retestEnvironment(): NodeJS.ProcessEnv {
+// Tests spawn the supervisor from target/retest, where layr-retest builds it with
+// coverage; the plain target/debug build would hide its code from the selection.
+export function retestEnvironment(root: string): NodeJS.ProcessEnv {
   const real = process.env.LAYR_ROOT ?? "";
   const layr = (process.env.PATH ?? "")
     .split(path.delimiter)
@@ -940,6 +942,15 @@ function retestEnvironment(): NodeJS.ProcessEnv {
   return {
     LAYR_ROOT: empty,
     [RETEST_REAL_ROOT_ENV]: real,
+    STUDIO_SUPERVISOR_BINARY: path.join(
+      root,
+      "target",
+      "retest",
+      "debug",
+      process.platform === "win32"
+        ? "codex-process-supervisor.exe"
+        : "codex-process-supervisor",
+    ),
     PATH: `${shim}${path.delimiter}${process.env.PATH}`,
   };
 }
@@ -1900,7 +1911,7 @@ export async function execute(
           }
         : scrubAgentEnvironment({ ...process.env });
     const retestEnv: NodeJS.ProcessEnv =
-      bin === "layr-retest" ? retestEnvironment() : {};
+      bin === "layr-retest" ? retestEnvironment(root) : {};
     const commandEnv = {
       ...baseEnv,
       CARGO_BUILD_JOBS: String(CARGO_BUILD_JOBS),
