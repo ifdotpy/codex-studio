@@ -135,7 +135,7 @@ macro_rules! string_id {
 }
 
 string_id!(AgentId);
-string_id!(TaskId);
+pub use studio_runtime_schema::task_record::TaskId;
 string_id!(QueueEventId);
 string_id!(ChatMessageId);
 string_id!(TranscriptItemId);
@@ -738,14 +738,18 @@ impl JsonRecord for AgentRecord {
 
 pub use studio_runtime_schema::records::WorkStatus;
 
-record_newtype!(
-    TaskRecord,
-    TaskId,
-    table = "runtime_tasks",
-    schema = "PersistedTaskRecord",
-    key = PayloadId,
-    query = JsonAgent
-);
+pub use studio_runtime_schema::task_record::TaskRecord;
+impl JsonRecord for TaskRecord {
+    type Id = TaskId;
+    const TABLE: &'static str = "runtime_tasks";
+    const SCHEMA: &'static str = "PersistedTaskRecord";
+    const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
+    const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::JsonAgent;
+    const TYPED_SHAPE: bool = true;
+    fn record_key(&self) -> Option<&Self::Id> {
+        Some(self.id())
+    }
+}
 pub use studio_runtime_schema::plan_record::PlanRecord;
 impl JsonRecord for PlanRecord {
     type Id = AgentId;
@@ -2489,10 +2493,10 @@ mod tests {
             "outputPreviewOnly":true
         }));
         assert_eq!(
-            task.get("reattachRecovery").expect("recovery metadata")["status"],
+            task.extra("reattachRecovery").expect("recovery metadata")["status"],
             "running"
         );
-        assert_eq!(task.get("outputPreviewOnly"), Some(&Value::Bool(true)));
+        assert_eq!(task.extra("outputPreviewOnly"), Some(&Value::Bool(true)));
 
         let request = RequestRecord::from_value(json!({
             "id":"request-1", "connectionId":null

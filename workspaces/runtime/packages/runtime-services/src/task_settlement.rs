@@ -19,7 +19,7 @@ use rusqlite::{OptionalExtension, Transaction};
 use serde_json::{Value, json};
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, CachedSql, RuntimeStore, StoreError, StoreResult,
-    TaskId, TaskRecord, TaskRepository, system_reads, truthy,
+    TaskId, TaskRecord, TaskRepository, truthy,
 };
 
 /// The status of a task whose turn ended before the provider reported its end.
@@ -37,6 +37,10 @@ pub const LOST_TASK_STATUS: &str = "lost";
 /// provider gave it a process id. Python keeps it running at turn end.
 pub fn background_command(task: &Value) -> bool {
     task["kind"] == "command" && truthy(task.get("processId"))
+}
+
+fn background_task(task: &TaskRecord) -> bool {
+    task.kind() == Some("command") && truthy(task.extra("processId"))
 }
 
 /// Whether `turn` of `agent` can still produce item reports. A completed turn
@@ -89,24 +93,12 @@ fn stored_agent(tx: &rusqlite::Connection, id: &str) -> StoreResult<Option<Value
 }
 
 /// Schema-checked running tasks of one agent, with their stored row identities.
-fn running_tasks(tx: &rusqlite::Connection, agent: &str) -> StoreResult<Vec<Value>> {
-    let mut statement = tx.prepare_cached(
-        "SELECT id,record FROM runtime_tasks WHERE json_extract(record,'$.agent')=?1 \
-         AND json_extract(record,'$.status')='running' ORDER BY id",
-    )?;
-    statement
-        .query_map([agent], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?
-        .map(|row| {
-            let (id, raw) = row?;
-            system_reads::decode("runtime_tasks", &id, &raw)
-        })
-        .collect()
+fn running_tasks(tx: &rusqlite::Connection, agent: &str) -> StoreResult<Vec<TaskRecord>> {
+    TaskRepository::running_for_agent(tx, agent)
 }
 
-fn write_task(tx: &Transaction<'_>, task: &Value) -> StoreResult<()> {
-    crate::notification_dispatch::put_task_record(tx, task).map_err(|error| match error {
+fn write_task(tx: &Transaction<'_>, task: &TaskRecord) -> StoreResult<()> {
+    crate::notification_dispatch::put_checked_task_record(tx, task).map_err(|error| match error {
         crate::notification_dispatch::NotificationDispatchError::Store(error) => error,
         crate::notification_dispatch::NotificationDispatchError::RequestResult(error) => {
             StoreError::RequestResult(error)
@@ -123,7 +115,7 @@ fn write_task(tx: &Transaction<'_>, task: &Value) -> StoreResult<()> {
         | crate::notification_dispatch::NotificationDispatchError::Json(_) => {
             StoreError::InvalidStoredObject {
                 table: "runtime_tasks",
-                id: task["id"].as_str().unwrap_or("<missing>").into(),
+                id: task.id().as_ref().into(),
             }
         }
     })
@@ -146,8 +138,8 @@ pub fn settle_agent_tasks(tx: &Transaction<'_>, agent_id: &str, at: f64) -> Stor
         && crate::legacy_image_workspace::is_legacy(&agent);
     let mut closed = 0;
     for task in running_tasks(tx, agent_id)? {
-        let turn = task["turnId"].as_str().filter(|turn| !turn.is_empty());
-        if !legacy && (turn.is_none() || background_command(&task)) {
+        let turn = task.turn_id().filter(|turn| !turn.is_empty());
+        if !legacy && (turn.is_none() || background_task(&task)) {
             continue;
         }
         if let Some(turn) = turn
@@ -155,17 +147,17 @@ pub fn settle_agent_tasks(tx: &Transaction<'_>, agent_id: &str, at: f64) -> Stor
         {
             continue;
         }
-        let mut settled = task.clone();
-        let lost = legacy && background_command(&task);
-        settled["status"] = json!(if lost {
+        let mut settled = task;
+        let lost = legacy && background_task(&settled);
+        settled.set_status(if lost {
             LOST_TASK_STATUS
         } else {
             SETTLED_TASK_STATUS
         });
         if lost {
-            settled["error"] = json!(LOST_COMMAND);
+            settled.set_error(json!(LOST_COMMAND));
         }
-        settled["finished"] = json!(at);
+        settled.set_finished(json!(at));
         write_task(tx, &settled)?;
         closed += 1;
     }
@@ -244,7 +236,7 @@ pub fn absent_command_checks(
         let mut tasks = Vec::new();
         for task in running_tasks(connection, &agent_id)? {
             if checkable_command(connection, &agent, account, &thread, &task)? {
-                tasks.push(task);
+                tasks.push(task.into_value());
             }
         }
         if !tasks.is_empty() {
@@ -277,23 +269,23 @@ fn checkable_command(
     agent: &Value,
     account: &str,
     thread: &str,
-    task: &Value,
+    task: &TaskRecord,
 ) -> StoreResult<bool> {
     let agent_id = agent["id"].as_str().unwrap_or_default();
     let (Some(turn), Some(created)) = (
-        task["turnId"].as_str().filter(|turn| !turn.is_empty()),
-        task["created"].as_f64(),
+        task.turn_id().filter(|turn| !turn.is_empty()),
+        task.created(),
     ) else {
         return Ok(false);
     };
-    if !background_command(task)
-        || task["agent"] != agent["id"]
-        || task["id"] != format!("{agent_id}:{}", task["itemId"].as_str().unwrap_or_default())
+    if !background_task(task)
+        || task.agent() != agent["id"].as_str()
+        || task.id().as_ref() != format!("{agent_id}:{}", task.item_id().unwrap_or_default())
         || task
-            .get("sourceThreadId")
+            .extra("sourceThreadId")
             .is_some_and(|v| !v.is_null() && v != thread)
         || task
-            .get("sourceAccountKey")
+            .extra("sourceAccountKey")
             .is_some_and(|v| !v.is_null() && v != account)
     {
         return Ok(false);
@@ -344,28 +336,26 @@ pub fn close_absent_commands(
     let mut closed = 0;
     for expected in &check.tasks {
         let id = expected["id"].as_str().unwrap_or_default();
-        let Some(current) = TaskRepository::get(tx, &TaskId::from(id))?.map(TaskRecord::into_value)
-        else {
+        let Some(current) = TaskRepository::get(tx, &TaskId::from(id))? else {
             continue;
         };
-        if &current != expected
+        if &current.value() != expected
             || !checkable_command(tx, &agent, account, &check.thread, &current)?
-            || listed(report, &current)
+            || listed(report, &current.value())
         {
             continue;
         }
         let mut lost = current;
-        lost["status"] = json!(LOST_TASK_STATUS);
-        lost["finished"] = json!(at);
-        lost["error"] = json!(LOST_COMMAND);
-        if let Some(object) = lost.as_object_mut() {
-            object.remove("recoveryHold");
-        }
+        lost.set_status(LOST_TASK_STATUS);
+        lost.set_finished(json!(at));
+        lost.set_error(json!(LOST_COMMAND));
+        lost.remove_recovery_hold();
+        let turn = lost.turn_id().map(str::to_owned);
         write_task(tx, &lost)?;
         tx.execute(
             "UPDATE runtime_items SET record=json_set(record,'$.toolStatus','lost') \
              WHERE id=?1 AND agent=?2 AND json_extract(record,'$.turnId')=?3",
-            rusqlite::params![id, agent_id, lost["turnId"].as_str()],
+            rusqlite::params![id, agent_id, turn],
         )?;
         closed += 1;
     }

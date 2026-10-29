@@ -51,6 +51,7 @@ pub mod string_enum;
 pub mod studio_errors;
 pub mod supervisor_contract;
 pub mod task_command;
+pub mod task_record;
 pub mod task_results;
 pub mod terminal_record;
 pub mod transcript_asset;

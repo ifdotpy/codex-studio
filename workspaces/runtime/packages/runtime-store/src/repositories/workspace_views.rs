@@ -85,8 +85,7 @@ impl WorkspaceTaskRow {
     pub fn decode(self, connection: &Connection) -> StoreResult<Value> {
         Ok(Table::<TaskRecord>::new(connection)
             .decode_stored(&self.id, &self.record)?
-            .value()
-            .clone())
+            .into_value())
     }
 }
 
@@ -231,7 +230,7 @@ impl WorkspaceViewsRepository {
     pub fn task(connection: &Connection, id: &str) -> StoreResult<Option<Value>> {
         Ok(Table::<TaskRecord>::new(connection)
             .get(&TaskId::from(id))?
-            .map(|record| record.value().clone()))
+            .map(TaskRecord::into_value))
     }
 
     pub fn agent(connection: &Connection, id: &str) -> StoreResult<Option<AgentRecord>> {

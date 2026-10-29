@@ -930,11 +930,19 @@ pub fn dispatch_notification_with_effects(
 
 /// Store one task record through the canonical task writer, which also keeps
 /// the task's sync window. Its caller owns the decision and the transaction.
+#[cfg(test)]
 pub(crate) fn put_task_record(
     tx: &Transaction<'_>,
     task: &Value,
 ) -> Result<(), NotificationDispatchError> {
     kinds::put_task(tx, task)
+}
+
+pub(crate) fn put_checked_task_record(
+    tx: &Transaction<'_>,
+    task: &studio_runtime_store::TaskRecord,
+) -> Result<(), NotificationDispatchError> {
+    kinds::put_checked_task(tx, task, &task.value())
 }
 
 /// Shared completion formatter for recovery; its caller owns the recovery receipt.
@@ -966,17 +974,13 @@ pub fn recover_task_in_transaction(
                 .as_str()
                 .ok_or(NotificationDispatchError::invalid())?,
         )?;
-        if current.as_ref().map(|record| record.value()) != Some(previous)
+        if current.as_ref().map(|record| record.value()).as_ref() != Some(previous)
             || stored_agent.as_ref() != Some(agent)
         {
             return Err(NotificationDispatchError::invalid());
         }
-        let snapshot = snapshot::NotificationSnapshot::from_records(
-            agent.clone(),
-            Some(previous.clone()),
-            None,
-        )?;
-        if previous["status"] != "running" {
+        let snapshot = snapshot::NotificationSnapshot::from_records(agent.clone(), current, None)?;
+        if snapshot.task().and_then(TaskRecord::status) != Some("running") {
             return Ok(());
         }
         let params = json!({"item":item,"turnId":previous["turnId"]});

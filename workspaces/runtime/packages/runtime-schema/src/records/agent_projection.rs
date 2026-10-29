@@ -172,9 +172,14 @@ impl<'de> Deserialize<'de> for AgentCounter {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(transparent)]
 pub struct NonnegativeNumber(Number);
+impl NonnegativeNumber {
+    pub fn number(&self) -> &Number {
+        &self.0
+    }
+}
 impl<'de> Deserialize<'de> for NonnegativeNumber {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let number = Number::deserialize(deserializer)?;
