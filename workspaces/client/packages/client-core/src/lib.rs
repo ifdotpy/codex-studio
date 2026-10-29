@@ -18,6 +18,7 @@ pub mod native;
 pub mod notifications;
 mod ordered_json;
 pub mod outbox;
+pub mod pair_approval;
 mod pdf;
 pub mod platform;
 pub mod projections;
