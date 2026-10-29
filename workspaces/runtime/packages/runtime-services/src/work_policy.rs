@@ -108,11 +108,13 @@ pub fn queue_items(
                 .collect::<Result<Vec<_>, _>>()?;
             let delivery = match &metadata.delivery {
                 studio_runtime_schema::queue_command::Field::Missing => json!("queue"),
-                other => json!(other),
+                other @ (studio_runtime_schema::queue_command::Field::Null
+                | studio_runtime_schema::queue_command::Field::Value(_)) => json!(other),
             };
             let requested = match &metadata.requested_delivery {
                 studio_runtime_schema::queue_command::Field::Missing => delivery.clone(),
-                other => json!(other),
+                other @ (studio_runtime_schema::queue_command::Field::Null
+                | studio_runtime_schema::queue_command::Field::Value(_)) => json!(other),
             };
             let mut item = json!({
                 "id": event.id, "kind": event.kind, "text": event.text,
