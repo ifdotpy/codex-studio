@@ -97,6 +97,8 @@ domain!(NativeReviewThreadStatus { Submitted=>"submitted", Accepted=>"accepted",
 domain!(SafetyRetryCertainty { Written=>"written", NotSent=>"not_sent", Unknown=>"unknown", Refused=>"refused" });
 domain!(WorkStatus { Ready=>"ready", Blocked=>"blocked", Running=>"running", Review=>"review", Accepted=>"accepted", Cancelled=>"cancelled" });
 domain!(OwnerKind { Agent=>"agent", Task=>"task", Account=>"account", Vm=>"vm", Project=>"project", Monitor=>"monitor", Terminal=>"terminal", Message=>"message", Request=>"request", Server=>"server" });
+domain!(RequestResultStatus { Applied=>"applied", Rejected=>"rejected" });
+domain!(RequestReferenceKind { Agent=>"agent", Annotation=>"annotation", Complaint=>"complaint", Message=>"message", Project=>"project", Room=>"room", Work=>"work" });
 domain!(OutboxKind { ProviderCall=>"provider_call", ProviderCallback=>"provider_callback", JournalEntry=>"journal_entry", Publication=>"publication", StreamFlush=>"stream_flush", FollowupEffect=>"followup_effect", Steer=>"steer", VoiceStop=>"voice_stop", VoiceDelete=>"voice_delete", WorkArchive=>"work_archive", WorkVm=>"work_vm", TitleGeneration=>"title_generation", NativeAction=>"native_action", TerminalAction=>"terminal_action", MonitorInput=>"monitor_input", McpReconnect=>"mcp_reconnect", ProjectRegistration=>"project_registration", RemoteDelivery=>"remote_delivery", ManagedTool=>"managed_tool" });
 domain!(OutboxStatus { Pending=>"pending", Submitted=>"submitted", Unknown=>"unknown", Committed=>"committed", Unrecognized=>"unrecognized" });
 domain!(HoldStatus { Clear=>"clear", Invalid=>"invalid", Unrecognized=>"unrecognized" });
@@ -176,6 +178,8 @@ contracts!(
     NativeActionAdmissionStatus,
     WorkStatus,
     OwnerKind,
+    RequestResultStatus,
+    RequestReferenceKind,
     OutboxKind,
     OutboxStatus,
     HoldStatus,

@@ -5,7 +5,12 @@ use super::manifest::{OperationStatus, RouteGroup, get, post};
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
+use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
+use studio_runtime_schema::annotation_command::{
+    AnnotationCommandResponse, AnnotationData, AnnotationEntityRow, AnnotationRowOperation,
+};
+use studio_runtime_schema::persistence::{RequestReferenceKind, RequestResultStatus};
 use studio_runtime_services::event_write::{self, AnnotationWrite, EventWriteError};
 use studio_runtime_services::work_policy::{self, WorkPolicyError};
 use studio_runtime_store::{
@@ -145,7 +150,7 @@ fn stored_error(error: WorkPolicyError) -> ApiError {
 pub(crate) async fn annotation(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<Value>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<AnnotationCommandResponse>, ApiError> {
     let agent_id = optional_string(&body, "agent")
         .map(str::to_owned)
         .unwrap_or_else(|| state.workspace_id.clone());
@@ -172,8 +177,33 @@ pub(crate) async fn annotation(
     if result.event_inserted {
         wake.notify_one();
     }
-    let result = result.record;
-    Ok(Json(result))
+    let reference = result.reference;
+    let id = reference.id.clone();
+    let rows = store.read_async("runtime-http/annotation-response", move |connection| {
+        #[derive(serde::Deserialize)]
+        struct Payload {
+            collection: RequestReferenceKind,
+            id: String,
+            value: AnnotationData,
+        }
+        let row: Option<(i64, String)> = connection.query_row(
+            "SELECT seq,payload FROM sync_entities WHERE collection='annotation' AND id=?1 AND deleted=0",
+            [&id], |row| Ok((row.get(0)?, row.get(1)?)),
+        ).optional()?;
+        let Some((seq, payload)) = row else { return Ok::<_, studio_runtime_store::StoreError>(Vec::new()) };
+        let payload: Payload = serde_json::from_str(&payload)?;
+        if payload.collection != RequestReferenceKind::Annotation || payload.id != id || payload.value.id != id {
+            return Err(studio_runtime_store::StoreError::InvalidStoredObject { table: "sync_entities", id });
+        }
+        Ok(vec![AnnotationEntityRow { collection: payload.collection, id: payload.id, op: AnnotationRowOperation::Upsert, seq, value: payload.value }])
+    }).await.map_err(ApiError::stored)?;
+    Ok(Json(AnnotationCommandResponse {
+        status: RequestResultStatus::Applied,
+        ref_kind: reference.kind,
+        ref_id: reference.id,
+        rev: reference.revision,
+        rows,
+    }))
 }
 pub(crate) async fn organization(
     State(state): State<HttpState>,
