@@ -10,6 +10,7 @@ use ring::{
     rand::{SecureRandom, SystemRandom},
     signature::{Ed25519KeyPair, KeyPair},
 };
+use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -37,8 +38,8 @@ impl FileVault {
 impl Vault for FileVault {
     fn read(&self) -> Result<VaultState, String> {
         match std::fs::read(&self.path) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map(VaultState::from_value)
+            Ok(bytes) => serde_json::from_slice::<Value>(&bytes)
+                .and_then(VaultState::deserialize)
                 .map_err(|_| "The server key store is invalid.".into()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 Ok(VaultState::from_value(json!({"drafts":{},"servers":{}})))
@@ -48,8 +49,8 @@ impl Vault for FileVault {
     }
     fn write(&self, state: &VaultState) -> Result<(), String> {
         use std::io::Write;
-        let bytes = serde_json::to_vec(&state.clone().into_value())
-            .map_err(|_| "The server key store could not be encoded.")?;
+        let bytes =
+            serde_json::to_vec(state).map_err(|_| "The server key store could not be encoded.")?;
         let directory = self
             .path
             .parent()
@@ -91,8 +92,8 @@ impl Vault for KeychainVault {
             "Codex Studio native server keys",
             &self.account,
         ) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map(VaultState::from_value)
+            Ok(bytes) => serde_json::from_slice::<Value>(&bytes)
+                .and_then(VaultState::deserialize)
                 .map_err(|_| "The server key store is invalid.".into()),
             Err(error) if error.code() == -25300 => {
                 Ok(VaultState::from_value(json!({"drafts":{},"servers":{}})))
@@ -101,8 +102,8 @@ impl Vault for KeychainVault {
         }
     }
     fn write(&self, state: &VaultState) -> Result<(), String> {
-        let bytes = serde_json::to_vec(&state.clone().into_value())
-            .map_err(|_| "The server key store could not be encoded.")?;
+        let bytes =
+            serde_json::to_vec(state).map_err(|_| "The server key store could not be encoded.")?;
         security_framework::passwords::set_generic_password(
             "Codex Studio native server keys",
             &self.account,
