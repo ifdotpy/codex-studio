@@ -22,6 +22,7 @@ struct Asset {
 #[serde(untagged)]
 enum UploadState {
     Pending {},
+    ExplicitNull { asset: () },
     Acknowledged { asset: Asset },
 }
 
@@ -42,6 +43,22 @@ struct Upload {
     extensions: BTreeMap<String, Value>,
 }
 
+#[derive(Default)]
+enum AssetField {
+    #[default]
+    Missing,
+    Null,
+    Present(Asset),
+}
+impl<'de> Deserialize<'de> for AssetField {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(match Option::<Asset>::deserialize(deserializer)? {
+            Some(asset) => Self::Present(asset),
+            None => Self::Null,
+        })
+    }
+}
+
 impl<'de> Deserialize<'de> for Upload {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         #[derive(Deserialize)]
@@ -56,7 +73,7 @@ impl<'de> Deserialize<'de> for Upload {
             size: usize,
             created: serde_json::Number,
             #[serde(default)]
-            asset: Option<Asset>,
+            asset: AssetField,
             #[serde(flatten)]
             extensions: BTreeMap<String, Value>,
         }
@@ -72,8 +89,9 @@ impl<'de> Deserialize<'de> for Upload {
             created: wire.created,
             extensions: wire.extensions,
             state: match wire.asset {
-                Some(asset) => UploadState::Acknowledged { asset },
-                None => UploadState::Pending {},
+                AssetField::Present(asset) => UploadState::Acknowledged { asset },
+                AssetField::Null => UploadState::ExplicitNull { asset: () },
+                AssetField::Missing => UploadState::Pending {},
             },
         })
     }
@@ -113,8 +131,12 @@ fn row(db: &Connection, id: &str) -> Result<Option<Upload>, String> {
         )
         .optional()
         .map_err(|e| e.to_string())?;
-    raw.map(|s| serde_json::from_str(&s).map_err(|e| e.to_string()))
-        .transpose()
+    raw.map(|s| {
+        serde_json::from_str::<Value>(&s)
+            .map_err(|e| e.to_string())
+            .and_then(decode)
+    })
+    .transpose()
 }
 fn status(db: &Connection, id: &str) -> Result<Value, String> {
     let cancelled: Option<bool> = db
@@ -251,10 +273,10 @@ fn apply(db: &Connection, request: &Request) -> Result<Value, String> {
                 .map_err(|e| e.to_string())?;
             let mut result = vec![];
             for row in rows {
-                result.push(
-                    serde_json::from_str::<Upload>(&row.map_err(|e| e.to_string())?)
+                result.push(decode::<Upload>(
+                    serde_json::from_str::<Value>(&row.map_err(|e| e.to_string())?)
                         .map_err(|e| e.to_string())?,
-                );
+                )?);
             }
             encode(result)
         }
@@ -366,12 +388,12 @@ pub async fn dispatch(backend: &Backend, sender: &StoreSender, request: Request)
             let response=receive.await.map_err(|e|e.to_string())?;
             return response.result.ok_or_else(||response.error.map(|e|e.message).unwrap_or("Missing file state response.".into()));
         }
-        let expected: Upload = decode(p["row"].clone())?;
-        let id = &expected.id;
+        let expected = &p["row"];
+        let id = text(expected, "id")?;
         let lock=upload_lock(id)?;let _guard=lock.lock().await;
         let current: Option<Upload> = decode(state(sender,"uploads.get",json!({"id":id})).await?)?;
         let Some(current) = current else { return Ok(Value::Null); };
-        if current.workspace != expected.workspace || current.agent != expected.agent || current.state_dir != expected.state_dir {
+        if expected["workspace"] != current.workspace || expected["agent"] != current.agent || expected["stateDir"] != current.state_dir {
             return Err("The saved upload belongs to another workspace or chat.".into());
         }
         let identity=crate::sync::identity(backend).await.map_err(|e|e.message)?;
@@ -629,6 +651,64 @@ mod tests {
             Some(Value::Null)
         );
     }
+    #[test]
+    fn stored_duplicate_keys_and_null_asset_keep_legacy_semantics() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("client.sqlite3")).unwrap();
+        let file = store
+            .dispatch(command(
+                "file",
+                "files.text",
+                json!({"name":"x","text":"x"}),
+            ))
+            .result
+            .unwrap();
+        let row = store.dispatch(command("queue", "uploads.queue", json!({"workspace":"a".repeat(32),"stateDir":"/state","agent":"lead","files":[file]}))).result.unwrap()[0].clone();
+        let id = row["id"].as_str().unwrap();
+        let raw = format!(
+            r#"{{"id":"bad","id":"{id}","workspace":"{}","stateDir":"/state","agent":"lead","name":"x","mime":"text/plain","size":1,"created":1,"asset":null}}"#,
+            "a".repeat(32)
+        );
+        store
+            .connection
+            .execute(
+                "UPDATE client_uploads SET document=?2 WHERE id=?1",
+                params![id, raw],
+            )
+            .unwrap();
+        let got = store
+            .dispatch(command("get", "uploads.get", json!({"id":id})))
+            .result
+            .unwrap();
+        assert_eq!(got["id"], id);
+        assert!(got.as_object().unwrap().contains_key("asset"));
+        assert!(got["asset"].is_null());
+        let listed = store
+            .dispatch(command(
+                "list-null",
+                "uploads.list",
+                json!({"workspace":"a".repeat(32),"stateDir":"/state"}),
+            ))
+            .result
+            .unwrap();
+        assert_eq!(listed[0], got);
+        let raw = format!(
+            r#"{{"id":"{id}","workspace":"{}","stateDir":"/state","agent":"lead","name":"x","mime":"text/plain","size":1,"created":1,"asset":{{"id":"wrong","id":"{id}"}}}}"#,
+            "a".repeat(32)
+        );
+        store
+            .connection
+            .execute(
+                "UPDATE client_uploads SET document=?2 WHERE id=?1",
+                params![id, raw],
+            )
+            .unwrap();
+        let got = store
+            .dispatch(command("get2", "uploads.get", json!({"id":id})))
+            .result
+            .unwrap();
+        assert_eq!(got["asset"]["id"], id);
+    }
     #[tokio::test]
     async fn delivery_persists_receipt_and_reuses_it() {
         use crate::backend::tests::{read_http, reply};
@@ -677,10 +757,22 @@ mod tests {
             }
         });
         let backend = Backend::new(&origin).unwrap();
+        let missing = dispatch(
+            &backend,
+            &sender,
+            command(
+                "missing",
+                "uploads.deliver",
+                json!({"row":{"id":"missing"}}),
+            ),
+        )
+        .await;
+        assert_eq!(missing.result, Some(Value::Null));
+        let minimal = json!({"id":row["id"],"workspace":row["workspace"],"stateDir":row["stateDir"],"agent":row["agent"]});
         let first = dispatch(
             &backend,
             &sender,
-            command("deliver", "uploads.deliver", json!({"row":row})),
+            command("deliver", "uploads.deliver", json!({"row":minimal})),
         )
         .await;
         let asset = first.result.unwrap();
