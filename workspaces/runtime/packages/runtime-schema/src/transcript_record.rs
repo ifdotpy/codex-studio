@@ -83,8 +83,19 @@ impl TranscriptItemRecord {
         self.extra.insert("afterRestore".into(), value);
     }
     pub fn into_value(self) -> Value {
-        self.serialize(serde_json::value::Serializer)
-            .expect("transcript fields serialize")
+        let mut fields: serde_json::Map<String, Value> = self.extra.into_iter().collect();
+        fields.insert("id".into(), Value::String(self.id.0));
+        insert_field(&mut fields, "role", self.role, Value::String);
+        insert_field(&mut fields, "text", self.text, Value::String);
+        insert_field(&mut fields, "inputs", self.inputs, |inputs| {
+            Value::Array(
+                inputs
+                    .into_iter()
+                    .map(TranscriptInput::into_value)
+                    .collect(),
+            )
+        });
+        Value::Object(fields)
     }
     pub fn value(&self) -> Value {
         self.serialize(serde_json::value::Serializer)
@@ -107,11 +118,33 @@ impl TranscriptInput {
     pub fn extra(&self, key: &str) -> Option<&Value> {
         self.extra.get(key)
     }
+    fn into_value(self) -> Value {
+        let mut fields: serde_json::Map<String, Value> = self.extra.into_iter().collect();
+        insert_field(&mut fields, "id", self.id, Value::String);
+        insert_field(&mut fields, "kind", self.kind, Value::String);
+        insert_field(&mut fields, "text", self.text, Value::String);
+        insert_field(&mut fields, "truncated", self.truncated, Value::Bool);
+        Value::Object(fields)
+    }
     pub fn value(&self) -> Value {
         self.serialize(serde_json::value::Serializer)
             .expect("transcript input fields serialize")
     }
 }
+fn insert_field<T>(
+    fields: &mut serde_json::Map<String, Value>,
+    name: &str,
+    field: Field<T>,
+    project: impl FnOnce(T) -> Value,
+) {
+    let value = match field {
+        Field::Missing => return,
+        Field::Null => Value::Null,
+        Field::Value(value) => project(value),
+    };
+    fields.insert(name.into(), value);
+}
+
 pub(crate) fn schema() -> Value {
     schemars::schema_for!(TranscriptItemRecord).to_value()
 }

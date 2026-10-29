@@ -2341,16 +2341,30 @@ mod tests {
     #[test]
     fn consuming_json_record_projection_moves_value_tree() {
         let record = TranscriptItemRecord::from_value(json!({
-            "id":"item-1", "agent":"agent-1", "nested":[{"retained":true}]
+            "id":"item-1", "agent":"agent-1", "nested":[{"retained":true}],
+            "inputs":[{"text":"allocated input content", "blob":[{"v":1}]}]
         }))
         .expect("transcript item has an id");
-        let source_ptr = record.value()["nested"]
+        let source_ptr = record
+            .extra("nested")
+            .unwrap()
             .as_array()
             .expect("nested value is an array")
             .as_ptr();
 
+        let input = &record.inputs().value().unwrap()[0];
+        let text_ptr = input.text().unwrap().as_ptr();
+        let input_blob_ptr = input.extra("blob").unwrap().as_array().unwrap().as_ptr();
         let projected = record.into_value();
 
+        assert_eq!(
+            projected["inputs"][0]["text"].as_str().unwrap().as_ptr(),
+            text_ptr
+        );
+        assert_eq!(
+            projected["inputs"][0]["blob"].as_array().unwrap().as_ptr(),
+            input_blob_ptr
+        );
         assert_eq!(projected["nested"][0]["retained"], Value::Bool(true));
         assert_eq!(
             projected["nested"]
