@@ -1090,7 +1090,7 @@ impl<'de> serde::Deserialize<'de> for NotificationWork {
                             }
                         }
                         _ => {
-                            map.next_value::<serde::de::IgnoredAny>()?;
+                            map.next_value::<Value>()?;
                         }
                     }
                 }
@@ -1637,6 +1637,41 @@ mod tests {
             vec![json!(1), Value::Null, json!({"resultId":null})]
         );
         assert!(serde_json::from_str::<NotificationWork>("{").is_err());
+    }
+
+    #[test]
+    fn notification_reader_skips_rows_with_invalid_unused_json_values() {
+        let mut db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE runtime_work(id TEXT PRIMARY KEY, record TEXT NOT NULL);")
+            .unwrap();
+        let depth = format!("{}0{}", "[".repeat(150), "]".repeat(150));
+        let rows = [
+            (
+                "valid",
+                r#"{"owner":"child","id":"valid","status":"ready"}"#.to_owned(),
+            ),
+            (
+                "overflow",
+                r#"{"owner":"child","id":"overflow","status":"ready","extra":1e400}"#.to_owned(),
+            ),
+            (
+                "deep",
+                format!(r#"{{"owner":"child","id":"deep","status":"ready","extra":{depth}}}"#),
+            ),
+        ];
+        for (id, raw) in &rows {
+            db.execute(
+                "INSERT INTO runtime_work VALUES(?1,?2)",
+                rusqlite::params![id, raw],
+            )
+            .unwrap();
+        }
+        assert!(serde_json::from_str::<Value>(&rows[1].1).is_err());
+        assert!(serde_json::from_str::<Value>(&rows[2].1).is_err());
+        let tx = db.transaction().unwrap();
+        let work = owned_work_records(&tx, "child").unwrap();
+        assert_eq!(work.len(), 1);
+        assert_eq!(work[0].id, "valid");
     }
 
     #[test]
