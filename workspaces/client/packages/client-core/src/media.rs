@@ -12,6 +12,7 @@ use std::{
     sync::{Mutex, OnceLock},
     time::{Duration, Instant},
 };
+use studio_client_domain::json_object::JsonObject;
 use tokio::sync::mpsc;
 
 pub const DICTATION_RATE: f64 = 16_000.0;
@@ -154,31 +155,20 @@ enum Command {
 }
 
 fn command(method: &str, params: Value) -> Result<Command, String> {
-    if method != "media.stopPlayback" && !params.is_object() {
-        return Err(if method == "media.requestMicrophone" {
-            "Use the button again to allow the microphone."
-        } else if matches!(
-            method,
-            "media.captureStart" | "media.captureStop" | "media.playRecording"
-        ) {
-            "Invalid capture identity."
-        } else {
-            "Unknown audio command."
-        }
-        .into());
-    }
     match method {
-        "media.requestMicrophone" => serde_json::from_value::<ReservationParams>(params)
-            .map(|p| Command::RequestMicrophone(p.reservation))
-            .map_err(|_| "Use the button again to allow the microphone.".into()),
-        "media.captureStart" => serde_json::from_value::<CaptureParams>(params)
-            .map(|p| Command::CaptureStart(p.capture))
+        "media.requestMicrophone" => {
+            serde_json::from_value::<JsonObject<ReservationParams>>(params)
+                .map(|JsonObject(p)| Command::RequestMicrophone(p.reservation))
+                .map_err(|_| "Use the button again to allow the microphone.".into())
+        }
+        "media.captureStart" => serde_json::from_value::<JsonObject<CaptureParams>>(params)
+            .map(|JsonObject(p)| Command::CaptureStart(p.capture))
             .map_err(|_| "Invalid capture identity.".into()),
-        "media.captureStop" => serde_json::from_value::<CaptureParams>(params)
-            .map(|p| Command::CaptureStop(p.capture))
+        "media.captureStop" => serde_json::from_value::<JsonObject<CaptureParams>>(params)
+            .map(|JsonObject(p)| Command::CaptureStop(p.capture))
             .map_err(|_| "Invalid capture identity.".into()),
-        "media.playRecording" => serde_json::from_value::<RecordingParams>(params)
-            .map(|p| Command::PlayRecording(p.recording))
+        "media.playRecording" => serde_json::from_value::<JsonObject<RecordingParams>>(params)
+            .map(|JsonObject(p)| Command::PlayRecording(p.recording))
             .map_err(|_| "Invalid capture identity.".into()),
         "media.stopPlayback" => Ok(Command::StopPlayback),
         _ => Err("Unknown audio command.".into()),
@@ -307,12 +297,10 @@ pub async fn dispatch(
                     json!({"id":recording,"directory":directory.path()}),
                 )
                 .await?;
-                if !exported.is_object() {
-                    return Err("The recording was not exported.".into());
-                }
-                let path = serde_json::from_value::<crate::dictation::WavExport>(exported)
-                    .map_err(|_| "The recording was not exported.")?
-                    .path;
+                let JsonObject(exported) =
+                    serde_json::from_value::<JsonObject<crate::dictation::WavExport>>(exported)
+                        .map_err(|_| "The recording was not exported.")?;
+                let path = exported.path;
                 #[cfg(target_os = "macos")]
                 {
                     let duration = mac::on_main(move || mac::play(path, directory)).await?;
@@ -570,6 +558,22 @@ mod tests {
             assert!(command("media.captureStart", value).is_err());
         }
         assert!(command("media.requestMicrophone", json!({"reservation": false})).is_err());
+        for method in [
+            "media.requestMicrophone",
+            "media.captureStart",
+            "media.captureStop",
+            "media.playRecording",
+        ] {
+            assert!(command(method, json!(["capture"])).is_err());
+        }
+        assert_eq!(
+            command("media.unknown", json!([])).err().unwrap(),
+            "Unknown audio command."
+        );
+        assert!(
+            serde_json::from_value::<JsonObject<crate::dictation::WavExport>>(json!(["path"]))
+                .is_err()
+        );
         assert!(matches!(
             command(
                 "media.captureStart",
