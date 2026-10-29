@@ -174,11 +174,7 @@ async fn claim(wake: &Wake) -> Result<Result<TurnIntent, Unclaimed>, WorkerError
                     let owned = AgentRepository::get(db, &AgentId::from(read_owner.as_str()))?
                         .is_some_and(|agent| {
                             agent.epoch == epoch
-                                && agent
-                                    .extra
-                                    .get("accountKey")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or("default")
+                                && agent.account_key.as_str()
                                     == read_account
                         });
                     if owned {
@@ -193,11 +189,7 @@ async fn claim(wake: &Wake) -> Result<Result<TurnIntent, Unclaimed>, WorkerError
                     if AgentRepository::get(tx, &AgentId::from(owner.as_str()))?.is_some_and(
                         |agent| {
                             agent.epoch == epoch
-                                && agent
-                                    .extra
-                                    .get("accountKey")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or("default")
+                                && agent.account_key.as_str()
                                     == owner_account
                         },
                     ) {
@@ -476,11 +468,7 @@ async fn advance_transfer(wake: &Wake) -> Result<bool, WorkerError> {
                             .unwrap_or_default();
                     let lazy_here =
                         studio_runtime_store::truthy(agent.extra.get("lazyAccountTransfer"))
-                            && agent
-                                .extra
-                                .get("accountKey")
-                                .and_then(Value::as_str)
-                                .unwrap_or("default")
+                            && agent.account_key.as_str()
                                 == a;
                     Ok(Some((phase, lazy_here)))
                 })

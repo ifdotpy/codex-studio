@@ -650,9 +650,13 @@ async fn non_radio_async_answer_is_steered_and_acknowledged() {
         tx.execute("DELETE FROM runtime_events WHERE agent=?1", [&agent_for_setup])?;
         let mut record = AgentRepository::get(tx, &AgentId::from(agent_for_setup.as_str()))?.unwrap();
         record.status = studio_runtime_store::AgentStatus::Running;
-        for (key, value) in [
-            ("isLead", json!(true)), ("autoWake", json!(true)), ("inFlight", json!(true)),
-            ("threadId", json!("thread-0")), ("turnId", json!("turn-0")),
+        record.in_flight = Some(true);
+        record.auto_wake = Some(true);
+        record.thread_id = Some("thread-0".to_string());
+record.turn_id = Some("turn-0".to_string());
+for (key, value) in [
+            ("isLead", json!(true)),
+
             ("startAttempt", json!({"id":"start","epoch":3,"submitted":true,"turnId":"turn-0","threadId":"thread-0","accountKey":"default","events":["initial"],"connectionGeneration":7})),
         ] { record.extra.insert(key.into(), value); }
         AgentRepository::put(tx, &record)?;

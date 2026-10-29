@@ -153,7 +153,7 @@ pub(crate) async fn run(
     guest: Arc<dyn GuestRpc>,
 ) -> DispatchedOperation {
     let record = actor.record();
-    let reviewer = record.extra.get("executionMode").and_then(Value::as_str) == Some("vm")
+    let reviewer = record.execution_mode == Some(studio_runtime_store::AgentExecutionMode::Vm)
         && record.extra.get("role").and_then(Value::as_str) == Some("reviewer")
         && studio_runtime_store::truthy(record.extra.get("layrReady"));
     if !reviewer {

@@ -17,7 +17,7 @@ pub(crate) fn terminal(
         );
         let text = message(&error, label);
         let id = format!("{}:native-notice:error:{turn}", agent.id.0);
-        let record = json!({"id":id,"role":"system","title":label,"text":text.chars().take(20_000).collect::<String>(),"truncated":text.chars().count()>20_000,"at":at,"nativeNotice":"error","turnId":turn,"threadId":agent.extra.get("threadId"),"nativeError":error,"cyberAccessProgram":agent.extra.get("cyberAccessProgram")});
+        let record = json!({"id":id,"role":"system","title":label,"text":text.chars().take(20_000).collect::<String>(),"truncated":text.chars().count()>20_000,"at":at,"nativeNotice":"error","turnId":turn,"threadId":agent.thread_id,"nativeError":error,"cyberAccessProgram":agent.extra.get("cyberAccessProgram")});
         NotificationDispatchRepository::put_transcript_item(
             tx,
             &id,

@@ -141,10 +141,7 @@ pub(super) async fn agents(state: &State, kind: ProviderKind, others: usize) -> 
                     let mut row = template.clone();
                     row.id = AgentId::from(id.as_str());
                     row.root_id = AgentId::from(id.as_str());
-                    row.extra.insert(
-                        "threadId".into(),
-                        json!(format!("fake-thread-{}", offset + 1)),
-                    );
+                    row.thread_id = Some(format!("fake-thread-{}", offset + 1));
                     AgentRepository::put(tx, &row)?;
                 }
                 Ok(())

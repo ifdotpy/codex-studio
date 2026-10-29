@@ -76,7 +76,7 @@ pub(super) fn native_action_provider(
     >,
     configured_guest: Option<Arc<dyn studio_runtime_services::linux_vm_guest::GuestRpc>>,
 ) -> Result<NativeActionPorts, ApiError> {
-    if agent.extra.get("executionMode").and_then(Value::as_str) != Some("vm") {
+    if agent.execution_mode != Some(studio_runtime_store::AgentExecutionMode::Vm) {
         return host_port
             .map(|port| (port, configured_guest))
             .ok_or_else(|| {
@@ -102,11 +102,7 @@ pub(super) fn native_action_provider(
             "Not implemented: requires workspace-state/vm-guest",
         )
     })?;
-    let account = agent
-        .extra
-        .get("accountKey")
-        .and_then(Value::as_str)
-        .unwrap_or("default");
+    let account = agent.account_key.as_str();
     let epoch = u64::try_from(agent.epoch).map_err(|_| ApiError::internal())?;
     let notification_sink = host_port.clone().ok_or_else(|| {
         ApiError::new(
@@ -243,11 +239,7 @@ async fn run_native_action(
             .read_async("runtime-http/routes/agent_management", move |tx| {
                 let record = AgentRepository::get(tx, &AgentId::from(read_agent.as_str()))?
                     .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Agent not found"))?;
-                let account = record
-                    .extra
-                    .get("accountKey")
-                    .and_then(Value::as_str)
-                    .unwrap_or("default")
+                let account = record.account_key.as_str()
                     .to_owned();
                 let epoch = record.value()["epoch"]
                     .as_i64()
@@ -483,14 +475,10 @@ impl NativeActionPreparationRun {
         &self,
         agent: &AgentRecord,
     ) -> native_actions::Result<Option<std::path::PathBuf>> {
-        if agent.extra.get("executionMode").and_then(Value::as_str) == Some("vm") {
+        if agent.execution_mode == Some(studio_runtime_store::AgentExecutionMode::Vm) {
             return Ok(None);
         }
-        let account = agent
-            .extra
-            .get("accountKey")
-            .and_then(Value::as_str)
-            .unwrap_or("default");
+        let account = agent.account_key.as_str();
         let account_driver = self
             .account_driver
             .as_ref()

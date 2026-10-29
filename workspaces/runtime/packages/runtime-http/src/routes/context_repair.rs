@@ -41,11 +41,7 @@ async fn repair(
                     })
                     .await?
                     .ok_or(RepairError::MissingAgent)?;
-                let account_key = agent
-                    .extra
-                    .get("accountKey")
-                    .and_then(Value::as_str)
-                    .unwrap_or("default");
+                let account_key = agent.account_key.as_str();
                 let snapshot = driver.snapshot().map_err(|_| RepairError::AccountSession)?;
                 let account = snapshot
                     .accounts

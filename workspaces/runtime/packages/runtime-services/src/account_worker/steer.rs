@@ -38,11 +38,7 @@ pub(super) fn claim(
     claude_steer_receipts: bool,
 ) -> Result<Option<(TurnIntent, String)>, WorkerError> {
     let owned = AgentRepository::get(tx, &AgentId::from(agent_id))?.is_some_and(|agent| {
-        agent
-            .extra
-            .get("accountKey")
-            .and_then(Value::as_str)
-            .unwrap_or("default")
+        agent.account_key.as_str()
             == account
             && (agent.extra.get("provider").and_then(Value::as_str) != Some("claude")
                 || claude_steer_receipts)
@@ -65,7 +61,7 @@ pub(super) fn claim(
         agent_id: agent_id.into(),
         epoch,
         attempt_id: steer_id.into(),
-        account_key: field("accountKey").unwrap_or("default").into(),
+        account_key: claimed.agent.account_key.clone(),
         provider: studio_runtime_providers::ProviderKind::of_field(
             claimed.agent.extra.get("provider"),
         )
@@ -418,11 +414,7 @@ pub(super) async fn claim_for_wake(
                     .filter(|record| {
                         record.epoch == epoch
                             && record.status == studio_runtime_store::AgentStatus::Running
-                            && record
-                                .extra
-                                .get("accountKey")
-                                .and_then(Value::as_str)
-                                .unwrap_or("default")
+                            && record.account_key.as_str()
                                 == read_account
                     })
             else {

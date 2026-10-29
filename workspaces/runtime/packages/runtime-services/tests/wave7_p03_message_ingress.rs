@@ -139,6 +139,8 @@ impl Fixture {
         );
         store.transaction(move |tx| {
             tx.execute_batch(&sql)?;
+            tx.execute("UPDATE runtime_agents SET record=json_remove(record,'$.threadId') WHERE json_type(record,'$.threadId')='null'", [])?;
+            tx.execute("UPDATE runtime_agents SET record=json_remove(record,'$.turnId') WHERE json_type(record,'$.turnId')='null'", [])?;
             tx.execute("UPDATE sync_entities SET hash=sync_entity_hash(payload) WHERE payload IS NOT NULL", [])?;
             studio_runtime_store::migrations::migrate_2026_10_20(tx)
         }).await.expect("configure ingress case");
@@ -482,6 +484,14 @@ fn logical_state(store: &RuntimeStore) -> BTreeMap<String, Value> {
 fn assert_json(actual: &Value, expected: &Value, path: &str) {
     match (actual, expected) {
         (Value::Object(a), Value::Object(b)) => {
+            let mut b = b.clone();
+            if a.contains_key("rootId") && a.contains_key("epoch") {
+                for key in ["threadId", "turnId"] {
+                    if !a.contains_key(key) && b.get(key).is_some_and(Value::is_null) {
+                        b.remove(key);
+                    }
+                }
+            }
             assert_eq!(
                 a.keys().collect::<Vec<_>>(),
                 b.keys().collect::<Vec<_>>(),
