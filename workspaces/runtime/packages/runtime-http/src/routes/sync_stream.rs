@@ -33,7 +33,8 @@ use studio_runtime_services::change_notifications::{
     ChangeSnapshot, MAX_SAFE_REVISION, SYNC_FRAME_MIN_INTERVAL,
 };
 use studio_runtime_services::resource_notify::{
-    ResourceChanges, ResourceIdentity, ResourceKind, ResourceNotifications, ResourceNotifyError,
+    LiveDelta, ResourceChanges, ResourceIdentity, ResourceKind, ResourceNotifications,
+    ResourceNotifyError,
 };
 #[cfg(test)]
 use studio_runtime_services::token_rate::TokenRateHub;
@@ -519,6 +520,7 @@ async fn sync_stream(
         draft_sequence: initial_draft_sequence,
         store: Some(store),
         changes,
+        live: state.resource_notifications.subscribe_live(),
         notifications: state.resource_notifications,
         token_rates,
         last_token_rates,
@@ -1289,6 +1291,8 @@ struct ResourceStream {
     store: Option<Arc<RuntimeStore>>,
     changes: tokio::sync::watch::Receiver<ChangeSnapshot>,
     notifications: Arc<ResourceNotifications>,
+    /// Committed model text, in memory. A lagging stream drops frames; the durable item catches up.
+    live: tokio::sync::broadcast::Receiver<LiveDelta>,
     token_rates: Option<tokio::sync::watch::Receiver<Arc<TokenRates>>>,
     /// Last snapshot sent by this stream; clearing it makes the next frame a full snapshot.
     last_token_rates: Option<Arc<TokenRates>>,
@@ -1448,6 +1452,37 @@ async fn subscription_frame(state: &mut ResourceStream, update: SubscriptionChan
     Some(())
 }
 
+/// The next live text frame for a chat that this stream has open. A lagged receiver skips
+/// ahead: the durable item carries the text that was dropped.
+async fn next_live_delta(
+    live: &mut tokio::sync::broadcast::Receiver<LiveDelta>,
+    resources: &[Value],
+) -> Event {
+    use tokio::sync::broadcast::error::RecvError;
+    loop {
+        match live.recv().await {
+            Ok(delta)
+                if resources.iter().any(|resource| {
+                    resource["kind"] == "transcript" && resource["agentId"] == delta.agent_id
+                }) =>
+            {
+                return sse_event(
+                    "live-delta",
+                    None,
+                    crate::generated::ResourceLiveDeltaEvent {
+                        agent_id: delta.agent_id,
+                        item_id: delta.item_id,
+                        offset: delta.offset as i64,
+                        text: delta.text,
+                    },
+                );
+            }
+            Ok(_) | Err(RecvError::Lagged(_)) => {}
+            Err(RecvError::Closed) => std::future::pending().await,
+        }
+    }
+}
+
 async fn next_frame(
     mut state: ResourceStream,
 ) -> Option<(Result<Event, Infallible>, ResourceStream)> {
@@ -1478,6 +1513,9 @@ async fn next_frame(
                     subscription_frame(&mut state, update?).await?;
                     return Some((Ok(state.initial.pop_front()?), state));
                 },
+                live = next_live_delta(&mut state.live, &state.resources) => {
+                    return Some((Ok(live), state));
+                },
                 changed = changed_not_before(Some(&mut state.changes), state.next_resources_frame_at) => {
                     if changed.is_err() { return None; }
                     state.changes.borrow_and_update();
@@ -1498,6 +1536,9 @@ async fn next_frame(
                 update = next_subscription_change(state.subscription.as_mut()) => {
                     subscription_frame(&mut state, update?).await?;
                     return Some((Ok(state.initial.pop_front()?), state));
+                },
+                live = next_live_delta(&mut state.live, &state.resources) => {
+                    return Some((Ok(live), state));
                 },
                 changed = changed_not_before(state.token_rates.as_mut(), state.next_token_frame_at) => {
                     if changed.is_err() { return None; }
@@ -5015,6 +5056,7 @@ mod tests {
             draft_sequence: 0,
             store: None,
             changes,
+            live: tokio::sync::broadcast::channel(1).1,
             notifications: Arc::new(ResourceNotifications::new(Arc::new(hub.clone()))),
             token_rates: Some(tokens.subscribe()),
             last_token_rates: None,
@@ -5067,6 +5109,7 @@ mod tests {
             draft_sequence: 0,
             store: None,
             changes,
+            live: tokio::sync::broadcast::channel(1).1,
             notifications: notifications.clone(),
             token_rates: Some(token_hub.subscribe()),
             last_token_rates: None,
@@ -5331,6 +5374,45 @@ mod tests {
         assert_eq!(batch["records"][0]["id"], "after-recovery");
     }
 
+    #[tokio::test]
+    async fn live_text_reaches_only_streams_with_the_chat_open() {
+        let hub = Arc::new(ChangeNotificationHub::new());
+        let tokens = TokenRateHub::new();
+        let notifications = Arc::new(ResourceNotifications::new(hub.clone()));
+        let open = test_stream(
+            &hub,
+            &tokens,
+            notifications.clone(),
+            vec![json!({"kind":"transcript","agentId":"a"})],
+        );
+        let other = test_stream(
+            &hub,
+            &tokens,
+            notifications.clone(),
+            vec![json!({"kind":"transcript","agentId":"b"})],
+        );
+        notifications.publish_live(LiveDelta {
+            agent_id: "a".into(),
+            item_id: "a:item".into(),
+            offset: 4,
+            text: "tail".into(),
+        });
+        let (frame, _) = tokio::time::timeout(Duration::from_secs(2), next_frame(open))
+            .await
+            .expect("live frame arrives with no timer")
+            .expect("open stream");
+        assert_eq!(
+            event_document(frame).await,
+            json!({"agentId":"a","itemId":"a:item","offset":4,"text":"tail"})
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), next_frame(other))
+                .await
+                .is_err(),
+            "a stream without that chat open gets no frame"
+        );
+    }
+
     fn test_stream(
         hub: &Arc<ChangeNotificationHub>,
         tokens: &TokenRateHub,
@@ -5357,6 +5439,7 @@ mod tests {
             draft_sequence: 0,
             store: None,
             changes,
+            live: notifications.subscribe_live(),
             notifications,
             token_rates: Some(tokens.subscribe()),
             last_token_rates: None,
@@ -5743,6 +5826,7 @@ mod tests {
             draft_sequence: 0,
             store: None,
             changes,
+            live: tokio::sync::broadcast::channel(1).1,
             notifications: Arc::new(ResourceNotifications::new(Arc::new(hub.clone()))),
             token_rates: Some(TokenRateHub::new().subscribe()),
             last_token_rates: None,
