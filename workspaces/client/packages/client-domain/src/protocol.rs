@@ -231,7 +231,7 @@ mod tests {
         let decoded: super::NativeFrame = serde_json::from_value(event.clone()).unwrap();
         match decoded {
             super::NativeFrame::Event(value) => assert_eq!(value, event),
-            _ => panic!("event must take priority"),
+            super::NativeFrame::Response(_) => panic!("event must take priority"),
         }
         let success: super::NativeFrame =
             serde_json::from_str(r#"{"id":"void","result":null}"#).unwrap();

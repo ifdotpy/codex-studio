@@ -97,10 +97,10 @@ fn clicked(id: &str) {
         let index = targets.iter().position(|(key, _)| key == id)?;
         targets.remove(index).map(|(_, target)| target)
     });
-    if let Some(target) = target {
-        if let Ok(value) = serde_json::to_value(target) {
-            drop(navigation().send(value));
-        }
+    if let Some(target) = target
+        && let Ok(value) = serde_json::to_value(target)
+    {
+        drop(navigation().send(value));
     }
 }
 

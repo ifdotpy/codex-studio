@@ -597,22 +597,25 @@ mod tests {
         close_all();
     }
 
-    #[tokio::test]
-    async fn dispatch_rejects_invalid_capture_before_touching_the_subscription() {
+    #[test]
+    fn dispatch_rejects_invalid_capture_before_touching_the_subscription() {
         let _serial = AUDIO_TEST_MUTEX.lock().unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         close_all();
         let receiver = attach(&json!("capture")).unwrap();
         let (store, mut requests) = mpsc::channel(1);
         for params in [json!({"capture": ""}), json!({"capture":"capture"})] {
-            let response = dispatch(
+            let response = runtime.block_on(dispatch(
                 crate::protocol::Request {
                     id: "request".into(),
                     method: "media.captureStart".into(),
                     params,
                 },
                 &store,
-            )
-            .await;
+            ));
             assert!(response.error.is_some());
             assert!(
                 service()

@@ -55,7 +55,7 @@ impl<T> Field<T> {
         match patch {
             Self::Missing => {}
             Self::Null => *self = Self::Missing,
-            value => *self = value,
+            value @ (Self::Known(_) | Self::Other(_)) => *self = value,
         }
     }
 }
@@ -218,7 +218,7 @@ struct Params {
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum WireParams {
-    Object(Params),
+    Object(Box<Params>),
     Other(serde::de::IgnoredAny),
 }
 
@@ -298,7 +298,7 @@ fn command(request: &Request) -> Result<Command, String> {
     let params = match serde_json::from_value::<WireParams>(request.params.clone())
         .map_err(|error| error.to_string())?
     {
-        WireParams::Object(params) => params,
+        WireParams::Object(params) => *params,
         WireParams::Other(_) => Params::default(),
     };
     match method {

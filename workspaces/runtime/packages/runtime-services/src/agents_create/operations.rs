@@ -187,7 +187,7 @@ impl<T> NullableSetting<T> {
     fn value(&self) -> Option<&T> {
         match self {
             Self::Value(value) => Some(value),
-            _ => None,
+            Self::Missing | Self::Null => None,
         }
     }
     fn nested(&self) -> Option<Option<&T>> {
