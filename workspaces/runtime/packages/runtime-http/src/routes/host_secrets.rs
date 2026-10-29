@@ -1367,6 +1367,40 @@ mod tests {
     use studio_runtime_services::project_secrets::{GuestCallError, ProjectSecretsError};
     use tower::ServiceExt;
 
+    fn desk_producer_fields_match(main: &str, service: &str, setup: &str) -> bool {
+        let Some((_, login)) = main.split_once("Command::AwsLogin { profile, json } =>") else {
+            return false;
+        };
+        let Some((login, _)) = login.split_once("Command::") else {
+            return false;
+        };
+        let Some((_, status)) = main.split_once("Command::Status { site, json } =>") else {
+            return false;
+        };
+        let Some((status, _)) = status.split_once("Command::Unlock") else {
+            return false;
+        };
+        let Some((_, service)) = service.split_once("if let Action::Status = action") else {
+            return false;
+        };
+        let Some((service, _)) = service.split_once("return Ok(())") else {
+            return false;
+        };
+        let Some((_, terminal_receipt)) = setup.rsplit_once("println!(") else {
+            return false;
+        };
+        let Some((terminal_receipt, _)) = terminal_receipt.split_once(");") else {
+            return false;
+        };
+        login.contains(r#"{"page": page, "code": code}"#)
+            && status.contains(r#"{"name": name, "unlocked": unlocked}"#)
+            && status.contains(r#"{"site": site, "projects": projects}"#)
+            && ["installed", "program", "site", "at"]
+                .iter()
+                .all(|field| service.contains(&format!("\"{field}\":")))
+            && terminal_receipt.contains("\"site\": site")
+    }
+
     #[test]
     fn desk_partial_views_track_producer_fields_and_legacy_json() {
         use serde::Deserialize;
@@ -1383,17 +1417,17 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/../../apps/layr-desk/crates/layr-desk/src/setup.rs"
         ));
-        for literal in [
-            r#"{"page": page, "code": code}"#,
-            r#"{"name": name, "unlocked": unlocked}"#,
-            r#"{"site": site, "projects": projects}"#,
-        ] {
-            assert!(main.contains(literal), "desk producer {literal}");
-        }
-        for field in ["installed", "program", "site", "at"] {
-            assert!(service.contains(&format!("\"{field}\":")));
-        }
-        assert!(setup.contains("\"site\": site"));
+        assert!(desk_producer_fields_match(main, service, setup));
+        let changed_setup = setup.replace(
+            r#"json!({"stack": stack, "site": site, "bucket": bucket_name})"#,
+            r#"json!({"stack": stack, "removed_site": site, "bucket": bucket_name})"#,
+        );
+        assert_ne!(changed_setup, setup);
+        assert!(
+            changed_setup.contains("\"site\": site"),
+            "storage still has the old field"
+        );
+        assert!(!desk_producer_fields_match(main, service, &changed_setup));
         for raw in [
             "null",
             "[]",
