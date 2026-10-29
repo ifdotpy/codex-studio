@@ -61,6 +61,15 @@ impl StoredPeer {
         self.status.value().and_then(Value::as_str) == Some("paired")
     }
 
+    pub fn is_revoked(&self) -> bool {
+        self.status.value().and_then(Value::as_str) == Some("revoked")
+    }
+
+    /// Retains explicit null and arbitrary historical creation evidence.
+    pub fn created(&self) -> Option<&Value> {
+        self.extra.get("created")
+    }
+
     pub fn mark_unreachable(&mut self) {
         self.status = PresentField::Value(Value::String("unreachable".into()));
     }
