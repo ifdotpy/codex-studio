@@ -4145,6 +4145,53 @@ mod actor_tests {
     }
 
     #[test]
+    fn legacy_work_reply_replay_preserves_unchecked_shell_and_bytes() {
+        let mut db = database();
+        let tx = db.transaction().unwrap();
+        let root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let token = match crate::event_write::begin_request::<studio_runtime_store::WorkItemRecord>(
+            &tx,
+            crate::event_write::RequestKey::new("work", &["lead"], &root),
+            "legacy",
+            (crate::event_write::unix_time().unwrap() * 1000.0) as i64,
+        )
+        .unwrap()
+        {
+            crate::event_write::CallerAdmission::Fresh(token) => token,
+            crate::event_write::CallerAdmission::Replay(_) => panic!("fresh receipt"),
+        };
+        let value =
+            json!({"id":"legacy","status":"ready","results":null,"version":-1,"future":{"x":1}});
+        let reply = studio_runtime_store::WorkItemRecord::from_value(value.clone()).unwrap();
+        crate::event_write::settle_request(&tx, &token, None, &reply).unwrap();
+        let stored = |tx: &rusqlite::Transaction<'_>| {
+            tx.query_row(
+                "SELECT result FROM request_results WHERE id=?1",
+                [token.id()],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap()
+        };
+        let before = stored(&tx);
+        let replay = crate::event_write::replay_request::<studio_runtime_store::WorkItemRecord>(
+            &tx,
+            token.id(),
+            "legacy",
+            (crate::event_write::unix_time().unwrap() * 1000.0) as i64,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(replay.reply.into_value(), value);
+        assert_eq!(stored(&tx), before);
+        assert_eq!(
+            tx.query_row("SELECT count(*) FROM runtime_work", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
     fn receipt_domain_archive_final_reply_uses_frozen_public_snapshot() {
         let mut db = database();
         let root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
