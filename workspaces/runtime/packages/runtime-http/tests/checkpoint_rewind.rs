@@ -286,9 +286,26 @@ async fn checkpoint_rewind_preview_and_restore_enforce_idle_and_preserve_before_
     let projected: Value = serde_json::from_str(&projected).unwrap();
     assert_eq!(projected["value"]["threadId"], "restored");
     assert!(projected["value"]["workspaceOperation"].is_null());
+    let (status, replay) = post(&app, "/api/checkpoint/restore", restore_body.clone()).await;
+    assert_eq!(status, 200);
+    assert_eq!(replay, restored);
+    store.transaction(|tx| {
+        tx.execute("UPDATE runtime_workspace_operations SET record=json_set(record,'$.result',json('null'),'$.future',json('{\"opaque\":true}')) WHERE json_extract(record,'$.kind')='restore'", [])?;
+        Ok(())
+    }).await.unwrap();
+    let (status, replay) = post(&app, "/api/checkpoint/restore", restore_body.clone()).await;
+    assert_eq!((status, replay), (200, Value::Null));
+    store.transaction(|tx| {
+        tx.execute("UPDATE runtime_workspace_operations SET record=json_remove(record,'$.result') WHERE json_extract(record,'$.kind')='restore'", [])?;
+        Ok(())
+    }).await.unwrap();
+    let (status, replay) = post(&app, "/api/checkpoint/restore", restore_body).await;
+    assert_eq!(status, 200);
+    assert_eq!(replay, json!({"status":"restored","checkpoint":checkpoint}));
+    let future: String = db.query_row("SELECT json_extract(record,'$.future') FROM runtime_workspace_operations WHERE json_extract(record,'$.kind')='restore'", [], |row| row.get(0)).unwrap();
     assert_eq!(
-        post(&app, "/api/checkpoint/restore", restore_body).await.0,
-        200
+        serde_json::from_str::<Value>(&future).unwrap(),
+        json!({"opaque":true})
     );
     assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
 }
