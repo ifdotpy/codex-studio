@@ -18,7 +18,7 @@ pub(crate) fn reserve(
         .to_owned();
     let existing = records::get(tx, "runtime_tool_requests", &id)?;
     if existing.is_none() {
-        let admission = crate::event_write::begin_request::<studio_runtime_store::ToolResultRecord>(
+        let admission = crate::event_write::begin_request::<super::OpaqueToolReply>(
             tx,
             crate::event_write::RequestKey::new(
                 "managed_tool",

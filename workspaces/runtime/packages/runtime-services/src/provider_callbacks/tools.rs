@@ -9,13 +9,13 @@ use studio_runtime_store::{RuntimeStore, system_reads as records};
 fn raw_tool_result(
     raw: &serde_json::value::RawValue,
     success: bool,
-) -> Result<Value, CallbackError> {
+) -> Result<studio_runtime_store::ToolResultRecord, CallbackError> {
     let text = if raw.get().starts_with('"') {
         serde_json::from_str::<String>(raw.get())?
     } else {
         raw.get().to_owned()
     };
-    Ok(json!({"success":success,"contentItems":[{"type":"inputText","text":text}]}))
+    Ok(studio_runtime_store::ToolResultRecord::text(success, text))
 }
 
 fn dispatch_gate_key(state_dir: &std::path::Path, id: &str) -> String {
@@ -858,7 +858,7 @@ fn execute_once(
             if (staged.handle || staged.output_ref)
                 && let Some(expires) = staged.output_expires_at
             {
-                value["serverOutputExpiresAt"] = json!(expires);
+                value.set_expiry(expires);
                 tx.execute(
                     "INSERT OR IGNORE INTO runtime_server_output_tools VALUES (?1,?2)",
                     params![call.id, expires],
@@ -868,21 +868,27 @@ fn execute_once(
         }
         Err(CallbackError::InvalidResultSchema(message)) => {
             tx.execute_batch("ROLLBACK TO callback_service; RELEASE callback_service")?;
-            (tool_result(json!(message), false), Vec::new())
+            (
+                studio_runtime_store::ToolResultRecord::text(false, message),
+                Vec::new(),
+            )
         }
         Err(CallbackError::Invalid(message)) => {
             tx.execute_batch("ROLLBACK TO callback_service; RELEASE callback_service")?;
-            (tool_result(json!(message), false), Vec::new())
+            (
+                studio_runtime_store::ToolResultRecord::text(false, message.to_string()),
+                Vec::new(),
+            )
         }
         Err(CallbackError::Dependency(name)) => {
             tx.execute_batch("ROLLBACK TO callback_service; RELEASE callback_service")?;
             (
-                tool_result(
-                    json!(format!(
+                studio_runtime_store::ToolResultRecord::text(
+                    false,
+                    format!(
                         "{} is unavailable: requires {name}. Do not retry this tool until that service is available.",
                         call.name
-                    )),
-                    false,
+                    ),
                 ),
                 Vec::new(),
             )
@@ -892,9 +898,14 @@ fn execute_once(
     let finalized = chrono::DateTime::from_timestamp_micros((now * 1_000_000.0).round() as i64)
         .ok_or(CallbackError::Invalid("Invalid callback clock"))?
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-    value["contentItems"].as_array_mut().ok_or(CallbackError::Invalid("Invalid tool result"))?
-        .push(json!({"type":"inputText","text":format!("[Time awareness] Tool result finalized at {finalized}")}));
-    if value["success"] == false {
+    value
+        .push_text(format!(
+            "[Time awareness] Tool result finalized at {finalized}"
+        ))
+        .map_err(CallbackError::Invalid)?;
+    let success = value.success();
+    let value = value.into_value();
+    if success == Some(false) {
         admission::reject(record)?;
     } else {
         lifecycle::settle(record, &value, true)?;
@@ -935,7 +946,7 @@ fn finalize_dispatched(
     .flatten();
     let mut value = raw_tool_result(&result.value, success)?;
     if let Some(expires) = output_expires {
-        value["serverOutputExpiresAt"] = json!(expires);
+        value.set_expiry(expires);
         tx.execute(
             "INSERT OR IGNORE INTO runtime_server_output_tools VALUES (?1,?2)",
             params![id, expires],
@@ -944,10 +955,12 @@ fn finalize_dispatched(
     let finalized = chrono::DateTime::from_timestamp_micros((now * 1_000_000.0).round() as i64)
         .ok_or(CallbackError::Invalid("Invalid callback clock"))?
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-    value["contentItems"]
-        .as_array_mut()
-        .ok_or(CallbackError::Invalid("Invalid tool result"))?
-        .push(json!({"type":"inputText","text":format!("[Time awareness] Tool result finalized at {finalized}")}));
+    value
+        .push_text(format!(
+            "[Time awareness] Tool result finalized at {finalized}"
+        ))
+        .map_err(CallbackError::Invalid)?;
+    let value = value.into_value();
     if rejected {
         admission::reject(record)?;
     } else {
@@ -972,13 +985,17 @@ mod local_failure_tests {
     fn raw_tool_result_keeps_strings_and_json_payloads() {
         let text = crate::managed_host_tools::OperationResult::reply(&"line\nquoted");
         assert_eq!(
-            super::raw_tool_result(&text.value, true).unwrap()["contentItems"][0]["text"],
+            super::raw_tool_result(&text.value, true)
+                .unwrap()
+                .into_value()["contentItems"][0]["text"],
             "line\nquoted"
         );
         let object = crate::managed_host_tools::OperationResult::reply(
             &json!({"status":"queued","count":2}),
         );
-        let result = super::raw_tool_result(&object.value, true).unwrap();
+        let result = super::raw_tool_result(&object.value, true)
+            .unwrap()
+            .into_value();
         let decoded: serde_json::Value =
             serde_json::from_str(result["contentItems"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(decoded, json!({"status":"queued","count":2}));

@@ -66,6 +66,9 @@ fn admitted(task: &Value) -> Result<AdmittedRequest, ToolRequestError> {
     ))
 }
 
+/// Legacy receipts can contain any JSON; preserve their original payload without narrowing it.
+type OpaqueToolReply = Value;
+
 /// Read the exact original tool reply; expiry never authorizes another dispatch.
 pub fn saved_result(
     connection: &studio_runtime_store::Connection,
@@ -87,8 +90,8 @@ pub fn saved_result(
         (now * 1000.0) as i64,
     )?;
     row.map(|row| {
-        serde_json::from_str::<ResultEnvelope<studio_runtime_store::ToolResultRecord>>(&row.result)
-            .map(|result| result.reply.into_value())
+        serde_json::from_str::<ResultEnvelope<OpaqueToolReply>>(&row.result)
+            .map(|result| result.reply)
             .map_err(StoreError::from)
             .map_err(Into::into)
     })
@@ -112,8 +115,7 @@ pub fn settle_result(
         &admitted,
         &ResultEnvelope {
             actor: task["agent"].as_str().map(str::to_owned),
-            reply: studio_runtime_store::ToolResultRecord::from_value(result.clone())
-                .map_err(StoreError::from)?,
+            reply: result.clone(),
             references: Vec::new(),
         },
     )?;

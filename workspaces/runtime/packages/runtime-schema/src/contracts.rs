@@ -602,6 +602,7 @@ fn check_account_group_parity(openapi: &Value) -> Result<(), String> {
 pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<(), String> {
     crate::rule_record::check_schema_parity()?;
     crate::monitor_record::check_schema_parity()?;
+    crate::tool_result::check_schema_parity()?;
     crate::transcript_asset::check_schema_parity()?;
     crate::complaint_record::check_schema_parity()?;
     crate::checkpoint_record::check_schema_parity()?;

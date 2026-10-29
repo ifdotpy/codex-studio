@@ -42,7 +42,7 @@ async fn callback_studio_ids_are_v7_and_distinct_from_rpc_labels() {
     .unwrap()
     .unwrap();
     let reply: ResultEnvelope<ToolResultRecord> = serde_json::from_str(&saved.result).unwrap();
-    assert_eq!(reply.reply.value()["success"], true);
+    assert_eq!(reply.reply.success().unwrap(), true);
     let callback_id: String = store
         .test_reader()
         .unwrap()
@@ -106,6 +106,54 @@ async fn seeded_token_settles_one_exact_typed_result_without_inline_copy() {
         .unwrap();
     assert_eq!(recovered["result"], original);
     assert!(request_row(&store, "seeded-result").get("result").is_none());
+}
+
+#[tokio::test]
+async fn arbitrary_legacy_result_round_trips_through_settlement_and_replay() {
+    let (_root, store, context) = fixture().await;
+    for (call, original) in [
+        ("legacy-scalar", json!(17)),
+        (
+            "legacy-malformed",
+            json!({"success":"old","contentItems":[null],"extension":42}),
+        ),
+    ] {
+        let template = queued_tool_request(&context, call);
+        let expected = original.clone();
+        let id = store
+            .transaction_with::<_, StoreError>(move |tx| {
+                let mut task = seed_tool_request(tx, template);
+                let id = task["id"].as_str().unwrap().to_owned();
+                task["stage"] = json!("completed");
+                task["outcome"] = json!("applied");
+                task["finished"] = json!(20.0);
+                tx.execute(
+                    "UPDATE runtime_tool_requests SET record=?1 WHERE id=?2",
+                    params![task.to_string(), id],
+                )?;
+                crate::tool_requests::settle_result(tx, &id, &original).unwrap();
+                Ok(id)
+            })
+            .await
+            .unwrap();
+        let token = request_with_admission(&store, call).admitted;
+        let reader = store.test_reader().unwrap();
+        let read_bytes = || {
+            reader
+                .query_row(
+                    "SELECT result FROM request_results WHERE id=?1",
+                    [token.id()],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap()
+        };
+        let before = read_bytes();
+        assert_eq!(
+            crate::tool_requests::saved_result(&reader, &id).unwrap(),
+            Some(expected)
+        );
+        assert_eq!(read_bytes(), before);
+    }
 }
 
 #[tokio::test]

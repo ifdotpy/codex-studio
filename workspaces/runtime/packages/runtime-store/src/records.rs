@@ -895,14 +895,53 @@ mod annotation_typed_tests {
         );
     }
 }
-record_newtype!(
-    ToolResultRecord,
-    String,
-    table = "request_results",
-    schema = "PersistedToolResult",
-    key = External,
-    query = None
-);
+pub use studio_runtime_schema::tool_result::ToolResultRecord;
+impl JsonRecord for ToolResultRecord {
+    type Id = String;
+    const TABLE: &'static str = "request_results";
+    const SCHEMA: &'static str = "PersistedToolResult";
+    const KEY_MODE: RecordKeyMode = RecordKeyMode::External;
+    const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
+    const TYPED_SHAPE: bool = true;
+    fn record_key(&self) -> Option<&Self::Id> {
+        None
+    }
+}
+#[cfg(test)]
+mod tool_result_typed_tests {
+    use super::{Table, ToolResultRecord};
+    use serde_json::json;
+    #[test]
+    fn tool_result_table_checks_shell_and_preserves_extensions() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE request_results(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+            .unwrap();
+        let table = Table::<ToolResultRecord>::new(&db);
+        let input = json!({"success":null,"contentItems":[{"type":"image","text":null,"data":[1,2]}],"extension":true});
+        table
+            .put_at(
+                &"r".into(),
+                &ToolResultRecord::from_value(input.clone()).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(table.get(&"r".into()).unwrap().unwrap().into_value(), input);
+        db.execute(
+            "UPDATE request_results SET record=?1",
+            [r#"{"success":false,"success":true}"#],
+        )
+        .unwrap();
+        assert_eq!(
+            table.get(&"r".into()).unwrap().unwrap().success(),
+            Some(true)
+        );
+        db.execute(
+            "UPDATE request_results SET record=?1",
+            [r#"{"contentItems":[null]}"#],
+        )
+        .unwrap();
+        assert!(table.get(&"r".into()).is_err());
+    }
+}
 record_newtype!(
     RequestRecord,
     String,
