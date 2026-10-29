@@ -46,8 +46,9 @@ export function runLogged(
         else child.kill(sig);
         return true;
       } catch (err) {
-        if ((err as NodeJS.ErrnoException).code !== "ESRCH")
-          error = err as Error;
+        // macOS answers EPERM, not ESRCH, for a group whose members are all exiting.
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code !== "ESRCH" && code !== "EPERM") error = err as Error;
         return false;
       }
     };

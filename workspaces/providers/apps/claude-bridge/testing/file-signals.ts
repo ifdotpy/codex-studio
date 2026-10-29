@@ -1,8 +1,9 @@
 import { existsSync, unwatchFile, watch, watchFile } from "node:fs";
 import path from "node:path";
 
-// Maximum wait for a scripted bridge fixture signal, in milliseconds.
-export const HANG_GUARD_MS = 10_000;
+// Maximum wait for a scripted bridge fixture signal or bridge reply, in milliseconds. A bridge
+// child starts slowly while the gate keeps the machine busy (load above 30).
+export const HANG_GUARD_MS = 25_000;
 
 // Observe before inspecting so creation, rename and append cannot fall between
 // the condition check and subscription. The timeout is only a failure guard.

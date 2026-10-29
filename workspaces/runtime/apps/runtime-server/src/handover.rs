@@ -47,8 +47,9 @@ const LOCK_MARGIN: Duration = Duration::from_secs(10);
 /// How long the new server looks for the standby after the old process ended, and how long
 /// the standby waits for the new server. Unit: seconds.
 const STANDBY_WAIT: Duration = Duration::from_secs(5);
-/// How long the old server waits for `GO` from a connected peer. Unit: seconds.
-const REQUEST_WAIT: Duration = Duration::from_secs(2);
+/// How long the old server waits for `GO` from a connected peer. Unit: seconds. A peer that
+/// the host starves for longer than this would be skipped and its request would hang.
+const REQUEST_WAIT: Duration = Duration::from_secs(10);
 
 /// The listening socket, taken or bound anew, and a duplicate for the offer.
 pub fn listener(

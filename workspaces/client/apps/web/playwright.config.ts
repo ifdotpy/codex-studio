@@ -38,7 +38,8 @@ console.log(
   })}`,
 );
 const globalTimeoutMs = 15 * 60 * 1000;
-const defaultTestTimeoutMs = 30_000;
+// Sized for a debug build on a busy machine: the gate runs it beside the Rust lane.
+const defaultTestTimeoutMs = 60_000;
 const outputDirectory = process.env.PLAYWRIGHT_OUTPUT_DIR;
 const requestedBrowser = process.env.BROWSER ?? "chromium";
 if (requestedBrowser !== "chromium" && requestedBrowser !== "webkit")
