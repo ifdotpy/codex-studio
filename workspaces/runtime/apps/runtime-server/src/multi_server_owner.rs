@@ -13,6 +13,9 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+use studio_runtime_services::multi_server_auth::tailscale_observation::{
+    Node, Observation, Profile, Status, object,
+};
 use studio_runtime_services::multi_server_auth::{AccessError, OwnerObservation, refused};
 use studio_runtime_services::multi_server_pairing::OwnerLookup;
 
@@ -20,6 +23,49 @@ const LOOKUP_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_OUTPUT: usize = 1024 * 1024;
 
 pub struct TailscaleOwnerLookup;
+
+pub(crate) fn whoami_projection(raw: Option<&Value>, status: Option<&Value>) -> Value {
+    let observation = raw.and_then(object::<Observation>);
+    let user = observation
+        .as_ref()
+        .and_then(|v| v.profile.as_ref().or(v.user.as_ref()))
+        .and_then(object::<Profile>)
+        .and_then(|profile| profile.login.or(profile.name))
+        .and_then(|login| {
+            login
+                .as_str()
+                .filter(|s| !s.trim().is_empty())
+                .map(|s| s.trim().to_ascii_lowercase())
+        });
+    let node = observation
+        .as_ref()
+        .and_then(|v| v.local.as_ref().or(v.machine.as_ref()))
+        .and_then(object::<Node>)
+        .and_then(|node| node.id);
+    let owner_login = status.and_then(object::<Status>).and_then(|status| {
+        let local: Node = status.local.as_ref().and_then(object)?;
+        let users = status.users.as_ref()?.as_object()?;
+        let profile: Profile = users
+            .get(&local.user_id.as_ref()?.to_string())
+            .and_then(object)?;
+        if status.backend.as_ref().and_then(Value::as_str) != Some("Running")
+            || local
+                .tags
+                .as_ref()
+                .and_then(Value::as_array)
+                .is_some_and(|tags| !tags.is_empty())
+        {
+            return None;
+        }
+        profile.login.and_then(|login| {
+            login
+                .as_str()
+                .filter(|s| !s.trim().is_empty() && s.len() <= 254)
+                .map(|s| s.trim().to_ascii_lowercase())
+        })
+    });
+    serde_json::json!({"status":if user.is_some() {"verified"} else {"unavailable"}, "user":user, "node":node, "ownerLogin":owner_login})
+}
 
 impl OwnerLookup for TailscaleOwnerLookup {
     fn observe<'a>(
@@ -148,4 +194,69 @@ fn unavailable() -> AccessError {
         "identity_unavailable",
         "The Tailscale owner identity is unavailable",
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn whoami_projection_matches_legacy_aliases_and_policy() {
+        fn legacy(raw: &Value, status: &Value) -> Value {
+            let user = raw
+                .get("UserProfile")
+                .or_else(|| raw.get("User"))
+                .and_then(|v| v.get("LoginName").or_else(|| v.get("Name")))
+                .and_then(Value::as_str)
+                .filter(|s| !s.trim().is_empty())
+                .map(|s| s.trim().to_ascii_lowercase());
+            let node = raw
+                .get("Self")
+                .or_else(|| raw.get("Machine"))
+                .and_then(|v| v.get("ID"))
+                .cloned();
+            let owner = (|| {
+                let local = status.get("Self")?;
+                let users = status.get("User")?.as_object()?;
+                let profile = users.get(&local.get("UserID")?.to_string())?;
+                if status.get("BackendState").and_then(Value::as_str) != Some("Running")
+                    || local
+                        .get("Tags")
+                        .and_then(Value::as_array)
+                        .is_some_and(|tags| !tags.is_empty())
+                {
+                    return None;
+                }
+                profile
+                    .get("LoginName")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.trim().is_empty() && s.len() <= 254)
+                    .map(|s| s.trim().to_ascii_lowercase())
+            })();
+            json!({"status":if user.is_some(){"verified"}else{"unavailable"},"user":user,"node":node,"ownerLogin":owner})
+        }
+        let raws = [
+            json!({"UserProfile":{"LoginName":" ÄBCD "},"Self":{"ID":{"opaque":1}}}),
+            json!({"UserProfile":null,"User":{"Name":"fallback"},"Self":null,"Machine":{"ID":1}}),
+            json!({"User":{"Name":"User"},"Machine":{"ID":[1]}}),
+            json!({"UserProfile":{"LoginName":false,"Name":"fallback"}}),
+            json!([]),
+        ];
+        let statuses = [
+            json!({"Self":{"UserID":1,"Tags":false},"User":{"1":{"LoginName":" ÄBCD "}},"BackendState":"Running"}),
+            json!({"Self":{"UserID":"1","Tags":[]},"User":{"\"1\"":{"LoginName":"OWNER"}},"BackendState":"Running"}),
+            json!({"Self":{"UserID":1,"Tags":["tag"]},"User":{"1":{"LoginName":"owner"}},"BackendState":"Running"}),
+            json!({}),
+        ];
+        for raw in &raws {
+            for status in &statuses {
+                assert_eq!(
+                    whoami_projection(Some(raw), Some(status)),
+                    legacy(raw, status),
+                    "{raw} {status}"
+                );
+            }
+        }
+    }
 }

@@ -376,6 +376,149 @@ struct CodexClaimProfile {
     _extra: BTreeMap<String, IgnoredAny>,
 }
 
+/// Credential needed by the VM login; values must never be logged.
+pub enum CodexVmCredential {
+    ApiKey(String),
+    ChatGpt {
+        access_token: String,
+        account_id: String,
+        expires: f64,
+    },
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum CodexVmAuthError {
+    Invalid,
+    AccountChanged,
+}
+
+// The VM historically accepts partial and wrong-typed unused fields. The
+// metadata reader above retains its separate strict Deserialize policy.
+#[derive(Default, Deserialize)]
+struct VmAuthFile {
+    #[serde(rename = "OPENAI_API_KEY", default, deserialize_with = "vm_string")]
+    api_key: Option<String>,
+    #[serde(default, deserialize_with = "vm_object")]
+    tokens: Option<VmTokens>,
+}
+
+#[derive(Default, Deserialize)]
+struct VmTokens {
+    #[serde(default, deserialize_with = "vm_string")]
+    access_token: Option<String>,
+    #[serde(default, deserialize_with = "vm_string")]
+    account_id: Option<String>,
+}
+
+#[derive(Default, Deserialize)]
+struct VmClaims {
+    #[serde(rename = "exp", default, deserialize_with = "vm_number")]
+    expires: Option<f64>,
+    // These components preserve the historical JSON pointer interpretation.
+    #[serde(rename = "https:", default, deserialize_with = "vm_object")]
+    https: Option<VmHttps>,
+}
+
+#[derive(Deserialize)]
+struct VmHttps {
+    #[serde(rename = "", default, deserialize_with = "vm_object")]
+    empty: Option<VmEmpty>,
+}
+#[derive(Deserialize)]
+struct VmEmpty {
+    #[serde(rename = "api.openai.com", default, deserialize_with = "vm_object")]
+    api: Option<VmApi>,
+}
+#[derive(Deserialize)]
+struct VmApi {
+    #[serde(default, deserialize_with = "vm_object")]
+    auth: Option<VmClaimDetails>,
+}
+#[derive(Deserialize)]
+struct VmClaimDetails {
+    #[serde(default, deserialize_with = "vm_string")]
+    chatgpt_account_id: Option<String>,
+}
+
+fn vm_string<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(Value::deserialize(d)?.as_str().map(str::to_owned))
+}
+fn vm_number<'de, D: Deserializer<'de>>(d: D) -> Result<Option<f64>, D::Error> {
+    Ok(Value::deserialize(d)?.as_f64())
+}
+fn vm_object<'de, D, T>(d: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let value = Value::deserialize(d)?;
+    Ok(if value.is_object() {
+        T::deserialize(value).ok()
+    } else {
+        None
+    })
+}
+
+fn vm_document<T: serde::de::DeserializeOwned + Default>(bytes: &[u8]) -> Option<T> {
+    // Parse the complete document first for legacy duplicate and number admission.
+    let value: Value = serde_json::from_slice(bytes).ok()?;
+    if value.is_object() {
+        T::deserialize(value).ok()
+    } else {
+        Some(T::default())
+    }
+}
+fn vm_claims(token: &str, padded: bool) -> Option<VmClaims> {
+    let part = token.split('.').nth(1)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(part)
+        .or_else(|error| {
+            if padded {
+                base64::engine::general_purpose::URL_SAFE.decode(part)
+            } else {
+                Err(error)
+            }
+        })
+        .ok()?;
+    vm_document(&bytes)
+}
+/// Refresh verification intentionally accepts only the unpadded form.
+pub fn codex_vm_refresh_exp(token: &str) -> Option<f64> {
+    vm_claims(token, false)?.expires
+}
+/// Parse a bounded VM auth file using the historical VM admission policy.
+pub fn codex_vm_auth(
+    bytes: &[u8],
+    expected_credential: Option<&str>,
+    expected_account: Option<&str>,
+) -> Result<CodexVmCredential, CodexVmAuthError> {
+    let auth: VmAuthFile = vm_document(bytes).ok_or(CodexVmAuthError::Invalid)?;
+    if let Some(key) = auth.api_key.filter(|key| !key.is_empty()) {
+        let identity = format!("api:{}", hex_sha256(key.as_bytes()));
+        if expected_credential.is_some_and(|value| value != identity) {
+            return Err(CodexVmAuthError::AccountChanged);
+        }
+        return Ok(CodexVmCredential::ApiKey(key));
+    }
+    let tokens = auth.tokens.ok_or(CodexVmAuthError::Invalid)?;
+    let access_token = tokens
+        .access_token
+        .filter(|value| !value.is_empty())
+        .ok_or(CodexVmAuthError::Invalid)?;
+    let claims = vm_claims(&access_token, true).ok_or(CodexVmAuthError::Invalid)?;
+    let identity = tokens
+        .account_id
+        .or_else(|| claims.https?.empty?.api?.auth?.chatgpt_account_id);
+    if identity.is_none() || identity.as_deref() != expected_account {
+        return Err(CodexVmAuthError::AccountChanged);
+    }
+    let expires = claims.expires.ok_or(CodexVmAuthError::Invalid)?;
+    Ok(CodexVmCredential::ChatGpt {
+        access_token,
+        account_id: identity.ok_or(CodexVmAuthError::AccountChanged)?,
+        expires,
+    })
+}
+
 fn codex_metadata(auth: CodexAuthFile) -> Result<AuthMetadata, ()> {
     let tokens = auth.tokens.unwrap_or_default();
     let token = tokens
@@ -3249,6 +3392,137 @@ fn base64url_decode(value: &str) -> Option<Vec<u8>> {
 mod tests {
     use super::*;
     const PLACEHOLDER_KEY: &str = "placeholder-secret-do-not-persist";
+
+    #[test]
+    fn vm_codex_projection_matches_legacy_ingress() {
+        fn legacy(bytes: &[u8], expected: Option<&str>) -> Result<Value, &'static str> {
+            let auth: Value = serde_json::from_slice(bytes).map_err(|_| "invalid")?;
+            if let Some(key) = auth
+                .get("OPENAI_API_KEY")
+                .and_then(Value::as_str)
+                .filter(|key| !key.is_empty())
+            {
+                return Ok(serde_json::json!({"kind":"api","key":key}));
+            }
+            let tokens = auth.get("tokens").ok_or("invalid")?;
+            let access = tokens
+                .get("access_token")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .ok_or("invalid")?;
+            let part = access.split('.').nth(1).ok_or("invalid")?;
+            let claims = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(part)
+                .or_else(|_| base64::engine::general_purpose::URL_SAFE.decode(part))
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                .ok_or("invalid")?;
+            let id = tokens
+                .get("account_id")
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    claims
+                        .pointer("/https://api.openai.com/auth/chatgpt_account_id")
+                        .and_then(Value::as_str)
+                });
+            if id.is_none() || id != expected {
+                return Err("changed");
+            }
+            let exp = claims.get("exp").and_then(Value::as_f64).ok_or("invalid")?;
+            Ok(serde_json::json!({"kind":"token","account":id,"exp":exp}))
+        }
+        let claims = [
+            serde_json::json!({"exp":12.5}),
+            serde_json::json!({"exp":12,"https://api.openai.com/auth":{"chatgpt_account_id":"a"}}),
+            serde_json::json!({"exp":12,"https:":{"":{"api.openai.com":{"auth":{"chatgpt_account_id":"a"}}}}}),
+            serde_json::json!({}),
+            serde_json::json!([]),
+        ];
+        let mut cases = vec![
+            "null".to_owned(),
+            "[]".into(),
+            "{".into(),
+            r#"{"OPENAI_API_KEY":"fake","tokens":{"access_token":false}}"#.into(),
+            r#"{"OPENAI_API_KEY":"old","OPENAI_API_KEY":null,"tokens":false}"#.into(),
+            r#"{"unknown":1e400}"#.into(),
+        ];
+        for claims in claims {
+            for padded in [true, false] {
+                let bytes = claims.to_string();
+                let token = if padded {
+                    base64::engine::general_purpose::URL_SAFE.encode(bytes)
+                } else {
+                    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+                };
+                for id in [None, Some(""), Some("a"), Some("other")] {
+                    let mut tokens =
+                        serde_json::json!({"access_token":format!("x.{token}.x"),"id_token":false});
+                    if let Some(id) = id {
+                        tokens["account_id"] = Value::String(id.into());
+                    }
+                    cases.push(serde_json::json!({"tokens":tokens}).to_string());
+                }
+            }
+        }
+        let nested = format!("{}0{}", "[".repeat(130), "]".repeat(130));
+        cases.push(format!(r#"{{"OPENAI_API_KEY":"fake","ignored":{nested}}}"#));
+        for raw_claims in [
+            r#"{"exp":1,"exp":12.5}"#,
+            r#"{"exp":1e400}"#,
+            r#"{"exp":null,"exp":12}"#,
+        ] {
+            let token = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw_claims);
+            cases.push(serde_json::json!({"tokens":{"access_token":format!("x.{token}.x"),"account_id":"a"}}).to_string());
+        }
+        for raw in cases {
+            for expected in [None, Some(""), Some("a")] {
+                let old = legacy(raw.as_bytes(), expected);
+                let new = match codex_vm_auth(raw.as_bytes(), None, expected) {
+                    Ok(CodexVmCredential::ApiKey(key)) => {
+                        Ok(serde_json::json!({"kind":"api","key":key}))
+                    }
+                    Ok(CodexVmCredential::ChatGpt {
+                        account_id,
+                        expires,
+                        ..
+                    }) => {
+                        Ok(serde_json::json!({"kind":"token","account":account_id,"exp":expires}))
+                    }
+                    Err(CodexVmAuthError::Invalid) => Err("invalid"),
+                    Err(CodexVmAuthError::AccountChanged) => Err("changed"),
+                };
+                assert_eq!(old, new, "synthetic case mismatch");
+            }
+        }
+    }
+
+    #[test]
+    fn vm_refresh_expiration_preserves_unpadded_only_policy() {
+        let padded = base64::engine::general_purpose::URL_SAFE.encode(br#"{"exp":12}"#);
+        assert!(padded.ends_with('='));
+        assert_eq!(codex_vm_refresh_exp(&format!("x.{padded}.x")), None);
+        let unpadded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(br#"{"exp":12}"#);
+        assert_eq!(codex_vm_refresh_exp(&format!("x.{unpadded}.x")), Some(12.0));
+    }
+
+    #[test]
+    fn vm_api_key_does_not_broaden_strict_metadata_reader() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(
+            root.path().join("auth.json"),
+            r#"{"OPENAI_API_KEY":"fake","tokens":{"access_token":false}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            codex_vm_auth(
+                &fs::read(root.path().join("auth.json")).unwrap(),
+                None,
+                None
+            ),
+            Ok(CodexVmCredential::ApiKey(_))
+        ));
+        assert_eq!(codex_auth_metadata(root.path()).status, AuthStatus::Error);
+    }
 
     #[test]
     fn codex_account_producers_reserve_explicit_login_and_replay_exact_receipt() {

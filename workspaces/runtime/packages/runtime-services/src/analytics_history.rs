@@ -1276,10 +1276,10 @@ impl HistoryCollector {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .invalidate(profile);
     }
-    pub async fn step<'a>(
+    pub async fn step<'a, T: crate::analytics_history_schedule::HistoryActor + 'a>(
         &mut self,
         store: &RuntimeStore,
-        lookup: impl FnOnce(i64) -> Option<&'a Value>,
+        lookup: impl FnOnce(i64) -> Option<&'a T>,
         profile: impl FnOnce(&str) -> Result<PathBuf, HistoryError> + Send + 'static,
         clock: HistoryClock,
         cancel: Arc<AtomicBool>,
@@ -1290,7 +1290,8 @@ impl HistoryCollector {
         };
         let agent = lookup(row)
             .ok_or(CaptureError::Invalid("/history/roster"))?
-            .clone();
+            .history_value()
+            .into_owned();
         if self.visited.len() >= self.schedule.roster_len()
             || self.visited.contains(text(&agent["id"]))
         {

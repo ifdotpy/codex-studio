@@ -17,6 +17,63 @@ pub const AUTO_PAIR_PATH: &str = "/api/multi-server/v1/auto-pair";
 pub const STATUS_PATH: &str = "/api/multi-server/v1/status";
 pub const NAME_PATH: &str = "/api/multi-server/v1/name";
 pub const MAX_OBSERVATION_BYTES: usize = 1024 * 1024;
+
+/// Partial views of already parsed host observations. Unknown and malformed
+/// fields remain evidence for each caller's existing admission policy.
+pub mod tailscale_observation {
+    use serde::{Deserialize, Deserializer, de::DeserializeOwned};
+    use serde_json::Value;
+
+    fn present<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Value>, D::Error> {
+        Value::deserialize(d).map(Some)
+    }
+    pub fn object<T: DeserializeOwned>(value: &Value) -> Option<T> {
+        value.as_object()?;
+        T::deserialize(value).ok()
+    }
+    #[derive(Deserialize)]
+    pub struct Status {
+        #[serde(rename = "Self", default, deserialize_with = "present")]
+        pub local: Option<Value>,
+        #[serde(rename = "User", default, deserialize_with = "present")]
+        pub users: Option<Value>,
+        #[serde(rename = "BackendState", default, deserialize_with = "present")]
+        pub backend: Option<Value>,
+    }
+    #[derive(Deserialize)]
+    pub struct Observation {
+        #[serde(rename = "Node", default, deserialize_with = "present")]
+        pub node: Option<Value>,
+        #[serde(rename = "Self", default, deserialize_with = "present")]
+        pub local: Option<Value>,
+        #[serde(rename = "Machine", default, deserialize_with = "present")]
+        pub machine: Option<Value>,
+        #[serde(rename = "UserProfile", default, deserialize_with = "present")]
+        pub profile: Option<Value>,
+        #[serde(rename = "User", default, deserialize_with = "present")]
+        pub user: Option<Value>,
+    }
+    #[derive(Deserialize)]
+    pub struct Node {
+        #[serde(rename = "UserID", default, deserialize_with = "present")]
+        pub user_id: Option<Value>,
+        #[serde(rename = "Tags", default, deserialize_with = "present")]
+        pub tags: Option<Value>,
+        #[serde(rename = "Name", default, deserialize_with = "present")]
+        pub name: Option<Value>,
+        #[serde(rename = "DNSName", default, deserialize_with = "present")]
+        pub dns: Option<Value>,
+        #[serde(rename = "ID", default, deserialize_with = "present")]
+        pub id: Option<Value>,
+    }
+    #[derive(Deserialize)]
+    pub struct Profile {
+        #[serde(rename = "LoginName", default, deserialize_with = "present")]
+        pub login: Option<Value>,
+        #[serde(rename = "Name", default, deserialize_with = "present")]
+        pub name: Option<Value>,
+    }
+}
 const SIGNED_HEADERS: [&str; 6] = [
     "x-studio-client",
     "x-studio-server",
@@ -316,41 +373,57 @@ impl OwnerObservation {
         {
             return Err(unavailable());
         }
-        let node = status
-            .get("Self")
-            .filter(|v| v.is_object())
+        use tailscale_observation::{Node, Observation, Profile, Status, object};
+        let status: Status = object(status).ok_or_else(unavailable)?;
+        let whois: Observation = object(whois).ok_or_else(unavailable)?;
+        let node: Node = status
+            .local
+            .as_ref()
+            .and_then(object)
             .ok_or_else(unavailable)?;
-        let peer = whois
-            .get("Node")
-            .filter(|v| v.is_object())
+        let peer: Node = whois
+            .node
+            .as_ref()
+            .and_then(object)
             .ok_or_else(unavailable)?;
         let user = node
-            .get("UserID")
+            .user_id
+            .as_ref()
             .map(|v| {
                 v.as_str()
                     .map(str::to_owned)
                     .unwrap_or_else(|| v.to_string())
             })
             .ok_or_else(unavailable)?;
-        let owner = status
-            .get("User")
+        let owner_profile: Profile = status
+            .users
+            .as_ref()
             .and_then(|v| v.get(&user))
-            .and_then(|v| v.get("LoginName"))
+            .and_then(object)
+            .ok_or_else(unavailable)?;
+        let owner = owner_profile
+            .login
+            .as_ref()
             .and_then(Value::as_str)
             .ok_or_else(unavailable)?;
-        let login = whois
-            .get("UserProfile")
-            .and_then(|v| v.get("LoginName"))
+        let peer_profile: Profile = whois
+            .profile
+            .as_ref()
+            .and_then(object)
+            .ok_or_else(unavailable)?;
+        let login = peer_profile
+            .login
+            .as_ref()
             .and_then(Value::as_str)
             .ok_or_else(unavailable)?;
-        let tagged = |v: &Value| {
-            v.get("Tags").is_some_and(|tags| {
+        let tagged = |v: &Node| {
+            v.tags.as_ref().is_some_and(|tags| {
                 !tags.is_null() && tags.as_array().is_none_or(|a| !a.is_empty())
             })
         };
-        if status.get("BackendState").and_then(Value::as_str) != Some("Running")
-            || tagged(node)
-            || tagged(peer)
+        if status.backend.as_ref().and_then(Value::as_str) != Some("Running")
+            || tagged(&node)
+            || tagged(&peer)
             || [owner, login]
                 .iter()
                 .any(|v| v.trim().is_empty() || v.len() > 254)
@@ -377,8 +450,9 @@ impl OwnerObservation {
             ));
         }
         let dns = peer
-            .get("Name")
-            .or_else(|| peer.get("DNSName"))
+            .name
+            .as_ref()
+            .or(peer.dns.as_ref())
             .and_then(Value::as_str)
             .map(|v| v.trim_end_matches('.').to_lowercase());
         Ok(Self {
@@ -862,6 +936,18 @@ pub(crate) fn check_invite(
 #[cfg(test)]
 mod snapshot_tests {
     use super::*;
+
+    #[test]
+    fn trusted_owner_projection_keeps_string_user_ids_and_strict_tags() {
+        let status = json!({"Self":{"UserID":"1","Tags":[]},"User":{"1":{"LoginName":" ÄBC "}},"BackendState":"Running"});
+        let mut whois = json!({"Node":{"Tags":[],"Name":null,"DNSName":"fallback."},"UserProfile":{"LoginName":"äbc"}});
+        let owner =
+            OwnerObservation::from_json("100.64.0.1", &["ÄBC".into()], &status, &whois).unwrap();
+        assert_eq!(owner.login(), "äbc");
+        assert_eq!(owner.dns, None);
+        whois["Node"]["Tags"] = json!(false);
+        assert!(OwnerObservation::from_json("100.64.0.1", &[], &status, &whois).is_err());
+    }
 
     #[test]
     fn invite_snapshot_retains_extensions_and_refuses_invalid_identity() {

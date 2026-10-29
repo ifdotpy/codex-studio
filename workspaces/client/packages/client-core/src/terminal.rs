@@ -17,6 +17,76 @@ use tokio::{
     task::JoinHandle,
 };
 
+// Optional typed fields preserve the old access-time validation of malformed input.
+fn text_field<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(Value::deserialize(d)?.as_str().map(str::to_owned))
+}
+fn unsigned_field<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
+    Ok(Value::deserialize(d)?.as_u64())
+}
+fn signed_field<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<i64>, D::Error> {
+    Ok(Value::deserialize(d)?.as_i64())
+}
+fn boolean_field<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    Ok(Value::deserialize(d)? == true)
+}
+fn project<T: for<'de> Deserialize<'de> + Default>(value: &Value) -> T {
+    if value.is_object() {
+        T::deserialize(value).unwrap_or_default()
+    } else {
+        T::default()
+    }
+}
+#[derive(Default, Deserialize)]
+struct TerminalIdentity {
+    #[serde(default, deserialize_with = "text_field")]
+    id: Option<String>,
+    #[serde(default, deserialize_with = "text_field")]
+    handle: Option<String>,
+}
+#[derive(Default, Deserialize)]
+struct TerminalInput {
+    #[serde(default, deserialize_with = "text_field")]
+    kind: Option<String>,
+    #[serde(default, deserialize_with = "text_field")]
+    text: Option<String>,
+    #[serde(default, deserialize_with = "text_field")]
+    key: Option<String>,
+    #[serde(default, deserialize_with = "text_field")]
+    action: Option<String>,
+    #[serde(default, deserialize_with = "unsigned_field")]
+    row: Option<u64>,
+    #[serde(default, deserialize_with = "unsigned_field")]
+    col: Option<u64>,
+    #[serde(default, deserialize_with = "unsigned_field")]
+    button: Option<u64>,
+    #[serde(default, deserialize_with = "boolean_field")]
+    shift: bool,
+    #[serde(default, deserialize_with = "boolean_field")]
+    alt: bool,
+    #[serde(default, deserialize_with = "boolean_field")]
+    ctrl: bool,
+}
+#[derive(Default, Deserialize)]
+struct TerminalSize {
+    #[serde(default, deserialize_with = "unsigned_field")]
+    cols: Option<u64>,
+    #[serde(default, deserialize_with = "unsigned_field")]
+    rows: Option<u64>,
+}
+#[derive(Default, Deserialize)]
+struct TerminalScroll {
+    #[serde(default, deserialize_with = "signed_field")]
+    delta: Option<i64>,
+}
+#[derive(Default, Deserialize)]
+struct DeliveryReceipt {
+    #[serde(default, deserialize_with = "boolean_field")]
+    ok: bool,
+    #[serde(default, deserialize_with = "text_field")]
+    delivery: Option<String>,
+}
+
 type Command = (Request, oneshot::Sender<Response>);
 // Initial terminal grid dimensions in rows and columns; both are nonzero.
 const INITIAL_ROWS: NonZeroU16 = NonZeroU16::new(24).expect("initial row count is nonzero");
@@ -54,7 +124,8 @@ impl Terminals {
                     return Err("Close another terminal view first.".into());
                 }
                 let backend = backend.as_ref().map_err(Clone::clone)?.clone();
-                let terminal = terminal_id(&request.params["id"])?;
+                let params: TerminalIdentity = project(&request.params);
+                let terminal = terminal_id(params.id.as_deref())?;
                 let handle = uuid()?;
                 let (input, commands) = mpsc::channel(32);
                 let (changed, value) = watch::channel(Value::Null);
@@ -64,7 +135,8 @@ impl Terminals {
             })();
             drop(reply.send(immediate(result)));
         } else {
-            let handle = request.params["handle"].as_str().unwrap_or("");
+            let params: TerminalIdentity = project(&request.params);
+            let handle = params.handle.as_deref().unwrap_or("");
             if request.method == "terminal.release" {
                 entries.remove(handle);
                 drop(reply.send(immediate(Ok(json!({"closed":true})))));
@@ -94,9 +166,8 @@ impl Terminals {
             .ok_or("This terminal view is closed.".into())
     }
 }
-fn terminal_id(value: &Value) -> Result<String, String> {
+fn terminal_id(value: Option<&str>) -> Result<String, String> {
     value
-        .as_str()
         .filter(|s| {
             !s.is_empty()
                 && s.len() <= 128
@@ -131,7 +202,8 @@ async fn send(backend: &Backend, id: &str, text: String) -> Result<(), String> {
         json!({"id":id,"text":text,"request_id":request_id}),
     )
     .await?;
-    if receipt["ok"] != true || receipt["delivery"] != "sent" {
+    let receipt: DeliveryReceipt = project(&receipt);
+    if !receipt.ok || receipt.delivery.as_deref() != Some("sent") {
         return Err(
             "Terminal input delivery is uncertain. Check the terminal before sending it again."
                 .into(),
@@ -294,10 +366,12 @@ fn running(status: &str) -> bool {
     status == "running"
 }
 fn input(screen: &vt100::Screen, params: &Value) -> Result<String, String> {
-    let kind = params["kind"].as_str().unwrap_or("");
+    let params: TerminalInput = project(params);
+    let kind = params.kind.as_deref().unwrap_or("");
     if kind == "text" || kind == "paste" {
-        let text = params["text"]
-            .as_str()
+        let text = params
+            .text
+            .as_deref()
             .filter(|s| s.len() <= 65520)
             .ok_or("Terminal input exceeds 64 KiB.")?;
         let text = if kind == "paste" {
@@ -312,15 +386,15 @@ fn input(screen: &vt100::Screen, params: &Value) -> Result<String, String> {
         });
     }
     if kind == "mouse" {
-        return mouse(screen, params);
+        return mouse(screen, &params);
     }
     if kind != "key" {
         return Err("Unknown terminal input type.".into());
     }
-    let key = params["key"].as_str().ok_or("Missing terminal key.")?;
-    let shift = params["shift"] == true;
-    let alt = params["alt"] == true;
-    let ctrl = params["ctrl"] == true;
+    let key = params.key.as_deref().ok_or("Missing terminal key.")?;
+    let shift = params.shift;
+    let alt = params.alt;
+    let ctrl = params.ctrl;
     let modifier = 1 + u8::from(shift) + 2 * u8::from(alt) + 4 * u8::from(ctrl);
     let cursor = match key {
         "ArrowUp" => Some('A'),
@@ -411,26 +485,26 @@ fn input(screen: &vt100::Screen, params: &Value) -> Result<String, String> {
     }
     Err("Unsupported terminal key.".into())
 }
-fn mouse(screen: &vt100::Screen, params: &Value) -> Result<String, String> {
+fn mouse(screen: &vt100::Screen, params: &TerminalInput) -> Result<String, String> {
     use vt100::{MouseProtocolEncoding as Encoding, MouseProtocolMode as Mode};
     let mode = screen.mouse_protocol_mode();
     if mode == Mode::None {
         return Ok(String::new());
     }
     let (rows, cols) = screen.size();
-    let row = params["row"]
-        .as_u64()
+    let row = params
+        .row
         .filter(|v| *v < u64::from(rows.get()))
         .ok_or("Invalid mouse row.")?
         + 1;
-    let col = params["col"]
-        .as_u64()
+    let col = params
+        .col
         .filter(|v| *v < u64::from(cols.get()))
         .ok_or("Invalid mouse column.")?
         + 1;
-    let action = params["action"].as_str().unwrap_or("");
-    let button = params["button"]
-        .as_u64()
+    let action = params.action.as_deref().unwrap_or("");
+    let button = params
+        .button
         .filter(|v| *v <= 5)
         .ok_or("Invalid mouse button.")?;
     if action == "release" && mode == Mode::Press {
@@ -450,13 +524,13 @@ fn mouse(screen: &vt100::Screen, params: &Value) -> Result<String, String> {
     if action == "move" {
         code += 32;
     }
-    if params["shift"] == true {
+    if params.shift {
         code += 4;
     }
-    if params["alt"] == true {
+    if params.alt {
         code += 8;
     }
-    if params["ctrl"] == true {
+    if params.ctrl {
         code += 16;
     }
     match screen.mouse_protocol_encoding() {
@@ -509,8 +583,9 @@ async fn run(
                             Ok(json!({"sent":true}))
                         },
                         "terminal.resize"=>{
-                            let cols=request.params["cols"].as_u64().filter(|n|(2..=240).contains(n)).and_then(|n|NonZeroU16::new(n as u16)).ok_or("Invalid terminal width.")?;
-                            let rows=request.params["rows"].as_u64().filter(|n|(2..=120).contains(n)).and_then(|n|NonZeroU16::new(n as u16)).ok_or("Invalid terminal height.")?;
+                            let params: TerminalSize = project(&request.params);
+                            let cols=params.cols.filter(|n|(2..=240).contains(n)).and_then(|n|NonZeroU16::new(n as u16)).ok_or("Invalid terminal width.")?;
+                            let rows=params.rows.filter(|n|(2..=120).contains(n)).and_then(|n|NonZeroU16::new(n as u16)).ok_or("Invalid terminal height.")?;
                             if screen.parser.screen().size()!=(rows,cols) {
                                 if running(&screen.status) {post(&backend,"resize",json!({"id":id,"cols":cols,"rows":rows})).await?;}
                                 screen.parser.screen_mut().set_size(rows,cols);
@@ -518,7 +593,8 @@ async fn run(
                             Ok(json!({"resized":true}))
                         },
                         "terminal.scroll"=>{
-                            let delta=request.params["delta"].as_i64().filter(|v|v.unsigned_abs()<=5000).ok_or("Invalid scroll distance.")?;
+                            let params: TerminalScroll = project(&request.params);
+                            let delta=params.delta.filter(|v|v.unsigned_abs()<=5000).ok_or("Invalid scroll distance.")?;
                             let offset=(screen.parser.screen().scrollback()as i64+delta).clamp(0,5000)as usize;
                             screen.parser.screen_mut().set_scrollback(offset);Ok(json!({"scrolled":true}))
                         },
@@ -548,7 +624,8 @@ async fn run(
 }
 
 pub async fn history(backend: &Backend, value: &Value) -> Result<(String, Arc<Vec<u8>>), String> {
-    let id = terminal_id(&value["id"])?;
+    let params: TerminalIdentity = project(value);
+    let id = terminal_id(params.id.as_deref())?;
     let mut offset = 0u64;
     let mut end = None;
     let mut bytes = Vec::new();
@@ -768,97 +845,166 @@ mod tests {
         stream.write_all(response.as_bytes()).await.unwrap();
     }
     #[tokio::test]
-    async fn lost_input_reply_blocks_queued_input_and_release_stops_the_view() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let backend =
-            Ok(Backend::new(&format!("http://{}", listener.local_addr().unwrap())).unwrap());
-        let (sent, mut inputs) = mpsc::channel(8);
-        let server = tokio::spawn(async move {
-            loop {
-                let (mut stream, _) = listener.accept().await.unwrap();
-                let (head, body) = read(&mut stream).await;
-                if head.starts_with("GET /api/session ") {
-                    respond(&mut stream, json!({"token":"test"})).await;
-                } else if head.starts_with("GET /api/terminals/output") {
-                    respond(&mut stream,json!({"text":"","offset":0,"truncated":false,"status":"running","error":null})).await;
-                } else {
-                    sent.send(body).await.unwrap();
-                    drop(stream);
-                }
-            }
-        });
+    async fn command_projection_keeps_deferred_validation_and_numeric_types() {
         let terminals = Terminals::default();
-        let opened = terminals
+        let response = terminals
             .queue(
-                &backend,
+                &Err("backend unavailable".into()),
                 Request {
                     id: "open".into(),
                     method: "terminal.open".into(),
-                    params: json!({"id":"shell"}),
+                    params: json!({"id":null}),
                 },
             )
             .await
             .unwrap();
-        let handle = opened.result.unwrap()["handle"]
-            .as_str()
-            .unwrap()
-            .to_owned();
-        let mut value = terminals.watch(&handle).unwrap();
-        tokio::time::timeout(Duration::from_secs(2), value.changed())
-            .await
-            .unwrap()
-            .unwrap();
-        let first = terminals.queue(
-            &backend,
-            Request {
-                id: "first".into(),
-                method: "terminal.input".into(),
-                params: json!({"handle":handle,"kind":"text","text":"first"}),
-            },
+        assert_eq!(response.error.unwrap().message, "backend unavailable");
+        let screen = Screen::new();
+        assert_eq!(
+            input(
+                screen.parser.screen(),
+                &json!({"kind":"mouse","row":"invalid","col":null,"button":[]})
+            )
+            .unwrap(),
+            ""
         );
-        let second = terminals.queue(
-            &backend,
-            Request {
-                id: "second".into(),
-                method: "terminal.input".into(),
-                params: json!({"handle":handle,"kind":"text","text":"second"}),
-            },
-        );
-        assert!(
-            first
+        let size: TerminalSize = project(&json!({"cols":80.0,"rows":24}));
+        assert!(size.cols.is_none());
+        assert_eq!(size.rows, Some(24));
+        let scroll: TerminalScroll = project(&json!({"delta":1.0}));
+        assert_eq!(scroll.delta, None);
+        let receipt: DeliveryReceipt =
+            project(&json!({"ok":{"true":true},"delivery":{"sent":true}}));
+        assert!(!receipt.ok);
+        assert!(receipt.delivery.is_none());
+    }
+    #[tokio::test]
+    async fn lost_input_reply_blocks_queued_input_and_release_stops_the_view() {
+        for receipt in [
+            None,
+            Some(json!({"ok":true,"delivery":"unknown"})),
+            Some(json!({"ok":true,"delivery":{"sent":true}})),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let backend =
+                Ok(Backend::new(&format!("http://{}", listener.local_addr().unwrap())).unwrap());
+            let (sent, mut inputs) = mpsc::channel(8);
+            let server = tokio::spawn(async move {
+                loop {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    let (head, body) = read(&mut stream).await;
+                    if head.starts_with("GET /api/session ") {
+                        respond(&mut stream, json!({"token":"test"})).await;
+                    } else if head.starts_with("GET /api/terminals/output") {
+                        respond(&mut stream,json!({"text":"","offset":0,"truncated":false,"status":"running","error":null})).await;
+                    } else {
+                        sent.send(body).await.unwrap();
+                        if let Some(value) = &receipt {
+                            respond(&mut stream, value.clone()).await;
+                        }
+                    }
+                }
+            });
+            let terminals = Terminals::default();
+            let opened = terminals
+                .queue(
+                    &backend,
+                    Request {
+                        id: "open".into(),
+                        method: "terminal.open".into(),
+                        params: json!({"id":"shell"}),
+                    },
+                )
+                .await
+                .unwrap();
+            let handle = opened.result.unwrap()["handle"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            let mut value = terminals.watch(&handle).unwrap();
+            tokio::time::timeout(Duration::from_secs(2), value.changed())
                 .await
                 .unwrap()
-                .error
-                .unwrap()
-                .message
-                .contains("Input paused")
-        );
-        assert!(
-            second
+                .unwrap();
+            let bad_size = terminals
+                .queue(
+                    &backend,
+                    Request {
+                        id: "resize".into(),
+                        method: "terminal.resize".into(),
+                        params: json!({"handle":handle,"cols":80.0,"rows":null}),
+                    },
+                )
                 .await
-                .unwrap()
-                .error
-                .unwrap()
-                .message
-                .contains("Input paused")
-        );
-        let submitted = inputs.recv().await.unwrap();
-        assert_eq!(submitted["text"], "first");
-        assert_eq!(submitted["request_id"].as_str().unwrap().len(), 36);
-        assert_eq!(inputs.try_recv(), Err(mpsc::error::TryRecvError::Empty));
-        terminals
-            .queue(
+                .unwrap();
+            assert_eq!(bad_size.error.unwrap().message, "Invalid terminal width.");
+            let bad_scroll = terminals
+                .queue(
+                    &backend,
+                    Request {
+                        id: "scroll".into(),
+                        method: "terminal.scroll".into(),
+                        params: json!({"handle":handle,"delta":1.0}),
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                bad_scroll.error.unwrap().message,
+                "Invalid scroll distance."
+            );
+            let first = terminals.queue(
                 &backend,
                 Request {
-                    id: "release".into(),
-                    method: "terminal.release".into(),
-                    params: json!({"handle":handle}),
+                    id: "first".into(),
+                    method: "terminal.input".into(),
+                    params: json!({"handle":handle,"kind":"text","text":"first"}),
                 },
-            )
-            .await
-            .unwrap();
-        assert!(terminals.watch(&handle).is_err());
-        server.abort();
+            );
+            let second = terminals.queue(
+                &backend,
+                Request {
+                    id: "second".into(),
+                    method: "terminal.input".into(),
+                    params: json!({"handle":handle,"kind":null,"text":null}),
+                },
+            );
+            assert!(
+                first
+                    .await
+                    .unwrap()
+                    .error
+                    .unwrap()
+                    .message
+                    .contains("Input paused")
+            );
+            assert!(
+                second
+                    .await
+                    .unwrap()
+                    .error
+                    .unwrap()
+                    .message
+                    .contains("Input paused")
+            );
+            let submitted = inputs.recv().await.unwrap();
+            assert_eq!(submitted["text"], "first");
+            assert_eq!(submitted["request_id"].as_str().unwrap().len(), 36);
+            assert_eq!(inputs.try_recv(), Err(mpsc::error::TryRecvError::Empty));
+            terminals
+                .queue(
+                    &backend,
+                    Request {
+                        id: "release".into(),
+                        method: "terminal.release".into(),
+                        params: json!({"handle":handle}),
+                    },
+                )
+                .await
+                .unwrap();
+            assert!(terminals.watch(&handle).is_err());
+            server.abort();
+        }
     }
     #[tokio::test]
     async fn history_preserves_unicode_and_rejects_missing_prefix() {
