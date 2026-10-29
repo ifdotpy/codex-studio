@@ -29,6 +29,24 @@ use studio_runtime_store::{
 use thiserror::Error;
 
 const MAX_ITEMS: usize = 40;
+
+pub(crate) fn hold_unclean_jobs(tx: &rusqlite::Transaction<'_>) -> Result<(), TitleError> {
+    let mut query = tx.prepare("SELECT id FROM runtime_outbox WHERE kind=?1 AND status=?2")?;
+    let ids = query
+        .query_map(
+            rusqlite::params![OutboxKind::TitleGeneration, OutboxStatus::Pending],
+            |row| row.get::<_, String>(0),
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(query);
+    for id in ids {
+        let row = Outbox::get::<TitleJob>(tx, &id)?.ok_or(TitleError::Conflict)?;
+        let mut job = row.payload;
+        job.status = TitleStatus::Unknown;
+        write_job(tx, &job, false)?;
+    }
+    Ok(())
+}
 const MAX_ITEM_BYTES: usize = 1_048_576;
 /// Python's one-shot title generation deadline (`codex_rename.py:109-110`).
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);

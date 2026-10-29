@@ -133,6 +133,96 @@ impl TitleRequestPort for GatedPort {
 }
 
 #[tokio::test]
+async fn unclean_restart_holds_title_after_lost_submission_commit() {
+    let (root, store) = fixture().await;
+    let id = request_id();
+    admit_python_request(&store, "title-agent", &id)
+        .await
+        .expect("reserve title");
+    let before = {
+        let db = store.test_reader().expect("reader");
+        let (effect, payload): (String, String) = db
+            .query_row(
+                "SELECT id,payload FROM runtime_outbox WHERE kind=?1",
+                [OutboxKind::TitleGeneration],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("queued effect");
+        let agent: String = db
+            .query_row(
+                "SELECT record FROM runtime_agents WHERE id='title-agent'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("agent");
+        (effect, payload, agent)
+    };
+    let (started, mut requests) = mpsc::unbounded_channel();
+    let (_reply, receive) = oneshot::channel();
+    let port = Arc::new(GatedPort {
+        started,
+        reply: Mutex::new(Some(receive)),
+    });
+    let store = Arc::new(store);
+    let task_store = Arc::clone(&store);
+    let task_port = Arc::clone(&port);
+    let task_id = id.clone();
+    let task = tokio::spawn(async move {
+        generate_admitted(
+            &task_store,
+            task_port.as_ref(),
+            "title-agent",
+            &catalog(),
+            &task_id,
+            deadline(),
+        )
+        .await
+    });
+    requests
+        .recv()
+        .await
+        .expect("provider received one request");
+    task.abort();
+    assert!(task.await.expect_err("interrupted caller").is_cancelled());
+    store
+        .transaction(move |tx| {
+            tx.execute(
+                "UPDATE runtime_outbox SET status=?1,payload=?2,next_at=NULL WHERE id=?3",
+                rusqlite::params![OutboxStatus::Pending, before.1, before.0],
+            )?;
+            tx.execute(
+                "UPDATE runtime_agents SET record=?1 WHERE id='title-agent'",
+                [before.2],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("simulate lost submission commit");
+    drop(store);
+    let reopened = RuntimeStore::open(Some(root.path()))
+        .await
+        .expect("restart");
+    studio_runtime_services::unclean_recovery::hold(&reopened)
+        .await
+        .expect("unclean recovery");
+    let never_send = FixedPort::new(vec![]);
+    assert_eq!(
+        generate_admitted(
+            &reopened,
+            &never_send,
+            "title-agent",
+            &catalog(),
+            &id,
+            deadline()
+        )
+        .await
+        .expect("held"),
+        TitleResult::HeldUnknown
+    );
+    assert_eq!(never_send.calls(), 0);
+}
+
+#[tokio::test]
 async fn title_admission_owns_one_root_and_unresolved_outbox() {
     let (_root, store) = fixture().await;
     let id = request_id();

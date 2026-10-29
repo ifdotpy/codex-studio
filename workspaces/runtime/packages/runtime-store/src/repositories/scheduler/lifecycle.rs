@@ -8,6 +8,66 @@ use studio_runtime_schema::shared_values::{
 };
 
 impl SchedulerRepository {
+    pub const UNCLEAN_START_HOLD: &'static str =
+        "The server stopped before input delivery could be confirmed.";
+
+    pub fn hold_unclean_starts(transaction: &Transaction<'_>) -> StoreResult<usize> {
+        let mut query = transaction.prepare_cached(
+            "SELECT id FROM runtime_agents WHERE json_extract(record,'$.startAttempt.submitted')=0 AND EXISTS(SELECT 1 FROM runtime_events WHERE agent=runtime_agents.id AND status='reserved')",
+        )?;
+        let ids = query
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(query);
+        let mut held = 0;
+        for id in ids {
+            let mut agent = load_agent(transaction, &id)?.ok_or_else(|| invalid_agent(&id))?;
+            let attempt = agent
+                .start_attempt()
+                .map_err(|_| invalid_agent(&id))?
+                .ok_or_else(|| invalid_agent(&id))?;
+            let attempt_id = attempt.id.ok_or_else(|| invalid_agent(&id))?;
+            let epoch = attempt.epoch.ok_or_else(|| invalid_agent(&id))?;
+            let events = attempt
+                .events
+                .filter(|events| !events.is_empty())
+                .ok_or_else(|| invalid_agent(&id))?;
+            if attempt.submitted != Some(false) || agent.start_outcome_hold.is_some() {
+                return Err(invalid_agent(&id));
+            }
+            let events_json = serde_json::to_string(&events)?;
+            let changed = transaction.execute_cached(
+                "UPDATE runtime_events SET status='uncertain',error=?1 WHERE agent=?2 AND epoch=?3 AND status='reserved' AND id IN (SELECT value FROM json_each(?4))",
+                params![Self::UNCLEAN_START_HOLD, id, epoch, events_json],
+            )?;
+            if changed != events.len() {
+                return Err(invalid_agent(&id));
+            }
+            agent.start_outcome_hold = Some(crate::StoredStartOutcomeHold::Known(
+                crate::StartOutcomeHold::Held {
+                    operation_id: None,
+                    connection_generation: None,
+                    reason: Some(Self::UNCLEAN_START_HOLD.into()),
+                    attempt_id: Some(attempt_id),
+                    extra: Default::default(),
+                },
+            ));
+            agent.status = AgentStatus::Interrupted;
+            agent
+                .extra
+                .insert("inFlight".into(), crate::projection_value(&false));
+            agent
+                .extra
+                .insert("autoWake".into(), crate::projection_value(&false));
+            agent.extra.insert(
+                "error".into(),
+                crate::projection_value(&Self::UNCLEAN_START_HOLD),
+            );
+            publish_agent(transaction, &agent)?;
+            held += 1;
+        }
+        Ok(held)
+    }
     /// Hold further input after manual recovery without stopping the exact
     /// native turn that recovery already observed. This owns the hold record.
     pub fn hold_recovered_delivery(agent: &mut AgentRecord) -> StoreResult<()> {

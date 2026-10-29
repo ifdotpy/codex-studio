@@ -369,7 +369,18 @@ fn clear_startup_agent_state(transaction: &rusqlite::Transaction<'_>) -> Result<
         studio_runtime_store::agent_volatile::merge(transaction, &id, &mut agent)?;
         let in_flight_changed = agent.get("inFlight") != Some(&Value::Bool(false));
         agent["inFlight"] = json!(false);
-        let keep_attempt = preparation_eligible(&agent);
+        let unclean_hold = AgentRecord::from_value(agent.clone())
+            .ok()
+            .and_then(|record| record.start_outcome_hold)
+            .is_some_and(|hold| {
+                matches!(
+                    hold,
+                    studio_runtime_store::StoredStartOutcomeHold::Known(
+                        studio_runtime_store::StartOutcomeHold::Held { reason: Some(reason), .. }
+                    ) if reason == SchedulerRepository::UNCLEAN_START_HOLD
+                )
+            });
+        let keep_attempt = preparation_eligible(&agent) || unclean_hold;
         let removed_attempt = if keep_attempt {
             false
         } else {

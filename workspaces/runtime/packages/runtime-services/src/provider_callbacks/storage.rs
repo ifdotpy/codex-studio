@@ -75,6 +75,25 @@ impl From<CallbackResponse> for Reply {
 type Owner = CallbackTask<CallbackOwner>;
 type Response = OutboxRow<CallbackResponse>;
 
+pub(crate) fn hold_unclean_responses(tx: &Transaction<'_>) -> Result<(), CallbackError> {
+    let mut query = tx.prepare("SELECT id FROM runtime_outbox WHERE kind=?1 AND status=?2")?;
+    let ids = query
+        .query_map(
+            params![OutboxKind::ProviderCallback, OutboxStatus::Pending],
+            |row| row.get::<_, String>(0),
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(query);
+    for id in ids {
+        let mut row: Response = Outbox::get(tx, &id)?.ok_or(CallbackError::Unknown)?;
+        row.status = OutboxStatus::Submitted;
+        row.next_at = None;
+        put_response(tx, &row)?;
+        delivery_in(tx, &row.payload.identity, DeliveryOutcome::Unknown)?;
+    }
+    Ok(())
+}
+
 pub(super) fn snapshot(
     tx: &Transaction<'_>,
     context: &CallbackContext,
