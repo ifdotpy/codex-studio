@@ -1,5 +1,6 @@
 //! Typed persisted checkpoint and generated storage schema.
-use crate::stored_record::present_nullable;
+
+use crate::queue_command::Field;
 use serde::{Deserialize, Serialize};
 use serde_json::{Number, Value};
 use std::collections::BTreeMap;
@@ -7,18 +8,12 @@ use std::collections::BTreeMap;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CheckpointRecord {
     id: String,
-    #[serde(
-        default,
-        deserialize_with = "present_nullable",
-        skip_serializing_if = "Option::is_none"
-    )]
-    agent: Option<Option<String>>,
-    #[serde(
-        default,
-        deserialize_with = "present_nullable",
-        skip_serializing_if = "Option::is_none"
-    )]
-    created: Option<Option<Number>>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    #[schemars(with = "Option<String>")]
+    agent: Field<String>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    #[schemars(with = "Option<Number>")]
+    created: Field<Number>,
     #[serde(flatten)]
     extra: BTreeMap<String, Value>,
 }
@@ -31,7 +26,7 @@ impl CheckpointRecord {
         &self.id
     }
     pub fn agent(&self) -> Option<&str> {
-        self.agent.as_ref().and_then(Option::as_deref)
+        self.agent.value().map(String::as_str)
     }
     pub fn into_value(self) -> Value {
         // All fields are already serializable JSON values or scalars.

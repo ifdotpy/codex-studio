@@ -1,5 +1,6 @@
 //! Typed persisted complaints and their generated schema.
-use crate::stored_record::present_nullable;
+
+use crate::queue_command::Field;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -7,31 +8,18 @@ use std::collections::BTreeMap;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ComplaintRecord {
     id: String,
-    #[serde(
-        default,
-        deserialize_with = "present_nullable",
-        skip_serializing_if = "Option::is_none"
-    )]
-    author: Option<Option<String>>,
-    #[serde(
-        rename = "leadId",
-        default,
-        deserialize_with = "present_nullable",
-        skip_serializing_if = "Option::is_none"
-    )]
-    lead_id: Option<Option<String>>,
-    #[serde(
-        default,
-        deserialize_with = "present_nullable",
-        skip_serializing_if = "Option::is_none"
-    )]
-    status: Option<Option<String>>,
-    #[serde(
-        default,
-        deserialize_with = "present_nullable",
-        skip_serializing_if = "Option::is_none"
-    )]
-    text: Option<Option<String>>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    #[schemars(with = "Option<String>")]
+    author: Field<String>,
+    #[serde(rename = "leadId", default, skip_serializing_if = "Field::is_missing")]
+    #[schemars(with = "Option<String>")]
+    lead_id: Field<String>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    #[schemars(with = "Option<String>")]
+    status: Field<String>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    #[schemars(with = "Option<String>")]
+    text: Field<String>,
     #[serde(flatten)]
     extra: BTreeMap<String, Value>,
 }
@@ -44,16 +32,16 @@ impl ComplaintRecord {
         &self.id
     }
     pub fn author(&self) -> Option<&str> {
-        self.author.as_ref().and_then(Option::as_deref)
+        self.author.value().map(String::as_str)
     }
     pub fn lead_id(&self) -> Option<&str> {
-        self.lead_id.as_ref().and_then(Option::as_deref)
+        self.lead_id.value().map(String::as_str)
     }
     pub fn status(&self) -> Option<&str> {
-        self.status.as_ref().and_then(Option::as_deref)
+        self.status.value().map(String::as_str)
     }
     pub fn text(&self) -> Option<&str> {
-        self.text.as_ref().and_then(Option::as_deref)
+        self.text.value().map(String::as_str)
     }
     pub fn into_value(self) -> Value {
         // Every member is already JSON data or a serializable scalar.

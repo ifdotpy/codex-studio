@@ -289,7 +289,7 @@ mod tests {
             v["receipt"]["status"] = json!({(status):null});
             values.push(v);
         }
-        let mut v = valid.clone();
+        let mut v = valid;
         v["metadata"]["requestHash"] = json!(format!("{}\n", "a".repeat(64)));
         values.push(v);
         for v in values {

@@ -1,5 +1,6 @@
 //! Typed persisted plans and their generated schema.
-use crate::stored_record::{StoredJsonInteger, present_nullable};
+use crate::queue_command::Field;
+use crate::stored_record::StoredJsonInteger;
 use serde::{Deserialize, Serialize};
 use serde_json::{Number, Value};
 use std::collections::BTreeMap;
@@ -56,18 +57,12 @@ pub struct PlanRecord {
     #[serde(deserialize_with = "Option::<Number>::deserialize")]
     #[schemars(required, schema_with = "updated_schema")]
     updated: Option<Number>,
-    #[serde(
-        default,
-        deserialize_with = "present_nullable",
-        skip_serializing_if = "Option::is_none"
-    )]
-    agent: Option<Option<String>>,
-    #[serde(
-        default,
-        deserialize_with = "present_nullable",
-        skip_serializing_if = "Option::is_none"
-    )]
-    native: Option<Option<BTreeMap<String, Value>>>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    #[schemars(with = "Option<String>")]
+    agent: Field<String>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    #[schemars(with = "Option<BTreeMap<String, Value>>")]
+    native: Field<BTreeMap<String, Value>>,
     #[serde(
         default,
         deserialize_with = "present",
@@ -97,8 +92,8 @@ impl PlanRecord {
                 .cloned()
                 .unwrap_or_else(|| Value::Array(Vec::new())),
         )?;
-        let native = serde_json::from_value(native)?;
-        self.native = Some(native);
+        let native: Option<BTreeMap<String, Value>> = Deserialize::deserialize(native)?;
+        self.native = native.map_or(Field::Null, Field::Value);
         self.steps = Some(steps);
         self.updated = Number::from_f64(updated);
         Ok(())
@@ -150,7 +145,7 @@ mod tests {
             record[field] = value;
             cases.push((record, valid));
         }
-        let mut missing = base.clone();
+        let mut missing = base;
         missing.as_object_mut().unwrap().remove("updated");
         cases.push((missing, false));
         cases.push((json!(["a"]), false));

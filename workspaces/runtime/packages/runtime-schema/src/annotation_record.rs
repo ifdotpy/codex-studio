@@ -1,5 +1,6 @@
 //! Typed persisted annotations and their generated schema.
-use crate::stored_record::{StoredJsonInteger, present_nullable};
+use crate::queue_command::Field;
+use crate::stored_record::StoredJsonInteger;
 use serde::{Deserialize, Serialize};
 use serde_json::{Number, Value};
 use std::collections::BTreeMap;
@@ -7,37 +8,21 @@ use std::collections::BTreeMap;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AnnotationRecord {
     id: String,
-    #[serde(
-        default,
-        deserialize_with = "present_nullable",
-        skip_serializing_if = "Option::is_none"
-    )]
-    agent: Option<Option<String>>,
-    #[serde(
-        default,
-        deserialize_with = "present_nullable",
-        skip_serializing_if = "Option::is_none"
-    )]
-    path: Option<Option<String>>,
-    #[serde(
-        default,
-        deserialize_with = "present_nullable",
-        skip_serializing_if = "Option::is_none"
-    )]
-    text: Option<Option<String>>,
-    #[serde(
-        default,
-        deserialize_with = "present_nullable",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    #[schemars(with = "Option<String>")]
+    agent: Field<String>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    #[schemars(with = "Option<String>")]
+    path: Field<String>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    #[schemars(with = "Option<String>")]
+    text: Field<String>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
     #[schemars(schema_with = "line_schema")]
-    line: Option<Option<StoredJsonInteger>>,
-    #[serde(
-        default,
-        deserialize_with = "present_nullable",
-        skip_serializing_if = "Option::is_none"
-    )]
-    created: Option<Option<Number>>,
+    line: Field<StoredJsonInteger>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    #[schemars(with = "Option<Number>")]
+    created: Field<Number>,
     #[serde(flatten)]
     extra: BTreeMap<String, Value>,
 }

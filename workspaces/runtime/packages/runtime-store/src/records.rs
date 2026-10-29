@@ -589,7 +589,7 @@ impl AgentRecord {
     }
 
     pub fn from_value(value: Value) -> Result<Self, serde_json::Error> {
-        serde_json::from_value(value)
+        Self::deserialize(value)
     }
 
     pub fn id(&self) -> &AgentId {
@@ -681,56 +681,8 @@ impl JsonRecord for AgentRecord {
     }
 
     fn decode_stored(connection: &Connection, row_id: &str, encoded: &str) -> StoreResult<Self> {
-        let projection = decode_agent_projection(connection, row_id, encoded)?;
-        let id = AgentId(projection.id.clone());
-        let root_id = AgentId(projection.root_id.clone());
-        let epoch = projection.epoch.as_i64();
-        let status = AgentStatus::parse(&projection.status);
-        let Value::Object(mut fields) = serde_json::to_value(projection)? else {
-            return Err(invalid_agent_field(row_id, "", "record_decode", None));
-        };
-        for key in ["id", "rootId", "epoch", "status"] {
-            fields.remove(key);
-        }
-        fn field<T: DeserializeOwned>(
-            fields: &mut serde_json::Map<String, Value>,
-            key: &str,
-        ) -> Result<Option<T>, serde_json::Error> {
-            fields
-                .remove(key)
-                .map(serde_json::from_value::<Option<T>>)
-                .transpose()
-                .map(Option::flatten)
-        }
-        let decode = |_: serde_json::Error| invalid_agent_field(row_id, "", "record_decode", None);
-        let title_job = field(&mut fields, "titleJob").map_err(decode)?;
-        let start_outcome_hold = field(&mut fields, "startOutcomeHold").map_err(decode)?;
-        let fired_events = fields
-            .remove("firedEvents")
-            .map(serde_json::from_value)
-            .transpose()
-            .map_err(decode)?
-            .unwrap_or_default();
-        let native_review_thread = field(&mut fields, "nativeReviewThread").map_err(decode)?;
-        let vm_launch = field(&mut fields, "vmLaunch").map_err(decode)?;
-        let credential_copy = field(&mut fields, "credentialCopy").map_err(decode)?;
-        let vm_auth_bootstrap = field(&mut fields, "vmAuthBootstrap").map_err(decode)?;
-        let native_release = field(&mut fields, "nativeRelease").map_err(decode)?;
-        Ok(Self {
-            id,
-            root_id,
-            epoch,
-            status,
-            title_job,
-            start_outcome_hold,
-            fired_events,
-            native_review_thread,
-            vm_launch,
-            credential_copy,
-            vm_auth_bootstrap,
-            native_release,
-            extra: fields.into_iter().collect(),
-        })
+        let value = decode_agent_value(connection, row_id, encoded)?;
+        Self::deserialize(value).map_err(|_| invalid_agent_field(row_id, "", "record_decode", None))
     }
 }
 
@@ -760,6 +712,7 @@ impl JsonRecord for PlanRecord {
 #[cfg(test)]
 mod plan_typed_tests {
     use super::{AgentId, PlanRecord, Table};
+    use serde::Deserialize;
     use serde_json::json;
 
     #[test]
@@ -769,11 +722,11 @@ mod plan_typed_tests {
             json!({"id":"a","rootId":"r","text":"","version":1.5,"updated":null}),
             json!({"id":"a","rootId":"r","text":"","version":1,"updated":null,"native":[]}),
         ] {
-            assert!(serde_json::from_value::<PlanRecord>(invalid).is_err());
+            assert!(PlanRecord::deserialize(invalid).is_err());
         }
         let value = json!({"id":"different-from-row","rootId":"r","text":"x","version":1.0,"updated":null,"native":null,"future":[1]});
-        let record: PlanRecord = serde_json::from_value(value.clone()).unwrap();
-        assert_eq!(serde_json::to_value(record).unwrap(), value);
+        let record = PlanRecord::deserialize(value.clone()).unwrap();
+        assert_eq!(record.into_value(), value);
     }
 
     #[test]
@@ -817,6 +770,7 @@ impl JsonRecord for AnnotationRecord {
 #[cfg(test)]
 mod annotation_typed_tests {
     use super::{AnnotationRecord, Table};
+    use serde::Deserialize;
     use serde_json::json;
 
     #[test]
@@ -826,14 +780,14 @@ mod annotation_typed_tests {
             json!({"id":"a","line":1.5}),
             json!({"id":"a","text":1}),
         ] {
-            assert!(serde_json::from_value::<AnnotationRecord>(value).is_err());
+            assert!(AnnotationRecord::deserialize(value).is_err());
         }
         for value in [
             json!({"id":"a"}),
             json!({"id":"a","line":1.0,"created":null,"extra":[1]}),
         ] {
-            let record: AnnotationRecord = serde_json::from_value(value.clone()).unwrap();
-            assert_eq!(serde_json::to_value(record).unwrap(), value);
+            let record = AnnotationRecord::deserialize(value.clone()).unwrap();
+            assert_eq!(record.into_value(), value);
         }
     }
 
@@ -923,6 +877,7 @@ impl JsonRecord for ComplaintRecord {
 #[cfg(test)]
 mod complaint_typed_tests {
     use super::{ComplaintRecord, Table};
+    use serde::Deserialize;
     use serde_json::json;
 
     #[test]
@@ -933,14 +888,14 @@ mod complaint_typed_tests {
             json!({"id":"c","status":false}),
             json!({"id":"c","leadId":[]}),
         ] {
-            assert!(serde_json::from_value::<ComplaintRecord>(value).is_err());
+            assert!(ComplaintRecord::deserialize(value).is_err());
         }
         for value in [
             json!({"id":"c"}),
             json!({"id":"c","author":null,"leadId":"l","status":"future","text":null,"future":[1]}),
         ] {
-            let decoded: ComplaintRecord = serde_json::from_value(value.clone()).unwrap();
-            assert_eq!(serde_json::to_value(decoded).unwrap(), value);
+            let decoded = ComplaintRecord::deserialize(value.clone()).unwrap();
+            assert_eq!(decoded.into_value(), value);
         }
     }
 
@@ -1021,6 +976,7 @@ impl JsonRecord for TerminalRecord {
 #[cfg(test)]
 mod terminal_typed_tests {
     use super::{Table, TerminalRecord};
+    use serde::Deserialize;
     use serde_json::json;
 
     #[test]
@@ -1031,7 +987,7 @@ mod terminal_typed_tests {
             json!({"id":"t","status":false}),
             json!({"id":"t","exitCode":1.5}),
         ] {
-            assert!(serde_json::from_value::<TerminalRecord>(invalid).is_err());
+            assert!(TerminalRecord::deserialize(invalid).is_err());
         }
         for valid in [
             json!({"id":"t"}),
@@ -1039,8 +995,8 @@ mod terminal_typed_tests {
             json!({"id":"t","exitCode":1.0}),
             json!({"id":"t","exitCode":u64::MAX}),
         ] {
-            let record: TerminalRecord = serde_json::from_value(valid.clone()).unwrap();
-            assert_eq!(serde_json::to_value(record).unwrap(), valid);
+            let record = TerminalRecord::deserialize(valid.clone()).unwrap();
+            assert_eq!(record.value(), valid);
         }
     }
 
@@ -1058,7 +1014,7 @@ mod terminal_typed_tests {
             (row.output.as_str(), row.offset, row.output_generation),
             ("hello", 4, 0)
         );
-        let mut conflicting = record.clone();
+        let mut conflicting = record;
         assert!(conflicting.set("status", json!(false)).is_err());
         assert_eq!(conflicting.value(), payload);
         tx.execute(
@@ -1863,10 +1819,10 @@ pub(crate) fn decode_record<R: JsonRecord>(
         // Stored JSON was historically parsed to a map first, so duplicate
         // property names retain serde_json's last-value behavior.
         let value = serde_json::from_str::<Value>(encoded).map_err(|_| invalid())?;
-        serde_json::from_value::<R>(value).map_err(|_| invalid())?
+        R::deserialize(value).map_err(|_| invalid())?
     } else {
         let value = decode_value(R::SCHEMA, encoded, invalid)?;
-        serde_json::from_value::<R>(value).map_err(|_| invalid())?
+        R::deserialize(value).map_err(|_| invalid())?
     };
     if R::KEY_MODE == RecordKeyMode::PayloadId
         && record.record_key().map(AsRef::as_ref) != Some(row_id)
@@ -1884,18 +1840,10 @@ pub fn decode_agent_value(
     row_id: &str,
     encoded: &str,
 ) -> StoreResult<Value> {
-    let projection = decode_agent_projection(connection, row_id, encoded)?;
-    serde_json::to_value(projection).map_err(Into::into)
-}
-
-fn decode_agent_projection(
-    connection: &Connection,
-    row_id: &str,
-    encoded: &str,
-) -> StoreResult<studio_runtime_schema::records::agent_projection::AgentProjection> {
     let mut value = parse_agent_value(row_id, encoded)?;
     crate::agent_volatile::merge(connection, row_id, &mut value)?;
-    checked_agent_projection(row_id, &value)
+    checked_agent_projection(row_id, &value)?;
+    Ok(value)
 }
 
 pub(crate) fn parse_agent_value(row_id: &str, encoded: &str) -> StoreResult<Value> {
@@ -1916,8 +1864,8 @@ pub(crate) fn parse_agent_value(row_id: &str, encoded: &str) -> StoreResult<Valu
 }
 
 pub(crate) fn validate_agent_value(row_id: &str, value: Value) -> StoreResult<Value> {
-    let projection = checked_agent_projection(row_id, &value)?;
-    serde_json::to_value(projection).map_err(Into::into)
+    checked_agent_projection(row_id, &value)?;
+    Ok(value)
 }
 
 fn checked_agent_projection(
@@ -1983,7 +1931,7 @@ fn encode_record<R: JsonRecord>(record: &R, row_id: &str) -> StoreResult<String>
 fn checked_value<R: JsonRecord>(record: &R, row_id: &str) -> StoreResult<Value> {
     #[cfg(test)]
     validation_counts::CHECKS.with(|count| count.set(count.get() + 1));
-    let value = serde_json::to_value(record)?;
+    let value = record.serialize(serde_json::value::Serializer)?;
     let invalid = || crate::StoreError::InvalidStoredObject {
         table: R::TABLE,
         id: row_id.to_owned(),
@@ -2328,7 +2276,7 @@ mod tests {
             "futureObject":{"number":1.5,"flag":true}, "futureInteger":9007199254740993_i64
         });
         let record = agent(value.clone());
-        let rewritten = serde_json::to_value(record).expect("agent record serializes");
+        let rewritten = record.into_value();
         assert_eq!(rewritten["futureObject"]["number"].as_f64(), Some(1.5));
         assert_eq!(rewritten["futureObject"]["flag"].as_bool(), Some(true));
         assert_eq!(rewritten["futureInteger"].as_i64(), Some(9007199254740993));
@@ -2422,7 +2370,7 @@ mod tests {
             "id":"task-1", "agent":"agent-1", "kind":"command", "status":"completed",
             "created":1.25, "interactive":true, "exitCode":7
         }));
-        let rewritten = serde_json::to_value(runtime_task).expect("runtime task serializes");
+        let rewritten = runtime_task.into_value();
         assert_eq!(rewritten["interactive"], json!(true));
         assert_eq!(rewritten["exitCode"].as_i64(), Some(7));
 
@@ -2431,10 +2379,7 @@ mod tests {
             "created":1.25, "updated":1.5, "version":3, "futureField":true
         }));
         assert_eq!(work.status(), WorkStatus::Ready);
-        assert_eq!(
-            serde_json::to_value(work).expect("work item serializes")["futureField"],
-            json!(true)
-        );
+        assert_eq!(work.into_value()["futureField"], json!(true));
     }
 
     #[test]
@@ -2465,10 +2410,7 @@ mod tests {
             record.status,
             AgentStatus::Other(UnknownAgentStatus::new("future-agent-state".into()).unwrap())
         );
-        assert_eq!(
-            serde_json::to_value(record).expect("record serializes"),
-            value
-        );
+        assert_eq!(record.into_value(), value);
     }
 
     #[test]
@@ -2845,6 +2787,27 @@ mod agent_projection_tests {
         let value = decode_agent_value(&db, "a", raw).expect("nested decimal aliases");
         assert_eq!(value["events"], json!(1.0));
         assert_eq!(value["agentArchive"]["epoch"], json!(1.0));
+    }
+
+    #[test]
+    fn stored_agent_business_decode_preserves_checked_wire_fields() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+            .unwrap();
+        db.execute_batch(crate::agent_volatile::agent_volatile_table_sql())
+            .unwrap();
+        let raw = json!({"id":"a","rootId":"r","epoch":1,"status":"idle", "accountKey":null,
+            "events":1.0,"agentArchive":{"at":1.5,"epoch":1.0},"future":{"x":[1,null]}});
+        db.execute(
+            "INSERT INTO runtime_agents(id,record) VALUES('a',?1)",
+            [raw.to_string()],
+        )
+        .unwrap();
+        let record = Table::<AgentRecord>::new(&db)
+            .get(&AgentId::from("a"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.into_value(), raw);
     }
 
     #[test]

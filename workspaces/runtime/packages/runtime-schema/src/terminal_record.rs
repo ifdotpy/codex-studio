@@ -1,32 +1,27 @@
 //! Typed persisted terminal record and its schema owner.
+use crate::queue_command::Field;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-use crate::stored_record::{StoredJsonInteger, present_nullable};
+use crate::stored_record::StoredJsonInteger;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TerminalRecord {
     id: String,
-    #[serde(
-        default,
-        deserialize_with = "present_nullable",
-        skip_serializing_if = "Option::is_none"
-    )]
-    agent: Option<Option<String>>,
-    #[serde(
-        default,
-        deserialize_with = "present_nullable",
-        skip_serializing_if = "Option::is_none"
-    )]
-    status: Option<Option<String>>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    #[schemars(with = "Option<String>")]
+    agent: Field<String>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    #[schemars(with = "Option<String>")]
+    status: Field<String>,
     #[serde(
         rename = "exitCode",
         default,
-        deserialize_with = "present_nullable",
-        skip_serializing_if = "Option::is_none"
+        skip_serializing_if = "Field::is_missing"
     )]
-    exit_code: Option<Option<StoredJsonInteger>>,
+    #[schemars(with = "Option<StoredJsonInteger>")]
+    exit_code: Field<StoredJsonInteger>,
     #[serde(flatten)]
     extra: BTreeMap<String, Value>,
 }
@@ -39,18 +34,19 @@ impl TerminalRecord {
         &self.id
     }
     pub fn status(&self) -> Option<&str> {
-        self.status.as_ref().and_then(Option::as_deref)
+        self.status.value().map(String::as_str)
     }
     pub fn set_status(&mut self, status: &str) {
-        self.status = Some(Some(status.to_owned()));
+        self.status = Field::Value(status.to_owned());
     }
     pub fn set_exit_code(&mut self, code: Option<i64>) {
-        self.exit_code = Some(code.map(StoredJsonInteger::from_i64));
+        self.exit_code = code.map_or(Field::Null, |value| {
+            Field::Value(StoredJsonInteger::from_i64(value))
+        });
     }
     pub fn exit_code_value(&self) -> Value {
         self.exit_code
-            .as_ref()
-            .and_then(Option::as_ref)
+            .value()
             .map_or(Value::Null, |value| Value::Number(value.number().clone()))
     }
     pub fn value(&self) -> Value {
