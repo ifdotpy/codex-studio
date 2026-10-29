@@ -18,6 +18,7 @@ import {
   execute,
   executeRecipe,
   evaluatePlaywrightReport,
+  gateSteps,
   nextestError,
   nextestSelectionError,
   packageTarget,
@@ -25,6 +26,8 @@ import {
   parseSelection,
   pruneLogs,
   recipePlan,
+  retestCommand,
+  retestEnvironment,
   typescriptProjects,
   unsafeRustFindings,
 } from "../facade.ts";
@@ -1842,5 +1845,88 @@ test("JavaScript coverage uses the same project names as gate type checking", ()
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("layr-retest summary line becomes step counts", () => {
+  const item = { name: "Rust nextest", ecosystem: "cargo" };
+  const counts = (ran: number, failed: number) =>
+    parseCounts(
+      item,
+      `noise\nlayr-retest: ran ${ran}, passed ${ran - failed}, failed ${failed}, skipped 4; record abc; 12.3s\n`,
+    );
+  assert.deepEqual(counts(0, 0), {
+    passed: 0,
+    failed: 0,
+    skipped: 4,
+    executed: 0,
+    summaryFound: true,
+  });
+  assert.deepEqual(counts(7, 2), {
+    passed: 5,
+    failed: 2,
+    skipped: 4,
+    executed: 7,
+    summaryFound: true,
+  });
+});
+
+test("the retest command reuses the nextest arguments", () => {
+  assert.deepEqual(
+    retestCommand([
+      "cargo",
+      ["nextest", "run", "--workspace", "--profile", "fast"],
+    ]),
+    ["layr-retest", ["run", "--", "--workspace", "--profile", "fast"]],
+  );
+});
+
+test("STUDIO_RETEST=1 switches only the Rust workspace step", () => {
+  const rust = (value?: string) => {
+    if (value === undefined) delete process.env.STUDIO_RETEST;
+    else process.env.STUDIO_RETEST = value;
+    return gateSteps(process.cwd(), "test-fast").find(
+      (step) => step.id === "rust-tests",
+    )!;
+  };
+  try {
+    assert.equal(rust().commands![0]![0], "cargo");
+    assert.equal(rust().crateReuse, true);
+    assert.equal(rust("0").commands![0]![0], "cargo");
+    const retest = rust("1");
+    assert.deepEqual(retest.commands![0], [
+      "layr-retest",
+      ["run", "--", "--workspace", "--profile", "fast"],
+    ]);
+    assert.notEqual(retest.crateReuse, true);
+    assert.equal(retest.options?.allowZeroTests, true);
+  } finally {
+    delete process.env.STUDIO_RETEST;
+  }
+});
+
+test("the retest step spawns the instrumented supervisor build", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "retest-env-"));
+  const savedPath = process.env.PATH;
+  try {
+    writeFileSync(path.join(dir, "layr"), "#!/bin/sh\n", { mode: 0o755 });
+    process.env.PATH = dir;
+    const env = retestEnvironment("/line");
+    rmSync(path.dirname(env.LAYR_ROOT!), { recursive: true, force: true });
+    assert.equal(
+      env.STUDIO_SUPERVISOR_BINARY,
+      path.join(
+        "/line",
+        "target",
+        "retest",
+        "debug",
+        process.platform === "win32"
+          ? "codex-process-supervisor.exe"
+          : "codex-process-supervisor",
+      ),
+    );
+  } finally {
+    process.env.PATH = savedPath;
+    rmSync(dir, { recursive: true, force: true });
   }
 });
