@@ -2957,10 +2957,6 @@
       "fingerprint": "de3cb5cbcab51771edd386e4bbfb266126cdfe4dd79fb2b70c9344c697da76ee:0"
     },
     {
-      "file": "workspaces/runtime/packages/runtime-process/src/supervisor_daemon.rs",
-      "fingerprint": "11993d625d54c901ff1d43f847de5d071ee96539ec2bc5d568f52e9a425d0f18:0"
-    },
-    {
       "file": "workspaces/runtime/packages/runtime-process/src/tests.rs",
       "fingerprint": "862ea0b59a328e22bef8cae76b79e1cab18c5c8ca647e3ef28e15726dc09f424:0"
     },

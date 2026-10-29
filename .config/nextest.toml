@@ -85,7 +85,7 @@ default-filter = '''
     (package(studio-runtime-services) & test(/conversation_signatures_preserve_nullable_setting_identity|confirmed_restart_is_atomic_replay_safe_and_waits_for_exit/)) |
     (package(studio-runtime-http) & test(/conversation_catalog_admission_tests::|branch_draft_keeps_the_historical_generated_request_identity|http_restart_uses_checked_request|monitor_restart_http_preserves_identity_and_waits_for_old_exit/)) |
     (package(studio-runtime-schema) & test(/^(continuation_snapshot|claude_login|usage_limits|checkpoint_record|complaint_record)::tests::/)) |
-    (package(studio-client-core) & test(/^(speech|client|terminal|file_preview|rich_document)::tests::/)) |
+    (package(studio-client-core) & test(/^(speech|client|terminal|file_preview|rich_document|file_actions)::tests::/)) |
     (package(studio-client-domain) & test(/^protocol::tests::/)) |
     (package(studio-runtime-store) & test(/checkpoint_(reads_enforce|write_rejects)|state_owner::tests|serving_open_claims_the_state/)) |
     (package(studio-runtime-store) & test(/complaint_typed_tests::|questions_reads::|journal_reads_raw_valid_json_without_number_normalization|malformed_journal_events_are_refused_on_read_and_startup|append_refuses_unknown_kind_without_advancing_the_journal|v2_batch_rejects_an_oversized_first_event_without_advancing_ack/)) |
@@ -352,7 +352,7 @@ default-filter = '''
     (package(studio-runtime-services) & test(/conversation_signatures_preserve_nullable_setting_identity|confirmed_restart_is_atomic_replay_safe_and_waits_for_exit/)) |
     (package(studio-runtime-http) & test(/conversation_catalog_admission_tests::|branch_draft_keeps_the_historical_generated_request_identity|http_restart_uses_checked_request|monitor_restart_http_preserves_identity_and_waits_for_old_exit/)) |
     (package(studio-runtime-schema) & test(/^(continuation_snapshot|claude_login|usage_limits|checkpoint_record|complaint_record)::tests::/)) |
-    (package(studio-client-core) & test(/^(speech|client|terminal|file_preview|rich_document)::tests::/)) |
+    (package(studio-client-core) & test(/^(speech|client|terminal|file_preview|rich_document|file_actions)::tests::/)) |
     (package(studio-client-domain) & test(/^protocol::tests::/)) |
     (package(studio-runtime-store) & test(/checkpoint_(reads_enforce|write_rejects)|state_owner::tests|serving_open_claims_the_state/)) |
     (package(studio-runtime-store) & test(/complaint_typed_tests::|questions_reads::|journal_reads_raw_valid_json_without_number_normalization|malformed_journal_events_are_refused_on_read_and_startup|append_refuses_unknown_kind_without_advancing_the_journal|v2_batch_rejects_an_oversized_first_event_without_advancing_ack/)) |
