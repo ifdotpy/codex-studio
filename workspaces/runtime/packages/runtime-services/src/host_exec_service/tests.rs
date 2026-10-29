@@ -6,6 +6,27 @@ use std::time::Duration;
 const TOKEN: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const BUILD: &str = "build-a";
 
+#[tokio::test]
+async fn slot_lease_preserves_nullable_generation_number() {
+    let fixture = Fixture::new();
+    let slot = fixture
+        .service
+        .pool
+        .join(protocol::key("project"))
+        .join("0");
+    fs::create_dir_all(&slot).unwrap();
+    fs::write(
+        slot.join("slot.json"),
+        r#"{"generation":"","generationNumber":null,"usedAt":0,"extra":{"keep":true}}"#,
+    )
+    .unwrap();
+    let lease = fixture.acquire("nullable").await.unwrap();
+    assert_eq!(lease["generation"], "");
+    assert_eq!(lease.get("generationNumber"), Some(&Value::Null));
+    let metadata = protocol::read_json(&slot.join("slot.json")).unwrap();
+    assert_eq!(metadata["extra"]["keep"], true);
+}
+
 fn repository() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../..")
 }
