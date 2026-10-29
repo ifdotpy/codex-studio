@@ -1591,18 +1591,7 @@ pub(super) fn load_policy_records(
 }
 
 pub(super) fn complaint_ids(text: &str) -> Option<Vec<String>> {
-    let value: Value = serde_json::from_str(text).ok()?;
-    let entries = value.get("complaints")?.as_array()?;
-    if entries.is_empty() {
-        return None;
-    }
-    entries
-        .iter()
-        .map(|entry| {
-            let id = entry.get("complaint_id")?.as_str()?;
-            (!id.is_empty()).then(|| id.to_owned())
-        })
-        .collect()
+    studio_runtime_schema::notification_text::complaint_ids(text)
 }
 
 pub(super) fn complaints_resolved(
@@ -1635,22 +1624,7 @@ pub(super) fn complaints_resolved(
 }
 
 pub(super) fn progress_update(text: &str) -> Option<((String, String, String), u64)> {
-    let value: Value = serde_json::from_str(text).ok()?;
-    if value.get("importance")?.as_str()? != "progress" {
-        return None;
-    }
-    let field = |key| {
-        value
-            .get(key)?
-            .as_str()
-            .filter(|value| !value.is_empty())
-            .map(str::to_owned)
-    };
-    let version = value.get("progress_version")?.as_u64()?;
-    Some((
-        (field("sender")?, field("room")?, field("progress_key")?),
-        version,
-    ))
+    studio_runtime_schema::notification_text::progress_update(text)
 }
 
 pub(super) fn obsolete_events(
@@ -1856,11 +1830,7 @@ pub(super) fn apply_preparation(
 }
 
 pub(super) fn work_review_ids(event: &QueueEvent) -> Option<(String, String)> {
-    let value: Value = serde_json::from_str(&event.text).ok()?;
-    Some((
-        value.get("task")?.as_str()?.to_owned(),
-        value.get("result")?.get("id")?.as_str()?.to_owned(),
-    ))
+    studio_runtime_schema::notification_text::work_review_ids(&event.text)
 }
 
 pub(super) fn obsolete_work_review_ids(
