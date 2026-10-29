@@ -1,8 +1,5 @@
 //! Pure sync document, cursor and preference decisions.
-use studio_runtime_schema::shared_values::{
-    MODEL_WHITELIST_KEY_MAX_CODEPOINTS, MODEL_WHITELIST_KEY_PATTERN, MODEL_WHITELIST_MAX_KEYS,
-    MODEL_WHITELIST_PREFERENCE_KEY,
-};
+use studio_runtime_schema::shared_values::MODEL_CHOICES_PREFERENCE_KEY;
 
 use crate::event_write::truthy;
 pub use crate::sync_views::{
@@ -2351,7 +2348,7 @@ fn validate_preference(
     let key = &parts[0];
     let value = field.get("value").unwrap_or(&Value::Null);
 
-    let model_whitelist = key == MODEL_WHITELIST_PREFERENCE_KEY;
+    let model_choices = key == MODEL_CHOICES_PREFERENCE_KEY;
     let appearance = key == "codex-studio-preferences-v1";
     let visual = key.starts_with("codex-project-tree:")
         || key.starts_with("codex-project-compact:")
@@ -2367,7 +2364,7 @@ fn validate_preference(
     let shell = key == "server-order"
         || key.starts_with("server-alias:")
         || key.starts_with("server-label:");
-    if !appearance && !visual && !shell && !model_whitelist {
+    if !appearance && !visual && !shell && !model_choices {
         return Err(SyncPolicyError::InvalidPreferences);
     }
     let expected_user_scope = appearance
@@ -2378,8 +2375,10 @@ fn validate_preference(
         return Err(SyncPolicyError::InvalidPreferences);
     }
 
-    if model_whitelist {
-        if parts.len() != 1 || field.get("value").is_none() || !valid_model_whitelist(value) {
+    if model_choices {
+        if parts.len() != 1
+            || !studio_runtime_schema::validate("ModelChoices", value).unwrap_or(false)
+        {
             return Err(SyncPolicyError::InvalidPreferences);
         }
     } else if appearance {
@@ -2418,29 +2417,6 @@ fn validate_preference(
         return Err(SyncPolicyError::InvalidPreferences);
     }
     Ok(())
-}
-
-fn valid_model_whitelist(value: &Value) -> bool {
-    static PATTERN: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    let pattern = PATTERN.get_or_init(|| {
-        // The static runtime-schema pattern is compiled and exercised by contract tests.
-        regex::Regex::new(MODEL_WHITELIST_KEY_PATTERN).expect("valid model identity pattern")
-    });
-    if value.is_null() {
-        return true;
-    }
-    let Some(keys) = value.as_array() else {
-        return false;
-    };
-    let mut seen = std::collections::BTreeSet::new();
-    keys.len() <= MODEL_WHITELIST_MAX_KEYS
-        && keys.iter().all(|key| {
-            key.as_str().is_some_and(|key| {
-                key.chars().count() <= MODEL_WHITELIST_KEY_MAX_CODEPOINTS
-                    && pattern.is_match(key)
-                    && seen.insert(key)
-            })
-        })
 }
 
 fn valid_appearance(name: &str, value: &Value) -> bool {
@@ -2489,7 +2465,7 @@ fn prune_preferences(fields: &mut Map<String, Value>) {
             !preference_key(name).is_some_and(|key| {
                 key == "codex-studio-preferences-v1"
                     || key.starts_with("server-")
-                    || key == MODEL_WHITELIST_PREFERENCE_KEY
+                    || key == MODEL_CHOICES_PREFERENCE_KEY
             })
         })
         .map(|(name, field)| {
@@ -2512,7 +2488,7 @@ fn prune_preferences(fields: &mut Map<String, Value>) {
         preference_key(name).is_some_and(|key| {
             key == "codex-studio-preferences-v1"
                 || key.starts_with("server-")
-                || key == MODEL_WHITELIST_PREFERENCE_KEY
+                || key == MODEL_CHOICES_PREFERENCE_KEY
         }) || retained.contains(name)
     });
 }
@@ -3858,25 +3834,25 @@ mod tests {
     }
 
     #[test]
-    fn model_whitelist_preference_validates_scope_and_value() {
-        let key = r#"["studio-model-whitelist-v1"]"#;
+    fn model_choices_preference_validates_scope_and_value() {
+        let key = r#"["studio-model-choices-v1"]"#;
         for value in [
-            Value::Null,
-            json!([]),
-            json!(["codex:gpt-6-astra", "claude:opus"]),
+            json!({}),
+            json!({"codex:gpt-6-astra": "whitelisted", "claude:opus": "blacklisted"}),
+            json!({"codex:new": "untouched"}),
         ] {
             let fields = Value::Object(preference_field(key, value, 1));
             assert!(parse_preferences(&fields, PreferenceScope::Server).is_ok());
             assert!(parse_preferences(&fields, PreferenceScope::User).is_err());
         }
         for value in [
+            Value::Null,
             json!(true),
-            json!({}),
-            json!([1]),
-            json!(["astra"]),
-            json!([":opus"]),
-            json!(["codex:"]),
-            json!(["codex:a", "codex:a"]),
+            json!(["codex:a"]),
+            json!({"astra": "blacklisted"}),
+            json!({":opus": "blacklisted"}),
+            json!({"codex:": "blacklisted"}),
+            json!({"codex:a": "hidden"}),
         ] {
             assert!(
                 parse_preferences(
@@ -3896,12 +3872,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn model_whitelist_persists_retries_and_preserves_other_fields_on_reopen() {
+    async fn model_choices_persist_retries_and_preserves_other_fields_on_reopen() {
         let root = tempfile::tempdir().expect("isolated state");
         let store = RuntimeStore::open(Some(root.path()))
             .await
             .expect("open store");
-        let key = r#"["studio-model-whitelist-v1"]"#;
+        let key = r#"["studio-model-choices-v1"]"#;
         let other = r#"["codex-project-tree:/state","/repo"]"#;
         let user = r#"["codex-studio-preferences-v1","theme"]"#;
         let apply = |value, version| {
@@ -3909,7 +3885,7 @@ mod tests {
                 &Value::Object(preference_field(key, value, version)),
                 PreferenceScope::Server,
             )
-            .expect("valid whitelist")
+            .expect("valid model choices")
         };
         push_preferences(
             &store,
@@ -3929,7 +3905,7 @@ mod tests {
         )
         .await
         .expect("user preference");
-        let first = apply(json!(["codex:astra"]), 2);
+        let first = apply(json!({"codex:astra": "whitelisted"}), 2);
         let merged = push_preferences(
             &store,
             PreferenceScope::Server,
@@ -3946,23 +3922,23 @@ mod tests {
         let changed = push_preferences(
             &store,
             PreferenceScope::Server,
-            apply(json!([]), 3),
+            apply(json!({"codex:astra": "blacklisted"}), 3),
             |_| true,
             || {},
         )
         .await
         .expect("new edit");
-        assert_eq!(changed[key]["value"], json!([]));
+        assert_eq!(changed[key]["value"], json!({"codex:astra": "blacklisted"}));
         let stale = push_preferences(
             &store,
             PreferenceScope::Server,
-            apply(Value::Null, 1),
+            apply(json!({}), 1),
             |_| true,
             || {},
         )
         .await
         .expect("stale base");
-        assert_eq!(stale[key]["value"], json!([]));
+        assert_eq!(stale[key]["value"], json!({"codex:astra": "blacklisted"}));
         assert_eq!(stale[other]["value"], true);
         drop(store);
         let reopened = RuntimeStore::open(Some(root.path()))
@@ -3975,7 +3951,7 @@ mod tests {
                 .expect("server row"),
         )
         .expect("JSON");
-        assert_eq!(persisted["value"]["fields"][key]["value"], json!([]));
+        assert_eq!(persisted["value"]["fields"][key]["value"], json!({"codex:astra": "blacklisted"}));
         assert_eq!(persisted["value"]["fields"][other]["value"], true);
         let user_row: Value = serde_json::from_str(
             &SyncDocumentsRepository::preference_payload(&reader, "user")
@@ -3989,13 +3965,13 @@ mod tests {
         let all = push_preferences(
             &reopened,
             PreferenceScope::Server,
-            apply(Value::Null, 4),
+            apply(json!({}), 4),
             |_| true,
             || {},
         )
         .await
         .expect("all including future models");
-        assert_eq!(all[key]["value"], Value::Null);
+        assert_eq!(all[key]["value"], json!({}));
     }
 
     #[tokio::test]

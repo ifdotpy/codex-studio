@@ -5,10 +5,7 @@ import {
 import { randomUUID } from "../../uuid";
 import { ProviderKind } from "../../generated/providerKind.ts";
 import { McpInventory } from "./McpInventory";
-import {
-  isModelWhitelisted,
-  useModelWhitelist,
-} from "../models/modelWhitelist";
+import { isModelEnabled, useModelChoices } from "../models/modelChoices";
 import Tasks from "./Tasks";
 import ClaudeCheckpointRestore from "../ClaudeCheckpointRestore";
 import { useServerApi } from "../../servers/ServerServicesContext";
@@ -1065,10 +1062,10 @@ function Profiles(c: Context) {
   );
   // The profile model list comes from the selected lead's subagent catalog.
   const catalog = useWorkerModels(lead?.accountKey || "default", !!draft, true);
-  const allowedModels = useModelWhitelist();
+  const allowedModels = useModelChoices();
   const profileModels = toModelOptions(catalog.models);
   const eligibleModels = catalog.models.filter(
-    (model) => !model.hidden && isModelWhitelisted(model, allowedModels),
+    (model) => !model.hidden && isModelEnabled(model, allowedModels),
   );
   const defaultModel =
     (eligibleModels.find((model) => model.isDefault) || eligibleModels[0])

@@ -32,6 +32,7 @@ mod m2026_10_28_receipts_vm_provider;
 mod m2026_10_28_receipts_voice;
 mod m2026_10_28_receipts_work;
 mod m2026_10_28_usage_revision;
+mod m2026_10_29_model_choices;
 
 #[cfg(any(test, feature = "test-support"))]
 pub use m2026_10_20_agents::migrate_2026_10_20;
@@ -85,6 +86,11 @@ const OCTOBER_28: MigrationDate = MigrationDate {
     year: 2026,
     month: 10,
     day: 28,
+};
+const OCTOBER_29: MigrationDate = MigrationDate {
+    year: 2026,
+    month: 10,
+    day: 29,
 };
 const OCTOBER_22: MigrationDate = MigrationDate {
     year: 2026,
@@ -481,6 +487,16 @@ static CATALOG: &[&dyn Migration] = &[
     &ReceiptMigration {
         family: &m2026_10_28_receipts_drop_old_tables::Family,
         sources: &[],
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-29-model-choices",
+            introduced: OCTOBER_29,
+            target: MigrationTarget::Canvas,
+            supported_source: "Server preferences with the retired exclusive model whitelist",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_29_model_choices::apply(c.transaction),
     },
     &RegistryMigration,
 ];

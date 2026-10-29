@@ -1,5 +1,5 @@
 import { randomUUID } from "../uuid";
-import { isModelWhitelisted, useModelWhitelist } from "./models/modelWhitelist";
+import { isModelEnabled, useModelChoices } from "./models/modelChoices";
 import { useServerApi } from "../servers/ServerServicesContext";
 import { accountCanStart } from "../accountName";
 import { ProviderMark, setupAccountName } from "./AccountTiles";
@@ -75,17 +75,14 @@ function ParticipantFields({
     if (account_key && account_key !== value.account_key)
       change({ account_key, model: "" });
   };
-  const allowed = useModelWhitelist();
+  const allowed = useModelChoices();
   const availableModels = catalog.models.filter((row) =>
-    isModelWhitelisted({ ...row, provider: row.provider || provider }, allowed),
+    isModelEnabled({ ...row, provider: row.provider || provider }, allowed),
   );
   const info = modelForValue(catalog.models, value.model);
   const enabledModel =
     !!info &&
-    isModelWhitelisted(
-      { ...info, provider: info.provider || provider },
-      allowed,
-    );
+    isModelEnabled({ ...info, provider: info.provider || provider }, allowed);
   const reasoningEfforts =
     info?.supportedReasoningEfforts.map((item) => item.reasoningEffort) ?? [];
   useEffect(() => {
