@@ -1129,6 +1129,9 @@ export function gateSteps(root: string, name: string): GateStep[] {
         "workspaces/runtime/apps/vm-guest/mac-sync-witness.test.mts",
         "workspaces/runtime/apps/vm-guest/install-layr-store.test.mts",
       ]),
+      nodeTest("profile-contract", "native profile contract parity", [
+        "workspaces/client/apps/native/src-tauri/src/profile-contract.test.ts",
+      ]),
       nodeTest("native-fixture", "native WebView fixture", [
         "workspaces/client/apps/native/check-native.test.ts",
         "workspaces/client/apps/native/recovery-package.test.ts",
