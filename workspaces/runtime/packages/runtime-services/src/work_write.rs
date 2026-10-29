@@ -1236,7 +1236,7 @@ pub async fn prepare_vm_submission(
         if result_refusal(tx, &work.value(), &owner, &input)?.is_some() {
             return Ok(VmSubmissionPreparation::NotVm);
         }
-        if work.get("resultSchema").is_none() {
+        if work.extension("resultSchema").is_none() {
             text(input.result.as_str().ok_or(Error::InvalidRequest("Supply result as text when the task has no result_schema"))?, false)?;
         }
         text(&input.checks, false)?;
@@ -2148,7 +2148,7 @@ fn authorize_mutation(
             let work = WorkItemsRepository::work_record(tx, task_id)?
                 .ok_or(Error::InvalidRequest("Unknown work item"))?;
             if actor.id != actor.root_id
-                && work.get("createdBy").and_then(Value::as_str) != Some(actor.id.0.as_str())
+                && work.extension("createdBy").and_then(Value::as_str) != Some(actor.id.0.as_str())
             {
                 return Err(Error::InvalidRequest(
                     "Only the lead or task creator can cancel this task",
@@ -2520,7 +2520,7 @@ fn decide_submit(
     let submitter_id = submitter.id.0.as_str();
     let path = result_path(&input.state_dir, id, &result_id)?;
     let structured = record
-        .get("resultSchema")
+        .extension("resultSchema")
         .map(|schema| {
             studio_runtime_schema::task_results::validate_result(schema, &input.result)
                 .map_err(|_| Error::InvalidRequest("Result does not match result_schema"))

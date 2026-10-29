@@ -2735,6 +2735,10 @@ async fn task_result_schema_spawn_assignment_contains_contract() {
         .unwrap();
     assert!(text.contains(&contract.to_string()), "{text}");
     assert!(text.contains("[Task result contract]"));
+    assert!(
+        text.contains("[Studio task schema-task] Schema task"),
+        "{text}"
+    );
     assert_eq!(
         studio_runtime_store::WorkItemsRepository::work_record(&read, "schema-task")
             .unwrap()

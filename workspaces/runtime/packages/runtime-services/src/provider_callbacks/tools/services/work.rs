@@ -62,9 +62,9 @@ pub(super) fn execute(
     if let Some(work) = work {
         if action == "get" {
             let mut result = brief(&work_policy::work_item_view(work, &statuses));
-            result["gate"] = work.get("gate").cloned().unwrap_or(Value::Null);
+            result["gate"] = work.extension("gate").cloned().unwrap_or(Value::Null);
             result["description"] = work.value()["description"].clone();
-            if let Some(schema) = work.get("resultSchema") {
+            if let Some(schema) = work.extension("resultSchema") {
                 result["resultSchema"] = schema.clone();
             }
             result["dependencies"] = json!(work.dependencies());

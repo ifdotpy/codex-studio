@@ -92,7 +92,7 @@ pub fn admit(
     state_dir: &Path,
     now: f64,
 ) -> Result<bool, MonitorError> {
-    let Some(config) = task.get("gate").filter(|v| !v.is_null()).cloned() else {
+    let Some(config) = task.extension("gate").filter(|v| !v.is_null()).cloned() else {
         return Ok(false);
     };
     let config = normalize(&config)?;

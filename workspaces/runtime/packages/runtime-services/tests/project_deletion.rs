@@ -451,6 +451,63 @@ async fn seed_parent(store: &Arc<RuntimeStore>, path: &str) {
         .await
         .expect("parent");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_creation_assigns_task_and_replays_without_reassignment() {
+    let (_root, store, project) = setup().await;
+    seed_parent(&store, project["id"].as_str().unwrap()).await;
+    store.transaction(|tx| {
+        let work = json!({"id":"task","rootId":"new-lead","title":"Assigned task","status":"ready","owner":null,"version":1,"dependencies":[],"results":[],"decisions":[]});
+        studio_runtime_store::WorkItemsRepository::put_work(tx, "task", &work)?;
+        Ok(())
+    }).await.unwrap();
+    let (observed, _received) = tokio::sync::oneshot::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    release.send(()).unwrap();
+    let catalog = Arc::new(Catalog {
+        observed: Mutex::new(Some(observed)),
+        release: Mutex::new(released),
+    });
+    let environment = ChildEnvironment {
+        catalog: catalog.clone(),
+        home: store.root().to_string_lossy().into_owned(),
+    };
+    let accounts = accounts();
+    let context = agents_create::Context {
+        store: store.clone(),
+        accounts: Some(&accounts),
+        driver: Some(driver(store.root())),
+        catalog: Some(catalog),
+        managed_creation_environment: Some(&environment),
+        validate: Arc::new(|_, _| true),
+    };
+    let request = agents_create::Creation {
+        id: Some("spawned".into()),
+        parent: Some("new-lead".into()),
+        workspace: Some("shared".into()),
+        account: Some("default".into()),
+        prompt: "Task".into(),
+        intent: json!({"model":"gpt-fixture","effort":null,"task_id":"task"}),
+        ..Default::default()
+    };
+    let created = agents_create::agent(&context, request.clone())
+        .await
+        .expect("task-linked creation");
+    assert_eq!(created["id"], "spawned");
+    let replayed = agents_create::agent(&context, request)
+        .await
+        .expect("creation replay");
+    assert_eq!(replayed["id"], "spawned");
+    let read = store.test_reader().unwrap();
+    let saved = studio_runtime_store::WorkItemsRepository::work_record(&read, "task")
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.owner(), Some("spawned"));
+    assert_eq!(
+        saved.version().and_then(serde_json::Number::as_i64),
+        Some(2)
+    );
+}
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn project_deletion_fences_prepared_spawn_and_includes_prior_spawn() {
     for deletion_first in [false, true] {

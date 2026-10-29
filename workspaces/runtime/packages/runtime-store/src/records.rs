@@ -1362,7 +1362,7 @@ impl WorkItemRecord {
     pub fn into_value(self) -> Value {
         self.0.into_value()
     }
-    pub fn get(&self, key: &str) -> Option<&Value> {
+    pub fn extension(&self, key: &str) -> Option<&Value> {
         self.0.extra(key)
     }
     pub fn status(&self) -> WorkStatus {

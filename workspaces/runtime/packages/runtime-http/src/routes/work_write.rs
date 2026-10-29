@@ -223,7 +223,7 @@ pub(crate) async fn perform(
                         ),
                     );
                 }
-                if task.get("gate").is_none_or(Value::is_null) {
+                if task.extension("gate").is_none_or(Value::is_null) {
                     return Ok(None);
                 }
                 let owner = task.owner().unwrap_or(&actor_id);
@@ -1196,7 +1196,7 @@ mod managed_work_port_tests {
         assert_eq!(saved.value()["version"], before["version"]);
         assert_eq!(serde_json::json!(saved.status()), before["status"]);
         assert_eq!(saved.value()["results"], before["results"]);
-        assert!(saved.get("submissionRefusal").is_none());
+        assert!(saved.extension("submissionRefusal").is_none());
         let mut valid = args;
         valid["result"] = json!({"count":7});
         let submitted = written(

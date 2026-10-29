@@ -539,7 +539,7 @@ mod tests {
             record.value()["future"]["x"][0],
             json!(9007199254740993_u64)
         );
-        let pointer = record.get("future").unwrap()["x"]
+        let pointer = record.extension("future").unwrap()["x"]
             .as_array()
             .unwrap()
             .as_ptr();
