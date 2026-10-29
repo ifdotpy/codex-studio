@@ -753,7 +753,9 @@ fn merge_recovery(run: &mut ExecutionRun, agent: &AgentRecord) {
     ] {
         if let Some(marker) = agent.extra.get(key)
             && marker.get("turnId").is_none_or(|v| {
-                v.is_null() || v.as_str() == run.turn_id.value().map(String::as_str)
+                v.is_null()
+                    || v.as_str()
+                        .is_some_and(|turn| Some(turn) == run.turn_id.value().map(String::as_str))
             })
             && marker
                 .get("accountKey")
@@ -808,6 +810,26 @@ inventory::submit! { crate::repositories::SchemaRegistration { repository: "exec
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn malformed_recovery_turn_does_not_match_missing_run_turn() {
+        let raw = r#"{"id":"run","agent":"agent","accountKey":"default","epoch":1,"created":1,"status":"running","turnId":null}"#;
+        let mut run = decode("runtime_execution_runs", "run", raw).unwrap();
+        let agent = AgentRecord::from_value(json!({"id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"idle","disconnectRecovery":{"turnId":false}})).unwrap();
+        merge_recovery(&mut run, &agent);
+        assert!(!run.extra.contains_key("disconnectRecovery"));
+        for (marker, accepted) in [
+            (json!({}), true),
+            (json!({"turnId":null}), true),
+            (json!({"turnId":[]}), false),
+            (json!({"turnId":"other"}), false),
+        ] {
+            run.extra.clear();
+            let agent = AgentRecord::from_value(json!({"id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"idle","disconnectRecovery":marker})).unwrap();
+            merge_recovery(&mut run, &agent);
+            assert_eq!(run.extra.contains_key("disconnectRecovery"), accepted);
+        }
+    }
 
     #[test]
     fn execution_run_wire_tracks_known_schema_fields() {

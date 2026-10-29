@@ -587,6 +587,14 @@ mod tests {
         connection
             .execute("DELETE FROM runtime_execution_runs", [])
             .unwrap();
+        let decimal = r#"{"id":"run-1","agent":"worker","accountKey":"default","epoch":4.0,"status":"running","created":1}"#;
+        connection.execute("INSERT INTO runtime_execution_runs VALUES ('run-1','worker','default',4,NULL,NULL,1.0,?1)", [decimal]).unwrap();
+        assert!(
+            matches!(WorkItemsRepository::submission_identity(&connection, &agent), Err(StoreError::InvalidStoredObject { table: "runtime_agents", ref id }) if id == "worker")
+        );
+        connection
+            .execute("DELETE FROM runtime_execution_runs", [])
+            .unwrap();
         for record in [
             json!({"id":"run-1","agent":"worker","accountKey":"default","epoch":4,"created":1.0}),
             json!({"id":"run-1","agent":"worker","accountKey":"default","epoch":4,"status":"running","created":1.0,"latestAttemptId":5}),
