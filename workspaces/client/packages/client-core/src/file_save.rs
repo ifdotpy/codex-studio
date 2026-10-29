@@ -1,6 +1,7 @@
 //! A native gesture starts a bounded transfer. Only Save As chooses a path.
 //! A transfer can be reserved at the gesture and declared once the UI has the data.
 use base64::Engine;
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
@@ -36,6 +37,92 @@ struct Chunk {
     bytes: Vec<u8>,
 }
 
+// A missing declaration reserves a transfer; a present malformed field does not.
+#[derive(Clone, Default, Deserialize)]
+#[serde(untagged)]
+enum Field<T> {
+    #[default]
+    #[serde(skip)]
+    Missing,
+    Valid(T),
+    Invalid(serde::de::IgnoredAny),
+}
+impl<T> Field<T> {
+    fn valid(self) -> Option<T> {
+        match self {
+            Self::Valid(value) => Some(value),
+            Self::Missing | Self::Invalid(_) => None,
+        }
+    }
+}
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct SaveInput<'a> {
+    #[serde(borrow)]
+    transfer: Field<&'a str>,
+    #[serde(borrow)]
+    name: Field<&'a str>,
+    size: Field<u64>,
+    offset: Field<u64>,
+    #[serde(borrow)]
+    base64: Field<&'a str>,
+}
+impl<'a> SaveInput<'a> {
+    fn parse(value: &'a Value) -> Self {
+        if value.is_object() {
+            Self::deserialize(value).unwrap_or_default()
+        } else {
+            Self::default()
+        }
+    }
+    fn transfer_id(&self, error: &str) -> Result<String, String> {
+        self.transfer
+            .clone()
+            .valid()
+            .map(str::to_owned)
+            .ok_or_else(|| error.into())
+    }
+    fn declaration(&self) -> Result<Declaration, String> {
+        let size = self
+            .size
+            .clone()
+            .valid()
+            .filter(|n| *n <= LIMIT as u64)
+            .and_then(|n| usize::try_from(n).ok())
+            .ok_or("Save accepts at most 64 MiB of file data.")?;
+        Ok(Declaration {
+            name: name(self.name.clone().valid())?,
+            size,
+        })
+    }
+    fn begin_declaration(&self) -> Result<Option<Declaration>, String> {
+        if matches!(self.name, Field::Missing) && matches!(self.size, Field::Missing) {
+            Ok(None)
+        } else {
+            self.declaration().map(Some)
+        }
+    }
+    fn chunk(&self) -> Result<Chunk, String> {
+        let offset = self
+            .offset
+            .clone()
+            .valid()
+            .filter(|n| *n <= LIMIT as u64)
+            .and_then(|n| usize::try_from(n).ok())
+            .ok_or("Invalid save offset.")?;
+        let encoded = self
+            .base64
+            .clone()
+            .valid()
+            .filter(|s| s.len() <= CHUNK.div_ceil(3) * 4)
+            .ok_or("The save chunk is too large.")?;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .map_err(|_| "Invalid save bytes.")?;
+        Ok(Chunk { offset, bytes })
+    }
+}
+
 // Keep validation results until execution so missing or expired transfers and
 // reserved state retain their existing error precedence over payload errors.
 enum Command {
@@ -53,16 +140,17 @@ enum Command {
 
 impl Command {
     fn parse(method: &str, value: &Value) -> Result<Self, String> {
-        let id = || transfer_id(value, "A save transfer is required.");
+        let input = SaveInput::parse(value);
+        let id = || input.transfer_id("A save transfer is required.");
         match method {
-            "desktop.saveBegin" => Ok(Self::Begin(begin_declaration(value))),
+            "desktop.saveBegin" => Ok(Self::Begin(input.begin_declaration())),
             "desktop.saveDeclare" => Ok(Self::Declare {
                 id: id(),
-                declaration: declaration(value),
+                declaration: input.declaration(),
             }),
             "desktop.saveChunk" => Ok(Self::Chunk {
                 id: id(),
-                chunk: parse_chunk(value),
+                chunk: input.chunk(),
             }),
             "desktop.saveCancel" => Ok(Self::Cancel(id())),
             _ => Err("Unknown file transfer command.".into()),
@@ -70,20 +158,6 @@ impl Command {
     }
 }
 
-fn transfer_id(value: &Value, error: &str) -> Result<String, String> {
-    value["transfer"]
-        .as_str()
-        .map(str::to_owned)
-        .ok_or_else(|| error.into())
-}
-
-fn begin_declaration(value: &Value) -> Result<Option<Declaration>, String> {
-    if value.get("name").is_none() && value.get("size").is_none() {
-        Ok(None)
-    } else {
-        declaration(value).map(Some)
-    }
-}
 #[derive(Default)]
 pub(crate) struct Transfers {
     items: HashMap<String, Transfer>,
@@ -102,20 +176,8 @@ pub(crate) fn uuid() -> Result<String, String> {
     .and_then(|v| v.as_str().map(str::to_owned))
     .ok_or("Cannot create a save identity.".into())
 }
-fn declaration(value: &Value) -> Result<Declaration, String> {
-    let size = value["size"]
-        .as_u64()
-        .filter(|n| *n <= LIMIT as u64)
-        .and_then(|n| usize::try_from(n).ok())
-        .ok_or("Save accepts at most 64 MiB of file data.")?;
-    Ok(Declaration {
-        name: name(&value["name"])?,
-        size,
-    })
-}
-fn name(value: &Value) -> Result<String, String> {
+fn name(value: Option<&str>) -> Result<String, String> {
     let raw = value
-        .as_str()
         .filter(|s| !s.is_empty() && s.len() <= 1024)
         .ok_or("Invalid file name.")?;
     let normalized = raw.replace('\\', "/");
@@ -139,7 +201,7 @@ impl Transfers {
         }
     }
     pub(crate) fn cancel(&mut self, value: &Value) -> Result<Value, String> {
-        self.cancel_id(transfer_id(value, "A transfer is required.")?)
+        self.cancel_id(SaveInput::parse(value).transfer_id("A transfer is required.")?)
     }
 
     fn cancel_id(&mut self, id: String) -> Result<Value, String> {
@@ -151,7 +213,7 @@ impl Transfers {
         self.items.retain(|_, v| v.expires > now);
     }
     pub(crate) fn begin(&mut self, value: &Value, now: Instant) -> Result<Value, String> {
-        self.begin_typed(begin_declaration(value), now)
+        self.begin_typed(SaveInput::parse(value).begin_declaration(), now)
     }
     fn begin_typed(
         &mut self,
@@ -198,9 +260,10 @@ impl Transfers {
             .ok_or("The save transfer expired or is no longer available.".into())
     }
     pub(crate) fn chunk(&mut self, value: &Value, now: Instant) -> Result<Value, String> {
+        let input = SaveInput::parse(value);
         self.chunk_typed(
-            transfer_id(value, "A save transfer is required."),
-            parse_chunk(value),
+            input.transfer_id("A save transfer is required."),
+            input.chunk(),
             now,
         )
     }
@@ -222,7 +285,10 @@ impl Transfers {
         value: &Value,
         now: Instant,
     ) -> Result<(String, Vec<u8>), String> {
-        self.take_id(transfer_id(value, "A save transfer is required."), now)
+        self.take_id(
+            SaveInput::parse(value).transfer_id("A save transfer is required."),
+            now,
+        )
     }
     fn take_id(
         &mut self,
@@ -308,21 +374,6 @@ impl Transfer {
     }
 }
 
-fn parse_chunk(value: &Value) -> Result<Chunk, String> {
-    let offset = value["offset"]
-        .as_u64()
-        .filter(|n| *n <= LIMIT as u64)
-        .and_then(|n| usize::try_from(n).ok())
-        .ok_or("Invalid save offset.")?;
-    let encoded = value["base64"]
-        .as_str()
-        .filter(|s| s.len() <= CHUNK.div_ceil(3) * 4)
-        .ok_or("The save chunk is too large.")?;
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(encoded)
-        .map_err(|_| "Invalid save bytes.")?;
-    Ok(Chunk { offset, bytes })
-}
 pub fn command(method: &str, value: &Value) -> Result<Value, String> {
     let mut pool = transfers()
         .lock()
@@ -371,6 +422,12 @@ pub fn write_atomic_if(path: &Path, bytes: &[u8], active: impl Fn() -> bool) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn transfer_id(value: &Value, error: &str) -> Result<String, String> {
+        SaveInput::parse(value).transfer_id(error)
+    }
+    fn declaration(value: &Value) -> Result<Declaration, String> {
+        SaveInput::parse(value).declaration()
+    }
     fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
         write_atomic_if(path, bytes, || true)
     }
@@ -490,6 +547,76 @@ mod tests {
             .is_err()
         );
     }
+    #[test]
+    fn structured_input_matches_json_integer_and_presence_rules() {
+        for spelling in [
+            "0",
+            "1",
+            "-0",
+            "1.0",
+            "1e0",
+            "-1",
+            "18446744073709551615",
+            "18446744073709551616",
+        ] {
+            let number: Value = serde_json::from_str(spelling).unwrap();
+            let value = json!({"size":number});
+            let input = SaveInput::parse(&value);
+            assert_eq!(input.size.valid(), number.as_u64(), "{spelling}");
+        }
+        assert!(
+            SaveInput::parse(&json!({}))
+                .begin_declaration()
+                .unwrap()
+                .is_none()
+        );
+        for value in [
+            json!({"name":null}),
+            json!({"size":null}),
+            json!({"name":{},"size":0}),
+        ] {
+            assert!(SaveInput::parse(&value).begin_declaration().is_err());
+        }
+        assert!(
+            SaveInput::parse(&json!(["x", 1]))
+                .begin_declaration()
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn desktop_dispatch_uses_structured_save_commands() {
+        use crate::protocol::Request;
+        let begin = command("desktop.saveBegin", &json!({})).unwrap();
+        let id = begin["transfer"].clone();
+        for (method, value) in [
+            (
+                "desktop.saveDeclare",
+                json!({"transfer":id,"name":"../x","size":1}),
+            ),
+            (
+                "desktop.saveChunk",
+                json!({"transfer":id,"offset":0,"base64":"eA=="}),
+            ),
+            ("desktop.saveCancel", json!({"transfer":id})),
+        ] {
+            let response = crate::desktop::dispatch(
+                Request {
+                    id: "save-test".into(),
+                    method: method.into(),
+                    params: json!({"value":value}),
+                },
+                None,
+                None,
+                None,
+            )
+            .await;
+            assert!(response.error.is_none(), "{:?}", response.error);
+        }
+        assert!(finish(&json!({"transfer":id})).is_err());
+    }
+
     #[test]
     fn save_command_keeps_validation_order_and_cancel_semantics() {
         let now = Instant::now();
