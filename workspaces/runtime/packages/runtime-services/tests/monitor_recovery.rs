@@ -568,7 +568,9 @@ async fn native_input_is_called_after_commit_and_unknown_is_never_resent() {
                         let saved = MonitorsRepository::get(tx, &id)?.expect("admitted row");
                         assert_eq!(
                             saved
-                                .get("inputAttempt")
+                                .input_attempt
+                                .as_ref()
+                                .and_then(Option::as_ref)
                                 .and_then(|v| v.get("id"))
                                 .and_then(Value::as_str),
                             Some("ticket-1")

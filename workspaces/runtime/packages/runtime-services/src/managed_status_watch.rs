@@ -696,13 +696,18 @@ fn agent_status_record(agent: &AgentRecord) -> Value {
 }
 
 fn monitor_status_record(monitor: &MonitorRecord) -> Value {
+    let error = monitor
+        .error
+        .as_ref()
+        .and_then(Option::as_ref)
+        .map(|value| json!(value.as_str()));
     json!({
-        "id": monitor.get("id").cloned().unwrap_or(Value::Null),
-        "agent": monitor.get("agent").cloned().unwrap_or(Value::Null),
-        "status": monitor.get("status").cloned().unwrap_or(Value::Null),
-        "exitCode": monitor.get("exitCode").cloned().unwrap_or(Value::Null),
+        "id": monitor.id,
+        "agent": monitor.agent(),
+        "status": monitor.status(),
+        "exitCode": monitor.exit_code.as_ref().and_then(Option::as_ref),
         "kind": "monitor",
-        "error": clip_value(monitor.get("error")),
+        "error": clip_value(error.as_ref()),
     })
 }
 
@@ -782,15 +787,24 @@ fn is_terminal_agent(status: &AgentStatus) -> bool {
 
 fn is_active_monitor(monitor: &MonitorRecord) -> bool {
     matches!(
-        monitor.get("status").and_then(Value::as_str),
-        Some("running" | "starting" | "approval")
+        monitor.status(),
+        Some(
+            studio_runtime_schema::studio_errors::MonitorStatus::Running
+                | studio_runtime_schema::studio_errors::MonitorStatus::Starting
+                | studio_runtime_schema::studio_errors::MonitorStatus::Approval
+        )
     )
 }
 
 fn is_terminal_monitor(monitor: &MonitorRecord) -> bool {
     matches!(
-        monitor.get("status").and_then(Value::as_str),
-        Some("completed" | "failed" | "cancelled" | "lost")
+        monitor.status(),
+        Some(
+            studio_runtime_schema::studio_errors::MonitorStatus::Completed
+                | studio_runtime_schema::studio_errors::MonitorStatus::Failed
+                | studio_runtime_schema::studio_errors::MonitorStatus::Cancelled
+                | studio_runtime_schema::studio_errors::MonitorStatus::Lost
+        )
     )
 }
 

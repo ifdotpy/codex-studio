@@ -41,6 +41,7 @@ pub mod queue_command;
 pub mod records;
 pub mod recovery_record;
 pub mod rule_record;
+pub mod monitor_record;
 pub mod shared_values;
 pub mod shell_policy;
 mod stored_record;

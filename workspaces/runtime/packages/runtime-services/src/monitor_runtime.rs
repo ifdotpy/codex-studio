@@ -320,15 +320,12 @@ pub fn snapshot(
 ) -> Result<(MonitorSnapshot, AgentRecord), MonitorError> {
     let row = MonitorsRepository::get(transaction, id)?
         .ok_or(MonitorError::Refused("Unknown command watch"))?;
-    let agent_id = row
-        .get("agent")
-        .and_then(Value::as_str)
-        .ok_or_else(|| invalid(id, "agent"))?;
+    let agent_id = row.agent().ok_or_else(|| invalid(id, "agent"))?;
     let actor = AgentRepository::get(transaction, &AgentId::from(agent_id))?
         .ok_or(MonitorError::Refused("Unknown agent"))?;
     let actor_value =
         serde_json::to_value(&actor).map_err(studio_runtime_store::StoreError::from)?;
-    let snapshot = MonitorSnapshot::checked(row.value().clone(), actor_value)?;
+    let snapshot = MonitorSnapshot::checked_stored(row, actor_value)?;
     Ok((snapshot, actor))
 }
 
@@ -1469,7 +1466,7 @@ pub async fn stored_create_result(
                 .and_then(Value::as_str)
                 .ok_or(MonitorError::Refused("Invalid monitor identity"))?;
             match MonitorsRepository::get(tx, id)? {
-                Some(previous) if policy::same_request(previous.value(), &record) => {
+                Some(previous) if policy::same_request(&previous.value(), &record) => {
                     Ok(Some(previous.value().clone()))
                 }
                 Some(_) => Err(MonitorError::Refused(
@@ -1510,7 +1507,7 @@ pub fn create_in_transaction(
         .and_then(Value::as_str)
         .ok_or(MonitorError::Refused("Invalid monitor identity"))?;
     if let Some(previous) = MonitorsRepository::get(tx, id)? {
-        if !policy::same_request(previous.value(), &record) {
+        if !policy::same_request(&previous.value(), &record) {
             return Err(MonitorError::Refused(
                 "This monitor request id has different content",
             ));
@@ -1815,7 +1812,8 @@ mod recovery_selection_tests {
         let saved = studio_runtime_store::MonitorsRepository::get(&tx, "watch")
             .expect("read")
             .expect("owner");
-        let queue = saved.value()["streamQueue"].as_array().expect("queue");
+        let saved_value = saved.value();
+        let queue = saved_value["streamQueue"].as_array().expect("queue");
         assert_eq!(queue.len(), 2);
         assert_eq!(queue[0]["cursor"], "output:1");
         assert_eq!(queue[1]["kind"], "exit");

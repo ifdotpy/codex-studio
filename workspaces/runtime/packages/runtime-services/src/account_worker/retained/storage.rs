@@ -195,7 +195,7 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
         && !crate::shell_policy::monitor_cleanup_allowed(
             tx,
             &agent_record.value(),
-            monitor.value(),
+            &monitor.value(),
             crate::idle_compaction::wall_now(),
         )?
     {

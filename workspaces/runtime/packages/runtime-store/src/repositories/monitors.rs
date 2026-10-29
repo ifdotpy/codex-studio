@@ -221,6 +221,31 @@ mod tests {
     use rusqlite::Connection;
 
     #[test]
+    fn monitor_rows_check_identity_and_preserve_open_operation_evidence() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        )
+        .unwrap();
+        let raw = r#"{"id":"m","status":null,"operation":{"agent":"a","epoch":1.0,"accountKey":"default","connectionId":"c","providerRequest":{"future":true}},"streamQueue":[{"opaque":true}]}"#;
+        db.execute("INSERT INTO runtime_monitors VALUES ('m',?1)", [raw])
+            .unwrap();
+        assert_eq!(
+            MonitorsRepository::get(&db, "m").unwrap().unwrap().value(),
+            serde_json::from_str::<serde_json::Value>(raw).unwrap()
+        );
+        for raw in [
+            r#"{"id":"wrong"}"#,
+            r#"{"id":"m","status":"unknown"}"#,
+            r#"{"id":"m","id":"m"}"#,
+        ] {
+            db.execute("UPDATE runtime_monitors SET record=?1", [raw])
+                .unwrap();
+            assert!(MonitorsRepository::get(&db, "m").is_err());
+        }
+    }
+
+    #[test]
     fn historical_thread_is_readable_but_does_not_change_operation_identity() {
         let base = r#"{"agent":"a","epoch":1,"accountKey":"default","connectionId":"c"}"#;
         let historical = r#"{"agent":"a","epoch":1,"accountKey":"default","connectionId":"c","threadId":"thread"}"#;

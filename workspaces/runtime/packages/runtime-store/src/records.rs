@@ -1001,14 +1001,19 @@ impl JsonRecord for CheckpointRecord {
         Some(self.id())
     }
 }
-record_newtype!(
-    MonitorRecord,
-    String,
-    table = "runtime_monitors",
-    schema = "PersistedMonitorRecord",
-    key = PayloadId,
-    query = JsonAgent
-);
+pub use studio_runtime_schema::monitor_record::MonitorRecord;
+impl JsonRecord for MonitorRecord {
+    type Id = String;
+    const TABLE: &'static str = "runtime_monitors";
+    const SCHEMA: &'static str = "PersistedMonitorRecord";
+    const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
+    const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::JsonAgent;
+    const TYPED_SHAPE: bool = true;
+    const DIRECT_TYPED_DECODE: bool = true;
+    fn record_key(&self) -> Option<&Self::Id> {
+        Some(self.id())
+    }
+}
 pub use studio_runtime_schema::terminal_record::TerminalRecord;
 
 impl JsonRecord for TerminalRecord {

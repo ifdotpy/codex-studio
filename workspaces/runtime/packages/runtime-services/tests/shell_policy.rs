@@ -230,7 +230,7 @@ async fn cleanup_records_intent_before_native_stop_and_never_repeats_unknown_io(
     let monitor = MonitorsRepository::get(&conn, &id).unwrap().unwrap();
     let mut active = actor.value();
     active["inFlight"] = json!(true);
-    assert!(!policy::monitor_cleanup_allowed(&conn, &active, monitor.value(), 3600.0).unwrap());
+    assert!(!policy::monitor_cleanup_allowed(&conn, &active, &monitor.value(), 3600.0).unwrap());
 }
 
 #[tokio::test]

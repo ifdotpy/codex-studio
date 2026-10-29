@@ -601,6 +601,7 @@ fn check_account_group_parity(openapi: &Value) -> Result<(), String> {
 /// Hold the committed OpenAPI document and persisted-state schemas to the Rust owners.
 pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<(), String> {
     crate::rule_record::check_schema_parity()?;
+    crate::monitor_record::check_schema_parity()?;
     crate::transcript_asset::check_schema_parity()?;
     crate::complaint_record::check_schema_parity()?;
     crate::checkpoint_record::check_schema_parity()?;
@@ -1318,6 +1319,10 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             text: run_node(root, "node_modules/oxfmt/bin/oxfmt", "--stdin-filepath=workspaces/runtime/packages/runtime-schema/src/schemas/persisted-rule-record.schema.json", &serde_json::to_string_pretty(&crate::rule_record::schema()).map_err(|error| error.to_string())?)?,
         },
         Rendered {
+            path: crate::studio_errors::MONITOR_RECORD_SCHEMA_PATH.into(),
+            text: run_node(root, "node_modules/oxfmt/bin/oxfmt", "--stdin-filepath=workspaces/runtime/packages/runtime-schema/src/schemas/persisted-monitor-record.schema.json", &serde_json::to_string_pretty(&crate::monitor_record::schema()).map_err(|error| error.to_string())?)?,
+        },
+        Rendered {
             path: "workspaces/runtime/packages/runtime-schema/src/schemas/runtime-transcript-asset.schema.json".into(),
             text: run_node(root, "node_modules/oxfmt/bin/oxfmt", "--stdin-filepath=workspaces/runtime/packages/runtime-schema/src/schemas/runtime-transcript-asset.schema.json", &serde_json::to_string_pretty(&crate::transcript_asset::schema()).map_err(|error| error.to_string())?)?,
         },
@@ -1563,14 +1568,6 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             &format!("--stdin-filepath={path}"),
             &serde_json::to_string_pretty(&messages).map_err(|error| error.to_string())?,
         )?,
-    });
-    let monitor_path = crate::studio_errors::MONITOR_RECORD_SCHEMA_PATH;
-    let mut monitor = read_json(root, monitor_path)?;
-    monitor["properties"]["status"]["anyOf"][0] =
-        openapi["components"]["schemas"]["MonitorState"].clone();
-    rendered.push(Rendered {
-        path: monitor_path.into(),
-        text: serde_json::to_string_pretty(&monitor).map_err(|error| error.to_string())? + "\n",
     });
     for (name, pointer) in PROVIDER_PERSISTED_RECORDS {
         let path =
