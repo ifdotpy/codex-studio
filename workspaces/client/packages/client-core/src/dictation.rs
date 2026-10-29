@@ -4,7 +4,7 @@ use crate::protocol::{Request, Response};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
-use serde_json::{Number, Value, json};
+use serde_json::{Number, Value};
 use std::collections::BTreeMap;
 use std::{
     io::Write,
@@ -584,6 +584,7 @@ fn export(db: &Connection, id: &str, directory: &Path) -> Result<String, String>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     fn call(db: &mut Connection, method: &str, params: Value) -> Result<Value, String> {
         let response = stored(
             db,
