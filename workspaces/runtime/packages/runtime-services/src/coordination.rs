@@ -690,9 +690,7 @@ fn safety_retry_active(agent: &studio_runtime_store::AgentRecord) -> bool {
                 .is_some_and(|stage| ACTIVE.contains(&stage))
                 && retry.get("epoch").and_then(Value::as_i64) == Some(agent.epoch)
                 && retry.get("accountKey").and_then(Value::as_str)
-                    == Some(
-                        agent.account_key.as_str(),
-                    )
+                    == Some(agent.account_key.as_str())
         })
 }
 

@@ -47,8 +47,9 @@ fn fixture() -> tempfile::TempDir {
 fn corpus() -> &'static Value {
     static CORPUS: OnceLock<Value> = OnceLock::new();
     CORPUS.get_or_init(|| {
-        let mut cases: Value = serde_json::from_str(include_str!("wave7_p07_fixtures/expected.json"))
-            .expect("frozen recovery expectations");
+        let mut cases: Value =
+            serde_json::from_str(include_str!("wave7_p07_fixtures/expected.json"))
+                .expect("frozen recovery expectations");
         normalize_agent_records(&mut cases);
         cases
     })
@@ -56,10 +57,18 @@ fn corpus() -> &'static Value {
 fn normalize_agent_records(value: &mut Value) {
     match value {
         Value::Object(fields) => {
-            if fields.contains_key("id") && fields.contains_key("rootId") && fields.contains_key("epoch") && fields.contains_key("status") {
-                fields.entry("accountKey").or_insert_with(|| json!("default"));
+            if fields.contains_key("id")
+                && fields.contains_key("rootId")
+                && fields.contains_key("epoch")
+                && fields.contains_key("status")
+            {
+                fields
+                    .entry("accountKey")
+                    .or_insert_with(|| json!("default"));
                 for key in ["threadId", "turnId"] {
-                    if fields.get(key).is_some_and(Value::is_null) { fields.remove(key); }
+                    if fields.get(key).is_some_and(Value::is_null) {
+                        fields.remove(key);
+                    }
                 }
             }
             fields.values_mut().for_each(normalize_agent_records);

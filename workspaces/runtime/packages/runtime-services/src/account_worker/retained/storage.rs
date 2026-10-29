@@ -239,8 +239,7 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
                 && source["id"] == actor.agent
                 && source["epoch"].as_i64() == Some(actor.epoch)
                 && source["accountKey"].as_str() == Some(call.scope.account.as_str())
-                && source["threadId"].as_str()
-                    == agent_record.thread_id.as_deref()
+                && source["threadId"].as_str() == agent_record.thread_id.as_deref()
                 && path_is_absolute(&snapshot["sourcePath"])
                 && path_is_absolute(&snapshot["copyPath"])
                 && snapshot["sourceSha256"]
@@ -276,9 +275,9 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
         )
         && actor.epoch.checked_add(1) == Some(agent_record.epoch)
         && agent_record.auto_wake == Some(false);
-    let thread_matches = call.params["threadId"].as_str().is_some_and(|thread| {
-        agent_record.thread_id.as_deref() == Some(thread)
-    });
+    let thread_matches = call.params["threadId"]
+        .as_str()
+        .is_some_and(|thread| agent_record.thread_id.as_deref() == Some(thread));
     let thread_start = call.method == Method::ThreadStart && call.params.get("threadId").is_none();
     let ephemeral_turn = if call.method == Method::TurnStart {
         match call.params["threadId"].as_str() {

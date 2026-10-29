@@ -339,9 +339,7 @@ impl SchedulerRepository {
         {
             return Ok(false);
         }
-        let Some(thread) = agent.thread_id.as_deref()
-            .filter(|value| !value.is_empty())
-        else {
+        let Some(thread) = agent.thread_id.as_deref().filter(|value| !value.is_empty()) else {
             return Ok(false);
         };
         let account = agent.account_key.as_str();
@@ -1318,13 +1316,19 @@ pub(super) fn replay_claim(
         preparation.result == true
             && preparation.input["agent"] == agent.id.0
             && preparation.input["epoch"] == epoch
-            && preparation.input["account"]
-                == Value::String(agent.account_key.clone())
+            && preparation.input["account"] == Value::String(agent.account_key.clone())
             && preparation.input["previousThread"]
-                == original.thread_id.clone().map(Value::String)
+                == original
+                    .thread_id
+                    .clone()
+                    .map(Value::String)
                     .unwrap_or(Value::Null)
             && preparation.input["thread"]
-                == agent.thread_id.clone().map(Value::String).unwrap_or(Value::Null)
+                == agent
+                    .thread_id
+                    .clone()
+                    .map(Value::String)
+                    .unwrap_or(Value::Null)
     });
     if original.id != agent.id
         || original.epoch != epoch

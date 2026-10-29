@@ -5183,10 +5183,9 @@ pub fn commit_prepared_turn(
     connection_id: &str,
     submission: &crate::notification_dispatch::PreparedSubmission,
 ) -> Result<bool, WorkerError> {
-    if AgentRepository::get(tx, &AgentId::from(intent.agent_id.as_str()))?.is_none_or(|agent| {
-        agent.account_key.as_str()
-            != intent.account_key
-    }) {
+    if AgentRepository::get(tx, &AgentId::from(intent.agent_id.as_str()))?
+        .is_none_or(|agent| agent.account_key.as_str() != intent.account_key)
+    {
         return Ok(false);
     }
     let may_submit = SchedulerRepository::reconcile_obsolete_before_submit(

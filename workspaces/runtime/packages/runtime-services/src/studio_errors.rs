@@ -622,7 +622,9 @@ fn build(tx: &Transaction<'_>, now: f64) -> Result<(Vec<StudioError>, Baseline),
         let Some(kind) = agent_kind(record.status.as_str(), &error) else {
             continue;
         };
-        let turn = record.turn_id.as_deref()
+        let turn = record
+            .turn_id
+            .as_deref()
             .or_else(|| {
                 record
                     .extra

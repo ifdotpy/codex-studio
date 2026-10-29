@@ -2064,12 +2064,12 @@ async fn exec_event_owner_checks_accept_the_receipt_form_like_python() {
         if let Some(lead) = case.lead {
             let mut record = AgentRecord {
                 in_flight: None,
-        account_key: "default".into(),
-        thread_id: None,
-        turn_id: None,
-        auto_wake: None,
-        execution_mode: None,
-        turn_epoch: None,
+                account_key: "default".into(),
+                thread_id: None,
+                turn_id: None,
+                auto_wake: None,
+                execution_mode: None,
+                turn_epoch: None,
                 title_job: None,
                 start_outcome_hold: None,
                 fired_events: Default::default(),

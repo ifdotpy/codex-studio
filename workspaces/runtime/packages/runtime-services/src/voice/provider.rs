@@ -1790,7 +1790,9 @@ fn agent_context(
 ) -> Result<(String, String, i64), VoiceProviderError> {
     let agent = super::checked_agent(connection, agent_id)
         .map_err(|_| VoiceProviderError::ContextUnavailable)?;
-    let thread_id = agent.thread_id.as_deref()
+    let thread_id = agent
+        .thread_id
+        .as_deref()
         .filter(|thread| !thread.is_empty())
         .unwrap_or_default();
     let account_key = Some(agent.account_key.as_str())
@@ -1909,8 +1911,7 @@ async fn attach_start_context(
         .transaction_with_error(move |transaction| -> Result<_, VoiceProviderError> {
             let agent = super::checked_agent(transaction, &agent_id)
                 .map_err(|_| VoiceProviderError::ContextUnavailable)?;
-            let current_thread = agent.thread_id.as_deref()
-                .unwrap_or_default();
+            let current_thread = agent.thread_id.as_deref().unwrap_or_default();
             let current_account = agent.account_key.as_str();
             if agent.epoch != context.epoch
                 || current_thread != context.thread_id
@@ -2734,12 +2735,12 @@ mod tests {
         extra.insert("isLead".into(), json!(true));
         let agent = AgentRecord {
             in_flight: None,
-        account_key: "default".into(),
-        thread_id: Some("voice-thread".into()),
-        turn_id: None,
-        auto_wake: None,
-        execution_mode: None,
-        turn_epoch: None,
+            account_key: "default".into(),
+            thread_id: Some("voice-thread".into()),
+            turn_id: None,
+            auto_wake: None,
+            execution_mode: None,
+            turn_epoch: None,
             title_job: None,
             start_outcome_hold: None,
             fired_events: Default::default(),

@@ -754,7 +754,10 @@ impl InterruptFixture {
                         }
                         let attempt = agent.extra.get("startAttempt").unwrap_or(&Value::Null);
                         let needs_settlement = agent.in_flight == Some(true)
-                            || agent.turn_id.as_deref().is_some_and(|turn| !turn.is_empty())
+                            || agent
+                                .turn_id
+                                .as_deref()
+                                .is_some_and(|turn| !turn.is_empty())
                             || attempt.get("activeAtReservation").and_then(Value::as_bool)
                                 == Some(true)
                             || agent

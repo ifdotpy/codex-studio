@@ -1602,9 +1602,7 @@ pub fn restart_in_transaction(
     let replacement_id =
         uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, request_id.as_bytes()).to_string();
     let actor = event_write::checked_agent(tx, owner)?;
-    if actor.epoch != epoch
-        || actor.account_key.as_str() != body.account_key
-    {
+    if actor.epoch != epoch || actor.account_key.as_str() != body.account_key {
         return Err(MonitorError::Refused("The monitor owner changed"));
     }
     let signature = &body.signature;

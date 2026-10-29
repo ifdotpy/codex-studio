@@ -80,10 +80,7 @@ async fn branch(
         .read_async("runtime-http/routes/branches", move |db| {
             let agent = AgentRepository::get(db, &AgentId::from(agent_id.as_str()))?
                 .ok_or_else(|| bad_request("Unknown managed agent"))?;
-            Ok::<_, ApiError>(
-                agent.account_key.as_str()
-                    .to_owned(),
-            )
+            Ok::<_, ApiError>(agent.account_key.as_str().to_owned())
         })
         .await?;
     let operation_id = format!("branch:{}", body.id);

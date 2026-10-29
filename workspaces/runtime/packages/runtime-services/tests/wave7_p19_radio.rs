@@ -299,7 +299,8 @@ fn state(store: &RuntimeStore, tables: &Value) -> Value {
 fn normalize(value: &mut Value) {
     match value {
         Value::Object(map) => {
-            if map.contains_key("rootId") && map.contains_key("epoch") && map.contains_key("status") {
+            if map.contains_key("rootId") && map.contains_key("epoch") && map.contains_key("status")
+            {
                 for key in ["threadId", "turnId"] {
                     if map.get(key).is_some_and(Value::is_null) {
                         map.remove(key);

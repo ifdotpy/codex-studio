@@ -239,8 +239,7 @@ async fn run_native_action(
             .read_async("runtime-http/routes/agent_management", move |tx| {
                 let record = AgentRepository::get(tx, &AgentId::from(read_agent.as_str()))?
                     .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Agent not found"))?;
-                let account = record.account_key.as_str()
-                    .to_owned();
+                let account = record.account_key.as_str().to_owned();
                 let epoch = record.value()["epoch"]
                     .as_i64()
                     .ok_or_else(ApiError::internal)?;

@@ -1543,7 +1543,10 @@ fn finalize_deleted(tx: &Transaction<'_>, id: &str) -> Result<(), ManagementErro
 fn needs_deleted_settlement(agent: &AgentRecord) -> bool {
     studio_runtime_store::truthy(agent.extra.get("deletedAt"))
         && (agent.in_flight == Some(true)
-            || agent.turn_id.as_deref().is_some_and(|turn| !turn.is_empty())
+            || agent
+                .turn_id
+                .as_deref()
+                .is_some_and(|turn| !turn.is_empty())
             || studio_runtime_store::truthy(
                 agent
                     .extra

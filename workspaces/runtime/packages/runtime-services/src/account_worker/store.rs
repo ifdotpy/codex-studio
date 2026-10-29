@@ -663,8 +663,7 @@ pub(super) fn recover_vm_actor_requests(
     let Some(agent_record) = AgentRepository::get(connection, &AgentId::from(agent))? else {
         return Ok(Vec::new());
     };
-    if agent_record.execution_mode != Some(studio_runtime_store::AgentExecutionMode::Vm)
-    {
+    if agent_record.execution_mode != Some(studio_runtime_store::AgentExecutionMode::Vm) {
         return Ok(Vec::new());
     }
     let mut recovered = Vec::new();
@@ -2801,9 +2800,7 @@ pub(super) async fn stop(
         let Some(record) = AgentRepository::get(tx, &AgentId::from(agent.as_str()))? else {
             return Ok(None);
         };
-        if record.account_key.as_str()
-            != account.as_str()
-        {
+        if record.account_key.as_str() != account.as_str() {
             return Ok(None);
         }
         SchedulerRepository::stop_agent(tx, &agent, "Stopped by user")?;
@@ -2854,8 +2851,7 @@ pub(super) fn interrupt_intent(
                     agent_id: agent.into(),
                     epoch,
                     attempt_id: id.into(),
-                    account_key: a.account_key.as_str()
-                        .into(),
+                    account_key: a.account_key.as_str().into(),
                     provider,
                     thread_id: Some(thread.into()),
                     cwd: None,

@@ -1378,8 +1378,7 @@ pub(crate) async fn request_review(
     environment: &dyn ManagedCreationEnvironment,
 ) -> Result<crate::managed_host_tools::DispatchedOperation, Error> {
     let actor_record = actor.record().clone();
-    if actor_record.execution_mode == Some(studio_runtime_store::AgentExecutionMode::Vm)
-    {
+    if actor_record.execution_mode == Some(studio_runtime_store::AgentExecutionMode::Vm) {
         if actor_record.extra.get("isLead").and_then(Value::as_bool) != Some(true) {
             return Err(crate::managed_host_tools::Error::Invalid(
                 "Only the lead can create a layr reviewer",

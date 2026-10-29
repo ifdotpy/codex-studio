@@ -30,9 +30,10 @@ async fn claim_retry(state: &State) -> String {
                     row.auto_wake = Some(true);
                     for (key, value) in [
                         ("lastCompletedTurn", json!(PREVIOUS_TURN)),
-
                         ("status", json!("completed")),
-                    ] { row.extra.insert(key.into(), value); }
+                    ] {
+                        row.extra.insert(key.into(), value);
+                    }
                     row.extra.remove("startAttempt");
                     AgentRepository::put(tx, &row)?;
                     let raw = ContinuationRepository::snapshot(

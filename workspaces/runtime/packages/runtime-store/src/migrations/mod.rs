@@ -13,7 +13,6 @@ pub(crate) mod m2026_10_27_cost_index;
 mod m2026_10_27_retired_sqlite;
 mod m2026_10_27_scheduler_indexes;
 mod m2026_10_28_agent_account;
-mod m2026_10_29_agent_authorizations;
 mod m2026_10_28_agent_fields;
 mod m2026_10_28_group_revision;
 mod m2026_10_28_receipts_account_worker;
@@ -35,6 +34,7 @@ mod m2026_10_28_receipts_vm_provider;
 mod m2026_10_28_receipts_voice;
 mod m2026_10_28_receipts_work;
 mod m2026_10_28_usage_revision;
+mod m2026_10_29_agent_authorizations;
 mod m2026_10_29_model_choices;
 mod m2026_10_29_request_results_v2;
 
