@@ -2123,15 +2123,19 @@ mod bounded_reconcile_tests {
                         root_id: id,
                         epoch: 1,
                         status: AgentStatus::Queued,
+                        account_key: "account-a".into(),
+                        auto_wake: Some(true),
+                        in_flight: Some(false),
+                        execution_mode: None,
+                        turn_epoch: None,
+                        thread_id: None,
+                        turn_id: None,
                         extra: BTreeMap::from([
                             (
                                 "provider".to_owned(),
                                 serde_json::json!(studio_runtime_schema::ProviderKind::Codex),
                             ),
-                            ("accountKey".to_owned(), serde_json::json!("account-a")),
                             ("workspaceMode".to_owned(), serde_json::json!("image")),
-                            ("autoWake".to_owned(), serde_json::json!(true)),
-                            ("inFlight".to_owned(), serde_json::json!(false)),
                         ]),
                     },
                 )?;
@@ -2304,12 +2308,13 @@ mod bounded_reconcile_tests {
                         root_id: id.clone(),
                         epoch: 1,
                         status: AgentStatus::Queued,
+                        account_key: "default".into(),
+                        auto_wake: Some(true),
+                        in_flight: Some(false),
+                        execution_mode: None, turn_epoch: None, thread_id: None, turn_id: None,
                         extra: BTreeMap::from([
                             ("provider".to_owned(), serde_json::json!(studio_runtime_schema::ProviderKind::Codex)),
-                            ("accountKey".to_owned(), serde_json::json!("default")),
                             ("workspaceMode".to_owned(), serde_json::json!("image")),
-                            ("autoWake".to_owned(), serde_json::json!(true)),
-                            ("inFlight".to_owned(), serde_json::json!(false)),
                         ]),
                     },
                 )?;
@@ -2348,13 +2353,10 @@ mod bounded_reconcile_tests {
                     ("lead", None, AgentStatus::Queued),
                     ("worker", Some("lead"), AgentStatus::Running),
                 ] {
-                    let mut extra = BTreeMap::from([
-                        (
-                            "provider".to_owned(),
-                            serde_json::json!(studio_runtime_schema::ProviderKind::Codex),
-                        ),
-                        ("accountKey".to_owned(), serde_json::json!("default")),
-                    ]);
+                    let mut extra = BTreeMap::from([(
+                        "provider".to_owned(),
+                        serde_json::json!(studio_runtime_schema::ProviderKind::Codex),
+                    )]);
                     if let Some(parent) = parent {
                         extra.insert("parentId".to_owned(), serde_json::json!(parent));
                     }
@@ -2373,6 +2375,13 @@ mod bounded_reconcile_tests {
                             root_id: AgentId::from("lead"),
                             epoch: 1,
                             status,
+                            account_key: "default".into(),
+                            auto_wake: None,
+                            in_flight: None,
+                            execution_mode: None,
+                            turn_epoch: None,
+                            thread_id: None,
+                            turn_id: None,
                             extra,
                         },
                     )?;

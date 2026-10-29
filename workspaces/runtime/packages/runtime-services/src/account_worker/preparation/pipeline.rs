@@ -943,7 +943,7 @@ async fn workspace_with_vm_action(
     allow_vm_native_action: bool,
 ) -> Result<crate::workspace_ready::ReadyToken, WorkerError> {
     let record = workspace_agent(&store, &intent.agent_id).await?;
-    if record.extra.get("executionMode").and_then(Value::as_str) == Some("vm") {
+    if record.execution_mode == Some(studio_runtime_store::AgentExecutionMode::Vm) {
         if record.extra.get("layrReady").and_then(Value::as_bool) != Some(true) {
             let start_attempt = record.extra.get("startAttempt").unwrap_or(&Value::Null);
             let attempt_id = start_attempt

@@ -94,6 +94,27 @@ An encoded record above 64 MiB is rejected explicitly. The exporter requires the
 source desktop to be closed; its backend can remain running. A copy taken while
 the desktop runs is suitable for diagnostics, not a final migration snapshot.
 
+## Operator CLI
+
+`layr-studio` manages the paired server registry without the window.
+`just install` links it on the command path like the other Studio commands.
+The package also holds it at `Contents/Resources/helpers/layr-studio`.
+
+```sh
+layr-studio servers list [--json]
+layr-studio servers forget <serverId>
+```
+
+- `list` prints id, origin and label of each server, or a JSON array with `--json`.
+- `forget` uses the same handler as `servers.forget` in the window.
+  An unknown id fails with `Unknown server: <id>`.
+- While the app runs, it holds `native-profile.lock`. The CLI then sends the
+  request over `operator.sock` in the profile folder (mode 0600, this user only).
+  The app runs the request in its own client. The socket accepts only
+  `servers.list` and `servers.forget`.
+- Without the app, the CLI takes the lock and runs the handler itself.
+- `CODEX_DESKTOP_PROFILE` selects another profile folder, as for the app.
+
 ## iOS shell
 
 The iOS build of this host is a shell for the iPhone Duo. It exists because

@@ -263,6 +263,18 @@ export const OwnerKindValues = [
   "server",
 ] as const;
 export type OwnerKind = (typeof OwnerKindValues)[number];
+export const RequestResultStatusValues = ["applied", "rejected"] as const;
+export type RequestResultStatus = (typeof RequestResultStatusValues)[number];
+export const RequestReferenceKindValues = [
+  "agent",
+  "annotation",
+  "complaint",
+  "message",
+  "project",
+  "room",
+  "work",
+] as const;
+export type RequestReferenceKind = (typeof RequestReferenceKindValues)[number];
 export const OutboxKindValues = [
   "provider_call",
   "provider_callback",

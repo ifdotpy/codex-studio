@@ -23,7 +23,9 @@ async fn startup_serves_health_and_refuses_commands_while_database_is_busy() {
         .spawn()
         .expect("server");
     async fn request(port: u16, request: &str) -> String {
-        let mut stream = tokio::time::timeout(Duration::from_secs(5), async {
+        // Like the sibling startup tests, allow 30 s: the host may scan a freshly linked
+        // binary for several seconds at its first launch, before the server runs.
+        let mut stream = tokio::time::timeout(Duration::from_secs(30), async {
             loop {
                 match tokio::net::TcpStream::connect(("127.0.0.1", port)).await {
                     Ok(stream) => break stream,

@@ -150,8 +150,10 @@ async fn start_and_next_turn(provider: &'static str) {
                 .transaction(move |tx| {
                     let mut record =
                         AgentRepository::get(tx, &AgentId::from(agent.as_str()))?.expect("actor");
+                    record.execution_mode = Some(studio_runtime_store::AgentExecutionMode::Vm);
+                    record.thread_id = None;
                     for (key, value) in [
-                        ("executionMode", json!("vm")),
+
                         ("workspaceMode", json!("layr")),
                         ("layrReady", json!(true)),
                         ("layrHome", json!(home_record)),
@@ -159,10 +161,8 @@ async fn start_and_next_turn(provider: &'static str) {
                         ("layrLine", json!("main")),
                         ("provider", json!(provider)),
                         ("cwd", json!("/guest/line")),
-                        ("threadId", Value::Null),
-                    ] {
-                        record.extra.insert(key.into(), value);
-                    }
+
+                    ] { record.extra.insert(key.into(), value); }
                     AgentRepository::put(tx, &record)
                 })
                 .await?;

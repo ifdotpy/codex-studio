@@ -420,18 +420,16 @@ fn stopped_turn(agent: &AgentRecord, generation: u64) -> Option<StoppedTurn> {
         Some("accepted" | "rejected" | "unknown")
     ) || staged(&receipt["startAttempt"])
         || extra.get("startAttempt").is_some_and(staged);
-    let stopped = extra.get("autoWake") == Some(&json!(false))
-        && !studio_runtime_store::truthy(extra.get("inFlight"))
+    let stopped = agent.auto_wake == Some(false)
+        && agent.in_flight != Some(true)
         && epoch.checked_add(1) == Some(agent.epoch);
     if ended
         || !stopped
         || receipt["startAttempt"]["connectionGeneration"].as_u64() != Some(generation)
         || receipt["startAttempt"]["turnId"].as_str() != Some(turn)
         // A delete tombstone clears the turn id; the epoch still names the stop.
-        || extra
-            .get("turnId")
-            .is_some_and(|current| !current.is_null() && current.as_str() != Some(turn))
-        || extra.get("threadId").and_then(Value::as_str) != Some(thread)
+        || agent.turn_id.as_deref().is_some_and(|current| current != turn)
+        || agent.thread_id.as_deref() != Some(thread)
         || extra.get("lastCompletedTurn").and_then(Value::as_str) == Some(turn)
     {
         return None;
@@ -478,12 +476,10 @@ fn unsettled_stop(agent: &AgentRecord, generation: u64) -> Option<StoppedTurn> {
         || interrupt["generation"].as_u64() != Some(generation)
         || attempt["connectionGeneration"].as_u64() != Some(generation)
         || attempt["epoch"].as_i64() != Some(epoch)
-        || extra.get("autoWake") != Some(&json!(false))
+        || agent.auto_wake != Some(false)
         // A delete tombstone clears the turn id; the epoch still names the stop.
-        || extra
-            .get("turnId")
-            .is_some_and(|current| !current.is_null() && current.as_str() != Some(turn))
-        || extra.get("threadId").and_then(Value::as_str) != Some(thread)
+        || agent.turn_id.as_deref().is_some_and(|current| current != turn)
+        || agent.thread_id.as_deref() != Some(thread)
         || extra.get("lastCompletedTurn").and_then(Value::as_str) == Some(turn)
     {
         return None;
@@ -544,11 +540,7 @@ fn record(
     let Some(mut agent) = AgentRepository::get(tx, &AgentId::from(turn.agent.as_str()))? else {
         return Ok(false);
     };
-    if agent
-        .extra
-        .get("accountKey")
-        .and_then(Value::as_str)
-        .unwrap_or("default")
+    if agent.account_key.as_str()
         != account
         || !owner_matches(&agent, turn, generation)
     {

@@ -1606,9 +1606,9 @@ async fn seed_restart_input(state: &State, fail_terminal_settlement: bool) {
                     "executionOutcome":"unknown","created":1.0,"connectionGeneration":1
                 });
                 agent.status = studio_runtime_store::AgentStatus::Queued;
-                agent.extra.insert("threadId".into(), json!("fake-thread-0"));
-                agent.extra.insert("autoWake".into(), json!(true));
-                agent.extra.insert("inFlight".into(), json!(false));
+                agent.thread_id = Some("fake-thread-0".to_string());
+                agent.auto_wake = Some(true);
+                agent.in_flight = Some(false);
                 agent.extra.insert("error".into(), json!("Context repair waits for a confirmed input receipt: annotation:input"));
                 agent.extra.insert("restartRecovery".into(), json!({"stage":"held","startAttempt":attempt}));
                 agent.extra.insert("contextRepairWait".into(), json!({"error":"Context repair waits for a confirmed input receipt: annotation:input","scope":"native","events":[event],"nextCheckAt":0,"source":{"id":agent_id,"epoch":epoch,"accountKey":"default","threadId":"fake-thread-0","attemptId":null}}));
@@ -2134,11 +2134,11 @@ async fn seed_transport_turn(state: &State) {
         store.transaction_with(move |tx| {
             let mut agent = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?.unwrap();
             agent.status = studio_runtime_store::AgentStatus::Running;
-            agent.extra.insert("threadId".into(), json!("fake-thread-0"));
-            agent.extra.insert("turnId".into(), json!("old-turn"));
-            agent.extra.insert("turnEpoch".into(), json!(agent.epoch));
-            agent.extra.insert("inFlight".into(), json!(true));
-            agent.extra.insert("autoWake".into(), json!(true));
+            agent.thread_id = Some("fake-thread-0".to_string());
+            agent.turn_id = Some("old-turn".to_string());
+            agent.turn_epoch = Some(agent.epoch);
+            agent.in_flight = Some(true);
+            agent.auto_wake = Some(true);
             agent.extra.remove("contextRepairWait");
             agent.extra.remove("restartRecovery");
             agent.extra.insert("startAttempt".into(), json!({
@@ -2183,11 +2183,11 @@ async fn seed_restart_turn(state: &State) {
                     let mut marker = receipt;
                     marker["stage"] = json!("pending");
                     agent.status = studio_runtime_store::AgentStatus::Interrupted;
-                    agent.extra.insert("threadId".into(), json!("fake-thread-0"));
-                    agent.extra.insert("turnId".into(), json!("old-turn"));
-                    agent.extra.insert("turnEpoch".into(), json!(epoch));
-                    agent.extra.insert("autoWake".into(), json!(false));
-                    agent.extra.insert("inFlight".into(), json!(false));
+                    agent.thread_id = Some("fake-thread-0".to_string());
+                    agent.turn_id = Some("old-turn".to_string());
+                    agent.turn_epoch = Some(epoch);
+                    agent.auto_wake = Some(false);
+                    agent.in_flight = Some(false);
                     agent.extra.insert(
                         "error".into(),
                         json!(studio_runtime_store::BACKEND_RESTARTED_TURN_ERROR),
@@ -2300,7 +2300,7 @@ async fn automatic_recovery_case(restart: bool, child: bool, stopped: bool) {
                 parent.id = AgentId::from("parent");
                 parent.root_id = AgentId::from("parent");
                 parent.status = studio_runtime_store::AgentStatus::Completed;
-                parent.extra.insert("threadId".into(), Value::Null);
+                parent.thread_id = None;
                 AgentRepository::put(tx, &parent)?;
                 agent.root_id = AgentId::from("parent");
                 agent.extra.insert("parentId".into(), json!("parent"));
@@ -2308,8 +2308,8 @@ async fn automatic_recovery_case(restart: bool, child: bool, stopped: bool) {
                 agent.extra.insert("role".into(), json!("implementer"));
             }
             agent.status = studio_runtime_store::AgentStatus::Running;
-            agent.extra.insert("turnId".into(), json!("old-turn"));
-            agent.extra.insert("inFlight".into(), json!(true));
+            agent.turn_id = Some("old-turn".to_string());
+            agent.in_flight = Some(true);
             agent.extra.insert("startAttempt".into(), json!({
                 "id":"old-attempt", "accountKey":"default", "epoch":agent.epoch,
                 "threadId":"fake-thread-0", "turnId":"old-turn", "submitted":true,
@@ -2510,11 +2510,11 @@ async fn seed_adopted_turn_checked_while_running(state: &State) {
                     marker["outcome"] = json!("active");
                     marker["observedAt"] = json!(2.0);
                     agent.status = studio_runtime_store::AgentStatus::Running;
-                    agent.extra.insert("threadId".into(), json!("fake-thread-0"));
-                    agent.extra.insert("turnId".into(), json!("old-turn"));
-                    agent.extra.insert("turnEpoch".into(), json!(epoch));
-                    agent.extra.insert("autoWake".into(), json!(true));
-                    agent.extra.insert("inFlight".into(), json!(false));
+                    agent.thread_id = Some("fake-thread-0".to_string());
+                    agent.turn_id = Some("old-turn".to_string());
+                    agent.turn_epoch = Some(epoch);
+                    agent.auto_wake = Some(true);
+                    agent.in_flight = Some(false);
                     agent.extra.insert("error".into(), Value::Null);
                     agent.extra.insert("startAttempt".into(), attempt);
                     agent.extra.insert("disconnectRecovery".into(), disconnect);
@@ -2604,9 +2604,9 @@ async fn restart_terminal_commit_before_wake_converges_on_next_worker_start() {
                     "executionOutcome":"unknown","created":1.0,"connectionGeneration":1
                 });
                 agent.status = studio_runtime_store::AgentStatus::Queued;
-                agent.extra.insert("threadId".into(), json!("fake-thread-0"));
-                agent.extra.insert("autoWake".into(), json!(true));
-                agent.extra.insert("inFlight".into(), json!(false));
+                agent.thread_id = Some("fake-thread-0".to_string());
+                agent.auto_wake = Some(true);
+                agent.in_flight = Some(false);
                 agent.extra.insert("error".into(), json!("held"));
                 agent.extra.insert("restartRecovery".into(), json!({"stage":"held","startAttempt":attempt}));
                 agent.extra.insert("contextRepairWait".into(), json!({
@@ -3109,7 +3109,7 @@ async fn tool_monitor_on_a_non_default_account_reaches_its_provider() {
                 .transaction_with(move |tx| {
                     let mut row =
                         AgentRepository::get(tx, &AgentId::from(agent.as_str()))?.unwrap();
-                    row.extra.insert("accountKey".into(), json!("profile-a"));
+                    row.account_key = "profile-a".to_string();
                     AgentRepository::put(tx, &row)?;
                     let monitor = |id: &str, extra: Value| {
                         let mut record = json!({"id":id,"agent":agent,"epoch":epoch,
@@ -4673,7 +4673,7 @@ async fn retained_vm_thread_start_provenance_survives_next_generation_attach() {
         .transaction_with(move |tx| {
             let mut agent =
                 AgentRepository::get(tx, &AgentId::from(fixture_actor.as_str()))?.unwrap();
-            agent.extra.insert("executionMode".into(), json!("vm"));
+            agent.execution_mode = Some(studio_runtime_store::AgentExecutionMode::Vm);
             agent.extra.insert(
                 "providerStream".into(),
                 json!({"generation":7,"connection":"old-vm-connection","ack":12,"streams":null}),

@@ -174,7 +174,7 @@ pub(super) fn save_account_submission(
     }
     let vm = AgentRepository::get(tx, &AgentId::from(context.intent.agent_id.as_str()))?
         .is_some_and(|agent| {
-            agent.extra.get("executionMode").and_then(Value::as_str) == Some("vm")
+            agent.execution_mode == Some(studio_runtime_store::AgentExecutionMode::Vm)
         });
     let account = &context.intent.account_key;
     let request = super::retained::storage::TransportRequest::from(request);
@@ -603,7 +603,7 @@ pub(super) async fn recover(
             let vm_owned =
                 AgentRepository::get(tx, &AgentId::from(context.intent.agent_id.as_str()))?
                     .is_some_and(|agent| {
-                        agent.extra.get("executionMode").and_then(Value::as_str) == Some("vm")
+                        agent.execution_mode == Some(studio_runtime_store::AgentExecutionMode::Vm)
                     });
             if vm_owned {
                 continue;
@@ -626,7 +626,7 @@ pub(super) async fn recover(
                         && a.extra.get("startAttempt").is_none_or(|attempt| {
                             attempt.is_null() || completed_attempt(a, attempt)
                         })
-                        && (a.extra.get("autoWake") == Some(&json!(true))
+                        && (a.auto_wake == Some(true)
                             || a.start_outcome_hold.as_ref()
                                 .and_then(studio_runtime_store::StoredStartOutcomeHold::operation_id)
                                 == Some(context.operation.as_str()))
@@ -663,11 +663,7 @@ pub(super) fn recover_vm_actor_requests(
     let Some(agent_record) = AgentRepository::get(connection, &AgentId::from(agent))? else {
         return Ok(Vec::new());
     };
-    if agent_record
-        .extra
-        .get("executionMode")
-        .and_then(Value::as_str)
-        != Some("vm")
+    if agent_record.execution_mode != Some(studio_runtime_store::AgentExecutionMode::Vm)
     {
         return Ok(Vec::new());
     }
@@ -969,11 +965,7 @@ pub(super) fn hold_invalid_agent_record_in(
     Ok(())
 }
 fn account_key(agent: &studio_runtime_store::AgentRecord) -> &str {
-    agent
-        .extra
-        .get("accountKey")
-        .and_then(Value::as_str)
-        .unwrap_or("default")
+    agent.account_key.as_str()
 }
 
 pub(super) async fn submitted(
@@ -1212,7 +1204,7 @@ pub(super) async fn submitted(
                             == i.attempt_id
                         && agent.extra.get("startAttempt").unwrap_or(&Value::Null)["submitted"]
                             == false
-                        && agent.extra.get("autoWake").unwrap_or(&Value::Null) == true
+                        && agent.auto_wake == Some(true)
                         && agent.extra.get("nativeFailureHold").unwrap_or(&Value::Null) != true
                 }
             })
@@ -2809,11 +2801,7 @@ pub(super) async fn stop(
         let Some(record) = AgentRepository::get(tx, &AgentId::from(agent.as_str()))? else {
             return Ok(None);
         };
-        if record
-            .extra
-            .get("accountKey")
-            .and_then(Value::as_str)
-            .unwrap_or("default")
+        if record.account_key.as_str()
             != account.as_str()
         {
             return Ok(None);
@@ -2827,7 +2815,7 @@ pub(super) async fn stop(
             .as_str()
             .or_else(|| attempt["observedTurnId"].as_str());
         let effect = turn
-            .zip(agent.extra.get("threadId").unwrap_or(&Value::Null).as_str())
+            .zip(agent.thread_id.as_deref())
             .map(|(turn, thread)| Effect::Interrupt {
                 agent: agent.id.0.clone(),
                 thread: thread.into(),
@@ -2866,12 +2854,7 @@ pub(super) fn interrupt_intent(
                     agent_id: agent.into(),
                     epoch,
                     attempt_id: id.into(),
-                    account_key: a
-                        .extra
-                        .get("accountKey")
-                        .unwrap_or(&Value::Null)
-                        .as_str()
-                        .unwrap_or("default")
+                    account_key: a.account_key.as_str()
                         .into(),
                     provider,
                     thread_id: Some(thread.into()),
@@ -3135,7 +3118,7 @@ pub(crate) fn checkpoint(
     if let Some((account, actor)) = journal_scope.rsplit_once(":vm:")
         && let Some(agent) = AgentRepository::get(tx, &AgentId::from(actor))?
         && account_key(&agent) == account
-        && agent.extra.get("executionMode").and_then(Value::as_str) == Some("vm")
+        && agent.execution_mode == Some(studio_runtime_store::AgentExecutionMode::Vm)
     {
         let state = agent.extra.get("providerStream").unwrap_or(&Value::Null);
         return Ok(if state["generation"].as_u64() == Some(generation) {
@@ -3190,7 +3173,7 @@ fn set_checkpoint(
     if let Some((account, actor)) = scope.rsplit_once(":vm:")
         && let Some(mut agent) = AgentRepository::get(tx, &AgentId::from(actor))?
         && account_key(&agent) == account
-        && agent.extra.get("executionMode").and_then(Value::as_str) == Some("vm")
+        && agent.execution_mode == Some(studio_runtime_store::AgentExecutionMode::Vm)
     {
         let state = agent
             .extra
@@ -3227,7 +3210,7 @@ pub(super) async fn attach_provider_stream(
     store.transaction_with(move|tx| {
         if let Some(actor)=actor {
             let agent = stored_agent(tx, &actor)?;
-            if account_key(&agent) != account || agent.extra.get("executionMode").and_then(Value::as_str) != Some("vm") { return Err(invalid(&actor)); }
+            if account_key(&agent) != account || agent.execution_mode != Some(studio_runtime_store::AgentExecutionMode::Vm) { return Err(invalid(&actor)); }
             let current = studio_runtime_store::account_state::provider_state(tx, studio_runtime_store::account_state::ProviderOwner::Agent(&agent))?;
             let previous = current.as_ref().map(|(state, _)| state.generation());
             if previous.is_some_and(|old| old > generation) { return Err(invalid(&actor)); }
@@ -4287,8 +4270,8 @@ fn hold_before_claim(
     let mut agent = AgentRepository::get(tx, &AgentId::from(id))?.ok_or_else(|| invalid(id))?;
     agent.status = studio_runtime_store::AgentStatus::Waiting;
     agent.extra.insert("nativeFailureHold".into(), json!(true));
-    agent.extra.insert("autoWake".into(), json!(false));
-    agent.extra.insert("inFlight".into(), json!(false));
+    agent.auto_wake = Some(false);
+    agent.in_flight = Some(false);
     agent.extra.insert("error".into(), json!(reason));
     agent.start_outcome_hold = Some(studio_runtime_store::StoredStartOutcomeHold::Known(
         studio_runtime_store::StartOutcomeHold::Held {

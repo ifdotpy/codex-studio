@@ -12,6 +12,9 @@ mod m2026_10_26_terminal_errors;
 pub(crate) mod m2026_10_27_cost_index;
 mod m2026_10_27_retired_sqlite;
 mod m2026_10_27_scheduler_indexes;
+mod m2026_10_28_agent_account;
+mod m2026_10_29_agent_authorizations;
+mod m2026_10_28_agent_fields;
 mod m2026_10_28_group_revision;
 mod m2026_10_28_receipts_account_worker;
 mod m2026_10_28_receipts_actions;
@@ -33,6 +36,7 @@ mod m2026_10_28_receipts_voice;
 mod m2026_10_28_receipts_work;
 mod m2026_10_28_usage_revision;
 mod m2026_10_29_model_choices;
+mod m2026_10_29_request_results_v2;
 
 #[cfg(any(test, feature = "test-support"))]
 pub use m2026_10_20_agents::migrate_2026_10_20;
@@ -325,6 +329,26 @@ static CATALOG: &[&dyn Migration] = &[
     },
     &SqlMigration {
         definition: MigrationDefinition {
+            id: "2026-10-28-agent-fields",
+            introduced: OCTOBER_28,
+            target: MigrationTarget::Canvas,
+            supported_source: "Agent execution fields before typed decoding",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_28_agent_fields::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-28-agent-account",
+            introduced: OCTOBER_28,
+            target: MigrationTarget::Canvas,
+            supported_source: "Agent records before account ownership was materialized",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_28_agent_account::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
             id: RETIRED_WAITS_ID,
             introduced: OCTOBER_26,
             target: MigrationTarget::Canvas,
@@ -490,6 +514,16 @@ static CATALOG: &[&dyn Migration] = &[
     },
     &SqlMigration {
         definition: MigrationDefinition {
+            id: "2026-10-29-agent-authorizations",
+            introduced: OCTOBER_29,
+            target: MigrationTarget::Canvas,
+            supported_source: "Agent and pending recovery authorization snapshots before typed identities",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_29_agent_authorizations::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
             id: "2026-10-29-model-choices",
             introduced: OCTOBER_29,
             target: MigrationTarget::Canvas,
@@ -497,6 +531,26 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| m2026_10_29_model_choices::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-29-request-results-v2",
+            introduced: OCTOBER_29,
+            target: MigrationTarget::Canvas,
+            supported_source: "Request results with exact response bodies",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_29_request_results_v2::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-29-annotation-revision",
+            introduced: OCTOBER_29,
+            target: MigrationTarget::Canvas,
+            supported_source: "Annotation rows without a revision",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_29_request_results_v2::annotation_revision(c.transaction),
     },
     &RegistryMigration,
 ];
@@ -738,6 +792,9 @@ fn run_receipt_migrations(
     for migration in CATALOG.iter().filter_map(|entry| entry.receipt_family()) {
         run_receipt_family_progress(db, migration, &mut |_, _, _| Ok(()), progress)?;
     }
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    m2026_10_29_request_results_v2::convert_annotations(&tx)?;
+    tx.commit()?;
     m2026_10_28_receipts_drop_old_tables::verify_absent(db)
         .map_err(|error| receipt_error(&error))?;
     crate::schema::verify_bootstrap(db)?;

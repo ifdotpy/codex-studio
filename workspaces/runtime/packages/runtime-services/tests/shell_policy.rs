@@ -87,10 +87,10 @@ async fn pressure_requires_thirty_idle_minutes_and_preserves_active_turns() {
         store.transaction(move |tx| {
             let mut actor = AgentRepository::get(tx, &AgentId::from("agent"))?.unwrap();
             match blocker {
-                "turn" => { actor.extra.insert("inFlight".into(), json!(true)); }
+                "turn" => { actor.in_flight = Some(true); }
                 "recent_input" => { actor.extra.insert("shellPolicyLastActiveAt".into(), json!(1.0)); }
                 "input" => { tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES('user','agent','user','hi','pending',0,2)", [])?; }
-                "delegate" => { let mut child = actor.clone(); child.id = "child".into(); child.status = studio_runtime_store::AgentStatus::Running; child.extra.insert("inFlight".into(), json!(true)); AgentRepository::put(tx, &child)?; }
+                "delegate" => { let mut child = actor.clone(); child.id = "child".into(); child.status = studio_runtime_store::AgentStatus::Running; child.in_flight = Some(true); AgentRepository::put(tx, &child)?; }
                 "output" => { tx.execute("UPDATE runtime_monitors SET record=json_set(record,'$.activityAt',1) WHERE id=?1", [&selected])?; }
                 "restart" => { actor.extra.insert("shellPolicyLastReapAt".into(), json!(1.0)); tx.execute("UPDATE runtime_monitors SET record=json_set(record,'$.created',2) WHERE id=?1", [&selected])?; }
                 _ => {}

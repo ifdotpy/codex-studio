@@ -227,8 +227,8 @@ async fn a_replacement_waits_for_its_own_recovery_before_the_health_turn() {
         state.bridge.store.transaction(move |tx| {
             let mut owner = AgentRepository::get(tx, &AgentId::from(agent.as_str()))?.expect("original actor");
             owner.status = studio_runtime_store::AgentStatus::Queued;
-            owner.extra.insert("inFlight".into(), json!(false));
-            owner.extra.insert("autoWake".into(), json!(true));
+            owner.in_flight = Some(false);
+            owner.auto_wake = Some(true);
             owner.extra.insert("restartRecovery".into(), json!({"stage":"held","startAttempt":{
                 "id":"matrix-held-start","epoch":epoch,"accountKey":"default","threadId":"fake-thread-0",
                 "events":["annotation:input"],"submitted":true,"executionOutcome":"unknown",
@@ -595,7 +595,7 @@ async fn prove_ready_for_new_turn(
         .expect("Python-written seed");
     seed.id = AgentId::from("replacement-health");
     seed.root_id = seed.id.clone();
-    seed.extra.insert("threadId".into(), json!("health-thread"));
+    seed.thread_id = Some("health-thread".to_string());
     let epoch = seed.epoch;
     state
         .bridge

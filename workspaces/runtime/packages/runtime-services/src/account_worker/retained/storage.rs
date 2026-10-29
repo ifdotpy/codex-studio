@@ -70,6 +70,25 @@ fn retained(row: &RetainedRow) -> Result<&RetainedCall, WorkerError> {
 fn put(tx: &rusqlite::Transaction<'_>, row: &RetainedRow) -> Result<(), WorkerError> {
     Outbox::put(tx, row).map_err(outbox_error)
 }
+pub(super) fn hold_unclean_pending(tx: &rusqlite::Transaction<'_>) -> Result<(), WorkerError> {
+    let mut statement = tx.prepare("SELECT id FROM runtime_outbox WHERE kind=?1 AND status=?2")?;
+    let ids = statement
+        .query_map(
+            rusqlite::params![OutboxKind::ProviderCall, OutboxStatus::Pending],
+            |row| row.get::<_, String>(0),
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(statement);
+    for id in ids {
+        let Some(mut row) = row(tx, &id)? else {
+            continue;
+        };
+        row.status = OutboxStatus::Unknown;
+        row.next_at = None;
+        put(tx, &row)?;
+    }
+    Ok(())
+}
 fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
@@ -91,7 +110,7 @@ fn monitor_account_sql(agent_param: usize) -> String {
 pub fn vm_actor(connection: &rusqlite::Connection, agent: &str) -> Result<bool, WorkerError> {
     let record = AgentRepository::get(connection, &AgentId::from(agent))?;
     Ok(record.is_some_and(|record| {
-        record.extra.get("executionMode").and_then(Value::as_str) == Some("vm")
+        record.execution_mode == Some(studio_runtime_store::AgentExecutionMode::Vm)
     }))
 }
 
@@ -164,11 +183,7 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
         )
         .map_err(|error| WorkerError::PreparationRefused(error.to_string()));
     }
-    let agent_account = agent_record
-        .extra
-        .get("accountKey")
-        .and_then(Value::as_str)
-        .unwrap_or("default");
+    let agent_account = agent_record.account_key.as_str();
     let common_identity = agent_account == call.scope.account
         && !studio_runtime_store::truthy(agent_record.extra.get("deletedAt"))
         && agent_record.extra.get("deleted") != Some(&json!(true));
@@ -225,7 +240,7 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
                 && source["epoch"].as_i64() == Some(actor.epoch)
                 && source["accountKey"].as_str() == Some(call.scope.account.as_str())
                 && source["threadId"].as_str()
-                    == agent_record.extra.get("threadId").and_then(Value::as_str)
+                    == agent_record.thread_id.as_deref()
                 && path_is_absolute(&snapshot["sourcePath"])
                 && path_is_absolute(&snapshot["copyPath"])
                 && snapshot["sourceSha256"]
@@ -260,9 +275,9 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
             Method::TurnInterrupt | Method::ThreadBackgroundTerminalsClean
         )
         && actor.epoch.checked_add(1) == Some(agent_record.epoch)
-        && agent_record.extra.get("autoWake") == Some(&json!(false));
+        && agent_record.auto_wake == Some(false);
     let thread_matches = call.params["threadId"].as_str().is_some_and(|thread| {
-        agent_record.extra.get("threadId").and_then(Value::as_str) == Some(thread)
+        agent_record.thread_id.as_deref() == Some(thread)
     });
     let thread_start = call.method == Method::ThreadStart && call.params.get("threadId").is_none();
     let ephemeral_turn = if call.method == Method::TurnStart {
@@ -443,7 +458,7 @@ fn authorize_retained_monitor_control(
         .iter()
         .all(|field| attempt.get(*field) == record["operation"].get(*field));
     Ok(current.epoch == actor.epoch
-        && current.extra.get("autoWake") == Some(&json!(true))
+        && current.auto_wake == Some(true)
         && !studio_runtime_store::truthy(current.extra.get("deletedAt"))
         && current.extra.get("deleted") != Some(&json!(true))
         && record["interactive"] == true
@@ -465,7 +480,7 @@ fn authorize_recovered_monitor_cancel(
     current: &studio_runtime_store::AgentRecord,
 ) -> Result<bool, WorkerError> {
     let inactive = current.epoch != actor.epoch
-        || current.extra.get("autoWake") != Some(&json!(true))
+        || current.auto_wake != Some(true)
         || studio_runtime_store::truthy(current.extra.get("deletedAt"))
         || current.extra.get("deleted") == Some(&json!(true));
     if call.method != Method::CommandExecTerminate || !inactive {
@@ -695,6 +710,14 @@ pub(super) fn replay_recorded(
         }
         if row.status == OutboxStatus::Unknown && prior.request.is_none() {
             return Ok(Err(PortError::Unknown));
+        }
+        if row.status == OutboxStatus::Unknown && proven_not_sent(prior, row.stream_id.as_deref()) {
+            let request = prior.request.as_ref().ok_or(WorkerError::Capacity)?;
+            let mut receipt = prior
+                .call
+                .receipt(request.recovered().ticket, RequestResult::Unknown);
+            receipt.replayed = true;
+            return Ok(Ok(Replay::Return(receipt)));
         }
         let replay = replay_pending(prior, row.stream_id.as_deref());
         if call.admitted_request.is_none()
@@ -935,6 +958,9 @@ fn settle(
     let store::ProviderCall::Retained(payload) = &mut row.payload else {
         return Err(WorkerError::Capacity);
     };
+    if row.status == OutboxStatus::Unknown && proven_not_sent(payload, row.stream_id.as_deref()) {
+        return Ok(());
+    }
     let Some(outcome) = &mut payload.outcome else {
         return Ok(());
     };
@@ -1069,6 +1095,15 @@ pub fn record_outcome(
         return Ok(None);
     };
     let mut payload = retained(&row)?.clone();
+    if row.status == OutboxStatus::Unknown
+        && proven_not_sent(&payload, row.stream_id.as_deref())
+        && payload
+            .outcome
+            .as_ref()
+            .is_some_and(|old| cursor <= old.cursor)
+    {
+        return Ok(None);
+    }
     if payload.outcome.as_ref().is_some_and(|outcome| {
         outcome.committed_ack.is_some()
             && !proof_matches(
@@ -1246,6 +1281,74 @@ pub(super) fn recorded_operation(
 #[cfg(test)]
 mod replay_identity_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn unclean_pending_call_is_not_prepared_again() {
+        let root = tempfile::tempdir().expect("root");
+        let store = database(root.path()).await;
+        store
+            .transaction_with(|tx| {
+                let mut call = call();
+                call.actor = None;
+                let identity =
+                    RequestIdentity::new("retained-fixture", &[], &call.root_request_id, &[])
+                        .expect("identity");
+                let owner = match RequestResults::admit(tx, &identity, "fixture", now_ms())
+                    .map_err(result_error)?
+                {
+                    Admission::Fresh(owner) => owner,
+                    Admission::Replay(_) => return Err(WorkerError::Capacity),
+                };
+                call.admitted_request = Some(super::super::reserve_provider_call(
+                    tx,
+                    &owner,
+                    call.clone(),
+                )?);
+                assert!(matches!(replay_recorded(tx, &call)?, Ok(Replay::Ready)));
+                hold_unclean_pending(tx)?;
+                assert!(matches!(
+                    replay_recorded(tx, &call)?,
+                    Err(PortError::Unknown)
+                ));
+                Ok::<_, WorkerError>(())
+            })
+            .await
+            .expect("recovery");
+    }
+
+    #[tokio::test]
+    async fn unclean_retry_does_not_reuse_old_not_sent_proof() {
+        let root = tempfile::tempdir().expect("root");
+        let store = database(root.path()).await;
+        store.transaction_with(|tx| {
+            let mut call = call();
+            call.actor = None;
+            let key = call.key();
+            let request = RecoveredRequest {
+                ticket: RequestTicket { generation: 4, id: RequestId::String(key.clone()), method: call.method },
+                operation_id: OperationId(key.clone()), thread_id: None, lightweight: true,
+                deadline_ms: 1000, unknown: true, remote_id: None,
+            };
+            let outcome = RetainedOutcome {
+                result: RequestResult::NotSent, cursor: 1,
+                committed_ack: Some(CommittedAck { stream_id: "default".into(), generation: 4, cursor: 1 }),
+            };
+            let call = seed(tx, call, &request, false, Some(outcome))?;
+            let mut saved = row(tx, &key)?.ok_or(WorkerError::Capacity)?;
+            saved.status = OutboxStatus::Pending;
+            put(tx, &saved)?;
+            assert!(matches!(replay_recorded(tx, &call)?, Ok(Replay::Retry(_))));
+            hold_unclean_pending(tx)?;
+            assert!(matches!(replay_recorded(tx, &call)?, Ok(Replay::Return(receipt)) if receipt.result == RequestResult::Unknown));
+            assert!(retained(&row(tx, &key)?.ok_or(WorkerError::Capacity)?)?.outcome.is_some());
+            record_outcome(tx, &key, None, Some(RequestResult::NotSent), 1)?;
+            assert_eq!(row(tx, &key)?.ok_or(WorkerError::Capacity)?.status, OutboxStatus::Unknown);
+            let mut saved = row(tx, &key)?.ok_or(WorkerError::Capacity)?;
+            settle(tx, &mut saved, "default", 4)?;
+            assert_eq!(row(tx, &key)?.ok_or(WorkerError::Capacity)?.status, OutboxStatus::Unknown);
+            Ok::<_, WorkerError>(())
+        }).await.expect("recovery");
+    }
 
     #[tokio::test]
     async fn migrated_submitted_without_request_stays_unknown_without_preparation() {
@@ -1478,9 +1581,9 @@ mod replay_identity_tests {
             let mut agent = studio_runtime_store::AgentRecord::from_value(json!({"provider":"codex","id":"agent-1","rootId":"agent-1","epoch":7,"threadId":"thread-1","status":"idle","autoWake":true}))?;
             AgentRepository::put(tx,&agent)?;
             assert!(authorize(tx,&request).expect("eligible handoff"));
-            agent.extra.insert("inFlight".into(),json!(true)); AgentRepository::put(tx,&agent)?;
+            agent.in_flight = Some(true); AgentRepository::put(tx,&agent)?;
             assert!(!authorize(tx,&request).expect("active handoff refused"));
-            agent.extra.insert("inFlight".into(),json!(false)); AgentRepository::put(tx,&agent)?;
+            agent.in_flight = Some(false); AgentRepository::put(tx,&agent)?;
             request.params["settings"]["pressureCleanup"] = json!(false);
             assert!(!authorize(tx,&request).expect("settings mismatch refused"));
             Ok::<_,StoreError>(())

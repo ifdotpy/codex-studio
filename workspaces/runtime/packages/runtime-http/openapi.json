@@ -15271,6 +15271,50 @@
         "title": "AnnotationBody",
         "type": "object"
       },
+      "AnnotationCommandResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "ref_id": {
+            "type": "string"
+          },
+          "ref_kind": {
+            "enum": [
+              "agent",
+              "annotation",
+              "complaint",
+              "message",
+              "project",
+              "room",
+              "work"
+            ],
+            "type": "string"
+          },
+          "rev": {
+            "type": "integer"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/SyncEntity"
+            },
+            "type": "array"
+          },
+          "status": {
+            "enum": [
+              "applied",
+              "rejected"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "ref_kind",
+          "ref_id",
+          "rev",
+          "rows"
+        ],
+        "type": "object"
+      },
       "AnnotationEntityDto": {
         "additionalProperties": false,
         "properties": {
@@ -68063,7 +68107,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AnnotationReceipt"
+                  "$ref": "#/components/schemas/AnnotationCommandResponse"
                 }
               }
             },

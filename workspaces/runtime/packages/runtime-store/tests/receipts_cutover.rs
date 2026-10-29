@@ -2,6 +2,28 @@ use rusqlite::Connection;
 use studio_runtime_schema::persistence::*;
 use studio_runtime_store::RuntimeStore;
 
+#[tokio::test]
+async fn receipt_v2_keeps_legacy_body_and_adds_checked_reference_fields() {
+    let root = tempfile::tempdir().expect("state");
+    let store = RuntimeStore::open(Some(root.path())).await.expect("open");
+    let db = Connection::open(root.path().join("canvas.sqlite3")).expect("database");
+    let columns: Vec<String> = db
+        .prepare("SELECT name FROM pragma_table_info('request_results') ORDER BY cid")
+        .expect("schema")
+        .query_map([], |row| row.get(0))
+        .expect("columns")
+        .collect::<rusqlite::Result<_>>()
+        .expect("column names");
+    for column in ["status", "ref_kind", "ref_id", "ref_rev"] {
+        assert!(
+            columns.iter().any(|name| name == column),
+            "missing {column}"
+        );
+    }
+    drop(db);
+    drop(store);
+}
+
 fn enum_column<T: strum::VariantNames>(db: &Connection, table: &str, column: &str) {
     let sql: String = db
         .query_row(

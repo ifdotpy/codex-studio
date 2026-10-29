@@ -4,6 +4,7 @@
 #![cfg(unix)]
 use super::*;
 use crate::tool_requests::{self, CallbackTask};
+use rusqlite::OptionalExtension;
 use studio_runtime_schema::persistence::{
     OutboxKind, OutboxStatus, ToolRequestKind, ToolRequestStatus,
 };
@@ -292,44 +293,48 @@ async fn scenario_callback_delivery_preserves_uncertainty(
             }
         );
         let db = state.bridge.store.test_reader().unwrap();
-        let raw: String = db
+        let raw: Option<String> = db
             .query_row(
                 "SELECT record FROM runtime_tool_requests WHERE id=?1",
                 [&task.payload.root_request_id],
                 |row| row.get(0),
             )
+            .optional()
             .unwrap();
-        let owner: CallbackTask<crate::provider_callbacks::CallbackOwner> =
-            serde_json::from_str(&raw).unwrap();
-        let token = owner.payload.admission.as_ref().unwrap();
-        let saved = studio_runtime_store::request_results::RequestResults::replay(
-            &db,
-            token.id(),
-            token.signature(),
-            chrono::Utc::now().timestamp_millis(),
-        )
-        .unwrap();
         if matches!(outcome, Some(WriteOutcome::Written | WriteOutcome::NotSent)) {
-            assert_eq!(
-                owner.status,
-                ToolRequestStatus::Completed,
-                "the generation fence survives response retirement"
+            assert!(
+                raw.is_none(),
+                "a delivered read has no retained callback owner"
             );
-            let exact: studio_runtime_store::request_results::ResultEnvelope<
-                crate::provider_callbacks::CallbackResponse,
-            > = serde_json::from_str(&saved.expect("exact written response").result).unwrap();
-            let crate::provider_callbacks::CallbackBody::Result(value) = exact.reply.body else {
-                panic!("successful tool body")
-            };
-            assert_eq!(
-                value, original["result"],
-                "the replay store owns the exact original response"
-            );
+            let retained: i64 = db.query_row(
+                "SELECT count(*) FROM runtime_tool_requests WHERE kind='managed_tool' AND json_extract(record,'$.callId')='status-0'",
+                [], |row| row.get(0),
+            ).unwrap();
+            assert_eq!(retained, 0, "the delivered read owner is removed");
         } else {
+            let owner: CallbackTask<crate::provider_callbacks::CallbackOwner> =
+                serde_json::from_str(&raw.expect("uncertain owner is retained")).unwrap();
+            let token = owner.payload.admission.as_ref().unwrap();
+            let saved = studio_runtime_store::request_results::RequestResults::replay(
+                &db,
+                token.id(),
+                token.signature(),
+                chrono::Utc::now().timestamp_millis(),
+            )
+            .unwrap();
             assert_eq!(owner.status, ToolRequestStatus::Unknown);
             assert!(
                 saved.is_none(),
                 "uncertain delivery has no fabricated completed response"
+            );
+            let same_body: bool = db.query_row(
+                "SELECT json_extract(payload,'$.body.result')=json_extract(?1,'$.result') FROM runtime_outbox WHERE kind=?2 AND status=?3",
+                rusqlite::params![original.to_string(), OutboxKind::ProviderCallback, OutboxStatus::Unknown],
+                |row| row.get(0),
+            ).unwrap();
+            assert!(
+                same_body,
+                "uncertain delivery retains the exact pending reply"
             );
         }
     }

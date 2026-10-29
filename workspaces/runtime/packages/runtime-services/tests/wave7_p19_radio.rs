@@ -271,6 +271,7 @@ fn state(store: &RuntimeStore, tables: &Value) -> Value {
                 for (index, column) in columns.iter().enumerate() {
                     if table == "agents"
                         && ["hold_status", "hold_incident"].contains(&column.as_str())
+                        || table == "annotations" && column == "rev"
                     {
                         continue;
                     }
@@ -298,6 +299,13 @@ fn state(store: &RuntimeStore, tables: &Value) -> Value {
 fn normalize(value: &mut Value) {
     match value {
         Value::Object(map) => {
+            if map.contains_key("rootId") && map.contains_key("epoch") && map.contains_key("status") {
+                for key in ["threadId", "turnId"] {
+                    if map.get(key).is_some_and(Value::is_null) {
+                        map.remove(key);
+                    }
+                }
+            }
             for (key, value) in map.iter_mut() {
                 if ["agents", "rooms"].contains(&key.as_str())
                     && let Some(rows) = value.as_array_mut()

@@ -115,11 +115,7 @@ impl WorkItemsRepository {
         if run.id().as_str() != id
             || run.value()["agent"] != agent.id.0
             || run.value()["accountKey"]
-                != agent
-                    .extra
-                    .get("accountKey")
-                    .cloned()
-                    .unwrap_or_else(|| serde_json::json!("default"))
+                != Value::String(agent.account_key.clone())
             || run.value()["epoch"] != agent.epoch
         {
             return Err(invalid());

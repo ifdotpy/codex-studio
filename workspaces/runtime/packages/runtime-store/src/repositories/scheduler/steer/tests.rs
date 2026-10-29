@@ -214,12 +214,6 @@ fn running() -> AgentRecord {
     let mut extra = BTreeMap::new();
     for (key, value) in [
         ("provider", json!("claude")),
-        ("accountKey", json!("acct")),
-        ("threadId", json!("thread")),
-        ("turnId", json!(TURN)),
-        ("turnEpoch", json!(4)),
-        ("autoWake", json!(true)),
-        ("inFlight", json!(true)),
         (
             "startAttempt",
             json!({"id":"start","epoch":4,"submitted":true,"turnId":TURN,"threadId":"thread",
@@ -229,19 +223,18 @@ fn running() -> AgentRecord {
         extra.insert(key.to_owned(), value);
     }
     AgentRecord {
-        title_job: None,
-        start_outcome_hold: None,
-        fired_events: Default::default(),
-        native_review_thread: None,
-        vm_launch: None,
-        credential_copy: None,
-        vm_auth_bootstrap: None,
-        native_release: None,
+        in_flight: Some(true),
+        account_key: "acct".into(),
+        thread_id: Some("thread".into()),
+        turn_id: Some(TURN.into()),
+        auto_wake: Some(true),
+        turn_epoch: Some(4),
         id: AgentId::from(AGENT),
         root_id: AgentId::from(AGENT),
         epoch: 4,
         status: AgentStatus::Running,
         extra,
+        ..AgentRecord::test_defaults()
     }
 }
 
@@ -326,7 +319,7 @@ fn terminal(connection: &mut Connection, unapplied: &[&str]) {
 
 fn retarget(connection: &Connection, turn: &str) {
     let mut record = agent(connection);
-    record.extra.insert("turnId".into(), json!(turn));
+    record.turn_id = Some(turn.to_string());
     record.extra.get_mut("startAttempt").expect("attempt")["turnId"] = json!(turn);
     put_agent(connection, record);
 }
@@ -384,7 +377,7 @@ fn claim_refuses_every_ineligible_agent_state() {
             a.extra.insert("steerRejectedTurnId".into(), json!(TURN));
         }),
         ("vm", |a| {
-            a.extra.insert("executionMode".into(), json!("vm"));
+            a.execution_mode = Some(crate::AgentExecutionMode::Vm);
         }),
         ("unbound-turn", |a| {
             a.extra.get_mut("startAttempt").expect("attempt")["turnId"] = Value::Null;
@@ -399,7 +392,7 @@ fn claim_refuses_every_ineligible_agent_state() {
             a.extra.insert("nativeFailureHold".into(), json!(true));
         }),
         ("stopped", |a| {
-            a.extra.insert("autoWake".into(), json!(false));
+            a.auto_wake = Some(false);
         }),
     ];
     for (name, change) in cases {
@@ -424,6 +417,21 @@ fn claim_refuses_every_ineligible_agent_state() {
         claim(&mut connection, "s1").is_none(),
         "unresolved input blocks steering"
     );
+}
+
+#[test]
+fn unclean_restart_does_not_release_a_reserved_steer() {
+    let mut connection = database();
+    claim(&mut connection, "s1").expect("claims");
+    settle(&mut connection, SchedulerRepository::hold_unclean_steers);
+    settle(&mut connection, |tx| {
+        SchedulerRepository::abandon_steers(tx, "acct", 8)
+    });
+    assert_eq!(
+        statuses(&connection),
+        ["uncertain", "uncertain", "pending", "uncertain"]
+    );
+    assert_eq!(open_receipts(&connection), 1);
 }
 
 #[test]
@@ -643,8 +651,8 @@ fn definite_rejection_after_unconfirmed_requeues_once() {
     // The turn ended first: `settle_terminal` left the agent idle.
     let mut idle = agent(&connection);
     idle.status = AgentStatus::Completed;
-    idle.extra.insert("inFlight".into(), json!(false));
-    idle.extra.insert("turnId".into(), Value::Null);
+    idle.in_flight = Some(false);
+    idle.turn_id = None;
     put_agent(&connection, idle);
     assert!(
         with(&mut connection, reject),
@@ -744,7 +752,7 @@ fn stop_before_turn_end_cancels_unread_input() {
     let mut stopped = agent(&connection);
     stopped.epoch = 5;
     stopped.status = AgentStatus::Paused;
-    stopped.extra.insert("autoWake".into(), json!(false));
+    stopped.auto_wake = Some(false);
     put_agent(&connection, stopped);
     terminal(&mut connection, &["u1"]);
     assert_eq!(status(&connection, "u1").0, "cancelled");

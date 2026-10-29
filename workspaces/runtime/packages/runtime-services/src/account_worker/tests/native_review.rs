@@ -26,12 +26,16 @@ async fn queue_review_child(state: &State) {
                     &AgentRecord::from_value(lead).map_err(StoreError::from)?,
                 )?;
                 row.extra.insert("parentId".into(), json!("review-lead"));
-                for (key, value) in [
-                    ("threadId", Value::Null),
-                    ("turnId", Value::Null),
+                row.in_flight = Some(false);
+row.auto_wake = Some(true);
+row.thread_id = None;
+row.turn_id = None;
+for (key, value) in [
+
+
                     ("status", json!("queued")),
-                    ("autoWake", json!(true)),
-                    ("inFlight", json!(false)),
+
+
                     ("role", json!("reviewer")),
                     ("yoloMode", json!(false)),
                     ("worktree", json!(false)),
@@ -43,9 +47,7 @@ async fn queue_review_child(state: &State) {
                             "actionRequestId":studio_runtime_schema::persistence::RequestIdentity::issue_root(),
                             "status":"pending","response":{}}),
                     ),
-                ] {
-                    row.extra.insert(key.into(), value);
-                }
+                ] { row.extra.insert(key.into(), value); }
                 row.extra.remove("startAttempt");
                 AgentRepository::put(tx, &row)?;
                 Ok(())
@@ -194,13 +196,18 @@ async fn an_unbound_interrupted_review_completion_settles_instead_of_holding_the
                     "actionRequestId":"native-review:child:0","submitted":true,"accountKey":"default",
                     "connectionGeneration":1,"connectionId":"connection","threadId":"review-thread",
                     "requestTicket":"retained:default:review","created":1.0});
-                for (key, value) in [
-                    ("threadId", json!("review-thread")),
-                    ("turnId", json!("review-turn")),
+                row.in_flight = Some(false);
+row.auto_wake = Some(false);
+row.turn_epoch = Some(epoch);
+row.thread_id = Some("review-thread".to_string());
+row.turn_id = Some("review-turn".to_string());
+for (key, value) in [
+
+
                     ("status", json!("interrupted")),
-                    ("autoWake", json!(false)),
-                    ("inFlight", json!(false)),
-                    ("turnEpoch", json!(epoch)),
+
+
+
                     ("error", json!(studio_runtime_store::PROVIDER_DISCONNECTED_TURN_ERROR)),
                     ("startAttempt", attempt.clone()),
                     (
@@ -214,9 +221,7 @@ async fn an_unbound_interrupted_review_completion_settles_instead_of_holding_the
                             "requestId":"lead:review:r1","actorId":"lead","args":{},
                             "status":"started","response":{}}),
                     ),
-                ] {
-                    row.extra.insert(key.into(), value);
-                }
+                ] { row.extra.insert(key.into(), value); }
                 AgentRepository::put(tx, &row)?;
                 Ok(())
             })

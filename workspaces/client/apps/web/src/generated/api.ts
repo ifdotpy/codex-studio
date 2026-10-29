@@ -8346,6 +8346,22 @@ export interface components {
        */
       turnId?: string | null | undefined;
     };
+    AnnotationCommandResponse: {
+      ref_id: string;
+      /** @enum {string} */
+      ref_kind:
+        | "agent"
+        | "annotation"
+        | "complaint"
+        | "message"
+        | "project"
+        | "room"
+        | "work";
+      rev: number;
+      rows: components["schemas"]["SyncEntity"][];
+      /** @enum {string} */
+      status: "applied" | "rejected";
+    };
     /** AnnotationEntityDto */
     AnnotationEntityDto: {
       /** Agent */
@@ -30457,7 +30473,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["AnnotationReceipt"];
+          "application/json": components["schemas"]["AnnotationCommandResponse"];
         };
       };
       /** @description Bad Request */

@@ -1334,6 +1334,13 @@ mod tests {
         );
         extra.insert("cwd".to_owned(), serde_json::json!(root));
         let agent = AgentRecord {
+            in_flight: None,
+        account_key: "default".into(),
+        thread_id: None,
+        turn_id: None,
+        auto_wake: None,
+        execution_mode: None,
+        turn_epoch: None,
             title_job: None,
             start_outcome_hold: None,
             fired_events: Default::default(),
@@ -1594,7 +1601,7 @@ mod tests {
             .expect("store")
             .transaction(move |tx| {
                 TerminalsRepository::put(tx, &transaction_id, &typed, "", 0)?;
-                tx.execute("INSERT INTO request_results VALUES('python-create',?1,?2,?3)",rusqlite::params![transaction_signature,serde_json::json!({"actor":null,"reply":{"response":transaction_result,"failure":null},"references":[transaction_id]}).to_string(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock").as_millis() as i64])?;
+                tx.execute("INSERT INTO request_results(id,signature,result,created) VALUES('python-create',?1,?2,?3)",rusqlite::params![transaction_signature,serde_json::json!({"actor":null,"reply":{"response":transaction_result,"failure":null},"references":[transaction_id]}).to_string(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock").as_millis() as i64])?;
                 Ok(())
             })
             .await

@@ -18,6 +18,7 @@ mod peer_link;
 use studio_runtime_server::provider_ports;
 #[cfg(unix)]
 mod runtime_shutdown;
+mod shutdown_marker;
 mod web_assets;
 use std::collections::BTreeMap;
 use std::env;
@@ -459,9 +460,13 @@ async fn run(
         )
         .await?,
     );
+    let unclean = shutdown_marker::begin(store.root())?;
     // Before the first runtime write: every writer transaction publishes the chats and
     // cards it changed.
     studio_runtime_services::entity_publication::install(&store).await?;
+    if unclean {
+        studio_runtime_services::unclean_recovery::hold(&store).await?;
+    }
     store
         .set_diagnostics_callback(Some(
             studio_runtime_services::diagnostics::observe_store_event,
@@ -1486,13 +1491,23 @@ async fn run(
     // Every writer has stopped: flush both runtime databases and truncate their
     // WAL files (docs/decisions/2026-10-24-sqlite-normal-with-periodic-flush.md).
     // A failure is reported; commits then wait for the next start's checkpoint.
-    match shutdown_join("final SQLite WAL flush", store.flush_wal_for_shutdown()).await {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => eprintln!("runtime server final WAL flush failed: {error}"),
-        Err(error) => eprintln!("{error}"),
-    }
+    let flushed =
+        match shutdown_join("final SQLite WAL flush", store.flush_wal_for_shutdown()).await {
+            Ok(Ok(())) => true,
+            Ok(Err(error)) => {
+                eprintln!("runtime server final WAL flush failed: {error}");
+                false
+            }
+            Err(error) => {
+                eprintln!("{error}");
+                false
+            }
+        };
     drained?;
     result?;
+    if flushed {
+        shutdown_marker::finish(store.root())?;
+    }
     Ok(handed.lock().map_err(|_| "handover state poisoned")?.take())
 }
 

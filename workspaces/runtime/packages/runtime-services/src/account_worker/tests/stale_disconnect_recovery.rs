@@ -148,13 +148,17 @@ async fn native_review_attempt_without_a_turn(shape: Shape) {
         "requestTicket":"retained:default:review","created":1.0});
     let saved = attempt.clone();
     edit(&state, move |row| {
-        for (key, value) in [
-            ("threadId", json!("review-thread")),
-            ("turnId", json!("review-turn")),
+        row.in_flight = Some(false);
+        row.auto_wake = Some(false);
+row.turn_epoch = Some(epoch);
+row.thread_id = Some("review-thread".to_string());
+row.turn_id = Some("review-turn".to_string());
+for (key, value) in [
+
+
             ("status", json!("interrupted")),
-            ("autoWake", json!(false)),
-            ("inFlight", json!(false)),
-            ("turnEpoch", json!(epoch)),
+
+
             (
                 "error",
                 json!(studio_runtime_store::PROVIDER_DISCONNECTED_TURN_ERROR),
@@ -171,9 +175,7 @@ async fn native_review_attempt_without_a_turn(shape: Shape) {
                     "requestId":"lead:review:r1","actorId":"lead","args":{},
                     "status":"started","response":{}}),
             ),
-        ] {
-            row.extra.insert(key.into(), value);
-        }
+        ] { row.extra.insert(key.into(), value); }
     })
     .await;
     // The replayed review completion settles the cut-off review.

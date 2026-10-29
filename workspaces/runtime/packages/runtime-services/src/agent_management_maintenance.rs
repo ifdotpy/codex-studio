@@ -278,7 +278,7 @@ mod tests {
         store
             .transaction(|tx| {
                 let mut lead = AgentRepository::get(tx, &AgentId::from("lead"))?.expect("lead");
-                lead.extra.insert("autoWake".into(), json!(false));
+                lead.auto_wake = Some(false);
                 AgentRepository::put(tx, &lead)
             })
             .await
