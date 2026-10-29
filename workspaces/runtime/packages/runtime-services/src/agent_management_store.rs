@@ -490,6 +490,15 @@ fn execute_decision(
             .ok_or(ManagementError::Invalid(
                 "Lifecycle adapter removed stopped agent",
             ))?;
+            let expected = studio_runtime_store::AgentRecord::from_value(write.record.clone())
+                .map_err(studio_runtime_store::StoreError::from)?;
+            if current.thread_id != expected.thread_id
+                || current.account_key != expected.account_key
+            {
+                return Err(ManagementError::Invalid(
+                    "Lifecycle adapter changed stop identity",
+                ));
+            }
             let current =
                 serde_json::to_value(current).map_err(studio_runtime_store::StoreError::from)?;
             for field in [
@@ -497,8 +506,6 @@ fn execute_decision(
                 "autoWake",
                 "status",
                 "deletedAt",
-                "threadId",
-                "accountKey",
                 "connectionId",
                 "connectionGeneration",
                 "provider",

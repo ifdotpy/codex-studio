@@ -623,9 +623,8 @@ fn build(tx: &Transaction<'_>, now: f64) -> Result<(Vec<StudioError>, Baseline),
             continue;
         };
         let turn = record
-            .extra
-            .get("turnId")
-            .and_then(Value::as_str)
+            .turn_id
+            .as_deref()
             .or_else(|| {
                 record
                     .extra

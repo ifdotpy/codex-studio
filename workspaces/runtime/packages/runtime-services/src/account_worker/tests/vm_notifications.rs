@@ -82,13 +82,13 @@ async fn fixture(provider: &'static str) -> (State, String) {
                 .transaction_with(move |tx| {
                     let mut record = AgentRepository::get(tx, &AgentId::from(primary.as_str()))?
                         .expect("primary actor");
+                    record.execution_mode = Some(studio_runtime_store::AgentExecutionMode::Vm);
+                    record.thread_id = None;
                     for (key, value) in [
-                        ("executionMode", json!("vm")),
                         ("workspaceMode", json!("layr")),
                         ("layrReady", json!(true)),
                         ("provider", json!(provider)),
                         ("cwd", json!("/home/studio/project")),
-                        ("threadId", Value::Null),
                     ] {
                         record.extra.insert(key.into(), value);
                     }
@@ -234,13 +234,11 @@ fn delta(actor: &str, text: &str) -> Frame {
 fn running(tx: &rusqlite::Transaction<'_>, actor: &str, native: bool) -> Result<(), StoreError> {
     let mut record = AgentRepository::get(tx, &AgentId::from(actor))?.expect("actor");
     record.status = studio_runtime_store::AgentStatus::Running;
-    record
-        .extra
-        .insert("threadId".into(), json!(format!("thread-{actor}")));
-    record.extra.insert("turnId".into(), json!("turn"));
-    record.extra.insert("inFlight".into(), json!(true));
+    record.thread_id = Some(format!("thread-{actor}"));
+    record.turn_id = Some("turn".to_string());
+    record.in_flight = Some(true);
     if native {
-        record.extra.insert("executionMode".into(), json!("host"));
+        record.execution_mode = Some(studio_runtime_store::AgentExecutionMode::Host);
     }
     AgentRepository::put(tx, &record)
 }

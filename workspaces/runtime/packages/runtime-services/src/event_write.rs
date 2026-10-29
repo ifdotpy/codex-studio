@@ -7,10 +7,12 @@ pub(crate) use studio_runtime_process::clock::monotonic_ns;
 
 use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
+use studio_runtime_schema::annotation_command::AnnotationData;
 use studio_runtime_schema::delivery::DeliveryMoment;
-use studio_runtime_schema::persistence::RequestIdentity;
+use studio_runtime_schema::persistence::{RequestIdentity, RequestReferenceKind};
 use studio_runtime_store::request_results::{
-    Admission, AdmittedRequest, RequestResultError, RequestResults, ResultEnvelope,
+    Admission, AdmittedRequest, RequestReference, RequestResultError, RequestResults,
+    ResultEnvelope,
 };
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, AgentStatus, EventWriteRepository, QueueEvent,
@@ -171,8 +173,13 @@ pub struct AnnotationWrite {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct WriteResult {
-    pub record: Value,
+    pub reference: RequestReference,
     pub event_inserted: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct LegacyAnnotationReply {
+    id: String,
 }
 
 pub fn annotate(
@@ -183,7 +190,11 @@ pub fn annotate(
     refuse_remote(&agent)?;
     let path = python_strip(&input.path).to_owned();
     let text = python_strip(&input.text).to_owned();
-    if path.is_empty() || path.contains('\0') || text.is_empty() {
+    if path.is_empty()
+        || path.contains('\0')
+        || text.is_empty()
+        || !(0..=studio_runtime_schema::shared_values::MAX_SAFE_INTEGER).contains(&input.line)
+    {
         return Err(EventWriteError::InvalidRequest("Invalid annotation"));
     }
     let turn_id = input.turn_id.as_deref().map(str::trim);
@@ -197,38 +208,44 @@ pub fn annotate(
         .unwrap_or_else(RequestIdentity::issue_root);
     let event_id = format!("annotation:{id}");
     let now_ms = (created * 1000.0) as i64;
-    let admitted = match begin_request::<studio_runtime_store::AnnotationRecord>(
-        connection,
-        RequestKey::new("annotation", &[&input.agent_id], &id),
-        &input.signature,
-        now_ms,
-    )? {
-        CallerAdmission::Replay(reply) => {
-            EventWriteRepository::validate_annotation(connection, &id, &reply.value())?;
-            return Ok(WriteResult {
-                record: reply.into_value(),
-                event_inserted: false,
-            });
-        }
-        CallerAdmission::Fresh(admitted) => admitted,
-    };
+    let authority = [input.agent_id.as_str()];
+    let key = RequestKey::new("annotation", &authority, &id);
+    if let Some(reference) =
+        RequestResults::replay_reference(connection, key.raw, &input.signature, now_ms)?
+    {
+        return annotation_replay(reference, &id);
+    }
+    if let Some(saved) =
+        replay_request::<LegacyAnnotationReply>(connection, key.raw, &input.signature, now_ms)?
+    {
+        return annotation_legacy_replay(saved.reply, &id);
+    }
+    let identity = request_identity(&key)?;
+    if let Some(reference) =
+        RequestResults::replay_reference(connection, identity.id(), &input.signature, now_ms)?
+    {
+        return annotation_replay(reference, &id);
+    }
+    let admitted =
+        match begin_request::<LegacyAnnotationReply>(connection, key, &input.signature, now_ms)? {
+            CallerAdmission::Replay(reply) => return annotation_legacy_replay(reply, &id),
+            CallerAdmission::Fresh(admitted) => admitted,
+        };
     if EventWriteRepository::event_exists(connection, &event_id)? {
         return Err(EventWriteError::Conflict(
             "The annotation event identity is already in use",
         ));
     }
-    let mut record = json!({
-        "id": id,
-        "agent": input.agent_id.clone(),
-        "rootId": agent.root_id.0,
-        "path": path,
-        "line": input.line,
-        "text": text,
-        "created": created,
-    });
-    if let Some(turn_id) = turn_id {
-        record["turnId"] = Value::String(turn_id.to_owned());
-    }
+    let record = AnnotationData {
+        id: id.clone(),
+        agent: input.agent_id.clone(),
+        root_id: agent.root_id.0.clone(),
+        path: path.clone(),
+        line: input.line,
+        text: text.clone(),
+        created,
+        turn_id: turn_id.map(str::to_owned),
+    };
     let event_text = format!(
         "Review comment at {path}:{}{turn_text}\n{text}",
         input.line,
@@ -236,19 +253,63 @@ pub fn annotate(
             .map(|turn| format!(" (reported turn {turn})"))
             .unwrap_or_default(),
     );
-    EventWriteRepository::put_annotation(connection, &id, &record)?;
+    connection
+        .execute(
+            "INSERT INTO runtime_annotations(id,record) VALUES(?1,?2)",
+            rusqlite::params![
+                id,
+                serde_json::to_string(&record).map_err(studio_runtime_store::StoreError::from)?
+            ],
+        )
+        .map_err(studio_runtime_store::StoreError::from)?;
     let event_inserted = enqueue_event(connection, &agent, event_id, "user", event_text, created)?;
-    settle_request(
-        connection,
-        &admitted,
-        Some(&input.agent_id),
-        &studio_runtime_store::AnnotationRecord::from_value(record.clone())
-            .map_err(studio_runtime_store::StoreError::from)?,
-    )?;
+    let revision = connection
+        .query_row(
+            "SELECT rev FROM runtime_annotations WHERE id=?1",
+            [&id],
+            |row| row.get(0),
+        )
+        .map_err(studio_runtime_store::StoreError::from)?;
+    let reference = RequestReference {
+        kind: RequestReferenceKind::Annotation,
+        id,
+        revision,
+    };
+    let reference = RequestResults::settle_reference(connection, &admitted, &reference)?;
     Ok(WriteResult {
-        record,
+        reference,
         event_inserted,
     })
+}
+
+fn annotation_replay(
+    reference: RequestReference,
+    id: &str,
+) -> Result<WriteResult, EventWriteError> {
+    if reference.kind != RequestReferenceKind::Annotation || reference.id != id {
+        return Err(invalid_stored("request_results", id));
+    }
+    Ok(WriteResult {
+        reference,
+        event_inserted: false,
+    })
+}
+
+fn annotation_legacy_replay(
+    reply: LegacyAnnotationReply,
+    id: &str,
+) -> Result<WriteResult, EventWriteError> {
+    if reply.id != id {
+        return Err(invalid_stored("request_results", id));
+    }
+    annotation_replay(
+        RequestReference {
+            kind: RequestReferenceKind::Annotation,
+            id: reply.id,
+            revision: 1,
+        },
+        id,
+    )
 }
 
 pub(crate) fn refuse_remote(agent: &AgentRecord) -> Result<(), EventWriteError> {
@@ -552,8 +613,8 @@ fn queue_agent(connection: &Transaction<'_>, agent: &AgentRecord) -> Result<(), 
     let auto_wake = agent_auto_wake(agent)?;
     let status = match agent.status {
         AgentStatus::Running | AgentStatus::Starting => {
-            !truthy(agent.extra.get("inFlight"))
-                && !truthy(agent.extra.get("turnId"))
+            agent.in_flight != Some(true)
+                && agent.turn_id.as_deref().is_none_or(str::is_empty)
                 && !truthy(agent.extra.get("startAttempt"))
         }
         AgentStatus::Approval => false,
@@ -586,9 +647,7 @@ fn queue_agent(connection: &Transaction<'_>, agent: &AgentRecord) -> Result<(), 
 
 fn agent_auto_wake(agent: &AgentRecord) -> Result<bool, EventWriteError> {
     agent
-        .extra
-        .get("autoWake")
-        .and_then(Value::as_bool)
+        .auto_wake
         .ok_or_else(|| invalid_stored("runtime_agents", &agent.id.0))
 }
 
@@ -710,7 +769,7 @@ mod tests {
             .execute_batch(
                 &studio_runtime_store::agent_columns::fixture_sql("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE runtime_plans(id TEXT PRIMARY KEY,record TEXT NOT NULL);
-                 CREATE TABLE runtime_annotations(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+                 CREATE TABLE runtime_annotations(id TEXT PRIMARY KEY,record TEXT NOT NULL,rev INTEGER NOT NULL DEFAULT 1);
                  CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE runtime_orchestration_settings(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY,record TEXT NOT NULL);
@@ -729,7 +788,15 @@ mod tests {
             .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
             .expect("volatile agent table creates");
         studio_runtime_store::receipt_schema::create(&connection).expect("request result schema");
+        connection.execute_batch("DROP TABLE request_results; CREATE TABLE request_results(id TEXT PRIMARY KEY,signature TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'applied',ref_kind TEXT,ref_id TEXT,ref_rev INTEGER,result TEXT,created INTEGER NOT NULL); CREATE INDEX request_results_created ON request_results(created,id);").expect("reference receipt fixture");
         let agent = AgentRecord {
+            in_flight: None,
+            account_key: "default".into(),
+            thread_id: None,
+            turn_id: None,
+            auto_wake: None,
+            execution_mode: None,
+            turn_epoch: None,
             title_job: None,
             start_outcome_hold: None,
             fired_events: Default::default(),
@@ -925,7 +992,7 @@ mod tests {
         let before_replay = counts(&connection);
         let replay = with_transaction(&mut connection, |transaction| annotate(transaction, input))
             .expect("same annotation replays");
-        assert_eq!(first.record, replay.record);
+        assert_eq!(first.reference, replay.reference);
         assert!(!replay.event_inserted);
         assert_eq!(counts(&connection), before_replay);
         assert!(matches!(
@@ -1007,6 +1074,28 @@ mod tests {
     }
 
     #[test]
+    fn annotation_rejects_line_outside_safe_integer_range() {
+        for line in [
+            -1,
+            studio_runtime_schema::shared_values::MAX_SAFE_INTEGER + 1,
+        ] {
+            let mut connection = database();
+            let before = counts(&connection);
+            let result = with_transaction(&mut connection, |tx| {
+                annotate(
+                    tx,
+                    AnnotationWrite {
+                        line,
+                        ..annotation("bad-line")
+                    },
+                )
+            });
+            assert!(result.is_err());
+            assert_eq!(counts(&connection), before);
+        }
+    }
+
+    #[test]
     fn invalid_annotation_refuses_without_writes() {
         let mut connection = database();
         let before = counts(&connection);
@@ -1057,7 +1146,7 @@ mod tests {
         let mut connection = database();
         connection
             .execute(
-                "INSERT INTO request_results VALUES(?1,?2,?3,?4)",
+                "INSERT INTO request_results(id,signature,result,created) VALUES(?1,?2,?3,?4)",
                 rusqlite::params![
                     fixture_request_id("n"),
                     "sig",

@@ -98,13 +98,28 @@ async fn edit_actor(state: &State, changes: Value) {
                     let mut record =
                         AgentRepository::get(tx, &AgentId::from(actor.as_str()))?.unwrap();
                     for (key, value) in changes.as_object().unwrap() {
-                        if key == "epoch" {
-                            record.epoch = value.as_i64().unwrap();
-                        } else {
-                            record.extra.insert(key.clone(), value.clone());
+                        match key.as_str() {
+                            "epoch" => record.epoch = value.as_i64().unwrap(),
+                            "accountKey" => record.account_key = value.as_str().unwrap().to_owned(),
+                            "threadId" => record.thread_id = value.as_str().map(str::to_owned),
+                            "turnId" => record.turn_id = value.as_str().map(str::to_owned),
+                            _ => {
+                                record.extra.insert(key.clone(), value.clone());
+                            }
                         }
                     }
-                    AgentRepository::put(tx, &record)
+                    AgentRepository::put(tx, &record)?;
+                    let written = AgentRepository::get(tx, &AgentId::from(actor.as_str()))?
+                        .unwrap()
+                        .value();
+                    for (key, value) in changes.as_object().unwrap() {
+                        assert_eq!(
+                            written.get(key),
+                            Some(value),
+                            "fixture failed to write {key}"
+                        );
+                    }
+                    Ok(())
                 })
                 .await?;
             Ok(())
@@ -785,13 +800,19 @@ async fn existing_actor(paused: bool) -> (State, Arc<ExistingGuest>) {
         store.transaction_with(move|tx|{
             let mut record=AgentRepository::get(tx,&AgentId::from(actor.as_str()))?.unwrap();
             record.status=if paused{studio_runtime_store::AgentStatus::Paused}else{studio_runtime_store::AgentStatus::Running};
-            for(key,value)in[
-                ("executionMode",json!("vm")),("workspaceMode",json!("layr")),("layrReady",json!(true)),
-                ("provider",json!("claude")),("accountKey",json!("default")),("executionSettingsAccountKey",json!("default")),
-                ("cwd",json!("/home/studio/project")),("threadId",json!("fake-thread-0")),("turnId",json!("vm-turn")),
-                ("inFlight",json!(true)),("autoWake",json!(!paused)),
+            record.in_flight = Some(true);
+            record.auto_wake = Some(!paused);
+record.execution_mode = Some(studio_runtime_store::AgentExecutionMode::Vm);
+record.account_key = "default".to_string();
+record.thread_id = Some("fake-thread-0".to_string());
+record.turn_id = Some("vm-turn".to_string());
+for (key, value) in [
+                ("workspaceMode",json!("layr")),("layrReady",json!(true)),
+                ("provider",json!("claude")),("executionSettingsAccountKey",json!("default")),
+                ("cwd",json!("/home/studio/project")),
+
                 ("startAttempt",json!({"id":"existing-vm-attempt","epoch":epoch,"accountKey":"default","submitted":true,"events":["annotation:input"],"threadId":"fake-thread-0","turnId":"vm-turn","connectionGeneration":1,"connectionId":"previous-backend","requestTicket":"original-native-start"})),
-            ]{record.extra.insert(key.into(),value);}
+            ] { record.extra.insert(key.into(), value); }
             AgentRepository::put(tx,&record)?;
             studio_runtime_store::ExecutionHistoryRepository::record(tx,&record)?;
             tx.execute("UPDATE runtime_events SET status='delivered',turn_id='vm-turn' WHERE agent=?1",[&actor])?;

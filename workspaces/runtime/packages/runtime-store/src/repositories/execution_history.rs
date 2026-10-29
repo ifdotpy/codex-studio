@@ -410,11 +410,7 @@ impl ExecutionHistoryRepository {
             )
             .optional()?
             .ok_or_else(|| Self::invalid("runtime_execution_runs", &run))?;
-        let account = agent
-            .extra
-            .get("accountKey")
-            .and_then(Value::as_str)
-            .unwrap_or("default");
+        let account = agent.account_key.as_str();
         Ok(
             (scope.0 == agent.id.0 && scope.1 == account && scope.2 == agent.epoch)
                 .then_some((run, attempt)),
@@ -484,15 +480,14 @@ impl ExecutionHistoryRepository {
         };
         let id = attempt["id"].as_str().ok_or_else(|| invalid(&agent.id.0))?;
         let submitted = super::scheduler::ValidatedAttempt::submission(agent)?;
-        let account = attempt
-            .get("accountKey")
-            .or_else(|| agent.extra.get("accountKey"))
-            .and_then(Value::as_str)
-            .unwrap_or("default");
+        let account = match attempt.get("accountKey") {
+            Some(value) => value.as_str().unwrap_or("default"),
+            None => agent.account_key.as_str(),
+        };
         let thread = attempt
             .get("threadId")
-            .or_else(|| agent.extra.get("threadId"))
             .cloned()
+            .or_else(|| agent.thread_id.clone().map(Value::String))
             .unwrap_or(Value::Null);
         let run: Option<ExecutionRun> = tx.query_row(
             "SELECT r.id,r.record FROM runtime_execution_runs r WHERE r.id=(SELECT run FROM runtime_execution_attempts WHERE id=?1) OR (r.id IN (SELECT run FROM runtime_execution_inputs WHERE event=?2) AND r.agent=?3 AND r.account=?4 AND r.epoch=?5 AND r.turn IS NULL) ORDER BY (r.id=(SELECT run FROM runtime_execution_attempts WHERE id=?1)) DESC, r.created DESC LIMIT 1",
@@ -796,8 +791,9 @@ fn now() -> f64 {
 
 fn decode(table: &str, id: &str, raw: &str) -> StoreResult<ExecutionRun> {
     let invalid = || ExecutionHistoryRepository::invalid(table, id);
+    let value: Value = serde_json::from_str(raw).map_err(|_| invalid())?;
     let JsonObject(run): JsonObject<ExecutionRun> =
-        serde_json::from_str(raw).map_err(|_| invalid())?;
+        JsonObject::deserialize(value).map_err(|_| invalid())?;
     if run.id != id
         || run.epoch.as_i64().is_none()
         || !run.created.as_f64().is_some_and(f64::is_finite)
@@ -923,6 +919,34 @@ mod tests {
     }
 
     #[test]
+    fn terminal_settlement_accepts_last_duplicate_execution_fields() {
+        let mut db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE runtime_agents(id TEXT,account_key TEXT,thread_id TEXT); INSERT INTO runtime_agents VALUES('agent','default','thread'); CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,agent TEXT,account TEXT,epoch INTEGER,thread TEXT,turn TEXT,created REAL,record TEXT); CREATE TABLE runtime_execution_attempts(id TEXT,run TEXT,record TEXT);").unwrap();
+        let raw = r#"{"id":"old","id":"run","agent":"other","agent":"agent","accountKey":"default","epoch":2,"epoch":1,"status":"unknown","status":"running","threadId":"thread","turnId":"turn","created":1}"#;
+        db.execute("INSERT INTO runtime_execution_runs VALUES('run','agent','default',1,'thread','turn',1,?1)", [raw]).unwrap();
+        let tx = db.transaction().unwrap();
+        ExecutionHistoryRepository::terminal(
+            &tx,
+            "agent",
+            "turn",
+            ExecutionStatus::Completed,
+            None,
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        let stored: String = db
+            .query_row(
+                "SELECT record FROM runtime_execution_runs WHERE id='run'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let value: Value = serde_json::from_str(&stored).unwrap();
+        assert_eq!(value["status"], "completed");
+        assert_eq!(value["epoch"], 1);
+    }
+
+    #[test]
     fn submission_accepts_opaque_attempt_extensions_history_refuses() {
         let mut db = rusqlite::Connection::open_in_memory().unwrap();
         db.execute_batch("CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,record TEXT);")
@@ -1017,9 +1041,7 @@ mod tests {
         assert!(!agent.extra.contains_key("activeExecution"));
         agent.epoch = 1;
         agent.extra.insert("activeExecution".into(), pointer);
-        agent
-            .extra
-            .insert("accountKey".into(), json!("another-account"));
+        agent.account_key = "another-account".to_string();
         ExecutionHistoryRepository::record_current(&tx, &mut agent).expect("account advances");
         assert!(!agent.extra.contains_key("activeExecution"));
         assert_eq!(

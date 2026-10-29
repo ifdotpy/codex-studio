@@ -4,6 +4,7 @@
 pub mod account_registry;
 pub mod agent_limits;
 pub mod agent_progress;
+pub mod annotation_command;
 pub mod annotation_record;
 pub mod api_schema;
 pub mod checkpoint_record;

@@ -626,8 +626,7 @@ fn capacity_snapshot(
     let team_active_all = team
         .iter()
         .filter(|agent| {
-            truthy(agent.extra.get("inFlight"))
-                || matches!(agent.status, Running | Starting | Approval)
+            agent.in_flight == Some(true) || matches!(agent.status, Running | Starting | Approval)
         })
         .count();
     Ok(json!({
@@ -680,7 +679,7 @@ fn agent_status_record(agent: &AgentRecord) -> Value {
         "id": agent.id.0,
         "name": agent.extra.get("name").cloned().unwrap_or(Value::Null),
         "status": agent.status.as_str(),
-        "inFlight": agent.extra.get("inFlight").cloned().unwrap_or(Value::Null),
+        "inFlight": agent.in_flight,
         "parentId": agent.extra.get("parentId").cloned().unwrap_or(Value::Null),
         "kind": "agent",
         "error": clip_value(agent.extra.get("error")),
@@ -1212,7 +1211,7 @@ pub async fn rules(
                         json!({"deleted": key})
                     } else {
                         if matches!(action, crate::rules::RuleAction::Resume { .. })
-                            && actor.extra.get("autoWake") != Some(&Value::Bool(true))
+                            && actor.auto_wake != Some(true)
                         {
                             return Err(RulesServiceError::Invalid(
                                 "Resume the agent before its rules",
@@ -1506,7 +1505,7 @@ fn save_rule(
         "fileGeneration": prior.and_then(|value| value.get("fileGeneration")).cloned().unwrap_or(json!(0)),
         "stallWakeGeneration": prior.and_then(|value| value.get("stallWakeGeneration")).cloned().unwrap_or(json!(-1)),
         "text": text_value,
-        "status": if actor.extra.get("autoWake") == Some(&Value::Bool(true)) { "active" } else { "paused" },
+        "status": if actor.auto_wake == Some(true) { "active" } else { "paused" },
         "created": prior.and_then(|value| value.get("created")).cloned().unwrap_or(json!(now)),
         "inFlight": false,
         "checks": prior.and_then(|value| value.get("checks")).cloned().unwrap_or(json!(0)),
@@ -1674,7 +1673,7 @@ mod tests {
         store
             .transaction_with(|tx| {
                 let mut agent = AgentRepository::get(tx, &"queued".into())?.expect("queued agent");
-                agent.extra.insert("autoWake".into(), json!(true));
+                agent.auto_wake = Some(true);
                 AgentRepository::put(tx, &agent)
             })
             .await
@@ -1747,7 +1746,7 @@ mod tests {
             store
                 .transaction_with(move |tx| {
                     let mut agent = AgentRepository::get(tx, &"queued".into())?.expect("agent");
-                    agent.extra.insert("autoWake".into(), json!(true));
+                    agent.auto_wake = Some(true);
                     agent.extra.insert("startWait".into(), saved);
                     AgentRepository::put(tx, &agent)
                 })

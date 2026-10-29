@@ -8,6 +8,17 @@ const AGENT: &str = "agent";
 const ACCOUNT: &str = "acct";
 
 #[test]
+fn transport_recovery_matches_null_and_absent_identity_fields() {
+    let agent = AgentRecord::from_value(json!({
+        "id":"agent", "rootId":"agent", "epoch":0, "status":"interrupted",
+        "inFlight":false, "autoWake":false, "turnId":"turn",
+        "error":PROVIDER_DISCONNECTED_TURN_ERROR,
+        "disconnectRecovery":{"accountKey":null,"threadId":null,"turnId":"turn","epoch":0,"autoWake":true}
+    })).expect("agent");
+    assert!(transport_continuation_allowed(&agent));
+}
+
+#[test]
 fn execution_outcome_reads_current_attempt_and_rejects_malformed_values() {
     for (outcome, accepted) in [
         (json!("unknown"), true),

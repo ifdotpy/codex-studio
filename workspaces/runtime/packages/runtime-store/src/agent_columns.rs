@@ -409,10 +409,10 @@ mod tests {
                 "provider":"claude","threadId":"t1","turnId":"u1","inFlight":true,"autoWake":true,
                 "cwd":"/w","workspaceOperation":"branch","startAttempt":{"submitted":true,
                 "connectionGeneration":4,"activeAtReservation":false},"prompt":"keep"}),
-            json!({"id":"child","provider":"codex","rootId":"lead","parentId":"lead","epoch":0,"status":"completed",
+            json!({"id":"child","provider":"codex","rootId":"lead","parentId":"lead","epoch":0,"status":"completed","accountKey":"default",
                 "role":"reviewer","reviewArchiveScheduled":"",
                 "restartRecovery":{"stage":"held"},"deletedAt":5.5}),
-            json!({"id":"bare","provider":"codex","rootId":"bare","epoch":0,"status":"idle"}),
+            json!({"id":"bare","provider":"codex","rootId":"bare","epoch":0,"status":"idle","accountKey":"default"}),
         ]
     }
 

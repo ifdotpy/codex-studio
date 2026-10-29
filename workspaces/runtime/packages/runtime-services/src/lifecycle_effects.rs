@@ -1354,7 +1354,7 @@ fn notify_parent_of_settled_turn(
     let disconnected_completion = agent.status == AgentStatus::Completed
         && value.pointer("/disconnectRecovery/turnId") == Some(&json!(turn_id))
         && value.pointer("/disconnectRecovery/autoWake") == Some(&json!(true));
-    if !(studio_runtime_store::truthy(agent.extra.get("autoWake")) || disconnected_completion)
+    if !(agent.auto_wake == Some(true) || disconnected_completion)
         || stopped
         || safety_retry
         || agent.status == AgentStatus::Waiting
@@ -1397,7 +1397,7 @@ pub(crate) fn notify_parent_of_failed_turn(
     if agent.status != AgentStatus::Failed
         || !agent.extra.get("parentId").is_some_and(Value::is_string)
         || agent.extra.get("lastCompletedTurn") != Some(&json!(turn_id))
-        || !studio_runtime_store::truthy(agent.extra.get("autoWake"))
+        || agent.auto_wake != Some(true)
         || !reports_turns(&agent)
         || retrying("capacityRetry")
         || retrying("usageResume")
@@ -1413,7 +1413,7 @@ fn reports_turns(agent: &AgentRecord) -> bool {
     !flag("deletedAt")
         && !flag("agentArchive")
         && !flag("executionMove")
-        && agent.extra.get("turnEpoch").and_then(Value::as_i64) == Some(agent.epoch)
+        && agent.turn_epoch == Some(agent.epoch)
 }
 
 /// Existing child-result fields plus the optional derived unsubmitted-assignment notice.
@@ -1527,8 +1527,8 @@ fn finalize_deleted(tx: &Transaction<'_>, id: &str) -> Result<(), ManagementErro
         return Ok(());
     }
     agent.status = studio_runtime_store::AgentStatus::Paused;
-    agent.extra.insert("inFlight".to_owned(), json!(false));
-    agent.extra.insert("turnId".to_owned(), Value::Null);
+    agent.in_flight = Some(false);
+    agent.turn_id = None;
     agent.extra.insert("activity".to_owned(), Value::Null);
     agent.extra.insert("activeTools".to_owned(), json!([]));
     if let Some(attempt) = agent.extra.get_mut("startAttempt")
@@ -1542,8 +1542,11 @@ fn finalize_deleted(tx: &Transaction<'_>, id: &str) -> Result<(), ManagementErro
 
 fn needs_deleted_settlement(agent: &AgentRecord) -> bool {
     studio_runtime_store::truthy(agent.extra.get("deletedAt"))
-        && (studio_runtime_store::truthy(agent.extra.get("inFlight"))
-            || studio_runtime_store::truthy(agent.extra.get("turnId"))
+        && (agent.in_flight == Some(true)
+            || agent
+                .turn_id
+                .as_deref()
+                .is_some_and(|turn| !turn.is_empty())
             || studio_runtime_store::truthy(
                 agent
                     .extra

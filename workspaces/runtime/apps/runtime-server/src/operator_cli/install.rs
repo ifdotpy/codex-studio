@@ -28,6 +28,7 @@ const RUST_COMMANDS: &[(&str, &str)] = &[
     ("codex-canvas", "studio-runtime-server"),
     ("codex-process-supervisor", "codex-process-supervisor"),
     ("codex-diagnostics", "codex-diagnostics"),
+    ("layr-studio", "layr-studio"),
 ];
 /// Unix execute bits accepted for a command binary.
 const EXECUTABLE_PERMISSION_MASK: u32 = 0o111;

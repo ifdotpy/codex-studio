@@ -265,6 +265,13 @@ fn compare(db: &rusqlite::Connection, expected: &Value, label: &str) {
             .and_then(Value::as_array_mut)
             .expect("agents")
         {
+            if let Some(record) = row.get_mut("record").and_then(Value::as_object_mut) {
+                for key in ["threadId", "turnId"] {
+                    if record.get(key).is_some_and(Value::is_null) {
+                        record.remove(key);
+                    }
+                }
+            }
             if let Some(record) = row.get_mut("record").and_then(Value::as_object_mut)
                 && record.contains_key("activeExecution")
             {

@@ -490,6 +490,19 @@ impl RemoteClient {
                         || (draft["rejected"] != true && draft["body"].is_string())
                 ))
             }
+            "servers.list" => {
+                let state = self.vault.read()?;
+                Ok(Value::Array(
+                    state["servers"]
+                        .as_object()
+                        .ok_or("Invalid server key store.")?
+                        .iter()
+                        .map(|(id, s)| {
+                            json!({"id":id,"origin":s["origin"],"label":s["label"].as_str().unwrap_or(id)})
+                        })
+                        .collect(),
+                ))
+            }
             "servers.forget" => {
                 let _guard = self.mutation.lock().await;
                 let mut state = self.vault.read()?;

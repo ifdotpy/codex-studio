@@ -214,25 +214,18 @@ mod tests {
             .expect("candidate-index transaction commits");
         let mut extra = BTreeMap::new();
         extra.insert("provider".to_owned(), json!("codex"));
-        extra.insert("threadId".into(), json!("thread"));
-        extra.insert("autoWake".to_owned(), json!(true));
-        extra.insert("inFlight".to_owned(), json!(false));
         AgentRepository::put(
             &connection,
             &AgentRecord {
-                title_job: None,
-                start_outcome_hold: None,
-                fired_events: Default::default(),
-                native_review_thread: None,
-                vm_launch: None,
-                credential_copy: None,
-                vm_auth_bootstrap: None,
-                native_release: None,
+                in_flight: Some(false),
+                thread_id: Some("thread".into()),
+                auto_wake: Some(true),
                 id: AgentId::from("agent"),
                 root_id: AgentId::from("agent"),
                 epoch: 4,
                 status: AgentStatus::Queued,
                 extra,
+                ..AgentRecord::test_defaults()
             },
         )
         .expect("agent fixture writes");
@@ -361,10 +354,21 @@ mod tests {
         let transaction = connection.transaction().expect("claim transaction");
         SchedulerRepository::claim(&transaction, "agent", 4, "attempt", 10.0, 2).expect("claim");
         transaction.commit().expect("claim commits");
+        let mut agent = AgentRepository::get(&connection, &AgentId::from("agent"))
+            .unwrap()
+            .unwrap();
+        agent.in_flight = Some(true);
+        agent.auto_wake = Some(true);
+        AgentRepository::put(&connection, &agent).unwrap();
         let transaction = connection.transaction().expect("recovery transaction");
         SchedulerRepository::hold_unclean_starts(&transaction).expect("hold uncertain start");
         SchedulerRepository::recover_unsubmitted(&transaction).expect("normal recovery");
         transaction.commit().expect("recovery commits");
+        let agent = AgentRepository::get(&connection, &AgentId::from("agent"))
+            .expect("agent reads")
+            .expect("agent remains");
+        assert_eq!(agent.in_flight, Some(false));
+        assert_eq!(agent.auto_wake, Some(false));
         let statuses: Vec<String> = connection
             .prepare("SELECT status FROM runtime_events WHERE id IN ('first','tie') ORDER BY id")
             .expect("statuses")
@@ -464,8 +468,8 @@ mod tests {
 
         let mut resumed = agent;
         resumed.status = AgentStatus::Queued;
-        resumed.extra.insert("autoWake".to_owned(), json!(true));
-        resumed.extra.insert("inFlight".to_owned(), json!(false));
+        resumed.auto_wake = Some(true);
+        resumed.in_flight = Some(false);
         AgentRepository::put(&connection, &resumed).expect("resumed agent writes");
         connection
             .execute(
@@ -696,24 +700,17 @@ mod tests {
             .expect("agent epoch advances");
         let mut other_extra = BTreeMap::new();
         other_extra.insert("provider".to_owned(), json!("codex"));
-        other_extra.insert("autoWake".to_owned(), json!(true));
-        other_extra.insert("inFlight".to_owned(), json!(false));
         AgentRepository::put(
             &transaction,
             &AgentRecord {
-                title_job: None,
-                start_outcome_hold: None,
-                fired_events: Default::default(),
-                native_review_thread: None,
-                vm_launch: None,
-                credential_copy: None,
-                vm_auth_bootstrap: None,
-                native_release: None,
+                in_flight: Some(false),
+                auto_wake: Some(true),
                 id: AgentId::from("other"),
                 root_id: AgentId::from("other"),
                 epoch: 1,
                 status: AgentStatus::Queued,
                 extra: other_extra,
+                ..AgentRecord::test_defaults()
             },
         )
         .expect("independent agent writes");
@@ -900,7 +897,7 @@ mod tests {
             .expect("agent reads")
             .expect("agent remains");
         assert_eq!(agent.status, AgentStatus::Paused);
-        assert_eq!(agent.extra["autoWake"], false);
+        assert_eq!(agent.auto_wake, Some(false));
         let event_status: String = connection
             .query_row(
                 "SELECT status FROM runtime_events WHERE id='first'",

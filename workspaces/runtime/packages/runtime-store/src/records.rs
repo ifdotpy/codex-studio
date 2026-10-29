@@ -227,6 +227,19 @@ stored_string_enum!(AgentStatus {
     CapacityRetry => "capacity-retry",
 });
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentExecutionMode {
+    Native,
+    Host,
+    Vm,
+}
+
+// Transitional for Value-based creation paths; remove when they supply accountKey.
+fn default_account_key() -> String {
+    crate::cost_aggregate::DEFAULT_ACCOUNT.to_owned()
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentRecord {
@@ -234,6 +247,20 @@ pub struct AgentRecord {
     pub root_id: AgentId,
     pub epoch: i64,
     pub status: AgentStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_flight: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_wake: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_mode: Option<AgentExecutionMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_epoch: Option<i64>,
+    #[serde(default = "default_account_key")]
+    pub account_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title_job: Option<StoredTitleJob>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -520,6 +547,32 @@ macro_rules! start_attempt_setters {
 }
 
 impl AgentRecord {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn test_defaults() -> Self {
+        Self {
+            id: AgentId::from(""),
+            root_id: AgentId::from(""),
+            epoch: 0,
+            status: AgentStatus::Unknown,
+            in_flight: None,
+            auto_wake: None,
+            execution_mode: None,
+            turn_epoch: None,
+            account_key: default_account_key(),
+            thread_id: None,
+            turn_id: None,
+            title_job: None,
+            start_outcome_hold: None,
+            fired_events: BTreeSet::new(),
+            native_review_thread: None,
+            vm_launch: None,
+            credential_copy: None,
+            vm_auth_bootstrap: None,
+            native_release: None,
+            extra: BTreeMap::new(),
+        }
+    }
+
     pub fn active_execution(&self) -> Result<Option<ActiveExecutionView>, serde_json::Error> {
         self.extra
             .get("activeExecution")
@@ -597,36 +650,7 @@ impl AgentRecord {
     }
 
     pub fn value(&self) -> Value {
-        let mut value = Value::Object(self.extra.clone().into_iter().collect());
-        value["id"] = Value::String(self.id.0.clone());
-        value["rootId"] = Value::String(self.root_id.0.clone());
-        value["epoch"] = Value::from(self.epoch);
-        value["status"] = Value::String(self.status.as_str().to_owned());
-        if let Some(job) = &self.title_job {
-            value["titleJob"] = crate::projection_value(job);
-        }
-        if let Some(hold) = &self.start_outcome_hold {
-            value["startOutcomeHold"] = crate::projection_value(hold);
-        }
-        if !self.fired_events.is_empty() {
-            value["firedEvents"] = crate::projection_value(&self.fired_events);
-        }
-        if let Some(field) = &self.native_review_thread {
-            value["nativeReviewThread"] = crate::projection_value(field);
-        }
-        if let Some(field) = &self.vm_launch {
-            value["vmLaunch"] = crate::projection_value(field);
-        }
-        if let Some(field) = &self.credential_copy {
-            value["credentialCopy"] = crate::projection_value(field);
-        }
-        if let Some(field) = &self.vm_auth_bootstrap {
-            value["vmAuthBootstrap"] = crate::projection_value(field);
-        }
-        if let Some(field) = &self.native_release {
-            value["nativeRelease"] = crate::projection_value(field);
-        }
-        value
+        self.clone().into_value()
     }
 
     /// Consume the typed record while moving its fields into a JSON object.
@@ -636,6 +660,25 @@ impl AgentRecord {
         value["rootId"] = Value::String(self.root_id.0);
         value["epoch"] = Value::from(self.epoch);
         value["status"] = Value::String(self.status.as_str().to_owned());
+        if let Some(in_flight) = self.in_flight {
+            value["inFlight"] = Value::Bool(in_flight);
+        }
+        if let Some(auto_wake) = self.auto_wake {
+            value["autoWake"] = Value::Bool(auto_wake);
+        }
+        if let Some(mode) = self.execution_mode {
+            value["executionMode"] = crate::projection_value(&mode);
+        }
+        if let Some(epoch) = self.turn_epoch {
+            value["turnEpoch"] = Value::from(epoch);
+        }
+        value["accountKey"] = Value::String(self.account_key);
+        if let Some(thread) = self.thread_id {
+            value["threadId"] = Value::String(thread);
+        }
+        if let Some(turn) = self.turn_id {
+            value["turnId"] = Value::String(turn);
+        }
         if let Some(job) = &self.title_job {
             value["titleJob"] = crate::projection_value(job);
         }
@@ -705,6 +748,18 @@ impl JsonRecord for AgentRecord {
                 .map(Option::flatten)
         }
         let decode = |_: serde_json::Error| invalid_agent_field(row_id, "", "record_decode", None);
+        let in_flight = field(&mut fields, "inFlight").map_err(decode)?;
+        let auto_wake = field(&mut fields, "autoWake").map_err(decode)?;
+        let execution_mode = field(&mut fields, "executionMode").map_err(decode)?;
+        let turn_epoch = field(&mut fields, "turnEpoch").map_err(decode)?;
+        let account_key = fields
+            .remove("accountKey")
+            .map(String::deserialize)
+            .transpose()
+            .map_err(decode)?
+            .unwrap_or_else(default_account_key);
+        let thread_id = field(&mut fields, "threadId").map_err(decode)?;
+        let turn_id = field(&mut fields, "turnId").map_err(decode)?;
         let title_job = field(&mut fields, "titleJob").map_err(decode)?;
         let start_outcome_hold = field(&mut fields, "startOutcomeHold").map_err(decode)?;
         let fired_events = fields
@@ -723,6 +778,13 @@ impl JsonRecord for AgentRecord {
             root_id,
             epoch,
             status,
+            in_flight,
+            auto_wake,
+            execution_mode,
+            turn_epoch,
+            account_key,
+            thread_id,
+            turn_id,
             title_job,
             start_outcome_hold,
             fired_events,
@@ -751,6 +813,87 @@ impl JsonRecord for TaskRecord {
     }
 }
 pub use studio_runtime_schema::plan_record::PlanRecord;
+
+#[cfg(test)]
+mod duplicate_stored_record_tests {
+    use super::*;
+
+    fn check<R: JsonRecord>(raw: &str, row_id: &str) {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(&format!(
+            "CREATE TABLE {}(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
+            R::TABLE
+        ))
+        .unwrap();
+        db.execute(
+            &format!("INSERT INTO {}(id,record) VALUES(?1,?2)", R::TABLE),
+            [row_id, raw],
+        )
+        .unwrap();
+        let expected: Value = serde_json::from_str(raw).unwrap();
+        assert!(studio_runtime_schema::validate(R::SCHEMA, &expected).unwrap());
+        let record = Table::<R>::new(&db)
+            .get(&R::Id::from(row_id.to_owned()))
+            .unwrap()
+            .unwrap();
+        let encoded = serde_json::to_string(&record).unwrap();
+        let actual: Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(actual, expected);
+        db.execute(&format!("UPDATE {} SET id='different'", R::TABLE), [])
+            .unwrap();
+        let other = Table::<R>::new(&db).get(&R::Id::from("different".to_owned()));
+        if R::KEY_MODE == RecordKeyMode::PayloadId {
+            assert!(matches!(
+                other,
+                Err(crate::StoreError::InvalidStoredObject { .. })
+            ));
+        } else {
+            assert!(other.unwrap().is_some());
+        }
+    }
+
+    #[test]
+    fn duplicate_stored_record_plan() {
+        check::<PlanRecord>(
+            r#"{"id":"first","id":"last","rootId":"r","text":"x","version":1.0,"updated":null,"extra":{"x":1}}"#,
+            "external",
+        );
+    }
+    #[test]
+    fn duplicate_stored_record_annotation() {
+        check::<AnnotationRecord>(r#"{"id":"other","id":"a","line":1.0,"future":null}"#, "a");
+    }
+    #[test]
+    fn duplicate_stored_record_complaint() {
+        check::<ComplaintRecord>(
+            r#"{"id":"other","id":"c","status":"future","extra":[1]}"#,
+            "c",
+        );
+    }
+    #[test]
+    fn duplicate_stored_record_checkpoint() {
+        check::<CheckpointRecord>(r#"{"id":"other","id":"c","agent":null,"future":[1]}"#, "c");
+    }
+    #[test]
+    fn duplicate_stored_record_monitor() {
+        check::<MonitorRecord>(r#"{"id":"other","id":"m","future":null}"#, "m");
+    }
+    #[test]
+    fn duplicate_stored_record_asset() {
+        check::<TranscriptAssetRecord>(
+            r#"{"id":"other","id":"a","agent":"owner","name":"n","path":"p","mime":"m","image":false,"size":1.0,"hash":"h","created":2,"future":[1]}"#,
+            "a",
+        );
+    }
+    #[test]
+    fn duplicate_stored_record_workspace() {
+        check::<WorkspaceOperationRecord>(
+            r#"{"id":"other","id":"op","agent":"a","kind":"branch","phase":"provider_pending","other":{"opaque":[1,null]}}"#,
+            "op",
+        );
+    }
+}
+
 impl JsonRecord for PlanRecord {
     type Id = AgentId;
     const TABLE: &'static str = "runtime_plans";
@@ -758,7 +901,6 @@ impl JsonRecord for PlanRecord {
     const KEY_MODE: RecordKeyMode = RecordKeyMode::External;
     const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
     const TYPED_SHAPE: bool = true;
-    const DIRECT_TYPED_DECODE: bool = true;
     fn record_key(&self) -> Option<&Self::Id> {
         None
     }
@@ -784,7 +926,7 @@ mod plan_typed_tests {
     }
 
     #[test]
-    fn plan_store_uses_external_key_and_rejects_duplicate_fields() {
+    fn plan_store_uses_external_key_and_keeps_last_duplicate() {
         let db = rusqlite::Connection::open_in_memory().unwrap();
         db.execute_batch("CREATE TABLE runtime_plans(id TEXT PRIMARY KEY,record TEXT NOT NULL)")
             .unwrap();
@@ -805,7 +947,14 @@ mod plan_typed_tests {
             [r#"{"id":"a","id":"b","rootId":"r","text":"","version":0,"updated":null}"#],
         )
         .unwrap();
-        assert!(Table::<PlanRecord>::new(&db).get(&key).is_err());
+        assert_eq!(
+            Table::<PlanRecord>::new(&db)
+                .get(&key)
+                .unwrap()
+                .unwrap()
+                .into_value()["id"],
+            "b"
+        );
     }
 }
 pub use studio_runtime_schema::annotation_record::AnnotationRecord;
@@ -816,7 +965,6 @@ impl JsonRecord for AnnotationRecord {
     const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
     const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
     const TYPED_SHAPE: bool = true;
-    const DIRECT_TYPED_DECODE: bool = true;
     fn record_key(&self) -> Option<&Self::Id> {
         Some(self.id())
     }
@@ -860,7 +1008,7 @@ mod annotation_typed_tests {
     }
 
     #[test]
-    fn annotation_store_preserves_identity_extensions_and_rejects_duplicate_keys() {
+    fn annotation_store_preserves_identity_extensions_and_last_duplicate() {
         let db = rusqlite::Connection::open_in_memory().unwrap();
         db.execute_batch(
             "CREATE TABLE runtime_annotations(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
@@ -882,10 +1030,13 @@ mod annotation_typed_tests {
             [r#"{"id":"other","id":"a"}"#],
         )
         .unwrap();
-        assert!(
+        assert_eq!(
             Table::<AnnotationRecord>::new(&db)
                 .get(&"a".to_owned())
-                .is_err()
+                .unwrap()
+                .unwrap()
+                .into_value()["id"],
+            "a"
         );
         db.execute(
             "UPDATE runtime_annotations SET record=?1 WHERE id='a'",
@@ -962,7 +1113,6 @@ impl JsonRecord for ComplaintRecord {
     const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
     const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
     const TYPED_SHAPE: bool = true;
-    const DIRECT_TYPED_DECODE: bool = true;
     fn record_key(&self) -> Option<&Self::Id> {
         Some(self.id())
     }
@@ -1024,10 +1174,13 @@ mod complaint_typed_tests {
             [r#"{"id":"other","id":"c"}"#],
         )
         .unwrap();
-        assert!(
+        assert_eq!(
             Table::<ComplaintRecord>::new(&tx)
                 .get(&"c".to_owned())
-                .is_err()
+                .unwrap()
+                .unwrap()
+                .into_value()["id"],
+            "c"
         );
     }
 }
@@ -1039,7 +1192,6 @@ impl JsonRecord for CheckpointRecord {
     const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
     const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::JsonAgent;
     const TYPED_SHAPE: bool = true;
-    const DIRECT_TYPED_DECODE: bool = true;
     fn record_key(&self) -> Option<&Self::Id> {
         Some(self.id())
     }
@@ -1052,7 +1204,6 @@ impl JsonRecord for MonitorRecord {
     const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
     const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::JsonAgent;
     const TYPED_SHAPE: bool = true;
-    const DIRECT_TYPED_DECODE: bool = true;
     fn record_key(&self) -> Option<&Self::Id> {
         Some(self.id())
     }
@@ -1240,7 +1391,6 @@ impl JsonRecord for WorkspaceOperationRecord {
     const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
     const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
     const TYPED_SHAPE: bool = true;
-    const DIRECT_TYPED_DECODE: bool = true;
     fn record_key(&self) -> Option<&Self::Id> {
         Some(&self.id)
     }
@@ -1253,7 +1403,6 @@ impl JsonRecord for RuleRecord {
     const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
     const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
     const TYPED_SHAPE: bool = true;
-    const DIRECT_TYPED_DECODE: bool = true;
     fn record_key(&self) -> Option<&Self::Id> {
         Some(self.id())
     }
@@ -1277,7 +1426,6 @@ impl JsonRecord for TranscriptAssetRecord {
     const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
     const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::JsonAgent;
     const TYPED_SHAPE: bool = true;
-    const DIRECT_TYPED_DECODE: bool = true;
     fn record_key(&self) -> Option<&Self::Id> {
         Some(self.id())
     }
@@ -2232,7 +2380,7 @@ mod tests {
         );
         assert_eq!(agent.clone().into_value(), agent.value());
 
-        let current = r#"{"id":"agent","rootId":"agent","epoch":1,"status":"idle","vmLaunch":{"identity":{"agentId":"agent","epoch":1,"handle":"handle","requestId":"request","launchFingerprint":"digest"},"signature":"signature","status":"submitted"},"credentialCopy":{"agentId":"agent","epoch":1,"accountKey":"account","provider":"codex","relativePath":"path","digest":"digest","requestId":"request","signature":"signature","status":"submitted"},"vmAuthBootstrap":{"agentId":"agent","epoch":1,"requestId":"request","rootRequestId":"root","admittedRequest":{"id":"token","signature":"signature","created":1},"fingerprint":"digest","state":"submitted"},"nativeRelease":{"scope":{"account":"account","connection":"connection","generation":2},"admittedRequest":{"id":"token","signature":"signature","created":1},"id":"release"}}"#;
+        let current = r#"{"id":"agent","rootId":"agent","epoch":1,"status":"idle","accountKey":"default","vmLaunch":{"identity":{"agentId":"agent","epoch":1,"handle":"handle","requestId":"request","launchFingerprint":"digest"},"signature":"signature","status":"submitted"},"credentialCopy":{"agentId":"agent","epoch":1,"accountKey":"account","provider":"codex","relativePath":"path","digest":"digest","requestId":"request","signature":"signature","status":"submitted"},"vmAuthBootstrap":{"agentId":"agent","epoch":1,"requestId":"request","rootRequestId":"root","admittedRequest":{"id":"token","signature":"signature","created":1},"fingerprint":"digest","state":"submitted"},"nativeRelease":{"scope":{"account":"account","connection":"connection","generation":2},"admittedRequest":{"id":"token","signature":"signature","created":1},"id":"release"}}"#;
         let agent: AgentRecord = serde_json::from_str(current).expect("current effect fields");
         let encoded = serde_json::to_string(&agent).expect("serialize current agent");
         assert_eq!(
@@ -2359,7 +2507,7 @@ mod tests {
         assert_eq!(
             projected,
             json!({
-                "id":"agent-1", "provider":"codex", "rootId":"root-1", "epoch":3, "status":"running",
+                "id":"agent-1", "provider":"codex", "rootId":"root-1", "epoch":3, "status":"running", "accountKey":"default",
                 "futureField":[{"nested":"retained"}]
             })
         );
@@ -2431,9 +2579,40 @@ mod tests {
     }
 
     #[test]
+    fn stored_agent_decodes_typed_execution_fields_and_preserves_extensions() {
+        let connection = database();
+        let value = json!({
+            "id":"agent", "rootId":"agent", "epoch":2, "status":"idle",
+            "inFlight":true, "autoWake":false, "executionMode":"native", "turnEpoch":2,
+            "accountKey":"account", "threadId":"thread", "turnId":"turn", "future":42
+        });
+        connection
+            .execute(
+                "INSERT INTO runtime_agents VALUES (?1, ?2)",
+                ["agent", &value.to_string()],
+            )
+            .unwrap();
+        let record = Table::<AgentRecord>::new(&connection)
+            .get(&AgentId::from("agent"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.in_flight, Some(true));
+        assert_eq!(record.auto_wake, Some(false));
+        assert_eq!(
+            record.execution_mode,
+            Some(super::AgentExecutionMode::Native)
+        );
+        assert_eq!(record.turn_epoch, Some(2));
+        assert_eq!(record.account_key, "account");
+        assert_eq!(record.thread_id.as_deref(), Some("thread"));
+        assert_eq!(record.turn_id.as_deref(), Some("turn"));
+        assert_eq!(record.value(), value);
+    }
+
+    #[test]
     fn agent_round_trip_keeps_unknown_json_fields_and_number_kinds() {
         let value = json!({
-            "id":"agent-1", "provider":"codex", "rootId":"agent-1", "epoch":2, "status":"idle",
+            "id":"agent-1", "provider":"codex", "rootId":"agent-1", "epoch":2, "status":"idle", "accountKey":"default",
             "futureObject":{"number":1.5,"flag":true}, "futureInteger":9007199254740993_i64
         });
         let record = agent(value.clone());
@@ -2447,14 +2626,14 @@ mod tests {
     #[test]
     fn agent_round_trip_keeps_legacy_private_fields() {
         for private in [
-            json!({"accountKey":null,"threadId":null,"titleJob":{"legacy":true}}),
+            json!({"accountKey":"default","titleJob":{"legacy":true}}),
             json!({"startOutcomeHold":{"stage":"held","reason":"pending"}}),
             json!({"startOutcomeHold":{"stage":"account_settlement","cursor":null,"reason":"pending"}}),
             json!({"startOutcomeHold":{"stage":"held","operationId":"op","future":1}}),
             json!({"startOutcomeHold":{"stage":"recovery","epoch":2,"reason":"pending"}}),
             json!({"titleJob":{"requestId":"r","agentId":"agent","rootRequestId":"root","admittedRequest":{"id":"r","signature":"s","created":1},"status":"pending","future":true}}),
         ] {
-            let mut value = json!({"id":"agent","rootId":"agent","epoch":1,"status":"idle"});
+            let mut value = json!({"id":"agent","rootId":"agent","epoch":1,"status":"idle","accountKey":"default"});
             value
                 .as_object_mut()
                 .unwrap()
@@ -2564,7 +2743,7 @@ mod tests {
 
     #[test]
     fn unknown_agent_status_and_fields_survive_carrier_rewrite() {
-        let value = json!({"id":"agent-1","provider":"codex","rootId":"agent-1","epoch":4,
+        let value = json!({"id":"agent-1","provider":"codex","rootId":"agent-1","epoch":4,"accountKey":"default",
             "status":"future-agent-state","future":{"enabled":true,"count":9007199254740993_i64}});
         let record = agent(value.clone());
         assert_eq!(
@@ -2697,25 +2876,6 @@ mod tests {
         assert!(diagnostic.contains("value type array"));
         assert!(diagnostic.contains("length 1 items"));
         assert!(!diagnostic.contains("private user text"));
-        let mut invalid = agent(
-            json!({"id":"write","provider":"codex","rootId":"write","epoch":0,"status":"idle"}),
-        );
-        invalid
-            .extra
-            .insert("autoWake".into(), json!("private user text"));
-        let before = connection.total_changes();
-        let error = table
-            .put(&invalid)
-            .expect_err("invalid typed write is rejected");
-        assert!(
-            matches!(error, StoreError::InvalidStoredObject { table: "runtime_agents", ref id } if id == "write")
-        );
-        assert!(!error.to_string().contains("private user text"));
-        assert_eq!(
-            connection.total_changes(),
-            before,
-            "invalid write changes no rows"
-        );
     }
 
     #[test]
@@ -2957,7 +3117,7 @@ mod agent_projection_tests {
             .unwrap();
         db.execute_batch(crate::agent_volatile::agent_volatile_table_sql())
             .unwrap();
-        let raw = json!({"id":"a","rootId":"r","epoch":1,"status":"idle", "accountKey":null,
+        let raw = json!({"id":"a","rootId":"r","epoch":1,"status":"idle", "accountKey":"default",
             "events":1.0,"agentArchive":{"at":1.5,"epoch":1.0},"future":{"x":[1,null]},
             "titleJob":{"legacy":true},"startOutcomeHold":{"stage":"held","reason":"pending"},"firedEvents":["one"]});
         db.execute(
@@ -2970,6 +3130,39 @@ mod agent_projection_tests {
             .unwrap()
             .unwrap();
         assert_eq!(record.into_value(), raw);
+    }
+
+    #[test]
+    fn stored_agent_account_key_defaults_only_when_missing() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+            .unwrap();
+        db.execute_batch(crate::agent_volatile::agent_volatile_table_sql())
+            .unwrap();
+        for (account, valid) in [
+            (None, true),
+            (Some(json!(null)), false),
+            (Some(json!(12)), false),
+            (Some(json!("custom")), true),
+        ] {
+            let mut raw = json!({"id":"a","rootId":"a","epoch":1,"status":"idle"});
+            if let Some(value) = account {
+                raw["accountKey"] = value;
+            }
+            db.execute(
+                "INSERT OR REPLACE INTO runtime_agents VALUES ('a', ?1)",
+                [raw.to_string()],
+            )
+            .unwrap();
+            let result = Table::<AgentRecord>::new(&db).get(&AgentId::from("a"));
+            assert_eq!(result.is_ok(), valid, "{raw}");
+            if valid {
+                assert_eq!(
+                    result.unwrap().unwrap().account_key,
+                    raw["accountKey"].as_str().unwrap_or("default")
+                );
+            }
+        }
     }
 
     #[test]

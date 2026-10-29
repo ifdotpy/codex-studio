@@ -189,7 +189,7 @@ pub fn answer_async_question<V: Fn(&Value) -> bool>(
     }
     if event_write::truthy(agent.extra.get("deletedAt"))
         || record.get("epoch").and_then(Value::as_i64) != Some(agent.epoch)
-        || !event_write::truthy(agent.extra.get("autoWake"))
+        || agent.auto_wake != Some(true)
     {
         return Err(QuestionsWriteError::InvalidRequest(
             "This question belongs to a stopped turn",
@@ -514,9 +514,8 @@ pub fn submit_complaint(
     // Python's enqueue() fast-dispatches only for autoWake agents, while its
     // send eligibility excludes moveImportPending agents. Keep the event
     // durable, but do not wake the worker while either owner gate is closed.
-    let wake_event_worker = event_inserted
-        && event_write::truthy(lead.extra.get("autoWake"))
-        && !event_write::recovery_pending(&lead);
+    let wake_event_worker =
+        event_inserted && lead.auto_wake == Some(true) && !event_write::recovery_pending(&lead);
     Ok(ComplaintWriteResult {
         record,
         event_inserted,
@@ -585,8 +584,8 @@ pub fn respond_to_complaint(
                     .iter()
                     .any(|response| response.get("author").and_then(Value::as_str) == Some(lead_id))
             });
-        let stopped = event_write::truthy(lead.extra.get("deletedAt"))
-            || !event_write::truthy(lead.extra.get("autoWake"));
+        let stopped =
+            event_write::truthy(lead.extra.get("deletedAt")) || lead.auto_wake != Some(true);
         let closing = match status {
             ComplaintResponseStatus::InProgress => false,
             ComplaintResponseStatus::Resolved | ComplaintResponseStatus::Declined => true,
@@ -657,7 +656,7 @@ pub fn respond_to_complaint(
     // Match Python enqueue/send gates: preserve the event, but do not wake
     // while autoWake is disabled or move import/recovery blocks sending.
     let wake_event_worker = event_inserted
-        && event_write::truthy(reporter.extra.get("autoWake"))
+        && reporter.auto_wake == Some(true)
         && !event_write::recovery_pending(&reporter);
     event_write::settle_request(
         transaction,

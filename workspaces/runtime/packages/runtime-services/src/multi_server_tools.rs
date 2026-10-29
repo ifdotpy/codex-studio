@@ -1313,7 +1313,7 @@ fn checked_actor(
     if studio_runtime_store::truthy(agent.extra.get("deletedAt")) {
         return refuse("This agent was deleted");
     }
-    if agent.extra.get("autoWake") != Some(&Value::Bool(true)) {
+    if agent.auto_wake != Some(true) {
         return refuse("The caller is stopped");
     }
     Ok(agent)
