@@ -29,27 +29,30 @@ fn parse<T: DeserializeOwned>(text: &str) -> Option<T> {
 
 #[derive(Deserialize)]
 struct ComplaintBatch {
-    complaints: Vec<Object<ComplaintEntry>>,
+    complaints: Vec<Value>,
 }
 #[derive(Deserialize)]
 struct ComplaintEntry {
     complaint_id: String,
 }
 
-/// Scheduler complaints require at least one nonempty identifier.
-pub fn complaint_ids(text: &str) -> Option<Vec<String>> {
+/// Parse the complete text before exposing entries, but decode each entry only
+/// when requested so consumers can preserve intervening database error order.
+pub fn complaint_entries(text: &str) -> Option<impl Iterator<Item = Option<String>>> {
     let batch: ComplaintBatch = parse(text)?;
     if batch.complaints.is_empty() {
         return None;
     }
-    batch
-        .complaints
-        .into_iter()
-        .map(|entry| {
-            let id = entry.0.complaint_id;
-            (!id.is_empty()).then_some(id)
-        })
-        .collect()
+    Some(batch.complaints.into_iter().map(|entry| {
+        let entry = Object::<ComplaintEntry>::deserialize(entry).ok()?;
+        let id = entry.0.complaint_id;
+        (!id.is_empty()).then_some(id)
+    }))
+}
+
+/// Scheduler complaints require at least one nonempty identifier.
+pub fn complaint_ids(text: &str) -> Option<Vec<String>> {
+    complaint_entries(text)?.collect()
 }
 
 #[derive(Deserialize)]
@@ -93,6 +96,21 @@ pub fn work_review_ids(text: &str) -> Option<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn complaint_entries_validate_each_item_lazily_after_full_json_parse() {
+        let mut entries = complaint_entries(
+            r#"{"complaints":[{"complaint_id":"old","complaint_id":"first"},{}]}"#,
+        )
+        .unwrap();
+        assert_eq!(entries.next(), Some(Some("first".into())));
+        assert_eq!(entries.next(), Some(None));
+        assert!(
+            complaint_entries(r#"{"complaints":[{"complaint_id":"first"},{}],"extra":1e999}"#)
+                .is_none()
+        );
+        assert!(complaint_entries(r#"{"complaints":[]}"#).is_none());
+    }
 
     #[test]
     fn progress_fields_match_message_tool_contract() {
