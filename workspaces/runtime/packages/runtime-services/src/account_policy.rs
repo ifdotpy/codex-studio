@@ -200,9 +200,10 @@ pub(crate) fn project_registry(
     let Some(bytes) = bytes else {
         return Err(registry_error("/", "registry is absent"));
     };
-    let (value, order) = decode_registry(bytes)
-        .map_err(|(pointer, _reason)| registry_error(&pointer, "schema validation failed"))?;
-    project_registry_value(&value, &order)
+    let (value, order, typed) =
+        studio_runtime_store::account_registry::decode_registry_typed(bytes)
+            .map_err(|(pointer, _reason)| registry_error(&pointer, "schema validation failed"))?;
+    project_registry_typed(&value, &order, &typed)
 }
 
 pub(crate) fn project_registry_value(
@@ -213,7 +214,14 @@ pub(crate) fn project_registry_value(
         studio_runtime_schema::account_registry::AccountRegistry,
     > = serde::Deserialize::deserialize(value)
         .map_err(|_| registry_error("/", "schema validation failed"))?;
-    let typed = typed.0;
+    project_registry_typed(value, order, &typed.0)
+}
+
+pub(crate) fn project_registry_typed(
+    value: &Value,
+    order: &RegistryOrder,
+    typed: &studio_runtime_schema::account_registry::AccountRegistry,
+) -> Result<AccountsSnapshot, AccountPolicyError> {
     let accounts_by_key = value
         .get("accounts")
         .and_then(Value::as_object)
@@ -222,10 +230,7 @@ pub(crate) fn project_registry_value(
         .get("logins")
         .and_then(Value::as_object)
         .ok_or_else(|| registry_error("/logins", "schema validation failed"))?;
-    let default_account_key = value
-        .get("defaultAccountKey")
-        .and_then(Value::as_str)
-        .ok_or_else(|| registry_error("/defaultAccountKey", "schema validation failed"))?;
+    let default_account_key = &typed.default_account_key;
     let mut accounts = Vec::new();
     let mut archived = Vec::new();
     let mut known = HashSet::new();
@@ -291,18 +296,7 @@ fn listed_account(key: &str, row: &studio_runtime_schema::account_registry::Acco
                 .is_none_or(str::is_empty))
 }
 
-pub(crate) fn can_attempt_native_proof(stored: Option<&Map<String, Value>>) -> bool {
-    stored
-        .and_then(|row| {
-            <studio_runtime_schema::json_object::JsonObject<
-                studio_runtime_schema::account_registry::AccountRecord,
-            > as serde::Deserialize>::deserialize(Value::Object(row.clone()))
-            .ok()
-        })
-        .is_some_and(|row| can_attempt_native_proof_typed(&row.0))
-}
-
-fn can_attempt_native_proof_typed(
+pub(crate) fn can_attempt_native_proof_typed(
     row: &studio_runtime_schema::account_registry::AccountRecord,
 ) -> bool {
     let email = row.email.as_deref().unwrap_or_default();

@@ -29,11 +29,6 @@ struct Profile {
     account_id: Option<String>,
     email: Option<String>,
     status: String,
-    #[serde(default = "empty_options")]
-    claude_options: Value,
-}
-fn empty_options() -> Value {
-    json!({})
 }
 pub struct BridgeSnapshot {
     profile: Profile,
@@ -43,12 +38,14 @@ pub struct BridgeSnapshot {
 impl BridgeSnapshot {
     pub fn from_record(record: Value) -> Result<Self, BridgeHold> {
         let profile: Profile =
-            serde_json::from_value(record.clone()).map_err(|_| BridgeHold::Account)?;
+            Deserialize::deserialize(&record).map_err(|_| BridgeHold::Account)?;
         if profile.provider != ProviderKind::Claude.key() {
             return Err(BridgeHold::Account);
         }
-        let options = serde::Deserialize::deserialize(&profile.claude_options)
-            .map_err(|_| BridgeHold::Options)?;
+        let empty = json!({});
+        let options =
+            serde::Deserialize::deserialize(record.get("claudeOptions").unwrap_or(&empty))
+                .map_err(|_| BridgeHold::Options)?;
         Ok(Self {
             profile,
             raw: record,
@@ -135,8 +132,11 @@ impl BridgeSnapshot {
         }
         env.insert(
             "STUDIO_CLAUDE_OPTIONS".into(),
-            serde_json::to_string(&bridge_options(&self.profile.claude_options)?)
-                .map_err(|_| BridgeHold::Options)?,
+            serde_json::to_string(&bridge_options_checked(
+                self.raw.get("claudeOptions"),
+                &self.options,
+            )?)
+            .map_err(|_| BridgeHold::Options)?,
         );
         env.insert("STUDIO_CLAUDE_ACCOUNT".into(), identity);
         let credential_identity = metadata
@@ -198,6 +198,37 @@ pub fn bridge_options(value: &Value) -> Result<Value, BridgeHold> {
     let mut options = value.as_object().cloned().ok_or(BridgeHold::Options)?;
     let args = options.remove("launchArgs").unwrap_or(json!(""));
     let args = args.as_str().ok_or(BridgeHold::Options)?;
+    finish_bridge_options(options, args)
+}
+
+fn bridge_options_checked(
+    value: Option<&Value>,
+    typed: &ClaudeOptionsRecord,
+) -> Result<Value, BridgeHold> {
+    let mut options = match value {
+        Some(value) => value.as_object().cloned().ok_or(BridgeHold::Options)?,
+        None => serde_json::Map::new(),
+    };
+    let present = options.remove("launchArgs");
+    let args = match (present, typed.launch_args.as_deref()) {
+        (None, _) => "",
+        (Some(Value::String(_)), Some(args)) => args,
+        _ => return Err(BridgeHold::Options),
+    };
+    finish_bridge_options(options, args)
+}
+
+fn finish_bridge_options(
+    mut options: serde_json::Map<String, Value>,
+    args: &str,
+) -> Result<Value, BridgeHold> {
+    let extra = bridge_launch_args(args)?;
+    options.entry("customModels").or_insert(json!([]));
+    options.insert("extraArgs".into(), Value::Object(extra));
+    Ok(Value::Object(options))
+}
+
+pub(crate) fn bridge_launch_args(args: &str) -> Result<serde_json::Map<String, Value>, BridgeHold> {
     if args.len() > 4096 {
         return Err(BridgeHold::Options);
     }
@@ -220,14 +251,12 @@ pub fn bridge_options(value: &Value) -> Result<Value, BridgeHold> {
             return Err(BridgeHold::Options);
         }
     }
-    options.entry("customModels").or_insert(json!([]));
-    options.insert("extraArgs".into(), Value::Object(extra));
-    Ok(Value::Object(options))
+    Ok(extra)
 }
 
 #[cfg(test)]
 mod options_tests {
-    use super::{BridgeHold, BridgeSnapshot, bridge_options};
+    use super::{BridgeHold, BridgeSnapshot, bridge_options, bridge_options_checked};
     use serde_json::json;
 
     #[test]
@@ -248,5 +277,26 @@ mod options_tests {
             json!({"customModels":[],"extension":{"key":1},"extraArgs":{"verbose":null}})
         );
         assert!(bridge_options(&json!({"launchArgs":null})).is_err());
+    }
+
+    #[test]
+    fn checked_options_keep_missing_null_and_extensions_at_launch() {
+        use serde::Deserialize;
+        for raw in [
+            json!({}),
+            json!({"launchArgs":"--verbose","future":[1]}),
+            json!({"launchArgs":null}),
+            json!({"customModels":null}),
+        ] {
+            let typed =
+                studio_runtime_schema::claude_options::ClaudeOptionsRecord::deserialize(&raw)
+                    .unwrap();
+            let old = bridge_options(&raw);
+            let checked = bridge_options_checked(Some(&raw), &typed);
+            assert_eq!(checked.is_ok(), old.is_ok(), "{raw}");
+            if let (Ok(checked), Ok(old)) = (checked, old) {
+                assert_eq!(checked, old);
+            }
+        }
     }
 }

@@ -891,6 +891,7 @@ pub struct AccountDriver<R = SystemProviderAuthReader> {
 
 struct RegistryState {
     value: Value,
+    typed: studio_runtime_schema::account_registry::AccountRegistry,
     order: RegistryOrder,
     /// Account groups and the default account order, kept beside the registry.
     account_order: crate::account_preference::AccountOrder,
@@ -901,7 +902,9 @@ struct RegistryState {
 impl RegistryState {
     /// The public projection with the account order applied.
     fn public_snapshot(&self) -> Result<AccountsSnapshot, AccountDriverError> {
-        let mut snapshot = project_snapshot(&self.value, &self.order)?;
+        let mut snapshot =
+            crate::account_policy::project_registry_typed(&self.value, &self.order, &self.typed)
+                .map_err(|_| AccountDriverError::InvalidRegistry)?;
         self.account_order.apply(&mut snapshot);
         Ok(snapshot)
     }
@@ -1580,7 +1583,15 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             }
             (
                 requests,
-                auth_profile(registry_account(&state.value, account)?)?,
+                auth_profile_typed(
+                    &state
+                        .typed
+                        .accounts
+                        .get(account)
+                        .ok_or(AccountDriverError::UnknownAccount)?
+                        .0,
+                    registry_account(&state.value, account)?,
+                ),
             )
         };
         // The provider has just written the credentials; read them again.
@@ -1636,7 +1647,13 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             {
                 continue;
             }
-            let profile = auth_profile(row)?;
+            let typed = &state
+                .typed
+                .accounts
+                .get(&account)
+                .ok_or(AccountDriverError::UnknownAccount)?
+                .0;
+            let profile = auth_profile_typed(typed, row);
             let deadline = login_deadline(&receipt);
             if receipt.get("reauthAccountKey").is_some()
                 && receipt.get("nativeCompleted") != Some(&Value::Bool(true))
@@ -1652,7 +1669,11 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             }
             // Credentials of another account than the pinned one read as
             // Changed; a completed "sign in again" request then ends in error.
-            let status = self.refresh_value(&mut value, &account, true)?;
+            let status = self.refresh_row(
+                registry_account_mut(&mut value, &account)?,
+                true,
+                Some(&profile),
+            )?;
             if status == AccountStatus::Ready
                 || (status == AccountStatus::Changed
                     && value["logins"][request]["nativeCompleted"] == true)
@@ -1785,16 +1806,18 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
     ) -> Result<Self, AccountDriverError> {
         let path = path.into();
         let bytes = read_registry(&path)?;
-        let (value, order) =
-            decode_registry(&bytes).map_err(|_| AccountDriverError::InvalidRegistry)?;
+        let (value, order, typed) =
+            studio_runtime_store::account_registry::decode_registry_typed(&bytes)
+                .map_err(|_| AccountDriverError::InvalidRegistry)?;
         let change_signal = AccountChangeSignal::new();
-        reader.watch(&live_profiles(&value));
+        reader.watch(&live_profiles(&typed, &value));
         let account_order =
             crate::account_preference::AccountOrder::read(&account_order_path(&path));
         Ok(Self {
             path,
             state: Mutex::new(RegistryState {
                 value,
+                typed,
                 order,
                 account_order,
                 revision: 0,
@@ -1919,7 +1942,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
     /// Refresh the response projection from credentials without persisting it.
     pub fn listing_snapshot(&self) -> Result<AccountsSnapshot, AccountDriverError> {
         // Provider reads run on this copy, so the registry lock is not held during I/O.
-        let (mut updated, order, account_order) = {
+        let (mut updated, order, account_order, profiles) = {
             let state = self
                 .state
                 .lock()
@@ -1928,11 +1951,28 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
                 state.value.clone(),
                 state.order.clone(),
                 state.account_order.clone(),
+                state
+                    .typed
+                    .accounts
+                    .iter()
+                    .filter_map(|(key, account)| {
+                        state
+                            .value
+                            .get("accounts")?
+                            .get(key)
+                            .map(|row| (key.clone(), auth_profile_typed(&account.0, row)))
+                    })
+                    .collect::<BTreeMap<_, _>>(),
             )
         };
         for key in &order.accounts {
             let stored = registry_account(&updated, key)?.clone();
-            if self.refresh_value(&mut updated, key, false)? == AccountStatus::Error {
+            if self.refresh_row(
+                registry_account_mut(&mut updated, key)?,
+                false,
+                profiles.get(key),
+            )? == AccountStatus::Error
+            {
                 // A listing cannot replace persisted status with an error when
                 // the auth reader could not determine the account's state.
                 *registry_account_mut(&mut updated, key)? = stored;
@@ -1950,10 +1990,19 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         let Some(account) = account else {
             return self.snapshot();
         };
-        let (mut state, row, _) = self.refreshed_account(account, true)?;
+        let (mut state, row, status) = self.refreshed_account(account, true)?;
+        let original = &state
+            .typed
+            .accounts
+            .get(account)
+            .ok_or(AccountDriverError::UnknownAccount)?
+            .0;
+        let ready = status == AccountStatus::Ready
+            && original.deleted != Some(true)
+            && original.disconnected != Some(true);
         let mut updated = state.value.clone();
         *registry_account_mut(&mut updated, account)? = row;
-        if !eligible_default(&updated, account) {
+        if !ready && !eligible_default(&updated, account) {
             return Err(AccountDriverError::SignInRequired);
         }
         updated["defaultAccountKey"] = Value::String(account.to_owned());
@@ -2345,15 +2394,22 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         AccountDriverError,
     > {
         for _ in 0..2 {
-            let original = {
+            let (original, profile) = {
                 let state = self
                     .state
                     .lock()
                     .map_err(|_| AccountDriverError::Poisoned)?;
-                registry_account(&state.value, account)?.clone()
+                let row = registry_account(&state.value, account)?;
+                let typed = &state
+                    .typed
+                    .accounts
+                    .get(account)
+                    .ok_or(AccountDriverError::UnknownAccount)?
+                    .0;
+                (row.clone(), auth_profile_typed(typed, row))
             };
             let mut refreshed = original.clone();
-            let status = self.refresh_row(&mut refreshed, include_inactive)?;
+            let status = self.refresh_row(&mut refreshed, include_inactive, Some(&profile))?;
             let state = self
                 .state
                 .lock()
@@ -2368,7 +2424,14 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             .lock()
             .map_err(|_| AccountDriverError::Poisoned)?;
         let mut row = registry_account(&state.value, account)?.clone();
-        let status = self.refresh_row(&mut row, include_inactive)?;
+        let typed = &state
+            .typed
+            .accounts
+            .get(account)
+            .ok_or(AccountDriverError::UnknownAccount)?
+            .0;
+        let profile = auth_profile_typed(typed, &row);
+        let status = self.refresh_row(&mut row, include_inactive, Some(&profile))?;
         Ok((state, row, status))
     }
 
@@ -2378,13 +2441,18 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         account: &str,
         include_inactive: bool,
     ) -> Result<AccountStatus, AccountDriverError> {
-        self.refresh_row(registry_account_mut(value, account)?, include_inactive)
+        self.refresh_row(
+            registry_account_mut(value, account)?,
+            include_inactive,
+            None,
+        )
     }
 
     fn refresh_row(
         &self,
         row: &mut Value,
         include_inactive: bool,
+        prepared: Option<&AuthProfile>,
     ) -> Result<AccountStatus, AccountDriverError> {
         if !include_inactive
             && (row.get("deleted") == Some(&Value::Bool(true))
@@ -2395,10 +2463,13 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         if row.get("duplicateOf").is_some_and(truthy_value) {
             return Ok(status_from_value(row.get("status")));
         }
-        let profile = auth_profile(row)?;
+        let profile = match prepared {
+            Some(profile) => profile,
+            None => &auth_profile(row)?,
+        };
         let metadata =
             crate::diagnostics::measure_runtime_stage("account_driver.auth_metadata", || {
-                self.reader.read(&profile)
+                self.reader.read(profile)
             });
         let row = row
             .as_object_mut()
@@ -2436,22 +2507,27 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         order: &RegistryOrder,
     ) -> Result<(), AccountDriverError> {
         let result = persist_registry(&self.path, state, updated, order);
-        self.reader.watch(&live_profiles(&state.value));
+        self.reader
+            .watch(&live_profiles(&state.typed, &state.value));
         result
     }
 }
 
 fn eligible_default(value: &Value, account: &str) -> bool {
-    let Some(row) = registry_account(value, account)
-        .ok()
-        .and_then(Value::as_object)
+    let Ok(row) = registry_account(value, account) else {
+        return false;
+    };
+    let Ok(studio_runtime_schema::json_object::JsonObject(row)) =
+        <studio_runtime_schema::json_object::JsonObject<
+            studio_runtime_schema::account_registry::AccountRecord,
+        > as serde::Deserialize>::deserialize(row)
     else {
         return false;
     };
-    (row.get("status").and_then(Value::as_str) == Some("ready")
-        || crate::account_policy::can_attempt_native_proof(Some(row)))
-        && row.get("disconnected") != Some(&Value::Bool(true))
-        && row.get("deleted") != Some(&Value::Bool(true))
+    (row.status == studio_runtime_schema::account_registry::AccountStatus::Ready
+        || crate::account_policy::can_attempt_native_proof_typed(&row))
+        && row.disconnected != Some(true)
+        && row.deleted != Some(true)
 }
 
 fn apply_registration_metadata(row: &mut serde_json::Map<String, Value>, metadata: &AuthMetadata) {
@@ -2683,22 +2759,37 @@ fn project_snapshot(
 fn persist_registry(
     path: &Path,
     state: &mut RegistryState,
-    mut updated: Value,
+    updated: Value,
     order: &RegistryOrder,
 ) -> Result<(), AccountDriverError> {
-    let accounts_changed =
-        project_snapshot(&state.value, &state.order)? != project_snapshot(&updated, order)?;
-    if accounts_changed {
-        updated["pendingAccountsChange"] = Value::Bool(true);
-    }
-    let encoded =
+    let mut encoded =
         encode_registry(&updated, order).map_err(|_| AccountDriverError::InvalidRegistry)?;
-    let (checked, order) =
-        decode_registry(&encoded).map_err(|_| AccountDriverError::InvalidRegistry)?;
+    // The encoded candidate replaces the large mutable tree during validation.
+    drop(updated);
+    let (mut checked, checked_order, mut typed) =
+        studio_runtime_store::account_registry::decode_registry_typed(&encoded)
+            .map_err(|_| AccountDriverError::InvalidRegistry)?;
+    let accounts_changed =
+        crate::account_policy::project_registry_typed(&state.value, &state.order, &state.typed)
+            .map_err(|_| AccountDriverError::InvalidRegistry)?
+            != crate::account_policy::project_registry_typed(&checked, order, &typed)
+                .map_err(|_| AccountDriverError::InvalidRegistry)?;
+    if accounts_changed {
+        checked["pendingAccountsChange"] = Value::Bool(true);
+        typed.pending_accounts_change = Some(true);
+        encoded =
+            encode_registry(&checked, order).map_err(|_| AccountDriverError::InvalidRegistry)?;
+        if encoded.len() > studio_runtime_store::account_state::MAX_PERSISTED_DOCUMENT_BYTES
+            || !studio_runtime_store::account_state::persisted_document_within_bounds(&encoded)
+        {
+            return Err(AccountDriverError::InvalidRegistry);
+        }
+    }
     match atomic_replace(path, &encoded) {
         Ok(()) => {
             state.value = checked;
-            state.order = order;
+            state.typed = typed;
+            state.order = checked_order;
             if accounts_changed {
                 state.publish_profile_change();
             }
@@ -2707,7 +2798,8 @@ fn persist_registry(
         Err(ReplaceError::NotReplaced) => Err(AccountDriverError::WriteRegistry),
         Err(ReplaceError::ReplacedNotDurable) => {
             state.value = checked;
-            state.order = order;
+            state.typed = typed;
+            state.order = checked_order;
             if accounts_changed {
                 state.publish_profile_change();
             }
@@ -2720,22 +2812,35 @@ fn auth_profile(row: &Value) -> Result<AuthProfile, AccountDriverError> {
     let account: studio_runtime_schema::json_object::JsonObject<
         studio_runtime_schema::account_registry::AccountRecord,
     > = serde::Deserialize::deserialize(row).map_err(|_| AccountDriverError::InvalidRegistry)?;
-    Ok(AuthProfile {
-        provider: account.0.provider,
-        home: PathBuf::from(account.0.home),
+    Ok(auth_profile_typed(&account.0, row))
+}
+
+fn auth_profile_typed(
+    account: &studio_runtime_schema::account_registry::AccountRecord,
+    row: &Value,
+) -> AuthProfile {
+    AuthProfile {
+        provider: account.provider,
+        home: PathBuf::from(&account.home),
         claude_options: row.get("claudeOptions").cloned(),
-    })
+    }
 }
 
 /// The profiles whose credentials the registry still uses.
-fn live_profiles(value: &Value) -> Vec<AuthProfile> {
-    value
-        .get("accounts")
-        .and_then(Value::as_object)
-        .into_iter()
-        .flatten()
-        .filter(|(_, row)| row.get("deleted") != Some(&Value::Bool(true)))
-        .filter_map(|(_, row)| auth_profile(row).ok())
+fn live_profiles(
+    typed: &studio_runtime_schema::account_registry::AccountRegistry,
+    value: &Value,
+) -> Vec<AuthProfile> {
+    typed
+        .accounts
+        .iter()
+        .filter(|(_, account)| account.0.deleted != Some(true))
+        .filter_map(|(key, account)| {
+            value
+                .get("accounts")?
+                .get(key)
+                .map(|row| auth_profile_typed(&account.0, row))
+        })
         .collect()
 }
 
@@ -3771,6 +3876,16 @@ exit 0
             error: None,
             error_kind: None,
         }
+    }
+
+    #[test]
+    fn claude_revalidation_uses_the_checked_registry_profile() {
+        let fixture = TestDir::new();
+        let path = claude_registry(&fixture, "ready", None);
+        let driver = AccountDriver::open_with_reader(&path, FixedReader(ready_claude())).unwrap();
+        let revalidated = driver.revalidate_claude("default").unwrap();
+        assert_eq!(revalidated["accountId"], "claude:fixture@example.invalid");
+        assert_eq!(driver.claude_profile("default").unwrap()["status"], "ready");
     }
 
     #[test]
@@ -4848,6 +4963,7 @@ exit 0
         let mut state = driver.state.lock().expect("registry state");
         let original_value = state.value.clone();
         let original_order = state.order.clone();
+        let original_status = state.typed.accounts["default"].0.status;
         let mut candidate = original_value.clone();
         candidate["accounts"]["default"]["status"] = Value::String("invalid".into());
         assert_eq!(
@@ -4855,6 +4971,7 @@ exit 0
             Err(AccountDriverError::InvalidRegistry)
         );
         assert_eq!(state.value, original_value);
+        assert!(state.typed.accounts["default"].0.status == original_status);
         assert_eq!(state.order.accounts, original_order.accounts);
         assert_eq!(state.order.logins, original_order.logins);
         assert_eq!(state.revision, 0);

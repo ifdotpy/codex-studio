@@ -2111,9 +2111,8 @@ pub fn normalize_profile(
     }
     let tokens = shlex::split(&input.launch_args).ok_or_else(invalid)?;
     let args = shlex::try_join(tokens.iter().map(String::as_str)).map_err(|_| invalid())?;
+    crate::claude_bridge::bridge_launch_args(&args).map_err(|_| invalid())?;
     options.insert("launchArgs".into(), Value::String(args));
-    let value = Value::Object(options.clone());
-    crate::claude_bridge::bridge_options(&value).map_err(|_| invalid())?;
     Ok(options)
 }
 

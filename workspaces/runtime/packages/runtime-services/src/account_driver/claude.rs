@@ -73,15 +73,29 @@ fn native_signed_out_status(stdout: &[u8]) -> bool {
 impl<R: ProviderAuthReader> AccountDriver<R> {
     /// Saved identity only; the sign-in path must not block on a native probe.
     pub fn claude_profile(&self, key: &str) -> Result<Value, ClaudeAccountError> {
+        self.with_claude_profile(key, |_, row| row.clone())
+    }
+
+    fn with_claude_profile<T>(
+        &self,
+        key: &str,
+        project: impl FnOnce(&studio_runtime_schema::account_registry::AccountRecord, &Value) -> T,
+    ) -> Result<T, ClaudeAccountError> {
         let state = self
             .state
             .lock()
             .map_err(|_| AccountDriverError::Poisoned)?;
         let row = registry_account(&state.value, key)?;
-        if row.get("provider") != Some(&json!(ProviderKind::Claude.key())) {
+        let account = &state
+            .typed
+            .accounts
+            .get(key)
+            .ok_or(AccountDriverError::UnknownAccount)?
+            .0;
+        if account.provider != ProviderKind::Claude {
             return Err(ClaudeAccountError::NotClaude);
         }
-        Ok(row.clone())
+        Ok(project(account, row))
     }
 
     /// The Claude account whose configuration folder is `config`, compared by
@@ -95,13 +109,8 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             .order
             .accounts
             .iter()
-            .filter_map(|key| state.value.get("accounts")?.get(key))
-            .find(|row| {
-                <studio_runtime_schema::json_object::JsonObject<
-                    studio_runtime_schema::account_registry::AccountRecord,
-                > as serde::Deserialize>::deserialize(*row)
-                .ok()
-                .is_some_and(|account| {
+            .find(|key| {
+                state.typed.accounts.get(*key).is_some_and(|account| {
                     account.0.provider == ProviderKind::Claude
                         && account
                             .0
@@ -113,14 +122,14 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
                             })
                 })
             })
-            .cloned())
+            .and_then(|key| state.value.get("accounts")?.get(key).cloned()))
     }
 
     /// The caller owns executable/path resolution and a per-config login lease.
     /// A durable registration is also the restart receipt for Add's config path.
     pub fn register_claude_verified(
         &self,
-        mut options: Map<String, Value>,
+        options: Map<String, Value>,
         label: &str,
         default_home: &Path,
         metadata: &AuthMetadata,
@@ -135,13 +144,17 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         {
             return Err(AccountDriverError::SignInRequired.into());
         }
+        let value = Value::Object(options);
         if label.trim().is_empty()
             || label.chars().count() > 200
-            || <studio_runtime_schema::claude_options::ClaudeOptionsRecord as serde::Deserialize>::deserialize(Value::Object(options.clone()))
+            || <studio_runtime_schema::claude_options::ClaudeOptionsRecord as serde::Deserialize>::deserialize(&value)
             .is_err()
         {
             return Err(ClaudeAccountError::InvalidProfile);
         }
+        let Value::Object(mut options) = value else {
+            return Err(ClaudeAccountError::InvalidProfile);
+        };
         options.entry("customModels").or_insert_with(|| json!([]));
         let identity = json!({"binaryPath":options.get("binaryPath").cloned().unwrap_or(json!("")),
             "configDir":options.get("configDir").cloned().unwrap_or(json!(""))});
@@ -361,16 +374,10 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
     /// Restart-only proof for a ready login whose chat repair has not committed.
     /// Read outside the registry lock, then compare the pinned profile before publication.
     pub(crate) fn revalidate_claude(&self, key: &str) -> Result<Value, ClaudeAccountError> {
-        let expected = self.claude_profile(key)?;
-        let metadata = self.reader.read(&AuthProfile {
-            provider: studio_runtime_providers::ProviderKind::Claude,
-            home: expected
-                .get("home")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .into(),
-            claude_options: expected.get("claudeOptions").cloned(),
-        });
+        let (expected, profile) = self.with_claude_profile(key, |account, row| {
+            (row.clone(), auth_profile_typed(account, row))
+        })?;
+        let metadata = self.reader.read(&profile);
         self.refresh_claude_verified(key, &expected, &metadata, false)
     }
 }

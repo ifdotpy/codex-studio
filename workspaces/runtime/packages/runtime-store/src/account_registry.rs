@@ -20,6 +20,19 @@ pub struct RegistryOrder {
 }
 
 pub fn decode_registry(bytes: &[u8]) -> Result<(Value, RegistryOrder), (String, String)> {
+    decode_registry_typed(bytes).map(|(value, order, _)| (value, order))
+}
+
+pub fn decode_registry_typed(
+    bytes: &[u8],
+) -> Result<
+    (
+        Value,
+        RegistryOrder,
+        studio_runtime_schema::account_registry::AccountRegistry,
+    ),
+    (String, String),
+> {
     if bytes.len() > crate::account_state::MAX_PERSISTED_DOCUMENT_BYTES
         || !crate::account_state::persisted_document_within_bounds(bytes)
     {
@@ -32,16 +45,19 @@ pub fn decode_registry(bytes: &[u8]) -> Result<(Value, RegistryOrder), (String, 
     >(bytes);
     let value: Value =
         serde_json::from_slice(bytes).map_err(|_| ("/".to_owned(), "invalid JSON".to_owned()))?;
-    if parsed.is_err() {
-        return Err(match registry_violation(&value) {
-            Ok(Some((pointer, _keyword))) => (pointer, "schema validation failed".to_owned()),
-            _ => ("/".to_owned(), "invalid registry shape".to_owned()),
-        });
-    }
+    let parsed = match parsed {
+        Ok(parsed) => parsed.0,
+        Err(_) => {
+            return Err(match registry_violation(&value) {
+                Ok(Some((pointer, _keyword))) => (pointer, "schema validation failed".to_owned()),
+                _ => ("/".to_owned(), "invalid registry shape".to_owned()),
+            });
+        }
+    };
     let mut deserializer = serde_json::Deserializer::from_slice(bytes);
     let order = RegistryOrder::deserialize(&mut deserializer)
         .map_err(|_| ("/".to_owned(), "invalid registry order".to_owned()))?;
-    Ok((value, order))
+    Ok((value, order, parsed))
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -241,7 +257,7 @@ pub fn atomic_replace_with(
 
 #[cfg(test)]
 mod tests {
-    use super::decode_registry;
+    use super::{decode_registry, decode_registry_typed};
     use serde_json::json;
 
     #[test]
@@ -252,9 +268,12 @@ mod tests {
             row("b"),
             row("a")
         );
-        let (value, order) = decode_registry(source.as_bytes()).expect("registry decodes");
+        let (value, order, typed) =
+            decode_registry_typed(source.as_bytes()).expect("registry decodes");
         assert_eq!(order.accounts, ["b", "a"]);
         assert_eq!(value["version"], json!(2.0));
+        assert_eq!(typed.default_account_key, "b");
+        assert_eq!(typed.accounts["a"].0.id, "a");
         let mut invalid: serde_json::Value = serde_json::from_str(&source).unwrap();
         invalid["accounts"]["b"]["provider"] = json!("unknown");
         let error = match decode_registry(invalid.to_string().as_bytes()) {
