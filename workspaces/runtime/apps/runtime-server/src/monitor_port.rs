@@ -98,6 +98,47 @@ struct CommandTiming {
     timeout_ms: u64,
 }
 
+// This provider read predates the stricter supervisor receipt contract. Invalid
+// optional fields are ignored independently, as they were in the JSON view.
+#[derive(Deserialize)]
+struct RuleOperationStatus {
+    #[serde(default, deserialize_with = "status_boolean")]
+    accepted: Option<bool>,
+    #[serde(default, deserialize_with = "status_text")]
+    reason: Option<String>,
+    #[serde(default)]
+    response: Value,
+}
+
+#[derive(Deserialize)]
+struct RuleOperationResponse {
+    #[serde(default, deserialize_with = "status_present")]
+    result: Option<Value>,
+    #[serde(default, rename = "exitCode", deserialize_with = "status_integer")]
+    exit_code: Option<i64>,
+    #[serde(default, deserialize_with = "status_text")]
+    error: Option<String>,
+}
+
+fn status_boolean<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<bool>, D::Error> {
+    Ok(Value::deserialize(d)?.as_bool())
+}
+fn status_text<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(Value::deserialize(d)?.as_str().map(str::to_owned))
+}
+fn status_integer<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<i64>, D::Error> {
+    Ok(Value::deserialize(d)?.as_i64())
+}
+fn status_present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Value>, D::Error> {
+    Value::deserialize(d).map(Some)
+}
+
+fn rule_response(value: &Value) -> Option<RuleOperationResponse> {
+    studio_runtime_schema::json_object::JsonObject::<RuleOperationResponse>::deserialize(value)
+        .ok()
+        .map(|object| object.0)
+}
+
 pub(crate) struct RetainedMonitorPort {
     store: Arc<RuntimeStore>,
     session: Arc<dyn AccountSessionPort>,
@@ -1052,7 +1093,10 @@ impl RetainedMonitorPort {
             return CheckReconciliation::Submitted;
         }
         let monitor_id = check.monitor_id.clone();
-        let loaded: Result<Option<(Value, MonitorSnapshot)>, MonitorError> = self
+        let loaded: Result<
+            Option<(studio_runtime_store::MonitorRecord, MonitorSnapshot)>,
+            MonitorError,
+        > = self
             .store
             .transaction_with(move |tx| {
                 let Some(record) = MonitorsRepository::get(tx, &monitor_id)? else {
@@ -1060,20 +1104,31 @@ impl RetainedMonitorPort {
                 };
                 let (snapshot, _) =
                     studio_runtime_services::monitor_runtime::snapshot(tx, &monitor_id)?;
-                Ok(Some((record.value(), snapshot)))
+                Ok(Some((record, snapshot)))
             })
             .await;
         let Ok(Some((record, snapshot))) = loaded else {
             return CheckReconciliation::Unknown;
         };
-        if record["ruleId"].as_str() != Some(&check.rule_id)
-            || record["command"].as_str() != Some(&check.command)
-            || record["agent"].as_str() != Some(&check.agent_id)
-            || record["epoch"].as_u64() != Some(check.epoch)
+        if record.rule_id.value().map(String::as_str) != Some(check.rule_id.as_str())
+            || record.command.as_ref().map(|command| command.as_str())
+                != Some(check.command.as_str())
+            || record.agent() != Some(check.agent_id.as_str())
+            || record
+                .epoch
+                .value()
+                .and_then(|epoch| epoch.number().as_u64())
+                != Some(check.epoch)
         {
             return CheckReconciliation::Unknown;
         }
-        if matches!(record["status"].as_str(), Some("approval" | "starting")) {
+        if matches!(
+            record.status(),
+            Some(
+                studio_runtime_schema::studio_errors::MonitorStatus::Approval
+                    | studio_runtime_schema::studio_errors::MonitorStatus::Starting
+            )
+        ) {
             return CheckReconciliation::Submitted;
         }
         let Some(operation) = snapshot.operation() else {
@@ -1095,12 +1150,19 @@ impl RetainedMonitorPort {
                 let Some(ProviderResponse::Reply(result)) = receipt.into_response() else {
                     return CheckReconciliation::Unknown;
                 };
-                if result["accepted"] == true {
-                    if let Some(response) = result.get("response").filter(|value| !value.is_null())
-                    {
-                        let response = response.get("result").unwrap_or(response);
-                        let code = response["exitCode"].as_i64();
-                        let error = response["error"].as_str().map(str::to_owned);
+                let Ok(studio_runtime_schema::json_object::JsonObject(result)) =
+                    studio_runtime_schema::json_object::JsonObject::<RuleOperationStatus>::deserialize(&result)
+                else {
+                    return CheckReconciliation::Unknown;
+                };
+                if result.accepted == Some(true) {
+                    if let Some(response) = rule_response(&result.response) {
+                        let response = match response.result {
+                            Some(nested) => rule_response(&nested),
+                            None => Some(response),
+                        };
+                        let (code, error) =
+                            response.map_or((None, None), |value| (value.exit_code, value.error));
                         if code.is_some() || error.is_some() {
                             let queued = monitor_event_queue::enqueue_exit(
                                 &self.store,
@@ -1119,11 +1181,10 @@ impl RetainedMonitorPort {
                         }
                     }
                     CheckReconciliation::Submitted
-                } else if result["accepted"] == false {
-                    let reason = result["reason"]
-                        .as_str()
-                        .unwrap_or("Native monitor command was not accepted")
-                        .to_owned();
+                } else if result.accepted == Some(false) {
+                    let reason = result
+                        .reason
+                        .unwrap_or_else(|| "Native monitor command was not accepted".to_owned());
                     let now = studio_runtime_services::event_write::unix_time().unwrap_or(0.0);
                     let monitor_id = check.monitor_id.clone();
                     let operation = operation.clone();
@@ -4209,6 +4270,97 @@ mod tests {
             .await
             .expect("seed rule and owner");
         check
+    }
+
+    #[tokio::test]
+    async fn rule_reconciliation_preserves_partial_status_and_exit_receipts() {
+        for (response, submitted, exits) in [
+            (json!({"accepted":true,"response":{"exitCode":0}}), true, 1),
+            (
+                json!({"accepted":true,"response":{"result":null,"exitCode":0}}),
+                true,
+                0,
+            ),
+            (
+                json!({"accepted":true,"response":{"result":{"error":"failed"}}}),
+                true,
+                1,
+            ),
+            (
+                json!({"accepted":"true","response":{"exitCode":0}}),
+                false,
+                0,
+            ),
+            (json!({"accepted":true,"response":null}), true, 0),
+            (json!({"accepted":false,"reason":42}), true, 0),
+            (
+                json!({"accepted":true,"response":{"exitCode":1.0,"error":false}}),
+                true,
+                0,
+            ),
+            (
+                serde_json::from_str(
+                    r#"{"accepted":false,"accepted":true,"response":{"exitCode":0}}"#,
+                )
+                .unwrap(),
+                true,
+                1,
+            ),
+        ] {
+            let root = tempfile::tempdir().expect("fixture");
+            let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+            let check = seed_in_flight_rule(&store, root.path()).await;
+            let (operation, _, _) = retained_command(root.path(), Some(42));
+            let mut watch = starting_watch(root.path(), &check.monitor_id);
+            watch["status"] = json!("running");
+            watch["ruleId"] = json!(check.rule_id);
+            watch["command"] = json!(check.command);
+            watch["operation"] = json!(operation);
+            store
+                .transaction(move |tx| {
+                    studio_runtime_store::Table::new(tx)
+                        .put(&studio_runtime_store::MonitorRecord::from_value(watch)?)?;
+                    Ok::<_, studio_runtime_store::StoreError>(())
+                })
+                .await
+                .expect("monitor");
+            let session = Arc::new(ExecSession {
+                input_writes: Default::default(),
+                terminate: Mutex::new(Some(ProviderResponse::Reply(response.clone()))),
+            });
+            let unknown_port =
+                RetainedMonitorPort::new(Arc::clone(&store), Arc::new(ExecSession::default()));
+            assert_eq!(
+                unknown_port.reconcile_rule_check(&check).await,
+                CheckReconciliation::Unknown
+            );
+            let port = RetainedMonitorPort::new(Arc::clone(&store), session);
+            let mut mismatched = check.clone();
+            mismatched.epoch += 1;
+            assert_eq!(
+                port.reconcile_rule_check(&mismatched).await,
+                CheckReconciliation::Unknown
+            );
+            let outcome = port.reconcile_rule_check(&check).await;
+            assert_eq!(
+                outcome == CheckReconciliation::Submitted,
+                submitted,
+                "{response}"
+            );
+            let record = store
+                .read_async("test/rule-monitor", move |db| {
+                    MonitorsRepository::get(db, &check.monitor_id)
+                })
+                .await
+                .expect("read")
+                .expect("monitor")
+                .value();
+            assert_eq!(
+                record["streamQueue"].as_array().map_or(0, Vec::len),
+                exits,
+                "{response}"
+            );
+        }
     }
 
     #[tokio::test]
