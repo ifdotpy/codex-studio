@@ -186,3 +186,227 @@ mod tests {
         );
     }
 }
+
+/// Normalized save input; callers apply their own wire defaults before checking it.
+pub struct RuleSaveInput {
+    pub kind: String,
+    pub minimum: Option<i64>,
+    pub duration: Option<i64>,
+    pub interval: i64,
+    pub stall: i64,
+    pub at: RuleTimeInput,
+    pub event: String,
+    pub command: String,
+    pub liveness: String,
+    pub name: String,
+    pub text: String,
+}
+
+#[derive(Clone, Copy)]
+pub struct RuleTime(f64);
+impl RuleTime {
+    pub fn check(value: f64, now: f64) -> Result<Self, RuleSaveError> {
+        if !value.is_finite() || value < now - 1.0 || value > now + 31_536_000.0 {
+            Err(RuleSaveError::At)
+        } else {
+            Ok(Self(value))
+        }
+    }
+}
+pub enum RuleTimeInput {
+    Checked(RuleTime),
+    Unchecked(f64),
+}
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub enum RuleSaveOrder {
+    Http,
+    Managed,
+}
+
+#[derive(Clone, Debug)]
+pub enum RuleKind {
+    Interval,
+    Once,
+    File {
+        stall: i64,
+        liveness: String,
+    },
+    Event,
+    LowWorkers {
+        minimum: Option<i64>,
+        duration: Option<i64>,
+    },
+}
+impl RuleKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Interval => "interval",
+            Self::Once => "once",
+            Self::File { .. } => "file",
+            Self::Event => "event",
+            Self::LowWorkers { .. } => "low_workers",
+        }
+    }
+    pub fn minimum(&self) -> Option<i64> {
+        match self {
+            Self::LowWorkers { minimum, .. } => *minimum,
+            _ => None,
+        }
+    }
+    pub fn duration(&self) -> Option<i64> {
+        match self {
+            Self::LowWorkers { duration, .. } => *duration,
+            _ => None,
+        }
+    }
+    pub fn stall(&self) -> i64 {
+        match self {
+            Self::File { stall, .. } => *stall,
+            _ => 0,
+        }
+    }
+    pub fn liveness(&self) -> &str {
+        match self {
+            Self::File { liveness, .. } => liveness,
+            _ => "",
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RuleEvent {
+    WorkerCompleted,
+    MonitorExit,
+    WorkReview,
+    Complaint,
+}
+impl RuleEvent {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::WorkerCompleted => "worker_completed",
+            Self::MonitorExit => "monitor_exit",
+            Self::WorkReview => "work_review",
+            Self::Complaint => "complaint",
+        }
+    }
+}
+
+/// The checked domain shared by HTTP and managed rule writes.
+#[derive(Clone, Debug)]
+pub struct CheckedRuleSave {
+    fields: RuleSaveFields,
+}
+#[derive(Clone, Debug)]
+pub struct RuleSaveFields {
+    pub kind: RuleKind,
+    pub interval: i64,
+    pub at: f64,
+    pub event: RuleEvent,
+    pub command: String,
+    pub name: String,
+    pub text: String,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RuleSaveError {
+    Kind,
+    Minimum,
+    Duration,
+    Interval,
+    Stall,
+    At,
+    Event,
+    Command,
+    Liveness,
+    Name,
+    Text,
+    Lead,
+}
+impl CheckedRuleSave {
+    pub fn new(
+        input: RuleSaveInput,
+        now: f64,
+        is_lead: bool,
+        order: RuleSaveOrder,
+    ) -> Result<Self, RuleSaveError> {
+        let kind = input.kind.as_str();
+        if !matches!(kind, "interval" | "once" | "file" | "event" | "low_workers") {
+            return Err(RuleSaveError::Kind);
+        }
+        if order == RuleSaveOrder::Http && kind == "low_workers" && !input.command.is_empty() {
+            return Err(RuleSaveError::Command);
+        }
+        if order == RuleSaveOrder::Http && kind != "file" && !input.liveness.is_empty() {
+            return Err(RuleSaveError::Liveness);
+        }
+        if kind == "low_workers" {
+            if !is_lead {
+                return Err(RuleSaveError::Lead);
+            }
+            if !(1..=255).contains(&input.minimum.unwrap_or(8)) {
+                return Err(RuleSaveError::Minimum);
+            }
+            if !(1..=525_600).contains(&input.duration.unwrap_or(30)) {
+                return Err(RuleSaveError::Duration);
+            }
+            if order == RuleSaveOrder::Managed && !input.command.is_empty() {
+                return Err(RuleSaveError::Command);
+            }
+        }
+        if !(10..=31_536_000).contains(&input.interval) {
+            return Err(RuleSaveError::Interval);
+        }
+        if !(0..=31_536_000).contains(&input.stall) {
+            return Err(RuleSaveError::Stall);
+        }
+        let at = match input.at {
+            RuleTimeInput::Checked(value) => value,
+            RuleTimeInput::Unchecked(value) => RuleTime::check(value, now)?,
+        };
+        let event = match input.event.as_str() {
+            "worker_completed" => RuleEvent::WorkerCompleted,
+            "monitor_exit" => RuleEvent::MonitorExit,
+            "work_review" => RuleEvent::WorkReview,
+            "complaint" => RuleEvent::Complaint,
+            _ => return Err(RuleSaveError::Event),
+        };
+        if order == RuleSaveOrder::Managed && kind != "file" && !input.liveness.is_empty() {
+            return Err(RuleSaveError::Liveness);
+        }
+        if order == RuleSaveOrder::Http && input.text.is_empty() {
+            return Err(RuleSaveError::Text);
+        }
+        if input.name.is_empty() {
+            return Err(RuleSaveError::Name);
+        }
+        if input.text.is_empty() {
+            return Err(RuleSaveError::Text);
+        }
+        let kind = match kind {
+            "interval" => RuleKind::Interval,
+            "once" => RuleKind::Once,
+            "file" => RuleKind::File {
+                stall: input.stall,
+                liveness: input.liveness,
+            },
+            "event" => RuleKind::Event,
+            "low_workers" => RuleKind::LowWorkers {
+                minimum: input.minimum,
+                duration: input.duration,
+            },
+            _ => return Err(RuleSaveError::Kind),
+        };
+        Ok(Self {
+            fields: RuleSaveFields {
+                kind,
+                interval: input.interval,
+                at: at.0,
+                event,
+                command: input.command.trim().to_owned(),
+                name: input.name,
+                text: input.text,
+            },
+        })
+    }
+    pub fn fields(&self) -> &RuleSaveFields {
+        &self.fields
+    }
+}

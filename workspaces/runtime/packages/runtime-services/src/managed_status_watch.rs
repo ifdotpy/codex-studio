@@ -35,7 +35,6 @@ const FILE_PATH_MAX_CHARS: usize = 4096;
 const RULE_TEXT_MAX_CHARS: usize = 12_000;
 const RULE_NAME_MAX_CHARS: usize = 120;
 const RULE_COMMAND_MAX_CHARS: usize = 12_000;
-const RULE_YEAR_SECONDS: f64 = 31_536_000.0;
 const RULE_DEFAULT_INTERVAL_SECONDS: u64 = 60;
 const RULE_DEFAULT_STALL_SECONDS: u64 = 1800;
 const DEFAULT_DELEGATION_DEPTH: u64 = 1;
@@ -899,6 +898,93 @@ fn read_rules_request(
 /// Apply one `RulesRuntime.rules` action. The optional result's cancellation
 /// IDs are sorted and must be delivered by the callback owner after this call
 /// returns, which proves the rule transaction has committed.
+// Keep each wire field's presence and type until its normal validation point.
+#[derive(Default)]
+enum RuleField<T> {
+    #[default]
+    Missing,
+    Null,
+    Value(T),
+    Invalid,
+}
+impl<'de, T: serde::Deserialize<'de>> serde::Deserialize<'de> for RuleField<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(serde::Deserialize)]
+        #[serde(untagged)]
+        enum Input<T> {
+            Value(T),
+            Invalid(serde::de::IgnoredAny),
+        }
+        Ok(match Option::<Input<T>>::deserialize(deserializer)? {
+            None => Self::Null,
+            Some(Input::Value(value)) => Self::Value(value),
+            Some(Input::Invalid(_)) => Self::Invalid,
+        })
+    }
+}
+impl<T> RuleField<T> {
+    fn value(&self) -> Option<&T> {
+        if let Self::Value(value) = self {
+            Some(value)
+        } else {
+            None
+        }
+    }
+    fn is_missing(&self) -> bool {
+        matches!(self, Self::Missing)
+    }
+}
+#[derive(Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct ManagedRuleWire {
+    action: RuleField<String>,
+    id: RuleField<String>,
+    kind: RuleField<String>,
+    path: RuleField<String>,
+    minimum_workers: RuleField<i64>,
+    duration_minutes: RuleField<i64>,
+    interval_seconds: RuleField<i64>,
+    stall_timeout_seconds: RuleField<i64>,
+    #[serde(rename = "stall_timeout_seconds")]
+    stall_alias: RuleField<i64>,
+    at: RuleField<f64>,
+    event: RuleField<String>,
+    command: RuleField<String>,
+    liveness_command: RuleField<String>,
+    #[serde(rename = "liveness_command")]
+    liveness_alias: RuleField<String>,
+    name: RuleField<String>,
+    text: RuleField<String>,
+}
+fn rule_integer(field: &RuleField<i64>, default: i64) -> Result<i64, RulesServiceError> {
+    match field {
+        RuleField::Missing | RuleField::Null => Ok(default),
+        RuleField::Value(value) => Ok(*value),
+        RuleField::Invalid => Err(RulesServiceError::Invalid("integer")),
+    }
+}
+fn rule_text(
+    field: &RuleField<String>,
+    label: &'static str,
+    maximum: usize,
+    empty: bool,
+) -> Result<String, RulesServiceError> {
+    let value = field
+        .value()
+        .ok_or(RulesServiceError::Invalid(label))?
+        .trim();
+    if value.chars().count() > maximum || (!empty && value.is_empty()) {
+        return Err(RulesServiceError::Invalid(label));
+    }
+    Ok(value.to_owned())
+}
+fn rule_empty_text(field: &RuleField<String>, maximum: usize) -> Result<String, RulesServiceError> {
+    match field {
+        RuleField::Missing | RuleField::Null => Ok(String::new()),
+        _ => rule_text(field, "text", maximum, true),
+    }
+}
+
 pub async fn rules(
     store: &RuntimeStore,
     actor_id: &str,
@@ -911,14 +997,13 @@ pub async fn rules(
     if !now.is_finite() {
         return Err(RulesServiceError::Invalid("time"));
     }
-    let action = data
-        .and_then(|value| value.get("action"))
-        .and_then(Value::as_str)
+    let wire = data.map(|value| <studio_runtime_schema::json_object::JsonObject<ManagedRuleWire> as serde::Deserialize>::deserialize(value).map(|wire| wire.0).map_err(|_| RulesServiceError::Invalid("rule"))).transpose()?;
+    let action = wire
+        .as_ref()
+        .and_then(|wire| wire.action.value())
+        .map(String::as_str)
         .unwrap_or(if data.is_none() { "list" } else { "save" })
         .to_owned();
-    if data.is_some_and(|value| !value.is_object()) {
-        return Err(RulesServiceError::Invalid("rule"));
-    }
     if action == "list" || data.is_none() {
         let read_actor = actor_id.to_owned();
         let value = store
@@ -954,16 +1039,12 @@ pub async fn rules(
     }
 
     let action = crate::rules::RuleActionName::parse(&action);
-    let body = data.ok_or(RulesServiceError::Invalid("rule"))?.clone();
+    let body = wire.ok_or(RulesServiceError::Invalid("rule"))?;
     if request_id.is_empty() || request_id.chars().count() > 200 {
         return Err(RulesServiceError::Invalid("request id"));
     }
     let signature = rules_request_signature(actor_id, actor_epoch, data)?;
-    let key = match body
-        .get("id")
-        .and_then(Value::as_str)
-        .filter(|id| !id.is_empty())
-    {
+    let key = match body.id.value().filter(|id| !id.is_empty()) {
         Some(id) => id.to_owned(),
         None => stable_rule_id(request_id)?,
     };
@@ -992,12 +1073,13 @@ pub async fn rules(
     }
 
     let kind = body
-        .get("kind")
-        .and_then(Value::as_str)
+        .kind
+        .value()
+        .map(String::as_str)
         .unwrap_or("interval")
         .to_owned();
     let prepared_path = if action == Some(crate::rules::RuleActionName::Save) && kind == "file" {
-        let raw = text(body.get("path"), "a path", FILE_PATH_MAX_CHARS, false)?;
+        let raw = rule_text(&body.path, "a path", FILE_PATH_MAX_CHARS, false)?;
         let cwd = cwd(&prepared_actor)?.to_owned();
         let files = (*files).clone();
         Some(
@@ -1257,142 +1339,96 @@ pub async fn acknowledge_rule_cancellations(
         .await
 }
 
-struct CheckedSave {
-    kind: String,
-    minimum_record: Option<i64>,
-    duration_record: Option<i64>,
-    interval: i64,
-    stall: i64,
-    at: f64,
-    event: String,
-    command: String,
-    liveness_command: String,
-    name: String,
-    text_value: String,
-}
-
 fn check_save(
-    body: &Value,
+    body: &ManagedRuleWire,
     old: Option<&Value>,
     actor: &AgentRecord,
     kind: &str,
     now: f64,
-) -> Result<CheckedSave, RulesServiceError> {
+) -> Result<crate::rules::CheckedRuleSave, RulesServiceError> {
     if old.is_some_and(|record| record.get("inFlight").and_then(Value::as_bool) == Some(true)) {
         return Err(RulesServiceError::Invalid(
             "Pause the rule and wait for its current check before editing",
         ));
     }
-    if !matches!(kind, "interval" | "once" | "file" | "event" | "low_workers") {
-        return Err(RulesServiceError::Invalid(
-            "Choose interval, once, file, event, or low_workers",
-        ));
-    }
-    let minimum = integer(body.get("minimumWorkers"), 8)?;
-    let duration = integer(body.get("durationMinutes"), 30)?;
-    if kind == "low_workers" {
-        if actor.extra.get("isLead") != Some(&Value::Bool(true)) {
-            return Err(RulesServiceError::Invalid(
-                "Only an orchestrator can own a low-worker alert",
-            ));
-        }
-        if !(1..=255).contains(&minimum) {
-            return Err(RulesServiceError::Invalid(
-                "Minimum subagents must be 1 to 255",
-            ));
-        }
-        if !(1..=525_600).contains(&duration) {
-            return Err(RulesServiceError::Invalid(
-                "Duration must be 1 to 525600 minutes",
-            ));
-        }
-        if !empty_text(body.get("command"), RULE_COMMAND_MAX_CHARS)?.is_empty() {
-            return Err(RulesServiceError::Invalid(
-                "A low-worker alert does not run a command",
-            ));
-        }
-    }
-    let interval = integer(
-        body.get("intervalSeconds"),
-        RULE_DEFAULT_INTERVAL_SECONDS as i64,
-    )?;
-    if !(10..=31_536_000).contains(&interval) {
-        return Err(RulesServiceError::Invalid(
-            "Interval must be 10 seconds to one year",
-        ));
-    }
-    let stall_value = body
-        .get("stallTimeoutSeconds")
-        .or_else(|| body.get("stall_timeout_seconds"));
-    let stall = integer(stall_value, RULE_DEFAULT_STALL_SECONDS as i64)?;
-    if !(0..=31_536_000).contains(&stall) {
-        return Err(RulesServiceError::Invalid(
-            "stall_timeout_seconds must be 0 to 31536000",
-        ));
-    }
-    let at = body
-        .get("at")
-        .filter(|value| !value.is_null())
-        .and_then(Value::as_f64)
-        .unwrap_or(now + interval as f64);
-    if !at.is_finite() || at < now - 1.0 || at > now + RULE_YEAR_SECONDS {
-        return Err(RulesServiceError::Invalid(
-            "Choose a date within the next year",
-        ));
-    }
+    let minimum = rule_integer(&body.minimum_workers, 8)?;
+    let duration = rule_integer(&body.duration_minutes, 30)?;
+    let interval = rule_integer(&body.interval_seconds, RULE_DEFAULT_INTERVAL_SECONDS as i64)?;
+    let stall_field = if body.stall_timeout_seconds.is_missing() {
+        &body.stall_alias
+    } else {
+        &body.stall_timeout_seconds
+    };
+    let stall = rule_integer(stall_field, RULE_DEFAULT_STALL_SECONDS as i64)?;
+    let at = body.at.value().copied().unwrap_or(now + interval as f64);
     let event = body
-        .get("event")
-        .and_then(Value::as_str)
+        .event
+        .value()
+        .map(String::as_str)
         .unwrap_or("worker_completed");
-    if !matches!(
-        event,
-        "worker_completed" | "monitor_exit" | "work_review" | "complaint"
-    ) {
-        return Err(RulesServiceError::Invalid("Unknown event type"));
-    }
-    let command = empty_text(body.get("command"), RULE_COMMAND_MAX_CHARS)?;
-    let liveness_command = empty_text(
-        body.get("livenessCommand")
-            .or_else(|| body.get("liveness_command")),
-        RULE_COMMAND_MAX_CHARS,
-    )?;
-    if !liveness_command.is_empty() && kind != "file" {
-        return Err(RulesServiceError::Invalid(
-            "liveness_command is only supported for file watches",
-        ));
-    }
-    let name = text(body.get("name"), "a rule name", RULE_NAME_MAX_CHARS, false)?;
-    let text_value = body
-        .get("text")
-        .filter(|value| !value.is_null())
-        .map(|value| text(Some(value), "an instruction", RULE_TEXT_MAX_CHARS, false))
-        .transpose()?
-        .unwrap_or_else(|| "Check this event and continue the original task.".to_owned());
-    Ok(CheckedSave {
-        kind: kind.to_owned(),
-        minimum_record: if body.get("minimumWorkers").is_some_and(Value::is_null) {
-            None
-        } else {
-            Some(minimum)
+    let command = rule_empty_text(&body.command, RULE_COMMAND_MAX_CHARS)?;
+    let liveness_field = if body.liveness_command.is_missing() {
+        &body.liveness_alias
+    } else {
+        &body.liveness_command
+    };
+    let liveness_command = rule_empty_text(liveness_field, RULE_COMMAND_MAX_CHARS)?;
+    let name = rule_text(&body.name, "a rule name", RULE_NAME_MAX_CHARS, false)?;
+    let text_value = match &body.text {
+        RuleField::Missing | RuleField::Null => {
+            "Check this event and continue the original task.".to_owned()
+        }
+        _ => rule_text(&body.text, "an instruction", RULE_TEXT_MAX_CHARS, false)?,
+    };
+    crate::rules::CheckedRuleSave::new(
+        crate::rules::RuleSaveInput {
+            kind: kind.to_owned(),
+            minimum: if matches!(body.minimum_workers, RuleField::Null) {
+                None
+            } else {
+                Some(minimum)
+            },
+            duration: if matches!(body.duration_minutes, RuleField::Null) {
+                None
+            } else {
+                Some(duration)
+            },
+            interval,
+            stall,
+            at: crate::rules::RuleTimeInput::Unchecked(at),
+            event: event.to_owned(),
+            command,
+            liveness: liveness_command,
+            name,
+            text: text_value,
         },
-        duration_record: if body.get("durationMinutes").is_some_and(Value::is_null) {
-            None
-        } else {
-            Some(duration)
-        },
-        interval,
-        stall,
-        at,
-        event: event.to_owned(),
-        command,
-        liveness_command,
-        name,
-        text_value,
+        now,
+        actor.extra.get("isLead") == Some(&Value::Bool(true)),
+        crate::rules::RuleSaveOrder::Managed,
+    )
+    .map_err(rule_save_error)
+}
+
+fn rule_save_error(error: crate::rules::RuleSaveError) -> RulesServiceError {
+    use crate::rules::RuleSaveError as E;
+    RulesServiceError::Invalid(match error {
+        E::Kind => "Choose interval, once, file, event, or low_workers",
+        E::Minimum => "Minimum subagents must be 1 to 255",
+        E::Duration => "Duration must be 1 to 525600 minutes",
+        E::Interval => "Interval must be 10 seconds to one year",
+        E::Stall => "stall_timeout_seconds must be 0 to 31536000",
+        E::At => "Choose a date within the next year",
+        E::Event => "Unknown event type",
+        E::Command => "A low-worker alert does not run a command",
+        E::Liveness => "liveness_command is only supported for file watches",
+        E::Name => "a rule name",
+        E::Text => "an instruction",
+        E::Lead => "Only an orchestrator can own a low-worker alert",
     })
 }
 
 struct RuleSave<'a> {
-    data: &'a CheckedSave,
+    data: &'a crate::rules::CheckedRuleSave,
     old: Option<&'a Value>,
     key: &'a str,
     now: f64,
@@ -1413,19 +1449,18 @@ fn save_rule(
         prepared_path,
         fingerprint,
     } = save;
-    let CheckedSave {
-        kind,
-        minimum_record,
-        duration_record,
-        interval,
-        stall,
-        at,
-        event,
-        command,
-        liveness_command,
-        name,
-        text_value,
-    } = data;
+    let data = data.fields();
+    let kind = data.kind.as_str();
+    let minimum_record = data.kind.minimum();
+    let duration_record = data.kind.duration();
+    let interval = data.interval;
+    let stall = data.kind.stall();
+    let at = data.at;
+    let event = data.event.as_str();
+    let command = &data.command;
+    let liveness_command = data.kind.liveness();
+    let name = &data.name;
+    let text_value = &data.text;
     let prior = old.and_then(Value::as_object);
     let mut record = json!({
         "id": key,
@@ -1440,7 +1475,7 @@ fn save_rule(
         "path": if kind == "file" { prepared_path.map(Value::from).unwrap_or(Value::Null) } else { Value::Null },
         "event": event,
         "command": command,
-        "stallTimeoutSeconds": if kind == "file" { *stall } else { 0 },
+        "stallTimeoutSeconds": if kind == "file" { stall } else { 0 },
         "livenessCommand": liveness_command,
         "fileActivityAt": prior.and_then(|value| value.get("fileActivityAt")).cloned().unwrap_or(json!(now)),
         "fileGeneration": prior.and_then(|value| value.get("fileGeneration")).cloned().unwrap_or(json!(0)),
@@ -1506,36 +1541,6 @@ fn cwd(agent: &AgentRecord) -> Result<&str, RulesServiceError> {
         .get("cwd")
         .and_then(Value::as_str)
         .ok_or(RulesServiceError::Invalid("workspace path"))
-}
-
-fn integer(value: Option<&Value>, default: i64) -> Result<i64, RulesServiceError> {
-    match value {
-        None | Some(Value::Null) => Ok(default),
-        Some(value) => value.as_i64().ok_or(RulesServiceError::Invalid("integer")),
-    }
-}
-
-fn text(
-    value: Option<&Value>,
-    label: &'static str,
-    maximum: usize,
-    empty: bool,
-) -> Result<String, RulesServiceError> {
-    let value = value
-        .and_then(Value::as_str)
-        .ok_or(RulesServiceError::Invalid(label))?
-        .trim();
-    if value.chars().count() > maximum || (!empty && value.is_empty()) {
-        return Err(RulesServiceError::Invalid(label));
-    }
-    Ok(value.to_owned())
-}
-
-fn empty_text(value: Option<&Value>, maximum: usize) -> Result<String, RulesServiceError> {
-    match value {
-        None | Some(Value::Null) => Ok(String::new()),
-        Some(value) => text(Some(value), "text", maximum, true),
-    }
 }
 
 #[cfg(test)]
@@ -1796,6 +1801,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn managed_wire_defaults_and_preparation_error_order_are_preserved() {
+        let (_directory, store) = fixture().await;
+        let request = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let value = json!({"name":"watch", "kind":true, "event":[], "at":"invalid", "stallTimeoutSeconds":null, "stall_timeout_seconds":1});
+        let saved = rules(&store, "lead", 3, Some(&value), &request, 100.0, &Files)
+            .await
+            .expect("legacy defaults");
+        assert_eq!(saved.value["kind"], "interval");
+        assert_eq!(saved.value["event"], "worker_completed");
+        assert_eq!(saved.value["at"], 160.0);
+        let request = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let invalid = json!({"kind":"file","path":"notes.txt","name":false});
+        let error = rules(
+            &store,
+            "lead",
+            3,
+            Some(&invalid),
+            &request,
+            100.0,
+            &FailingFiles,
+        )
+        .await
+        .expect_err("file preparation fails first");
+        assert!(matches!(error, RulesServiceError::FilePath));
+    }
+
+    #[tokio::test]
     async fn file_rule_save_pause_and_post_commit_cancellations() {
         let (_directory, store) = fixture().await;
         let generated_request = studio_runtime_schema::persistence::RequestIdentity::issue_root();
@@ -1822,7 +1854,7 @@ mod tests {
             Some(&generated),
             &generated_request,
             101.0,
-            &Files,
+            &FailingFiles,
         )
         .await
         .expect("replay generated rule");

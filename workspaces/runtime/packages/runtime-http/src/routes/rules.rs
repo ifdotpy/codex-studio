@@ -57,15 +57,18 @@ async fn update(
     use crate::generated::RuleBodyAction;
     let action_name = body.action.clone().unwrap_or_default();
     let now = now_seconds()?;
-    if matches!(action_name, RuleBodyAction::Save)
-        && let Some(at) = body.at.as_ref().and_then(Option::as_ref)
-        && {
-            let at = rule_at(at);
-            at < now - 1.0 || at > now + 31_536_000.0
-        }
-    {
-        return Err(located("at"));
-    }
+    let checked_at = if matches!(action_name, RuleBodyAction::Save) {
+        let interval = body.interval_seconds.unwrap_or(60) as f64;
+        let at = body
+            .at
+            .as_ref()
+            .and_then(Option::as_ref)
+            .map(rule_at)
+            .unwrap_or(now + interval);
+        Some(rules::RuleTime::check(at, now).map_err(rule_save_error)?)
+    } else {
+        None
+    };
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let agent_id = body.agent.clone();
     let supplied_id = body.id.clone().flatten();
@@ -224,19 +227,33 @@ async fn update(
                     let command = body.command.as_deref().unwrap_or("");
                     let raw_path = body.path.as_ref().and_then(Option::as_deref);
                     let liveness = body.liveness_command.as_deref().unwrap_or("").trim();
-                    if kind == "low_workers" && !command.is_empty() { return Err(located("command")); }
                     if kind == "file" && raw_path.is_none_or(|path| path.trim().is_empty()) { return Err(located("path")); }
-                    if !liveness.is_empty() && kind != "file" { return Err(located("livenessCommand")); }
-                    if kind == "low_workers" && agent_value.get("isLead").and_then(Value::as_bool) != Some(true) {
-                        return Err(ApiError::new(StatusCode::BAD_REQUEST, "Only an orchestrator can own a low-worker alert"));
-                    }
                     let interval = body.interval_seconds.unwrap_or(60) as u64;
-                    let at = body.at.as_ref().and_then(Option::as_ref).map(rule_at).unwrap_or(now + interval as f64);
-                    if !(now - 1.0..=now + 31_536_000.0).contains(&at) { return Err(located("at")); }
                     let stall = body.stall_timeout_seconds.or_else(|| body.stall_timeout_seconds_2.flatten()).unwrap_or(1800) as u64;
                     let text = body.text.as_deref().unwrap_or("Check this event and continue the original task.").trim();
-                    if text.is_empty() { return Err(located("text")); }
-                    let name = body.name.as_ref().and_then(Option::as_deref).map(str::trim).filter(|name| !name.is_empty()).ok_or_else(|| located("name"))?;
+                    let name = body.name.as_ref().and_then(Option::as_deref).map(str::trim).unwrap_or("");
+                    let checked = rules::CheckedRuleSave::new(rules::RuleSaveInput {
+                        kind: kind.to_owned(),
+                        minimum: Some(body.minimum_workers.unwrap_or(8) as i64),
+                        duration: Some(body.duration_minutes.unwrap_or(30) as i64),
+                        interval: interval as i64,
+                        stall: stall as i64,
+                        at: rules::RuleTimeInput::Checked(checked_at.ok_or_else(ApiError::internal)?),
+                        event: body.event.as_ref().map_or("worker_completed", |event| event.as_str()).to_owned(),
+                        command: command.to_owned(),
+                        liveness: liveness.to_owned(),
+                        name: name.to_owned(),
+                        text: text.to_owned(),
+                    }, now, agent_value.get("isLead").and_then(Value::as_bool) == Some(true), rules::RuleSaveOrder::Http).map_err(rule_save_error)?;
+                    let checked = checked.fields();
+                    let kind = checked.kind.as_str();
+                    let interval = checked.interval;
+                    let at = checked.at;
+                    let stall = checked.kind.stall();
+                    let text = &checked.text;
+                    let name = &checked.name;
+                    let command = &checked.command;
+                    let liveness = checked.kind.liveness();
                     let path = if kind == "file" { prepared_path.clone() } else { None };
                     let fingerprint = if kind == "file" { prepared_fingerprint.clone() } else { None };
                     let old_record = old_value.as_ref();
@@ -245,8 +262,8 @@ async fn update(
                         "rootId": agent_value.get("rootId").cloned().unwrap_or_else(|| json!(agent_id)),
                         "epoch": agent_value["epoch"], "name": name, "kind": kind,
                         "intervalSeconds": interval, "nextAt": at, "at": at,
-                        "path": path, "event": body.event.as_ref().map_or("worker_completed", |event| event.as_str()),
-                        "command": command.trim(), "stallTimeoutSeconds": if kind == "file" { stall } else { 0 },
+                        "path": path, "event": checked.event.as_str(),
+                        "command": command, "stallTimeoutSeconds": if kind == "file" { stall } else { 0 },
                         "livenessCommand": liveness, "fileActivityAt": old_record.and_then(|v| v.get("fileActivityAt")).cloned().unwrap_or(json!(now)),
                         "fileGeneration": old_record.and_then(|v| v.get("fileGeneration")).cloned().unwrap_or(json!(0)),
                         "stallWakeGeneration": old_record.and_then(|v| v.get("stallWakeGeneration")).cloned().unwrap_or(json!(-1)),
@@ -255,8 +272,8 @@ async fn update(
                         "inFlight": false, "checks": old_record.and_then(|v| v.get("checks")).cloned().unwrap_or(json!(0)),
                         "wakes": old_record.and_then(|v| v.get("wakes")).cloned().unwrap_or(json!(0)),
                         "fingerprint": fingerprint,
-                        "minimumWorkers": if kind == "low_workers" { json!(body.minimum_workers.unwrap_or(8)) } else { Value::Null },
-                        "durationMinutes": if kind == "low_workers" { json!(body.duration_minutes.unwrap_or(30)) } else { Value::Null },
+                        "minimumWorkers": if kind == "low_workers" { json!(checked.kind.minimum()) } else { Value::Null },
+                        "durationMinutes": if kind == "low_workers" { json!(checked.kind.duration()) } else { Value::Null },
                         "lowSince": Value::Null, "alerted": Value::Bool(false),
                     });
                     let value = strip_null_low_worker_fields(value, kind);
@@ -320,6 +337,27 @@ async fn update(
 enum RuleWriteResponse {
     Deleted(crate::generated::DeletedRuleReceipt),
     Record(Box<crate::generated::RuleRecordResponse>),
+}
+
+fn rule_save_error(error: rules::RuleSaveError) -> ApiError {
+    use rules::RuleSaveError as E;
+    match error {
+        E::Lead => ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "Only an orchestrator can own a low-worker alert",
+        ),
+        E::Kind => located("kind"),
+        E::Minimum => located("minimumWorkers"),
+        E::Duration => located("durationMinutes"),
+        E::Interval => located("intervalSeconds"),
+        E::Stall => located("stallTimeoutSeconds"),
+        E::At => located("at"),
+        E::Event => located("event"),
+        E::Command => located("command"),
+        E::Liveness => located("livenessCommand"),
+        E::Name => located("name"),
+        E::Text => located("text"),
+    }
 }
 
 fn rules_error(error: RulesError) -> ApiError {
