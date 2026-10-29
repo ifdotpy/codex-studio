@@ -8,7 +8,10 @@ import { McpInventory } from "./McpInventory";
 import { isModelEnabled, useModelChoices } from "../models/modelChoices";
 import Tasks from "./Tasks";
 import ClaudeCheckpointRestore from "../ClaudeCheckpointRestore";
-import { useServerApi } from "../../servers/ServerServicesContext";
+import {
+  useServerApi,
+  useServerSync,
+} from "../../servers/ServerServicesContext";
 import { SearchContent } from "./SearchOverlay";
 import { EmptyState, PanelHeader } from "../ui/primitives";
 import { localDateTime } from "../../local-time";
@@ -159,6 +162,7 @@ function Status({ value }: { value: string }) {
 
 export function Workspace(props: Props) {
   const { post } = useServerApi();
+  const sync = useServerSync();
 
   const [section, setSection] = useState(props.initialSection || "messages"),
     [agentId, setAgentId] = useState(props.agent?.id || ""),
@@ -217,6 +221,13 @@ export function Workspace(props: Props) {
       setPending((n) => n + 1);
       try {
         const result = await post(path, body);
+        if (path === "/api/annotation") {
+          await sync
+            .applyCommandRows((result as PostResult<"/api/annotation">).rows)
+            .catch((error: unknown) =>
+              console.error("Could not apply command rows", error),
+            );
+        }
         reload();
         await refreshRef.current();
         return result;
@@ -227,7 +238,7 @@ export function Workspace(props: Props) {
         setPending((n) => n - 1);
       }
     },
-    [reload],
+    [post, reload, sync],
   );
   const selected = props.data.threads.find(
     (a) => a.id === agentId && a.source === GeneratedApiAgentSource.managed,

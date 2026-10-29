@@ -295,6 +295,33 @@ async function setup() {
   };
 }
 
+it("keeps the newer row when command replies arrive out of order", async () => {
+  const f = await setup();
+  const row = (
+    seq: number,
+    name: string,
+  ): components["schemas"]["SyncEntity"] => ({
+    op: "upsert",
+    collection: "agentSummary",
+    id: "lead",
+    seq,
+    value: {
+      id: "lead",
+      rootId: "lead",
+      epoch: 1,
+      name,
+      status: AgentStatus.idle,
+    },
+  });
+  await f.client.applyCommandRows([row(9, "newer")]);
+  await f.client.applyCommandRows([row(4, "older")]);
+  const saved = await f.db.projections
+    .findOne("entity:agentSummary:lead")
+    .exec();
+  expect(saved?.seq).toBe(9);
+  expect(saved?.entity?.value).toMatchObject({ name: "newer" });
+});
+
 it("waits for the applied cold SSE baseline and publishes it without a speculative pull", async () => {
   const f = await setup();
   f.subscribe();

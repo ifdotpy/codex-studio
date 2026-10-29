@@ -20,6 +20,120 @@ const FIRST: &str = "held-preparation";
 const REASON: &str = "Provider thread resume failed (invalid transport); input remains pending.";
 const RETRY_REFUSAL: &str = "This failed agent has no current unsent batch that can be retried";
 
+#[derive(serde::Serialize)]
+struct AnnotationCommand<'a> {
+    agent: &'a str,
+    id: &'a str,
+    path: &'a str,
+    line: i64,
+    text: &'a str,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct AnnotationCommandReply {
+    status: String,
+    ref_kind: String,
+    ref_id: String,
+    rev: i64,
+    rows: Vec<AnnotationCommandRow>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct AnnotationCommandRow {
+    id: String,
+    seq: i64,
+    value: AnnotationCommandValue,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct AnnotationCommandValue {
+    text: String,
+}
+
+async fn post_annotation(app: &axum::Router, body: &AnnotationCommand<'_>) -> (u16, Vec<u8>) {
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/annotation")
+        .header("host", "127.0.0.1:49171")
+        .header("content-type", "application/json")
+        .header("x-canvas-token", "fixture-token")
+        .header(
+            studio_runtime_http::API_SCHEMA_HASH_HEADER,
+            studio_runtime_http::api_schema_hash(),
+        )
+        .extension(ConnectInfo(
+            "127.0.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
+        ))
+        .body(Body::from(serde_json::to_vec(body).unwrap()))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    (
+        response.status().as_u16(),
+        to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+}
+
+#[tokio::test]
+async fn annotation_command_replays_reference_and_returns_latest_entity() {
+    let (_directory, store, app) = fixture().await;
+    studio_runtime_services::entity_publication::install(&store)
+        .await
+        .unwrap();
+    let id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    let mut input = AnnotationCommand {
+        agent: ACTOR,
+        id: &id,
+        path: "file.rs",
+        line: 1,
+        text: "first",
+    };
+    let (status, bytes) = post_annotation(&app, &input).await;
+    assert_eq!(status, 200);
+    let first: AnnotationCommandReply = serde_json::from_slice(&bytes).expect("command response");
+    assert_eq!(
+        (
+            first.status.as_str(),
+            first.ref_kind.as_str(),
+            first.ref_id.as_str(),
+            first.rev
+        ),
+        ("applied", "annotation", id.as_str(), 1)
+    );
+    assert_eq!(first.rows.len(), 1);
+    assert_eq!(first.rows[0].id, id);
+    assert_eq!(first.rows[0].value.text, "first");
+    let previous_seq = first.rows[0].seq;
+    let id_for_write = id.clone();
+    store.transaction(move |tx| {
+        tx.execute("UPDATE runtime_annotations SET record=json_set(record,'$.text','later') WHERE id=?1", [id_for_write])?;
+        Ok(())
+    }).await.unwrap();
+    let (status, bytes) = post_annotation(&app, &input).await;
+    assert_eq!(status, 200);
+    let replay: AnnotationCommandReply = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        (replay.status, replay.ref_kind, replay.ref_id, replay.rev),
+        (first.status, first.ref_kind, first.ref_id, first.rev)
+    );
+    assert_eq!(replay.rows[0].value.text, "later");
+    assert!(replay.rows[0].seq > previous_seq);
+    let receipt: Option<String> = store
+        .test_reader()
+        .unwrap()
+        .query_row(
+            "SELECT result FROM request_results WHERE ref_id=?1",
+            [&id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(receipt.is_none(), "reference receipt stores no body");
+    input.text = "different";
+    assert_eq!(post_annotation(&app, &input).await.0, 409);
+}
+
 async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, axum::Router) {
     let directory = tempfile::tempdir().unwrap();
     let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
@@ -236,7 +350,10 @@ async fn send_now_keeps_explicit_stop_and_other_start_owners_held() {
         ("nativeThreadBlock", json!({"threadId":"original-thread"})),
         ("startAttempt", json!({"id":"other","submitted":true})),
         ("startOutcomeHold", json!({"phase":"unknown"})),
-        ("nativeRelease", json!({"phase":"unknown","resetPending":true})),
+        (
+            "nativeRelease",
+            json!({"phase":"unknown","resetPending":true}),
+        ),
     ] {
         let (_directory, store, app) = fixture().await;
         store

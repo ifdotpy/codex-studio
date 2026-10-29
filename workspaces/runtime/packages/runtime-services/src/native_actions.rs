@@ -1048,7 +1048,7 @@ mod native_action_retry_tests {
             references: Vec::<String>::new(),
         };
         db.execute(
-            "INSERT INTO request_results VALUES('old-action','signature',?1,?2)",
+            "INSERT INTO request_results(id,signature,result,created) VALUES('old-action','signature',?1,?2)",
             rusqlite::params![
                 serde_json::to_string(&envelope).expect("reply"),
                 chrono::Utc::now().timestamp_millis()
