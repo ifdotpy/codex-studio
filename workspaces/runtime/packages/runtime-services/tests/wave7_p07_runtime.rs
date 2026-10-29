@@ -558,6 +558,7 @@ async fn unknown_start_accepts_exact_client_receipt_without_resending_input() {
     let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
     let before = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":0,"status":"running","accountKey":"default","threadId":"thread","turnEpoch":0,"turnId":null,"inFlight":true,"autoWake":true,"error":"turn/start response timed out; outcome unknown","startAttempt":{"id":"attempt","epoch":0,"accountKey":"default","threadId":"thread","connectionId":"connection","connectionGeneration":1,"requestTicket":"request","events":["event"],"created":1.0,"submitted":true,"executionOutcome":"unknown"}});
     seed(&store, &before).await;
+    let before = agent(&store);
     store.transaction(|tx|{tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,turn_id,error) VALUES('event','agent','user','one original input','uncertain',1,0,NULL,NULL)",[])?;Ok(())}).await.expect("unknown input");
     let turn = json!({"id":"turn","status":"inProgress","items":[{"id":"input","type":"userMessage","clientId":"event"}]});
     let result = apply(
@@ -622,6 +623,7 @@ async fn task_writer_checks_receipts_and_scope_in_the_completion_transaction() {
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         let before = json!({"id":"agent","rootId":"agent","epoch":0,"status":"completed","accountKey":"default","provider":"codex","threadId":"thread","turnId":null,"inFlight":false});
         seed(&store, &before).await;
+        let before = agent(&store);
         let task = json!({"id":"agent:item","agent":"agent","itemId":"item","turnId":"turn","type":"commandExecution","kind":"command","status":"running","created":1.0});
         let task_to_save = task.clone();
         store
