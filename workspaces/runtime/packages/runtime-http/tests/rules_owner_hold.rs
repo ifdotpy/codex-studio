@@ -113,13 +113,18 @@ async fn rule_actions_preserve_the_target_and_time_bounds() {
     let app = router(state).unwrap();
     let (code, saved) = post(
         &app,
-        json!({"agent":"owner","id":"rule","name":"Watch","text":"Continue"}),
+        json!({"agent":"owner","id":"rule","name":"Watch","text":"Continue","intervalSeconds":120.0}),
     )
     .await;
     assert_eq!(code, 200, "{saved}");
     assert_eq!(saved["id"], "rule");
+    assert_eq!(saved["intervalSeconds"], 60);
     for (action, status) in [("pause", "paused"), ("resume", "active")] {
-        let (code, result) = post(&app, json!({"agent":"owner","id":"rule","action":action})).await;
+        let (code, result) = post(
+            &app,
+            json!({"agent":"owner","id":"rule","action":action,"checks":0.0}),
+        )
+        .await;
         assert_eq!(code, 200, "{result}");
         assert_eq!(result["status"], status);
     }

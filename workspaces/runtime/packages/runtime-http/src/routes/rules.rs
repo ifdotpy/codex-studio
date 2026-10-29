@@ -47,23 +47,50 @@ pub(crate) async fn list(
     )?))
 }
 
+// OpenAPI validation owns the wire shape; numeric fields retain JSON number spelling.
+#[derive(Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RuleWire {
+    agent: String,
+    action: Option<crate::generated::RuleBodyAction>,
+    id: Option<String>,
+    kind: Option<String>,
+    name: Option<String>,
+    text: Option<String>,
+    command: Option<String>,
+    path: Option<String>,
+    liveness_command: Option<String>,
+    interval_seconds: Option<Number>,
+    at: Option<Number>,
+    #[serde(default)]
+    stall_timeout_seconds: studio_runtime_schema::queue_command::Field<Number>,
+    #[serde(rename = "stall_timeout_seconds", default)]
+    stall_alias: studio_runtime_schema::queue_command::Field<Number>,
+    minimum_workers: Option<Number>,
+    duration_minutes: Option<Number>,
+    event: Option<crate::generated::RuleBodyEvent>,
+}
+
 async fn update(
     State(state): State<HttpState>,
     runtime: Option<
         Extension<Arc<studio_runtime_services::monitor_runtime_wiring::MonitorRuntime>>,
     >,
-    ApiJson(body): ApiJson<crate::generated::RuleBody>,
+    ApiJson(body): ApiJson<RuleWire>,
 ) -> Result<Json<RuleWriteResponse>, ApiError> {
     use crate::generated::RuleBodyAction;
     let action_name = body.action.clone().unwrap_or_default();
     let now = now_seconds()?;
     let checked_at = if matches!(action_name, RuleBodyAction::Save) {
-        let interval = body.interval_seconds.unwrap_or(60) as f64;
+        let interval = body
+            .interval_seconds
+            .as_ref()
+            .and_then(Number::as_u64)
+            .unwrap_or(60) as f64;
         let at = body
             .at
             .as_ref()
-            .and_then(Option::as_ref)
-            .map(rule_at)
+            .and_then(Number::as_f64)
             .unwrap_or(now + interval);
         Some(rules::RuleTime::check(at, now).map_err(rule_save_error)?)
     } else {
@@ -71,7 +98,7 @@ async fn update(
     };
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let agent_id = body.agent.clone();
-    let supplied_id = body.id.clone().flatten();
+    let supplied_id = body.id.clone();
     let rule_id = supplied_id.unwrap_or_else(new_rule_id);
     let action = match action_name {
         RuleBodyAction::Save => RuleAction::Save {
@@ -116,11 +143,7 @@ async fn update(
             {
                 Some(resolve_workspace_path(
                     &agent_value,
-                    prepare_body
-                        .path
-                        .as_ref()
-                        .and_then(Option::as_deref)
-                        .unwrap_or(""),
+                    prepare_body.path.as_deref().unwrap_or(""),
                 )?)
             } else {
                 None
@@ -225,25 +248,26 @@ async fn update(
                 RuleAction::Save { data: body, .. } => {
                     let kind = body.kind.as_deref().unwrap_or("interval");
                     let command = body.command.as_deref().unwrap_or("");
-                    let raw_path = body.path.as_ref().and_then(Option::as_deref);
+                    let raw_path = body.path.as_deref();
                     let liveness = body.liveness_command.as_deref().unwrap_or("").trim();
                     if kind == "file" && raw_path.is_none_or(|path| path.trim().is_empty()) { return Err(located("path")); }
-                    let interval = body.interval_seconds.unwrap_or(60) as u64;
-                    let stall = body.stall_timeout_seconds.or_else(|| body.stall_timeout_seconds_2.flatten()).unwrap_or(1800) as u64;
+                    let interval = body.interval_seconds.as_ref().and_then(Number::as_u64).unwrap_or(60);
+                    let stall_field = if body.stall_timeout_seconds.is_missing() { &body.stall_alias } else { &body.stall_timeout_seconds };
+                    let stall = stall_field.value().and_then(Number::as_u64).unwrap_or(1800);
                     let text = body.text.as_deref().unwrap_or("Check this event and continue the original task.").trim();
-                    let name = body.name.as_ref().and_then(Option::as_deref).map(str::trim).unwrap_or("");
+                    let name = body.name.as_deref().map(str::trim).unwrap_or("");
                     let checked = rules::CheckedRuleSave::new(rules::RuleSaveInput {
                         kind: kind.to_owned(),
-                        minimum: Some(body.minimum_workers.unwrap_or(8) as i64),
-                        duration: Some(body.duration_minutes.unwrap_or(30) as i64),
-                        interval: interval as i64,
-                        stall: stall as i64,
+                        minimum: Ok(Some(body.minimum_workers.clone().unwrap_or_else(|| 8.into()))),
+                        duration: Ok(Some(body.duration_minutes.clone().unwrap_or_else(|| 30.into()))),
+                        interval: Ok(interval as i64),
+                        stall: Ok(stall as i64),
                         at: rules::RuleTimeInput::Checked(checked_at.ok_or_else(ApiError::internal)?),
                         event: body.event.as_ref().map_or("worker_completed", |event| event.as_str()).to_owned(),
-                        command: command.to_owned(),
-                        liveness: liveness.to_owned(),
-                        name: name.to_owned(),
-                        text: text.to_owned(),
+                        command: Ok(command.to_owned()),
+                        liveness: Ok(liveness.to_owned()),
+                        name: Ok(name.to_owned()),
+                        text: Ok(text.to_owned()),
                     }, now, agent_value.get("isLead").and_then(Value::as_bool) == Some(true), rules::RuleSaveOrder::Http).map_err(rule_save_error)?;
                     let checked = checked.fields();
                     let kind = checked.kind.as_str();
@@ -342,6 +366,7 @@ enum RuleWriteResponse {
 fn rule_save_error(error: rules::RuleSaveError) -> ApiError {
     use rules::RuleSaveError as E;
     match error {
+        E::Integer | E::InputText => ApiError::internal(),
         E::Lead => ApiError::new(
             StatusCode::BAD_REQUEST,
             "Only an orchestrator can own a low-worker alert",
@@ -368,13 +393,6 @@ fn rules_error(error: RulesError) -> ApiError {
 
 fn string<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
     value.get(key).and_then(Value::as_str)
-}
-
-fn rule_at(value: &crate::generated::RuleBodyAt) -> f64 {
-    match value {
-        crate::generated::RuleBodyAt::Integer(value) => *value as f64,
-        crate::generated::RuleBodyAt::Number(value) => *value,
-    }
 }
 
 fn located(field: &str) -> ApiError {

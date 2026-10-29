@@ -190,16 +190,16 @@ mod tests {
 /// Normalized save input; callers apply their own wire defaults before checking it.
 pub struct RuleSaveInput {
     pub kind: String,
-    pub minimum: Option<i64>,
-    pub duration: Option<i64>,
-    pub interval: i64,
-    pub stall: i64,
+    pub minimum: Result<Option<serde_json::Number>, RuleSaveError>,
+    pub duration: Result<Option<serde_json::Number>, RuleSaveError>,
+    pub interval: Result<i64, RuleSaveError>,
+    pub stall: Result<i64, RuleSaveError>,
     pub at: RuleTimeInput,
     pub event: String,
-    pub command: String,
-    pub liveness: String,
-    pub name: String,
-    pub text: String,
+    pub command: Result<String, RuleSaveError>,
+    pub liveness: Result<String, RuleSaveError>,
+    pub name: Result<String, RuleSaveError>,
+    pub text: Result<String, RuleSaveError>,
 }
 
 #[derive(Clone, Copy)]
@@ -233,8 +233,8 @@ pub enum RuleKind {
     },
     Event,
     LowWorkers {
-        minimum: Option<i64>,
-        duration: Option<i64>,
+        minimum: Option<serde_json::Number>,
+        duration: Option<serde_json::Number>,
     },
 }
 impl RuleKind {
@@ -247,15 +247,15 @@ impl RuleKind {
             Self::LowWorkers { .. } => "low_workers",
         }
     }
-    pub fn minimum(&self) -> Option<i64> {
+    pub fn minimum(&self) -> Option<&serde_json::Number> {
         match self {
-            Self::LowWorkers { minimum, .. } => *minimum,
+            Self::LowWorkers { minimum, .. } => minimum.as_ref(),
             _ => None,
         }
     }
-    pub fn duration(&self) -> Option<i64> {
+    pub fn duration(&self) -> Option<&serde_json::Number> {
         match self {
-            Self::LowWorkers { duration, .. } => *duration,
+            Self::LowWorkers { duration, .. } => duration.as_ref(),
             _ => None,
         }
     }
@@ -319,6 +319,8 @@ pub enum RuleSaveError {
     Name,
     Text,
     Lead,
+    Integer,
+    InputText,
 }
 impl CheckedRuleSave {
     pub fn new(
@@ -331,30 +333,50 @@ impl CheckedRuleSave {
         if !matches!(kind, "interval" | "once" | "file" | "event" | "low_workers") {
             return Err(RuleSaveError::Kind);
         }
-        if order == RuleSaveOrder::Http && kind == "low_workers" && !input.command.is_empty() {
+        let minimum = input.minimum?;
+        let duration = input.duration?;
+        if order == RuleSaveOrder::Http
+            && kind == "low_workers"
+            && !input.command.as_ref().map_err(|error| *error)?.is_empty()
+        {
             return Err(RuleSaveError::Command);
         }
-        if order == RuleSaveOrder::Http && kind != "file" && !input.liveness.is_empty() {
+        if order == RuleSaveOrder::Http
+            && kind != "file"
+            && !input.liveness.as_ref().map_err(|error| *error)?.is_empty()
+        {
             return Err(RuleSaveError::Liveness);
         }
         if kind == "low_workers" {
             if !is_lead {
                 return Err(RuleSaveError::Lead);
             }
-            if !(1..=255).contains(&input.minimum.unwrap_or(8)) {
+            if !minimum
+                .as_ref()
+                .and_then(serde_json::Number::as_f64)
+                .is_none_or(|value| (1.0..=255.0).contains(&value))
+            {
                 return Err(RuleSaveError::Minimum);
             }
-            if !(1..=525_600).contains(&input.duration.unwrap_or(30)) {
+            if !duration
+                .as_ref()
+                .and_then(serde_json::Number::as_f64)
+                .is_none_or(|value| (1.0..=525_600.0).contains(&value))
+            {
                 return Err(RuleSaveError::Duration);
             }
-            if order == RuleSaveOrder::Managed && !input.command.is_empty() {
+            if order == RuleSaveOrder::Managed
+                && !input.command.as_ref().map_err(|error| *error)?.is_empty()
+            {
                 return Err(RuleSaveError::Command);
             }
         }
-        if !(10..=31_536_000).contains(&input.interval) {
+        let interval = input.interval?;
+        if !(10..=31_536_000).contains(&interval) {
             return Err(RuleSaveError::Interval);
         }
-        if !(0..=31_536_000).contains(&input.stall) {
+        let stall = input.stall?;
+        if !(0..=31_536_000).contains(&stall) {
             return Err(RuleSaveError::Stall);
         }
         let at = match input.at {
@@ -368,41 +390,42 @@ impl CheckedRuleSave {
             "complaint" => RuleEvent::Complaint,
             _ => return Err(RuleSaveError::Event),
         };
-        if order == RuleSaveOrder::Managed && kind != "file" && !input.liveness.is_empty() {
+        let command = input.command?;
+        let liveness = input.liveness?;
+        if order == RuleSaveOrder::Managed && kind != "file" && !liveness.is_empty() {
             return Err(RuleSaveError::Liveness);
         }
-        if order == RuleSaveOrder::Http && input.text.is_empty() {
-            return Err(RuleSaveError::Text);
+        if order == RuleSaveOrder::Http {
+            let text = input.text.as_ref().map_err(|error| *error)?;
+            if text.is_empty() {
+                return Err(RuleSaveError::Text);
+            }
         }
-        if input.name.is_empty() {
+        let name = input.name?;
+        if name.is_empty() {
             return Err(RuleSaveError::Name);
         }
-        if input.text.is_empty() {
+        let text = input.text?;
+        if text.is_empty() {
             return Err(RuleSaveError::Text);
         }
         let kind = match kind {
             "interval" => RuleKind::Interval,
             "once" => RuleKind::Once,
-            "file" => RuleKind::File {
-                stall: input.stall,
-                liveness: input.liveness,
-            },
+            "file" => RuleKind::File { stall, liveness },
             "event" => RuleKind::Event,
-            "low_workers" => RuleKind::LowWorkers {
-                minimum: input.minimum,
-                duration: input.duration,
-            },
+            "low_workers" => RuleKind::LowWorkers { minimum, duration },
             _ => return Err(RuleSaveError::Kind),
         };
         Ok(Self {
             fields: RuleSaveFields {
                 kind,
-                interval: input.interval,
+                interval,
                 at: at.0,
                 event,
-                command: input.command.trim().to_owned(),
-                name: input.name,
-                text: input.text,
+                command: command.trim().to_owned(),
+                name,
+                text,
             },
         })
     }

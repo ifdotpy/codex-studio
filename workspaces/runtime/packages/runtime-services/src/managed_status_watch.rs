@@ -1351,47 +1351,59 @@ fn check_save(
             "Pause the rule and wait for its current check before editing",
         ));
     }
-    let minimum = rule_integer(&body.minimum_workers, 8)?;
-    let duration = rule_integer(&body.duration_minutes, 30)?;
-    let interval = rule_integer(&body.interval_seconds, RULE_DEFAULT_INTERVAL_SECONDS as i64)?;
+    let minimum =
+        rule_integer(&body.minimum_workers, 8).map_err(|_| crate::rules::RuleSaveError::Integer);
+    let duration =
+        rule_integer(&body.duration_minutes, 30).map_err(|_| crate::rules::RuleSaveError::Integer);
+    let interval = rule_integer(&body.interval_seconds, RULE_DEFAULT_INTERVAL_SECONDS as i64)
+        .map_err(|_| crate::rules::RuleSaveError::Integer);
     let stall_field = if body.stall_timeout_seconds.is_missing() {
         &body.stall_alias
     } else {
         &body.stall_timeout_seconds
     };
-    let stall = rule_integer(stall_field, RULE_DEFAULT_STALL_SECONDS as i64)?;
-    let at = body.at.value().copied().unwrap_or(now + interval as f64);
+    let stall = rule_integer(stall_field, RULE_DEFAULT_STALL_SECONDS as i64)
+        .map_err(|_| crate::rules::RuleSaveError::Integer);
+    let at = body
+        .at
+        .value()
+        .copied()
+        .unwrap_or(now + interval.as_ref().copied().unwrap_or_default() as f64);
     let event = body
         .event
         .value()
         .map(String::as_str)
         .unwrap_or("worker_completed");
-    let command = rule_empty_text(&body.command, RULE_COMMAND_MAX_CHARS)?;
+    let command = rule_empty_text(&body.command, RULE_COMMAND_MAX_CHARS)
+        .map_err(|_| crate::rules::RuleSaveError::InputText);
     let liveness_field = if body.liveness_command.is_missing() {
         &body.liveness_alias
     } else {
         &body.liveness_command
     };
-    let liveness_command = rule_empty_text(liveness_field, RULE_COMMAND_MAX_CHARS)?;
-    let name = rule_text(&body.name, "a rule name", RULE_NAME_MAX_CHARS, false)?;
+    let liveness_command = rule_empty_text(liveness_field, RULE_COMMAND_MAX_CHARS)
+        .map_err(|_| crate::rules::RuleSaveError::InputText);
+    let name = rule_text(&body.name, "a rule name", RULE_NAME_MAX_CHARS, false)
+        .map_err(|_| crate::rules::RuleSaveError::Name);
     let text_value = match &body.text {
         RuleField::Missing | RuleField::Null => {
-            "Check this event and continue the original task.".to_owned()
+            Ok("Check this event and continue the original task.".to_owned())
         }
-        _ => rule_text(&body.text, "an instruction", RULE_TEXT_MAX_CHARS, false)?,
+        _ => rule_text(&body.text, "an instruction", RULE_TEXT_MAX_CHARS, false)
+            .map_err(|_| crate::rules::RuleSaveError::Text),
     };
     crate::rules::CheckedRuleSave::new(
         crate::rules::RuleSaveInput {
             kind: kind.to_owned(),
             minimum: if matches!(body.minimum_workers, RuleField::Null) {
-                None
+                Ok(None)
             } else {
-                Some(minimum)
+                minimum.map(|value| Some(value.into()))
             },
             duration: if matches!(body.duration_minutes, RuleField::Null) {
-                None
+                Ok(None)
             } else {
-                Some(duration)
+                duration.map(|value| Some(value.into()))
             },
             interval,
             stall,
@@ -1412,6 +1424,8 @@ fn check_save(
 fn rule_save_error(error: crate::rules::RuleSaveError) -> RulesServiceError {
     use crate::rules::RuleSaveError as E;
     RulesServiceError::Invalid(match error {
+        E::Integer => "integer",
+        E::InputText => "text",
         E::Kind => "Choose interval, once, file, event, or low_workers",
         E::Minimum => "Minimum subagents must be 1 to 255",
         E::Duration => "Duration must be 1 to 525600 minutes",
@@ -1797,6 +1811,53 @@ mod tests {
             error,
             StatusError::Store(StoreError::InvalidStoredRecord { object: "runtime_model_status", id })
                 if id == "lead"
+        ));
+    }
+
+    #[tokio::test]
+    async fn managed_rule_validation_keeps_numeric_error_precedence() {
+        let (_directory, store) = fixture().await;
+        for (input, expected) in [
+            (
+                json!({"intervalSeconds":1,"name":false}),
+                "Interval must be 10 seconds to one year",
+            ),
+            (
+                json!({"stallTimeoutSeconds":-1,"name":"Watch","text":false}),
+                "stall_timeout_seconds must be 0 to 31536000",
+            ),
+            (
+                json!({"kind":"nonsense","minimumWorkers":false}),
+                "Choose interval, once, file, event, or low_workers",
+            ),
+            (
+                json!({"kind":"low_workers","minimumWorkers":0,"command":false}),
+                "Minimum subagents must be 1 to 255",
+            ),
+            (json!({"event":"bad","command":false}), "Unknown event type"),
+        ] {
+            let request = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+            let error = rules(&store, "lead", 3, Some(&input), &request, 100.0, &Files)
+                .await
+                .expect_err("invalid input");
+            assert!(
+                matches!(error, RulesServiceError::Invalid(message) if message == expected),
+                "{error:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn low_worker_permission_precedes_bad_command_and_name() {
+        let (_directory, store) = fixture().await;
+        let request = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let input = json!({"kind":"low_workers", "command":false, "name":false});
+        let error = rules(&store, "queued", 4, Some(&input), &request, 100.0, &Files)
+            .await
+            .expect_err("not lead");
+        assert!(matches!(
+            error,
+            RulesServiceError::Invalid("Only an orchestrator can own a low-worker alert")
         ));
     }
 
