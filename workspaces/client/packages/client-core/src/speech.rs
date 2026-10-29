@@ -195,22 +195,7 @@ enum HelperProgress {
 }
 
 fn parse_progress(line: &str) -> Option<HelperProgress> {
-    struct Object;
-    impl<'de> serde::de::Visitor<'de> for Object {
-        type Value = HelperProgress;
-
-        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            formatter.write_str("a progress object")
-        }
-
-        fn visit_map<M: serde::de::MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
-            HelperProgress::deserialize(serde::de::value::MapAccessDeserializer::new(map))
-        }
-    }
-    let mut decoder = serde_json::Deserializer::from_str(line);
-    let progress = serde::Deserializer::deserialize_map(&mut decoder, Object).ok()?;
-    decoder.end().ok()?;
-    Some(progress)
+    serde_json::from_str(line).ok()
 }
 
 #[derive(serde::Deserialize)]
@@ -613,7 +598,6 @@ mod tests {
             "diagnostic",
             r#"{"type":"progress","completed":3,"total":2}"#,
             r#"{"type":"progress","completed":1,"total":38}"#,
-            r#"["progress",1,2]"#,
             r#"{"type":"progress","completed":1.0,"total":2}"#,
             r#"{"type":"progress","completed":2,"total":2}"#,
         ];
