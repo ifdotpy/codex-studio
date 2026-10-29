@@ -876,11 +876,11 @@ mod snapshot_tests {
         )
         .unwrap();
         assert_eq!(
-            serde_json::from_str::<Value>(
-                &serde_json::to_string(snapshot.invite().unwrap()).unwrap()
+            serde_json::to_string(snapshot.invite().unwrap()).unwrap(),
+            format!(
+                r#"{{"inviteId":"i","status":"open","expires":9007199254740993,"tokenHash":"{}","tailscaleUser":"owner","extra":{{"opaque":true}}}}"#,
+                digest(b"secret")
             )
-            .unwrap(),
-            invite
         );
         let error = AccessSnapshot::from_records("c", None, "other", Some(&raw), false)
             .err()
