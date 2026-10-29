@@ -16,7 +16,7 @@ pub(super) fn fixture() -> (tempfile::TempDir, Arc<Supervisor>) {
         children: Mutex::new(BTreeMap::new()),
         active_children: AtomicUsize::new(0),
         ownership: Mutex::new(Ownership::default()),
-        recovery: Mutex::new(json!({"blocked":null})),
+        recovery: Mutex::new(serde_json::from_str(r#"{"blocked":null}"#).unwrap()),
         connections: AtomicUsize::new(1),
     });
     (root, supervisor)

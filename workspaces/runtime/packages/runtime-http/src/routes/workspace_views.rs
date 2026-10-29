@@ -117,6 +117,13 @@ fn git_changes(cwd: &str) -> Result<Value, ApiError> {
     })
 }
 
+#[derive(serde::Deserialize)]
+struct ReportedChangePayload {
+    diff: String,
+    #[serde(rename = "turnId")]
+    turn_id: Option<Value>,
+}
+
 fn reported_changes(connection: &Connection, agent: &str) -> Result<Value, ApiError> {
     let prefix = format!("{agent}:turn/diff/updated:");
     let items = TranscriptRepository::items_for_agent_including_restored(connection, agent)
@@ -139,15 +146,20 @@ fn reported_changes(connection: &Connection, agent: &str) -> Result<Value, ApiEr
     let raw = text.or_else(|| item.record.text().value().cloned());
     let payload: Value = serde_json::from_str(raw.as_deref().unwrap_or_default())
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "The recorded changes are invalid"))?;
-    let diff = payload.get("diff").and_then(Value::as_str).ok_or_else(|| {
-        ApiError::new(StatusCode::BAD_REQUEST, "The recorded changes are invalid")
-    })?;
-    let files = reported_change_files(diff);
-    let truncated = diff.chars().count() > 300_000;
-    let diff = diff.chars().take(300_000).collect::<String>();
+    if !payload.is_object() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "The recorded changes are invalid",
+        ));
+    }
+    let payload: ReportedChangePayload = serde::Deserialize::deserialize(payload)
+        .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "The recorded changes are invalid"))?;
+    let files = reported_change_files(&payload.diff);
+    let truncated = payload.diff.chars().count() > 300_000;
+    let diff = payload.diff.chars().take(300_000).collect::<String>();
     Ok(json!({
         "scope":"chat", "git":true, "files":files, "diff":diff, "patch":diff,
-        "truncated":truncated, "turnId":payload.get("turnId"), "reportedAt":item.record.extra("at"),
+        "truncated":truncated, "turnId":payload.turn_id, "reportedAt":item.record.extra("at"),
     }))
 }
 
@@ -565,6 +577,146 @@ mod tests {
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
     use studio_runtime_store::StoreError;
+
+    #[tokio::test]
+    async fn reported_changes_http_preserves_payload_and_visibility_boundaries() {
+        use axum::body::{Body, to_bytes};
+        use axum::extract::ConnectInfo;
+        use axum::http::Request;
+        use serde_json::{Value, json};
+        use std::sync::Arc;
+        use studio_runtime_store::RuntimeStore;
+        use tower::ServiceExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
+        store.transaction_with(|tx| {
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('agent',?1)", [json!({"provider":"codex","id":"agent","rootId":"agent","epoch":0,"status":"idle"}).to_string()])?;
+            Ok::<_, StoreError>(())
+        }).await.unwrap();
+        let state = crate::HttpState::new(
+            "fixture-token".into(),
+            "fixture".into(),
+            store.root().to_string_lossy().into(),
+            49171,
+            None,
+            Some(store.clone()),
+            None,
+        );
+        let app = crate::router(state).unwrap();
+        let long_text = json!({"diff":"🦀".repeat(300_001)}).to_string();
+        for (text, extra, status, expected) in [
+            (
+                long_text.as_str(),
+                json!({}),
+                StatusCode::OK,
+                json!({"diff":"🦀".repeat(300_000), "truncated":true}),
+            ),
+            (
+                r#"{"diff":"first","diff":"second","turnId":null}"#,
+                json!({}),
+                StatusCode::OK,
+                json!({"diff":"second","turnId":null}),
+            ),
+            (
+                r#"{"diff":9}"#,
+                json!({}),
+                StatusCode::BAD_REQUEST,
+                json!({"error":"The recorded changes are invalid"}),
+            ),
+            (
+                r#"{}"#,
+                json!({}),
+                StatusCode::BAD_REQUEST,
+                json!({"error":"The recorded changes are invalid"}),
+            ),
+            (
+                r#"{"diff":"ok","extra":1e400}"#,
+                json!({}),
+                StatusCode::BAD_REQUEST,
+                json!({"error":"The recorded changes are invalid"}),
+            ),
+            (
+                r#"["diff"]"#,
+                json!({}),
+                StatusCode::BAD_REQUEST,
+                json!({"error":"The recorded changes are invalid"}),
+            ),
+            (
+                "invalid",
+                json!({"truncated":true}),
+                StatusCode::BAD_REQUEST,
+                json!({"error":"The complete reported changes are unavailable"}),
+            ),
+            (
+                "fulltext fixture",
+                json!({"truncated":true}),
+                StatusCode::OK,
+                json!({"diff":"full","turnId":"turn"}),
+            ),
+            (
+                "invalid",
+                json!({"afterRestore":true}),
+                StatusCode::OK,
+                json!({"diff":"","turnId":null}),
+            ),
+        ] {
+            let mut record = json!({"id":"agent:turn/diff/updated","role":"output","text":text});
+            record
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            let fulltext = text == "fulltext fixture";
+            store.transaction_with(move |tx| {
+                tx.execute("DELETE FROM runtime_item_fulltext WHERE id='agent:turn/diff/updated'", [])?;
+                tx.execute("INSERT OR REPLACE INTO runtime_items(id,agent,record,created) VALUES('agent:turn/diff/updated','agent',?1,1)", [record.to_string()])?;
+                if fulltext {
+                    tx.execute("INSERT INTO runtime_item_fulltext(id,body) VALUES('agent:turn/diff/updated',?1)", [r#"{"diff":"full","turnId":"turn"}"#])?;
+                }
+                Ok::<_, StoreError>(())
+            }).await.unwrap();
+            let request = Request::builder()
+                .uri("/api/changes?agent=agent&scope=chat")
+                .header("host", "127.0.0.1:49171")
+                .header("x-canvas-token", "fixture-token")
+                .header(crate::API_SCHEMA_HASH_HEADER, crate::api_schema_hash())
+                .extension(ConnectInfo(
+                    "127.0.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
+                ))
+                .body(Body::empty())
+                .unwrap();
+            let response = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), status, "{text}");
+            let body: Value =
+                serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                    .unwrap();
+            for (key, value) in expected.as_object().unwrap() {
+                assert_eq!(&body[key], value);
+            }
+        }
+    }
+
+    #[test]
+    fn reported_payload_preserves_opaque_turn_ids_after_json_admission() {
+        use serde_json::Value;
+        for raw in [
+            r#"{"diff":"ok"}"#,
+            r#"{"diff":"ok","turnId":null}"#,
+            r#"{"diff":"ok","turnId":{"future":[1]}}"#,
+        ] {
+            let value: Value = serde_json::from_str(raw).unwrap();
+            let expected = value.get("turnId").cloned().unwrap_or(Value::Null);
+            let payload: super::ReportedChangePayload = serde_json::from_value(value).unwrap();
+            assert_eq!(payload.turn_id.unwrap_or(Value::Null), expected);
+        }
+        assert!(
+            serde_json::from_str::<Value>(&format!(
+                "{{\"diff\":\"ok\",\"extra\":{}}}",
+                "[".repeat(140) + &"]".repeat(140)
+            ))
+            .is_err()
+        );
+    }
 
     #[tokio::test]
     async fn task_page_http_keeps_summary_and_ignores_invalid_lookahead() {

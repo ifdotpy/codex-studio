@@ -10,6 +10,10 @@ use std::path::{Path, PathBuf};
 /// `runtime_item_fulltext`, and why. Paths are relative to `workspaces/runtime`.
 const FULLTEXT_MENTIONS: &[(&str, &str)] = &[
     (
+        "packages/runtime-http/src/routes/workspace_views.rs",
+        "test fixture inserts plain full text; the route reads through TranscriptRepository::full_text",
+    ),
+    (
         "packages/runtime-store/src/stored_text.rs",
         "format owner; names its owned column",
     ),

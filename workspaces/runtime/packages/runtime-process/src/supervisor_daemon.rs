@@ -31,7 +31,8 @@ use studio_runtime_providers::supervisor_protocol::{
 };
 use studio_runtime_store::path_identity::CanonicalPath;
 use studio_runtime_store::supervisor_journal::{
-    JournalError, START_FAILED_REASON, StoredHandle, SupervisorJournal, launch_signature,
+    JournalError, START_FAILED_REASON, StoredHandle, SupervisorJournal, SupervisorRecovery,
+    launch_signature,
 };
 
 use crate::supervisor_contract::{SUPERVISOR_JOURNAL_EPOCH_FIELD, SUPERVISOR_JOURNAL_ID_KEY};
@@ -81,7 +82,7 @@ struct Supervisor {
     children: Mutex<BTreeMap<String, Arc<ChildSlot>>>,
     active_children: AtomicUsize,
     ownership: Mutex<Ownership>,
-    recovery: Mutex<Value>,
+    recovery: Mutex<SupervisorRecovery>,
     connections: AtomicUsize,
 }
 /// The map is only an index. This lock serializes lifecycle and requests for
@@ -192,12 +193,12 @@ impl Supervisor {
             }
             Command::FinishFallback => {
                 let mut recovery = lock(&self.recovery)?;
-                if !recovery["blocked"].is_null() {
+                if recovery.blocked() {
                     return Err(Error::Refused(
                         "Cannot finish supervisor fallback while child ownership is uncertain",
                     ));
                 }
-                let clean = json!({"degraded":false,"fallbackReady":false,"blocked":null});
+                let clean = SupervisorRecovery::clean();
                 self.journal.save_recovery(&clean)?;
                 *recovery = clean;
                 Ok(json!({"finished":true}))
@@ -244,9 +245,7 @@ impl Supervisor {
                     stopped = true;
                 }
                 if let Some(saved) = self.journal.handle(handle)? {
-                    if !lock(&self.recovery)?["blocked"].is_null()
-                        || (!stopped && saved.closed_at.is_none())
-                    {
+                    if lock(&self.recovery)?.blocked() || (!stopped && saved.closed_at.is_none()) {
                         return Err(Error::Refused(
                             "Supervisor handle is orphaned; native outcome remains unknown",
                         ));
@@ -377,8 +376,7 @@ impl Supervisor {
                     let mut recovery = lock(&self.recovery)?;
                     let mut clean = recovery.clone();
                     if !unresolved {
-                        clean["blocked"] = Value::Null;
-                        clean["fallbackReady"] = clean["degraded"].clone();
+                        clean.clear_blocked();
                     }
                     self.journal
                         .close_unknown(&self.saved(&row.id)?, now()?, &clean)?;
@@ -586,41 +584,38 @@ impl Supervisor {
         }
     }
     fn recover(&self) -> Result<()> {
-        let mut recovery = json!({"degraded":false,"fallbackReady":false,"blocked":null});
+        let mut recovery = SupervisorRecovery::clean();
         for row in self.journal.handles(true)? {
-            let (outcome, detail): (&str, String) = if let (Some(expected), Some(pgid)) =
-                (&row.start_time, row.pgid)
-            {
-                let live_leader = inspect_start(row.pid, expected)?.0 == StartMatch::Exact;
-                if live_leader {
-                    recovery["degraded"] = json!(true);
-                    recovery["notice"] =
-                        json!("The process supervisor restarted; native work is using recovery.");
-                }
-                match stop_verified(row.pid, pgid, expected) {
-                    Ok(outcome) => (
-                        outcome.journal_outcome(),
-                        "verified process group terminated".into(),
-                    ),
-                    Err(error) => {
-                        let blocked = "Could not terminate verified child process group";
-                        recovery["blocked"] = json!(blocked);
-                        ("termination-failed", format!("{blocked}: {error}"))
+            let (outcome, detail): (&str, String) =
+                if let (Some(expected), Some(pgid)) = (&row.start_time, row.pgid) {
+                    let live_leader = inspect_start(row.pid, expected)?.0 == StartMatch::Exact;
+                    if live_leader {
+                        recovery.mark_degraded(
+                            "The process supervisor restarted; native work is using recovery.",
+                        );
                     }
-                }
-            } else {
-                recovery["blocked"] =
-                    json!("A native child is missing its recorded PID and start time");
-                (
-                    "missing-identity",
-                    "Native child PID and start time were not recorded".into(),
-                )
-            };
+                    match stop_verified(row.pid, pgid, expected) {
+                        Ok(outcome) => (
+                            outcome.journal_outcome(),
+                            "verified process group terminated".into(),
+                        ),
+                        Err(error) => {
+                            let blocked = "Could not terminate verified child process group";
+                            recovery.block(blocked);
+                            ("termination-failed", format!("{blocked}: {error}"))
+                        }
+                    }
+                } else {
+                    recovery.block("A native child is missing its recorded PID and start time");
+                    (
+                        "missing-identity",
+                        "Native child PID and start time were not recorded".into(),
+                    )
+                };
             self.journal
                 .recovered(&self.saved(&row.id)?, outcome, &detail, now()?)?;
         }
-        recovery["fallbackReady"] =
-            json!(recovery["degraded"] == true && recovery["blocked"].is_null());
+        recovery.finish_recovery();
         self.journal.save_recovery(&recovery)?;
         *lock(&self.recovery)? = recovery;
         Ok(())
@@ -1075,7 +1070,7 @@ pub fn serve(root: &Path, wait_for_lease: bool) -> Result<()> {
         children: Mutex::new(BTreeMap::new()),
         active_children: AtomicUsize::new(0),
         ownership: Mutex::new(Ownership::default()),
-        recovery: Mutex::new(json!({"degraded":false,"fallbackReady":false,"blocked":null})),
+        recovery: Mutex::new(SupervisorRecovery::clean()),
         connections: AtomicUsize::new(0),
     });
     supervisor.recover()?;
@@ -1201,5 +1196,42 @@ mod lease_tests {
         ] {
             assert!(serde_json::from_value::<SupervisorLease>(value).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+
+    #[test]
+    fn recovery_and_finish_fallback_preserve_blocking_and_health() {
+        let (_root, supervisor) = super::deadline_tests::fixture();
+        let capabilities = super::deadline_tests::backend_capabilities(&supervisor);
+        supervisor.recover().unwrap();
+        assert_eq!(
+            supervisor.handle(Command::Health, &capabilities).unwrap()["recovery"],
+            json!({"degraded":false,"fallbackReady":false,"blocked":null})
+        );
+        *lock(&supervisor.recovery).unwrap() =
+            serde_json::from_str(r#"{"degraded":true,"blocked":false,"extra":1}"#).unwrap();
+        assert!(matches!(
+            supervisor.handle(Command::FinishFallback, &capabilities),
+            Err(Error::Refused(_))
+        ));
+        assert_eq!(
+            supervisor.handle(Command::Health, &capabilities).unwrap()["recovery"]["extra"],
+            1
+        );
+        lock(&supervisor.recovery).unwrap().clear_blocked();
+        assert_eq!(
+            supervisor
+                .handle(Command::FinishFallback, &capabilities)
+                .unwrap(),
+            json!({"finished":true})
+        );
+        assert_eq!(
+            supervisor.handle(Command::Health, &capabilities).unwrap()["recovery"],
+            json!({"degraded":false,"fallbackReady":false,"blocked":null})
+        );
     }
 }

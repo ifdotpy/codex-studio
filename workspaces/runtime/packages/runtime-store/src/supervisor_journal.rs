@@ -5,6 +5,7 @@ use rusqlite::{
     Connection, OptionalExtension, Transaction, params,
     types::{Value as SqlValue, ValueRef},
 };
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
@@ -15,6 +16,89 @@ use studio_runtime_providers::supervisor_protocol::{
     EVENT_KIND_EXIT, EVENT_KIND_STDERR, EVENT_KIND_STDOUT, EventKind, HANDLE_LIMIT, HandleSnapshot,
     NativeId, ReceiptSnapshot, Refusal, WriteDecision,
 };
+use studio_runtime_schema::queue_command::Field;
+
+/// Recovery evidence in the journal is historically unrestricted JSON; known
+/// object fields are typed as presence-aware evidence without narrowing it.
+#[derive(Clone, Debug, Serialize)]
+#[serde(untagged)]
+pub enum SupervisorRecovery {
+    Object(RecoveryFields),
+    Other(Value),
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryFields {
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    degraded: Field<Value>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    fallback_ready: Field<Value>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    blocked: Field<Value>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    notice: Field<Value>,
+    #[serde(flatten)]
+    extra: serde_json::Map<String, Value>,
+}
+
+impl<'de> Deserialize<'de> for SupervisorRecovery {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        let value = Value::deserialize(deserializer)?;
+        if value.is_object() {
+            RecoveryFields::deserialize(value)
+                .map(Self::Object)
+                .map_err(serde::de::Error::custom)
+        } else {
+            Ok(Self::Other(value))
+        }
+    }
+}
+
+impl SupervisorRecovery {
+    pub fn clean() -> Self {
+        Self::Object(RecoveryFields {
+            degraded: Field::Value(json!(false)),
+            fallback_ready: Field::Value(json!(false)),
+            blocked: Field::Null,
+            notice: Field::Missing,
+            extra: Default::default(),
+        })
+    }
+    pub fn blocked(&self) -> bool {
+        matches!(self, Self::Object(fields) if fields.blocked.value().is_some())
+    }
+    pub fn mark_degraded(&mut self, notice: &str) {
+        let Self::Object(fields) = self else {
+            unreachable!("recovery is constructed as an object")
+        };
+        fields.degraded = Field::Value(json!(true));
+        fields.notice = Field::Value(json!(notice));
+    }
+    pub fn block(&mut self, reason: &str) {
+        let Self::Object(fields) = self else {
+            unreachable!("recovery is constructed as an object")
+        };
+        fields.blocked = Field::Value(json!(reason));
+    }
+    pub fn clear_blocked(&mut self) {
+        let Self::Object(fields) = self else {
+            unreachable!("recovery is constructed as an object")
+        };
+        fields.blocked = Field::Null;
+        fields.fallback_ready = match &fields.degraded {
+            Field::Value(value) => Field::Value(value.clone()),
+            Field::Missing | Field::Null => Field::Null,
+        };
+    }
+    pub fn finish_recovery(&mut self) {
+        let ready = matches!(self, Self::Object(fields) if fields.degraded.value() == Some(&json!(true)) && fields.blocked.value().is_none());
+        let Self::Object(fields) = self else {
+            unreachable!("recovery is constructed as an object")
+        };
+        fields.fallback_ready = Field::Value(json!(ready));
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum JournalError {
@@ -673,7 +757,12 @@ impl SupervisorJournal {
             Ok(((), None))
         })
     }
-    pub fn close_unknown(&self, expected: &StoredHandle, now: f64, recovery: &Value) -> Result<()> {
+    pub fn close_unknown(
+        &self,
+        expected: &StoredHandle,
+        now: f64,
+        recovery: &SupervisorRecovery,
+    ) -> Result<()> {
         self.transaction(|tx, buffered| {
             let current = stored(
                 tx,
@@ -686,12 +775,12 @@ impl SupervisorJournal {
                 return Err(Refusal("Operator close refused: handle identity changed").into());
             }
             tx.execute("UPDATE handles SET closed_at=?,closed_reason='Closed by operator after verified test/unknown-client ownership' WHERE id=?", params![now,expected.id])?;
-            tx.execute("INSERT INTO supervisor_state VALUES ('recovery',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [recovery.to_string()])?;
+            tx.execute("INSERT INTO supervisor_state VALUES ('recovery',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [serde_json::to_string(recovery)?])?;
             Ok(((), None))
         })
     }
-    pub fn save_recovery(&self, recovery: &Value) -> Result<()> {
-        self.transaction(|tx, _buffered| { tx.execute("INSERT INTO supervisor_state VALUES ('recovery',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[recovery.to_string()])?; Ok(((), None)) })
+    pub fn save_recovery(&self, recovery: &SupervisorRecovery) -> Result<()> {
+        self.transaction(|tx, _buffered| { tx.execute("INSERT INTO supervisor_state VALUES ('recovery',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[serde_json::to_string(recovery)?])?; Ok(((), None)) })
     }
 }
 #[derive(Debug, PartialEq, Eq)]
@@ -728,6 +817,52 @@ pub(crate) fn prepare_schema(db: &Transaction<'_>) -> crate::StoreResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recovery_owner_preserves_open_wire_values_and_journal_writes() {
+        let root = tempfile::tempdir().unwrap();
+        let journal = SupervisorJournal::open(root.path()).unwrap();
+        for input in [
+            json!(null),
+            json!(false),
+            json!([1, 2]),
+            json!({}),
+            json!({"blocked":null,"notice":{"future":true}}),
+            json!({"degraded":"legacy","fallbackReady":0,"blocked":false,"extra":[1,null]}),
+        ] {
+            let recovery = SupervisorRecovery::deserialize(input.clone()).unwrap();
+            let encoded = serde_json::to_string(&recovery).unwrap();
+            let decoded: Value = serde_json::from_str(&encoded).unwrap();
+            assert_eq!(decoded, input);
+            journal.save_recovery(&recovery).unwrap();
+            let saved: String = journal
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT value FROM supervisor_state WHERE key='recovery'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(serde_json::from_str::<Value>(&saved).unwrap(), input);
+        }
+        for blocked in [json!(false), json!(0), json!(""), json!({}), json!([])] {
+            let recovery = SupervisorRecovery::deserialize(json!({"blocked":blocked})).unwrap();
+            assert!(recovery.blocked());
+        }
+        let mut recovery =
+            SupervisorRecovery::deserialize(json!({"degraded":"legacy","blocked":false,"extra":3}))
+                .unwrap();
+        recovery.clear_blocked();
+        let saved = recovery.serialize(serde_json::value::Serializer).unwrap();
+        assert_eq!(
+            saved,
+            json!({"degraded":"legacy","fallbackReady":"legacy","blocked":null,"extra":3})
+        );
+        recovery.finish_recovery();
+        let saved = recovery.serialize(serde_json::value::Serializer).unwrap();
+        assert_eq!(saved["fallbackReady"], false);
+    }
 
     #[test]
     fn append_refuses_unknown_kind_without_advancing_the_journal() {
