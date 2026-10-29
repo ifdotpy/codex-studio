@@ -12,7 +12,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use serde_json::{Number, Value, json};
 use std::sync::Arc;
-use studio_runtime_services::rules::{self, RulesError};
+use studio_runtime_services::rules::{self, RuleAction, RulesError};
 use studio_runtime_store::{RuleRecord, RulesRepository, StoreError};
 
 use crate::error::ApiError;
@@ -52,23 +52,40 @@ async fn update(
     runtime: Option<
         Extension<Arc<studio_runtime_services::monitor_runtime_wiring::MonitorRuntime>>,
     >,
-    ApiJson(body): ApiJson<Value>,
+    ApiJson(body): ApiJson<crate::generated::RuleBody>,
 ) -> Result<Json<RuleWriteResponse>, ApiError> {
-    let action = string(&body, "action").unwrap_or("save");
+    use crate::generated::RuleBodyAction;
+    let action_name = body.action.clone().unwrap_or_default();
     let now = now_seconds()?;
-    if action == "save"
-        && let Some(at) = body.get("at").filter(|value| !value.is_null())
-        && at
-            .as_f64()
-            .is_none_or(|at| at < now - 1.0 || at > now + 31_536_000.0)
+    if matches!(action_name, RuleBodyAction::Save)
+        && let Some(at) = body.at.as_ref().and_then(Option::as_ref)
+        && {
+            let at = rule_at(at);
+            at < now - 1.0 || at > now + 31_536_000.0
+        }
     {
         return Err(located("at"));
     }
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let action = action.to_owned();
-    let agent_id = string(&body, "agent").unwrap_or_default().to_owned();
-    let supplied_id = string(&body, "id").map(str::to_owned);
+    let agent_id = body.agent.clone();
+    let supplied_id = body.id.clone().flatten();
     let rule_id = supplied_id.unwrap_or_else(new_rule_id);
+    let action = match action_name {
+        RuleBodyAction::Save => RuleAction::Save {
+            id: rule_id.clone(),
+            data: body.clone(),
+        },
+        RuleBodyAction::Pause => RuleAction::Pause {
+            id: rule_id.clone(),
+        },
+        RuleBodyAction::Resume => RuleAction::Resume {
+            id: rule_id.clone(),
+        },
+        RuleBodyAction::Delete => RuleAction::Delete {
+            id: rule_id.clone(),
+        },
+    };
+    let rule_id = action.id().to_owned();
     let prepare_store = store.clone();
     let prepare_agent_id = agent_id.clone();
     let prepare_rule_id = rule_id.clone();
@@ -84,19 +101,23 @@ async fn update(
             let old =
                 RulesRepository::get(connection, &prepare_rule_id).map_err(store_api_error)?;
             let old_value = old.as_ref().map(|old| old.value().clone());
-            let path = if prepare_action == "resume"
+            let path = if matches!(prepare_action, RuleAction::Resume { .. })
                 && old_value.as_ref().and_then(|value| string(value, "kind")) == Some("file")
             {
                 old_value
                     .as_ref()
                     .and_then(|value| string(value, "path"))
                     .map(str::to_owned)
-            } else if !matches!(prepare_action.as_str(), "delete" | "pause" | "resume")
-                && string(&prepare_body, "kind") == Some("file")
+            } else if matches!(prepare_action, RuleAction::Save { .. })
+                && prepare_body.kind.as_deref() == Some("file")
             {
                 Some(resolve_workspace_path(
                     &agent_value,
-                    string(&prepare_body, "path").unwrap_or(""),
+                    prepare_body
+                        .path
+                        .as_ref()
+                        .and_then(Option::as_deref)
+                        .unwrap_or(""),
                 )?)
             } else {
                 None
@@ -131,27 +152,27 @@ async fn update(
                     return Err(ApiError::new(StatusCode::BAD_REQUEST, "This rule belongs to another agent"));
                 }
             }
-            if action == "save" && old_value.as_ref().and_then(|v| v.get("inFlight")).and_then(Value::as_bool) == Some(true) {
+            if matches!(action, RuleAction::Save { .. }) && old_value.as_ref().and_then(|v| v.get("inFlight")).and_then(Value::as_bool) == Some(true) {
                 return Err(ApiError::new(StatusCode::BAD_REQUEST, "Pause the rule and wait for its current check before editing"));
             }
-            if action == "resume" && old_value.as_ref().and_then(|v| v.get("inFlight")).and_then(Value::as_bool) == Some(true) {
+            if matches!(action, RuleAction::Resume { .. }) && old_value.as_ref().and_then(|v| v.get("inFlight")).and_then(Value::as_bool) == Some(true) {
                 return Err(ApiError::new(StatusCode::BAD_REQUEST, "Wait for the current rule check before resuming"));
             }
-            let cancel_ids = if matches!(action.as_str(), "pause" | "delete") {
+            let cancel_ids = if matches!(action, RuleAction::Pause { .. } | RuleAction::Delete { .. }) {
                 RulesRepository::active_check_ids(transaction, &rule_id).map_err(store_api_error)?
             } else {
                 Vec::new()
             };
-            let result = match action.as_str() {
-                "delete" | "pause" | "resume" => {
+            let result = match &action {
+                RuleAction::Delete { .. } | RuleAction::Pause { .. } | RuleAction::Resume { .. } => {
                     let (Some(_old), Some(mut value)) = (old, old_value) else {
                         return Err(ApiError::new(StatusCode::BAD_REQUEST, "Unknown rule"));
                     };
-                    if action == "delete" {
+                    if matches!(action, RuleAction::Delete { .. }) {
                         RulesRepository::delete(transaction, &rule_id).map_err(store_api_error)?;
                         json!({"deleted": rule_id})
                     } else {
-                        if action == "resume" && agent_value.get("autoWake").and_then(Value::as_bool) != Some(true) {
+                        if matches!(action, RuleAction::Resume { .. }) && agent_value.get("autoWake").and_then(Value::as_bool) != Some(true) {
                             return Err(ApiError::new(StatusCode::BAD_REQUEST, "Resume the agent before its rules"));
                         }
                         // A manual pause or resume replaces a pause that the tick made
@@ -161,7 +182,7 @@ async fn update(
                             object.remove("restartCheck");
                             object.remove("ownerHold");
                         }
-                        let desired = if action == "resume" { "active" } else { "paused" };
+                        let desired = if matches!(action, RuleAction::Resume { .. }) { "active" } else { "paused" };
                         if !owner_held
                             && string(&value, "kind") == Some("low_workers")
                             && string(&value, "status") == Some(desired)
@@ -171,7 +192,7 @@ async fn update(
                         } else {
                             let interval = value.get("intervalSeconds").and_then(Value::as_f64).unwrap_or(60.0);
                             let kind = string(&value, "kind").unwrap_or("").to_owned();
-                            let file_update = (action == "resume" && kind == "file").then(|| (
+                            let file_update = (matches!(action, RuleAction::Resume { .. }) && kind == "file").then(|| (
                                 now,
                                 prepared_fingerprint.clone().unwrap_or(Value::Null),
                                 value.get("fileGeneration").and_then(Value::as_u64).unwrap_or(0).saturating_add(1),
@@ -198,24 +219,24 @@ async fn update(
                         }
                     }
                 }
-                _ => {
-                    let kind = string(&body, "kind").unwrap_or("interval");
-                    let command = string(&body, "command").unwrap_or("");
-                    let raw_path = string(&body, "path");
-                    let liveness = string(&body, "livenessCommand").unwrap_or("").trim();
+                RuleAction::Save { data: body, .. } => {
+                    let kind = body.kind.as_deref().unwrap_or("interval");
+                    let command = body.command.as_deref().unwrap_or("");
+                    let raw_path = body.path.as_ref().and_then(Option::as_deref);
+                    let liveness = body.liveness_command.as_deref().unwrap_or("").trim();
                     if kind == "low_workers" && !command.is_empty() { return Err(located("command")); }
                     if kind == "file" && raw_path.is_none_or(|path| path.trim().is_empty()) { return Err(located("path")); }
                     if !liveness.is_empty() && kind != "file" { return Err(located("livenessCommand")); }
                     if kind == "low_workers" && agent_value.get("isLead").and_then(Value::as_bool) != Some(true) {
                         return Err(ApiError::new(StatusCode::BAD_REQUEST, "Only an orchestrator can own a low-worker alert"));
                     }
-                    let interval = body.get("intervalSeconds").and_then(Value::as_u64).unwrap_or(60);
-                    let at = body.get("at").and_then(Value::as_f64).unwrap_or(now + interval as f64);
+                    let interval = body.interval_seconds.unwrap_or(60) as u64;
+                    let at = body.at.as_ref().and_then(Option::as_ref).map(rule_at).unwrap_or(now + interval as f64);
                     if !(now - 1.0..=now + 31_536_000.0).contains(&at) { return Err(located("at")); }
-                    let stall = body.get("stallTimeoutSeconds").or_else(|| body.get("stall_timeout_seconds")).and_then(Value::as_u64).unwrap_or(1800);
-                    let text = string(&body, "text").unwrap_or("Check this event and continue the original task.").trim();
+                    let stall = body.stall_timeout_seconds.or_else(|| body.stall_timeout_seconds_2.flatten()).unwrap_or(1800) as u64;
+                    let text = body.text.as_deref().unwrap_or("Check this event and continue the original task.").trim();
                     if text.is_empty() { return Err(located("text")); }
-                    let name = trimmed_text(&body, "name")?;
+                    let name = body.name.as_ref().and_then(Option::as_deref).map(str::trim).filter(|name| !name.is_empty()).ok_or_else(|| located("name"))?;
                     let path = if kind == "file" { prepared_path.clone() } else { None };
                     let fingerprint = if kind == "file" { prepared_fingerprint.clone() } else { None };
                     let old_record = old_value.as_ref();
@@ -224,7 +245,7 @@ async fn update(
                         "rootId": agent_value.get("rootId").cloned().unwrap_or_else(|| json!(agent_id)),
                         "epoch": agent_value["epoch"], "name": name, "kind": kind,
                         "intervalSeconds": interval, "nextAt": at, "at": at,
-                        "path": path, "event": string(&body, "event").unwrap_or("worker_completed"),
+                        "path": path, "event": body.event.as_ref().map_or("worker_completed", |event| event.as_str()),
                         "command": command.trim(), "stallTimeoutSeconds": if kind == "file" { stall } else { 0 },
                         "livenessCommand": liveness, "fileActivityAt": old_record.and_then(|v| v.get("fileActivityAt")).cloned().unwrap_or(json!(now)),
                         "fileGeneration": old_record.and_then(|v| v.get("fileGeneration")).cloned().unwrap_or(json!(0)),
@@ -234,8 +255,8 @@ async fn update(
                         "inFlight": false, "checks": old_record.and_then(|v| v.get("checks")).cloned().unwrap_or(json!(0)),
                         "wakes": old_record.and_then(|v| v.get("wakes")).cloned().unwrap_or(json!(0)),
                         "fingerprint": fingerprint,
-                        "minimumWorkers": if kind == "low_workers" { body.get("minimumWorkers").cloned().unwrap_or(json!(8)) } else { Value::Null },
-                        "durationMinutes": if kind == "low_workers" { body.get("durationMinutes").cloned().unwrap_or(json!(30)) } else { Value::Null },
+                        "minimumWorkers": if kind == "low_workers" { json!(body.minimum_workers.unwrap_or(8)) } else { Value::Null },
+                        "durationMinutes": if kind == "low_workers" { json!(body.duration_minutes.unwrap_or(30)) } else { Value::Null },
                         "lowSince": Value::Null, "alerted": Value::Bool(false),
                     });
                     let value = strip_null_low_worker_fields(value, kind);
@@ -311,14 +332,11 @@ fn string<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
     value.get(key).and_then(Value::as_str)
 }
 
-fn trimmed_text(value: &Value, key: &str) -> Result<Value, ApiError> {
-    let Some(text) = string(value, key) else {
-        return Err(located(key));
-    };
-    if text.trim().is_empty() {
-        return Err(located(key));
+fn rule_at(value: &crate::generated::RuleBodyAt) -> f64 {
+    match value {
+        crate::generated::RuleBodyAt::Integer(value) => *value as f64,
+        crate::generated::RuleBodyAt::Number(value) => *value,
     }
-    Ok(Value::String(text.trim().to_owned()))
 }
 
 fn located(field: &str) -> ApiError {

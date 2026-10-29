@@ -91,3 +91,45 @@ async fn a_manual_pause_or_resume_replaces_the_owner_hold_pause() {
         assert!(stored["error"].is_null(), "{action}: {stored}");
     }
 }
+
+#[tokio::test]
+async fn rule_actions_preserve_the_target_and_time_bounds() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
+    store.transaction(|tx| {
+        AgentRepository::put(tx, &AgentRecord::from_value(json!({"id":"owner","rootId":"owner","epoch":0,
+            "status":"waiting","autoWake":true,"accountKey":"default","provider":"codex","name":"Fixture lead"}))?)?;
+        Ok::<_, studio_runtime_store::StoreError>(())
+    }).await.unwrap();
+    let state = HttpState::new(
+        "fixture-token".into(),
+        "fixture".into(),
+        store.root().to_string_lossy().into(),
+        49171,
+        None,
+        Some(store.clone()),
+        None,
+    );
+    let app = router(state).unwrap();
+    let (code, saved) = post(
+        &app,
+        json!({"agent":"owner","id":"rule","name":"Watch","text":"Continue"}),
+    )
+    .await;
+    assert_eq!(code, 200, "{saved}");
+    assert_eq!(saved["id"], "rule");
+    for (action, status) in [("pause", "paused"), ("resume", "active")] {
+        let (code, result) = post(&app, json!({"agent":"owner","id":"rule","action":action})).await;
+        assert_eq!(code, 200, "{result}");
+        assert_eq!(result["status"], status);
+    }
+    let (code, _) = post(
+        &app,
+        json!({"agent":"owner","id":"rule","name":"Watch","text":"Continue","at":1}),
+    )
+    .await;
+    assert_eq!(code, 400);
+    let (code, deleted) = post(&app, json!({"agent":"owner","id":"rule","action":"delete"})).await;
+    assert_eq!(code, 200, "{deleted}");
+    assert_eq!(deleted["deleted"], "rule");
+}

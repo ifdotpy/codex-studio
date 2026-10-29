@@ -6,6 +6,56 @@ use serde_json::Value;
 use studio_runtime_store::{AgentRecord, RuleRecord};
 use thiserror::Error;
 
+/// Names accepted at rule action ingress. The HTTP schema is checked against
+/// this owner by the rules contract test.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RuleActionName {
+    Save,
+    Pause,
+    Resume,
+    Delete,
+}
+
+impl RuleActionName {
+    pub const ALL: [Self; 4] = [Self::Save, Self::Pause, Self::Resume, Self::Delete];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Save => "save",
+            Self::Pause => "pause",
+            Self::Resume => "resume",
+            Self::Delete => "delete",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|action| action.as_str() == value)
+    }
+}
+
+/// A rule mutation and its target. Control actions have no save fields; each
+/// ingress supplies its save payload.
+#[derive(Clone, Debug)]
+pub enum RuleAction<T> {
+    Save { id: String, data: T },
+    Pause { id: String },
+    Resume { id: String },
+    Delete { id: String },
+}
+
+impl<T> RuleAction<T> {
+    pub fn id(&self) -> &str {
+        match self {
+            Self::Save { id, .. }
+            | Self::Pause { id }
+            | Self::Resume { id }
+            | Self::Delete { id } => id,
+        }
+    }
+}
+
 #[derive(Debug, Error, Eq, PartialEq)]
 pub enum RulesError {
     #[error("invalid stored object {object}/{id}")]
@@ -50,9 +100,32 @@ fn invalid_object(object: &'static str, id: String) -> RulesError {
 
 #[cfg(test)]
 mod tests {
-    use super::{RulesError, visible_rules};
+    use super::{RuleActionName, RulesError, visible_rules};
     use serde_json::json;
     use studio_runtime_store::{AgentRecord, RuleRecord};
+
+    #[test]
+    fn rule_action_names_match_the_http_wire_contract() {
+        let openapi: serde_json::Value =
+            serde_json::from_str(include_str!("../../runtime-http/openapi.json"))
+                .expect("HTTP contract parses");
+        let wire = openapi["components"]["schemas"]["RuleBody"]["properties"]["action"]["enum"]
+            .as_array()
+            .expect("action enum");
+        let wire: std::collections::BTreeSet<_> = wire
+            .iter()
+            .map(|value| value.as_str().expect("action name"))
+            .collect();
+        let owned: std::collections::BTreeSet<_> = RuleActionName::ALL
+            .into_iter()
+            .map(RuleActionName::as_str)
+            .collect();
+        assert_eq!(wire, owned);
+        for action in RuleActionName::ALL {
+            assert_eq!(RuleActionName::parse(action.as_str()), Some(action));
+        }
+        assert_eq!(RuleActionName::parse("unknown"), None);
+    }
 
     fn agent(id: &str, deleted_at: Option<serde_json::Value>) -> AgentRecord {
         let mut record = json!({"provider":studio_runtime_schema::ProviderKind::Codex,

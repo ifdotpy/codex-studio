@@ -953,6 +953,7 @@ pub async fn rules(
         });
     }
 
+    let action = crate::rules::RuleActionName::parse(&action);
     let body = data.ok_or(RulesServiceError::Invalid("rule"))?.clone();
     if request_id.is_empty() || request_id.chars().count() > 200 {
         return Err(RulesServiceError::Invalid("request id"));
@@ -995,7 +996,7 @@ pub async fn rules(
         .and_then(Value::as_str)
         .unwrap_or("interval")
         .to_owned();
-    let prepared_path = if action == "save" && kind == "file" {
+    let prepared_path = if action == Some(crate::rules::RuleActionName::Save) && kind == "file" {
         let raw = text(body.get("path"), "a path", FILE_PATH_MAX_CHARS, false)?;
         let cwd = cwd(&prepared_actor)?.to_owned();
         let files = (*files).clone();
@@ -1007,7 +1008,7 @@ pub async fn rules(
             .await
             .map_err(|_| RulesServiceError::FilePath)??,
         )
-    } else if action == "resume"
+    } else if action == Some(crate::rules::RuleActionName::Resume)
         && old_before
             .as_ref()
             .and_then(|old| old.get("kind"))
@@ -1078,26 +1079,48 @@ pub async fn rules(
                     "This rule belongs to another agent",
                 ));
             }
-            let mut cancel_monitor_ids = if matches!(action.as_str(), "pause" | "delete") {
+            let action = match action {
+                Some(crate::rules::RuleActionName::Save) => crate::rules::RuleAction::Save {
+                    id: key.clone(),
+                    data: check_save(&body, old.as_ref(), &actor, &kind, now)?,
+                },
+                Some(crate::rules::RuleActionName::Pause) => {
+                    crate::rules::RuleAction::Pause { id: key.clone() }
+                }
+                Some(crate::rules::RuleActionName::Resume) => {
+                    crate::rules::RuleAction::Resume { id: key.clone() }
+                }
+                Some(crate::rules::RuleActionName::Delete) => {
+                    crate::rules::RuleAction::Delete { id: key.clone() }
+                }
+                None => return Err(RulesServiceError::UnknownAction),
+            };
+            let key = action.id().to_owned();
+            let mut cancel_monitor_ids = if matches!(
+                action,
+                crate::rules::RuleAction::Pause { .. } | crate::rules::RuleAction::Delete { .. }
+            ) {
                 active_rule_monitors(tx, &key)?
             } else {
                 Vec::new()
             };
-            let value = match action.as_str() {
-                "pause" | "resume" | "delete" => {
+            let value = match &action {
+                crate::rules::RuleAction::Pause { .. }
+                | crate::rules::RuleAction::Resume { .. }
+                | crate::rules::RuleAction::Delete { .. } => {
                     let mut old = old.ok_or(RulesServiceError::Invalid("Unknown rule"))?;
-                    if action == "resume"
+                    if matches!(action, crate::rules::RuleAction::Resume { .. })
                         && old.get("inFlight").and_then(Value::as_bool) == Some(true)
                     {
                         return Err(RulesServiceError::Invalid(
                             "Wait for the current rule check before resuming",
                         ));
                     }
-                    if action == "delete" {
+                    if matches!(action, crate::rules::RuleAction::Delete { .. }) {
                         RulesRepository::delete(tx, &key)?;
                         json!({"deleted": key})
                     } else {
-                        if action == "resume"
+                        if matches!(action, crate::rules::RuleAction::Resume { .. })
                             && actor.extra.get("autoWake") != Some(&Value::Bool(true))
                         {
                             return Err(RulesServiceError::Invalid(
@@ -1107,7 +1130,7 @@ pub async fn rules(
                         if let Some(object) = old.as_object_mut() {
                             object.remove("restartCheck");
                         }
-                        let desired = if action == "resume" {
+                        let desired = if matches!(action, crate::rules::RuleAction::Resume { .. }) {
                             "active"
                         } else {
                             "paused"
@@ -1121,7 +1144,7 @@ pub async fn rules(
                                 old["lowSince"] = Value::Null;
                                 old["alerted"] = Value::Bool(false);
                             }
-                            if action == "resume"
+                            if matches!(action, crate::rules::RuleAction::Resume { .. })
                                 && old.get("kind").and_then(Value::as_str) == Some("file")
                             {
                                 let generation = old
@@ -1148,20 +1171,18 @@ pub async fn rules(
                         old
                     }
                 }
-                "save" => save_rule(
+                crate::rules::RuleAction::Save { data, .. } => save_rule(
                     tx,
                     &actor,
                     RuleSave {
-                        body: &body,
+                        data,
                         old: old.as_ref(),
                         key: &key,
-                        kind: &kind,
                         now,
                         prepared_path: prepared_path.as_deref(),
                         fingerprint: fingerprint.as_ref(),
                     },
                 )?,
-                _ => return Err(RulesServiceError::UnknownAction),
             };
             cancel_monitor_ids.sort();
             cancel_monitor_ids.dedup();
@@ -1236,30 +1257,27 @@ pub async fn acknowledge_rule_cancellations(
         .await
 }
 
-struct RuleSave<'a> {
-    body: &'a Value,
-    old: Option<&'a Value>,
-    key: &'a str,
-    kind: &'a str,
-    now: f64,
-    prepared_path: Option<&'a str>,
-    fingerprint: Option<&'a Value>,
+struct CheckedSave {
+    kind: String,
+    minimum_record: Option<i64>,
+    duration_record: Option<i64>,
+    interval: i64,
+    stall: i64,
+    at: f64,
+    event: String,
+    command: String,
+    liveness_command: String,
+    name: String,
+    text_value: String,
 }
 
-fn save_rule(
-    tx: &Transaction<'_>,
+fn check_save(
+    body: &Value,
+    old: Option<&Value>,
     actor: &AgentRecord,
-    save: RuleSave<'_>,
-) -> Result<Value, RulesServiceError> {
-    let RuleSave {
-        body,
-        old,
-        key,
-        kind,
-        now,
-        prepared_path,
-        fingerprint,
-    } = save;
+    kind: &str,
+    now: f64,
+) -> Result<CheckedSave, RulesServiceError> {
     if old.is_some_and(|record| record.get("inFlight").and_then(Value::as_bool) == Some(true)) {
         return Err(RulesServiceError::Invalid(
             "Pause the rule and wait for its current check before editing",
@@ -1350,6 +1368,64 @@ fn save_rule(
         .map(|value| text(Some(value), "an instruction", RULE_TEXT_MAX_CHARS, false))
         .transpose()?
         .unwrap_or_else(|| "Check this event and continue the original task.".to_owned());
+    Ok(CheckedSave {
+        kind: kind.to_owned(),
+        minimum_record: if body.get("minimumWorkers").is_some_and(Value::is_null) {
+            None
+        } else {
+            Some(minimum)
+        },
+        duration_record: if body.get("durationMinutes").is_some_and(Value::is_null) {
+            None
+        } else {
+            Some(duration)
+        },
+        interval,
+        stall,
+        at,
+        event: event.to_owned(),
+        command,
+        liveness_command,
+        name,
+        text_value,
+    })
+}
+
+struct RuleSave<'a> {
+    data: &'a CheckedSave,
+    old: Option<&'a Value>,
+    key: &'a str,
+    now: f64,
+    prepared_path: Option<&'a str>,
+    fingerprint: Option<&'a Value>,
+}
+
+fn save_rule(
+    tx: &Transaction<'_>,
+    actor: &AgentRecord,
+    save: RuleSave<'_>,
+) -> Result<Value, RulesServiceError> {
+    let RuleSave {
+        data,
+        old,
+        key,
+        now,
+        prepared_path,
+        fingerprint,
+    } = save;
+    let CheckedSave {
+        kind,
+        minimum_record,
+        duration_record,
+        interval,
+        stall,
+        at,
+        event,
+        command,
+        liveness_command,
+        name,
+        text_value,
+    } = data;
     let prior = old.and_then(Value::as_object);
     let mut record = json!({
         "id": key,
@@ -1364,7 +1440,7 @@ fn save_rule(
         "path": if kind == "file" { prepared_path.map(Value::from).unwrap_or(Value::Null) } else { Value::Null },
         "event": event,
         "command": command,
-        "stallTimeoutSeconds": if kind == "file" { stall } else { 0 },
+        "stallTimeoutSeconds": if kind == "file" { *stall } else { 0 },
         "livenessCommand": liveness_command,
         "fileActivityAt": prior.and_then(|value| value.get("fileActivityAt")).cloned().unwrap_or(json!(now)),
         "fileGeneration": prior.and_then(|value| value.get("fileGeneration")).cloned().unwrap_or(json!(0)),
@@ -1378,8 +1454,8 @@ fn save_rule(
         "fingerprint": if kind == "file" { fingerprint.cloned().unwrap_or(Value::Null) } else { Value::Null },
     });
     if kind == "low_workers" {
-        record["minimumWorkers"] = body.get("minimumWorkers").cloned().unwrap_or(json!(8));
-        record["durationMinutes"] = body.get("durationMinutes").cloned().unwrap_or(json!(30));
+        record["minimumWorkers"] = json!(minimum_record);
+        record["durationMinutes"] = json!(duration_record);
         record["lowSince"] = Value::Null;
         record["alerted"] = Value::Bool(false);
         record["nextAt"] = json!(now);
@@ -1753,6 +1829,22 @@ mod tests {
         assert_eq!(first.value, replay.value);
         assert!(first.value["id"].is_string());
         assert_eq!(first.value["fingerprint"], json!([123, 4, 5]));
+        let mut explicit_save = generated.clone();
+        explicit_save["action"] = json!("save");
+        assert!(
+            rules(
+                &store,
+                "lead",
+                3,
+                Some(&explicit_save),
+                &generated_request,
+                101.0,
+                &Files,
+            )
+            .await
+            .is_err(),
+            "semantically equivalent input must not replace the original request identity"
+        );
 
         let mut save = generated;
         save["id"] = json!("rule-fixed");
