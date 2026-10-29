@@ -317,8 +317,8 @@ async fn write_frame(input: &mut tokio::process::ChildStdin, value: &Value) -> R
     input.flush().await.map_err(|_| ())
 }
 
-async fn response(
-    reader: &mut BufReader<tokio::process::ChildStdout>,
+async fn response<R: AsyncRead + Unpin>(
+    reader: &mut BufReader<R>,
     id: u64,
     deadline: tokio::time::Instant,
 ) -> Result<Value, ()> {
@@ -326,17 +326,11 @@ async fn response(
         let line = tokio::time::timeout_at(deadline, bounded_line(reader, MAX_FRAME_BYTES))
             .await
             .map_err(|_| ())??;
-        let value: Value = serde_json::from_slice(&line).map_err(|_| ())?;
-        if value.get("method").is_some() {
-            if value.get("id").is_some() {
-                return Err(());
-            }
-            continue;
+        if let Some(result) =
+            studio_runtime_providers::decode_probe_response(&line, id).map_err(|_| ())?
+        {
+            return Ok(result);
         }
-        if value.get("id") != Some(&json!(id)) || value.get("error").is_some() {
-            return Err(());
-        }
-        return value.get("result").cloned().ok_or(());
     }
 }
 
@@ -528,6 +522,67 @@ mod tests {
         native_runtime::{CompatibilityProbe, CompatibilityResult},
         provider_binaries::NativePlatform,
     };
+
+    #[test]
+    fn probe_response_admission_matches_legacy_value_handling() {
+        fn legacy(line: &[u8]) -> Result<Option<serde_json::Value>, ()> {
+            let value: serde_json::Value = serde_json::from_slice(line).map_err(|_| ())?;
+            if value.get("method").is_some() {
+                return if value.get("id").is_some() {
+                    Err(())
+                } else {
+                    Ok(None)
+                };
+            }
+            if value.get("id") != Some(&json!(1)) || value.get("error").is_some() {
+                return Err(());
+            }
+            value.get("result").cloned().map(Some).ok_or(())
+        }
+        for line in [
+            r#"{"method":false,"params":3}"#,
+            r#"{"method":null,"error":null}"#,
+            r#"{"method":false,"id":null}"#,
+            r#"{"id":1,"result":{"error":{"message":"opaque"}}}"#,
+            r#"{"id":1,"result":null}"#,
+            r#"{"id":1,"result":0,"error":null}"#,
+            r#"{"id":1.0,"result":0}"#,
+            r#"{"id":"1","result":0}"#,
+            r#"{"id":2,"id":1,"result":1,"result":2}"#,
+            r#"{"method":"x","method":null,"id":null}"#,
+            r#"[null,1,null,2,null,{}]"#,
+            r#"{"id":1}"#,
+            "{",
+        ] {
+            assert_eq!(
+                studio_runtime_providers::decode_probe_response(line.as_bytes(), 1).map_err(|_| ()),
+                legacy(line.as_bytes()),
+                "{line}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn probe_response_skips_notifications_and_keeps_bounded_input() {
+        use tokio::io::BufReader;
+        let mut reader =
+            BufReader::new(&b"{\"method\":false}\n{\"id\":1,\"result\":{\"x\":1}}\n"[..]);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
+        assert_eq!(
+            super::response(&mut reader, 1, deadline).await,
+            Ok(json!({"x":1}))
+        );
+        let oversized = vec![b'x'; super::MAX_FRAME_BYTES + 1];
+        let mut reader = BufReader::new(oversized.as_slice());
+        assert!(super::response(&mut reader, 1, deadline).await.is_err());
+        let (_writer, reader) = tokio::io::duplex(1);
+        let mut reader = BufReader::new(reader);
+        assert!(
+            super::response(&mut reader, 1, tokio::time::Instant::now())
+                .await
+                .is_err()
+        );
+    }
 
     fn write_executable(path: &std::path::Path, source: &str) {
         fs::write(path, source).expect("fixture executable");
