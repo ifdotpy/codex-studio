@@ -29,8 +29,7 @@ fn state_check_reads_fixture_rows_without_changing_or_disclosing_them() {
     let output = String::from_utf8(result.stdout).expect("state-check output is UTF-8");
     let report: serde_json::Value = serde_json::from_str(&output).expect("state-check prints JSON");
     let tables = report["tables"].as_array().expect("table reports exist");
-    // Token-budget removal retired the budget and budget-usage reporters.
-    assert_eq!(tables.len(), 44);
+    assert_eq!(tables.len(), 40);
     let names: std::collections::BTreeSet<_> = tables
         .iter()
         .map(|table| table["table"].as_str().expect("table name is a string"))

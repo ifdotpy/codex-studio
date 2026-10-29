@@ -173,7 +173,7 @@ fn recovery_signals_only_exact_native_identity() {
         let journal = SupervisorJournal::open(&state.0).unwrap();
         journal.reserve("fixture", "saved", 1.0).unwrap();
         journal
-            .opened("fixture", "saved", probe.0.id(), saved)
+            .opened("fixture", "saved", probe.0.id(), saved, None)
             .unwrap();
         drop(journal);
         let _supervisor = SupervisorProcess::start(&state);

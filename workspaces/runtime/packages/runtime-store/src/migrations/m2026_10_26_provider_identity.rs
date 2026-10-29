@@ -518,6 +518,7 @@ mod tests {
             .expect("fresh state");
         store.transaction(|tx| {
             legacy_table(tx)?;
+            tx.execute_batch("CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL)")?;
             for (id, provider) in [("absent", None), ("null", Some(Value::Null)),
                 ("codex", Some(json!("codex"))), ("claude", Some(json!("claude")))] {
                 let mut agent = json!({"id":id,"rootId":id,"epoch":1,"status":"idle"});
@@ -556,10 +557,10 @@ mod tests {
             .expect("receipt rows")
             .collect::<Result<Vec<_>, _>>()
             .expect("receipt values");
-        drop(store);
-        let store = RuntimeStore::open(Some(root.path()))
+        store
+            .transaction(|tx| super::migrate_canvas_2026_10_26(tx, &super::Accounts::new()))
             .await
-            .expect("migrated effects");
+            .expect("dated provider tag conversion");
         let reader = store.test_reader().expect("reader");
         for (id, signature, raw) in before {
             let mut expected: Value = serde_json::from_str(&raw).expect("original effect");

@@ -5,7 +5,7 @@ use studio_runtime_store::StoreError;
 use thiserror::Error;
 use uuid::Uuid;
 
-const MAX_RECORD_BYTES: usize = 4 * 1024 * 1024;
+pub(crate) const MAX_RECORD_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Debug, Error)]
 pub enum RelocationError {
@@ -38,6 +38,15 @@ pub(crate) fn checked<T: DeserializeOwned>(
     object: &'static str,
     value: &Value,
 ) -> Result<T, RelocationError> {
+    validate(schema, object, value)?;
+    serde_json::from_value(value.clone()).map_err(|_| invalid(object, "record"))
+}
+
+pub(crate) fn validate(
+    schema: &str,
+    object: &'static str,
+    value: &Value,
+) -> Result<(), RelocationError> {
     if value.to_string().len() > MAX_RECORD_BYTES {
         return Err(invalid(object, "record size"));
     }
@@ -46,7 +55,7 @@ pub(crate) fn checked<T: DeserializeOwned>(
     {
         return Err(invalid(object, &pointer));
     }
-    serde_json::from_value(value.clone()).map_err(|_| invalid(object, "record"))
+    Ok(())
 }
 
 pub(crate) fn invalid(object: &'static str, pointer: &str) -> RelocationError {

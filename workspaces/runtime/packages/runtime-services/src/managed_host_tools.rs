@@ -162,6 +162,8 @@ impl Call {
 
 #[derive(Debug, Error)]
 pub(crate) enum Error {
+    #[error("The request ID expired")]
+    Expired,
     #[error("{0}")]
     Invalid(&'static str),
     #[error("The caller identity changed")]
@@ -352,10 +354,35 @@ impl WakeSignal {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub(crate) struct OperationResult {
-    pub(crate) value: Value,
+    pub(crate) value: Box<serde_json::value::RawValue>,
     pub(crate) signals: Vec<WakeSignal>,
+    pub(crate) output_expires_at: Option<f64>,
+    pub(crate) handle: bool,
+    pub(crate) output_ref: bool,
+}
+
+impl OperationResult {
+    pub(crate) fn reply<T: serde::Serialize>(reply: &T) -> Self {
+        // Replies are derived Serialize types or JSON values with string-keyed maps.
+        Self::raw(serde_json::value::to_raw_value(reply).expect("derived reply serializes"))
+    }
+
+    pub(crate) fn raw(value: Box<serde_json::value::RawValue>) -> Self {
+        Self {
+            value,
+            signals: Vec::new(),
+            output_expires_at: None,
+            handle: false,
+            output_ref: false,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_value(&self) -> Value {
+        serde_json::from_str(self.value.get()).expect("valid result JSON")
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -366,7 +393,7 @@ pub(crate) enum DeliveryCertainty {
     Unknown,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub(crate) enum DispatchedOperation {
     Applied(OperationResult),
     Rejected(OperationResult),
@@ -388,10 +415,25 @@ impl DispatchedOperation {
 
 /// The transaction caller persists `value` and the durable intent before
 /// returning this object. Its `signals` are released only after commit.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub(crate) struct Staged {
-    pub(crate) value: Value,
+    pub(crate) value: Box<serde_json::value::RawValue>,
     pub(crate) signals: Vec<WakeSignal>,
+    pub(crate) output_expires_at: Option<f64>,
+    pub(crate) handle: bool,
+    pub(crate) output_ref: bool,
+}
+
+impl From<OperationResult> for Staged {
+    fn from(result: OperationResult) -> Self {
+        Self {
+            value: result.value,
+            signals: result.signals,
+            output_expires_at: result.output_expires_at,
+            handle: result.handle,
+            output_ref: result.output_ref,
+        }
+    }
 }
 
 pub(crate) trait Ports:
@@ -664,14 +706,11 @@ pub(crate) fn execute(
                     })
                 })
                 .unwrap_or(Value::Null);
-            OperationResult {
-                value: json!({
-                    "topic":"plan",
-                    "version":studio_runtime_store::sha256_hex(content.to_string().as_bytes())[..24].to_owned(),
-                    "content":content
-                }),
-                signals: Vec::new(),
-            }
+            OperationResult::reply(&json!({
+                "topic":"plan",
+                "version":studio_runtime_store::sha256_hex(content.to_string().as_bytes())[..24].to_owned(),
+                "content":content
+            }))
         }
         ManagedHostTool::Context => ports.context(tx, actor, &call.args)?,
         ManagedHostTool::Complaint => {
@@ -695,10 +734,7 @@ pub(crate) fn execute(
             ports.review(tx, actor, &call.args, &call.request_id, now)?
         }
     };
-    Ok(Staged {
-        value: result.value,
-        signals: result.signals,
-    })
+    Ok(result.into())
 }
 
 /// Match Runtime.dynamic's remote-origin branches. Search, monitor Context,
@@ -843,8 +879,10 @@ fn spawn(
         children.push(project_child(&persisted, spec_task_id));
     }
     Ok(OperationResult {
-        value: json!({"requestId":call.request_id,"agents":children,"delivery":"Results wake you automatically. Finish your turn while waiting."}),
         signals,
+        ..OperationResult::reply(
+            &json!({"requestId":call.request_id,"agents":children,"delivery":"Results wake you automatically. Finish your turn while waiting."}),
+        )
     })
 }
 

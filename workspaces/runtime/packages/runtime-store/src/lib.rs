@@ -5,6 +5,7 @@ pub mod blocking_pool;
 mod bootstrap;
 mod cached_sql;
 pub mod entity_publication;
+pub mod error_incidents;
 pub mod migrations;
 pub use cached_sql::{CachedSql, STATEMENT_CACHE_CAPACITY};
 pub use entity_publication::{EntityPublisher, PendingEntities, StudioErrorSources};
@@ -24,8 +25,16 @@ pub const WORK_DETAILS_SEED_MARKER: &str = "work_details_v1";
 mod multi_server_state_check;
 mod path;
 pub mod path_identity;
+pub mod receipt_migration_contract;
+pub mod receipt_schema;
 mod records;
 mod repositories;
+pub use repositories::multi_server_delivery;
+pub use repositories::process_actions::{
+    ProcessActionKind, ProcessActionPhase, ProcessActionRecord,
+};
+pub use repositories::terminals;
+pub use repositories::{outbox, request_results};
 mod schema;
 mod sqlite_actor;
 pub mod sqlite_durability;
@@ -35,6 +44,7 @@ pub mod stored_text;
 pub mod stored_text_compaction;
 pub mod stored_text_dictionary;
 pub mod supervisor_journal;
+pub mod vm_work_intent;
 pub use schema::{
     python_float_json, python_json, python_json_compact, python_json_utf8,
     python_json_with_separators, sha256_hex, truthy,
@@ -85,14 +95,17 @@ use sqlite_actor::{ActorResponseDisposition, SqliteActor};
 
 pub use path::{NATIVE_LAYR_DIRECTORY, resolve_state_dir};
 pub use records::{
-    AgentId, AgentRecord, AgentRepository, AgentStatus, AnnotationRecord, ChatMessage,
-    ChatMessageId, CheckpointRecord, ComplaintRecord, EventMetadataRecord, ExecutionRunRecord,
-    GraphAgentRecord, JsonRecord, MessageRepository, MonitorRecord, PlanRecord, QueueEvent,
-    QueueEventId, QueueEventRepository, RecordKeyMode, RecordOrder, RecordPredicate,
-    RecordQueryShape, RequestRecord, RuleRecord, Table, TaskId, TaskRecord, TaskRepository,
-    TerminalRecord, TranscriptAssetId, TranscriptAssetRecord, TranscriptItemId,
-    TranscriptItemRecord, UnknownAgentStatus, UsageResumeRecord, WorkItemRecord, WorkStatus,
-    WorkspaceOperationRecord, decode_agent_value,
+    ActiveExecutionView, AgentId, AgentRecord, AgentRepository, AgentStatus, AnnotationRecord,
+    ChatMessage, ChatMessageId, CheckpointRecord, ComplaintRecord, CredentialCopy,
+    EventMetadataRecord, ExecutionRunRecord, GraphAgentRecord, InterruptOutcome, JsonRecord,
+    MessageRepository, MonitorRecord, NativeRelease, NativeReleaseScope, NativeReviewThread,
+    PlanRecord, QueueEvent, QueueEventId, QueueEventRepository, RecordKeyMode, RecordOrder,
+    RecordPredicate, RecordQueryShape, RequestRecord, RuleRecord, StartAttemptAction,
+    StartAttemptView, StartIdentity, StartInterruptView, StartOutcomeHold, StoredStartOutcomeHold,
+    StoredTitleJob, Table, TaskId, TaskRecord, TaskRepository, TerminalRecord, TitleJob,
+    ToolResultRecord, TranscriptAssetId, TranscriptAssetRecord, TranscriptItemId,
+    TranscriptItemRecord, UnknownAgentStatus, UsageResumeRecord, VmAuthBootstrap, VmLaunch,
+    WorkItemRecord, WorkStatus, WorkspaceOperationRecord, decode_agent_value,
 };
 pub use repositories::agent_indexed_reads::{AgentIndexedReads, RESERVED_TURN_INPUT};
 pub use repositories::agent_move::{AgentMoveRepository, MoveRecord};
@@ -100,16 +113,17 @@ pub use repositories::claude_retry::{ClaudeRetryRecords, ClaudeRetryRepository};
 pub use repositories::context_repair::ContextRepairRepository;
 pub use repositories::continuation::{ContinuationRepository, ContinuationTable};
 pub use repositories::coordination::{CanvasMessage, ChatGroup, CoordinationRepository};
-pub use repositories::event_write::{
-    EventWriteReceipt, EventWriteRepository, INVALID_AGENT_HOLD_RECEIPT_PREFIX,
-    INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
+pub use repositories::event_write::EventWriteRepository;
+pub use repositories::execution_history::{
+    AttemptReceipt, ExecutionAttempt, ExecutionHistoryRepository, ExecutionRun,
 };
-pub use repositories::execution_history::ExecutionHistoryRepository;
 pub use repositories::federation::FederationRepository;
 pub use repositories::federation_credentials::FederationCredentialsRepository;
 pub use repositories::federation_messaging;
 pub use repositories::monitor_runtime;
-pub use repositories::monitors::{MonitorsRepository, StoredMonitor};
+pub use repositories::monitors::{
+    MonitorOperation, MonitorOperationEvidence, MonitorsRepository, StoredMonitor,
+};
 pub use repositories::multi_server::MultiServerRepository;
 pub use repositories::notification_dispatch::NotificationDispatchRepository;
 pub use repositories::orchestration_settings::{
@@ -145,7 +159,10 @@ pub use repositories::transcript::{
 pub use repositories::usage::{
     UsageRepositoryError, cancel_capacity_retry, cancel_usage_resume, disable_usage_resume,
 };
-pub use repositories::voice::{VoiceDelivery, VoiceRecord, VoiceRepository};
+pub use repositories::voice::{
+    VoiceDelivery, VoiceEffect, VoiceEffectAuthority, VoiceEffectDisposition, VoiceRecord,
+    VoiceRepository,
+};
 pub use repositories::work_items::{StoredQueueEvent, StoredRecord, WorkItemsRepository};
 pub use repositories::workspace_files::{StoredWorkspaceAsset, WorkspaceFilesRepository};
 pub use repositories::workspace_operations;
@@ -184,7 +201,7 @@ pub enum ObservedTable {
     Events,
     EventMeta,
     Rooms,
-    OperationReceipts,
+    RequestResults,
     Work,
     Monitors,
     Rules,
@@ -196,13 +213,14 @@ pub enum ObservedTable {
     FederationInvites,
     FederationRooms,
     FederationOutbox,
-    NativeActionReceipts,
-    AccessReceipts,
+    RuntimeOutbox,
+    ErrorIncidents,
     AccountTransfers,
     OrchestrationSettings,
     RuntimeRequests,
     RuntimeToolRequests,
     AnalyticsProjection,
+    AccountState,
     Projects,
 }
 
@@ -248,7 +266,7 @@ type TableChangeObserverRegistry = Mutex<HashMap<ObservedTable, Vec<TableChangeO
 struct ChangedRowHints {
     /// Tables whose rowids are recorded for the whole transaction.
     complete: u32,
-    rows: [Vec<i64>; OBSERVED_TABLES.len()],
+    rows: [Vec<i64>; u32::BITS as usize],
 }
 
 thread_local! {
@@ -281,7 +299,7 @@ impl ObservedTable {
             Self::Events => "runtime_events",
             Self::EventMeta => "runtime_event_meta",
             Self::Rooms => "runtime_rooms",
-            Self::OperationReceipts => "runtime_operation_receipts",
+            Self::RequestResults => request_results::TABLE,
             Self::Work => "runtime_work",
             Self::Monitors => "runtime_monitors",
             Self::Rules => "runtime_rules",
@@ -293,13 +311,14 @@ impl ObservedTable {
             Self::FederationInvites => "runtime_federation_invites",
             Self::FederationRooms => "runtime_federation_rooms",
             Self::FederationOutbox => "runtime_federation_outbox",
-            Self::NativeActionReceipts => "runtime_native_action_receipts",
-            Self::AccessReceipts => "runtime_access_receipts",
+            Self::RuntimeOutbox => "runtime_outbox",
+            Self::ErrorIncidents => "runtime_error_incidents",
             Self::AccountTransfers => "runtime_account_transfers",
             Self::OrchestrationSettings => "runtime_orchestration_settings",
             Self::RuntimeRequests => "runtime_requests",
             Self::RuntimeToolRequests => "runtime_tool_requests",
             Self::AnalyticsProjection => "runtime_analytics_projection",
+            Self::AccountState => "runtime_account_state",
             Self::Projects => "runtime_projects",
         }
     }
@@ -312,7 +331,7 @@ impl ObservedTable {
             Self::Events => 1 << 3,
             Self::EventMeta => 1 << 19,
             Self::Rooms => 1 << 4,
-            Self::OperationReceipts => 1 << 5,
+            Self::RequestResults => 1 << 5,
             Self::Work => 1 << 6,
             Self::Monitors => 1 << 7,
             Self::Rules => 1 << 8,
@@ -324,33 +343,31 @@ impl ObservedTable {
             Self::FederationInvites => 1 << 14,
             Self::FederationRooms => 1 << 15,
             Self::FederationOutbox => 1 << 16,
-            Self::NativeActionReceipts => 1 << 17,
-            Self::AccessReceipts => 1 << 18,
+            Self::RuntimeOutbox => 1 << 17,
+            Self::ErrorIncidents => 1 << 18,
             Self::AccountTransfers => 1 << 22,
             Self::OrchestrationSettings => 1 << 23,
             Self::RuntimeRequests => 1 << 24,
             Self::RuntimeToolRequests => 1 << 25,
             Self::AnalyticsProjection => 1 << 26,
+            Self::AccountState => 1 << 27,
             Self::Projects => 1 << 20,
         }
     }
 
     const fn suppressible_resource_receipt(self) -> bool {
-        matches!(
-            self,
-            Self::OperationReceipts | Self::NativeActionReceipts | Self::AccessReceipts
-        )
+        matches!(self, Self::RequestResults | Self::RuntimeOutbox)
     }
 }
 
-const OBSERVED_TABLES: [ObservedTable; 26] = [
+const OBSERVED_TABLES: [ObservedTable; 27] = [
     ObservedTable::AccessClients,
     ObservedTable::UsageResumes,
     ObservedTable::Agents,
     ObservedTable::Events,
     ObservedTable::EventMeta,
     ObservedTable::Rooms,
-    ObservedTable::OperationReceipts,
+    ObservedTable::RequestResults,
     ObservedTable::Work,
     ObservedTable::Monitors,
     ObservedTable::Rules,
@@ -362,13 +379,14 @@ const OBSERVED_TABLES: [ObservedTable; 26] = [
     ObservedTable::FederationInvites,
     ObservedTable::FederationRooms,
     ObservedTable::FederationOutbox,
-    ObservedTable::NativeActionReceipts,
-    ObservedTable::AccessReceipts,
+    ObservedTable::RuntimeOutbox,
+    ObservedTable::ErrorIncidents,
     ObservedTable::AccountTransfers,
     ObservedTable::OrchestrationSettings,
     ObservedTable::RuntimeRequests,
     ObservedTable::RuntimeToolRequests,
     ObservedTable::AnalyticsProjection,
+    ObservedTable::AccountState,
     ObservedTable::Projects,
 ];
 
@@ -753,6 +771,10 @@ fn identity_registry() -> &'static Mutex<HashMap<PathBuf, IdentityEntry>> {
 
 #[derive(Debug, Error)]
 pub enum StoreError {
+    #[error(transparent)]
+    RequestResult(#[from] request_results::RequestResultError),
+    #[error(transparent)]
+    Outbox(#[from] outbox::OutboxError),
     #[error("state directory is unavailable: {0}")]
     StateDirectory(#[from] std::io::Error),
     #[error("another runtime owns the state directory")]
@@ -763,7 +785,7 @@ pub enum StoreError {
     UnsafeStateDirectory,
     #[error("database schema or migration marker is incompatible: {0}")]
     SchemaMismatch(String),
-    #[error("migration {id} failed ({target:?}/{phase:?}, rollback {rollback:?})")]
+    #[error("migration {id} failed ({target:?}/{phase:?}, rollback {rollback:?}): {source}")]
     Migration {
         id: &'static str,
         target: studio_runtime_schema::studio_errors::MigrationTarget,
@@ -3300,9 +3322,9 @@ mod commit_notification_tests {
         for table in [
             ObservedTable::AccessClients.name(),
             ObservedTable::EventMeta.name(),
-            ObservedTable::OperationReceipts.name(),
-            ObservedTable::NativeActionReceipts.name(),
-            ObservedTable::AccessReceipts.name(),
+            ObservedTable::RequestResults.name(),
+            ObservedTable::RuntimeOutbox.name(),
+            ObservedTable::ErrorIncidents.name(),
             ENTITY_RESOURCE_TABLES[0],
             ENTITY_RESOURCE_TABLES[1],
         ] {
@@ -3373,7 +3395,7 @@ mod commit_notification_tests {
                 ("runtime_events", 0),
                 ("runtime_event_meta", 0),
                 ("runtime_rooms", 0),
-                ("runtime_operation_receipts", 1),
+                ("request_results", 1),
                 ("runtime_work", 0),
                 ("runtime_monitors", 0),
                 ("runtime_rules", 0),
@@ -3385,13 +3407,14 @@ mod commit_notification_tests {
                 ("runtime_federation_invites", 0),
                 ("runtime_federation_rooms", 0),
                 ("runtime_federation_outbox", 0),
-                ("runtime_native_action_receipts", 1),
-                ("runtime_access_receipts", 1),
+                ("runtime_outbox", 1),
+                ("runtime_error_incidents", 0),
                 ("runtime_account_transfers", 0),
                 ("runtime_orchestration_settings", 0),
                 ("runtime_requests", 0),
                 ("runtime_tool_requests", 0),
                 ("runtime_analytics_projection", 0),
+                ("runtime_account_state", 0),
                 ("runtime_projects", 0),
             ]
         );
@@ -3612,7 +3635,7 @@ mod commit_notification_tests {
 
         let unpolled = store.transaction(|transaction| {
             transaction.execute(
-                "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES ('unpolled','agent','message','text','queued',1.0,1)",
+                "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES ('unpolled','agent','user','text','pending',1.0,1)",
                 [],
             )?;
             Ok(())
@@ -3621,9 +3644,9 @@ mod commit_notification_tests {
         assert_eq!(notifications.load(Ordering::Acquire), 0);
 
         let receipt_inserts = [
-            "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES ('op-only','sig','{}')",
-            "INSERT INTO runtime_native_action_receipts(id,signature,receipt,outcome) VALUES ('native-only','sig','{}','{}')",
-            "INSERT INTO runtime_access_receipts(client,request_id,hash,session,status,record) VALUES ('client-only','request-only','hash','session','pending','{}')",
+            "INSERT INTO request_results(id,signature,result,created) VALUES ('op-only','sig','{}',0)",
+            "INSERT INTO runtime_outbox(id,kind,owner_kind,owner_id,signature,status,payload,created) VALUES ('native-only','native_action','agent','a','sig','unknown','{}',0)",
+            "INSERT INTO request_results(id,signature,result,created) VALUES ('access-only','hash','{}',0)",
         ];
         for sql in receipt_inserts {
             store
@@ -3637,16 +3660,16 @@ mod commit_notification_tests {
         assert_eq!(notifications.load(Ordering::Acquire), 0);
 
         let mixed_receipt_inserts = [
-            "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES ('op-mixed','sig','{}')",
-            "INSERT INTO runtime_native_action_receipts(id,signature,receipt,outcome) VALUES ('native-mixed','sig','{}','{}')",
-            "INSERT INTO runtime_access_receipts(client,request_id,hash,session,status,record) VALUES ('client-mixed','request-mixed','hash','session','pending','{}')",
+            "INSERT INTO request_results(id,signature,result,created) VALUES ('op-mixed','sig','{}',0)",
+            "INSERT INTO runtime_outbox(id,kind,owner_kind,owner_id,signature,status,payload,created) VALUES ('native-mixed','native_action','agent','a','sig','unknown','{}',0)",
+            "INSERT INTO request_results(id,signature,result,created) VALUES ('access-mixed','hash','{}',0)",
         ];
         for (index, sql) in mixed_receipt_inserts.into_iter().enumerate() {
             store
                 .transaction(move |transaction| {
                     transaction.execute_batch(sql)?;
                     transaction.execute(
-                        "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES (?1,'agent','message','text','queued',1.0,1)",
+                        "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES (?1,'agent','user','text','pending',1.0,1)",
                         [format!("resource-event-{index}")],
                     )?;
                     Ok(())
@@ -3664,12 +3687,12 @@ mod commit_notification_tests {
             .transaction(|transaction| {
                 transaction.execute_batch(
                     "CREATE TABLE resource_receipt_trigger_side_effect(value INTEGER);
-                     CREATE TRIGGER resource_receipt_trigger AFTER INSERT ON runtime_access_receipts
+                     CREATE TRIGGER resource_receipt_trigger AFTER INSERT ON request_results
                      BEGIN INSERT INTO resource_receipt_trigger_side_effect VALUES (1); END;",
                 )?;
                 transaction.execute_batch(
-                    "INSERT INTO runtime_access_receipts(client,request_id,hash,session,status,record)
-                     VALUES ('trigger-client','trigger-request','hash','session','pending','{}')",
+                    "INSERT INTO request_results(id,signature,result,created)
+                     VALUES ('trigger-request','hash','{}',0)",
                 )?;
                 Ok(())
             })
@@ -3689,8 +3712,8 @@ mod commit_notification_tests {
         let rolled_back = store
             .transaction_with(|transaction| {
                 transaction.execute_batch(
-                    "INSERT INTO runtime_operation_receipts(id,signature,result)
-                     VALUES ('op-rollback','sig','{}')",
+                    "INSERT INTO request_results(id,signature,result,created)
+                     VALUES ('op-rollback','sig','{}',0)",
                 )?;
                 Err::<(), StoreError>(StoreError::RecordContract("test rollback"))
             })
@@ -3704,8 +3727,8 @@ mod commit_notification_tests {
         let receipt_unknown = store
             .transaction(|transaction| {
                 transaction.execute_batch(
-                    "INSERT INTO runtime_operation_receipts(id,signature,result)
-                     VALUES ('op-unknown-receipt','sig','{}')",
+                    "INSERT INTO request_results(id,signature,result,created)
+                     VALUES ('op-unknown-receipt','sig','{}',0)",
                 )?;
                 Ok(())
             })
@@ -3722,7 +3745,7 @@ mod commit_notification_tests {
         let resource_unknown = store
             .transaction(|transaction| {
                 transaction.execute(
-                    "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES ('unknown-resource','agent','message','text','queued',1.0,1)",
+                    "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES ('unknown-resource','agent','user','text','pending',1.0,1)",
                     [],
                 )?;
                 Ok(())
@@ -3754,8 +3777,8 @@ mod commit_notification_tests {
         store
             .transaction(|transaction| {
                 transaction.execute_batch(
-                    "INSERT INTO runtime_operation_receipts(id,signature,result)
-                     VALUES ('op-missing-hook','sig','{}')",
+                    "INSERT INTO request_results(id,signature,result,created)
+                     VALUES ('op-missing-hook','sig','{}',0)",
                 )?;
                 Ok(())
             })
@@ -3787,7 +3810,7 @@ mod commit_notification_tests {
             .expect("restore update hook and remove delete authorizer");
         store
             .transaction(|transaction| {
-                transaction.execute("DELETE FROM runtime_operation_receipts", [])?;
+                transaction.execute("DELETE FROM request_results", [])?;
                 Ok(())
             })
             .await
@@ -4845,5 +4868,35 @@ mod wal_flush_tests {
             studio_runtime_schema::shared_values::SQLITE_WAL_JOURNAL_SIZE_LIMIT_BYTES,
         );
         assert_eq!((canvas, analytics), (expected, expected));
+    }
+}
+
+/// The only typed→Value conversion: feeds existing Value-only projections
+/// (sync views, SSE, entity/room/subscription views). Also writes typed fields
+/// into existing Value-backed records. Not for general storage or logic.
+/// Also backs legacy read-only AgentRecord::value() readers; migrate to typed fields.
+///
+/// Panics if T's Serialize fails (custom serializer error or non-string map keys).
+/// Use only with derived projection types; the reply and record types passed
+/// here are derived with string keys.
+#[allow(clippy::expect_used)]
+pub fn projection_value<T: serde::Serialize>(value: &T) -> serde_json::Value {
+    serde_json::to_value(value).expect("projection serialization failed")
+}
+
+#[cfg(test)]
+mod projection_adapter_tests {
+    #[test]
+    fn preserves_typed_fields() {
+        #[derive(serde::Serialize)]
+        struct Sample {
+            name: &'static str,
+            count: u32,
+        }
+        let projected = super::projection_value(&Sample {
+            name: "sample",
+            count: 3,
+        });
+        assert_eq!(projected, serde_json::json!({"name":"sample", "count":3}));
     }
 }

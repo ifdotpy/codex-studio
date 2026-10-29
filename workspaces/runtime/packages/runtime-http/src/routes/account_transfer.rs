@@ -183,6 +183,7 @@ async fn transfer(
 }
 fn error(error: TransferError) -> ApiError {
     let status = match error {
+        TransferError::Expired => StatusCode::GONE,
         TransferError::Requires(_) => StatusCode::NOT_IMPLEMENTED,
         TransferError::Stored { object, pointer } => {
             return ApiError::invalid_stored(object, &pointer);

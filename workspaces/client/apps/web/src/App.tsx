@@ -1,4 +1,5 @@
 import {
+  DeliveryStatus,
   AgentStatus as GeneratedApiAgentStatus,
   AgentSource as GeneratedApiAgentSource,
   RequestStatus as GeneratedApiRequestStatus,
@@ -1881,7 +1882,9 @@ export default function App({ active = true }: { active?: boolean }) {
         }
         if (
           result.kind === "server" &&
-          Object.values(result.deliveries || {}).some((v) => v !== "queued")
+          Object.values(result.deliveries || {}).some(
+            (v) => v.status !== DeliveryStatus.queued,
+          )
         )
           notify("Message saved. Some deliveries are not confirmed.");
       }

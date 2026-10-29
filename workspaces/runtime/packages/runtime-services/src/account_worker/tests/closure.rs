@@ -4,6 +4,187 @@ use studio_runtime_store::path_identity::CanonicalPath;
 
 const FLUSH_OPERATION_PROGRESS_GUARD: std::time::Duration = std::time::Duration::from_secs(10);
 
+#[tokio::test]
+async fn current_provider_scope_reads_host_and_vm_owners() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = studio_runtime_store::RuntimeStore::open(Some(directory.path()))
+        .await
+        .unwrap();
+    store.transaction(|tx| {
+        for (id, mode) in [("host", "native"), ("vm", "vm")] {
+            let agent = studio_runtime_store::AgentRecord::from_value(json!({"id":id,"rootId":id,"epoch":0,"status":"idle","provider":"codex","accountKey":"default","executionMode":mode})).unwrap();
+            assert!(studio_runtime_store::account_state::current_provider_scope(tx, &agent).is_err());
+            studio_runtime_store::AgentRepository::put(tx, &agent)?;
+        }
+        Ok(())
+    }).await.unwrap();
+    store::attach_provider_stream_for_test(&store, "default", None, 4, "host-connection")
+        .await
+        .unwrap();
+    store::attach_provider_stream(&store, "default", Some("vm"), 7, "vm-connection")
+        .await
+        .unwrap();
+    store
+        .transaction(|tx| {
+            for (id, generation, connection) in
+                [("host", 4, "host-connection"), ("vm", 7, "vm-connection")]
+            {
+                let agent = studio_runtime_store::AgentRepository::get(tx, &id.into())?.unwrap();
+                let scope = studio_runtime_store::account_state::current_provider_scope(tx, &agent)
+                    .unwrap();
+                assert_eq!(scope.generation, generation);
+                assert_eq!(scope.connection, connection);
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+    store
+        .transaction(|tx| {
+            tx.execute(
+                "UPDATE runtime_account_state SET connection_id=NULL WHERE account='default'",
+                [],
+            )?;
+            let host = studio_runtime_store::AgentRepository::get(tx, &"host".into())?.unwrap();
+            assert!(matches!(
+                studio_runtime_store::account_state::current_provider_scope(tx, &host),
+                Err(studio_runtime_store::account_state::ScopeError::Unavailable)
+            ));
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert!(
+        store::attach_provider_stream(&store, "default", None, 3, "stale")
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn new_supervisor_generation_after_direct_does_not_reuse_ack() {
+    let root = tempfile::tempdir().unwrap();
+    let state = root.path().join("state");
+    let journal_root = root.path().join("journal");
+    std::fs::create_dir_all(&state).unwrap();
+    std::fs::create_dir_all(&journal_root).unwrap();
+    let store = studio_runtime_store::RuntimeStore::open(Some(&state))
+        .await
+        .unwrap();
+    let direct = store
+        .transaction(|tx| {
+            studio_runtime_store::account_state::allocate_next_generation(tx, "default")
+        })
+        .await
+        .unwrap();
+    store::attach_provider_stream(&store, "default", None, direct, "direct")
+        .await
+        .unwrap();
+    store
+        .transaction(move |tx| {
+            studio_runtime_store::account_state::set_provider_checkpoint(tx, "default", direct, 100)
+        })
+        .await
+        .unwrap();
+    let journal =
+        studio_runtime_store::supervisor_journal::SupervisorJournal::open(&journal_root).unwrap();
+    journal
+        .reserve("account:default", "signature", 1.0)
+        .unwrap();
+    let allocated = store
+        .transaction(|tx| {
+            studio_runtime_store::account_state::allocate_next_generation(tx, "default")
+        })
+        .await
+        .unwrap();
+    let supervisor = journal
+        .opened("account:default", "signature", 1, "start", Some(allocated))
+        .unwrap();
+    assert!(
+        supervisor > direct,
+        "new supervisor must use a new host generation"
+    );
+    store::attach_provider_stream(&store, "default", None, supervisor, "supervisor")
+        .await
+        .unwrap();
+    let ack = store
+        .read_async("test/supervisor-ack", move |db| {
+            studio_runtime_store::account_state::provider_checkpoint(db, "default", supervisor)
+        })
+        .await
+        .unwrap();
+    assert_eq!(ack, 0);
+    store
+        .transaction(move |tx| {
+            studio_runtime_store::account_state::set_provider_checkpoint(
+                tx, "default", supervisor, 17,
+            )
+        })
+        .await
+        .unwrap();
+    store::attach_provider_stream(&store, "default", None, supervisor, "reattach")
+        .await
+        .unwrap();
+    let ack = store
+        .read_async("test/reattach-ack", move |db| {
+            studio_runtime_store::account_state::provider_checkpoint(db, "default", supervisor)
+        })
+        .await
+        .unwrap();
+    assert_eq!(ack, 17, "reattaching the same supervisor preserves its ACK");
+}
+
+#[tokio::test]
+async fn direct_generation_after_supervisor_attachment_does_not_reuse_ack() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = studio_runtime_store::RuntimeStore::open(Some(directory.path()))
+        .await
+        .unwrap();
+    store
+        .transaction(|tx| {
+            studio_runtime_store::account_state::ensure_account(tx, "default")?;
+            tx.execute(
+                "UPDATE runtime_account_state SET next_generation=41 WHERE account='default'",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    store::attach_provider_stream(&store, "default", None, 42, "supervisor")
+        .await
+        .unwrap();
+    store
+        .transaction(|tx| {
+            studio_runtime_store::account_state::set_provider_checkpoint(tx, "default", 42, 100)
+        })
+        .await
+        .unwrap();
+    let next = store
+        .transaction(|tx| {
+            studio_runtime_store::account_state::allocate_next_generation(tx, "default")
+        })
+        .await
+        .unwrap();
+    assert!(
+        next > 42,
+        "direct generation must exceed the supervisor generation"
+    );
+    store::attach_provider_stream(&store, "default", None, next, "direct")
+        .await
+        .unwrap();
+    let ack = store
+        .read_async("test/direct-checkpoint", move |db| {
+            studio_runtime_store::account_state::provider_checkpoint(db, "default", next)
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        ack, 0,
+        "a new direct process must not inherit the supervisor ACK"
+    );
+}
+
 async fn recover_after_flush_failure(state: &State) {
     *state.bridge.faults.pause_operation.lock().unwrap() = None;
     state
@@ -155,7 +336,7 @@ async fn journal_error_does_not_delete_an_acknowledged_pending_batch() {
     let cursor = peer.frame(json!({"method":"item/agentMessage/delta","params":{"threadId":"fake-thread-0","turnId":"turn","itemId":"pending-error","delta":"must remain durable"}})).await;
     peer.acknowledged(cursor).await;
     state.bridge.run(|store| async move { store.transaction_with(move |tx| {
-        tx.execute_batch("CREATE TRIGGER journal_error BEFORE INSERT ON runtime_operation_receipts WHEN NEW.id LIKE 'account-worker:journal:%' BEGIN SELECT RAISE(ABORT,'journal unavailable'); END;")?;
+        tx.execute_batch(&format!("CREATE TRIGGER journal_error BEFORE INSERT ON runtime_outbox WHEN NEW.kind='{}' BEGIN SELECT RAISE(ABORT,'journal unavailable'); END;",OutboxKind::JournalEntry.as_str()))?;
         Ok(())
     }).await }).await.unwrap();
     peer.frame(json!({"method":"test/barrier","params":{}}))
@@ -196,26 +377,28 @@ pub(super) async fn scenario_retained_submit_and_settlement_keep_one_replay_iden
     let start = state.start(&mut peer, &worker).await;
     // The submitted commit retires the Submit effect that owed it, so no
     // effect outlives the durable submission.
-    let receipts = |pattern: &'static str| {
-        state.bridge.run(move |store| async move {
-            Ok(store.test_reader()?.query_row(
-                "SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE ?1",
-                [pattern],
-                |row| row.get::<_, i64>(0),
-            )?)
-        })
-    };
-    assert_eq!(receipts("account-worker:effect:%").await.unwrap(), 0);
-    assert_eq!(
-        receipts("account-worker:account:%:turn/start:submitted")
-            .await
-            .unwrap(),
-        1
-    );
+    let operation = start["id"]
+        .as_str()
+        .expect("submitted transport identity")
+        .to_owned();
+    let guarded = operation.clone();
+    state.bridge.run(move |store| async move {
+        store.transaction_with(move |tx| {
+            let call=store::account_submission(tx,&guarded)?.expect("one exact submission guard");
+            assert_eq!(call.request.method,Method::TurnStart);
+            assert_eq!(tx.query_row("SELECT COUNT(*) FROM runtime_outbox WHERE account='default' AND kind=?1",[OutboxKind::FollowupEffect],|row|row.get::<_,i64>(0))?,0);
+            Ok::<_,WorkerError>(())
+        }).await
+    }).await.unwrap();
     peer.accepted(&start).await;
     worker_barrier(&worker).await;
-    let count = state.bridge.run(|store| async move { Ok(store.test_reader()?.query_row("SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:effect:%' OR id LIKE 'account-worker:account:%:submitted'",[],|row|row.get::<_,i64>(0))?) }).await.unwrap();
-    assert_eq!(count, 0, "settlement retires the submission guard");
+    state.bridge.run(move |store| async move {
+        store.transaction_with(move |tx| {
+            assert!(store::account_submission(tx,&operation)?.is_none(),"settlement retires the exact submission guard");
+            assert_eq!(tx.query_row("SELECT COUNT(*) FROM runtime_outbox WHERE account='default' AND kind=?1",[OutboxKind::FollowupEffect],|row|row.get::<_,i64>(0))?,0);
+            Ok::<_,WorkerError>(())
+        }).await
+    }).await.unwrap();
     worker.shutdown().await.unwrap();
 }
 
@@ -319,30 +502,35 @@ pub(super) async fn scenario_old_generation_pending_text_is_materialized_and_rec
             .await;
         peer.acknowledged(marker).await;
         replacement.shutdown().await.unwrap();
-        let (text, receipts, retained, checkpoints) = state.bridge.run(|store| async move {
+        let (text, bookkeeping, calls, checkpoint) = state.bridge.run(|store| async move {
             let db=store.test_reader()?;
             let text=db.query_row("SELECT json_extract(record,'$.text') FROM runtime_items WHERE id LIKE '%:generation'",[],|r|r.get::<_,String>(0))?;
-            let receipts=db.query_row("SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:%' AND id NOT LIKE 'account-worker:retained:%'",[],|r|r.get::<_,i64>(0))?;
-            let retained=db.query_row("SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:retained:%'",[],|r|r.get::<_,i64>(0))?;
-            let checkpoints=db.query_row("SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:cursor:default:%:ack'",[],|r|r.get::<_,i64>(0))?;
-            Ok((text,receipts,retained,checkpoints))
+            let calls=db.prepare("SELECT payload FROM runtime_outbox WHERE account='default' AND kind=?1")?
+                .query_map([OutboxKind::ProviderCall],|row|row.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?
+                .into_iter().map(|raw|serde_json::from_str::<store::ProviderCall>(&raw).map_err(StoreError::from)).collect::<Result<Vec<_>,_>>()?;
+            let all:i64=db.query_row("SELECT COUNT(*) FROM runtime_outbox WHERE account='default'",[],|row|row.get(0))?;
+            let owner_count:i64=db.query_row("SELECT COUNT(*) FROM runtime_account_state WHERE account='default'",[],|row|row.get(0))?;
+            assert_eq!(owner_count,1,"the host keeps one current stream owner across generations");
+            let checkpoint=db.query_row("SELECT connection_generation,journal_ack FROM runtime_account_state WHERE account='default'",[],|row|Ok((row.get::<_,i64>(0)?,row.get::<_,i64>(1)?)))?;
+            Ok((text,all+owner_count,calls,checkpoint))
         }).await.unwrap();
         assert_eq!(text, "old generation text");
         assert!(
-            receipts <= 4,
-            "generation churn retained {receipts} worker receipts"
-        );
-        // The one automatic restart check is a retained read (submitted,
-        // written, result). Retained receipts are durable by design, and the
-        // submission pins its generation's checkpoint (see `retire_generations`).
-        // Churn adds nothing more: later workers do not repeat the check.
-        assert_eq!(
-            retained, 3,
-            "generation {generation} retained {retained} history read receipts"
+            bookkeeping <= 4,
+            "generation churn retained {bookkeeping} worker owner/obligation rows"
         );
         assert!(
-            checkpoints <= 2,
-            "generation churn retained {checkpoints} cursor checkpoints"
+            calls.is_empty(),
+            "read-only recovery leaves no provider obligation"
+        );
+        assert_eq!(
+            checkpoint.0,
+            i64::try_from(generation).expect("generation fits SQLite"),
+            "only the current host generation owns the checkpoint"
+        );
+        assert!(
+            checkpoint.1 >= i64::try_from(marker).expect("cursor fits SQLite"),
+            "the current generation ACK includes its committed barrier"
         );
     }
 }
@@ -453,11 +641,35 @@ async fn written_callback_replay_compacts_its_journal_without_resending() {
         peer.writes.try_recv().is_err(),
         "Written answer must not be sent twice"
     );
-    let rows = state.bridge.run(|store| async move { Ok(store.test_reader()?.query_row("SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:journal:%' OR id LIKE 'account-worker:callback:%'",[],|row|row.get::<_,i64>(0))?) }).await.unwrap();
+    let rows = state.bridge.run(|store| async move { Ok(store.test_reader()?.query_row("SELECT (SELECT COUNT(*) FROM runtime_outbox WHERE account='default' AND kind=?1)+(SELECT COUNT(*) FROM runtime_tool_requests WHERE kind=?2 AND status IN (?3,?4,?5))",rusqlite::params![OutboxKind::JournalEntry,studio_runtime_schema::persistence::ToolRequestKind::ProviderCallback,studio_runtime_schema::persistence::ToolRequestStatus::Queued,studio_runtime_schema::persistence::ToolRequestStatus::Running,studio_runtime_schema::persistence::ToolRequestStatus::Unknown],|row|row.get::<_,i64>(0))?) }).await.unwrap();
     assert_eq!(
         rows, 0,
         "Written replay advances and compacts the journal prefix"
     );
+    state
+        .bridge
+        .run(move |store| async move {
+            let db = store.test_reader()?;
+            let task = crate::tool_requests::get_callback::<
+                crate::account_worker::callback_record::CallbackObligation,
+            >(
+                &db,
+                &crate::account_worker::callback_record::operation("default", 1, cursor),
+            )
+            .expect("callback owner")
+            .expect("completed origin fence remains");
+            assert_eq!(
+                task.status,
+                studio_runtime_schema::persistence::ToolRequestStatus::Completed
+            );
+            assert!(
+                task.payload.submitted.is_none(),
+                "delivered response bytes no longer remain pending"
+            );
+            Ok(())
+        })
+        .await
+        .unwrap();
     replacement.shutdown().await.unwrap();
 }
 

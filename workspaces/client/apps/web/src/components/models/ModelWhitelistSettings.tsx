@@ -14,22 +14,21 @@ import {
 import "./model-whitelist-settings.css";
 import { useWorkerModels } from "../agents/WorkerModelPicker";
 import { toModelOptions } from "./modelOption";
+import { ModelChoice } from "../../generated/api";
 import {
-  isModelWhitelisted,
-  modelWhitelistKey,
-  modelWhitelistReadError,
-  readModelWhitelist,
-  useModelWhitelist,
-  writeModelWhitelist,
-  type ModelWhitelist,
-} from "./modelWhitelist";
+  isModelEnabled,
+  modelChoiceKey,
+  readModelChoices,
+  useModelChoices,
+  writeModelChoices,
+} from "./modelChoices";
 
 export function ModelWhitelistSettings() {
   const services = useServerServices();
   const settings = useServerSettings();
   const owner = services?.owner || settings?.server;
   const catalog = useWorkerModels("default", true, true);
-  const allowed = useModelWhitelist();
+  const choices = useModelChoices();
   const storage = useServerStorage();
   const readStatus = useCallback(
     () => readPreferenceWriteStatus(storage, "server"),
@@ -41,17 +40,22 @@ export function ModelWhitelistSettings() {
     readStatus,
   );
   const [error, setError] = useState("");
-  const savedError = modelWhitelistReadError(storage);
   const models = [
     ...new Map(
       toModelOptions(catalog.models.filter((row) => !row.hidden)).map(
-        (model) => [modelWhitelistKey(model), model],
+        (model) => [modelChoiceKey(model), model],
       ),
     ).values(),
   ];
-  const save = (value: ModelWhitelist) => {
+  const save = (keys: string[], choice: ModelChoice) => {
     try {
-      writeModelWhitelist(value, storage);
+      writeModelChoices(
+        {
+          ...readModelChoices(storage),
+          ...Object.fromEntries(keys.map((key) => [key, choice])),
+        },
+        storage,
+      );
       setError("");
     } catch (failure) {
       setError(String(failure));
@@ -89,29 +93,36 @@ export function ModelWhitelistSettings() {
         </>
       )}
       <Group gap="sm">
-        <Button variant="default" onClick={() => save(null)}>
+        <Button
+          variant="default"
+          disabled={!models.length}
+          onClick={() =>
+            save(models.map(modelChoiceKey), ModelChoice.whitelisted)
+          }
+        >
           Select all models
         </Button>
         <Button
           variant="subtle"
           disabled={!models.length}
-          onClick={() => save([])}
+          onClick={() =>
+            save(models.map(modelChoiceKey), ModelChoice.blacklisted)
+          }
         >
           Clear selection
         </Button>
       </Group>
-      {allowed === null && (
-        <Text size="xs" c="dimmed">
-          All models selected, including new models.
-        </Text>
-      )}
-      {allowed?.length === 0 && (
-        <Text size="sm">Select a model to start new chats.</Text>
-      )}
+      <Text size="xs" c="dimmed">
+        New models appear enabled until you hide them.
+      </Text>
+      {models.length > 0 &&
+        !models.some((model) => isModelEnabled(model, choices)) && (
+          <Text size="sm">Select a model to start new chats.</Text>
+        )}
       {catalog.loading && <Text role="status">Loading models…</Text>}
-      {(error || savedError || catalog.error) && (
+      {(error || catalog.error) && (
         <Text role="alert" c="red">
-          {error || savedError || catalog.error}
+          {error || catalog.error}
         </Text>
       )}
       {catalog.error && (
@@ -126,22 +137,20 @@ export function ModelWhitelistSettings() {
             {models
               .filter((model) => model.provider === provider)
               .map((model) => {
-                const key = modelWhitelistKey(model);
+                const key = modelChoiceKey(model);
                 return (
                   <Checkbox
                     key={key}
                     label={model.label}
-                    checked={isModelWhitelisted(model, allowed)}
-                    onChange={(event) => {
-                      const current =
-                        readModelWhitelist(storage) ??
-                        models.map(modelWhitelistKey);
+                    checked={isModelEnabled(model, choices)}
+                    onChange={(event) =>
                       save(
+                        [key],
                         event.currentTarget.checked
-                          ? [...current, key]
-                          : current.filter((value) => value !== key),
-                      );
-                    }}
+                          ? ModelChoice.whitelisted
+                          : ModelChoice.blacklisted,
+                      )
+                    }
                   />
                 );
               })}

@@ -102,7 +102,7 @@ mod registry_hints {
                             ObservedTable::AccessClients
                             | ObservedTable::UsageResumes
                             | ObservedTable::Rooms
-                            | ObservedTable::OperationReceipts
+                            | ObservedTable::RequestResults
                             | ObservedTable::Monitors
                             | ObservedTable::Rules
                             | ObservedTable::ServerOutbox
@@ -113,12 +113,13 @@ mod registry_hints {
                             | ObservedTable::FederationInvites
                             | ObservedTable::FederationRooms
                             | ObservedTable::FederationOutbox
-                            | ObservedTable::NativeActionReceipts
-                            | ObservedTable::AccessReceipts
+                            | ObservedTable::RuntimeOutbox
+                            | ObservedTable::ErrorIncidents
                             | ObservedTable::AccountTransfers
                             | ObservedTable::OrchestrationSettings
                             | ObservedTable::RuntimeRequests
                             | ObservedTable::RuntimeToolRequests
+                            | ObservedTable::AccountState
                             | ObservedTable::AnalyticsProjection
                             | ObservedTable::Projects => return self.wake.notify_one(),
                         };
@@ -689,6 +690,8 @@ impl studio_runtime_services::account_session_runtime::RetainedAccountSession
             let operation = request.operation.clone();
             let response = session
                 .request(SessionRequest {
+                    root_request_id: request.root_request_id.clone(),
+                    admitted_request: request.admitted_request.clone(),
                     scope: scope.clone(),
                     expected_scope: Some(scope.clone()),
                     operation: operation.clone(),
@@ -716,6 +719,9 @@ impl studio_runtime_services::account_session_runtime::RetainedAccountSession
                 ) => Ok(not_sent(ReceiptOutcome::ExpectedScopeMismatch)),
                 Err(studio_runtime_services::account_worker::retained::PortError::Unknown) => {
                     Err(AccountSessionError::Unknown)
+                }
+                Err(studio_runtime_services::account_worker::retained::PortError::Expired) => {
+                    Err(AccountSessionError::Expired)
                 }
                 Err(_) => Err(AccountSessionError::Refused(
                     "Account transfer source request was rejected",
@@ -747,6 +753,9 @@ impl studio_runtime_services::account_session_runtime::RetainedAccountSession
                 .barrier(&expected_scope, deadline)
                 .await
                 .map_err(|error| match error {
+                    studio_runtime_services::account_worker::retained::PortError::Expired => {
+                        studio_runtime_services::account_session_runtime::AccountSessionError::Expired
+                    }
                     studio_runtime_services::account_worker::retained::PortError::Unknown => {
                         studio_runtime_services::account_session_runtime::AccountSessionError::Unknown
                     }
@@ -776,6 +785,9 @@ impl studio_runtime_services::account_session_runtime::RetainedAccountSession
                 );
             };
             session.recover_connection(agent_id).await.map_err(|error| match error {
+                studio_runtime_services::account_worker::retained::PortError::Expired => {
+                    studio_runtime_services::account_session_runtime::AccountSessionError::Expired
+                }
                 studio_runtime_services::account_worker::retained::PortError::Unknown => {
                     studio_runtime_services::account_session_runtime::AccountSessionError::Unknown
                 }
@@ -850,6 +862,8 @@ async fn dispatch_request(
     }
     let fallback_request = request.clone();
     let retained_request = SessionRequest {
+        root_request_id: request.root_request_id.clone(),
+        admitted_request: request.admitted_request.clone(),
         scope: scope.clone(),
         expected_scope: request.expected_scope.clone(),
         operation: request.operation.clone(),
@@ -882,6 +896,9 @@ async fn dispatch_request(
         }
         Err(error) => {
             return Err(match error {
+                studio_runtime_services::account_worker::retained::PortError::Expired => {
+                    studio_runtime_services::account_session_runtime::AccountSessionError::Expired
+                }
                 studio_runtime_services::account_worker::retained::PortError::Unknown => {
                     studio_runtime_services::account_session_runtime::AccountSessionError::Unknown
                 }
@@ -2094,6 +2111,14 @@ mod bounded_reconcile_tests {
                 AgentRepository::put(
                     transaction,
                     &AgentRecord {
+                        title_job: None,
+                        start_outcome_hold: None,
+                        fired_events: Default::default(),
+                        native_review_thread: None,
+                        vm_launch: None,
+                        credential_copy: None,
+                        vm_auth_bootstrap: None,
+                        native_release: None,
                         id: id.clone(),
                         root_id: id,
                         epoch: 1,
@@ -2171,7 +2196,7 @@ mod bounded_reconcile_tests {
                 if id == "healthy-mode" { agent["workspaceMode"] = serde_json::json!("shared"); }
                 if id == "null-mode" { agent["workspaceMode"] = serde_json::Value::Null; }
                 AgentRepository::put(tx, &AgentRecord::from_value(agent)?)?;
-                tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES (?1,?1,'annotation','fixture','pending',0,1)", [id])?;
+                tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES (?1,?1,'user','fixture','pending',0,1)", [id])?;
             }
             Ok(())
         }).await.expect("pending candidates");
@@ -2222,20 +2247,17 @@ mod bounded_reconcile_tests {
                 .expect("retained row"),
             raw
         );
-        let held: i64 = connection
+        let held: studio_runtime_schema::persistence::HoldStatus = connection
             .query_row(
-                "SELECT count(*) FROM runtime_operation_receipts WHERE id=?1 AND signature=?2",
-                rusqlite::params![
-                    format!(
-                        "{}bad-mode",
-                        studio_runtime_store::INVALID_AGENT_HOLD_RECEIPT_PREFIX
-                    ),
-                    studio_runtime_store::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE
-                ],
+                "SELECT hold_status FROM runtime_agents WHERE id='bad-mode'",
+                [],
                 |row| row.get(0),
             )
             .expect("invalid-agent hold");
-        assert_eq!(held, 1);
+        assert_eq!(
+            held,
+            studio_runtime_schema::persistence::HoldStatus::Invalid
+        );
         assert_eq!(
             connection
                 .query_row(
@@ -2270,6 +2292,14 @@ mod bounded_reconcile_tests {
                 AgentRepository::put(
                     transaction,
                     &AgentRecord {
+                        title_job: None,
+                        start_outcome_hold: None,
+                        fired_events: Default::default(),
+                        native_review_thread: None,
+                        vm_launch: None,
+                        credential_copy: None,
+                        vm_auth_bootstrap: None,
+                        native_release: None,
                         id: id.clone(),
                         root_id: id.clone(),
                         epoch: 1,
@@ -2284,7 +2314,7 @@ mod bounded_reconcile_tests {
                     },
                 )?;
                 transaction.execute(
-                    "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES (?1,?1,'annotation','fixture','pending',0,1)",
+                    "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES (?1,?1,'user','fixture','pending',0,1)",
                     [id.0.as_str()],
                 )?;
                 Ok(())
@@ -2331,6 +2361,14 @@ mod bounded_reconcile_tests {
                     AgentRepository::put(
                         transaction,
                         &AgentRecord {
+                            title_job: None,
+                            start_outcome_hold: None,
+                            fired_events: Default::default(),
+                            native_review_thread: None,
+                            vm_launch: None,
+                            credential_copy: None,
+                            vm_auth_bootstrap: None,
+                            native_release: None,
                             id: AgentId::from(id),
                             root_id: AgentId::from("lead"),
                             epoch: 1,
@@ -2729,6 +2767,8 @@ mod tests {
         assert!(broker.current_scope("account-a").is_none());
         let receipt = broker
             .request(ProviderRequest {
+                root_request_id: studio_runtime_schema::persistence::RequestIdentity::issue_root(),
+                admitted_request: None,
                 account: "account-a".into(),
                 operation: "read-1".into(),
                 actor: None,

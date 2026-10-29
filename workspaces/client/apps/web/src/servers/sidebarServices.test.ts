@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   ApiError,
   type ApiPostPath,
-  type PostBody,
+  type PostInput,
   type PostResult,
 } from "../api";
 import {
@@ -165,7 +165,7 @@ function backend(ownerId: string) {
     },
     async post<Path extends ApiPostPath>(
       path: Path,
-      body: PostBody<Path>,
+      body: PostInput<Path>,
     ): Promise<PostResult<Path>> {
       requests.push({ path, body });
       if (failure) throw failure;
@@ -324,7 +324,7 @@ describe("owner sidebar services", () => {
       path,
       folder: model.folderKey("remote", "/remote", "folder"),
     };
-    const body: PostBody<"/api/projects"> = {
+    const body: PostInput<"/api/projects"> = {
       action: "rename_folder",
       path,
       folder_id: target.folder,

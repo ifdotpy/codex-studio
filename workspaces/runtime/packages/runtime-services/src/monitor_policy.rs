@@ -14,19 +14,14 @@ pub const DEFAULT_MONITOR_STALL_SECONDS: u64 = 1800;
 use studio_runtime_schema::studio_errors::MonitorRecoveryStatus as RecoveryStatus;
 pub use studio_runtime_schema::studio_errors::MonitorStatus;
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Operation {
-    pub agent: String,
-    pub epoch: i64,
-    pub account_key: String,
-    pub connection_id: String,
-    #[serde(flatten)]
-    pub evidence: std::collections::BTreeMap<String, Value>,
-}
+pub use studio_runtime_store::{
+    MonitorOperation as Operation, MonitorOperationEvidence as OperationEvidence,
+};
 
 #[derive(Debug, Error)]
 pub enum MonitorError {
+    #[error("Request id expired")]
+    Expired,
     #[error("Invalid stored object monitors/{id} at {location}")]
     InvalidStored { id: String, location: String },
     #[error("Invalid persisted monitor result receipt: {0}")]
@@ -65,6 +60,14 @@ pub enum MonitorError {
     Io(#[from] std::io::Error),
 }
 
+impl From<studio_runtime_schema::persistence::RequestIdentityError> for MonitorError {
+    fn from(error: studio_runtime_schema::persistence::RequestIdentityError) -> Self {
+        Self::Store(studio_runtime_store::StoreError::RequestResult(
+            error.into(),
+        ))
+    }
+}
+
 impl MonitorError {
     /// A failure at the durable store boundary, retryable or not.
     pub fn store_failure_for_task(&self) -> bool {
@@ -100,6 +103,7 @@ impl MonitorError {
             | Self::InvalidDeliveryIdentity(_)
             | Self::InvalidOutputReceipt(_)
             | Self::TaskFailed
+            | Self::Expired
             | Self::InputOutcomeUnknown
             | Self::Refused(_)
             | Self::Unavailable(_)
@@ -147,6 +151,7 @@ impl MonitorError {
                 crate::event_write::EventWriteError::Store(error),
             )) => fatal_store_error(error),
             Self::Refused(_)
+            | Self::Expired
             | Self::InputOutcomeUnknown
             | Self::Unavailable(_)
             | Self::ProviderRequest { .. }
@@ -190,9 +195,14 @@ pub(crate) struct ReattachRecovery {
     account_key: String,
     epoch: i64,
     pub(crate) status: RecoveryStatus,
-    pub(crate) started_at: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) started_at: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) proof: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    finished: Option<f64>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -344,6 +354,11 @@ impl MonitorSnapshot {
         crate::monitor_matches::validate(&record).map_err(invalid)?;
         let fields: Fields =
             serde_json::from_value(record.clone()).map_err(|_| invalid("record"))?;
+        if fields.reattach_recovery.as_ref().is_some_and(|recovery| {
+            recovery.status == RecoveryStatus::Running && recovery.started_at.is_none()
+        }) {
+            return Err(invalid("reattachRecovery/startedAt"));
+        }
         let actor: Actor = serde_json::from_value(actor).map_err(|_| invalid("agent"))?;
         if fields.agent != actor.id {
             return Err(invalid("agent/id"));
@@ -430,7 +445,11 @@ impl MonitorSnapshot {
             .reattach_recovery
             .as_ref()
             .filter(|recovery| recovery.status == RecoveryStatus::Running)
-            .map(|recovery| recovery.started_at + MONITOR_REATTACH_WINDOW_SECONDS)
+            .and_then(|recovery| {
+                recovery
+                    .started_at
+                    .map(|started| started + MONITOR_REATTACH_WINDOW_SECONDS)
+            })
     }
     pub fn operation(&self) -> Option<&Operation> {
         self.fields.operation.as_ref()
@@ -852,6 +871,7 @@ pub fn begin_input(
 
 #[derive(Clone)]
 pub enum InputOutcome {
+    Expired,
     Acknowledged,
     Rejected(String),
     Unknown(String),
@@ -889,12 +909,13 @@ pub fn settle_input(
     receipt["finished"] = json!(now);
     receipt["status"] = json!(match outcome {
         InputOutcome::Acknowledged => "acknowledged",
-        InputOutcome::Rejected(_) => "failed",
+        InputOutcome::Rejected(_) | InputOutcome::Expired => "failed",
         InputOutcome::Unknown(_) => "uncertain",
     });
     let error = match &outcome {
         InputOutcome::Acknowledged => None,
-        InputOutcome::Rejected(error) | InputOutcome::Unknown(error) => Some(error),
+        InputOutcome::Expired => Some("Request id expired"),
+        InputOutcome::Rejected(error) | InputOutcome::Unknown(error) => Some(error.as_str()),
     };
     if let Some(error) = error {
         if error.chars().count() > 12000 {
@@ -1007,7 +1028,7 @@ pub struct ReattachProof {
 /// A retained-process observation never launches a command.
 pub enum ReattachOutcome {
     Pending,
-    Running(ReattachProof),
+    Running(Box<ReattachProof>),
     TerminalQueued,
     Gone(String),
 }
@@ -1029,8 +1050,10 @@ pub fn restart_recovery(snapshot: &MonitorSnapshot, now: f64) -> Result<Decision
         account_key: snapshot.command_account().to_owned(),
         epoch: snapshot.actor.epoch,
         status: RecoveryStatus::Running,
-        started_at: now,
+        started_at: Some(now),
         proof: None,
+        error: None,
+        finished: None,
     });
     Ok(decision)
 }

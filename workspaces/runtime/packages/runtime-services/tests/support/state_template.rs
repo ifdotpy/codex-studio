@@ -9,6 +9,18 @@ pub(crate) struct StateTemplate {
 impl StateTemplate {
     const DATABASES: [&'static str; 2] = ["canvas.sqlite3", "analytics.sqlite3"];
 
+    pub(crate) async fn migrate(root: &std::path::Path) -> Self {
+        let store = studio_runtime_store::RuntimeStore::open(Some(root))
+            .await
+            .expect("migrate fixture");
+        store
+            .flush_wal_for_shutdown()
+            .await
+            .expect("checkpoint fixture");
+        drop(store);
+        Self::capture(root)
+    }
+
     // Synchronous test seed preparation; this helper never runs in an HTTP handler.
     #[allow(clippy::disallowed_methods)]
     pub(crate) fn capture(root: &std::path::Path) -> Self {

@@ -13,7 +13,7 @@ import {
   SegmentedControl,
   Accordion,
 } from "@mantine/core";
-import { errorText, type PostBody, type PostResult } from "../api";
+import { ApiError, errorText, type PostBody, type PostResult } from "../api";
 import { busy, type Agent } from "../types";
 import { useWorkerModels } from "./agents/WorkerModelPicker";
 import AccountSignInNotice from "./AccountSignInNotice";
@@ -74,7 +74,7 @@ type ClaudeSessionState = Extract<ClaudeSessionResponse, { turns: unknown[] }>;
 type ClaudeCommandsResponse = Extract<ClaudeSessionResponse, unknown[]>;
 type ClaudeSessionMutation = ClaudeSessionRequest extends infer Request
   ? Request extends {
-      action: "settings" | "command" | "rollback";
+      action: "settings" | "command" | "rollback" | "stop_task";
     }
     ? Omit<Request, "request_id">
     : never
@@ -172,9 +172,19 @@ export function ClaudeSettings({
       storageKey,
       JSON.stringify(body),
     );
-    const result = await call({ ...body, request_id: requestId });
-    clearSettingsRequest({ saved, save }, storageKey, requestId);
-    return result;
+    try {
+      const result = await call({ ...body, request_id: requestId });
+      clearSettingsRequest({ saved, save }, storageKey, requestId);
+      return result;
+    } catch (error) {
+      if (
+        error instanceof ApiError &&
+        error.status === 400 &&
+        error.outcome !== "outcome_unknown"
+      )
+        clearSettingsRequest({ saved, save }, storageKey, requestId);
+      throw error;
+    }
   };
   const load = async () => {
     const result = await call({ id: agent.id, action: "state" });
@@ -606,7 +616,7 @@ export function ClaudeSettings({
                 onClick={() =>
                   void run(
                     () =>
-                      call({
+                      mutate({
                         id: agent.id,
                         action: "stop_task",
                         task_id: item.task_id,

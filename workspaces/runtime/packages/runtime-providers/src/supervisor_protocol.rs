@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 /// Version of the maintained process supervisor wire protocol.
-pub const SUPERVISOR_PROTOCOL_V2: u64 = 2;
+pub const SUPERVISOR_PROTOCOL_VERSION: u64 = 3;
 pub const HANDLE_LIMIT: u64 = 256 * 1024 * 1024;
 pub const MAX_HANDLE_CHARACTERS: usize = 180;
 
@@ -161,6 +161,7 @@ pub enum Command {
     #[serde(rename = "open")]
     Open {
         handle: String,
+        generation: Option<u64>,
         command: Vec<String>,
         env: BTreeMap<String, String>,
         #[serde(deserialize_with = "Option::<String>::deserialize")]

@@ -20,7 +20,8 @@
 // The Claude login is the canary's own (CANARY_CLAUDE_CONFIG_DIR), never a live one.
 // Keychain stays denied unless --claude-keychain or CANARY_CLAUDE_KEYCHAIN=1 is explicit.
 
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import { requestId as randomUUID } from "../../../providers/apps/claude-bridge/request-id.ts";
 import { execFileSync, spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import fs from "node:fs";

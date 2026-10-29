@@ -42,7 +42,7 @@ mod admission {
             json!({"probe":true,"backendId":"bypass"}),
             json!({"backendId":"another-backend"}),
         ] {
-            let mut handshake = json!({"protocol":2,"stateDir":state.0});
+            let mut handshake = json!({"protocol":3,"stateDir":state.0});
             handshake
                 .as_object_mut()
                 .unwrap()
@@ -76,7 +76,7 @@ mod admission {
         );
         for (role, legacy_operator) in [("probe", false), ("operator", false), ("operator", true)] {
             let mut socket = connect(&state);
-            let mut handshake = json!({"protocol":2,"stateDir":state.0});
+            let mut handshake = json!({"protocol":3,"stateDir":state.0});
             handshake[role] = json!(true);
             if legacy_operator {
                 handshake["backendId"] = json!("another-backend");

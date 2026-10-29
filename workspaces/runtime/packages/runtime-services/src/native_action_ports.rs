@@ -208,6 +208,7 @@ impl Acceptance for NativeActionAcceptance {
 fn admission_error(error: crate::coordination::CoordinationError) -> NativeError {
     use crate::coordination::CoordinationError;
     match error {
+        CoordinationError::RequestResult(error) => NativeError::Store(error.into()),
         CoordinationError::RequiresDependency(name) => NativeError::Unavailable(name),
         CoordinationError::AdmissionDenied(_) => NativeError::Invalid("budget"),
         CoordinationError::InvalidRequest(_)

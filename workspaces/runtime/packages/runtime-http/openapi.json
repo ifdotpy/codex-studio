@@ -3464,6 +3464,28 @@
         "title": "ActiveToolRecordResponse",
         "type": "object"
       },
+      "AdmittedRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "created": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "id": {
+            "type": "string"
+          },
+          "signature": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "signature",
+          "created"
+        ],
+        "title": "AdmittedRequest",
+        "type": "object"
+      },
       "AgentActivity": {
         "additionalProperties": false,
         "properties": {
@@ -18805,7 +18827,7 @@
           },
           "deliveries": {
             "additionalProperties": {
-              "type": "string"
+              "$ref": "#/components/schemas/RecipientDelivery"
             },
             "title": "Deliveries",
             "type": "object"
@@ -20799,6 +20821,11 @@
             "title": "Id",
             "type": "string"
           },
+          "request_id": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          },
           "task_id": {
             "title": "Task Id",
             "type": "string"
@@ -20807,6 +20834,7 @@
         "required": [
           "action",
           "id",
+          "request_id",
           "task_id"
         ],
         "title": "ClaudeSessionStopTaskRequest",
@@ -23737,6 +23765,20 @@
           "after_turn"
         ],
         "title": "DeliveryMomentInput",
+        "type": "string"
+      },
+      "DeliveryStatus": {
+        "enum": [
+          "queued",
+          "stored_only",
+          "accepted",
+          "sent",
+          "cancelled",
+          "pending",
+          "delivered",
+          "failed",
+          "uncertain"
+        ],
         "type": "string"
       },
       "DesktopEntityDto": {
@@ -27109,11 +27151,16 @@
           "id": {
             "title": "Id",
             "type": "string"
+          },
+          "requestId": {
+            "format": "uuid",
+            "type": "string"
           }
         },
         "required": [
           "id",
-          "hash"
+          "hash",
+          "requestId"
         ],
         "title": "FederationAck",
         "type": "object"
@@ -27128,11 +27175,16 @@
           "id": {
             "title": "Id",
             "type": "string"
+          },
+          "requestId": {
+            "format": "uuid",
+            "type": "string"
           }
         },
         "required": [
           "id",
-          "hash"
+          "hash",
+          "requestId"
         ],
         "title": "FederationAckResult",
         "type": "object"
@@ -29724,7 +29776,7 @@
           },
           "deliveries": {
             "additionalProperties": {
-              "type": "string"
+              "$ref": "#/components/schemas/RecipientDelivery"
             },
             "title": "Deliveries",
             "type": "object"
@@ -30060,6 +30112,27 @@
           }
         },
         "title": "ModelCatalogResponse",
+        "type": "object"
+      },
+      "ModelChoice": {
+        "description": "A user's explicit model picker choice. Pickers offer every model that is\nnot blacklisted, so a model new to the catalog starts untouched and enabled.",
+        "enum": [
+          "untouched",
+          "whitelisted",
+          "blacklisted"
+        ],
+        "type": "string"
+      },
+      "ModelChoices": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/ModelChoice"
+        },
+        "description": "Server preference value keyed by provider-qualified model identity; an\nabsent key is untouched. The schema is the server validator.",
+        "maxProperties": 2048,
+        "propertyNames": {
+          "maxLength": 512,
+          "pattern": "^[a-z][a-z0-9_-]*:\\S+$"
+        },
         "type": "object"
       },
       "ModelEntityDto": {
@@ -32068,6 +32141,11 @@
             "title": "Id",
             "type": "string"
           },
+          "request_id": {
+            "description": "UUIDv7 mutation root, retained across command retries.",
+            "format": "uuid",
+            "type": "string"
+          },
           "text": {
             "anyOf": [
               {
@@ -32084,7 +32162,8 @@
         },
         "required": [
           "id",
-          "action"
+          "action",
+          "request_id"
         ],
         "title": "NativeCommandRequest",
         "type": "object"
@@ -35669,6 +35748,7 @@
         "type": "object"
       },
       "ProcessActionResult": {
+        "additionalProperties": true,
         "properties": {
           "processes": {
             "default": [],
@@ -36104,7 +36184,8 @@
           "key",
           "agent"
         ],
-        "type": "object"
+        "type": "object",
+        "unevaluatedProperties": true
       },
       "ProcessIdentity": {
         "additionalProperties": false,
@@ -40346,6 +40427,25 @@
           "agentId"
         ],
         "title": "ReceiptsResource",
+        "type": "object"
+      },
+      "RecipientDelivery": {
+        "additionalProperties": false,
+        "description": "One recipient's delivery state. Error text is separate from the closed status.",
+        "properties": {
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/DeliveryStatus"
+          }
+        },
+        "required": [
+          "status"
+        ],
         "type": "object"
       },
       "RecoveryConnectionGeneration": {
@@ -46835,10 +46935,54 @@
         "additionalProperties": false,
         "properties": {
           "action": {
-            "maxLength": 80,
-            "minLength": 1,
-            "title": "Action",
+            "enum": [
+              "event",
+              "input",
+              "message",
+              "move_send",
+              "move_status",
+              "location_info",
+              "location_matches",
+              "stop",
+              "exec_event",
+              "projects",
+              "projects.changed",
+              "folders",
+              "git",
+              "export",
+              "chunk",
+              "exec_read",
+              "exec_input",
+              "exec_cancel",
+              "release",
+              "update.offer",
+              "update.export",
+              "update.chunk",
+              "update.release",
+              "task",
+              "complaint",
+              "context",
+              "directory",
+              "chat_read",
+              "move_manage",
+              "move_interrupt",
+              "move_spawn",
+              "exec",
+              "exec_receipt",
+              "browser_callback",
+              "add_location",
+              "remove_location",
+              "move_validate",
+              "move_begin"
+            ],
             "type": "string"
+          },
+          "operation": {
+            "description": "Scoped suboperation tuple; empty for a single-step request.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "payload": {
             "additionalProperties": {
@@ -46858,7 +47002,8 @@
         "required": [
           "requestId",
           "action",
-          "payload"
+          "payload",
+          "operation"
         ],
         "title": "ServerOperationRequest",
         "type": "object"
@@ -47576,6 +47721,11 @@
             "title": "Protocol",
             "type": "integer"
           },
+          "requestId": {
+            "description": "UUIDv7 mutation root, issued once and retained across delivery retries.",
+            "format": "uuid",
+            "type": "string"
+          },
           "room": {
             "maxLength": 128,
             "title": "Room",
@@ -47606,7 +47756,8 @@
           "created",
           "timestamp",
           "nonce",
-          "signature"
+          "signature",
+          "requestId"
         ],
         "title": "SignedEnvelope",
         "type": "object"
@@ -64379,7 +64530,7 @@
             "anyOf": [
               {
                 "additionalProperties": {
-                  "type": "string"
+                  "$ref": "#/components/schemas/RecipientDelivery"
                 },
                 "type": "object"
               },

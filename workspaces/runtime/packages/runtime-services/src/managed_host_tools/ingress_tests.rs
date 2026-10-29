@@ -3,6 +3,9 @@
 #[path = "ingress_tests/claude_permissions.rs"]
 mod claude_permissions;
 
+#[path = "ingress_tests/receipts.rs"]
+mod receipts;
+
 use crate::managed_host_tools::{
     Actor, ChildCreationPort, ComplaintPort, ContextPort, Error, InterruptPort, OperationResult,
     PostCommitPort, ReviewPort, SearchPort, SendPort, StatusPort, WakeSignal, WatchMonitorPort,
@@ -18,6 +21,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId, ResponseBody};
+use studio_runtime_schema::persistence::RequestIdentity;
 use studio_runtime_store::path_identity::CanonicalPath;
 use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, RuntimeStore, StoreError};
 
@@ -60,7 +64,6 @@ fn template() -> &'static Template {
             "monitor": serde_json::from_str::<Value>(&FIXTURE_MONITOR.replace("@cwd", &cwd)).unwrap(),
             "managedToolCases": [{"actor": "bf2eeb40-0cc8-44ef-a4e8-aa321b4d7331", "tool": "orchestration_send", "arguments": {"agent_id": "415ccbb7-cd04-444e-8599-af5c52da8e5e", "text": "descendant input"}, "callId": "managed-0"}, {"actor": "415ccbb7-cd04-444e-8599-af5c52da8e5e", "tool": "orchestration_send", "arguments": {"agent_id": "parent", "text": "parent alias"}, "callId": "managed-1"}, {"actor": "415ccbb7-cd04-444e-8599-af5c52da8e5e", "tool": "orchestration_send", "arguments": {"agent_id": "bf2eeb40-0cc8-44ef-a4e8-aa321b4d7331", "text": "parent id"}, "callId": "managed-2"}, {"actor": "415ccbb7-cd04-444e-8599-af5c52da8e5e", "tool": "orchestration_send", "arguments": {"agent_id": "broadcast", "text": "team notice"}, "callId": "managed-3"}, {"actor": "415ccbb7-cd04-444e-8599-af5c52da8e5e", "tool": "orchestration_send", "arguments": {"agent_id": "787d59cc-071a-4918-990a-cb1dffba4e2f", "text": "peer refusal"}, "callId": "managed-4"}, {"actor": "415ccbb7-cd04-444e-8599-af5c52da8e5e", "tool": "orchestration_complaint", "arguments": {"action": "submit", "text": "Need help"}, "callId": "managed-5"}, {"actor": "bf2eeb40-0cc8-44ef-a4e8-aa321b4d7331", "tool": "orchestration_complaint", "arguments": {"action": "read", "complaint_id": "ccba5086-ee65-562b-9703-fd2fc708bad4"}, "callId": "managed-6"}, {"actor": "bf2eeb40-0cc8-44ef-a4e8-aa321b4d7331", "tool": "orchestration_complaint", "arguments": {"action": "respond", "complaint_id": "ccba5086-ee65-562b-9703-fd2fc708bad4", "text": "Investigating", "status": "in_progress"}, "callId": "managed-7"}, {"actor": "bf2eeb40-0cc8-44ef-a4e8-aa321b4d7331", "tool": "orchestration_context", "arguments": {"topic": "monitor", "id": "6a1cbd51-e035-54ce-af5c-7fd9850e3065"}, "callId": "managed-9"}, {"actor": "bf2eeb40-0cc8-44ef-a4e8-aa321b4d7331", "tool": "orchestration_cancel_monitor", "arguments": {"monitor_id": "6a1cbd51-e035-54ce-af5c-7fd9850e3065"}, "callId": "managed-10"}],
             "managedRootDeletedRefusal": {"actor": "415ccbb7-cd04-444e-8599-af5c52da8e5e", "tool": "orchestration_complaint", "callId": "deleted-root", "arguments": {"action": "read"}},
-            "reservations": [{"record": {"id": "thread-0:spawn:request-1", "agent": "bf2eeb40-0cc8-44ef-a4e8-aa321b4d7331", "threadId": "thread-0", "callId": "alias-1", "tool": "orchestration_spawn", "signature": "c91f8a50f288534226b47d6abda036631ba03b0ad5aae43ad0b8e1fe6431fc12", "rpcId": 1, "turnId": "turn-0", "epoch": 3, "accountKey": "default", "connectionId": "connection", "created": 10.0, "updated": 10.0, "readOnly": false, "timing": {"reservationBeganAt": 49476990541458_i64, "reservationLockedAt": 49476991477012_i64, "reservationEndedAt": 49476991698409_i64}, "request_id": "request-1", "stage": "queued", "outcome": "pending", "cancelRequested": false}}],
         });
         Template {
             value,
@@ -73,7 +76,13 @@ async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, CallbackContext) {
     let directory = tempfile::tempdir().unwrap();
     let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
     let agents = template.value["agents"].as_array().unwrap().clone();
-    let monitor = template.value["monitor"].clone();
+    let mut monitor = template.value["monitor"].clone();
+    let monitor_request = RequestIdentity::issue_root();
+    monitor["requestId"] = json!(monitor_request);
+    monitor["operation"]
+        .as_object_mut()
+        .unwrap()
+        .remove("requestId");
     let cwd = json!(directory.path());
     store
         .transaction_with::<_, StoreError>(move |tx| {
@@ -104,6 +113,7 @@ async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, CallbackContext) {
         .unwrap();
     let actor = &template.value["agents"][0];
     let context = CallbackContext {
+        stream_id: "default".into(),
         agent: actor["id"].as_str().unwrap().into(),
         account: "default".into(),
         connection: "connection".into(),
@@ -149,8 +159,8 @@ impl PortBundle {
         )?;
         self.staged.fetch_add(1, Ordering::SeqCst);
         Ok(OperationResult {
-            value,
             signals: vec![WakeSignal::new(kind)],
+            ..OperationResult::reply(&value)
         })
     }
 }
@@ -340,8 +350,8 @@ impl PostCommitPort for PortBundle {
             self.dispatched.fetch_add(1, Ordering::SeqCst);
             Ok(Some(
                 crate::managed_host_tools::DispatchedOperation::Applied(OperationResult {
-                    value: json!({"status":"dispatched"}),
                     signals: vec![WakeSignal::new("event-driver/test-dispatch")],
+                    ..OperationResult::reply(&json!({"status":"dispatched"}))
                 }),
             ))
         })
@@ -366,7 +376,7 @@ async fn a_failed_wake_after_the_effect_still_answers_with_the_real_result() {
         &context,
         "post-commit-status",
         "orchestration_status",
-        json!({}),
+        &json!({}),
     );
     // The effect committed, so the model must not be told it failed.
     let first =
@@ -378,12 +388,7 @@ async fn a_failed_wake_after_the_effect_still_answers_with_the_real_result() {
     };
     assert!(matches!(&first.body, ResponseBody::Result(value) if value["success"] == true));
     assert_eq!(ports.dispatched.load(Ordering::SeqCst), 1);
-    let connection = store.test_reader().unwrap();
-    let receipt = studio_runtime_store::system_reads::all(&connection, "runtime_tool_requests")
-        .unwrap()
-        .into_iter()
-        .find(|row| row["callId"] == "post-commit-status")
-        .unwrap();
+    let receipt = claim_settlement::request_row(&store, "post-commit-status");
     assert_eq!(receipt["deliveryCertainty"], "written");
 
     ports.fail_release.store(false, Ordering::SeqCst);
@@ -635,7 +640,7 @@ async fn production_monitor_adapter_authorizes_before_callback_writes_and_preser
             &context,
             "production-monitor-input",
             "orchestration_monitor_input",
-            json!({"monitor_id":managed_monitor_id(),"text":"hello"}),
+            &json!({"monitor_id":managed_monitor_id(),"text":"hello"}),
         );
         activate_fixture_monitor(&store, &context, &managed_monitor_id()).await;
         let ports = production_managed_ports(&store, &context, &frame, fake.clone()).await;
@@ -653,15 +658,14 @@ async fn production_monitor_adapter_authorizes_before_callback_writes_and_preser
         );
         let tickets = fake.tickets.lock().unwrap();
         assert_eq!(tickets.len(), 1, "same native ticket must not be resent");
-        assert!(tickets[0].contains("production-monitor-input"));
-        let row = studio_runtime_store::system_reads::all(
-            &store.test_reader().unwrap(),
-            "runtime_tool_requests",
-        )
-        .unwrap()
-        .into_iter()
-        .find(|row| row["callId"] == "production-monitor-input")
-        .unwrap();
+        let row = claim_settlement::request_row(&store, "production-monitor-input");
+        assert_eq!(
+            tickets[0],
+            crate::monitor_policy::input_effect_identity(
+                &managed_monitor_id(),
+                row["id"].as_str().unwrap(),
+            )
+        );
         let expected = match certainty {
             crate::managed_host_tools::DeliveryCertainty::Written => "written",
             crate::managed_host_tools::DeliveryCertainty::NotSent => "not_sent",
@@ -674,6 +678,7 @@ async fn production_monitor_adapter_authorizes_before_callback_writes_and_preser
     let (_root, store, _lead_context) = fixture_arc().await;
     let worker = &template().value["agents"][1];
     let worker_context = CallbackContext {
+        stream_id: "default".into(),
         agent: worker["id"].as_str().unwrap().to_owned(),
         account: "default".into(),
         connection: "connection".into(),
@@ -691,7 +696,7 @@ async fn production_monitor_adapter_authorizes_before_callback_writes_and_preser
         &worker_context,
         "production-foreign-monitor-input",
         "orchestration_monitor_input",
-        json!({"monitor_id":managed_monitor_id(),"text":"no"}),
+        &json!({"monitor_id":managed_monitor_id(),"text":"no"}),
     );
     let ports = production_managed_ports(&store, &worker_context, &frame, fake.clone()).await;
     let before = callback_intent_snapshot(&store);
@@ -719,7 +724,7 @@ async fn production_monitor_adapter_authorizes_before_callback_writes_and_preser
         &stale_context,
         "production-stale-monitor-input",
         "orchestration_monitor_input",
-        json!({"monitor_id":managed_monitor_id(),"text":"no"}),
+        &json!({"monitor_id":managed_monitor_id(),"text":"no"}),
     );
     let ports = production_managed_ports(&store, &stale_context, &frame, fake.clone()).await;
     let before = callback_intent_snapshot(&store);
@@ -820,11 +825,11 @@ fn callback_intent_snapshot(store: &RuntimeStore) -> Value {
         "requests": connection.prepare("SELECT id,record FROM runtime_tool_requests ORDER BY id").unwrap()
             .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))).unwrap()
             .collect::<Result<Vec<_>, _>>().unwrap(),
-        "results": connection.prepare("SELECT id,result FROM runtime_tool_results ORDER BY id").unwrap()
+        "results": connection.prepare("SELECT id,result FROM request_results ORDER BY id").unwrap()
             .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))).unwrap()
             .collect::<Result<Vec<_>, _>>().unwrap(),
-        "aliases": connection.prepare("SELECT agent,alias,request FROM runtime_tool_request_aliases ORDER BY agent,alias,request").unwrap()
-            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))).unwrap()
+        "outbox": connection.prepare("SELECT id,payload FROM runtime_outbox ORDER BY id").unwrap()
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))).unwrap()
             .collect::<Result<Vec<_>, _>>().unwrap(),
     })
 }
@@ -906,7 +911,7 @@ async fn managed_monitor_input_checks_owner_and_preserves_delivery_receipts_on_r
             &context,
             "stable-monitor-input",
             "orchestration_monitor_input",
-            json!({"monitor_id":managed_monitor_id(),"text":"hello"}),
+            &json!({"monitor_id":managed_monitor_id(),"text":"hello"}),
         );
         let ports = shared_ports(
             crate::provider_callbacks::managed_tool_ports_with_runtime(
@@ -925,18 +930,14 @@ async fn managed_monitor_input_checks_owner_and_preserves_delivery_receipts_on_r
             .await
             .unwrap();
         assert_eq!(fake.calls.load(Ordering::SeqCst), 1);
+        let row = claim_settlement::request_row(&store, "stable-monitor-input");
+        assert_eq!(*fake.tickets.lock().unwrap(), [row["id"].as_str().unwrap()]);
         assert_eq!(
-            *fake.tickets.lock().unwrap(),
-            ["thread-0:stable-monitor-input"]
+            uuid::Uuid::parse_str(row["id"].as_str().unwrap())
+                .unwrap()
+                .get_version_num(),
+            7
         );
-        let row = studio_runtime_store::system_reads::all(
-            &store.test_reader().unwrap(),
-            "runtime_tool_requests",
-        )
-        .unwrap()
-        .into_iter()
-        .find(|row| row["callId"] == "stable-monitor-input")
-        .unwrap();
         let expected = match certainty {
             crate::managed_host_tools::DeliveryCertainty::Written => "written",
             crate::managed_host_tools::DeliveryCertainty::NotSent => "not_sent",
@@ -948,6 +949,7 @@ async fn managed_monitor_input_checks_owner_and_preserves_delivery_receipts_on_r
     let (_root, store, _lead_context) = fixture().await;
     let worker = &template().value["agents"][1];
     let worker_context = CallbackContext {
+        stream_id: "default".into(),
         agent: worker["id"].as_str().unwrap().to_owned(),
         account: "default".into(),
         connection: "connection".into(),
@@ -967,7 +969,7 @@ async fn managed_monitor_input_checks_owner_and_preserves_delivery_receipts_on_r
         &worker_context,
         "foreign-monitor-input",
         "orchestration_monitor_input",
-        json!({"monitor_id":managed_monitor_id(),"text":"no"}),
+        &json!({"monitor_id":managed_monitor_id(),"text":"no"}),
     );
     let ports = shared_ports(
         crate::provider_callbacks::managed_tool_ports_with_runtime(
@@ -1062,7 +1064,7 @@ async fn each_missing_managed_runtime_port_refuses_without_domain_writes() {
     let (_root, store, context) = fixture().await;
     for (index, (tool, args, refusal)) in cases.into_iter().enumerate() {
         let before = application_table_snapshot(&store);
-        let frame = call(&context, &format!("missing-port-{index}"), tool, args);
+        let frame = call(&context, &format!("missing-port-{index}"), tool, &args);
         let ports = shared_ports(
             crate::provider_callbacks::managed_tool_ports_with_runtime(
                 &store,
@@ -1085,7 +1087,7 @@ async fn each_missing_managed_runtime_port_refuses_without_domain_writes() {
     }
 }
 
-fn call(context: &CallbackContext, rpc: &str, tool: &str, args: Value) -> Frame {
+fn call(context: &CallbackContext, rpc: &str, tool: &str, args: &Value) -> Frame {
     Frame::Request(RequestFrame {
         id: RequestId::String(format!("rpc-{rpc}")),
         method: Method::ItemToolCall,
@@ -1112,6 +1114,38 @@ fn intent_count(store: &RuntimeStore, kind: &str) -> i64 {
         .unwrap()
 }
 
+fn queued_tool_request(context: &CallbackContext, call_id: &str) -> Value {
+    json!({
+        "agent":context.agent,"threadId":context.thread,"turnId":context.turn,
+        "epoch":context.epoch,"accountKey":context.account,"connectionId":context.connection,
+        "supervisor":{"generation":context.generation},"callId":call_id,
+        "rpcId":format!("rpc-{call_id}"),"tool":"orchestration_spawn",
+        "arguments":{"agents":[]},"signature":"fixture-signature","readOnly":false,
+        "updated":chrono::Utc::now().timestamp_millis() as f64 / 1000.0,
+    })
+}
+
+fn seed_tool_request(tx: &Transaction<'_>, mut record: Value) -> Value {
+    record["id"] = json!(RequestIdentity::issue_root());
+    record["created"] = json!(chrono::Utc::now().timestamp_millis() as f64 / 1000.0);
+    record["stage"] = json!("queued");
+    record["outcome"] = json!("pending");
+    record["cancelRequested"] = json!(false);
+    for field in [
+        "admitted",
+        "request_id",
+        "aliases",
+        "result",
+        "started",
+        "finished",
+        "deliveryCertainty",
+    ] {
+        record.as_object_mut().unwrap().remove(field);
+    }
+    let call = record["callId"].as_str().unwrap().to_owned();
+    crate::tool_requests::admission::reserve(tx, record, &call, "", None).unwrap()
+}
+
 fn application_table_snapshot(store: &RuntimeStore) -> Vec<(String, Vec<String>)> {
     use rusqlite::types::ValueRef;
     let connection = store.test_reader().unwrap();
@@ -1127,10 +1161,7 @@ fn application_table_snapshot(store: &RuntimeStore) -> Vec<(String, Vec<String>)
     for name in names {
         // Callback ingress necessarily persists its idempotency/result receipt.
         // The tested operation must leave every other row byte-for-byte stable.
-        if matches!(
-            name.as_str(),
-            "runtime_tool_requests" | "runtime_tool_results" | "runtime_tool_request_aliases"
-        ) {
+        if matches!(name.as_str(), "runtime_tool_requests" | "request_results") {
             continue;
         }
         let quoted = name.replace('"', "\"\"");
@@ -1143,8 +1174,8 @@ fn application_table_snapshot(store: &RuntimeStore) -> Vec<(String, Vec<String>)
             .map(|column| column.to_string())
             .collect::<Vec<_>>()
             .join(",");
-        let receipt_filter = if name == "runtime_operation_receipts" {
-            " WHERE signature!='provider-callback'"
+        let receipt_filter = if name == "runtime_outbox" {
+            " WHERE kind!='provider_callback'"
         } else {
             ""
         };
@@ -1189,6 +1220,7 @@ async fn dispatch_case(
         .find(|actor| actor["id"] == expected["actor"])
         .unwrap();
     let context = CallbackContext {
+        stream_id: "default".into(),
         agent: actor["id"].as_str().unwrap().to_owned(),
         account: "default".into(),
         connection: "connection".into(),
@@ -1201,7 +1233,7 @@ async fn dispatch_case(
         &context,
         expected["callId"].as_str().unwrap(),
         expected["tool"].as_str().unwrap(),
-        args.unwrap_or_else(|| expected["arguments"].clone()),
+        &args.unwrap_or_else(|| expected["arguments"].clone()),
     );
     let ports = shared_ports(
         crate::provider_callbacks::managed_tool_ports(
@@ -1223,7 +1255,7 @@ async fn managed_monitor_create_persists_one_start_intent_and_replays_exactly() 
         &context,
         "managed-monitor-create",
         "orchestration_monitor",
-        json!({"command":"printf managed-monitor","wake_on":"exit"}),
+        &json!({"command":"printf managed-monitor","wake_on":"exit"}),
     );
     let wake = std::sync::Arc::new(tokio::sync::Notify::new());
     let monitor_port: Arc<dyn crate::monitor_runtime_wiring::MonitorPort> =
@@ -1290,10 +1322,13 @@ async fn managed_monitor_create_persists_one_start_intent_and_replays_exactly() 
         saved["status"].as_str(),
         Some("starting" | "approval")
     ));
-    assert!(
-        saved["requestId"]
-            .as_str()
-            .is_some_and(|id| id.ends_with(":managed-monitor-create"))
+    let task = claim_settlement::request_row(&store, "managed-monitor-create");
+    assert_eq!(saved["requestId"], task["id"]);
+    assert_eq!(
+        uuid::Uuid::parse_str(task["id"].as_str().unwrap())
+            .unwrap()
+            .get_version_num(),
+        7
     );
 
     let actor_record = {
@@ -1431,7 +1466,7 @@ async fn send_remote_routing_refusals_write_nothing() {
             &context,
             &format!("remote-send-{index}"),
             "orchestration_send",
-            json!({"agent_id":target,"text":"remote send"}),
+            &json!({"agent_id":target,"text":"remote send"}),
         );
         let ports = shared_ports(
             crate::provider_callbacks::managed_tool_ports(
@@ -1508,7 +1543,7 @@ async fn managed_reads_preserve_corrupt_record_identity() {
         &context,
         "corrupt-search",
         "orchestration_search",
-        json!({"query":"fixture"}),
+        &json!({"query":"fixture"}),
     );
     let search_ports = shared_ports(
         crate::provider_callbacks::managed_tool_ports(
@@ -1574,7 +1609,7 @@ async fn managed_reads_preserve_corrupt_record_identity() {
         &context,
         "corrupt-context",
         "orchestration_context",
-        json!({"topic":"monitor","id":monitor_id}),
+        &json!({"topic":"monitor","id":monitor_id}),
     );
     let context_ports = shared_ports(
         crate::provider_callbacks::managed_tool_ports(
@@ -1608,12 +1643,14 @@ async fn managed_write_rollback(case_index: usize, table: &str, operation: &str,
     let seed = &template().value;
     let cases = seed["managedToolCases"].as_array().unwrap();
     let (_root, store, _) = fixture().await;
+    let mut expected = cases[case_index].clone();
     if matches!(case_index, 6 | 7) {
-        // Complaint read/respond need the submit; earlier sends and reads are independent.
-        assert!(matches!(
-            dispatch_case(&store, seed, &cases[5], None).await.unwrap(),
-            CallbackDecision::Answer(_)
-        ));
+        // Complaint read/respond use the identity returned by the committed submit.
+        let (success, submitted) =
+            tool_reply(dispatch_case(&store, seed, &cases[5], None).await.unwrap());
+        assert!(success, "complaint prerequisite: {submitted}");
+        expected["arguments"]["complaint_id"] = submitted["id"].clone();
+        assert!(expected["arguments"]["complaint_id"].is_string());
     }
     let trigger = format!("p05_fail_{case_index}_{timing}_{operation}");
     let hits = Arc::new(AtomicUsize::new(0));
@@ -1638,7 +1675,7 @@ async fn managed_write_rollback(case_index: usize, table: &str, operation: &str,
         .await
         .unwrap();
     let before = application_table_snapshot(&store);
-    let expected = &cases[case_index];
+    let expected = &expected;
     let first_attempt = dispatch_case(&store, seed, expected, None).await;
     assert_eq!(
         hits.load(Ordering::SeqCst),
@@ -1746,8 +1783,8 @@ async fn startup_reconciles_reserved_callback_once() {
     store
         .transaction_with::<_, StoreError>(|tx| {
             tx.execute("DELETE FROM runtime_requests", [])?;
-            tx.execute("DELETE FROM runtime_operation_receipts", [])?;
-            tx.execute_batch("CREATE TRIGGER p05_crash_after_reservation BEFORE INSERT ON runtime_tool_results BEGIN SELECT RAISE(ABORT,'crash after reservation'); END")?;
+            tx.execute("DELETE FROM request_results", [])?;
+            tx.execute_batch("CREATE TRIGGER p05_crash_after_reservation BEFORE INSERT ON request_results BEGIN SELECT RAISE(ABORT,'crash after reservation'); END")?;
             Ok(())
         }).await
         .unwrap();
@@ -1844,7 +1881,7 @@ async fn every_managed_tool_runs_through_provider_callback_dispatch() {
     ];
     for (index, (tool, args)) in cases.into_iter().enumerate() {
         let rpc = format!("managed-{index}");
-        let frame = call(&context, &rpc, tool, args);
+        let frame = call(&context, &rpc, tool, &args);
         let decision =
             dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 20.0, ports.clone())
                 .await
@@ -1866,7 +1903,7 @@ async fn post_commit_wake_failure_answers_and_replays_without_staging_again() {
         &context,
         "rollback-status",
         "orchestration_status",
-        json!({}),
+        &json!({}),
     );
     let first =
         dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 20.0, ports.clone())
@@ -1894,7 +1931,7 @@ async fn same_request_replays_saved_result_without_a_second_effect() {
         &context,
         "exact-replay",
         "orchestration_send",
-        json!({"agent_id":"worker","text":"continue"}),
+        &json!({"agent_id":"worker","text":"continue"}),
     );
     let first =
         dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 20.0, ports.clone())
@@ -1961,7 +1998,7 @@ async fn remote_origin_search_and_monitor_context_stay_local() {
             json!({"topic":"monitor","id":monitor_id}),
         ),
     ] {
-        let frame = call(&context, rpc, tool, args);
+        let frame = call(&context, rpc, tool, &args);
         let ports = shared_ports(
             crate::provider_callbacks::managed_tool_ports(
                 &store,
@@ -1990,40 +2027,23 @@ async fn remote_origin_search_and_monitor_context_stay_local() {
 #[tokio::test]
 async fn queued_managed_tool_request_can_be_cancelled_before_dispatch() {
     let (_root, store, context) = fixture().await;
-    let mut queued = template().value["reservations"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|reservation| &reservation["record"])
-        .find(|record| record["tool"] == "orchestration_spawn")
-        .unwrap()
-        .clone();
-    let request_id = "thread-0:spawn:p05-cancel";
-    queued["id"] = json!(request_id);
-    queued["request_id"] = json!("p05-cancel");
-    let queued_record = queued.to_string();
-    let request_id = request_id.to_owned();
-    let request_id_for_tx = request_id.clone();
+    let queued = queued_tool_request(&context, "queued-cancel");
     let agent_id = context.agent.clone();
-    store
+    let request_id = store
         .transaction_with(move |tx| {
-            tx.execute(
-                "INSERT INTO runtime_tool_requests(id,record) VALUES(?1,?2)",
-                params![request_id_for_tx, queued_record],
-            )?;
-            let stored = studio_runtime_store::system_reads::get(
-                tx,
-                "runtime_tool_requests",
-                &request_id_for_tx,
-            )?;
+            let queued = seed_tool_request(tx, queued);
+            let request_id = queued["id"].as_str().unwrap().to_owned();
+            let stored =
+                studio_runtime_store::system_reads::get(tx, "runtime_tool_requests", &request_id)?;
             assert_eq!(stored.as_ref(), Some(&queued));
             let result = crate::tool_requests::execute(
                 tx,
                 &agent_id,
-                crate::tool_requests::Action::Cancel(&request_id_for_tx),
+                crate::tool_requests::Action::Cancel(&request_id),
                 21.0,
             )?;
-            Ok::<_, CallbackError>(result)
+            assert_eq!(result["outcome"], "not_applied");
+            Ok::<_, CallbackError>(request_id)
         })
         .await
         .unwrap();
@@ -2516,6 +2536,7 @@ async fn managed_reviewer_defaults_reach_public_spawn_tool() {
             .unwrap();
         let context = if label.starts_with("nested-") {
             CallbackContext {
+                stream_id: "default".into(),
                 agent: WORKER.into(),
                 thread: "thread-1".into(),
                 turn: "turn-1".into(),
@@ -2529,6 +2550,7 @@ async fn managed_reviewer_defaults_reach_public_spawn_tool() {
                 continue;
             }
             let key = format!("reviewer-defaults-{label}-{tool}");
+            let request_id = RequestIdentity::issue_root();
             let args = if tool == "orchestration_spawn" {
                 let mut spec =
                     json!({"name":"Review", "prompt":"Review the changes", "role":"reviewer"});
@@ -2538,13 +2560,13 @@ async fn managed_reviewer_defaults_reach_public_spawn_tool() {
                 if spec["role"].is_null() {
                     spec.as_object_mut().unwrap().remove("role");
                 }
-                json!({"request_id":key,"agents":[spec]})
+                json!({"request_id":request_id,"agents":[spec]})
             } else {
                 let mut args = options.clone();
-                args["request_id"] = json!(key);
+                args["request_id"] = json!(request_id);
                 args
             };
-            let frame = call(&context, &key, tool, args);
+            let frame = call(&context, &key, tool, &args);
             let ports = shared_ports(
                 crate::provider_callbacks::managed_tool_ports_with_bundle(
                     &store,
@@ -2650,7 +2672,8 @@ async fn managed_spawn_accepts_any_explicit_model_for_each_role() {
             )
             .await
             .unwrap_or_else(|error| panic!("{role} with {model}: {error:?}"));
-            let child_id = spawned.result().value["agents"][0]["id"].as_str().unwrap();
+            let receipt = spawned.result().test_value();
+            let child_id = receipt["agents"][0]["id"].as_str().unwrap();
             let child = studio_runtime_store::AgentRepository::get(
                 &store.test_reader().unwrap(),
                 &child_id.into(),
@@ -2671,7 +2694,7 @@ async fn managed_spawn_accepts_any_explicit_model_for_each_role() {
             )
             .await
             .unwrap();
-            assert_eq!(replayed.result().value["agents"][0]["id"], child_id);
+            assert_eq!(replayed.result().test_value()["agents"][0]["id"], child_id);
         }
     }
 }
@@ -2700,7 +2723,8 @@ async fn task_result_schema_spawn_assignment_contains_contract() {
     let spawned = crate::managed_child_create::spawn_agents(&store, &actor,
         &json!({"agents":[{"name":"Schema worker","prompt":"Read the task","workspace":"shared","task_id":"schema-task"}]}),
         "schema-spawn", 20.0, &CreationEnvironment).await.unwrap();
-    let child = spawned.result().value["agents"][0]["id"].as_str().unwrap();
+    let receipt = spawned.result().test_value();
+    let child = receipt["agents"][0]["id"].as_str().unwrap();
     let read = store.test_reader().unwrap();
     let text: String = read
         .query_row(
@@ -2836,11 +2860,18 @@ async fn managed_child_creation_preserves_spawn_and_review_contracts() {
     .await
     .unwrap();
     assert_eq!(
-        spawned.result().value["agents"].as_array().unwrap().len(),
+        spawned.result().test_value()["agents"]
+            .as_array()
+            .unwrap()
+            .len(),
         1
     );
-    assert_eq!(spawned.result().value["requestId"], "dispatcher-spawn-api");
-    let spawned_child_id = spawned.result().value["agents"][0]["id"].as_str().unwrap();
+    assert_eq!(
+        spawned.result().test_value()["requestId"],
+        "dispatcher-spawn-api"
+    );
+    let receipt = spawned.result().test_value();
+    let spawned_child_id = receipt["agents"][0]["id"].as_str().unwrap();
     let read = store.test_reader().unwrap();
     let spawned_child = studio_runtime_store::AgentRepository::get(
         &read,
@@ -2855,9 +2886,12 @@ async fn managed_child_creation_preserves_spawn_and_review_contracts() {
     assert_eq!(spawned_child["nativeEffort"], "low");
     assert_eq!(spawned_child["profileId"], "profile-reviewer");
     assert_eq!(spawned_child["profileInstructions"], "profile instructions");
-    assert_eq!(spawned.result().value["agents"][0]["baseRef"], "HEAD~1");
     assert_eq!(
-        spawned.result().value["agents"][0]["baseCommit"],
+        spawned.result().test_value()["agents"][0]["baseRef"],
+        "HEAD~1"
+    );
+    assert_eq!(
+        spawned.result().test_value()["agents"][0]["baseCommit"],
         base_commit
     );
     drop(read);
@@ -2873,7 +2907,8 @@ async fn managed_child_creation_preserves_spawn_and_review_contracts() {
     )
     .await
     .unwrap();
-    let fallback_id = fallback.result().value["agents"][0]["id"].as_str().unwrap();
+    let receipt = fallback.result().test_value();
+    let fallback_id = receipt["agents"][0]["id"].as_str().unwrap();
     let fallback_child = studio_runtime_store::AgentRepository::get(
         &store.test_reader().unwrap(),
         &studio_runtime_store::AgentId::from(fallback_id),
@@ -2896,9 +2931,8 @@ async fn managed_child_creation_preserves_spawn_and_review_contracts() {
     )
     .await
     .expect("a host worker may work in another existing folder");
-    let alternate_id = alternate.result().value["agents"][0]["id"]
-        .as_str()
-        .unwrap();
+    let receipt = alternate.result().test_value();
+    let alternate_id = receipt["agents"][0]["id"].as_str().unwrap();
     let alternate_child = studio_runtime_store::AgentRepository::get(
         &store.test_reader().unwrap(),
         &studio_runtime_store::AgentId::from(alternate_id),
@@ -2921,10 +2955,8 @@ async fn managed_child_creation_preserves_spawn_and_review_contracts() {
     )
     .await
     .expect("a worktree child may start in another repository folder");
-    let child_id = alternate_worktree.result().value["agents"][0]["id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    let receipt = alternate_worktree.result().test_value();
+    let child_id = receipt["agents"][0]["id"].as_str().unwrap().to_owned();
     let actual_child = studio_runtime_store::AgentRepository::get(
         &store.test_reader().unwrap(),
         &studio_runtime_store::AgentId::from(child_id.as_str()),
@@ -2948,10 +2980,8 @@ async fn managed_child_creation_preserves_spawn_and_review_contracts() {
     )
     .await
     .expect("a default worktree outside Git uses the shared folder");
-    let child_id = no_git.result().value["agents"][0]["id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    let receipt = no_git.result().test_value();
+    let child_id = receipt["agents"][0]["id"].as_str().unwrap().to_owned();
     let initial: String = store
         .test_reader()
         .unwrap()
@@ -3082,11 +3112,12 @@ async fn managed_child_creation_preserves_spawn_and_review_contracts() {
     .await
     .unwrap_or_else(|error| panic!("review API call: {error:?}"));
     assert_eq!(
-        reviewed.result().value["requestId"],
+        reviewed.result().test_value()["requestId"],
         "dispatcher-review-api"
     );
-    assert_eq!(reviewed.result().value["status"], "queued");
-    let child = reviewed.result().value["agents"][0]["id"].as_str().unwrap();
+    assert_eq!(reviewed.result().test_value()["status"], "queued");
+    let receipt = reviewed.result().test_value();
+    let child = receipt["agents"][0]["id"].as_str().unwrap();
     let read = store.test_reader().unwrap();
     let child = studio_runtime_store::AgentRepository::get(
         &read,
@@ -3348,7 +3379,8 @@ async fn spawn_past_the_running_limit_queues_and_past_the_team_size_refuses() {
         )
         .await
         .unwrap_or_else(|error| panic!("{provider} spawn within the team size: {error:?}"));
-        let children = spawned.result().value["agents"].as_array().unwrap();
+        let receipt = spawned.result().test_value();
+        let children = receipt["agents"].as_array().unwrap();
         assert_eq!(children.len(), 2, "{provider}");
         let first = children[0]["id"].as_str().unwrap().to_owned();
         store
@@ -3509,7 +3541,7 @@ async fn task_claim_submit_and_accept_run_through_the_work_action_owner_once() {
             &context,
             rpc,
             "orchestration_task",
-            json!({"action":action,"task_id":"task-1","version":3,"result":"done"}),
+            &json!({"action":action,"task_id":"task-1","version":3,"result":"done"}),
         );
         let ports = work_ports(&store, &context, &frame, Arc::clone(&port)).await;
         let first =
@@ -3554,7 +3586,7 @@ async fn task_claim_submit_and_accept_run_through_the_work_action_owner_once() {
         &context,
         "task-refused",
         "orchestration_task",
-        json!({"action":"submit","task_id":"task-1","version":3,"result":"done"}),
+        &json!({"action":"submit","task_id":"task-1","version":3,"result":"done"}),
     );
     let ports = work_ports(&store, &context, &frame, refusing).await;
     let (success, value) = tool_reply(
@@ -3611,7 +3643,7 @@ async fn legacy_worker_archives_through_current_tool_without_losing_its_row() {
         &context,
         "legacy-archive",
         "orchestration_agent_manage",
-        json!({
+        &json!({
             "action":"archive", "agent_id":worker, "reason":"Legacy workspace is finished", "unassign_work":true
         }),
     );
@@ -3670,7 +3702,7 @@ async fn lead_archive_and_restore_run_through_the_lifecycle_owner() {
         let store = Arc::clone(&store);
         let context = context.clone();
         async move {
-            let frame = call(&context, rpc, "orchestration_agent_manage", args);
+            let frame = call(&context, rpc, "orchestration_agent_manage", &args);
             let ports = shared_ports(
                 crate::provider_callbacks::managed_tool_ports(
                     &store,
@@ -3761,9 +3793,10 @@ async fn lead_archive_and_restore_run_through_the_lifecycle_owner() {
     assert!(record.get("deletedAt").is_none(), "{record}");
     assert_eq!(record["status"], "paused");
     assert_eq!(record["autoWake"], false);
+    let archive_request = RequestIdentity::issue_root();
     let (success, batch) = manage(
         "manage-archive-finished",
-        json!({"action":"archive_finished","request_id":"finished-batch"}),
+        json!({"action":"archive_finished","request_id":archive_request}),
     )
     .await;
     assert!(success, "{batch}");
@@ -3772,7 +3805,7 @@ async fn lead_archive_and_restore_run_through_the_lifecycle_owner() {
     assert_eq!(report.archived, 1);
     let (success, replay) = manage(
         "manage-archive-finished",
-        json!({"action":"archive_finished","request_id":"finished-batch"}),
+        json!({"action":"archive_finished","request_id":archive_request}),
     )
     .await;
     assert!(success, "{replay}");
@@ -3811,7 +3844,7 @@ async fn archive_finished_runs_for_codex_and_claude_leads_through_tool_dispatch(
             &context,
             "archive-finished-provider",
             "orchestration_agent_manage",
-            json!({"action":"archive_finished","request_id":format!("finished-{provider}")}),
+            &json!({"action":"archive_finished","request_id":RequestIdentity::issue_root()}),
         );
         let ports = shared_ports(
             crate::provider_callbacks::managed_tool_ports(
@@ -3867,12 +3900,12 @@ async fn archive_finished_reason_survives_dispatch_and_receipt_replay() {
         }).await.expect("finished worker");
         let mut args = args;
         args["action"] = json!("archive_finished");
-        args["request_id"] = json!("archive-with-reason");
+        args["request_id"] = json!(RequestIdentity::issue_root());
         let frame = call(
             &context,
             "archive-with-reason",
             "orchestration_agent_manage",
-            args,
+            &args,
         );
         let ports = shared_ports(
             crate::provider_callbacks::managed_tool_ports(

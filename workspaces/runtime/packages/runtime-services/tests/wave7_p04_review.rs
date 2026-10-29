@@ -1,13 +1,15 @@
 //! Review regressions: lifecycle races and actual queue/receipt restart boundaries.
 #![allow(clippy::unwrap_used)]
 use crate::callback_fixtures as fixture;
+use crate::wave7_p04_callback_runtime::{callback_body, callback_owner};
 use fixture::*;
 use futures_util::{FutureExt, poll};
 use serde_json::json;
 use std::sync::{Arc, mpsc};
 use studio_runtime_providers::{Frame, RequestId};
+use studio_runtime_schema::persistence::{OutboxStatus, ToolRequestStatus};
 use studio_runtime_services::{callback_runtime::*, provider_callbacks::*};
-use studio_runtime_store::RuntimeStore;
+use studio_runtime_store::{RuntimeStore, outbox::Outbox};
 
 #[tokio::test]
 async fn complaint_event_failure_returns_error_and_rolls_back_complaint() {
@@ -77,9 +79,6 @@ async fn resolved_before_admission_or_before_deletion_survives_restart() {
             .await
             .unwrap();
         assert!(matches!(decision, CallbackDecision::Settled(_)));
-        bind_journal(&store, &decision, &context, &RequestId::Number(42), 1)
-            .await
-            .unwrap();
         assert!(prepared_replies(&store, &context).await.unwrap().is_empty());
         if let Some(id) = id {
             assert_eq!(stored(&store, &id)["status"], "deleted");
@@ -98,7 +97,7 @@ async fn resolved_before_admission_or_before_deletion_survives_restart() {
 }
 
 #[tokio::test]
-async fn python_admitted_resolution_keeps_its_signature_and_acked_proof_retires() {
+async fn python_admitted_resolution_keeps_its_signature_and_completed_origin_fence() {
     let (_root, store, context) = fixture().await;
     let frame = request(&context);
     let Frame::Request(request_frame) = &frame else {
@@ -111,6 +110,7 @@ async fn python_admitted_resolution_keeps_its_signature_and_acked_proof_retires(
     legacy["params"] = request_frame.params.clone().unwrap();
     legacy["status"] = json!("pending");
     card(&store, &legacy).await;
+    seed_admission(&store, &legacy).await;
 
     resolve(&store, &context, &RequestId::Number(42), 20.0)
         .await
@@ -121,14 +121,14 @@ async fn python_admitted_resolution_keeps_its_signature_and_acked_proof_retires(
             .unwrap(),
         CallbackDecision::Settled(_)
     ));
-    let decision = dispatch(Arc::clone(&store), &context, &frame, 22.0)
-        .await
-        .unwrap();
-    bind_journal(&store, &decision, &context, &RequestId::Number(42), 1)
-        .await
-        .unwrap();
-    assert_eq!(checkpoint(&store, &context, 0).await, 0);
-    assert_eq!(checkpoint(&store, &context, 1).await, 1);
+    let owner = callback_owner(&store, &context, &RequestId::Number(42));
+    assert_eq!(owner.status, ToolRequestStatus::Completed);
+    assert!(
+        Outbox::get::<CallbackResponse>(&store.test_reader().unwrap(), &owner.origin_key)
+            .unwrap()
+            .is_none()
+    );
+    assert!(callback_body(&store, &owner).is_none());
     assert!(matches!(
         dispatch(Arc::clone(&store), &context, &frame, 23.0)
             .await
@@ -215,13 +215,11 @@ async fn send_acceptance_and_resolution_are_serialized_without_holding_a_store_t
         .await
         .unwrap()
         .unwrap();
-    delivery(&store, &reply.identity, DeliveryOutcome::Submitted)
-        .await
-        .unwrap();
     let runtime = CallbackRuntime::new(store.clone(), Arc::new(Port::default()));
     let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
     let (release_tx, release_rx) = tokio::sync::oneshot::channel();
     let submit = runtime.submit_committed(&reply, || async {
+        delivery(&store, &reply.identity, DeliveryOutcome::Submitted).await?;
         // The store transaction ends, but transport acceptance still holds the lifecycle gate.
         store
             .transaction_with::<_, CallbackError>(|_| Ok(()))
@@ -337,15 +335,14 @@ async fn every_foreign_receipt_dimension_is_held_unknown() {
 
 #[tokio::test]
 async fn answer_and_cancellation_restart_at_each_real_store_queue_and_transport_boundary() {
-    // 0 before admission, 1 admission, 2 bind, 3 answer/delete intent, 4 Submitted,
-    // 5 actual mailbox acceptance, 6 native submission, 7 typed receipt received,
-    // 8 Written persisted, 9 ACK persisted, 10 payload retirement persisted.
+    // 0 before admission, 1 admission, 2 answer/delete intent, 3 Submitted,
+    // 4 mailbox acceptance, 5 native submission, 6 typed receipt received,
+    // 7 Written, exact result, origin fingerprint and body retirement commit atomically.
     for cancel in [false, true] {
-        for boundary in 0..=10 {
+        for boundary in 0..=7 {
             let (root, mut store, context) = fixture().await;
             let frame = request(&context);
             let (native_tx, native_rx) = mpsc::channel();
-            let mut decision = None;
             let mut id = None;
             if boundary >= 1 {
                 let accepted = dispatch(Arc::clone(&store), &context, &frame, 10.0)
@@ -355,20 +352,8 @@ async fn answer_and_cancellation_restart_at_each_real_store_queue_and_transport_
                     panic!("pending")
                 };
                 id = Some(card_id.clone());
-                decision = Some(accepted);
             }
             if boundary >= 2 {
-                bind_journal(
-                    &store,
-                    decision.as_ref().unwrap(),
-                    &context,
-                    &RequestId::Number(42),
-                    1,
-                )
-                .await
-                .unwrap();
-            }
-            if boundary >= 3 {
                 let reply = if cancel {
                     prepare_delete(&store, id.as_ref().unwrap(), 20.0).await
                 } else {
@@ -383,12 +368,12 @@ async fn answer_and_cancellation_restart_at_each_real_store_queue_and_transport_
                 }
                 .unwrap()
                 .unwrap();
-                if boundary >= 4 {
+                if (3..5).contains(&boundary) {
                     delivery(&store, &reply.identity, DeliveryOutcome::Submitted)
                         .await
                         .unwrap();
                 }
-                if boundary >= 5 {
+                if boundary >= 4 {
                     let (mailbox, receiver) = CallbackMailbox::new(Arc::new(|| {}));
                     let runtime = CallbackRuntime::new(store.clone(), mailbox.clone());
                     let for_port = reply.clone();
@@ -403,9 +388,11 @@ async fn answer_and_cancellation_restart_at_each_real_store_queue_and_transport_
                     .await
                     .unwrap()
                     .unwrap();
-                    if boundary >= 6 {
+                    if boundary >= 5 {
                         runtime
                             .submit_committed(&queued.reply, || async {
+                                delivery(&store, &reply.identity, DeliveryOutcome::Submitted)
+                                    .await?;
                                 native_tx.send(queued.reply.frame()).unwrap();
                                 Ok(())
                             })
@@ -413,7 +400,7 @@ async fn answer_and_cancellation_restart_at_each_real_store_queue_and_transport_
                             .unwrap()
                             .unwrap();
                     }
-                    if boundary >= 7 {
+                    if boundary >= 6 {
                         assert!(
                             queued
                                 .receipt
@@ -427,41 +414,32 @@ async fn answer_and_cancellation_restart_at_each_real_store_queue_and_transport_
                         drop(queued.receipt);
                     }
                     let receipt = waiting.await.unwrap();
-                    if boundary >= 7 {
+                    if boundary >= 6 {
                         assert_eq!(receipt.unwrap().outcome, ReplyOutcome::Written);
                     } else {
                         assert!(receipt.is_err());
                     }
                 }
-                if boundary >= 8 {
+                if boundary >= 7 {
                     delivery(&store, &reply.identity, DeliveryOutcome::Written)
                         .await
                         .unwrap();
                 }
-                if boundary >= 9 {
-                    ack(&store, &context, 1).await;
-                }
-                if boundary >= 10 {
-                    assert_eq!(retire(&store, &context).await, 1);
-                }
             }
-            // Every branch stops here before the next boundary; no hidden bind/ACK.
+            // Every branch stops before the next actual boundary; Written has no separate cleanup phase.
             drop(store);
             store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
             let port = Arc::new(Port::default());
             let runtime = CallbackRuntime::new(store.clone(), port.clone());
-            if boundary < 2 {
+            if boundary < 1 {
                 let accepted = runtime.dispatch(&context, &frame, 11.0).await.unwrap();
                 let CallbackDecision::Pending(card_id) = &accepted else {
                     panic!("pending")
                 };
                 id = Some(card_id.clone());
-                bind_journal(&store, &accepted, &context, &RequestId::Number(42), 1)
-                    .await
-                    .unwrap();
             }
             let id = id.unwrap();
-            if boundary < 3 {
+            if boundary < 2 {
                 if cancel {
                     runtime.delete_question(&id, 20.0).await.unwrap();
                 } else {
@@ -470,11 +448,11 @@ async fn answer_and_cancellation_restart_at_each_real_store_queue_and_transport_
                         .await
                         .unwrap();
                 }
-            } else if boundary == 3 {
+            } else if boundary == 2 {
                 let prepared = prepared_replies(&store, &context).await.unwrap();
                 assert_eq!(prepared.len(), 1);
                 runtime.deliver(&prepared[0]).await.unwrap();
-            } else if boundary < 8 {
+            } else if boundary < 7 {
                 assert!(prepared_replies(&store, &context).await.unwrap().is_empty());
                 assert!(
                     runtime
@@ -499,13 +477,25 @@ async fn answer_and_cancellation_restart_at_each_real_store_queue_and_transport_
                         true
                     );
                 }
-                if boundary == 9 {
-                    assert_eq!(retire(&store, &context).await, 1);
-                }
+            }
+            let owner = callback_owner(&store, &context, &RequestId::Number(42));
+            let response =
+                Outbox::get::<CallbackResponse>(&store.test_reader().unwrap(), &owner.origin_key)
+                    .unwrap();
+            if (3..7).contains(&boundary) {
+                assert_eq!(owner.status, ToolRequestStatus::Unknown);
+                let response = response.unwrap();
+                assert_eq!(response.status, OutboxStatus::Unknown);
+                assert_eq!(response.next_at, None);
+            } else {
+                assert_eq!(owner.status, ToolRequestStatus::Completed);
+                assert!(response.is_none());
+                assert!(owner.payload.frame_fingerprint.is_some());
+                assert!(callback_body(&store, &owner).is_some());
             }
             let native: Vec<_> = native_rx.try_iter().collect();
-            assert_eq!(native.len(), usize::from(boundary >= 6));
-            assert_eq!(port.calls.lock().unwrap().len(), usize::from(boundary < 4));
+            assert_eq!(native.len(), usize::from(boundary >= 5));
+            assert_eq!(port.calls.lock().unwrap().len(), usize::from(boundary < 3));
             assert!(
                 native.len() + port.calls.lock().unwrap().len() <= 1,
                 "{cancel} {boundary}"

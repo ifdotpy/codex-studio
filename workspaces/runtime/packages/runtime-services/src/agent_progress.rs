@@ -14,6 +14,12 @@ struct AgentSource {
     #[serde(default)]
     is_lead: bool,
     deleted_at: Option<f64>,
+    active_execution: Option<ActiveExecution>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ActiveExecution {
+    run_id: String,
 }
 pub(crate) type Assignment = WorkItemRecord;
 #[derive(Deserialize)]
@@ -121,11 +127,14 @@ pub(crate) fn derive<'a>(
     {
         if let Some(task) = assignment {
             let mut since = task.updated();
-            if crate::sync_policy::table_exists(connection, "runtime_execution_runs")? {
-                let raw: Option<String> = connection.query_row(
-                    "SELECT record FROM runtime_execution_runs WHERE agent=?1 ORDER BY created DESC LIMIT 1",
-                    [&agent.id], |row| row.get(0),
-                ).optional()?;
+            if let Some(execution) = &agent.active_execution {
+                let raw: Option<String> = connection
+                    .query_row(
+                        "SELECT record FROM runtime_execution_runs WHERE id=?1 AND agent=?2",
+                        rusqlite::params![execution.run_id, agent.id],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
                 if let Some(raw) = raw {
                     let execution: ExecutionSource = serde_json::from_str(&raw)?;
                     since = since.max(execution.finished.unwrap_or_default());
@@ -247,10 +256,10 @@ mod tests {
         let connection = Connection::open_in_memory().expect("test fixture value");
         connection.execute_batch("CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE INDEX runtime_monitor_agent_status ON runtime_monitors(json_extract(record,'$.agent'),json_extract(record,'$.status'));
-            CREATE TABLE runtime_execution_runs(agent TEXT, created REAL, record TEXT);").expect("test fixture value");
+            CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,agent TEXT, created REAL, record TEXT);").expect("test fixture value");
         connection
             .execute(
-                "INSERT INTO runtime_execution_runs VALUES('worker',20,?1)",
+                "INSERT INTO runtime_execution_runs VALUES('current','worker',20,?1)",
                 [json!({"finished":30.0}).to_string()],
             )
             .expect("test fixture value");
@@ -258,7 +267,7 @@ mod tests {
             json!({"id":"task","owner":"worker","status":"running","updated":10}),
         )
         .expect("test fixture value");
-        let mut agent = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"lead","epoch":0,"status":"completed"});
+        let mut agent = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"lead","epoch":0,"status":"completed","activeExecution":{"runId":"current","attemptId":"attempt"}});
         let mut tasks = vec![task];
         let progress = derive(&connection, &agent, &tasks).expect("test fixture value");
         assert_eq!(

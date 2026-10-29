@@ -230,9 +230,9 @@ beforeEach(() => {
   choices.post.mockReset();
 });
 
-vi.mock("../models/modelWhitelist", async (load) => ({
-  ...(await load<typeof import("../models/modelWhitelist")>()),
-  useModelWhitelist: () => null,
+vi.mock("../models/modelChoices", async (load) => ({
+  ...(await load<typeof import("../models/modelChoices")>()),
+  useModelChoices: () => ({}),
 }));
 
 for (const initialRole of ["orchestrator", "worker", "review"] as const) {

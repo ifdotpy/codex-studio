@@ -7,7 +7,7 @@ use serde_json::{Value, value::RawValue};
 use strum::Display;
 pub use studio_runtime_providers::supervisor_protocol::NativeId;
 
-pub use studio_runtime_providers::supervisor_protocol::SUPERVISOR_PROTOCOL_V2;
+pub use studio_runtime_providers::supervisor_protocol::SUPERVISOR_PROTOCOL_VERSION;
 pub const SUPERVISOR_NEXT_BATCH_MAX_EVENTS: usize = 64;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -164,6 +164,8 @@ pub struct CursorRequest {
 #[derive(Clone, Debug, Serialize)]
 pub struct OpenRequest {
     pub handle: SupervisorHandle,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub generation: Option<Generation>,
     pub command: Vec<String>,
     pub env: BTreeMap<String, String>,
     pub cwd: String,

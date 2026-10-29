@@ -1088,7 +1088,10 @@ while IFS= read -r line; do
 done
 "#;
         let launch = ProviderLaunchSpec::new(shell_command(script), support::child_environment(&root.0), root.0.clone());
-        let factory: Arc<dyn ProviderTaskFactory> = Arc::new(studio_runtime_process::provider_task::SupervisorProviderTaskFactory::new(root.identity()));
+        let account_state = root.0.join("account-state");
+        std::fs::create_dir(&account_state).unwrap();
+        let store = Arc::new(studio_runtime_store::RuntimeStore::open(Some(&account_state)).await.unwrap());
+        let factory: Arc<dyn ProviderTaskFactory> = Arc::new(studio_runtime_process::provider_task::SupervisorProviderTaskFactory::new(root.identity()).with_account_store(store));
         let mut opts = options();
         opts.launch = launch.clone();
         let mut cfg = config();
@@ -1709,7 +1712,10 @@ while IFS= read -r line; do
 done
 "#;
         let launch = ProviderLaunchSpec::new(shell_command(script), child_environment(&root.0), root.0.clone());
-        let factory: Arc<dyn ProviderTaskFactory> = Arc::new(studio_runtime_process::provider_task::SupervisorProviderTaskFactory::new(root.identity()));
+        let account_state = root.0.join("account-state");
+        std::fs::create_dir(&account_state).unwrap();
+        let store = Arc::new(studio_runtime_store::RuntimeStore::open(Some(&account_state)).await.unwrap());
+        let factory: Arc<dyn ProviderTaskFactory> = Arc::new(studio_runtime_process::provider_task::SupervisorProviderTaskFactory::new(root.identity()).with_account_store(store));
         let mut opts = options(); opts.launch=launch.clone();
         let mut cfg=config(); cfg.timeout_ms=HANG_GUARD.as_millis() as u64;
         let mut first = SessionHandle::open(factory.clone(),ProviderHandle::for_account("test"),opts,cfg).await.unwrap();
@@ -2011,7 +2017,10 @@ while IFS= read -r line; do
 done
 "#;
         let launch = ProviderLaunchSpec::new(shell_command(script), child_environment(&root.0), root.0.clone());
-        let factory: Arc<dyn ProviderTaskFactory> = Arc::new(studio_runtime_process::provider_task::SupervisorProviderTaskFactory::new(root.identity()));
+        let account_state = root.0.join("account-state");
+        std::fs::create_dir(&account_state).unwrap();
+        let store = Arc::new(studio_runtime_store::RuntimeStore::open(Some(&account_state)).await.unwrap());
+        let factory: Arc<dyn ProviderTaskFactory> = Arc::new(studio_runtime_process::provider_task::SupervisorProviderTaskFactory::new(root.identity()).with_account_store(store));
         let mut opts = options(); opts.launch=launch.clone();
         let mut cfg=config(); cfg.timeout_ms=HANG_GUARD.as_millis() as u64;
         let mut first = SessionHandle::open(factory.clone(),ProviderHandle::for_account("test"),opts,cfg).await.unwrap();

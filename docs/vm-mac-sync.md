@@ -107,6 +107,13 @@ has a file where the other has a folder.
   This includes every `outcome_unknown` response, regardless of its error text.
   A later round repeats that request until the guest gives a proven result.
   A definite refusal ends the operation. A failed fold leaves nothing in the `mac` line.
+  One answer is a proof of no result: `outcome_unknown` with the text of a guest receipt row
+  that has no response (`receipt` in `vm-guest/common.py`). The guest stopped during that
+  operation and applies one operation per project at a time, so no copy runs. The round then
+  drops `pending.json` and plans again in the same round, from the real Mac files and the
+  manifest, under a new operation ID. The guest folds the files onto the real main files, so
+  a part of the old operation that ran sets the same target state again. Other uncertain
+  answers (a deadline, a closed channel) keep the operation.
 - A legacy `recover.json` record stops sync. The original request or a final receipt
   must establish the result before another operation can start. Equal hashes alone
   cannot prove that an old operation has stopped.

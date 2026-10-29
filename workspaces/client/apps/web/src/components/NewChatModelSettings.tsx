@@ -2,7 +2,7 @@ import {
   AgentSource as GeneratedApiAgentSource,
   AgentStatus as GeneratedApiAgentStatus,
 } from "../generated/api.ts";
-import { isModelWhitelisted, useModelWhitelist } from "./models/modelWhitelist";
+import { isModelEnabled, useModelChoices } from "./models/modelChoices";
 import { modelForValue } from "./models/modelOption";
 import {
   ServerServicesProvider,
@@ -184,9 +184,9 @@ function ModelDraft({ server, projectId, path, onChange }: Props) {
   const provider = accounts?.accounts.find(
     (row) => row.id === accountKey,
   )?.provider;
-  const allowed = useModelWhitelist();
+  const allowed = useModelChoices();
   const availableModels = catalog.models.filter((row) =>
-    isModelWhitelisted({ ...row, provider: row.provider || provider }, allowed),
+    isModelEnabled({ ...row, provider: row.provider || provider }, allowed),
   );
   const model = settings.model || defaultChatModel(provider, availableModels);
   const modelInfo = modelForValue(catalog.models, model);
@@ -234,7 +234,7 @@ function ModelDraft({ server, projectId, path, onChange }: Props) {
     (accounts && !catalog.loading && !model
       ? "No enabled models are available for this account. Select models in Studio settings → Models."
       : modelInfo &&
-          !isModelWhitelisted(
+          !isModelEnabled(
             { ...modelInfo, provider: modelInfo.provider || provider },
             allowed,
           )

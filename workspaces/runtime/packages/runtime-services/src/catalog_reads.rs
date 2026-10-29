@@ -93,6 +93,8 @@ pub async fn account_session_exchange(
             Method::from_wire(&request.method).ok_or(CatalogReadError::ProviderExchangeFailed)?;
         let receipt = session
             .provider_request(SessionRequest {
+                root_request_id: String::new(),
+                admitted_request: None,
                 account: account.to_owned(),
                 operation: operation.clone(),
                 actor: None,

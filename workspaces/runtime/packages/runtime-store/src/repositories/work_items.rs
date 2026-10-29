@@ -79,122 +79,52 @@ pub struct StoredRecord {
 pub struct WorkItemsRepository;
 
 impl WorkItemsRepository {
-    /// Read the validation errors that first reached this attempt's current count.
-    /// The counter identity selects the current attempt; the task fields fence its receipts.
-    pub fn legacy_submission_refusal(
-        connection: &Connection,
-        counter_id: &str,
-        work: &Value,
-        failed: i64,
-    ) -> StoreResult<Option<Value>> {
-        let record: Option<String> = connection
-            .query_row(
-                "SELECT json_extract(result, '$.submissionRefusal') FROM runtime_operation_receipts
-             WHERE rowid > (SELECT rowid FROM runtime_operation_receipts WHERE id=?1)
-               AND json_valid(result)
-               AND json_extract(result, '$.id')=?2
-               AND json_extract(result, '$.version')=?3
-               AND json_extract(result, '$.owner')=?4
-               AND json_extract(result, '$.submissionRefusal.failedSubmits')=?5
-             ORDER BY rowid ASC LIMIT 1",
-                params![
-                    counter_id,
-                    work["id"].as_str(),
-                    work["version"].as_i64(),
-                    work["owner"].as_str(),
-                    failed
-                ],
-                |row| row.get(0),
-            )
-            .optional()?;
-        record
-            .map(|text| serde_json::from_str(&text).map_err(StoreError::from))
-            .transpose()
-    }
-
-    /// Read the active execution identity the Python writer would attach to a work result.
-    /// The execution table is feature-created and therefore optional on older state.
+    /// The task submission counter belongs to the current owner execution pointer.
+    /// Historical order cannot grant a new attempt identity after a source transition.
     pub fn submission_identity(
         connection: &Connection,
         agent: &AgentRecord,
     ) -> StoreResult<Option<(String, Option<String>)>> {
-        let table_exists: bool = connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_execution_runs')",
-            [],
-            |row| row.get(0),
-        )?;
-        if !table_exists {
-            return Ok(None);
-        }
-
-        let account = agent
+        let Some(pointer) = agent
             .extra
-            .get("accountKey")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("default");
-        let thread = agent
-            .extra
-            .get("threadId")
-            .and_then(serde_json::Value::as_str);
-        let turn = agent
-            .extra
-            .get("turnId")
-            .and_then(serde_json::Value::as_str);
-        let row: Option<(String, String)> = if let Some(turn) = turn {
-            let mut statement = connection.prepare_cached(
-                "SELECT id, record FROM runtime_execution_runs \
-                 WHERE agent=?1 AND account=?2 AND thread IS ?3 AND turn=?4 LIMIT 2",
-            )?;
-            let rows = statement
-                .query_map(params![agent.id.0, account, thread, turn], |row| {
-                    Ok((row.get(0)?, row.get(1)?))
-                })?
-                .collect::<Result<Vec<_>, _>>()?;
-            (rows.len() == 1).then(|| rows.into_iter().next()).flatten()
-        } else {
-            connection
-                .query_row(
-                    "SELECT id, record FROM runtime_execution_runs \
-                     WHERE agent=?1 AND account=?2 AND epoch=?3 AND turn IS NULL \
-                     ORDER BY created DESC LIMIT 1",
-                    params![agent.id.0, account, agent.epoch],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .optional()?
-        };
-        let Some((id, record)) = row else {
+            .get("activeExecution")
+            .filter(|value| !value.is_null())
+        else {
             return Ok(None);
         };
-        let typed = serde_json::from_str::<ExecutionRunRecord>(&record).map_err(|_| {
-            crate::StoreError::InvalidStoredObject {
-                table: "runtime_execution_runs",
-                id: id.clone(),
-            }
-        })?;
-        if typed.id().as_ref() != id
-            || Table::<ExecutionRunRecord>::new(connection)
-                .validate(&typed)
-                .is_err()
-        {
-            return Err(crate::StoreError::InvalidStoredObject {
-                table: "runtime_execution_runs",
-                id,
-            });
-        }
-        let value = typed.value();
-        if turn.is_none()
-            && matches!(
-                value.get("status").and_then(serde_json::Value::as_str),
-                Some("completed" | "failed" | "interrupted" | "cancelled")
+        let invalid = || StoreError::InvalidStoredObject {
+            table: "runtime_agents",
+            id: agent.id.0.clone(),
+        };
+        let id = pointer["runId"].as_str().ok_or_else(invalid)?;
+        let attempt = match pointer.get("attemptId") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(attempt)) => Some(attempt.clone()),
+            Some(_) => return Err(invalid()),
+        };
+        let raw: Option<String> = connection
+            .query_row(
+                "SELECT record FROM runtime_execution_runs WHERE id=?1",
+                [id],
+                |row| row.get(0),
             )
+            .optional()?;
+        let raw = raw.ok_or_else(invalid)?;
+        let run = serde_json::from_str::<ExecutionRunRecord>(&raw).map_err(|_| invalid())?;
+        Table::<ExecutionRunRecord>::new(connection).validate(&run)?;
+        if run.id().as_str() != id
+            || run.value()["agent"] != agent.id.0
+            || run.value()["accountKey"]
+                != agent
+                    .extra
+                    .get("accountKey")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!("default"))
+            || run.value()["epoch"] != agent.epoch
         {
-            return Ok(None);
+            return Err(invalid());
         }
-        let attempt_id = value
-            .get("latestAttemptId")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned);
-        Ok(Some((id, attempt_id)))
+        Ok(Some((id.into(), attempt)))
     }
 
     pub fn work_record(connection: &Connection, id: &str) -> StoreResult<Option<WorkItemRecord>> {
@@ -629,7 +559,8 @@ mod tests {
             "CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,agent TEXT,account TEXT,epoch INTEGER,thread TEXT,turn TEXT,created REAL,record TEXT);",
         ).expect("execution table creates");
         let agent = AgentRecord::from_value(json!({
-            "id":"worker","provider":"codex","rootId":"lead","epoch":4,"status":"paused"
+            "id":"worker","provider":"codex","rootId":"lead","epoch":4,"status":"paused",
+            "activeExecution":{"runId":"run-1","attemptId":null}
         }))
         .expect("agent record parses");
         for record in [
@@ -728,5 +659,48 @@ inventory::submit! {
     crate::repositories::SchemaRegistration {
         repository: "work_items",
         requirements: &REQUIREMENTS,
+    }
+}
+
+#[cfg(test)]
+mod receipt_domain_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn submission_identity_never_selects_history_without_current_owner() {
+        let db = Connection::open_in_memory().expect("database");
+        db.execute_batch("CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,agent TEXT,account TEXT,epoch INTEGER,thread TEXT,turn TEXT,created REAL,record TEXT)").expect("history");
+        let record = json!({"id":"old","agent":"agent","accountKey":"default","epoch":1,"threadId":null,"turnId":null,"created":1.0,"status":"pending","latestAttemptId":"old-attempt"});
+        db.execute(
+            "INSERT INTO runtime_execution_runs VALUES('old','agent','default',1,NULL,NULL,1,?1)",
+            [record.to_string()],
+        )
+        .expect("historical execution");
+        let mut agent = AgentRecord::from_value(
+            json!({"id":"agent","rootId":"agent","provider":"codex","status":"idle","epoch":1}),
+        )
+        .expect("agent");
+        assert_eq!(
+            WorkItemsRepository::submission_identity(&db, &agent).expect("no current owner"),
+            None
+        );
+        agent.extra.insert(
+            "activeExecution".into(),
+            json!({"runId":"old","attemptId":"old-attempt"}),
+        );
+        assert_eq!(
+            WorkItemsRepository::submission_identity(&db, &agent).expect("current identity"),
+            Some(("old".into(), Some("old-attempt".into())))
+        );
+        agent.extra.insert(
+            "activeExecution".into(),
+            json!({"runId":"old","attemptId":null}),
+        );
+        assert_eq!(
+            WorkItemsRepository::submission_identity(&db, &agent)
+                .expect("current run without attempt"),
+            Some(("old".into(), None))
+        );
     }
 }

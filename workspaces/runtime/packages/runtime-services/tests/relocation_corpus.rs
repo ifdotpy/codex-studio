@@ -3,8 +3,8 @@ use studio_runtime_schema::provider_kind::ProviderKind;
 
 use rusqlite::params;
 use serde_json::{Value, json};
-use std::{fs, path::PathBuf, process::Command};
-use studio_runtime_services::{agent_move, project_locations, relocation::identity};
+use std::{fs, path::PathBuf, process::Command, sync::Arc};
+use studio_runtime_services::{agent_move, project_locations};
 use studio_runtime_store::{
     AgentId, AgentMoveRepository, AgentRecord, AgentRepository, ProjectLocationsRepository,
     ProjectsRepository, RuntimeStore,
@@ -24,10 +24,7 @@ impl Fixture {
             include_str!("relocation/canvas.sql"),
             include_str!("relocation/analytics.sql"),
         );
-        // The retired oracle hardcoded completed for unknown tool outcomes.
-        // Frozen inputs use the producer's failed/unknown pair; the historical
-        // completed/applied transport wrapper remains a separate repair case.
-        // An already applied result also keeps its settled completed/applied pair.
+        // Frozen inputs retain the producer's failed/unknown pair for unresolved tools.
         let corpus = if full() {
             include_str!("relocation/oracle-full.json")
         } else {
@@ -40,6 +37,48 @@ impl Fixture {
             for pointer in ["/agent", "/expected/agent"] {
                 if let Some(agent) = case.pointer_mut(pointer).and_then(Value::as_object_mut) {
                     agent.insert("provider".into(), json!("codex"));
+                }
+            }
+        }
+        for case in data["cases"].as_array_mut().expect("cases") {
+            if case["family"] == "location" {
+                let root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+                let identity = studio_runtime_schema::persistence::RequestIdentity::new(
+                    "project-location",
+                    &["local-fixture", "ui"],
+                    &root,
+                    &["location"],
+                )
+                .expect("fixture identity");
+                case["resultId"] = json!(identity.id());
+                case["requestRoot"] = json!(root);
+            }
+        }
+        for case in data["cases"].as_array_mut().expect("cases") {
+            if case["family"] == "tool" {
+                if case["name"] == "tool-old-applied-wrapper" {
+                    // Completed replies remain exact even if an old wrapper disagrees.
+                    case["expected"]["record"] = case["record"].clone();
+                    case["expected"]["result"] = case["previous"].clone();
+                }
+                let admitted = json!({"id":case["record"]["id"],"signature":"fixture-tool","created":chrono::Utc::now().timestamp_millis()});
+                let mut arguments = case["outbox"]["body"]["payload"]["request"].clone();
+                if arguments["action"] == "remove_location" {
+                    arguments
+                        .as_object_mut()
+                        .expect("location arguments")
+                        .remove("path");
+                }
+                for field in ["record", "expected/record"] {
+                    let target = if field == "record" {
+                        &mut case["record"]
+                    } else {
+                        &mut case["expected"]["record"]
+                    };
+                    target["admitted"] = admitted.clone();
+                    target["kind"] = json!("managed_tool");
+                    target["arguments"] = arguments.clone();
+                    target["aliases"] = json!([]);
                 }
             }
         }
@@ -65,18 +104,53 @@ impl Fixture {
         let case = case.clone();
         store.transaction(move |tx|{
             if case["family"]=="location" {
-                if !case["project"].is_null() {ProjectsRepository::put_project(tx,&case["project"])?;}
                 let outbox=&case["outbox"];
+                if !case["project"].is_null() {
+                    let mut project = case["project"].clone();
+                    project["registration"] = json!({"requestId":outbox["id"],"status":studio_runtime_schema::persistence::WorkEffectStatus::Unknown});
+                    ProjectsRepository::put_project(tx,&project)?;
+                    let identity = studio_runtime_schema::persistence::RequestIdentity::new("project-location", &["local-fixture","ui"], text(&case,"requestRoot"), &["location"]).expect("fixture identity");
+                    let signature = studio_runtime_store::sha256_hex(studio_runtime_schema::json_compat::python_json_compact(&outbox["body"]["payload"]["request"]).as_bytes());
+                    // Recreate the historical owner recorded before the expiry watermark.
+                    tx.execute("UPDATE runtime_projects SET record=json_patch(record,json_object('locationIntents',json_object(?2,json_object('request',json_object('id',?3,'signature',?4,'created',?5))))) WHERE id=?1",
+                        params!["/home-project",text(outbox,"id"),identity.id(),signature,identity.issued_ms()])?;
+                    ProjectsRepository::location_request(tx,"/home-project",text(outbox,"id"))?.expect("saved fixture admission");
+                }
                 tx.execute("INSERT INTO runtime_server_outbox(id,server,body,state,result) VALUES(?1,?2,?3,?4,?5)",params![text(outbox,"id"),text(outbox,"server"),outbox["body"].to_string(),text(outbox,"state"),outbox.get("result").filter(|v|!v.is_null()).map(Value::to_string)])?;
-                ProjectsRepository::save_receipt(tx,"project-registration:/home-project","registration",&json!({"outcome":"unknown","projectId":"/home-project","requestId":outbox["id"]}))?;
             } else if case["family"] == "tool" {
                 let record=&case["record"];let outbox=&case["outbox"];
                 AgentRepository::put(tx,&AgentRecord::from_value(json!({
                     "id":record["agent"],"rootId":record["agent"],"epoch":record["epoch"],"status":"idle","accountKey":"default","provider":"codex"
                 })).expect("tool actor record"))?;
-                tx.execute("INSERT INTO runtime_tool_requests(id,record) VALUES(?1,?2)",params![text(record,"id"),record.to_string()])?;
-                tx.execute("INSERT INTO runtime_tool_results(id,result) VALUES(?1,?2)",params![text(record,"id"),case["previous"].to_string()])?;
-                tx.execute("INSERT INTO runtime_server_outbox(id,server,body,state,result) VALUES(?1,?2,?3,?4,?5)",params![text(outbox,"id"),text(outbox,"server"),outbox["body"].to_string(),text(outbox,"state"),outbox["result"].to_string()])?;
+                let mut owner = record.clone();
+                if record["outcome"]!="unknown" && record["outcome"]!="pending" {
+                    owner.as_object_mut().expect("tool owner").remove("result");
+                }
+                tx.execute("INSERT INTO runtime_tool_requests(id,record) VALUES(?1,?2)",params![text(record,"id"),owner.to_string()])?;
+                #[derive(serde::Deserialize)]
+                struct ToolOwner { admitted: studio_runtime_store::request_results::AdmittedRequest }
+                let raw: String = tx.query_row("SELECT record FROM runtime_tool_requests WHERE id=?1", [text(record,"id")], |row| row.get(0))?;
+                let parent = serde_json::from_str::<ToolOwner>(&raw).expect("owner token").admitted;
+                let location=parent.derive_result("project-location", &["location"], &studio_runtime_store::sha256_hex(studio_runtime_schema::json_compat::python_json_compact(&outbox["body"]["payload"]["request"]).as_bytes()));
+                let result = &outbox["result"];
+                let outcome = match text(result, "outcome") {
+                    "applied" => project_locations::LocationOutcome::Applied,
+                    "not_applied" => project_locations::LocationOutcome::NotApplied,
+                    "unknown" => project_locations::LocationOutcome::Unknown,
+                    other => panic!("unexpected location outcome {other}"),
+                };
+                assert_eq!(result, &json!({"requestId":text(result,"requestId"),"outcome":text(result,"outcome"),"value":{"removed":true,"serverId":"peer"}}));
+                let receipt = project_locations::LocationResult {
+                    request_id: text(result,"requestId").into(), outcome, project_id: None, error: None,
+                    value: Some(project_locations::LocationValue { server_id: "peer".into(), removed: Some(true), path: None, canonical_path: None, project_id: None, git_origin: None, home_project_id: None, request_id: None }),
+                };
+                if receipt.outcome!=project_locations::LocationOutcome::Unknown {
+                    studio_runtime_services::event_write::settle_request(tx,&location,Some(text(record,"agent")),&receipt).expect("location result");
+                }
+                if record["outcome"]!="unknown" && record["outcome"]!="pending" {
+                    let result=studio_runtime_store::ToolResultRecord::from_value(case["previous"].clone()).expect("tool result");
+                    studio_runtime_services::event_write::settle_request(tx,&parent,Some(text(record,"agent")),&result).expect("tool result");
+                }
             } else {
                 AgentMoveRepository::save(tx,&case["operation"])?;
                 AgentRepository::put(tx,&AgentRecord::from_value(case["agent"].clone()).expect("Python agent"))?;
@@ -85,23 +159,104 @@ impl Fixture {
         }).await.expect("seed Python records without rebuilding snapshots");
     }
 }
+fn project_domain(mut project: Value) -> Value {
+    if let Some(fields) = project.as_object_mut() {
+        fields.remove("registration");
+        fields.remove("locationIntents");
+    }
+    project
+}
 fn text<'a>(row: &'a Value, key: &str) -> &'a str {
     row[key].as_str().expect("fixture string")
 }
 fn full() -> bool {
     std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some()
 }
+
+use studio_runtime_services::multi_server_transport::{
+    AccessError, OrchestrationDriver, PairedTransport, RuntimeOrchestrationEffects,
+};
+struct Peer(Value);
+impl PairedTransport for Peer {
+    fn exchange<'a>(
+        &'a self,
+        _: &'a str,
+        envelope: &'a Value,
+        _: std::time::Duration,
+    ) -> futures_util::future::BoxFuture<
+        'a,
+        Result<studio_runtime_store::multi_server_delivery::RemoteReply, AccessError>,
+    > {
+        Box::pin(async move {
+            Ok(serde_json::from_str(
+                &json!({"requestId":envelope["requestId"],"outcome":"applied","value":self.0})
+                    .to_string(),
+            )
+            .expect("fixture reply"))
+        })
+    }
+}
+#[tokio::test]
+async fn move_release_uses_settled_status_delivery() {
+    let fixture = Fixture::new();
+    let case = fixture.data["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|case| case["name"] == "release-waiting-not-started")
+        .unwrap();
+    let (_, store) = fixture.store("settled-move-status").await;
+    fixture.seed(&store, case).await;
+    store.transaction(|tx| {tx.execute("INSERT INTO runtime_access_clients(id,record) VALUES('peer',?1)",[json!({"id":"peer","clientId":"client","kind":"server","label":"Peer","created":1,"publicKey":"fixture-key","status":"paired"}).to_string()])?;Ok(())}).await.unwrap();
+    let store = Arc::new(store);
+    let driver = OrchestrationDriver::new(
+        store.clone(),
+        Arc::new(Peer(case["targetReceipt"].clone())),
+        Arc::new(RuntimeOrchestrationEffects::new(store.clone())),
+    );
+    let key = text(&case["operation"], "id");
+    let generation = agent_move::MoveSnapshot::from_record(&case["operation"])
+        .unwrap()
+        .reconciliation_generation();
+    let root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    let now = chrono::Utc::now().timestamp();
+    driver
+        .exchange(
+            "peer",
+            "move_status",
+            &json!({"move":key,"reconciliationGeneration":generation}),
+            &root,
+            now,
+        )
+        .await
+        .expect("settled status");
+    assert_eq!(
+        store
+            .test_reader()
+            .unwrap()
+            .query_row("SELECT count(*) FROM runtime_server_outbox", [], |row| row
+                .get::<_, i64>(
+                0
+            ))
+            .unwrap(),
+        0
+    );
+    assert!(
+        agent_move::release_untransferred(&store, key, &root, now as f64)
+            .await
+            .expect("release settled status")
+    );
+}
 fn snapshot(store: &RuntimeStore) -> Value {
     let db = store.test_reader().expect("read state");
     let mut result = serde_json::Map::new();
     for table in [
         "runtime_projects",
-        "runtime_operation_receipts",
+        "request_results",
         "runtime_server_outbox",
         "runtime_agent_moves",
         "runtime_agents",
         "runtime_tool_requests",
-        "runtime_tool_results",
         "sync_entities",
         "sync_versions",
     ] {
@@ -153,29 +308,28 @@ async fn apply_move_case(
 }
 
 async fn save_status_ticket(
-    store: &RuntimeStore,
+    store: &Arc<RuntimeStore>,
     move_id: &str,
     ticket: &str,
     generation: Value,
     target_receipt: &Value,
 ) {
-    let ticket = ticket.to_owned();
-    let move_id = move_id.to_owned();
-    let target_receipt = target_receipt.clone();
-    store
-        .transaction(move |tx| {
-            tx.execute(
-                "INSERT INTO runtime_server_outbox(id,server,body,state,result) VALUES(?1,'peer',?2,'complete',?3)",
-                params![
-                    ticket,
-                    json!({"requestId":ticket,"action":"move_status","payload":{"move":move_id,"reconciliationGeneration":generation}}).to_string(),
-                    json!({"requestId":ticket,"outcome":"applied","value":target_receipt}).to_string()
-                ],
-            )?;
-            Ok(())
-        })
+    store.transaction(|tx| {tx.execute("INSERT OR IGNORE INTO runtime_access_clients(id,record) VALUES('peer',?1)",[json!({"id":"peer","clientId":"client","kind":"server","label":"Peer","created":1,"publicKey":"fixture-key","status":"paired"}).to_string()])?;Ok(())}).await.expect("peer");
+    let driver = OrchestrationDriver::new(
+        store.clone(),
+        Arc::new(Peer(target_receipt.clone())),
+        Arc::new(RuntimeOrchestrationEffects::new(store.clone())),
+    );
+    driver
+        .exchange(
+            "peer",
+            "move_status",
+            &json!({"move":move_id,"reconciliationGeneration":generation}),
+            ticket,
+            chrono::Utc::now().timestamp(),
+        )
         .await
-        .expect("save durable status ticket");
+        .expect("settle status ticket");
 }
 
 async fn complete_location(
@@ -187,16 +341,71 @@ async fn complete_location(
     local_server: &str,
     now: f64,
 ) -> Result<Value, project_locations::LocationError> {
-    project_locations::complete(
-        store,
-        key.to_owned(),
-        server.to_owned(),
-        envelope.clone(),
-        receipt.clone(),
-        local_server.to_owned(),
+    let key = key.to_owned();
+    let server = server.to_owned();
+    let envelope = envelope.clone();
+    let receipt = receipt.clone();
+    let local_server = local_server.to_owned();
+    store
+        .transaction_with(move |tx| {
+            complete_location_in_fixture(tx, &key, &server, &envelope, &receipt, &local_server, now)
+        })
+        .await
+}
+fn complete_location_in_fixture(
+    tx: &studio_runtime_store::Transaction<'_>,
+    key: &str,
+    server: &str,
+    envelope: &Value,
+    receipt: &Value,
+    local_server: &str,
+    now: f64,
+) -> Result<Value, project_locations::LocationError> {
+    let raw = ProjectLocationsRepository::outbox(tx, key)?.ok_or(
+        project_locations::LocationError::Refused("Unknown location request"),
+    )?;
+    if raw["server"] != server || raw["body"] != *envelope {
+        return Err(project_locations::LocationError::Refused(
+            "Different location envelope",
+        ));
+    }
+    let typed = serde_json::from_str(&receipt.to_string())
+        .map_err(studio_runtime_store::StoreError::from)?;
+    project_locations::complete_snapshot_in_transaction(
+        tx,
+        key,
+        server,
+        &envelope.to_string(),
+        &typed,
+        local_server,
         now,
+    )?;
+    if receipt["outcome"] != "unknown" {
+        tx.execute("DELETE FROM runtime_server_outbox WHERE id=?1", [key])?;
+    }
+    Ok(receipt.clone())
+}
+fn saved_location(
+    store: &RuntimeStore,
+    case: &Value,
+    now: f64,
+) -> project_locations::LocationResult {
+    let db = store.test_reader().expect("reader");
+    let signature = studio_runtime_store::sha256_hex(
+        studio_runtime_schema::json_compat::python_json_compact(
+            &case["outbox"]["body"]["payload"]["request"],
+        )
+        .as_bytes(),
+    );
+    studio_runtime_services::event_write::replay_request::<project_locations::LocationResult>(
+        &db,
+        text(case, "resultId"),
+        &signature,
+        (now * 1000.0) as i64,
     )
-    .await
+    .expect("replay")
+    .expect("result")
+    .reply
 }
 
 #[tokio::test]
@@ -229,6 +438,7 @@ async fn python_location_and_move_corpus_through_consumers() {
         }
         let (path, store) = fixture.store(text(case, "name")).await;
         fixture.seed(&store, case).await;
+        let store = Arc::new(store);
         let family = text(case, "family");
         let before = snapshot(&store);
         match family {
@@ -255,19 +465,28 @@ async fn python_location_and_move_corpus_through_consumers() {
                 assert_eq!(
                     ProjectsRepository::get(&db, "/home-project")
                         .expect("project")
-                        .map(|(_, v)| v)
+                        .map(|(_, v)| project_domain(v))
                         .unwrap_or(Value::Null),
                     case["expected"]["project"],
                     "{} project",
                     case["name"]
                 );
-                assert_eq!(
-                    ProjectsRepository::receipt(&db, "project-registration:/home-project")
-                        .expect("registration")
-                        .expect("exists")
-                        .1,
-                    case["expected"]["registration"]
-                );
+                let result = studio_runtime_services::event_write::replay_request::<
+                    project_locations::LocationResult,
+                >(
+                    &db,
+                    text(case, "resultId"),
+                    &studio_runtime_store::sha256_hex(
+                        studio_runtime_schema::json_compat::python_json_compact(
+                            &outbox["body"]["payload"]["request"],
+                        )
+                        .as_bytes(),
+                    ),
+                    (now * 1000.0) as i64,
+                )
+                .expect("registration")
+                .expect("result");
+                assert_eq!(json!(result.reply), case["expected"]["registration"]);
                 if !case["project"].is_null() {
                     let payload:String=db.query_row("SELECT payload FROM sync_entities WHERE collection='project' AND id='/home-project'",[],|r|r.get(0)).expect("project sync published");
                     let payload: Value = serde_json::from_str(&payload).expect("payload");
@@ -281,18 +500,8 @@ async fn python_location_and_move_corpus_through_consumers() {
                 drop(store);
                 let reopened = RuntimeStore::open(Some(&path)).await.expect("restart");
                 assert_eq!(
-                    complete_location(
-                        &reopened,
-                        key,
-                        "peer",
-                        &outbox["body"],
-                        &case["receipt"],
-                        local,
-                        now + 1.0
-                    )
-                    .await
-                    .expect("lost reply replay"),
-                    value
+                    json!(saved_location(&reopened, case, now + 1.0)),
+                    case["expected"]["registration"]
                 );
                 assert_eq!(snapshot(&reopened), committed, "replay writes nothing");
                 continue;
@@ -322,13 +531,15 @@ async fn python_location_and_move_corpus_through_consumers() {
                 let stored = ProjectLocationsRepository::tool(&db, text(&record, "id"))
                     .expect("stored request")
                     .expect("exists");
-                let result = ProjectLocationsRepository::tool_result(&db, text(&record, "id"))
-                    .expect("stored result")
-                    .expect("exists");
-                assert_eq!(
-                    generated_tool_json(stored),
-                    generated_tool_json(case["expected"]["record"].clone())
-                );
+                let result =
+                    studio_runtime_services::tool_requests::saved_result(&db, text(&record, "id"))
+                        .expect("stored result")
+                        .expect("exists");
+                let mut expected = case["expected"]["record"].clone();
+                if let Some(fields) = expected.as_object_mut() {
+                    fields.remove("result");
+                }
+                assert_eq!(generated_tool_json(stored), generated_tool_json(expected));
                 assert_eq!(
                     generated_tool_json(result),
                     generated_tool_json(case["expected"]["result"].clone())
@@ -355,12 +566,18 @@ async fn python_location_and_move_corpus_through_consumers() {
             "release" => {
                 let operation = &case["operation"];
                 let key = text(operation, "id");
-                let ticket = identity(&[key, "status", "50"]);
-                let ticket_for_write = ticket.to_owned();
-                let key_for_write = key.to_owned();
-                let operation_for_write = operation.clone();
-                let target_receipt = case["targetReceipt"].clone();
-                store.transaction(move |tx|{tx.execute("INSERT INTO runtime_server_outbox(id,server,body,state,result) VALUES(?1,'peer',?2,'complete',?3)",params![ticket_for_write,json!({"requestId":ticket_for_write,"action":"move_status","payload":{"move":key_for_write,"reconciliationGeneration":agent_move::MoveSnapshot::from_record(&operation_for_write).expect("checked source").reconciliation_generation()}}).to_string(),json!({"requestId":ticket_for_write,"outcome":"applied","value":target_receipt}).to_string()])?;Ok(())}).await.expect("saved status proof");
+                let ticket = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+                let generation = agent_move::MoveSnapshot::from_record(operation)
+                    .expect("checked source")
+                    .reconciliation_generation();
+                save_status_ticket(
+                    &store,
+                    key,
+                    &ticket,
+                    json!(generation),
+                    &case["targetReceipt"],
+                )
+                .await;
                 assert_eq!(
                     agent_move::release_untransferred(&store, key, &ticket, now)
                         .await
@@ -476,14 +693,13 @@ async fn location_commit_failpoints_reopen_and_apply_once() {
     let outbox = &case["outbox"];
     let key = text(outbox, "id");
     let boundaries = [
-        ("runtime_operation_receipts", "INSERT"),
-        ("runtime_operation_receipts", "UPDATE"),
+        ("request_results", "INSERT"),
         ("runtime_projects", "UPDATE"),
         ("sync_entities", "UPDATE"),
-        ("runtime_server_outbox", "UPDATE"),
+        ("runtime_server_outbox", "DELETE"),
     ];
     for (index, (table, verb)) in boundaries.into_iter().enumerate() {
-        if !full() && ![0, 4].contains(&index) {
+        if !full() && ![0, 3].contains(&index) {
             continue;
         }
         for timing in ["BEFORE", "AFTER"] {
@@ -543,17 +759,10 @@ async fn location_commit_failpoints_reopen_and_apply_once() {
             let store = RuntimeStore::open(Some(&path))
                 .await
                 .expect("restart after committed transaction");
-            complete_location(
-                &store,
-                key,
-                "peer",
-                &outbox["body"],
-                &case["receipt"],
-                local,
-                now + 10.0,
-            )
-            .await
-            .expect("reply lost replay");
+            assert_eq!(
+                json!(saved_location(&store, case, now + 10.0)),
+                case["expected"]["registration"]
+            );
             assert_eq!(snapshot(&store), committed);
         }
     }
@@ -726,9 +935,12 @@ async fn tool_reconciliation_binds_identity_aliases_and_rolls_back() {
         );
         assert_eq!(snapshot(&store), before);
     }
-    for (index, table) in ["runtime_tool_results", "runtime_tool_requests"]
-        .into_iter()
-        .enumerate()
+    for (index, (table, verb)) in [
+        ("request_results", "INSERT"),
+        ("runtime_tool_requests", "UPDATE"),
+    ]
+    .into_iter()
+    .enumerate()
     {
         for timing in ["BEFORE", "AFTER"] {
             if !full() && timing == "BEFORE" {
@@ -736,7 +948,7 @@ async fn tool_reconciliation_binds_identity_aliases_and_rolls_back() {
             }
             let mut record = record.clone();
             let trigger = format!(
-                "CREATE TRIGGER tool_fault {timing} UPDATE ON {table} BEGIN SELECT RAISE(ABORT,'tool fault'); END"
+                "CREATE TRIGGER tool_fault {timing} {verb} ON {table} BEGIN SELECT RAISE(ABORT,'tool fault'); END"
             );
             store
                 .transaction(move |tx| {
@@ -786,21 +998,28 @@ async fn tool_reconciliation_binds_identity_aliases_and_rolls_back() {
     let request = text(record, "id").to_owned();
     let actor_for_write = actor.clone();
     let request_for_write = request.clone();
-    let key=store.transaction_with(move |tx|{
-        tx.execute("INSERT INTO runtime_tool_request_aliases(agent,alias,request) VALUES(?1,'alias',?2)",params![actor_for_write,request_for_write])?;
-        project_locations::tool_receipt_key(tx,&actor_for_write,"alias","peer")
-    }).await.expect("alias resolves");
-    assert_eq!(key, case["outbox"]["id"]);
-    let actor_for_write = actor.clone();
-    let retired_id = identity(&["project-location", &actor, "second"]);
-    store.transaction(move |tx|{
-        tx.execute("INSERT INTO runtime_tool_request_aliases(agent,alias,request) VALUES(?1,'alias','second')",[actor_for_write])?;
-        tx.execute("INSERT INTO runtime_server_retired(id,direction,signature,server) VALUES(?1,'out','signature','peer')",[retired_id])?;Ok(())
-    }).await.expect("second durable alias receipt");
+    let receipt=store.transaction_with(move |tx|{
+        tx.execute("UPDATE runtime_tool_requests SET record=json_set(record,'$.aliases',json('[\"alias\"]')) WHERE id=?1",[request_for_write])?;
+        project_locations::tool_location_receipt(tx,&actor_for_write,"alias","peer",now)
+    }).await.expect("alias resolves").expect("receipt");
+    assert_eq!(json!(receipt.request_id), case["outbox"]["id"]);
+    let mut second = record.clone();
+    second["id"] = json!("second");
+    second["aliases"] = json!(["alias"]);
+    store
+        .transaction(move |tx| {
+            tx.execute(
+                "INSERT INTO runtime_tool_requests(id,record) VALUES('second',?1)",
+                [second.to_string()],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("second alias owner");
     assert!(
         store
-            .transaction_with(move |tx| project_locations::tool_receipt_key(
-                tx, &actor, "alias", "peer"
+            .transaction_with(move |tx| project_locations::tool_location_receipt(
+                tx, &actor, "alias", "peer", now
             ))
             .await
             .is_err()
@@ -851,31 +1070,44 @@ async fn location_process_loss_before_and_after_commit_is_recoverable() {
         if committed {
             assert_ne!(committed_state, before);
             assert_eq!(
-                ProjectsRepository::get(&store.test_reader().expect("read"), "/home-project")
-                    .expect("project")
-                    .expect("exists")
-                    .1,
+                project_domain(
+                    ProjectsRepository::get(&store.test_reader().expect("read"), "/home-project")
+                        .expect("project")
+                        .expect("exists")
+                        .1
+                ),
                 case["expected"]["project"]
             );
             assert!(
-                !committed_state["runtime_operation_receipts"]
+                !committed_state["request_results"]
                     .as_array()
                     .expect("receipts")
                     .is_empty()
             );
         }
         let outbox = &case["outbox"];
-        complete_location(
-            &store,
-            text(outbox, "id"),
-            "peer",
-            &outbox["body"],
-            &case["receipt"],
-            text(&fixture.data, "local"),
-            fixture.data["now"].as_f64().expect("clock"),
-        )
-        .await
-        .expect("recover same request");
+        if committed {
+            assert_eq!(
+                json!(saved_location(
+                    &store,
+                    case,
+                    fixture.data["now"].as_f64().expect("clock")
+                )),
+                case["expected"]["registration"]
+            );
+        } else {
+            complete_location(
+                &store,
+                text(outbox, "id"),
+                "peer",
+                &outbox["body"],
+                &case["receipt"],
+                text(&fixture.data, "local"),
+                fixture.data["now"].as_f64().expect("clock"),
+            )
+            .await
+            .expect("recover same request");
+        }
         if committed {
             assert_eq!(
                 snapshot(&store),
@@ -884,10 +1116,12 @@ async fn location_process_loss_before_and_after_commit_is_recoverable() {
             );
         }
         assert_eq!(
-            ProjectsRepository::get(&store.test_reader().expect("read"), "/home-project")
-                .expect("read project")
-                .expect("exists")
-                .1,
+            project_domain(
+                ProjectsRepository::get(&store.test_reader().expect("read"), "/home-project")
+                    .expect("read project")
+                    .expect("exists")
+                    .1
+            ),
             case["expected"]["project"]
         );
     }
@@ -911,7 +1145,7 @@ async fn relocation_process_stop_child() {
         .transaction_with(move |tx| {
             let case = &child_input["case"];
             let outbox = &case["outbox"];
-            project_locations::complete_in_transaction(
+            complete_location_in_fixture(
                 tx,
                 text(outbox, "id"),
                 "peer",
@@ -1043,15 +1277,17 @@ async fn move_status_ticket_rejects_stale_generation_and_replay() {
         .expect("release case");
     let (path, store) = fixture.store("status-generation").await;
     fixture.seed(&store, case).await;
+    let store = Arc::new(store);
     let now = fixture.data["now"].as_f64().expect("clock");
     let key = text(&case["operation"], "id");
     let old_generation = agent_move::MoveSnapshot::from_record(&case["operation"])
         .expect("Python-written source")
         .reconciliation_generation();
+    let old_ticket = studio_runtime_schema::persistence::RequestIdentity::issue_root();
     save_status_ticket(
         &store,
         key,
-        "old-ticket",
+        &old_ticket,
         json!(old_generation),
         &case["targetReceipt"],
     )
@@ -1067,17 +1303,19 @@ async fn move_status_ticket_rejects_stale_generation_and_replay() {
         .expect("advance source status");
     let before = snapshot(&store);
     assert!(
-        agent_move::release_untransferred(&store, key, "old-ticket", now)
+        agent_move::release_untransferred(&store, key, &old_ticket, now)
             .await
             .is_err()
     );
     assert_eq!(snapshot(&store), before);
     drop(store);
-    let store = RuntimeStore::open(Some(&path))
-        .await
-        .expect("restart preserves source generation");
+    let store = Arc::new(
+        RuntimeStore::open(Some(&path))
+            .await
+            .expect("restart preserves source generation"),
+    );
     assert!(
-        agent_move::release_untransferred(&store, key, "old-ticket", now)
+        agent_move::release_untransferred(&store, key, &old_ticket, now)
             .await
             .is_err()
     );
@@ -1086,11 +1324,8 @@ async fn move_status_ticket_rejects_stale_generation_and_replay() {
         .expect("current snapshot")
         .reconciliation_generation();
     assert_ne!(generation, old_generation);
-    for (index, malformed) in [Value::Null, json!(true), json!(0), json!({})]
-        .into_iter()
-        .enumerate()
-    {
-        let ticket = format!("malformed-{index}");
+    for malformed in [Value::Null, json!(true), json!(0), json!({})].into_iter() {
+        let ticket = studio_runtime_schema::persistence::RequestIdentity::issue_root();
         save_status_ticket(&store, key, &ticket, malformed, &case["targetReceipt"]).await;
         let before = snapshot(&store);
         assert!(
@@ -1100,16 +1335,17 @@ async fn move_status_ticket_rejects_stale_generation_and_replay() {
         );
         assert_eq!(snapshot(&store), before);
     }
+    let current_ticket = studio_runtime_schema::persistence::RequestIdentity::issue_root();
     save_status_ticket(
         &store,
         key,
-        "current-ticket",
+        &current_ticket,
         json!(generation),
         &case["targetReceipt"],
     )
     .await;
     assert!(
-        agent_move::release_untransferred(&store, key, "current-ticket", now)
+        agent_move::release_untransferred(&store, key, &current_ticket, now)
             .await
             .expect("fresh proof releases")
     );
@@ -1119,7 +1355,7 @@ async fn move_status_ticket_rejects_stale_generation_and_replay() {
         .await
         .expect("restart after release");
     assert!(
-        agent_move::release_untransferred(&store, key, "current-ticket", now + 1.0)
+        agent_move::release_untransferred(&store, key, &current_ticket, now + 1.0)
             .await
             .is_err()
     );

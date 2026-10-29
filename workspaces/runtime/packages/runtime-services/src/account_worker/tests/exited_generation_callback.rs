@@ -73,7 +73,7 @@ fn assert_no_exited_reply(peer: &mut Peer) {
     }
 }
 
-/// The exited generation's journal receipt is ready, so its checkpoint covers it.
+/// The current stream owner accounts for the exited request in its contiguous ACK.
 async fn assert_exited_checkpoint(state: &State, cursor: u64) {
     state
         .bridge
@@ -81,9 +81,11 @@ async fn assert_exited_checkpoint(state: &State, cursor: u64) {
             store
                 .transaction_with(move |tx| {
                     assert!(
-                        store::checkpoint(tx, "default", EXITED)? >= cursor,
-                        "the exited generation's checkpoint passes its request"
+                        store::checkpoint(tx, "default", CURRENT)? >= cursor,
+                        "the current stream ACK passes the exited generation request"
                     );
+                    let pending:i64=tx.query_row("SELECT count(*) FROM runtime_outbox WHERE stream_id=?1 AND generation=?2 AND kind=?3 AND status!=?4 AND ordinal<=?5",rusqlite::params!["default",EXITED as i64,studio_runtime_schema::persistence::OutboxKind::JournalEntry,studio_runtime_schema::persistence::OutboxStatus::Committed,cursor as i64],|row|row.get(0))?;
+                    assert_eq!(pending,0,"the exited request leaves no unsettled journal obligation");
                     Ok(())
                 })
                 .await

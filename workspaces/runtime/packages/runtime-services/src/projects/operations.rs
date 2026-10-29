@@ -1,4 +1,5 @@
 use super::*;
+use crate::event_write::{CallerAdmission, RequestKey, begin_request};
 use std::sync::Arc;
 
 pub async fn peer_team_write(
@@ -12,12 +13,6 @@ pub async fn peer_team_write(
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned();
-    if action == "radio" {
-        return crate::radio_runtime::manage_http(Arc::clone(&store), &body).await;
-    }
-    if action == "convert" {
-        return crate::peer_conversion::convert(Arc::clone(&store), &body).await;
-    }
     if !matches!(action.as_str(), "save" | "delete" | "move") {
         return Err(ProjectsError::Invalid("unknown peer team action"));
     }
@@ -30,7 +25,7 @@ pub async fn peer_team_write(
         .get("request_id")
         .and_then(Value::as_str)
         .ok_or(ProjectsError::Invalid("peer team request ID is required"))?;
-    let request_id = python_strip(raw_request);
+    let request_id = python_strip(raw_request).to_owned();
     if request_id.is_empty() || request_id.chars().count() > 255 {
         return Err(ProjectsError::Invalid("peer team request ID is invalid"));
     }
@@ -85,13 +80,21 @@ pub async fn peer_team_write(
             "select at least two different lead chats",
         ));
     }
-    let signature =
-        sha256_hex(python_json(&json!({"operation":"peer-team","body":body})).as_bytes());
+    let signature = sha256_hex(
+        studio_runtime_schema::json_compat::python_json_compact(
+            &json!({"operation":"peer-team","body":body}),
+        )
+        .as_bytes(),
+    );
     let key = format!("peer-team:{request_id}");
     let (prepared, path) = super::prepare_path(store.clone(), path_value, false).await?;
     store.transaction_with(move |tx| {
         prepared.recheck(tx)?;
-        if let Some(result) = replay(tx, &key, &signature, "peer team")? { return Ok(result); }
+        let server = RuntimeStore::transaction_local_server_id(tx)?.ok_or(ProjectsError::Invalid("The local server ID is unavailable"))?;
+        let admitted = match begin_request::<Box<serde_json::value::RawValue>>(tx,RequestKey::new("peer-team", &[&server,"owner-api"], &request_id).raw(&key).operation(&["write"]), &signature,(now_seconds()*1000.0) as i64).map_err(StoreError::from)? {
+            CallerAdmission::Fresh(admitted) => admitted,
+            CallerAdmission::Replay(reply) => return serde_json::from_str(reply.get()).map_err(StoreError::from).map_err(Into::into),
+        };
         let mut project = match load_project(tx, &path)? {
             Some(project) => project,
             None if path.starts_with("project:") => return Err(ProjectsError::Invalid("select an existing project")),
@@ -157,54 +160,10 @@ pub async fn peer_team_write(
         }
         for id in previous_ids.difference(&live_ids) { SyncDocumentsRepository::put_entity(tx, "peerTeam", id, json!({}), true)?; }
         refresh_project_rooms(tx, &path, &prepared)?;
-        save_operation_receipt(tx, &key, &signature, &project)?;
+        let reply = serde_json::value::to_raw_value(&project).map_err(StoreError::from)?;
+        crate::event_write::settle_request(tx, &admitted, None, &reply).map_err(StoreError::from)?;
         Ok(project)
     }).await
-}
-
-pub(crate) fn replay(
-    tx: &studio_runtime_store::Transaction<'_>,
-    key: &str,
-    signature: &str,
-    subject: &'static str,
-) -> Result<Option<Value>, ProjectsError> {
-    read_receipt(tx, Some(key), signature, "runtime_projects", key, |_| true).map_err(|error| {
-        match error {
-            EventWriteError::Conflict(_) => ProjectsError::Invalid(match subject {
-                "sidebar" => "sidebar request ID was reused",
-                _ => "peer team request ID was reused",
-            }),
-            EventWriteError::InvalidStoredObject { object, id } => {
-                ProjectsError::InvalidStored { table: object, id }
-            }
-            EventWriteError::Store(error) => ProjectsError::Store(error),
-            EventWriteError::InvalidRequest(_)
-            | EventWriteError::InvalidResultSchema(_)
-            | EventWriteError::RemoteEventsUnavailable
-            | EventWriteError::WorkerAssignmentUnavailable
-            | EventWriteError::Clock => ProjectsError::Invalid("operation receipt is invalid"),
-        }
-    })
-}
-
-pub(crate) fn save_operation_receipt(
-    tx: &studio_runtime_store::Transaction<'_>,
-    key: &str,
-    signature: &str,
-    result: &Value,
-) -> Result<(), ProjectsError> {
-    save_receipt(tx, Some(key), signature, result).map_err(|error| match error {
-        EventWriteError::Store(error) => ProjectsError::Store(error),
-        EventWriteError::InvalidStoredObject { object, id } => {
-            ProjectsError::InvalidStored { table: object, id }
-        }
-        EventWriteError::InvalidRequest(_)
-        | EventWriteError::InvalidResultSchema(_)
-        | EventWriteError::Conflict(_)
-        | EventWriteError::RemoteEventsUnavailable
-        | EventWriteError::WorkerAssignmentUnavailable
-        | EventWriteError::Clock => ProjectsError::Invalid("operation receipt could not be saved"),
-    })
 }
 
 pub(crate) fn project_agents(
@@ -359,16 +318,37 @@ pub(super) async fn reorder(store: &RuntimeStore, mut body: Value) -> Result<Val
     {
         return Err(ProjectsError::Invalid("sidebar order is invalid"));
     }
-    let signature =
-        sha256_hex(python_json(&json!({"operation":"sidebar-order","body":body})).as_bytes());
+    let signature = sha256_hex(
+        studio_runtime_schema::json_compat::python_json_compact(
+            &json!({"operation":"sidebar-order","body":body}),
+        )
+        .as_bytes(),
+    );
     let key = format!("sidebar-order:{request_id}");
+    let request_id = request_id.to_owned();
     let groups = body["groups"].take();
     let migration = body.get("migration").and_then(Value::as_bool) == Some(true);
     store
         .transaction_with(move |tx| -> Result<Value, ProjectsError> {
-            if let Some(result) = replay(tx, &key, &signature, "sidebar")? {
-                return Ok(result);
-            }
+            let server = RuntimeStore::transaction_local_server_id(tx)?
+                .ok_or(ProjectsError::Invalid("The local server ID is unavailable"))?;
+            let admitted = match begin_request::<Box<serde_json::value::RawValue>>(
+                tx,
+                RequestKey::new("sidebar-order", &[&server, "owner-api"], &request_id)
+                    .raw(&key)
+                    .operation(&["write"]),
+                &signature,
+                (now_seconds() * 1000.0) as i64,
+            )
+            .map_err(StoreError::from)?
+            {
+                CallerAdmission::Fresh(admitted) => admitted,
+                CallerAdmission::Replay(reply) => {
+                    return serde_json::from_str(reply.get())
+                        .map_err(StoreError::from)
+                        .map_err(Into::into);
+                }
+            };
             let current = ProjectsRepository::sidebar_order(tx)?;
             let revision = current.get("revision").and_then(Value::as_u64).ok_or(
                 ProjectsError::InvalidStored {
@@ -390,9 +370,11 @@ pub(super) async fn reorder(store: &RuntimeStore, mut body: Value) -> Result<Val
                     "Sidebar order changed. Refreshed from the server",
                 ));
             }
-            let result = json!({"revision": revision.saturating_add(1), "groups": groups});
+            let result = json!({"revision":revision.saturating_add(1),"groups":groups});
             ProjectsRepository::put_sidebar_order(tx, &result)?;
-            save_operation_receipt(tx, &key, &signature, &result)?;
+            let reply = serde_json::value::to_raw_value(&result).map_err(StoreError::from)?;
+            crate::event_write::settle_request(tx, &admitted, None, &reply)
+                .map_err(StoreError::from)?;
             Ok(result)
         })
         .await

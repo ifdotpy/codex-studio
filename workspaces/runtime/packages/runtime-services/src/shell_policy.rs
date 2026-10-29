@@ -161,6 +161,9 @@ pub fn maintain_monitor(
     };
     let report = json!({"id":format!("monitor:{}:{generation}:{kind}",before.id()),"kind":kind,"message":message,"monitorId":before.id()});
     observe(tx, &agent, &report, now).map_err(|error| match error {
+        crate::notification_dispatch::NotificationDispatchError::RequestResult(error) => {
+            MonitorError::Store(StoreError::RequestResult(error))
+        }
         crate::notification_dispatch::NotificationDispatchError::Store(error) => {
             MonitorError::Store(error)
         }
@@ -265,6 +268,7 @@ pub fn observe(
         | crate::event_write::EventWriteError::RemoteEventsUnavailable
         | crate::event_write::EventWriteError::WorkerAssignmentUnavailable
         | crate::event_write::EventWriteError::InvalidStoredObject { .. }
+        | crate::event_write::EventWriteError::RequestResult(_)
         | crate::event_write::EventWriteError::Clock => {
             crate::notification_dispatch::NotificationDispatchError::invalid()
         }
@@ -359,7 +363,7 @@ async fn sweep(
     store: &RuntimeStore,
     port: &dyn AccountSessionPort,
     critical: bool,
-) -> Result<(), StoreError> {
+) -> Result<(), crate::account_worker::WorkerError> {
     let (settings, agents) = store.read_async("runtime-services/shell-policy", move |db| {
         let settings = OrchestrationSettingsRepository::shell_policy(db)?;
         if settings.quiet_threshold_ms == 0 && !critical { return Ok((settings,Vec::new())); }
@@ -376,18 +380,105 @@ async fn sweep(
         };
         let id = agent["id"].as_str().unwrap_or_default().to_owned();
         let epoch = agent["epoch"].as_i64().unwrap_or(-1);
-        let check = agent.clone();
-        let allowed = store
-            .read_async("runtime-services/shell-policy/eligibility", move |db| {
-                eligible(db, &check)
+        let account = account.to_owned();
+        let policy = settings.clone();
+        let request = store.transaction_with(move |tx| {
+            use crate::account_worker::retained::{ProviderCallIntent, reserve_provider_call};
+            use studio_runtime_schema::persistence::RequestIdentity;
+            use studio_runtime_store::request_results::{Admission, RequestResults};
+            let allowed = eligible(tx, &agent)?;
+            let root_request_id = RequestIdentity::issue_root();
+            let operation = format!("shell-policy:{id}:{root_request_id}");
+            let params = json!({"threadId":agent["threadId"],"settings":policy,"eligible":allowed,"critical":critical});
+            let identity = RequestIdentity::new("shell-policy", &[&id], &root_request_id, &[])
+                .map_err(studio_runtime_store::request_results::RequestResultError::from).map_err(StoreError::from)?;
+            let owner = match RequestResults::admit(tx, &identity, &params.to_string(), chrono::Utc::now().timestamp_millis()).map_err(StoreError::from)? {
+                Admission::Fresh(owner) => owner,
+                Admission::Replay(_) => return Err(crate::account_worker::WorkerError::Store(StoreError::RequestResult(
+                    studio_runtime_store::request_results::RequestResultError::Conflict {id: identity.id().to_owned()}
+                ))),
+            };
+            let actor = Some(RequestActor {agent: id, epoch});
+            let method = studio_runtime_providers::Method::ClaudeShellPolicy;
+            let admitted = reserve_provider_call(tx, &owner, ProviderCallIntent {
+                root_request_id: root_request_id.clone(), admitted_request: None,
+                scope: scope.clone(), operation: operation.clone(), actor: actor.clone(),
+                transfer: None, deleted_actor_session: None, method, params: params.clone(),
+            })?;
+            Ok::<_,crate::account_worker::WorkerError>(ProviderRequest {
+                root_request_id, admitted_request: Some(admitted), account, operation, actor,
+                expected_scope: Some(scope), deleted_actor_session: None, method, params,
+                deadline: Instant::now() + Duration::from_secs(2),
             })
-            .await?;
-        drop(port.provider_request(ProviderRequest {
-            account: account.into(), operation: format!("shell-policy:{id}:{}", uuid::Uuid::new_v4()), actor: Some(RequestActor {agent: id, epoch}), expected_scope: Some(scope), deleted_actor_session: None,
-            method: studio_runtime_providers::Method::ClaudeShellPolicy,
-            params: json!({"threadId":agent["threadId"],"settings":settings,"eligible":allowed,"critical":critical}),
-            deadline: Instant::now() + Duration::from_secs(2),
-        }).await);
+        }).await?;
+        let admitted = request.admitted_request.clone();
+        let expected_scope = request.expected_scope.clone();
+        let operation = request.operation.clone();
+        if let (Some(admitted), Some(expected_scope), Ok(receipt)) = (
+            admitted,
+            expected_scope,
+            port.provider_request(request).await,
+        ) && receipt.scope == expected_scope
+            && receipt.operation == operation
+            && receipt.certainty() == crate::account_session_runtime::RequestCertainty::NotSent
+        {
+            store
+                .transaction_with(move |tx| {
+                    crate::account_worker::retained::discard_unsent_provider_call(tx, &admitted)
+                })
+                .await?;
+        }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod receipt_tests {
+    use super::*;
+    use crate::account_session_runtime::{
+        AccountSessionFuture, ConnectionScope, SessionOutcome, SessionReceipt,
+    };
+
+    struct NotSent;
+    impl AccountSessionPort for NotSent {
+        fn current_scope(&self, _: &str) -> Option<ConnectionScope> {
+            Some(ConnectionScope {
+                account: "default".into(),
+                connection: "connection".into(),
+                generation: 1,
+            })
+        }
+        fn provider_request<'a>(
+            &'a self,
+            request: ProviderRequest,
+        ) -> AccountSessionFuture<'a, SessionReceipt> {
+            Box::pin(async move {
+                Ok(SessionReceipt {
+                    scope: request.expected_scope.unwrap(),
+                    operation: request.operation,
+                    outcome: SessionOutcome::NoLiveAccountWorker,
+                    replayed: false,
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn repeated_unsent_sweeps_do_not_leave_pending_provider_rows() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
+        store.transaction_with(|tx| {
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)", ("agent", json!({"id":"agent","rootId":"agent","provider":"claude","threadId":"thread","accountKey":"default","epoch":1,"autoWake":true,"status":"idle"}).to_string()))?;
+            tx.execute("INSERT INTO runtime_tasks(id,record) VALUES(?1,?2)", ("task", json!({"id":"task","agent":"agent","status":"running","name":"local_bash"}).to_string()))?;
+            Ok::<_, StoreError>(())
+        }).await.unwrap();
+        sweep(&store, &NotSent, true).await.unwrap();
+        drop(store);
+        let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
+        for _ in 0..2 {
+            sweep(&store, &NotSent, true).await.unwrap();
+        }
+        let pending: i64 = store.read_async("shell-policy/test", |db| Ok::<_, StoreError>(db.query_row("SELECT count(*) FROM runtime_outbox WHERE kind='provider_call' AND status='pending'", [], |row| row.get(0))?)).await.unwrap();
+        assert_eq!(pending, 0, "unsent periodic checks must not accumulate");
+    }
 }

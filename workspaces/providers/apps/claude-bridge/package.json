@@ -2,6 +2,10 @@
   "name": "studio-claude-bridge",
   "private": true,
   "type": "module",
+  "exports": {
+    "./request-id": "./request-id.ts",
+    "./*.ts": "./*.ts"
+  },
   "scripts": {
     "test": "vitest run --config vitest.config.ts",
     "check:focused": "pnpm run typecheck && vitest run --config vitest.config.ts",

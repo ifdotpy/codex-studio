@@ -394,7 +394,7 @@ mod tests {
             );
         connection
             .execute(
-                "INSERT INTO runtime_agents VALUES(?1,?2)",
+                "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
                 rusqlite::params![AGENT, agent.to_string()],
             )
             .expect("agent");

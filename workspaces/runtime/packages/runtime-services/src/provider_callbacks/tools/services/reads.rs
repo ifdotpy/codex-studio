@@ -11,56 +11,107 @@ pub(super) fn chat(
     tx: &Transaction<'_>,
     snapshot: &CallbackSnapshot,
     args: &Value,
-) -> Result<Value, CallbackError> {
+) -> Result<Box<serde_json::value::RawValue>, CallbackError> {
     let room = text(args, "room_id")?;
     messages::authorize_room(tx, snapshot, room)?;
     let page = crate::coordination_reads::chat_read(tx, room, args["before"].as_i64(), None, 100)?;
     project_chat(&page)
 }
 
-pub(crate) fn project_chat(page: &Value) -> Result<Value, CallbackError> {
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BriefMessage<'a> {
+    seq: i64,
+    id: &'a str,
+    room: &'a str,
+    sender: &'a str,
+    text: &'a str,
+    created: f64,
+    sender_name: &'a Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    truncated: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text_chars: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    read: Option<Value>,
+}
+
+pub(crate) fn project_chat(
+    page: &crate::coordination_reads::ChatRead,
+) -> Result<Box<serde_json::value::RawValue>, CallbackError> {
     let room = Value::Object(
         ["id", "kind", "rootId", "name"]
             .into_iter()
-            .filter_map(|k| page["room"].get(k).map(|v| (k.into(), v.clone())))
+            .filter_map(|k| page.room.get(k).map(|v| (k.into(), v.clone())))
             .collect(),
     );
-    let messages = page["messages"]
-        .as_array()
-        .ok_or(CallbackError::Stored("chat messages".into()))?;
+    let messages = &page.messages;
     let mut selected = Vec::new();
     for message in messages.iter().rev() {
-        let mut brief = message
-            .as_object()
-            .cloned()
-            .ok_or(CallbackError::Stored("chat message".into()))?;
-        brief.remove("deliveries");
-        let body = text(message, "text")?;
-        if body.len() > 3000 {
-            let end = body.floor_char_boundary(2400.min(body.len()));
-            brief.insert("text".into(), json!(&body[..end]));
-            brief.insert("truncated".into(), json!(true));
-            brief.insert("textChars".into(), json!(body.chars().count()));
-            brief.insert("read".into(), json!({"tool":"orchestration_read","output_ref":format!("chat-message:{}",text(message,"id")?)}));
-        }
-        let mut candidate = vec![Value::Object(brief)];
+        let body = message.text.as_str();
+        let truncated = body.len() > 3000;
+        let brief = BriefMessage {
+            seq: message.seq,
+            id: &message.id,
+            room: &message.room,
+            sender: &message.sender,
+            text: if truncated {
+                &body[..body.floor_char_boundary(2400.min(body.len()))]
+            } else {
+                body
+            },
+            created: message.created,
+            sender_name: &message.sender_name,
+            truncated: truncated.then_some(true),
+            text_chars: truncated.then(|| body.chars().count()),
+            read: truncated.then(|| {
+                Value::Object(Map::from_iter([
+                    ("tool".into(), Value::String("orchestration_read".into())),
+                    (
+                        "output_ref".into(),
+                        Value::String(format!("chat-message:{}", message.id)),
+                    ),
+                ]))
+            }),
+        };
+        let mut candidate = vec![brief];
         candidate.extend(selected.iter().cloned());
         // Conservative byte bound includes the model's escaped text envelope.
-        let bytes = json!([{"type":"inputText","text":json!({"room":room,"messages":candidate}).to_string()}]).to_string().len();
+        let inner = serde_json::to_string(&ChatPreview {
+            room: &room,
+            messages: &candidate,
+        })?;
+        let bytes =
+            r#"[{"text":,"type":"inputText"}]"#.len() + serde_json::to_string(&inner)?.len();
         if !selected.is_empty() && bytes > 13000 {
             break;
         }
         selected = candidate;
     }
-    let next = if !page["nextBefore"].is_null() || selected.len() < messages.len() {
-        selected
-            .first()
-            .map(|m| m["seq"].clone())
-            .unwrap_or(Value::Null)
+    let next = if page.next_before.is_some() || selected.len() < messages.len() {
+        selected.first().map(|m| m.seq)
     } else {
-        Value::Null
+        None
     };
-    Ok(json!({"room":room,"messages":selected,"nextBefore":next}))
+    Ok(serde_json::value::to_raw_value(&ChatProjection {
+        room: &room,
+        messages: &selected,
+        next_before: next,
+    })?)
+}
+
+#[derive(serde::Serialize)]
+struct ChatPreview<'a> {
+    room: &'a Value,
+    messages: &'a [BriefMessage<'a>],
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ChatProjection<'a> {
+    room: &'a Value,
+    messages: &'a [BriefMessage<'a>],
+    next_before: Option<i64>,
 }
 
 pub(super) fn read(
@@ -123,7 +174,7 @@ pub(super) fn read(
         ));
     }
     let id = text(&receipt, "id")?;
-    let mut result = records::get(tx, "runtime_tool_results", id)?
+    let mut result = tool_requests::saved_result(tx, id)?
         .or_else(|| receipt.get("result").cloned())
         .ok_or(CallbackError::Invalid(
             "Result is not available yet. Do not repeat the operation.",
@@ -219,7 +270,7 @@ fn native_request_alias(
 ) -> Result<Option<String>, CallbackError> {
     let aliases = tx
         .prepare_cached(
-            "SELECT request FROM runtime_tool_request_aliases WHERE agent=?1 AND alias=?2 LIMIT 2",
+            "SELECT id FROM runtime_tool_requests WHERE agent=?1 AND EXISTS(SELECT 1 FROM json_each(record,'$.aliases') WHERE value=?2) LIMIT 2",
         )?
         .query_map([agent, call], |row| row.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?;
@@ -531,6 +582,7 @@ mod studio_input_tests {
                 "accountKey":"default","threadId":"thread","turnId":"turn","name":id,"cwd":"/work"})
                 .to_string(),
                 &CallbackContext {
+                    stream_id: "default".into(),
                     agent: id.into(),
                     account: "default".into(),
                     connection: "connection".into(),

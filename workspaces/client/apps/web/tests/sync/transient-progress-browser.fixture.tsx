@@ -6,7 +6,7 @@ import VaultSetup from "../../src/components/sidebar/VaultSetup.tsx";
 import ClaudeSignIn from "../../src/components/ClaudeSignIn.tsx";
 import type { ServerServices } from "../../src/servers/serverServices.ts";
 import { ServerServicesProvider } from "../../src/servers/ServerServicesContext.tsx";
-import type { ApiPostPath, PostBody, PostResult } from "../../src/apiTypes.ts";
+import type { ApiPostPath, PostInput, PostResult } from "../../src/apiTypes.ts";
 import type {
   ResourceProgress,
   ResourceRef,
@@ -60,7 +60,7 @@ function fixtureReply<P extends ApiPostPath>(value: unknown): PostResult<P> {
 const backend = {
   post: async <P extends ApiPostPath>(
     path: P,
-    body: PostBody<P>,
+    body: PostInput<P>,
   ): Promise<PostResult<P>> => {
     if (path !== "/api/vault/setup/facts") {
       reads.jobs++;

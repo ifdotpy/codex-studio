@@ -18,7 +18,7 @@ from native_identity import process_start_time
 
 # Rust owner: runtime-providers/src/supervisor_protocol.rs.
 # test_retained_boundary checks this retained guest consumer against that owner.
-SUPERVISOR_PROTOCOL_V2 = 2
+SUPERVISOR_PROTOCOL_VERSION = 3
 
 INLINE_EVENT_BYTES = 64 * 1024
 MAX_EVENT_BYTES = 256 * 1024 * 1024
@@ -52,13 +52,13 @@ class Native:
             unproven(action, "connect", exc, started)
             raise GuestError("outcome_unknown", "The native supervisor connection is unavailable") from exc
         try:
-            hello = {"protocol": SUPERVISOR_PROTOCOL_V2, "stateDir": str(self.root), "operator": operator}
+            hello = {"protocol": SUPERVISOR_PROTOCOL_VERSION, "stateDir": str(self.root), "operator": operator}
             if not operator:
                 hello["backendId"] = self.backend
             writer.write(json.dumps(hello).encode() + b"\n")
             await asyncio.wait_for(writer.drain(), 2)
             hello = json.loads(await asyncio.wait_for(reader.readline(), 2))
-            if hello.get("ok") is not True or hello.get("protocol") != SUPERVISOR_PROTOCOL_V2:
+            if hello.get("ok") is not True or hello.get("protocol") != SUPERVISOR_PROTOCOL_VERSION:
                 raise GuestError("outcome_unknown", "The native supervisor refused the connection")
             request_id = uuid.uuid4().hex
             writer.write(json.dumps({"requestId": request_id, "action": action, **params}).encode() + b"\n")

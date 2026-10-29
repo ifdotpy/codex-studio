@@ -4,22 +4,16 @@ use super::*;
 use crate::recovery_history::ConnectionScope;
 use std::time::Instant;
 use studio_runtime_providers::RequestTicket;
+use studio_runtime_schema::persistence::RequestIdentity;
+use studio_runtime_store::request_results::AdmittedRequest;
 use tokio::sync::oneshot;
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct RequestActor {
-    pub agent: String,
-    pub epoch: i64,
-}
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct TransferAuthorization {
-    pub transfer_id: String,
-    pub member: String,
-    pub source_account: String,
-    pub thread_id: String,
-}
 #[derive(Clone)]
 pub struct SessionRequest {
+    /// The owner persists this root before making the provider obligation.
+    pub root_request_id: String,
+    /// The final effect token, when the owner already admitted this exact call.
+    pub admitted_request: Option<AdmittedRequest>,
     pub scope: ConnectionScope,
     pub expected_scope: Option<ConnectionScope>,
     pub operation: String,
@@ -34,52 +28,77 @@ pub struct SessionRequest {
 /// provider query whose result is not worth a durable record.
 pub const DIAGNOSTICS_OPERATION_PREFIX: &str = "diagnostics:";
 
-/// Any retained transport evidence prevents a transfer from changing an old
-/// read intent. This includes an unknown result and a prepared submission.
-pub(crate) fn has_transport_evidence(
-    tx: &studio_runtime_store::Transaction<'_>,
-    account: &str,
-    operation: &str,
-) -> Result<bool, WorkerError> {
-    let key = Call::operation_key(account, operation);
-    for phase in ["submitted", "written", "result"] {
-        if store::receipt(tx, &key, phase)?.is_some() {
-            return Ok(true);
+macro_rules! provider_reads {
+    ($($method:ident),+ $(,)?)=>{
+        /// The closed owner of side-effect-free provider reads.
+        #[derive(Clone,Copy,Debug,PartialEq,Eq)]
+        pub enum ProviderReadMethod {$($method),+}
+        impl ProviderReadMethod {
+            pub const ALL:&'static [Self]=&[$(Self::$method),+];
+            pub fn method(self)->Method {match self {$(Self::$method=>Method::$method),+}}
+            pub fn from_method(method:Method)->Option<Self> {Self::ALL.iter().copied().find(|read|read.method()==method)}
+            pub fn from_request(method:Method,params:&Value)->Option<Self> {
+                let read=Self::from_method(method)?;
+                if read==Self::AccountRead && params.get("refreshToken").is_some_and(|value|value!=&Value::Bool(false)){return None}
+                Some(read)
+            }
         }
-    }
-    Ok(false)
+    };
 }
-
+provider_reads! {
+    ConfigRead,
+    ClaudeDiagnostics,
+    ThreadLoadedList,
+    ModelList,
+    AccountRead,
+    AccountRateLimitsRead,
+    ThreadRead,
+    ThreadTurnsList,
+    ThreadItemsList,
+    ThreadList,
+    ThreadBackgroundTerminalsList,
+    ThreadQueueList,
+    ClaudeState,
+    ClaudeRepairReport,
+    ClaudeFileBackups,
+    ClaudeActivity,
+    ClaudeMoveVersions,
+    McpServerStatusList,
+    SkillsList,
+    OperationStatus,
+    ClaudeCommands,
+    ClaudeMoveIdentity,
+    ClaudeMovePreflight,
+    ClaudeMoveProof,
+    CurrentTimeRead,
+    ProviderList,
+    SecretsList,
+    Health,
+    Info,
+    LayrHealth,
+    Status,
+    ResponseStatus,
+    EventRead,
+    ShareStatus,
+    SyncMacHashes,
+    SyncMacHead,
+    SyncMacRead,
+    SyncMacWorktree,
+    VaultStatus
+}
 impl SessionRequest {
-    /// Configuration reads have no side effects and can be repeated after a lost
-    /// reply. Diagnostics probes are also read-only. Neither needs a durable
-    /// receipt or a wait for an unrelated journal checkpoint.
     pub(super) fn is_volatile_read(&self) -> bool {
-        self.method == Method::ConfigRead
-            || (self.operation.starts_with(DIAGNOSTICS_OPERATION_PREFIX)
-                && self.actor.is_none()
-                && self.transfer.is_none()
-                && matches!(
-                    self.method,
-                    Method::ClaudeDiagnostics | Method::ThreadLoadedList
-                ))
+        ProviderReadMethod::from_request(self.method, &self.params).is_some()
     }
 }
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum RequestResult {
-    Reply(Value),
-    Rejected(Value),
-    NotSent,
-    Unknown,
-}
 #[derive(Clone, Debug)]
 pub struct SessionReceipt {
     pub scope: ConnectionScope,
     pub operation: String,
     pub ticket: RequestTicket,
     pub result: RequestResult,
-    /// True only when this receipt came from checkpoint-verified durable replay.
+    /// True when this receipt reads a durable recorded identity, including Unknown.
     pub replayed: bool,
 }
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
@@ -90,6 +109,8 @@ pub enum PortError {
     ScopeMismatch,
     #[error("retained-session/invalid-request")]
     Invalid,
+    #[error("retained-session/request-expired")]
+    Expired,
     #[error("retained-session/not-sent")]
     NotSent,
     #[error("retained-session/unknown")]
@@ -282,6 +303,20 @@ impl RetainedSessionPort {
             .map_err(|_| PortError::Unknown)?
     }
 }
+fn account_refresh_shape(
+    scope: &ConnectionScope,
+    root: &str,
+    operation: &str,
+    method: Method,
+    params: &Value,
+) -> bool {
+    method == Method::AccountRead
+        && operation == format!("vm-codex-token-refresh:{}:{root}", scope.account)
+        && params.as_object().is_some_and(|params| {
+            params.len() == 1 && params.get("refreshToken") == Some(&Value::Bool(true))
+        })
+}
+
 pub(crate) fn validate(request: &SessionRequest) -> Result<(), PortError> {
     let turn_view = request.params.get("itemsView").and_then(Value::as_str);
     let turn_limit = request.params.get("limit").and_then(Value::as_u64);
@@ -298,7 +333,15 @@ pub(crate) fn validate(request: &SessionRequest) -> Result<(), PortError> {
     }
     let actorless_request = request.transfer.is_none()
         && request.actor.is_none()
-        && valid_actorless_request_shape(request.method, &request.params, &request.operation);
+        && (valid_actorless_request_shape(request.method, &request.params, &request.operation)
+            || (request.deleted_actor_session.is_none()
+                && account_refresh_shape(
+                    &request.scope,
+                    &request.root_request_id,
+                    &request.operation,
+                    request.method,
+                    &request.params,
+                )));
     let deleted_voice_stop = request
         .deleted_actor_session
         .as_ref()
@@ -1087,34 +1130,95 @@ fn valid_voice_speech(request: &SessionRequest) -> bool {
                 && params.get("text").and_then(Value::as_str).is_some()
         })
 }
-#[derive(Clone, serde::Serialize, serde::Deserialize, PartialEq)]
-pub(super) struct Call {
-    scope: ConnectionScope,
-    operation: String,
-    actor: Option<RequestActor>,
-    transfer: Option<TransferAuthorization>,
-    deleted_actor_session: Option<String>,
-    method: String,
-    params: Value,
+
+pub use studio_runtime_schema::provider_call_contract::{
+    RequestActor, RequestResult, TransferAuthorization,
+};
+pub type ProviderCallIntent = studio_runtime_schema::provider_call_contract::ProviderCallIntent<
+    Method,
+    AdmittedRequest,
+    ConnectionScope,
+>;
+pub(in crate::account_worker) type Call = ProviderCallIntent;
+
+/// Reserve a provider obligation in the transaction admitting its owning work.
+/// Repeating this call never turns submitted or unknown work back into sendable work.
+pub fn reserve_provider_call(
+    tx: &studio_runtime_store::Transaction<'_>,
+    owner: &AdmittedRequest,
+    mut intent: ProviderCallIntent,
+) -> Result<AdmittedRequest, WorkerError> {
+    let signature = intent.signature();
+    let discriminator = intent.effect_discriminator(&intent.scope.account);
+    let parts = discriminator.each_ref().map(String::as_str);
+    let admitted = owner.derive_result("provider-call", &parts, &signature);
+    intent.admitted_request = Some(admitted.clone());
+    storage::reserve(tx, intent, admitted.clone())?;
+    Ok(admitted)
 }
+
+/// The owning transaction must commit the cancellation or replacement before deleting this row.
+pub fn discard_unsent_provider_call(
+    tx: &studio_runtime_store::Transaction<'_>,
+    admitted: &AdmittedRequest,
+) -> Result<(), WorkerError> {
+    storage::discard_unsent(tx, admitted)
+}
+
+impl From<&SessionRequest> for ProviderCallIntent {
+    fn from(request: &SessionRequest) -> Self {
+        Self {
+            root_request_id: request.root_request_id.clone(),
+            admitted_request: request.admitted_request.clone(),
+            scope: request.scope.clone(),
+            operation: request.operation.clone(),
+            actor: request.actor.clone(),
+            transfer: request.transfer.clone(),
+            deleted_actor_session: request.deleted_actor_session.clone(),
+            method: request.method,
+            params: request.params.clone(),
+        }
+    }
+}
+
 /// The retained `command/exec` call of monitor `id`, checked against its
 /// operation identity. `None` when no request was submitted for it.
 fn monitor_call(
     tx: &rusqlite::Transaction<'_>,
     id: &str,
     operation: &crate::monitor_policy::Operation,
-) -> Result<Option<(Call, Value)>, WorkerError> {
+) -> Result<Option<storage::RecordedCall>, WorkerError> {
     let identity = format!("monitor:{id}");
     let key = Call::operation_key(&operation.account_key, &identity);
-    let Some(value) = super::store::receipt(tx, &key, "submitted")? else {
+    let result_id = if let Some(token) = &operation.evidence.provider_request {
+        Some(token.id().to_owned())
+    } else if let Some(root) = operation.evidence.root_request_id.as_deref() {
+        Some(
+            RequestIdentity::new(
+                "provider-call",
+                &[
+                    &operation.account_key,
+                    &operation.agent,
+                    &operation.epoch.to_string(),
+                ],
+                root,
+                &[&identity],
+            )
+            .map_err(|_| WorkerError::Capacity)?
+            .id()
+            .to_owned(),
+        )
+    } else {
+        None
+    };
+    let Some(value) = storage::recorded_operation(tx, &key, result_id.as_deref())? else {
         return Ok(None);
     };
-    let call: Call =
-        serde_json::from_value(value["call"].clone()).map_err(|_| WorkerError::Capacity)?;
+    let call = value.call();
     if call.operation != identity
         || call.scope.account != operation.account_key
         || call.scope.connection != operation.connection_id
-        || call.method != Method::CommandExec.as_str()
+        || call.method != Method::CommandExec
         || call.params.get("processId").and_then(Value::as_str) != Some(id)
         || call
             .actor
@@ -1125,7 +1229,7 @@ fn monitor_call(
             "monitor retained receipt identity changed".into(),
         ));
     }
-    Ok(Some((call, value)))
+    Ok(Some(value))
 }
 
 /// The original host command's durable scope. Account transfer never changes
@@ -1141,25 +1245,26 @@ pub(crate) fn monitor_command_scope(
     if record.value().get("operation") != Some(&json!(operation)) {
         return Ok(None);
     }
-    let Some((call, submitted)) = monitor_call(tx, id, operation)? else {
+    let Some(submitted) = monitor_call(tx, id, operation)? else {
         return Ok(None);
     };
-    // `submitted` precedes I/O and is not proof that a process exists. The
-    // provider task writes this record only for CommandReceipt::Written.
-    let Some(written) = store::receipt(tx, &call.key(), "written")? else {
+    let call = submitted.call();
+    if !submitted.written() {
+        return Ok(None);
+    }
+    let Some(prepared) = submitted.request() else {
         return Ok(None);
     };
-    let written = store::decode(&written)?;
-    if written.ticket.id != studio_runtime_providers::RequestId::String(call.key())
-        || written.ticket.generation != call.scope.generation
-        || written.ticket.method != Method::CommandExec
-        || written.operation_id.0 != call.key()
+    if prepared.id != studio_runtime_providers::RequestId::String(call.key())
+        || prepared.generation != call.scope.generation
+        || prepared.method != Method::CommandExec
+        || prepared.operation != call.key()
     {
         return Ok(None);
     }
-    Ok(match storage::replay_submitted(tx, &call, &submitted)? {
-        Ok(storage::Replay::Return(receipt)) => Some(receipt.scope),
-        _ => None,
+    Ok(match submitted.replay() {
+        storage::Replay::Return(receipt) => Some(receipt.scope),
+        storage::Replay::Ready | storage::Replay::Retry(_) => None,
     })
 }
 
@@ -1206,7 +1311,7 @@ pub async fn monitor_result(
     let operation = operation.clone();
     store
         .read_async("runtime-services/retained_monitor_result", move |tx| {
-            let Some((call, submitted)) = monitor_call(tx, &id, &operation)? else {
+            let Some(submitted) = monitor_call(tx, &id, &operation)? else {
                 return Ok(None);
             };
             if studio_runtime_store::MonitorsRepository::get(tx, &id)?
@@ -1214,24 +1319,7 @@ pub async fn monitor_result(
             {
                 return Ok(None);
             }
-            let receipt = match storage::replay_submitted(tx, &call, &submitted)? {
-                Ok(storage::Replay::Return(receipt)) => receipt,
-                Ok(storage::Replay::Miss | storage::Replay::Retry(_)) => return Ok(None),
-                Err(_) => {
-                    return Err(WorkerError::PreparationRefused(
-                        "monitor retained receipt authorization changed".into(),
-                    ));
-                }
-            };
-            Ok(match receipt.result {
-                RequestResult::Reply(value) => Some(
-                    crate::account_session_runtime::ProviderResponse::Reply(value),
-                ),
-                RequestResult::Rejected(value) => Some(
-                    crate::account_session_runtime::ProviderResponse::Rejected(value),
-                ),
-                RequestResult::Unknown | RequestResult::NotSent => None,
-            })
+            Ok(monitor_response(&submitted))
         })
         .await
 }
@@ -1260,25 +1348,25 @@ pub async fn monitor_late_result(
             if !snapshot.deadline_lost() || snapshot.operation() != Some(&operation) {
                 return Ok(None);
             }
-            let Some((call, submitted)) = monitor_call(tx, &id, &operation)? else {
+            let Some(submitted) = monitor_call(tx, &id, &operation)? else {
                 return Ok(None);
             };
-            let Ok(storage::Replay::Return(receipt)) =
-                storage::replay_submitted(tx, &call, &submitted)?
-            else {
-                return Ok(None);
-            };
-            Ok(match receipt.result {
-                RequestResult::Reply(value) => Some(
-                    crate::account_session_runtime::ProviderResponse::Reply(value),
-                ),
-                RequestResult::Rejected(value) => Some(
-                    crate::account_session_runtime::ProviderResponse::Rejected(value),
-                ),
-                RequestResult::Unknown | RequestResult::NotSent => None,
-            })
+            Ok(monitor_response(&submitted))
         })
         .await
+}
+fn monitor_response(
+    submitted: &storage::RecordedCall,
+) -> Option<crate::account_session_runtime::ProviderResponse> {
+    use crate::account_session_runtime::ProviderResponse;
+    let storage::Replay::Return(receipt) = submitted.replay() else {
+        return None;
+    };
+    match receipt.result {
+        RequestResult::Reply(value) => Some(ProviderResponse::Reply(value)),
+        RequestResult::Rejected(value) => Some(ProviderResponse::Rejected(value)),
+        RequestResult::Unknown | RequestResult::NotSent => None,
+    }
 }
 /// The provider generation that received monitor `id`'s retained
 /// `command/exec`. While that generation's provider process runs, its answer
@@ -1298,12 +1386,35 @@ pub async fn monitor_request_generation(
         .await
 }
 
-impl Call {
-    fn operation_key(account: &str, operation: &str) -> String {
-        format!(
-            "retained:{account}:{}",
-            studio_runtime_store::sha256_hex(operation.as_bytes())
+trait CallIdentity {
+    fn identity(&self) -> Result<RequestIdentity, PortError>;
+    fn signature(&self) -> String;
+    fn operation_key(account: &str, operation: &str) -> String;
+    fn key(&self) -> String;
+    fn receipt(&self, ticket: RequestTicket, result: RequestResult) -> SessionReceipt;
+}
+impl CallIdentity for Call {
+    fn identity(&self) -> Result<RequestIdentity, PortError> {
+        let actor = self.actor.as_ref().map_or("", |actor| actor.agent.as_str());
+        let epoch = self
+            .actor
+            .as_ref()
+            .map(|actor| actor.epoch.to_string())
+            .unwrap_or_default();
+        RequestIdentity::new(
+            "provider-call",
+            &[&self.scope.account, actor, &epoch],
+            &self.root_request_id,
+            &[&self.operation],
         )
+        .map_err(|_| PortError::Invalid)
+    }
+
+    fn signature(&self) -> String {
+        self.fingerprint(&self.scope.account, self.method.as_str())
+    }
+    fn operation_key(account: &str, operation: &str) -> String {
+        studio_runtime_schema::provider_call_contract::transport_key(account, operation)
     }
     fn key(&self) -> String {
         Self::operation_key(&self.scope.account, &self.operation)
@@ -1341,9 +1452,11 @@ pub(super) struct PendingBarrier {
 }
 
 mod runtime;
-mod storage;
+pub(in crate::account_worker) mod storage;
 pub(super) use storage::recover;
 pub use storage::vm_actor;
+#[cfg(feature = "test-support")]
+pub use storage::{checkpoint_covered, record_outcome, submitted};
 #[cfg(test)]
 pub(super) async fn test_submitted(
     store: &RuntimeStore,
@@ -1358,11 +1471,55 @@ pub mod consumers;
 
 #[cfg(test)]
 mod validation_tests {
+    #[test]
+    fn read_policy_has_one_closed_owner_and_preserves_mutations() {
+        for method in ProviderReadMethod::ALL {
+            assert_eq!(
+                ProviderReadMethod::from_method(method.method()),
+                Some(*method)
+            );
+        }
+        for method in [
+            Method::TurnStart,
+            Method::ThreadCompactStart,
+            Method::ThreadFork,
+            Method::ThreadSettingsUpdate,
+            Method::ClaudeSettings,
+            Method::ClaudeStopTask,
+            Method::AccountRateLimitResetCreditConsume,
+        ] {
+            assert_eq!(ProviderReadMethod::from_method(method), None);
+        }
+    }
+
     use super::*;
     use serde_json::json;
 
+    #[test]
+    fn account_refresh_is_never_a_volatile_read() {
+        assert_eq!(
+            ProviderReadMethod::from_request(Method::AccountRead, &json!({})),
+            Some(ProviderReadMethod::AccountRead)
+        );
+        assert_eq!(
+            ProviderReadMethod::from_request(Method::AccountRead, &json!({"refreshToken":false})),
+            Some(ProviderReadMethod::AccountRead)
+        );
+        for value in [json!(true), Value::Null, json!("false"), json!(0)] {
+            assert_eq!(
+                ProviderReadMethod::from_request(
+                    Method::AccountRead,
+                    &json!({"refreshToken":value})
+                ),
+                None
+            );
+        }
+    }
+
     fn turns_request(items_view: &str, limit: u64, actor: bool) -> SessionRequest {
         SessionRequest {
+            root_request_id: RequestIdentity::issue_root(),
+            admitted_request: None,
             scope: ConnectionScope {
                 account: "default".into(),
                 connection: "fixture-connection".into(),
@@ -1814,6 +1971,8 @@ mod validation_tests {
     #[test]
     fn retained_worker_accepts_only_bound_actorless_reset_credit_shapes() {
         let request = |method, operation: &str, params| SessionRequest {
+            root_request_id: RequestIdentity::issue_root(),
+            admitted_request: None,
             scope: ConnectionScope {
                 account: "default".into(),
                 connection: "fixture-connection".into(),

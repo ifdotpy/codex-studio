@@ -1,18 +1,25 @@
 //! Task gates use monitor admission, execution, output bounds, and approvals.
 //! Submission and monitor admission commit together. A restart never certifies a gate.
 use crate::event_write::{self, EventWriteError};
+use crate::event_write::{CallerAdmission, RequestKey};
 use crate::monitor_policy::MonitorError;
 use crate::monitor_runtime::{MonitorAdmission, WorkspaceAdmission};
 use serde_json::{Value, json};
 use std::path::Path;
+use studio_runtime_schema::persistence::RequestIdentity;
 use studio_runtime_store::{AgentRecord, AgentRepository, Transaction, WorkItemsRepository};
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DefaultGateReply {
+    id: String,
+    default_gate: Option<studio_runtime_schema::task_gate::Gate>,
+}
 
 pub fn normalize(value: &Value) -> Result<Value, EventWriteError> {
     let gate =
         studio_runtime_schema::task_gate::parse(value).map_err(EventWriteError::InvalidRequest)?;
-    serde_json::to_value(gate)
-        .map_err(studio_runtime_store::StoreError::from)
-        .map_err(Into::into)
+    Ok(studio_runtime_store::projection_value(&gate))
 }
 
 pub fn set_default(
@@ -28,19 +35,36 @@ pub fn set_default(
             "Only the lead can set the default acceptance gate",
         ));
     }
-    let gate = normalize(gate)?;
-    if let Some(saved) =
-        event_write::read_receipt(tx, request_id, signature, "runtime_agents", actor_id, |v| {
-            v["id"] == actor_id && v.get("defaultGate").is_some()
-        })?
-    {
-        return Ok(saved);
-    }
-    actor.extra.insert("taskDefaultGate".into(), gate.clone());
+    let gate =
+        studio_runtime_schema::task_gate::parse(gate).map_err(EventWriteError::InvalidRequest)?;
+    let admitted = if let Some(root) = request_id {
+        match event_write::begin_request::<DefaultGateReply>(
+            tx,
+            RequestKey::new("work-default-gate", &[actor_id], root),
+            signature,
+            (event_write::unix_time()? * 1000.0) as i64,
+        )? {
+            CallerAdmission::Replay(reply) => {
+                return Ok(studio_runtime_store::projection_value(&reply));
+            }
+            CallerAdmission::Fresh(admitted) => Some(admitted),
+        }
+    } else {
+        None
+    };
+    actor.extra.insert(
+        "taskDefaultGate".into(),
+        studio_runtime_store::projection_value(&gate),
+    );
     AgentRepository::put(tx, &actor)?;
-    let receipt = json!({"id":actor_id,"defaultGate":gate});
-    event_write::save_receipt(tx, request_id, signature, &receipt)?;
-    Ok(receipt)
+    let reply = DefaultGateReply {
+        id: actor_id.to_owned(),
+        default_gate: gate,
+    };
+    if let Some(admitted) = admitted {
+        event_write::settle_request(tx, &admitted, Some(actor_id), &reply)?;
+    }
+    Ok(studio_runtime_store::projection_value(&reply))
 }
 
 /// The guard and command both execute through the managed monitor sandbox.
@@ -89,7 +113,8 @@ pub fn admit(
         evidence["error"] =
             json!("Acceptance gates require a Git workspace and its full commit ID");
     } else if let Some(workspace) = workspace {
-        let request_id = format!("task-gate:{result_id}");
+        let request_id = RequestIdentity::issue_root();
+        evidence["requestId"] = json!(request_id);
         let request = json!({"command":command,"timeout_ms":config["timeout_ms"],"stall_timeout_seconds":0,"success_exit_codes":[0]});
         let log_root = crate::monitor_output::log_root(state_dir)
             .to_string_lossy()
@@ -341,9 +366,20 @@ mod tests {
         }).await.expect("gate fixture writes");
         (store, root)
     }
+    fn request_root(store: &RuntimeStore, label: &str) -> String {
+        static ROOTS: std::sync::LazyLock<
+            std::sync::Mutex<std::collections::BTreeMap<(std::path::PathBuf, String), String>>,
+        > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::BTreeMap::new()));
+        ROOTS
+            .lock()
+            .expect("fixture roots")
+            .entry((store.root().to_owned(), label.into()))
+            .or_insert_with(studio_runtime_schema::persistence::RequestIdentity::issue_root)
+            .clone()
+    }
     async fn submit(store: &Arc<RuntimeStore>, request: &str, revision: &str) -> Value {
         let state_dir = store.root().to_owned();
-        let request = request.to_owned();
+        let request = request_root(store, request);
         let revision = revision.to_owned();
         store
             .transaction_with(move |tx| {
@@ -377,13 +413,14 @@ mod tests {
         reason: Option<&str>,
     ) -> Result<Value, WorkWriteError> {
         let reason = reason.map(str::to_owned);
+        let request = request_root(store, "accept");
         store
             .transaction_with(move |tx| {
                 work_write::write_action_as_agent(
                     tx,
                     "lead",
                     "lead",
-                    Some("accept"),
+                    Some(&request),
                     "accept",
                     WorkWrite::Accept(AcceptWork {
                         task_id: "task".into(),
@@ -478,12 +515,14 @@ mod tests {
             "Known fixture failure; reviewed manually"
         );
         assert_eq!(events(&store, "work_ready").await.len(), 1);
-        assert_eq!(
-            accept(&store, Some("Known fixture failure; reviewed manually"))
-                .await
-                .expect("decision events load")["status"],
-            "accepted"
-        );
+        assert!(matches!(
+            accept(&store, Some("Known fixture failure; reviewed manually")).await,
+            Err(WorkWriteError::Event(
+                crate::event_write::EventWriteError::Conflict(
+                    "The accepted archive outcome is pending"
+                )
+            ))
+        ));
         assert_eq!(events(&store, "work_ready").await.len(), 1);
     }
     #[tokio::test]

@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 use studio_runtime_providers::ProviderKind;
+use studio_runtime_schema::persistence::{IdleEpisodeOutcome, RequestIdentity};
 use studio_runtime_schema::{
     idle_compaction::{Mode, Settings},
     shared_values::*,
@@ -16,7 +17,6 @@ use studio_runtime_store::{
 use tokio::sync::{Notify, watch};
 
 pub const NOTICE: &str = "Compacted while idle, before the prompt cache expired. To turn it off, set Claude idle compaction to Off in Settings > Agent orchestration.";
-pub const REQUEST_PREFIX: &str = "idle-compaction:";
 const FAILURE_RETRY_SECONDS: u64 = 30;
 
 pub use studio_runtime_schema::idle_compaction::CacheReport;
@@ -32,6 +32,16 @@ pub struct Episode {
     pub identity: Value,
     pub prefix_inputs: Value,
     pub attempt: Value,
+    #[serde(default)]
+    pub fired: bool,
+    #[serde(default)]
+    pub outcome: Option<IdleEpisodeOutcome>,
+    #[serde(default)]
+    pub fired_at: Option<f64>,
+    #[serde(default)]
+    pub before: Option<Value>,
+    #[serde(default)]
+    pub limits: Option<Value>,
 }
 
 pub fn fire_at(activity: f64, expiry: f64, fraction: f64) -> f64 {
@@ -69,7 +79,12 @@ fn prefix_inputs(agent: &Value) -> Value {
 
 /// Called in the dedicated cache notification transaction. Only request-local
 /// assistant usage can arm a timer; a cumulative SDK result cannot arm it.
-pub fn observe(connection: &Connection, agent: &mut Value, raw: &Value) -> Result<(), StoreError> {
+pub fn observe(
+    connection: &Connection,
+    agent: &mut Value,
+    raw: &Value,
+    previous: Option<&Episode>,
+) -> Result<(), StoreError> {
     if agent["provider"] != ProviderKind::Claude.key() {
         return Ok(());
     }
@@ -85,6 +100,13 @@ pub fn observe(connection: &Connection, agent: &mut Value, raw: &Value) -> Resul
         ));
     }
     agent["idleCache"] = json!(cache);
+    if let Some(previous) = previous
+        && previous.cache.request_id == cache.request_id
+        && previous.cache.ttl == cache.ttl
+        && previous.identity == identity(agent)
+    {
+        return Ok(());
+    }
     let settings = OrchestrationSettingsRepository::idle_compaction(connection)?;
     if cache.ttl != "1h" || settings.mode == Mode::Off {
         if let Some(fields) = agent.as_object_mut() {
@@ -94,14 +116,7 @@ pub fn observe(connection: &Connection, agent: &mut Value, raw: &Value) -> Resul
     }
     let activity = cache.last_activity_at / 1000.0;
     let expiry = activity + IDLE_COMPACTION_CACHE_SECONDS;
-    let id = format!(
-        "{REQUEST_PREFIX}{}",
-        studio_runtime_store::sha256_hex(
-            json!([agent["id"], identity(agent), cache.request_id])
-                .to_string()
-                .as_bytes()
-        )
-    );
+    let id = RequestIdentity::issue_root();
     agent["idleCompactionEpisode"] = json!(Episode {
         id,
         cache,
@@ -110,6 +125,11 @@ pub fn observe(connection: &Connection, agent: &mut Value, raw: &Value) -> Resul
         identity: identity(agent),
         prefix_inputs: prefix_inputs(agent),
         attempt: agent["startAttempt"]["id"].clone(),
+        fired: false,
+        outcome: None,
+        fired_at: None,
+        before: None,
+        limits: None,
     });
     Ok(())
 }
@@ -122,38 +142,38 @@ pub fn refusal(
     now: f64,
     allowed: bool,
     queued: bool,
-) -> Option<&'static str> {
+) -> Option<IdleEpisodeOutcome> {
     if settings.mode == Mode::Off {
-        return Some("disabled");
+        return Some(IdleEpisodeOutcome::Disabled);
     }
     if !episode.cache.compaction_enabled {
-        return Some("compaction_off");
+        return Some(IdleEpisodeOutcome::CompactionOff);
     }
     if !episode.cache.idle_compaction_enabled {
-        return Some("idle_compaction_off");
+        return Some(IdleEpisodeOutcome::IdleCompactionOff);
     }
     if prefix_inputs(agent) != episode.prefix_inputs || identity(agent) != episode.identity {
-        return Some("prefix_changed");
+        return Some(IdleEpisodeOutcome::PrefixChanged);
     }
     if agent["idleCache"]["ttl"] != "1h" {
-        return Some("not_one_hour");
+        return Some(IdleEpisodeOutcome::NotOneHour);
     }
     if (now - episode.fire_at).max(0.0) > IDLE_COMPACTION_MAX_LATE_SECONDS
         || !episode.cache.warm
         || now >= episode.expires_at
     {
-        return Some("lapsed");
+        return Some(IdleEpisodeOutcome::Lapsed);
     }
     if episode.cache.context_tokens < settings.min_tokens {
-        return Some("small");
+        return Some(IdleEpisodeOutcome::Small);
     }
     if agent["idleCache"]["requestId"] != episode.cache.request_id
         || agent["startAttempt"]["id"] != episode.attempt
     {
-        return Some("newer_request");
+        return Some(IdleEpisodeOutcome::NewerRequest);
     }
     if !allowed {
-        return Some("near_limit");
+        return Some(IdleEpisodeOutcome::NearLimit);
     }
     if agent["inFlight"] == true
         || agent["turnId"].as_str().is_some_and(|id| !id.is_empty())
@@ -162,17 +182,17 @@ pub fn refusal(
             Some("queued" | "starting" | "running" | "approval" | "compacting")
         )
     {
-        return Some("active");
+        return Some(IdleEpisodeOutcome::Active);
     }
     if queued {
-        return Some("queued_input");
+        return Some(IdleEpisodeOutcome::QueuedInput);
     }
     if agent["autoWake"] != true
         || studio_runtime_store::truthy(agent.get("deletedAt"))
         || studio_runtime_store::truthy(agent.get("nativeFailureHold"))
         || !matches!(agent["status"].as_str(), Some("idle" | "completed"))
     {
-        return Some("stopped");
+        return Some(IdleEpisodeOutcome::Stopped);
     }
     None
 }
@@ -182,36 +202,31 @@ fn queued(connection: &Connection, id: &str) -> Result<bool, StoreError> {
 }
 pub fn settled(connection: &Connection, id: &str) -> Result<bool, StoreError> {
     Ok(connection.query_row(
-        "SELECT EXISTS(SELECT 1 FROM runtime_operation_receipts WHERE id=?1)",
-        [id],
-        |row| row.get(0),
+        "SELECT EXISTS(SELECT 1 FROM runtime_agents WHERE idle_episode_type='object' AND idle_episode_id=?1 AND json_extract(record,'$.idleCompactionEpisode.fired')=1)",
+        [id], |row| row.get(0),
     )?)
 }
 fn record(
     connection: &Connection,
     episode: &Episode,
-    outcome: &str,
+    outcome: IdleEpisodeOutcome,
     now: f64,
 ) -> Result<(), StoreError> {
-    connection.execute("INSERT OR IGNORE INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'idle-compaction',?2)", params![episode.id, json!({"outcome":outcome,"at":now,"fireAt":episode.fire_at,"contextTokens":episode.cache.context_tokens,"lateMs":((now-episode.fire_at).max(0.0)*1000.0)}).to_string()])?;
-    eprintln!(
-        "idle_compaction_fired request={} outcome={} contextTokens={} lateMs={}",
-        episode.id,
-        outcome,
-        episode.cache.context_tokens,
-        (now - episode.fire_at).max(0.0) * 1000.0
-    );
+    connection.execute("UPDATE runtime_agents SET record=json_set(record,'$.idleCompactionEpisode.fired',json('true'),'$.idleCompactionEpisode.outcome',?2,'$.idleCompactionEpisode.firedAt',?3) WHERE idle_episode_type='object' AND idle_episode_id=?1 AND COALESCE(json_extract(record,'$.idleCompactionEpisode.fired'),0)=0", params![episode.id,outcome,now])?;
     Ok(())
 }
 
 /// Rechecks eligibility under the same writer transaction as native admission.
-/// The native receipt and this fire receipt commit together or neither commits.
+/// The native obligation and the current episode fire commit together or neither commits.
 pub struct IdleAdmission {
     pub inner: Arc<dyn Admission>,
     pub episode: Episode,
     pub limits: Value,
 }
 impl Admission for IdleAdmission {
+    fn idle_episode_id(&self) -> Option<&str> {
+        Some(&self.episode.id)
+    }
     fn check(
         &self,
         tx: &Transaction<'_>,
@@ -223,14 +238,14 @@ impl Admission for IdleAdmission {
             return Err(NativeError::Changed);
         }
         if let Some(reason) = check(tx, &self.episode, agent, &self.limits, now)? {
-            return Err(NativeError::Invalid(reason));
+            return Err(NativeError::Invalid(reason.as_str()));
         }
         if OrchestrationSettingsRepository::idle_compaction(tx)?.mode == Mode::Log {
             return Err(NativeError::Invalid("would_compact"));
         }
         self.inner.check(tx, agent, action)?;
-        record(tx, &self.episode, "started", now)?;
-        tx.execute("UPDATE runtime_operation_receipts SET result=json_set(result,'$.limits',json(?2),'$.before',json(?3)) WHERE id=?1", params![self.episode.id,self.limits.to_string(),json!({"status":agent["status"],"startAttempt":agent["startAttempt"],"turnEpoch":agent["turnEpoch"]}).to_string()])?;
+        record(tx, &self.episode, IdleEpisodeOutcome::Started, now)?;
+        tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.idleCompactionEpisode.limits',json(?2),'$.idleCompactionEpisode.before',json(?3)) WHERE id=?1", params![agent["id"].as_str(),self.limits.to_string(),json!({"status":agent["status"],"startAttempt":agent["startAttempt"],"turnEpoch":agent["turnEpoch"]}).to_string()])?;
         Ok(())
     }
 }
@@ -260,16 +275,12 @@ pub async fn release_unsubmitted(
             {
                 return Ok(());
             }
-            let saved: String = tx.query_row(
-                "SELECT result FROM runtime_operation_receipts WHERE id=?1",
-                [&request_id],
-                |row| row.get(0),
-            )?;
-            let saved: Value = serde_json::from_str(&saved)?;
+            let saved = crate::native_actions::idle_provenance(tx, &request_id)?
+                .ok_or(NativeError::Changed)?;
             crate::native_actions::fail_pending(tx, &request_id, &message)?;
-            for field in ["status", "startAttempt", "turnEpoch"] {
-                value[field] = saved["before"][field].clone();
-            }
+            value["status"] = Value::String(saved.before.status.as_str().to_owned());
+            value["startAttempt"] = saved.before.start_attempt;
+            value["turnEpoch"] = json!(saved.before.turn_epoch);
             value["inFlight"] = json!(false);
             studio_runtime_store::AgentRepository::put(
                 tx,
@@ -286,19 +297,13 @@ pub fn handoff_refusal(
     tx: &Transaction<'_>,
     agent: &Value,
     request: &str,
-) -> Result<Option<&'static str>, StoreError> {
+) -> Result<Option<IdleEpisodeOutcome>, StoreError> {
+    if agent["idleCompactionEpisode"]["id"] != request {
+        return Ok(Some(IdleEpisodeOutcome::NewerRequest));
+    }
     let episode: Episode = serde_json::from_value(agent["idleCompactionEpisode"].clone())
         .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
-    if episode.id != request {
-        return Ok(Some("newer_request"));
-    }
-    let raw: String = tx.query_row(
-        "SELECT result FROM runtime_operation_receipts WHERE id=?1",
-        [request],
-        |row| row.get(0),
-    )?;
-    let receipt: Value = serde_json::from_str(&raw)
-        .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
+    let receipt = &agent["idleCompactionEpisode"];
     let account = episode.identity["accountKey"].as_str().unwrap_or("default");
     let current: Option<String> = tx.query_row("SELECT payload FROM sync_entities WHERE collection='workspace' AND id='current' AND deleted=0", [], |row| row.get(0)).optional()?;
     let current: Value = current
@@ -319,7 +324,7 @@ pub fn handoff_refusal(
         return Ok(reason);
     }
     let settings = OrchestrationSettingsRepository::idle_compaction(tx)?;
-    Ok((settings.mode == Mode::Log).then_some("would_compact"))
+    Ok((settings.mode == Mode::Log).then_some(IdleEpisodeOutcome::WouldCompact))
 }
 
 pub fn limits_allowed(limits: &Value, agent: &Value, now: f64) -> bool {
@@ -339,7 +344,7 @@ fn check(
     agent: &Value,
     limits: &Value,
     now: f64,
-) -> Result<Option<&'static str>, StoreError> {
+) -> Result<Option<IdleEpisodeOutcome>, StoreError> {
     let settings = OrchestrationSettingsRepository::idle_compaction(connection)?.with_environment();
     Ok(refusal(
         &settings,
@@ -356,7 +361,7 @@ pub trait Host: Send + Sync + 'static {
     fn compact<'a>(&'a self, agent: &'a str, episode: Episode, limits: Value) -> HostFuture<'a>;
 }
 
-const NEXT_EPISODE_SQL: &str = "SELECT a.id,a.record FROM runtime_agents a WHERE a.idle_episode_type='object' AND a.idle_episode_id NOT IN (SELECT value FROM json_each(?1)) AND NOT EXISTS(SELECT 1 FROM runtime_operation_receipts r WHERE r.id=a.idle_episode_id) ORDER BY a.idle_episode_fire_at,a.id LIMIT 1";
+const NEXT_EPISODE_SQL: &str = "SELECT a.id,a.record FROM runtime_agents a WHERE a.idle_episode_type='object' AND a.idle_episode_id NOT IN (SELECT value FROM json_each(?1)) AND COALESCE(json_extract(a.record,'$.idleCompactionEpisode.fired'),0)=0 ORDER BY a.idle_episode_fire_at,a.id LIMIT 1";
 
 #[derive(Deserialize)]
 struct EpisodeRecord {
@@ -406,7 +411,7 @@ pub async fn fire(
                 return Ok(false);
             }
             let Some(agent) = AgentRepository::get(tx, &AgentId::from(id.as_str()))? else {
-                record(tx, &candidate, "no_host", now)?;
+                record(tx, &candidate, IdleEpisodeOutcome::NoHost, now)?;
                 return Ok(false);
             };
             let agent = agent.value();
@@ -417,7 +422,7 @@ pub async fn fire(
                 return Ok(false);
             }
             if settings.mode == Mode::Log {
-                record(tx, &candidate, "would_compact", now)?;
+                record(tx, &candidate, IdleEpisodeOutcome::WouldCompact, now)?;
                 return Ok(false);
             }
             Ok(true)
@@ -426,9 +431,9 @@ pub async fn fire(
     if start {
         let result = host.compact(&agent_id, episode.clone(), limits).await;
         let outcome = if result.is_ok() {
-            "dispatched"
+            IdleEpisodeOutcome::Dispatched
         } else {
-            "failed"
+            IdleEpisodeOutcome::Failed
         };
         if let Err(error) = result {
             eprintln!("idle compaction {}: {error}", episode.id);
@@ -525,6 +530,54 @@ pub async fn run(
 mod tests {
     use super::*;
     #[test]
+    fn receipt_domain_idle_repeat_keeps_fired_episode_through_disabled_observation() {
+        let db = studio_runtime_store::test_canvas();
+        let (settings, episode, mut agent, _) = fixture();
+        OrchestrationSettingsRepository::set_idle_compaction(&db, &settings).expect("settings");
+        observe(&db, &mut agent, &json!(episode.cache), None).expect("first observation");
+        let root = agent["idleCompactionEpisode"]["id"].clone();
+        agent["idleCompactionEpisode"]["fired"] = json!(true);
+        agent["idleCompactionEpisode"]["outcome"] = json!(IdleEpisodeOutcome::Started);
+        let mut disabled = settings;
+        disabled.mode = Mode::Off;
+        OrchestrationSettingsRepository::set_idle_compaction(&db, &disabled).expect("disable");
+        observe(&db, &mut agent, &json!(episode.cache), Some(&episode)).expect("same episode");
+        assert_eq!(agent["idleCompactionEpisode"]["id"], root);
+        assert_eq!(agent["idleCompactionEpisode"]["fired"], true);
+        disabled.mode = Mode::Compact;
+        OrchestrationSettingsRepository::set_idle_compaction(&db, &disabled).expect("enable");
+        observe(&db, &mut agent, &json!(episode.cache), Some(&episode)).expect("repeat");
+        assert_eq!(agent["idleCompactionEpisode"]["id"], root);
+        assert_eq!(agent["idleCompactionEpisode"]["fired"], true);
+        let tx = db.unchecked_transaction().expect("tx");
+        agent["idleCompactionEpisode"] = Value::Null;
+        assert_eq!(
+            handoff_refusal(&tx, &agent, root.as_str().expect("root")).expect("superseded"),
+            Some(IdleEpisodeOutcome::NewerRequest)
+        );
+    }
+
+    #[test]
+    fn receipt_domain_idle_fires_on_owner_once_without_receipt_table() {
+        let db = studio_runtime_store::test_canvas();
+        let (_, episode, mut agent, _) = fixture();
+        agent["rootId"] = json!("agent");
+        agent["idleCompactionEpisode"] = json!(episode);
+        AgentRepository::put(
+            &db,
+            &studio_runtime_store::AgentRecord::from_value(agent).expect("agent"),
+        )
+        .expect("save owner");
+        record(&db, &episode, IdleEpisodeOutcome::Started, 3241.0).expect("fire");
+        let saved = AgentRepository::get(&db, &AgentId::from("agent"))
+            .expect("read")
+            .expect("owner")
+            .value();
+        assert_eq!(saved["idleCompactionEpisode"]["fired"], true);
+        assert_eq!(saved["idleCompactionEpisode"]["outcome"], "started");
+        assert!(settled(&db, &episode.id).expect("settled"));
+    }
+    #[test]
     fn episode_lookup_searches_deadline_index() {
         let db = studio_runtime_store::test_canvas();
         let plan = db
@@ -584,7 +637,7 @@ mod tests {
             "second"
         );
         store.transaction(|tx| {
-            tx.execute("INSERT INTO runtime_operation_receipts VALUES('first','idle-compaction','{}')", [])?;
+            tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.idleCompactionEpisode.fired',json('true')) WHERE id='first'", [])?;
             tx.execute("UPDATE runtime_agents SET record=json_remove(record,'$.idleCompactionEpisode') WHERE id='second'", [])?;
             Ok(())
         }).await.expect("settle and remove");
@@ -673,6 +726,11 @@ mod tests {
             identity: identity(&agent),
             prefix_inputs: prefix_inputs(&agent),
             attempt: json!("request"),
+            fired: false,
+            outcome: None,
+            fired_at: None,
+            before: None,
+            limits: None,
         };
         (settings, episode, agent, Clock(3241.0))
     }
@@ -726,7 +784,7 @@ mod tests {
                 _ => unreachable!(),
             }
             assert_eq!(
-                refusal(&s, &e, &a, c.0, allowed, queued),
+                refusal(&s, &e, &a, c.0, allowed, queued).map(IdleEpisodeOutcome::as_str),
                 Some(reason),
                 "{reason}"
             );
@@ -743,19 +801,19 @@ mod tests {
         episode.cache.warm = false;
         assert_eq!(
             refusal(&settings, &episode, &agent, clock.0, true, false),
-            Some("lapsed")
+            Some(IdleEpisodeOutcome::Lapsed)
         );
         episode.cache.warm = true;
         episode.expires_at = clock.0;
         assert_eq!(
             refusal(&settings, &episode, &agent, clock.0, true, false),
-            Some("lapsed")
+            Some(IdleEpisodeOutcome::Lapsed)
         );
         episode.expires_at += 1.0;
         agent["startAttempt"]["id"] = json!("new-turn");
         assert_eq!(
             refusal(&settings, &episode, &agent, clock.0, true, false),
-            Some("newer_request")
+            Some(IdleEpisodeOutcome::NewerRequest)
         );
     }
 }

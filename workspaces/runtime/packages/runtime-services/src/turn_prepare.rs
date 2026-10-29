@@ -44,7 +44,7 @@ type Versions = BTreeMap<String, String>;
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Epoch(pub Option<String>, pub u64);
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContextManifest {
     pub epoch: Epoch,
     pub versions: Versions,
@@ -211,7 +211,7 @@ pub struct PreparationSnapshot {
     pub prepared_at: f64,
     pub operation_id: String,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ProviderInput {
     #[serde(rename = "text")]
@@ -235,7 +235,7 @@ pub enum ProviderInput {
         origin: Option<ProviderInputOrigin>,
     },
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct TranscriptInput {
     pub id: String,
     pub at: f64,
@@ -244,7 +244,7 @@ pub struct TranscriptInput {
     pub truncated: bool,
     pub assets: Vec<Map<String, Value>>,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct TranscriptItem {
     pub id: String,
     pub role: String,
@@ -255,19 +255,19 @@ pub struct TranscriptItem {
     pub assets: Vec<Map<String, Value>>,
     pub inputs: Vec<TranscriptInput>,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct ArtifactIntent {
     pub event_id: String,
     pub relative_path: String,
     /// Create exclusively, or verify identical bytes if this location already exists.
     pub body: String,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentPatch {
     #[serde(rename = "complaintsPresented")]
     pub complaints_presented: Vec<String>,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct PreparedSubmission {
     pub operation_id: String,
     pub actor_id: String,

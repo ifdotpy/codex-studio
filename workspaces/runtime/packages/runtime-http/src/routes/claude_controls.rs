@@ -485,6 +485,7 @@ fn session_error(
 ) -> ApiError {
     use studio_runtime_services::account_session_runtime::AccountSessionError as Error;
     match error {
+        Error::Expired => ApiError::new(StatusCode::GONE, error.to_string()),
         Error::Requires(dependency) => ApiError::dependency(dependency),
         Error::Refused(message) => ApiError::new(StatusCode::BAD_REQUEST, message),
         Error::InvalidResponse(_) | Error::Persistence | Error::Unknown => ApiError::internal(),

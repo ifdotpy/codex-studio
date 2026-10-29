@@ -319,6 +319,18 @@ function generatedFacadeRequestAssertions() {
     id: "agent",
     request_id: "one",
   });
+  post("/api/claude/session", {
+    action: "stop_task",
+    id: "agent",
+    task_id: "task",
+    request_id: "one",
+  });
+  // @ts-expect-error stopping a task requires its durable request identity
+  post("/api/claude/session", {
+    action: "stop_task",
+    id: "agent",
+    task_id: "task",
+  });
 }
 void generatedFacadeRequestAssertions;
 

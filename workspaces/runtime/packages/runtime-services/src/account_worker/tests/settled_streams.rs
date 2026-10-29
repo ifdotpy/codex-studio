@@ -12,6 +12,21 @@ async fn persisted_streams(state: &State) -> (usize, usize) {
             store
                 .transaction_with(|tx| {
                     let streams = store::load_streams(tx, "default")?;
+                    let raw = studio_runtime_store::account_state::streams(tx, "default")?
+                        .expect("current account stream owner");
+                    let saved: Value = serde_json::from_str(&raw).map_err(StoreError::from)?;
+                    assert_eq!(
+                        saved["metadata"]["closed"]
+                            .as_array()
+                            .expect("closed owner keys")
+                            .len(),
+                        streams.closed_len()
+                    );
+                    assert_eq!(
+                        pending_stream_batch(tx)?.is_some(),
+                        streams.pending_bytes() > 0,
+                        "pending bytes have exactly one StreamFlush owner"
+                    );
                     Ok::<_, WorkerError>((streams.closed_len(), streams.pending_bytes()))
                 })
                 .await

@@ -138,9 +138,9 @@ fn v2_handshake_and_event_keep_typed_envelope_and_raw_payload() {
     };
     let request = handshake_request_v2(&identity);
     let encoded = serde_json::to_value(request).unwrap();
-    assert_eq!(encoded["protocol"], SUPERVISOR_PROTOCOL_V2);
+    assert_eq!(encoded["protocol"], SUPERVISOR_PROTOCOL_VERSION);
     assert!(validate_handshake_v2(r#"{"ok":true}"#).is_err());
-    assert!(validate_handshake_v2(r#"{"ok":true,"protocol":2}"#).is_ok());
+    assert!(validate_handshake_v2(r#"{"ok":true,"protocol":3}"#).is_ok());
 
     let event = SupervisorEventV2 {
         sequence: EventCursor(9),
@@ -273,12 +273,14 @@ fn actor(
         initialization: InitializationStatus::AwaitingReply,
     };
     let actor = AdapterTask {
+        account_store: None,
         activation: None,
         inherit_cwd: false,
         clock: SessionClock::default(),
         handle: ProviderHandle::for_account("unit"),
         open: OpenRequest {
             handle: SupervisorHandle("account:unit".into()),
+            generation: None,
             command: vec![],
             env: Default::default(),
             cwd: "/".into(),
@@ -328,6 +330,15 @@ async fn attachment_with_supervisor_peers() -> (
     let factory = SupervisorProviderTaskFactory::new(BackendIdentity {
         backend_id: BackendId("detach-barrier".into()),
         state_dir: root.path().into(),
+    })
+    .with_account_store({
+        let path = root.path().join("account-state");
+        std::fs::create_dir(&path).unwrap();
+        Arc::new(
+            studio_runtime_store::RuntimeStore::open(Some(&path))
+                .await
+                .unwrap(),
+        )
     });
     let attachment = factory
         .open(
@@ -350,7 +361,7 @@ async fn attachment_with_supervisor_peers() -> (
     let _handshake = read_request(&mut control).await;
     control
         .get_mut()
-        .write_all(b"{\"ok\":true,\"protocol\":2}\n")
+        .write_all(b"{\"ok\":true,\"protocol\":3}\n")
         .await
         .unwrap();
     let status = read_request(&mut control).await;
@@ -362,7 +373,7 @@ async fn attachment_with_supervisor_peers() -> (
     let _handshake = read_request(&mut events).await;
     events
         .get_mut()
-        .write_all(b"{\"ok\":true,\"protocol\":2}\n")
+        .write_all(b"{\"ok\":true,\"protocol\":3}\n")
         .await
         .unwrap();
     assert_eq!(read_request(&mut events).await["action"], "nextBatch");
@@ -371,9 +382,8 @@ async fn attachment_with_supervisor_peers() -> (
 
 #[tokio::test]
 async fn shutdown_waits_for_supervisor_detach_on_both_connections() {
+    let (_root, mut attachment, mut control, mut events) = attachment_with_supervisor_peers().await;
     tokio::time::timeout(RPC_TIMEOUT, async {
-        let (_root, mut attachment, mut control, mut events) =
-            attachment_with_supervisor_peers().await;
         let mut shutdown = Box::pin(attachment.shutdown());
         assert!(
             std::future::poll_fn(|cx| Poll::Ready(shutdown.as_mut().poll(cx).is_pending())).await
@@ -882,16 +892,34 @@ pub(super) fn panic_on_open_write(bytes: &[u8]) {
 
 #[tokio::test]
 async fn panic_during_uncertain_open_closes_socket_and_preserves_handle_recovery() {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let root = std::env::temp_dir().join(format!(
+        "panic-open-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::create_dir(&root).unwrap();
+    struct Cleanup(PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ignored = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(root.clone());
+    let listener = tokio::net::UnixListener::bind(root.join("supervisor.sock")).unwrap();
+    let identity = BackendIdentity {
+        backend_id: BackendId("panic-test".into()),
+        state_dir: root.clone(),
+    };
+    let account_path = root.join("account-state");
+    std::fs::create_dir(&account_path).unwrap();
+    let store = Arc::new(
+        studio_runtime_store::RuntimeStore::open(Some(&account_path))
+            .await
+            .unwrap(),
+    );
     tokio::time::timeout(Duration::from_secs(15), async {
-        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let root = std::env::temp_dir().join(format!("panic-open-{}-{}", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
-        std::fs::create_dir(&root).unwrap();
-        struct Cleanup(PathBuf);
-        impl Drop for Cleanup { fn drop(&mut self) { let _ignored = std::fs::remove_dir_all(&self.0); } }
-        let _cleanup = Cleanup(root.clone());
-        let listener = tokio::net::UnixListener::bind(root.join("supervisor.sock")).unwrap();
-        let identity = BackendIdentity { backend_id: BackendId("panic-test".into()), state_dir: root.clone() };
-        let factory = SupervisorProviderTaskFactory::new(identity);
+        let factory = SupervisorProviderTaskFactory::new(identity).with_account_store(store);
         let handle = ProviderHandle::for_account("panic-open");
         PANIC_OPEN.with(|armed| armed.set(true));
         let mut attachment = factory.open(handle.clone(), OpenOptions { clock: SessionClock::default(), launch: ProviderLaunchSpec::new(vec!["fake".into()], Default::default(), root), expected_generation: None }, Shutdown::default()).await.unwrap();
@@ -899,7 +927,7 @@ async fn panic_during_uncertain_open_closes_socket_and_preserves_handle_recovery
         let mut peer = BufReader::new(socket);
         let _handshake = read_request(&mut peer).await;
         peer.get_mut()
-            .write_all(b"{\"ok\":true,\"protocol\":2}\n")
+            .write_all(b"{\"ok\":true,\"protocol\":3}\n")
             .await
             .unwrap();
         let status = read_request(&mut peer).await;

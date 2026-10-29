@@ -282,18 +282,38 @@ pub async fn release_untransferred(
                 return Ok(false);
             };
             let snapshot = MoveSnapshot::from_record(&row)?;
-            let receipt =
-                studio_runtime_store::ProjectLocationsRepository::outbox(tx, &status_ticket)?
-                    .ok_or(MoveError::Refused("Unknown move status ticket"))?;
-            if receipt["server"] != row["server"]
-                || receipt.pointer("/body/payload/reconciliationGeneration")
+            let server = row["server"]
+                .as_str()
+                .ok_or(MoveError::Refused("Unknown move server"))?;
+            let receipt = studio_runtime_store::request_results::RequestResults::read::<
+                studio_runtime_store::multi_server_delivery::SavedRemoteReply,
+            >(
+                tx,
+                &status_ticket,
+                "server-outbox",
+                &[server],
+                &status_ticket,
+                &["move_status"],
+                (now * 1000.0) as i64,
+            )?
+            .ok_or(MoveError::Refused("Unknown move status ticket"))?
+            .reply;
+            let body: Value = serde_json::from_str(
+                receipt
+                    .body
+                    .as_deref()
+                    .ok_or(MoveError::Refused("Missing move status request"))?,
+            )
+            .map_err(studio_runtime_store::StoreError::from)?;
+            if receipt.server.as_deref() != Some(server)
+                || body.pointer("/payload/reconciliationGeneration")
                     != Some(&json!(snapshot.reconciliation_generation()))
-                || receipt["state"] != "complete"
-                || receipt.pointer("/body/requestId") != Some(&json!(status_ticket))
-                || receipt.pointer("/body/action") != Some(&json!("move_status"))
-                || receipt.pointer("/body/payload/move") != Some(&json!(key))
-                || receipt.pointer("/result/requestId") != Some(&json!(status_ticket))
-                || receipt.pointer("/result/outcome") != Some(&json!("applied"))
+                || body["requestId"] != json!(status_ticket)
+                || body["action"] != "move_status"
+                || body.pointer("/payload/move") != Some(&json!(key))
+                || receipt.response.request_id != status_ticket
+                || receipt.response.outcome
+                    != studio_runtime_schema::persistence::RemoteOutcome::Applied
             {
                 return Err(MoveError::Refused(
                     "The move status ticket does not prove this move",
@@ -302,10 +322,16 @@ pub async fn release_untransferred(
             let agent = AgentRepository::get(tx, &AgentId::from(snapshot.agent.as_str()))?
                 .ok_or(MoveError::Refused("Unknown move agent"))?;
             let pending = Repository::pending_events(tx, &snapshot.agent)?;
-            apply(
-                tx,
-                snapshot.release(&agent.value(), &receipt["result"]["value"], pending, now)?,
+            let value: Value = serde_json::from_str(
+                receipt
+                    .response
+                    .value
+                    .as_deref()
+                    .ok_or(MoveError::Refused("Missing move status response"))?
+                    .get(),
             )
+            .map_err(studio_runtime_store::StoreError::from)?;
+            apply(tx, snapshot.release(&agent.value(), &value, pending, now)?)
         })
         .await
 }

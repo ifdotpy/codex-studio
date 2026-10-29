@@ -3,6 +3,7 @@ use rusqlite::Transaction;
 use serde_json::{Value, json};
 use studio_runtime_providers::ProviderKind;
 use studio_runtime_providers::{RequestId, ResponseBody};
+use studio_runtime_schema::persistence::RequestCardStatus;
 use studio_runtime_schema::question_answers::{
     QuestionApproval, QuestionCardAnswer, QuestionDecision,
 };
@@ -17,6 +18,11 @@ pub const NATIVE_REQUEST_METHODS: [&str; 5] = [
     "item/tool/requestUserInput",
     "mcpServer/elicitation/request",
 ];
+
+pub(super) fn status(card: &Value) -> Result<RequestCardStatus, CallbackError> {
+    serde_json::from_value(card["status"].clone())
+        .map_err(|_| CallbackError::Stored("runtime_requests/status".into()))
+}
 
 pub fn interactive(method: &str) -> bool {
     NATIVE_REQUEST_METHODS.contains(&method)
@@ -37,13 +43,11 @@ pub enum NativeAdmission {
 /// transaction. Repeating it for the same request (a worker restart before its
 /// record retired) finds the first card and admits nothing new. The user's
 /// answer is sent only by the card's HTTP path, never from here, so a replay
-/// cannot send it a second time. `cursor` is the request's journal cursor: it
-/// lets the written answer's payload retire with the worker checkpoint.
+/// cannot send it a second time.
 pub async fn admit_native(
     store: std::sync::Arc<RuntimeStore>,
     context: &CallbackContext,
     frame: &studio_runtime_providers::Frame,
-    cursor: u64,
     now: f64,
 ) -> Result<NativeAdmission, CallbackError> {
     let request = Input::from_frame(frame)?
@@ -52,32 +56,22 @@ pub async fn admit_native(
     if !now.is_finite() || now < 0.0 {
         return Err(CallbackError::Invalid("Invalid callback clock"));
     }
-    if cursor == 0 {
-        return Err(CallbackError::Invalid("Invalid callback journal cursor"));
-    }
     let context = context.clone();
     store
         .transaction_with(move |tx| {
             let identity = ReplyIdentity::new(&context, &request.id);
-            if storage::read(tx, &format!("{}:resolved", identity.key()))?.is_some() {
-                return Ok(NativeAdmission::Settled);
-            }
-            let key = format!("{}:card", identity.key());
-            if let Some(saved) = storage::read(tx, &key)? {
-                if saved["signature"] != request.signature()
-                    || saved["identity"] != serde_json::to_value(&identity)?
-                {
-                    return Err(CallbackError::Conflict);
-                }
-                let id = saved["card"]
-                    .as_str()
-                    .ok_or_else(|| CallbackError::Stored(key.clone()))?;
-                let card = records::get(tx, "runtime_requests", id)?
-                    .ok_or_else(|| CallbackError::Stored(key.clone()))?;
-                return Ok(if card["status"] == "pending" {
-                    NativeAdmission::Card(id.to_owned())
-                } else {
-                    NativeAdmission::Settled
+            if let Some(decision) = storage::saved_decision(tx, &identity, &request)? {
+                return Ok(match decision {
+                    CallbackDecision::Pending(id) => {
+                        let mut card = records::get(tx, "runtime_requests", &id)?
+                            .ok_or(CallbackError::Stale)?;
+                        card["connectionId"] = json!(context.connection);
+                        save(tx, &card)?;
+                        NativeAdmission::Card(id)
+                    }
+                    CallbackDecision::Answer(_)
+                    | CallbackDecision::Settled(_)
+                    | CallbackDecision::Unsupported => NativeAdmission::Settled,
                 });
             }
             let snapshot = storage::snapshot(tx, &context)?;
@@ -95,9 +89,6 @@ pub async fn admit_native(
             else {
                 return Err(CallbackError::Unknown);
             };
-            let mut saved = storage::read(tx, &key)?.ok_or(CallbackError::Unknown)?;
-            saved["journalCursor"] = json!(cursor);
-            storage::update(tx, &key, &saved)?;
             Ok(NativeAdmission::Card(id))
         })
         .await
@@ -115,13 +106,22 @@ pub fn expire_ended_generations(
     let rows = {
         let mut statement = tx.prepare_cached(
             "SELECT id,record FROM runtime_requests WHERE json_valid(record) \
-             AND json_extract(record,'$.status') IN ('pending','answering') \
+             AND json_extract(record,'$.status') IN (?6,?7) \
              AND json_extract(record,'$.method') IN (?1,?2,?3,?4,?5)",
         )?;
         statement
-            .query_map(NATIVE_REQUEST_METHODS, |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })?
+            .query_map(
+                rusqlite::params![
+                    NATIVE_REQUEST_METHODS[0],
+                    NATIVE_REQUEST_METHODS[1],
+                    NATIVE_REQUEST_METHODS[2],
+                    NATIVE_REQUEST_METHODS[3],
+                    NATIVE_REQUEST_METHODS[4],
+                    RequestCardStatus::Pending,
+                    RequestCardStatus::Answering
+                ],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )?
             .collect::<Result<Vec<_>, _>>()?
     };
     let mut count = 0;
@@ -163,13 +163,18 @@ pub fn expire_ended_generations(
 
 /// A pending card expires; an answer whose delivery started becomes uncertain.
 fn expire_card(tx: &Transaction<'_>, card: &mut Value) -> Result<bool, CallbackError> {
-    let next = match card["status"].as_str() {
-        Some("pending") => "expired",
-        Some("answering") => "uncertain",
-        _ => return Ok(false),
+    let next = match status(card)? {
+        RequestCardStatus::Pending => RequestCardStatus::Expired,
+        RequestCardStatus::Answering => RequestCardStatus::Uncertain,
+        RequestCardStatus::Answered
+        | RequestCardStatus::Uncertain
+        | RequestCardStatus::Blocked
+        | RequestCardStatus::Resolved
+        | RequestCardStatus::Expired
+        | RequestCardStatus::Deleted => return Ok(false),
     };
     card["status"] = json!(next);
-    tx.execute("UPDATE runtime_operation_receipts SET result=json_set(result,'$.delivery','unknown') WHERE json_extract(result,'$.card')=?1 AND json_extract(result,'$.delivery') IN ('prepared','submitted')", [card["id"].as_str().ok_or(CallbackError::Invalid("Invalid callback card identity"))?])?;
+    storage::hold_card(tx, card["id"].as_str().ok_or(CallbackError::Stale)?)?;
     save(tx, card)?;
     Ok(true)
 }
@@ -231,9 +236,14 @@ pub(super) fn save(tx: &Transaction<'_>, card: &Value) -> Result<(), CallbackErr
         .transpose()?
         .flatten();
     if let Some(actor) = actor {
-        crate::tool_requests::reconcile_effect(tx, "requests", card, &actor)?;
+        crate::tool_requests::reconcile_effect(
+            tx,
+            studio_runtime_schema::persistence::ExecutionEffectKind::Requests,
+            card,
+            &actor,
+        )?;
     }
-    let deleted = card["status"] != "pending";
+    let deleted = status(card)? != RequestCardStatus::Pending;
     let value = if deleted {
         json!({})
     } else {
@@ -251,29 +261,16 @@ pub(super) fn admit(
     now: f64,
 ) -> Result<CallbackDecision, CallbackError> {
     let identity = ReplyIdentity::new(context, &input.id);
-    let key = format!("{}:card", identity.key());
-    if let Some(saved) = storage::read(tx, &key)? {
-        if saved["signature"] != input.signature()
-            || saved["identity"] != serde_json::to_value(&identity)?
-        {
-            return Err(CallbackError::Conflict);
-        }
-        let id = saved["card"]
-            .as_str()
-            .ok_or_else(|| CallbackError::Stored(key.clone()))?;
-        let card = records::get(tx, "runtime_requests", id)?
-            .ok_or_else(|| CallbackError::Stored(key.clone()))?;
-        return match card["status"].as_str() {
-            Some("pending") => Ok(CallbackDecision::Pending(id.into())),
-            _ => Err(CallbackError::Invalid("Request is no longer pending")),
-        };
+    if let Some(decision) = storage::saved_decision(tx, &identity, input)? {
+        return Ok(decision);
     }
-    let pending:i64=tx.query_row("SELECT count(*) FROM runtime_requests WHERE json_extract(record,'$.accountKey')=?1 AND json_extract(record,'$.status') IN ('pending','answering')",[&context.account],|row|row.get(0))?;
+    let mut owner = storage::admit_owner(tx, &identity, &input.signature())?;
+    let pending:i64=tx.query_row("SELECT count(*) FROM runtime_requests WHERE json_extract(record,'$.accountKey')=?1 AND json_extract(record,'$.status') IN (?2,?3)",rusqlite::params![context.account,RequestCardStatus::Pending,RequestCardStatus::Answering],|row|row.get(0))?;
     if pending >= MAX_PENDING as i64 {
         return Err(CallbackError::Invalid("Too many pending provider requests"));
     }
-    let id = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, key.as_bytes()).to_string();
-    let mut card = json!({"id":id,"rpcId":input.id,"method":input.method,"params":input.params,"agent":context.agent,"accountKey":context.account,"connectionId":context.connection,"epoch":context.epoch,"supervisor":{"generation":context.generation},"status":"pending","createdAt":now});
+    let id = owner.id.clone();
+    let mut card = json!({"id":id,"rpcId":input.id,"method":input.method,"params":input.params,"agent":context.agent,"accountKey":context.account,"connectionId":context.connection,"epoch":context.epoch,"supervisor":{"generation":context.generation},"status":RequestCardStatus::Pending,"createdAt":now});
     if let Some(item_id) = input.params["itemId"].as_str() {
         let key = format!("{}:{item_id}", context.agent);
         if let Some(item) = records::get(tx, "runtime_items", &key)?
@@ -288,11 +285,8 @@ pub(super) fn admit(
     let mut actor = snapshot.actor().clone();
     actor["status"] = json!("approval");
     storage::save_actor(tx, &actor)?;
-    storage::save(
-        tx,
-        &key,
-        &json!({"identity":identity,"signature":input.signature(),"card":id}),
-    )?;
+    owner.payload.card = Some(id.clone());
+    storage::put_owner(tx, &owner)?;
     Ok(CallbackDecision::Pending(id))
 }
 
@@ -408,7 +402,6 @@ fn answer_in(
     if card["agent"] != context.agent
         || card["epoch"].as_u64() != Some(context.epoch)
         || card["accountKey"] != context.account
-        || card["connectionId"] != context.connection
         || card
             .pointer("/supervisor/generation")
             .and_then(Value::as_u64)
@@ -432,16 +425,20 @@ fn answer_in(
         params: card["params"].clone(),
     };
     let identity = ReplyIdentity::new(context, &input.id);
+    let owner = storage::owner(tx, &identity)?.ok_or(CallbackError::Stale)?;
+    if owner.payload.card.as_deref() != Some(id) {
+        return Err(CallbackError::Stale);
+    }
     if let Some(previous) = card.get("answerSignature") {
         if previous != &signature {
             return Err(CallbackError::Conflict);
         }
-        if card["status"] != "answered" {
+        if status(&card)? != RequestCardStatus::Answered {
             return Err(CallbackError::Unknown);
         }
         return storage::saved_reply(tx, &identity, &input)?.ok_or(CallbackError::Unknown);
     }
-    if card["status"] != "pending" {
+    if status(&card)? != RequestCardStatus::Pending {
         return Err(CallbackError::Invalid("Request is no longer pending"));
     }
     let unanswered = card.clone();
@@ -452,18 +449,13 @@ fn answer_in(
     card["decision"] = data.get("decision").cloned().unwrap_or(json!("answer"));
     card["deferred"] = json!(false);
     card["answerHistory"] = history;
-    card["status"] = json!("answering");
+    card["status"] = json!(RequestCardStatus::Answering);
     let reply = Reply::new(identity, ResponseBody::Result(result))?;
     storage::save_reply(tx, &input, &reply)?;
-    let key = reply.identity.key();
-    let mut outbox = storage::read(tx, &key)?.ok_or(CallbackError::Unknown)?;
-    outbox["card"] = json!(id);
-    outbox["unanswered"] = unanswered;
-    let admission = storage::read(tx, &format!("{key}:card"))?.ok_or(CallbackError::Stale)?;
-    if let Some(cursor) = admission.get("journalCursor") {
-        outbox["journalCursor"] = cursor.clone();
-    }
-    storage::update(tx, &key, &outbox)?;
+    let mut outbox = storage::response(tx, &reply.identity)?.ok_or(CallbackError::Unknown)?;
+    outbox.payload.card = Some(id.into());
+    outbox.payload.unanswered = Some(unanswered);
+    storage::put_response(tx, &outbox)?;
     save(tx, &card)?;
     Ok(reply)
 }
@@ -505,93 +497,32 @@ pub async fn resolve(
     store.transaction_with(move |tx| {
         let rpc_value = serde_json::to_value(&rpc_id)?;
         let identity = ReplyIdentity::new(&context, &rpc_id);
-        let resolution_key = format!("{}:resolved", identity.key());
-        let mut card_signature = None;
-        for card in matching_rpc_cards(tx, &context, &rpc_id)? {
-                let card_id = card["id"]
-                    .as_str()
-                    .ok_or_else(|| CallbackError::Stored("runtime_requests/id".into()))?;
-                let input = Input {
-                    id: serde_json::from_value(card["rpcId"].clone())
-                        .map_err(|_| CallbackError::Stored(format!("runtime_requests/{card_id}")))?,
-                    method: card["method"]
-                        .as_str()
-                        .ok_or_else(|| CallbackError::Stored(format!("runtime_requests/{card_id}")))?
-                        .into(),
-                    params: card
-                        .get("params")
-                        .filter(|params| params.is_object())
-                        .cloned()
-                        .ok_or_else(|| CallbackError::Stored(format!("runtime_requests/{card_id}")))?,
-                };
-                input.check_context(&context)?;
-                let signature = input.signature();
-                if card_signature
-                    .as_ref()
-                    .is_some_and(|previous| previous != &signature)
-                {
-                    return Err(CallbackError::Conflict);
-                }
-                card_signature = Some(signature);
-        }
-        let receipt_signature = storage::read(tx, &identity.key())?
-            .or(storage::read(tx, &format!("{}:card", identity.key()))?)
-            .and_then(|receipt| receipt["signature"].as_str().map(str::to_owned));
-        if card_signature
-            .as_ref()
-            .zip(receipt_signature.as_ref())
-            .is_some_and(|(card, receipt)| card != receipt)
-        {
-            return Err(CallbackError::Conflict);
-        }
-        let known_signature = card_signature.or(receipt_signature);
-        if let Some(previous) = storage::read(tx, &resolution_key)? {
-            if previous["identity"] != serde_json::to_value(&identity)? {
-                return Err(CallbackError::Stale);
-            }
-            if let Some(signature) = known_signature {
-                if previous
-                    .get("signature")
-                    .is_some_and(|saved| saved != &signature)
-                {
-                    return Err(CallbackError::Conflict);
-                }
-                if previous.get("signature").is_none() {
-                    let mut proof = previous;
-                    proof["signature"] = json!(signature);
-                    storage::update(tx, &resolution_key, &proof)?;
-                }
-            }
-        } else {
-            let mut proof = json!({"identity":identity,"resolvedAt":now});
-            if let Some(signature) = known_signature {
-                proof["signature"] = json!(signature);
-            }
-            storage::save(tx, &resolution_key, &proof)?;
-        }
+        let matching = matching_rpc_cards(tx, &context, &rpc_id)?;
+        let signature = matching.first().map(|card| Input {
+            id: rpc_id.clone(), method: card["method"].as_str().unwrap_or_default().into(), params: card["params"].clone(),
+        }.signature());
+        storage::resolve_owner(tx, &identity, signature.as_deref())?;
         let mut count = 0;
         for mut card in records::all(tx, "runtime_requests")? {
             if card["agent"] == context.agent
                 && card["accountKey"] == context.account
-                && card["connectionId"] == context.connection
                 && card["epoch"].as_u64() == Some(context.epoch)
                 && card
                     .pointer("/supervisor/generation")
                     .and_then(Value::as_u64)
                     == Some(context.generation)
                 && card["rpcId"] == rpc_value
-                && matches!(card["status"].as_str(), Some("pending" | "answering" | "uncertain" | "blocked"))
+                && matches!(status(&card)?, RequestCardStatus::Pending | RequestCardStatus::Answering | RequestCardStatus::Uncertain | RequestCardStatus::Blocked)
             {
-                card["status"] = json!("resolved");
+                card["status"] = json!(RequestCardStatus::Resolved);
                 card["resolvedAt"] = json!(now);
                 // Retire prepared/submitted replies before any delayed worker can
                 // submit or settle them; provider resolution is not approval.
-                tx.execute("UPDATE runtime_operation_receipts SET result=json_remove(json_set(result,'$.delivery','resolved'),'$.body','$.unanswered') WHERE json_extract(result,'$.card')=?1 AND json_extract(result,'$.delivery')!='written'", [card["id"].as_str().ok_or(CallbackError::Stored("runtime_requests/id".into()))?])?;
                 save(tx, &card)?;
                 count += 1;
             }
         }
-        let pending: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM runtime_requests WHERE json_extract(record,'$.agent')=?1 AND json_extract(record,'$.status')='pending')", [&context.agent], |r| r.get(0))?;
+        let pending: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM runtime_requests WHERE json_extract(record,'$.agent')=?1 AND json_extract(record,'$.status')=?2)", rusqlite::params![context.agent,RequestCardStatus::Pending], |r| r.get(0))?;
         if !pending {
             let mut actor = records::get(tx, "runtime_agents", &context.agent)?.ok_or(CallbackError::Stale)?;
             if actor["epoch"].as_u64() == Some(context.epoch) && actor["status"] == "approval" && studio_runtime_store::truthy(actor.get("inFlight")) && actor["autoWake"] == true {
@@ -613,16 +544,14 @@ fn matching_rpc_cards(
         "SELECT record FROM runtime_requests \
          WHERE json_extract(record,'$.agent')=?1 \
            AND json_extract(record,'$.accountKey')=?2 \
-           AND json_extract(record,'$.connectionId')=?3 \
-           AND json_extract(record,'$.epoch')=?4 \
-           AND json_extract(record,'$.supervisor.generation')=?5 \
-           AND json_extract(record,'$.rpcId')=json_extract(?6,'$')",
+           AND json_extract(record,'$.epoch')=?3 \
+           AND json_extract(record,'$.supervisor.generation')=?4 \
+           AND json_extract(record,'$.rpcId')=json_extract(?5,'$')",
     )?;
     let rows = statement.query_map(
         rusqlite::params![
             context.agent,
             context.account,
-            context.connection,
             i64::try_from(context.epoch).map_err(|_| CallbackError::Stale)?,
             i64::try_from(context.generation).map_err(|_| CallbackError::Stale)?,
             rpc_id,
@@ -659,9 +588,23 @@ fn card_context(tx: &Transaction<'_>, card: &Value) -> Result<CallbackContext, C
     let agent = required(&card["agent"])?;
     let actor = records::get(tx, "runtime_agents", &agent)?.ok_or(CallbackError::Stale)?;
     Ok(CallbackContext {
-        agent,
+        agent: agent.clone(),
         account: card["accountKey"].as_str().unwrap_or("default").into(),
-        connection: required(&card["connectionId"])?,
+        stream_id: if actor["executionMode"] == "vm" {
+            crate::account_worker::vm_journal_scope(
+                card["accountKey"].as_str().unwrap_or("default"),
+                &agent,
+            )
+        } else {
+            card["accountKey"].as_str().unwrap_or("default").into()
+        },
+        connection: actor
+            .pointer("/startAttempt/connectionId")
+            .and_then(Value::as_str)
+            .filter(|connection| !connection.is_empty())
+            .map(str::to_owned)
+            .map(Ok)
+            .unwrap_or_else(|| required(&card["connectionId"]))?,
         generation: card
             .pointer("/supervisor/generation")
             .and_then(Value::as_u64)
@@ -682,7 +625,8 @@ fn provider_context(tx: &Transaction<'_>, card: &Value) -> Result<CallbackContex
         CallbackError::Stored(_) | CallbackError::Stale => {
             CallbackError::Dependency("provider-session/question-answer")
         }
-        error @ CallbackError::Invalid(_)
+        error @ CallbackError::Expired
+        | error @ CallbackError::Invalid(_)
         | error @ CallbackError::InvalidResultSchema(_)
         | error @ CallbackError::Dependency(_)
         | error @ CallbackError::Conflict
@@ -704,7 +648,7 @@ pub async fn pending_native_delete_context(
             let card = records::get(tx, "runtime_requests", &id)?
                 .ok_or(CallbackError::Invalid("Unknown question"))?;
             let method = card["method"].as_str().unwrap_or_default();
-            if card["status"] == "pending" && method != "agent/asyncQuestion" {
+            if status(&card)? == RequestCardStatus::Pending && method != "agent/asyncQuestion" {
                 provider_context(tx, &card).map(Some)
             } else {
                 Ok(None)
@@ -742,7 +686,7 @@ fn prepare_answer_in(
         if signature != &answer_signature(data) {
             return Err(CallbackError::Conflict);
         }
-        if card["status"] == "answered" {
+        if status(&card)? == RequestCardStatus::Answered {
             return Ok(None);
         }
         return Err(CallbackError::Unknown);
@@ -764,10 +708,9 @@ fn prepare_answer_in(
     let context = provider_context(tx, &card)?;
     let reply = answer_in(tx, &context, id, data, now)?;
     if delete {
-        let key = reply.identity.key();
-        let mut outbox = storage::read(tx, &key)?.ok_or(CallbackError::Unknown)?;
-        outbox["deleteRequestedAt"] = json!(now);
-        storage::update(tx, &key, &outbox)?;
+        let mut outbox = storage::response(tx, &reply.identity)?.ok_or(CallbackError::Unknown)?;
+        outbox.payload.delete_requested_at = Some(now);
+        storage::put_response(tx, &outbox)?;
     }
     Ok(Some(reply))
 }
@@ -818,7 +761,7 @@ pub async fn prepare_delete(
                 return Ok(None);
             }
             let method = card["method"].as_str().unwrap_or_default();
-            if card["status"] == "pending" && method != "agent/asyncQuestion" {
+            if status(&card)? == RequestCardStatus::Pending && method != "agent/asyncQuestion" {
                 // A native answer is only possible for a card tied to a live
                 // provider request. Missing callback identity is a named refusal,
                 // checked before prepare_answer_in writes durable intent.

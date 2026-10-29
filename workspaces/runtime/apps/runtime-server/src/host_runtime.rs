@@ -174,11 +174,30 @@ type VmLaunchInputs = (
 
 #[derive(Clone, Copy)]
 struct VmCodexRefreshIdentity<'a> {
+    root_request_id: &'a str,
+    source: &'a studio_runtime_store::request_results::AdmittedRequest,
     account_key: &'a str,
     previous_account_id: &'a str,
     actor_id: &'a str,
     actor_epoch: i64,
     generation: u64,
+}
+
+enum VmAuthOwner<'a> {
+    Execution {
+        attempt_id: &'a str,
+        source: &'a studio_runtime_store::request_results::AdmittedRequest,
+    },
+    Callback {
+        source: &'a studio_runtime_store::request_results::AdmittedRequest,
+    },
+}
+
+struct VmCodexAuthSource<'a> {
+    account_key: &'a str,
+    account: &'a Value,
+    root_request_id: &'a str,
+    owner: VmAuthOwner<'a>,
 }
 
 struct ClaudeCredentialRequest<'a> {
@@ -320,6 +339,14 @@ impl HostRuntime {
             if let Some(host_exec) = &host_exec {
                 vm.attach_host_exec(Arc::clone(host_exec));
             }
+            // The guest follows the installed build (docs/linux-vm-workspaces.md, "Guest updates").
+            match studio_runtime_services::linux_vm_update::GuestPayload::read(
+                install_root.workspace_root(),
+            ) {
+                Ok(Some(payload)) => vm.attach_guest_payload(payload),
+                Ok(None) => {}
+                Err(error) => eprintln!("linux-vm: the guest files are unreadable: {error}"),
+            }
             vm.attach_chat_notices(Arc::new(
                 studio_runtime_services::linux_vm_runtime::StoreChatNotices::new(store.clone()),
             ));
@@ -350,6 +377,16 @@ impl HostRuntime {
                 checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 loop {
                     checks.tick().await;
+                    // Idle moment of the watchdog: the guest follows the installed build.
+                    match vm.update_guest().await {
+                        Ok(outcome)
+                            if matches!(
+                                outcome.as_str(),
+                                "current" | "none" | "stopped" | "busy" | "deferred" | "no_key"
+                            ) => {}
+                        Ok(outcome) => eprintln!("linux-vm: guest update: {outcome}"),
+                        Err(error) => eprintln!("linux-vm: guest update failed: {error}"),
+                    }
                     match vm.check().await {
                         Ok(outcome)
                             if matches!(
@@ -418,7 +455,7 @@ impl HostRuntime {
             })
             .with_callback_runtime(callback_runtime);
         let launcher = Arc::new(HostLauncher {
-            factory: SupervisorProviderTaskFactory::new(identity),
+            factory: SupervisorProviderTaskFactory::new(identity).with_account_store(store.clone()),
             supervisor_mode: std::env::var("CODEX_AGENTS_SUPERVISOR_MODE")
                 .is_ok_and(|value| value == "1"),
             child_priority: ChildPriority::from_environment(),
@@ -657,6 +694,7 @@ impl studio_runtime_services::account_worker::preparation::VmProviderLaunchResol
                 resolve_vm_launch_inputs(
                     Arc::clone(&accounts),
                     account_session.as_deref(),
+                    Arc::clone(&self.store),
                     &claude_bridge_dir,
                     request_for_resolution,
                 )
@@ -704,6 +742,8 @@ impl studio_runtime_services::account_worker::preparation::VmProviderLaunchResol
         actor_id: String,
         actor_epoch: i64,
         generation: u64,
+        root_request_id: String,
+        source: studio_runtime_store::request_results::AdmittedRequest,
     ) -> studio_runtime_services::account_worker::preparation::VmProviderAuthFuture<'_> {
         let accounts = Arc::clone(&self.accounts);
         let account_session = self.account_session.clone();
@@ -714,6 +754,8 @@ impl studio_runtime_services::account_worker::preparation::VmProviderLaunchResol
                 account_session.as_deref(),
                 Arc::clone(&store),
                 VmCodexRefreshIdentity {
+                    root_request_id: &root_request_id,
+                    source: &source,
                     account_key: &account_key,
                     previous_account_id: &previous_account_id,
                     actor_id: &actor_id,
@@ -751,6 +793,7 @@ impl studio_runtime_services::account_worker::preparation::VmProviderLaunchResol
             let (_, _, _, credential_path, credential_document, _) = resolve_vm_launch_inputs(
                 Arc::clone(&accounts),
                 account_session.as_deref(),
+                Arc::clone(&store),
                 &claude_bridge_dir,
                 first,
             )
@@ -806,8 +849,10 @@ impl studio_runtime_services::account_worker::preparation::VmProviderLaunchResol
                     .await
                 {
                     match error {
-                        studio_runtime_services::linux_vm_provider::GuestProviderError::Task
-                        | studio_runtime_services::linux_vm_provider::GuestProviderError::Persistence(_) => {
+                        studio_runtime_services::linux_vm_provider::GuestProviderError::Persistence(error) => return Err(WorkerError::Store(error)),
+                        studio_runtime_services::linux_vm_provider::GuestProviderError::Outbox(error) => return Err(WorkerError::Store(error.into())),
+                        studio_runtime_services::linux_vm_provider::GuestProviderError::RequestResult(error) => return Err(WorkerError::Store(error.into())),
+                        studio_runtime_services::linux_vm_provider::GuestProviderError::Task => {
                             return Err(WorkerError::TaskFailed);
                         }
                         studio_runtime_services::linux_vm_provider::GuestProviderError::Invalid | studio_runtime_services::linux_vm_provider::GuestProviderError::Unknown | studio_runtime_services::linux_vm_provider::GuestProviderError::Refused | studio_runtime_services::linux_vm_provider::GuestProviderError::InvalidResponse | studio_runtime_services::linux_vm_provider::GuestProviderError::Guest(_) | studio_runtime_services::linux_vm_provider::GuestProviderError::Json(_) => profile_copy_failed = true,
@@ -870,6 +915,7 @@ async fn resolve_vm_launch_inputs(
     account_session: Option<
         &dyn studio_runtime_services::account_session_runtime::AccountSessionPort,
     >,
+    store: Arc<RuntimeStore>,
     claude_bridge_dir: &Path,
     request: studio_runtime_services::account_worker::preparation::VmProviderLaunchRequest,
 ) -> Result<VmLaunchInputs, WorkerError> {
@@ -1012,8 +1058,16 @@ async fn resolve_vm_launch_inputs(
         let bootstrap = read_vm_codex_bootstrap(
             Arc::clone(&accounts),
             account_session,
-            &request.account_key,
-            account,
+            &store,
+            VmCodexAuthSource {
+                account_key: &request.account_key,
+                account,
+                root_request_id: &request.root_request_id,
+                owner: VmAuthOwner::Execution {
+                    attempt_id: &request.attempt_id,
+                    source: &request.source,
+                },
+            },
             false,
         )
         .await?;
@@ -1042,11 +1096,17 @@ async fn resolve_vm_launch_inputs(
 async fn read_vm_codex_bootstrap(
     accounts: Arc<AccountDriver>,
     session: Option<&dyn studio_runtime_services::account_session_runtime::AccountSessionPort>,
-    account_key: &str,
-    account: &Value,
+    store: &RuntimeStore,
+    source: VmCodexAuthSource<'_>,
     force_refresh: bool,
 ) -> Result<Value, WorkerError> {
     use base64::Engine as _;
+    let VmCodexAuthSource {
+        account_key,
+        account,
+        root_request_id,
+        owner,
+    } = source;
     let read = || {
         let account = account.clone();
         studio_runtime_process::blocking_pool::spawn_blocking(
@@ -1163,24 +1223,66 @@ async fn read_vm_codex_bootstrap(
         let scope = port.ensure_session(account_key).await.map_err(|_| {
             WorkerError::PreparationPending("provider-session/account-session".into())
         })?;
-        let source_token = payload
-            .pointer("/accessToken")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                WorkerError::PreparationRefused("provider-session/codex-auth-invalid".into())
-            })?;
-        let source_digest = studio_runtime_store::sha256_hex(source_token.as_bytes());
-        let source_expiry = expires.ok_or_else(|| {
-            WorkerError::PreparationRefused("provider-session/codex-auth-invalid".into())
-        })?;
-        let operation = format!(
-            "vm-codex-token-refresh:{account_key}:{}:{source_expiry}:{}",
-            scope.generation,
-            &source_digest[..24]
-        );
+        let operation = format!("vm-codex-token-refresh:{account_key}:{root_request_id}");
+        let intent = studio_runtime_services::account_worker::retained::ProviderCallIntent {
+            root_request_id: root_request_id.to_owned(),
+            admitted_request: None,
+            scope: scope.clone(),
+            operation: operation.clone(),
+            actor: None,
+            transfer: None,
+            deleted_actor_session: None,
+            method: studio_runtime_providers::Method::AccountRead,
+            params: json!({"refreshToken":true}),
+        };
+        let root = root_request_id.to_owned();
+        let admitted_request = match owner {
+            VmAuthOwner::Callback { source } => {
+                let source = source.clone();
+                store
+                    .transaction_with(move |tx| {
+                        studio_runtime_services::provider_callbacks::reserve_credential_refresh(
+                            tx, &root, &source, intent,
+                        )
+                        .map_err(|error| match error {
+                            studio_runtime_services::provider_callbacks::CallbackError::Store(error) => WorkerError::Store(error),
+                            studio_runtime_services::provider_callbacks::CallbackError::Unknown => WorkerError::CallbackUnknown,
+                            studio_runtime_services::provider_callbacks::CallbackError::Expired => WorkerError::Expired,
+                            studio_runtime_services::provider_callbacks::CallbackError::Invalid(_)
+                            | studio_runtime_services::provider_callbacks::CallbackError::InvalidResultSchema(_)
+                            | studio_runtime_services::provider_callbacks::CallbackError::Dependency(_)
+                            | studio_runtime_services::provider_callbacks::CallbackError::Stale
+                            | studio_runtime_services::provider_callbacks::CallbackError::Conflict
+                            | studio_runtime_services::provider_callbacks::CallbackError::Stored(_) => WorkerError::PreparationRefused("vm-auth/refresh-owner-changed".into()),
+                        })
+                    })
+                    .await?
+            }
+            VmAuthOwner::Execution { attempt_id, source } => {
+                let attempt_id = attempt_id.to_owned();
+                let source = source.clone();
+                store.transaction_with(move |tx| {
+                    use studio_runtime_store::ExecutionHistoryRepository;
+                    if ExecutionHistoryRepository::admission(tx,&attempt_id)?.as_ref()!=Some(&source) {
+                        return Err(WorkerError::PreparationRefused("vm-auth/source-admission-changed".into()));
+                    }
+                    if let Some(admitted) = ExecutionHistoryRepository::vm_credential_refresh_admission(tx,&attempt_id)? {
+                        if admitted.signature()!=intent.fingerprint(&intent.scope.account,intent.method.as_str()) {
+                            return Err(WorkerError::PreparationRefused("vm-auth/refresh-input-changed".into()));
+                        }
+                        return Ok(admitted);
+                    }
+                    let admitted = studio_runtime_services::account_worker::retained::reserve_provider_call(tx,&source,intent)?;
+                    ExecutionHistoryRepository::set_vm_credential_refresh_admission(tx,&attempt_id,&source,&admitted)?;
+                    Ok(admitted)
+                }).await?
+            }
+        };
         let receipt = port
             .provider_request(
                 studio_runtime_services::account_session_runtime::ProviderRequest {
+                    root_request_id: root_request_id.to_owned(),
+                    admitted_request: Some(admitted_request),
                     account: account_key.to_owned(),
                     operation,
                     actor: None,
@@ -1259,6 +1361,8 @@ async fn refresh_vm_codex_token(
     identity: VmCodexRefreshIdentity<'_>,
 ) -> Result<Value, WorkerError> {
     let VmCodexRefreshIdentity {
+        root_request_id,
+        source,
         account_key,
         previous_account_id,
         actor_id,
@@ -1318,8 +1422,13 @@ async fn refresh_vm_codex_token(
     let payload = read_vm_codex_bootstrap(
         Arc::clone(&accounts),
         account_session,
-        account_key,
-        account,
+        &store,
+        VmCodexAuthSource {
+            account_key,
+            account,
+            root_request_id,
+            owner: VmAuthOwner::Callback { source },
+        },
         true,
     )
     .await?;
@@ -2384,6 +2493,8 @@ mod voice_composition_tests {
                 let operation = request.operation.clone();
                 let retained = port
                     .request(SessionRequest {
+                        root_request_id: request.root_request_id,
+                        admitted_request: request.admitted_request,
                         scope,
                         expected_scope: request.expected_scope,
                         operation,
@@ -2396,6 +2507,7 @@ mod voice_composition_tests {
                     })
                     .await
                     .map_err(|error| match error {
+                        PortError::Expired => AccountSessionError::Expired,
                         PortError::Unknown => AccountSessionError::Unknown,
                         PortError::Capacity => AccountSessionError::Persistence,
                         PortError::Identity
@@ -2436,8 +2548,94 @@ mod voice_composition_tests {
         }
     }
 
+    #[derive(Default)]
     struct VoiceFactory {
         stop_writes: Arc<AtomicUsize>,
+        request_writes: Arc<AtomicUsize>,
+        stop_refusals: Arc<AtomicUsize>,
+        stop_attempts: Arc<AtomicUsize>,
+        stop_signal: Arc<tokio::sync::Notify>,
+    }
+
+    async fn seed_voice_agent(store: &RuntimeStore, name: &'static str) {
+        use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, AgentStatus};
+        store
+            .transaction(move |tx| {
+                let id = AgentId::from(name);
+                AgentRepository::put(
+                    tx,
+                    &AgentRecord {
+                        title_job: None,
+                        start_outcome_hold: None,
+                        fired_events: Default::default(),
+                        native_review_thread: None,
+                        vm_launch: None,
+                        credential_copy: None,
+                        vm_auth_bootstrap: None,
+                        native_release: None,
+                        id: id.clone(),
+                        root_id: id,
+                        epoch: 3,
+                        status: AgentStatus::Idle,
+                        extra: [
+                            ("isLead".into(), Value::Bool(true)),
+                            (
+                                "provider".into(),
+                                serde_json::to_value(studio_runtime_schema::ProviderKind::Codex)
+                                    .unwrap(),
+                            ),
+                            ("threadId".into(), Value::String("voice-thread".into())),
+                            ("accountKey".into(), Value::String("voice-account".into())),
+                        ]
+                        .into(),
+                    },
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("seed voice agent");
+    }
+
+    async fn seed_ready_voice_session(
+        store: Arc<RuntimeStore>,
+        session: Arc<AccountSessionRuntime>,
+        callbacks: Arc<CallbackRuntime>,
+        agent: &'static str,
+        voice_session: &str,
+    ) {
+        let provider = Arc::new(
+            studio_runtime_services::voice::account_session::AccountSessionVoicePort::new(
+                store.clone(),
+                session.clone(),
+                callbacks,
+            ),
+        );
+        studio_runtime_services::voice::provider::start(
+            store.clone(),
+            provider,
+            agent.into(),
+            voice_session.into(),
+            "v=0\r\n".into(),
+            1.0,
+        )
+        .await
+        .expect("start voice session");
+        tokio::time::timeout(
+            super::HOST_RUNTIME_SHUTDOWN_WAIT,
+            studio_runtime_services::voice::provider::wait_for_start_setup(agent, voice_session),
+        )
+        .await
+        .expect("voice setup completes");
+        let scope =
+            studio_runtime_services::account_session_runtime::AccountSessionPort::current_scope(
+                session.as_ref(),
+                "voice-account",
+            )
+            .unwrap();
+        studio_runtime_services::voice::provider::handle_notification(
+            &store, "voice-account", &scope.connection,
+            &json!({"method":"thread/realtime/sdp","params":{"threadId":"voice-thread","realtimeSessionId":voice_session,"sdp":"answer"}}), 1.0,
+        ).await.expect("voice session ready");
     }
 
     impl ProviderTaskFactory for VoiceFactory {
@@ -2464,6 +2662,10 @@ mod voice_composition_tests {
             });
             let mut stop = shutdown.subscribe();
             let stop_writes = Arc::clone(&self.stop_writes);
+            let request_writes = Arc::clone(&self.request_writes);
+            let stop_refusals = Arc::clone(&self.stop_refusals);
+            let stop_attempts = Arc::clone(&self.stop_attempts);
+            let stop_signal = Arc::clone(&self.stop_signal);
             let task = tokio::spawn(async move {
                 let mut cursor = 0_u64;
                 loop {
@@ -2491,6 +2693,19 @@ mod voice_composition_tests {
                                 }
                                 continue;
                             }
+                            if method == "thread/realtime/stop" {
+                                stop_attempts.fetch_add(1, Ordering::SeqCst);
+                                stop_signal.notify_one();
+                                if stop_refusals
+                                    .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+                                        n.checked_sub(1)
+                                    })
+                                    .is_ok()
+                                {
+                                    let _ignored = reply.send(CommandReceipt::NotSent);
+                                    continue;
+                                }
+                            }
                             let _ignored = reply.send(CommandReceipt::Written {
                                 remote_id: None,
                                 duplicate: false,
@@ -2505,11 +2720,18 @@ mod voice_composition_tests {
                             else {
                                 continue;
                             };
+                            if (method == "account/read"
+                                && message["params"]["refreshToken"] == true)
+                                || method == "thread/realtime/appendSpeech"
+                            {
+                                request_writes.fetch_add(1, Ordering::SeqCst);
+                            }
                             if method == "thread/realtime/stop" {
                                 stop_writes.fetch_add(1, Ordering::SeqCst);
                             }
                             let result = match method {
                                 "account/read" => json!({"account":{"type":"chatgpt"}}),
+                                "thread/loaded/list" => json!({"data":[],"nextCursor":null}),
                                 _ => json!({}),
                             };
                             cursor += 1;
@@ -2639,6 +2861,373 @@ mod voice_composition_tests {
     }
 
     #[tokio::test]
+    async fn pre_cutover_provider_retry_expires_before_signature_check_without_sending() {
+        use studio_runtime_schema::persistence::RequestIdentity;
+        use studio_runtime_store::request_results::RequestResults;
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
+        let old_root = uuid::Uuid::from_u128((1 << 80) | (7 << 76) | (2 << 62)).to_string();
+        let operation = format!("vm-codex-token-refresh:voice-account:{old_root}");
+        let identity = RequestIdentity::new(
+            "provider-call",
+            &["voice-account", "", ""],
+            &old_root,
+            &[&operation],
+        )
+        .unwrap();
+        store.transaction(move |tx| {
+            let cutover = RequestResults::expired_before_ms(tx).map_err(studio_runtime_store::StoreError::from)?;
+            assert!(cutover > identity.issued_ms(), "migration installs the admission watermark");
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('expired-agent',?1)", [json!({"id":"expired-agent","rootId":"expired-agent","epoch":3,"status":"idle","isLead":true,"provider":"codex","threadId":"voice-thread","accountKey":"voice-account"}).to_string()])?;
+            // A saved row with a different signature must not mask the expiry refusal.
+            tx.execute("INSERT INTO request_results(id,signature,result,created) VALUES(?1,'original-import-signature','{}',?2)", rusqlite::params![identity.id(),cutover])?;
+            Ok(())
+        }).await.unwrap();
+        let factory = Arc::new(VoiceFactory {
+            stop_writes: Arc::new(AtomicUsize::new(0)),
+            request_writes: Arc::new(AtomicUsize::new(0)),
+            ..Default::default()
+        });
+        let (mut worker, session, _callbacks) =
+            start_voice_worker(directory.path(), Arc::clone(&store), Arc::clone(&factory)).await;
+        let scope =
+            studio_runtime_services::account_session_runtime::AccountSessionPort::current_scope(
+                session.as_ref(),
+                "voice-account",
+            )
+            .unwrap();
+        let sent_before_retry = factory.request_writes.load(Ordering::SeqCst);
+        let result =
+            studio_runtime_services::account_session_runtime::AccountSessionPort::provider_request(
+                session.as_ref(),
+                ProviderRequest {
+                    root_request_id: old_root,
+                    admitted_request: None,
+                    account: "voice-account".into(),
+                    operation,
+                    actor: None,
+                    expected_scope: Some(scope),
+                    deleted_actor_session: None,
+                    method: studio_runtime_providers::Method::AccountRead,
+                    params: json!({"refreshToken":true}),
+                    deadline: std::time::Instant::now() + std::time::Duration::from_secs(2),
+                },
+            )
+            .await;
+        assert!(matches!(result, Err(AccountSessionError::Expired)));
+        assert_eq!(
+            factory.request_writes.load(Ordering::SeqCst),
+            sent_before_retry
+        );
+        worker.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn voice_speech_http_reserves_and_replays_through_real_worker() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
+        seed_voice_agent(&store, "speech-agent").await;
+        let factory = Arc::new(VoiceFactory::default());
+        let voice_session = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let (mut worker, session, callbacks) =
+            start_voice_worker(directory.path(), store.clone(), factory.clone()).await;
+        seed_ready_voice_session(
+            store.clone(),
+            session.clone(),
+            callbacks.clone(),
+            "speech-agent",
+            &voice_session,
+        )
+        .await;
+        let record_session = voice_session.clone();
+        store.transaction(move |tx| {
+            tx.execute("INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('speech-record','speech-agent',?1,'orchestrator','hello','','','{}',1)", [&record_session])?;
+            Ok(())
+        }).await.unwrap();
+        let mut state = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            directory.path().display().to_string(),
+            4620,
+            None,
+            Some(store.clone()),
+            None,
+        );
+        state.account_session = Some(session);
+        let app = router(install_host_voice_port(state, store.clone(), callbacks)).unwrap();
+        let before = factory.request_writes.load(Ordering::SeqCst);
+        for _ in 0..2 {
+            let body = studio_runtime_http::generated::VoiceSpeechRequest {
+                agent: "speech-agent".into(),
+                session_id: voice_session.clone(),
+                record_id: "speech-record".into(),
+            };
+            let mut request = Request::builder()
+                .method("POST")
+                .uri("/api/voice/speech")
+                .header("host", "127.0.0.1:4620")
+                .header("x-canvas-token", "token")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap();
+            request.extensions_mut().insert(ConnectInfo(
+                "127.0.0.1:32100".parse::<std::net::SocketAddr>().unwrap(),
+            ));
+            let response = app.clone().oneshot(request).await.unwrap();
+            let status = response.status();
+            let body = to_bytes(response.into_body(), 100_000).await.unwrap();
+            assert_eq!(
+                status,
+                StatusCode::OK,
+                "{}, writes={}",
+                String::from_utf8_lossy(&body),
+                factory.request_writes.load(Ordering::SeqCst)
+            );
+        }
+        assert_eq!(factory.request_writes.load(Ordering::SeqCst), before + 1);
+        worker.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn stale_unsent_voice_stop_reaches_real_worker_after_lifecycle_stop() {
+        use studio_runtime_services::{
+            agent_management::Action, lifecycle_effects::ProductionLifecyclePorts,
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
+        seed_voice_agent(&store, "stale-agent").await;
+        let factory = Arc::new(VoiceFactory::default());
+        let voice_session = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        factory.stop_refusals.store(1, Ordering::SeqCst);
+        let (mut worker, session, callbacks) =
+            start_voice_worker(directory.path(), store.clone(), factory.clone()).await;
+        seed_ready_voice_session(
+            store.clone(),
+            session.clone(),
+            callbacks.clone(),
+            "stale-agent",
+            &voice_session,
+        )
+        .await;
+        let provider: Arc<dyn studio_runtime_services::voice::runtime::VoiceRequestPort> = Arc::new(
+            studio_runtime_services::voice::account_session::AccountSessionVoicePort::new(
+                store.clone(),
+                session.clone(),
+                callbacks,
+            ),
+        );
+        let result = studio_runtime_services::voice::provider::end(
+            store.clone(),
+            provider.clone(),
+            "stale-agent".into(),
+            voice_session.clone(),
+            1.0,
+        )
+        .await;
+        assert!(
+            matches!(
+                result,
+                Err(studio_runtime_services::voice::provider::VoiceProviderError::NotSent)
+            ),
+            "{result:?}, attempts={}",
+            factory.stop_attempts.load(Ordering::SeqCst)
+        );
+        assert_eq!(factory.stop_attempts.load(Ordering::SeqCst), 1);
+        let ports = Arc::new(ProductionLifecyclePorts::new(
+            store.clone(),
+            Arc::new(tokio::sync::Notify::new()),
+            Arc::new(tokio::sync::Notify::new()),
+            session.clone(),
+            Some(provider),
+        ));
+        ports
+            .execute(
+                &Action::Stop {
+                    target: "stale-agent".into(),
+                    descendants: false,
+                    reason: None,
+                    sender: None,
+                    sender_epoch: None,
+                },
+                2.0,
+            )
+            .await
+            .unwrap();
+        let scope =
+            studio_runtime_services::account_session_runtime::AccountSessionPort::current_scope(
+                session.as_ref(),
+                "voice-account",
+            )
+            .expect("live provider scope");
+        let old =
+            studio_runtime_services::account_session_runtime::AccountSessionPort::provider_request(
+                session.as_ref(),
+                ProviderRequest {
+                    root_request_id:
+                        studio_runtime_schema::persistence::RequestIdentity::issue_root(),
+                    admitted_request: None,
+                    account: "voice-account".into(),
+                    operation: format!("voice:stop:{voice_session}"),
+                    actor: Some(
+                        studio_runtime_schema::provider_call_contract::RequestActor {
+                            agent: "stale-agent".into(),
+                            epoch: 3,
+                        },
+                    ),
+                    expected_scope: Some(scope),
+                    deleted_actor_session: None,
+                    method: studio_runtime_providers::Method::ThreadRealtimeStop,
+                    params: json!({"threadId":"voice-thread"}),
+                    deadline: std::time::Instant::now() + std::time::Duration::from_secs(2),
+                },
+            )
+            .await;
+        assert!(
+            match old {
+                Ok(receipt) => receipt.certainty()
+                    == studio_runtime_services::account_session_runtime::RequestCertainty::NotSent,
+                Err(AccountSessionError::Refused("Provider request was refused")) => true,
+                Err(_) => false,
+            },
+            "old epoch cannot dispatch"
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let notified = factory.stop_signal.notified();
+                if factory.stop_attempts.load(Ordering::SeqCst) == 2 {
+                    break;
+                }
+                notified.await;
+            }
+        })
+        .await
+        .expect("current-epoch lifecycle stop reaches the retained provider");
+        assert_eq!(
+            factory.stop_attempts.load(Ordering::SeqCst),
+            2,
+            "old epoch never reaches provider"
+        );
+        worker.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn migrated_voice_stop_replays_unknown_with_real_worker_without_resending() {
+        use studio_runtime_schema::provider_call_contract::{
+            ConnectionScope, ProviderCallIntent, RequestActor, transport_key,
+        };
+        use studio_runtime_store::request_results::AdmittedRequest;
+        #[derive(serde::Serialize)]
+        struct LegacyStop<'a> {
+            agent: &'a str,
+            epoch: i64,
+            status: &'a str,
+        }
+        #[derive(serde::Serialize)]
+        struct LegacySubmission {
+            call: ProviderCallIntent<studio_runtime_providers::Method, AdmittedRequest>,
+            request: studio_runtime_schema::provider_call_contract::TransportRequest<
+                studio_runtime_providers::Method,
+            >,
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
+        seed_voice_agent(&store, "legacy-agent").await;
+        let voice_session = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let operation = format!("voice:stop:{voice_session}");
+        let scope = studio_runtime_schema::persistence::ProviderScope {
+            generation: 42,
+            connection: "legacy-connection".into(),
+        };
+        let transport = transport_key("voice-account", &operation);
+        let call = LegacySubmission {
+            call: ProviderCallIntent {
+                root_request_id: studio_runtime_schema::persistence::RequestIdentity::issue_root(),
+                admitted_request: None,
+                scope: ConnectionScope {
+                    account: "voice-account".into(),
+                    connection: scope.connection.clone(),
+                    generation: scope.generation,
+                },
+                operation: operation.clone(),
+                actor: Some(RequestActor {
+                    agent: "legacy-agent".into(),
+                    epoch: 3,
+                }),
+                transfer: None,
+                deleted_actor_session: None,
+                method: studio_runtime_providers::Method::ThreadRealtimeStop,
+                params: json!({"threadId":"voice-thread"}),
+            },
+            request: studio_runtime_schema::provider_call_contract::TransportRequest {
+                id: studio_runtime_schema::provider_input::RequestId::String(transport.clone()),
+                generation: scope.generation,
+                method: studio_runtime_providers::Method::ThreadRealtimeStop,
+                operation: transport.clone(),
+                thread: None,
+                lightweight: false,
+                deadline: 100,
+                unknown: true,
+                remote_id: None,
+            },
+        };
+        let session_for_seed = voice_session.clone();
+        let submitted_id = format!("account-worker:{}:submitted", transport);
+        store.transaction(move |tx| {
+            tx.execute_batch("DELETE FROM runtime_payload_migrations WHERE name LIKE 'receipts:%'; CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL);")?;
+            tx.execute("INSERT INTO voice_sessions(id,agent,created,native_thread,account_key,connection_id,state) VALUES(?1,'legacy-agent',1,'voice-thread','voice-account','legacy-connection','ready')", [&session_for_seed])?;
+            tx.execute("INSERT INTO runtime_operation_receipts VALUES('agent-voice-stop:legacy-agent:3','lifecycle.voice-stop.v1',?1)", [serde_json::to_string(&LegacyStop { agent: "legacy-agent", epoch: 3, status: "pending" }).unwrap()])?;
+            tx.execute("INSERT INTO runtime_operation_receipts VALUES(?1,'submitted',?2)", rusqlite::params![submitted_id, serde_json::to_string(&call).unwrap()])?;
+            Ok(())
+        }).await.unwrap();
+        drop(store);
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("migrate legacy voice"),
+        );
+        let encoded: String = store
+            .test_reader()
+            .unwrap()
+            .query_row(
+                "SELECT provider_scope FROM voice_sessions WHERE id=?1",
+                [&voice_session],
+                |row| row.get(0),
+            )
+            .expect("migrated session scope");
+        assert_eq!(
+            serde_json::from_str::<studio_runtime_schema::persistence::ProviderScope>(&encoded)
+                .unwrap(),
+            scope
+        );
+        let factory = Arc::new(VoiceFactory::default());
+        let (mut worker, session, callbacks) =
+            start_voice_worker(directory.path(), store.clone(), factory.clone()).await;
+        let provider = Arc::new(
+            studio_runtime_services::voice::account_session::AccountSessionVoicePort::new(
+                store.clone(),
+                session,
+                callbacks,
+            ),
+        );
+        for now in [2.0, 3.0] {
+            let replay = studio_runtime_services::voice::provider::end(
+                store.clone(),
+                provider.clone(),
+                "legacy-agent".into(),
+                voice_session.clone(),
+                now,
+            )
+            .await
+            .expect("replay uncertain legacy stop");
+            assert_eq!(replay.get("state").and_then(Value::as_str), Some("unknown"));
+        }
+        assert_eq!(factory.stop_attempts.load(Ordering::SeqCst), 0);
+        assert_eq!(factory.stop_writes.load(Ordering::SeqCst), 0);
+        worker.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn composed_runtime_server_routes_voice_through_the_shared_account_session() {
         let directory = tempfile::tempdir().unwrap();
         let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
@@ -2660,9 +3249,12 @@ mod voice_composition_tests {
 
         let factory = Arc::new(VoiceFactory {
             stop_writes: Arc::new(AtomicUsize::new(0)),
+            request_writes: Arc::new(AtomicUsize::new(0)),
+            ..Default::default()
         });
         let (mut worker, session, callbacks) =
             start_voice_worker(directory.path(), store.clone(), Arc::clone(&factory)).await;
+        let session_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
         let mut state = HttpState::new(
             "token".into(),
             "workspace".into(),
@@ -2686,7 +3278,8 @@ mod voice_composition_tests {
             .header("x-canvas-token", "token")
             .header("content-type", "application/json")
             .body(Body::from(
-                r#"{"agent":"voice-composed-agent","session_id":"voice-session","sdp":"v=0\r\n"}"#,
+                json!({"agent":"voice-composed-agent","session_id":session_id,"sdp":"v=0\r\n"})
+                    .to_string(),
             ))
             .unwrap();
         request.extensions_mut().insert(ConnectInfo(
@@ -2697,7 +3290,7 @@ mod voice_composition_tests {
         let body = to_bytes(response.into_body(), 100_000).await.unwrap();
         assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
         let response: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(response["session_id"], "voice-session");
+        assert_eq!(response["session_id"], session_id);
         assert_eq!(response["state"], "connecting");
         // The HTTP acceptance boundary persists the connecting session before
         // provider setup completes; wait on its existing completion barrier
@@ -2706,7 +3299,7 @@ mod voice_composition_tests {
             super::HOST_RUNTIME_SHUTDOWN_WAIT,
             studio_runtime_services::voice::provider::wait_for_start_setup(
                 "voice-composed-agent",
-                "voice-session",
+                &session_id,
             ),
         )
         .await
@@ -2715,12 +3308,12 @@ mod voice_composition_tests {
         // The deletion transaction persists stop authorization before removing
         // voice rows, matching Python's delete-before-post-commit-stop ordering.
         let delete_intent = store
-            .transaction_with_error(|transaction| -> Result<_, studio_runtime_services::voice::provider::VoiceProviderError> {
+            .transaction_with_error(move |transaction| -> Result<_, studio_runtime_services::voice::provider::VoiceProviderError> {
                 transaction.execute(
-                    "INSERT INTO voice_sessions(id,agent,created,native_thread,account_key,connection_id,state) \
-                     SELECT 'voice-session-unknown',agent,created+1,native_thread,account_key,connection_id,state \
-                     FROM voice_sessions WHERE id='voice-session' AND agent='voice-composed-agent'",
-                    [],
+                    "INSERT INTO voice_sessions(id,agent,created,native_thread,account_key,connection_id,provider_scope,state) \
+                     SELECT 'voice-session-unknown',agent,created+1,native_thread,account_key,connection_id,provider_scope,state \
+                     FROM voice_sessions WHERE id=?1 AND agent='voice-composed-agent'",
+                    [&session_id],
                 )?;
                 transaction.execute(
                     "UPDATE runtime_agents SET record=json_set(record,'$.deletedAt',1) WHERE id='voice-composed-agent'",
@@ -2738,7 +3331,7 @@ mod voice_composition_tests {
             })
             .await
             .unwrap();
-        assert_eq!(delete_intent.sessions.len(), 2);
+        assert_eq!(delete_intent.len(), 2);
 
         // Simulate a restart after the deletion transaction commits. Python
         // marks sessions on the vanished connection lost and never sends their
@@ -2754,20 +3347,48 @@ mod voice_composition_tests {
                     post_delete_callbacks,
                 ),
             );
-        let receipts = studio_runtime_services::voice::provider::end_deleted_sessions(
-            delete_provider,
-            delete_intent.id.clone(),
-            delete_intent.sessions.clone(),
-            2.0,
-        )
-        .await
-        .unwrap();
+        for intent in &delete_intent {
+            studio_runtime_services::voice::provider::end_deleted_sessions_tracked(
+                Arc::clone(&store),
+                Arc::clone(&delete_provider),
+                intent.id.clone(),
+                intent.session.clone(),
+                2.0,
+            )
+            .await
+            .unwrap();
+        }
         post_delete_worker.shutdown().await.unwrap();
-        assert_eq!(receipts.len(), 2);
-        assert!(receipts.iter().all(|receipt| {
-            receipt.certainty
-                == studio_runtime_services::voice::runtime::VoiceWriteCertainty::Unknown
-        }));
+        let saved: Vec<_> = delete_intent
+            .iter()
+            .map(|intent| {
+                studio_runtime_store::outbox::Outbox::get::<studio_runtime_store::VoiceEffect>(
+                    &store.test_reader().unwrap(),
+                    &intent.id,
+                )
+                .unwrap()
+                .expect("unknown deletion remains durable")
+            })
+            .collect();
+        assert_eq!(saved.len(), 2);
+        assert!(
+            saved
+                .iter()
+                .all(|row| row.status == studio_runtime_schema::persistence::OutboxStatus::Unknown)
+        );
+        assert!(saved.iter().all(|row| matches!(
+            row.payload.authority,
+            studio_runtime_store::VoiceEffectAuthority::Admitted {
+                outcome: studio_runtime_schema::persistence::VoiceStopOutcome::Unknown,
+                ..
+            }
+        )));
+        assert!(
+            studio_runtime_services::voice::provider::pending_delete_intents(&store)
+                .await
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(factory.stop_writes.load(Ordering::SeqCst), 0);
 
         // Recovery replays the known receipt and retains Unknown without another
@@ -2782,17 +3403,61 @@ mod voice_composition_tests {
                     recovered_callbacks,
                 ),
             );
-        let replay = studio_runtime_services::voice::provider::end_deleted_sessions(
-            recovered_provider,
-            delete_intent.id,
-            delete_intent.sessions,
-            3.0,
-        )
-        .await
-        .unwrap();
-        assert_eq!(replay, receipts);
+        for intent in &delete_intent {
+            studio_runtime_services::voice::provider::end_deleted_sessions_tracked(
+                Arc::clone(&store),
+                Arc::clone(&recovered_provider),
+                intent.id.clone(),
+                intent.session.clone(),
+                3.0,
+            )
+            .await
+            .unwrap();
+        }
+        let replay: Vec<_> = delete_intent
+            .iter()
+            .map(|intent| {
+                studio_runtime_store::outbox::Outbox::get::<studio_runtime_store::VoiceEffect>(
+                    &store.test_reader().unwrap(),
+                    &intent.id,
+                )
+                .unwrap()
+                .expect("unknown deletion survives recovery")
+            })
+            .collect();
+        assert_eq!(replay, saved);
         assert_eq!(factory.stop_writes.load(Ordering::SeqCst), 0);
         recovered_worker.shutdown().await.unwrap();
+    }
+}
+
+#[cfg(test)]
+mod direct_generation_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn direct_generation_uses_only_migrated_account_counter() {
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        store.transaction(|tx| {
+            studio_runtime_store::receipt_schema::create(tx)?;
+            tx.execute("INSERT INTO runtime_account_state VALUES('alpha',41,NULL,NULL,0,0,'null',NULL,NULL)", [])?;
+            // Any accidental history query must fail, including on a seeded counter.
+            tx.execute_batch("DROP TABLE IF EXISTS runtime_operation_receipts")?;
+            Ok(())
+        }).await.expect("migrated fixture");
+        assert_eq!(
+            next_direct_generation(&store, "alpha").await.expect("next"),
+            Generation(42)
+        );
+        assert_eq!(
+            next_direct_generation(&store, "alpha").await.expect("next"),
+            Generation(43)
+        );
+        assert_eq!(
+            next_direct_generation(&store, "beta").await.expect("first"),
+            Generation(1)
+        );
     }
 }
 
@@ -2801,63 +3466,13 @@ async fn next_direct_generation(
     account: &str,
 ) -> Result<Generation, WorkerError> {
     let account = account.to_owned();
-    store.transaction_with(move |tx| {
-        let invalid = || {
-            WorkerError::PreparationRefused("account-worker/direct-generation".into())
-        };
-        let counter_id = format!("account-worker:direct-generation:{account}:next");
-        let counter_exists = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM runtime_operation_receipts WHERE id=?1)",
-            [&counter_id],
-            |row| row.get::<_, bool>(0),
-        )?;
-        let mut latest = if counter_exists {
-            let raw = tx.query_row(
-                "SELECT result FROM runtime_operation_receipts WHERE id=?1",
-                [&counter_id],
-                |row| row.get::<_, String>(0),
-            )?;
-            serde_json::from_str::<u64>(&raw).map_err(|_| invalid())?
-        } else {
-            0
-        };
-        for kind in ["cursor", "journal", "callback", "recovery", "account"] {
-            let prefix = format!("account-worker:{kind}:{account}:");
-            let upper = format!("{prefix}~");
-            let mut query = tx.prepare(
-                "SELECT id,result FROM runtime_operation_receipts WHERE id>=?1 AND id<?2",
-            )?;
-            let rows = query
-                .query_map((prefix.as_str(), upper.as_str()), |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                })?
-                .collect::<Result<Vec<_>, _>>()?;
-            for (id, raw) in rows {
-                let value: serde_json::Value = serde_json::from_str(&raw).map_err(|_| invalid())?;
-                let generation = if kind == "account" {
-                    value
-                        .pointer("/request/generation")
-                        .or_else(|| value.get("generation"))
-                        .and_then(serde_json::Value::as_u64)
-                } else {
-                    id.strip_prefix(&prefix)
-                        .and_then(|tail| tail.split(':').next())
-                        .and_then(|number| number.parse::<u64>().ok())
-                };
-                if let Some(generation) = generation {
-                    latest = latest.max(generation);
-                }
-            }
-        }
-        let next = latest.checked_add(1).ok_or_else(invalid)?;
-        let result = serde_json::to_string(&next).map_err(|_| invalid())?;
-        tx.execute(
-            "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'direct-provider-generation',?2) ON CONFLICT(id) DO UPDATE SET result=excluded.result",
-            (counter_id.as_str(), result.as_str()),
-        )?;
-        Ok(Generation(next))
-    })
-    .await
+    store
+        .transaction_with(move |tx| {
+            studio_runtime_store::account_state::allocate_next_generation(tx, &account)
+                .map(Generation)
+                .map_err(WorkerError::from)
+        })
+        .await
 }
 
 /// The home and isolation of a Codex account whose provider session may start:

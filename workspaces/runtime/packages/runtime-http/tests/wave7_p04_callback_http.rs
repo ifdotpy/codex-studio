@@ -12,6 +12,44 @@ use std::sync::Arc;
 use studio_runtime_http::{HttpState, router};
 use studio_runtime_services::callback_runtime::*;
 use tower::ServiceExt;
+
+struct FramedPort {
+    store: Arc<studio_runtime_store::RuntimeStore>,
+    port: Port,
+}
+
+impl CallbackReplyPort for FramedPort {
+    fn has_live_session(
+        &self,
+        context: &studio_runtime_services::provider_callbacks::CallbackContext,
+    ) -> bool {
+        self.port.has_live_session(context)
+    }
+
+    fn deliver<'a>(
+        &'a self,
+        reply: &'a studio_runtime_services::provider_callbacks::Reply,
+        deadline: std::time::Duration,
+    ) -> CallbackReplyFuture<'a> {
+        Box::pin(async move {
+            let reply_copy = reply.clone();
+            self.store
+                .transaction_with(move |tx| {
+                    let identity = &reply_copy.identity;
+                    studio_runtime_services::provider_callbacks::begin_frame(
+                        tx,
+                        &identity.context.stream_id,
+                        identity.context.generation,
+                        &identity.operation_id(),
+                        &reply_copy.frame(),
+                    )?;
+                    Ok::<_, studio_runtime_services::provider_callbacks::CallbackError>(())
+                })
+                .await?;
+            self.port.deliver(reply, deadline).await
+        })
+    }
+}
 async fn call(app: &axum::Router, path: &str, body: Value, token: &str) -> (u16, Value) {
     let request = Request::builder()
         .method("POST")
@@ -153,7 +191,8 @@ async fn complaint_http_replays_original_signature_before_version_and_recipient_
         None,
     ))
     .unwrap();
-    let body = json!({"id":"reply", "action":"respond", "complaint_id":"complaint",
+    let request_root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    let body = json!({"id":request_root, "action":"respond", "complaint_id":"complaint",
         "text":"  Reviewed  ", "status":"in_progress", "version":1, "lead":null});
     assert_eq!(
         call(&app, "/api/complaints", body.clone(), "wrong").await.0,
@@ -168,9 +207,8 @@ async fn complaint_http_replays_original_signature_before_version_and_recipient_
     signature_body["operation"] = json!("complaint_response");
     let signature = studio_runtime_services::event_write::request_signature(&signature_body);
     store.transaction_with::<_, studio_runtime_store::StoreError>(move |tx| {
-        assert!(studio_runtime_services::event_write::read_receipt(
-            tx, Some("user:reply"), &signature, "runtime_complaints", "complaint", |_: &Value| true,
-        ).unwrap().is_some());
+        let identity = studio_runtime_schema::persistence::RequestIdentity::new("complaint_response", &["complaint","user"], &request_root, &[]).unwrap();
+        assert!(studio_runtime_services::event_write::replay_request::<studio_runtime_store::ComplaintRecord>(tx, identity.id(), &signature, (studio_runtime_services::event_write::unix_time().unwrap()*1000.0) as i64)?.is_some());
         // A lost reply must replay despite later version/recipient changes.
         tx.execute("UPDATE runtime_complaints SET record=json_set(record,'$.recipient','lead','$.version',9)", [])?;
         Ok(())
@@ -186,11 +224,11 @@ async fn complaint_http_replays_original_signature_before_version_and_recipient_
             changed[field] = json!("Changed reply");
         }
         let (status, error) = call(&app, "/api/complaints", changed, "token").await;
-        assert_eq!(status, 400, "{error}");
-        assert_eq!(error["error"], "This request id has different content");
+        assert_eq!(status, 409, "{error}");
+        assert_eq!(error["error"], "This request ID has different content");
     }
     let mut fresh = body.clone();
-    fresh["id"] = json!("new-reply");
+    fresh["id"] = json!(studio_runtime_schema::persistence::RequestIdentity::issue_root());
     let (status, error) = call(&app, "/api/complaints", fresh.clone(), "token").await;
     assert_eq!(status, 400, "{error}");
     assert_eq!(
@@ -243,12 +281,9 @@ async fn complaint_http_replays_original_signature_before_version_and_recipient_
         })
         .await
         .unwrap();
-    for (id, version, status) in [
-        ("resolved-reply", 9, "resolved"),
-        ("declined-reply", 10, "declined"),
-    ] {
+    for (version, status) in [(9, "resolved"), (10, "declined")] {
         let mut closing = body.clone();
-        closing["id"] = json!(id);
+        closing["id"] = json!(studio_runtime_schema::persistence::RequestIdentity::issue_root());
         closing["version"] = json!(version);
         closing["status"] = json!(status);
         let (code, record) = call(&app, "/api/complaints", closing, "token").await;
@@ -287,7 +322,10 @@ async fn human_http_roundtrip_requires_consumer_and_authenticated_user() {
         "delete cannot bypass CallbackRuntime when its reply port is absent"
     );
     assert_eq!(stored(&store, &id), before);
-    let port = Arc::new(Port::default());
+    let port = Arc::new(FramedPort {
+        store: store.clone(),
+        port: Port::default(),
+    });
     let app = router(
         state.with_callback_runtime(Arc::new(CallbackRuntime::new(store.clone(), port.clone()))),
     )
@@ -300,12 +338,59 @@ async fn human_http_roundtrip_requires_consumer_and_authenticated_user() {
     let (status, value) = call(&app, "/api/answer", body.clone(), "token").await;
     assert_eq!(status, 200, "{value}");
     assert_eq!(value["status"], "answered");
-    assert_eq!(port.calls.lock().unwrap().len(), 1);
-    assert_eq!(checkpoint(&store, &context, 1).await, 1);
+    assert_eq!(port.port.calls.lock().unwrap().len(), 1);
+    let reply = port.port.calls.lock().unwrap()[0].clone();
+    let context_copy = context.clone();
+    store
+        .transaction_with(move |tx| {
+            use studio_runtime_services::provider_callbacks::{
+                CallbackOwner, FrameAdmission, begin_frame, callback_origin_key,
+            };
+            let key = callback_origin_key(
+                &context_copy,
+                &studio_runtime_providers::RequestId::Number(42),
+            );
+            let owner =
+                studio_runtime_services::tool_requests::get_callback::<CallbackOwner>(tx, &key)?
+                    .unwrap();
+            assert_eq!(
+                owner.status,
+                studio_runtime_schema::persistence::ToolRequestStatus::Completed
+            );
+            let token = owner.payload.admission.unwrap();
+            assert!(
+                studio_runtime_store::request_results::RequestResults::replay(
+                    tx,
+                    token.id(),
+                    token.signature(),
+                    (studio_runtime_services::event_write::unix_time().unwrap() * 1000.0) as i64
+                )?
+                .is_some()
+            );
+            let count: i64 = tx.query_row(
+                "SELECT count(*) FROM runtime_outbox WHERE kind='provider_callback'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(count, 0);
+            assert!(matches!(
+                begin_frame(
+                    tx,
+                    &context_copy.stream_id,
+                    context_copy.generation,
+                    &reply.identity.operation_id(),
+                    &reply.frame()
+                )?,
+                FrameAdmission::Written
+            ));
+            Ok::<_, studio_runtime_services::provider_callbacks::CallbackError>(())
+        })
+        .await
+        .unwrap();
     let (status, value) = call(&app, "/api/answer", body, "token").await;
     assert_eq!(status, 200, "{value}");
     assert_eq!(value["replayed"], true);
-    assert_eq!(port.calls.lock().unwrap().len(), 1);
+    assert_eq!(port.port.calls.lock().unwrap().len(), 1);
     assert!(!stored(&store, &id).to_string().contains("private"));
     let (status, value) = call(&app, "/api/questions/delete", json!({"id":id}), "token").await;
     assert_eq!(status, 200, "{value}");
@@ -465,7 +550,6 @@ async fn pending_codex_approval(
             store.clone(),
             context,
             &frame,
-            1,
             10.0,
         )
         .await
@@ -483,7 +567,7 @@ async fn live_permissions_codex_switch_settles_pending_once_and_ask_prompts_agai
     let (id, frame) = pending_codex_approval(&store, &context).await;
     let port = Arc::new(Port::default());
     let app = permission_app(root.path(), store.clone(), port.clone()).await;
-    let body = json!({"id":context.agent,"yolo_mode":true,"request_id":"live-full","expected_account_key":"default"});
+    let body = json!({"id":context.agent,"yolo_mode":true,"request_id":studio_runtime_schema::persistence::RequestIdentity::issue_root(),"expected_account_key":"default"});
     assert_eq!(
         call(&app, "/api/conversation", body.clone(), "wrong")
             .await
@@ -507,23 +591,24 @@ async fn live_permissions_codex_switch_settles_pending_once_and_ask_prompts_agai
         request.id = studio_runtime_providers::RequestId::Number(88);
     }
     assert!(matches!(
-        admit_native(store.clone(), &context, &later, 2, 11.0)
+        admit_native(store.clone(), &context, &later, 11.0)
             .await
             .unwrap(),
         NativeAdmission::Answer(_)
     ));
-    let ask = json!({"id":context.agent,"yolo_mode":false,"request_id":"live-ask","expected_account_key":"default"});
+    let ask = json!({"id":context.agent,"yolo_mode":false,"request_id":studio_runtime_schema::persistence::RequestIdentity::issue_root(),"expected_account_key":"default"});
     assert_eq!(call(&app, "/api/conversation", ask, "token").await.0, 200);
-    // Replaying the old Full save must not override the later Ask save.
+    // Replay returns the original response without overriding the later Ask save.
     assert_eq!(
         call(&app, "/api/conversation", body, "token").await.1["yoloMode"],
-        false
+        true
     );
+    assert_eq!(actor(&store, &context)["yoloMode"], false);
     if let studio_runtime_providers::Frame::Request(ref mut request) = later {
         request.id = studio_runtime_providers::RequestId::Number(89);
     }
     assert!(matches!(
-        admit_native(store.clone(), &context, &later, 3, 12.0)
+        admit_native(store.clone(), &context, &later, 12.0)
             .await
             .unwrap(),
         NativeAdmission::Card(_)
@@ -579,7 +664,7 @@ async fn live_permissions_failed_auto_answer_stays_pending_for_the_user() {
     let port = Arc::new(Port::default());
     *port.next.lock().unwrap() = Some(ReplyOutcome::NotSent);
     let app = permission_app(root.path(), store.clone(), port.clone()).await;
-    let full = json!({"id":context.agent,"yolo_mode":true,"request_id":"pending-full","expected_account_key":"default"});
+    let full = json!({"id":context.agent,"yolo_mode":true,"request_id":studio_runtime_schema::persistence::RequestIdentity::issue_root(),"expected_account_key":"default"});
     let (status, value) = call(&app, "/api/conversation", full, "token").await;
     assert_eq!(status, 200, "{value}");
     assert_eq!(value["yoloMode"], true);
@@ -602,12 +687,12 @@ async fn live_permissions_receipt_distinguishes_omitted_effort_from_null() {
         .await
         .unwrap();
     let app = permission_app(root.path(), store, Arc::new(Port::default())).await;
-    let mut body = json!({"id":context.agent,"yolo_mode":true,"request_id":"presence"});
+    let mut body = json!({"id":context.agent,"yolo_mode":true,"request_id":studio_runtime_schema::persistence::RequestIdentity::issue_root()});
     let (status, value) = call(&app, "/api/conversation", body.clone(), "token").await;
     assert_eq!(status, 200, "{value}");
     assert_eq!(value["effort"], "high");
     body["effort"] = Value::Null;
     let (status, value) = call(&app, "/api/conversation", body, "token").await;
-    assert_eq!(status, 400, "changed content must conflict: {value}");
-    assert_eq!(value["error"], "This request id has different content");
+    assert_eq!(status, 409, "changed content must conflict: {value}");
+    assert_eq!(value["error"], "This request ID has different content");
 }

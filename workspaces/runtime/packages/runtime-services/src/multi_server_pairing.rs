@@ -643,104 +643,51 @@ fn apply_pair(
     now: f64,
 ) -> Result<Value, AccessError> {
     let fingerprint = request.fingerprint();
-    let receipt=tx.query_row("SELECT hash,status,record FROM runtime_access_receipts WHERE client=?1 AND request_id=?2",params![request.client_id(),request.request_id()],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).optional()?;
-    let prefix = if request.is_pairing() {
-        "pairing"
-    } else {
-        "autoPairing"
+    use crate::event_write::{CallerAdmission, RequestKey, begin_request};
+    use studio_runtime_store::multi_server_delivery::{
+        AccessPending, HttpAccessReply, remote_result_key,
     };
-    if let Some((hash, status, record)) = receipt {
-        let record = auth::stored(
-            "PersistedAccessReceipt",
-            "runtime_access_receipts",
-            request.request_id(),
-            &record,
-        )?;
-        if hash != fingerprint {
+    let id = remote_result_key("access", &[request.client_id()], request.request_id());
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    if let Some(saved) =
+        crate::event_write::replay_request::<HttpAccessReply>(tx, &id, &fingerprint, now_ms)
+            .map_err(crate::multi_server_orchestration::replay_error)?
+    {
+        return pairing_reply(&saved.reply, request.client_id());
+    }
+    let pending_id = remote_result_key(
+        "access-pending",
+        &[request.client_id()],
+        request.request_id(),
+    );
+    if let Some(pending) =
+        studio_runtime_store::outbox::Outbox::get::<AccessPending>(tx, &pending_id)
+            .map_err(|_| refused(503, "invalid_record", "Stored pairing admission is invalid"))?
+    {
+        if pending.signature != fingerprint {
             return Err(refused(
                 409,
                 "request_conflict",
                 "The request ID has different content",
             ));
         }
-        if status == "tombstone"
-            || (status == "complete"
-                && record["completed"]
-                    .as_f64()
-                    .is_some_and(|completed| completed < now - 7.0 * 86400.0))
-        {
-            return Err(refused(
-                410,
-                "receipt_expired",
-                "The saved response expired. The operation must not run again",
-            ));
-        }
-        if status == "complete" {
-            if record["completed"].as_f64().is_none() {
-                return Err(refused(
-                    503,
-                    "receipt_invalid",
-                    "The saved pairing response is invalid",
-                ));
-            }
-            let raw = base64::engine::general_purpose::STANDARD
-                .decode(text(&record, "body"))
-                .map_err(|_| {
-                    refused(
-                        503,
-                        "receipt_invalid",
-                        "The saved pairing response is invalid",
-                    )
-                })?;
-            let result: Value = serde_json::from_slice(&raw).map_err(|_| {
-                refused(
-                    503,
-                    "receipt_invalid",
-                    "The saved pairing response is invalid",
-                )
-            })?;
-            auth::stored(
-                "DevicePairResponse",
-                "runtime_access_receipts",
-                request.request_id(),
-                &result.to_string(),
-            )?;
-            if record["status"].as_u64() != Some(200)
-                || text(&result, "clientId") != request.client_id()
-            {
-                return Err(refused(
-                    503,
-                    "receipt_invalid",
-                    "The saved pairing response is invalid",
-                ));
-            }
-            return Ok(result);
-        }
-        if let Some(client) = snapshot.client()
-            && text(client, &format!("{prefix}RequestId")) == request.request_id()
-            && text(client, &format!("{prefix}Hash")) == fingerprint
-            && let Some(result) = client
-                .get(format!("{prefix}Receipt"))
-                .filter(|v| v.is_object())
-        {
-            auth::stored(
-                "DevicePairResponse",
-                "runtime_access_clients",
-                request.client_id(),
-                &result.to_string(),
-            )?;
-            save_receipt(tx, request, &fingerprint, result, now)?;
-            return Ok(result.clone());
-        }
-        // Only Python's explicit no-effect retry state permits execution.
-        if status != "retry" {
-            return Err(refused(
-                409,
-                "outcome_unknown",
-                "The operation outcome is unknown. Recover its existing receipt",
-            ));
-        }
+        return Err(refused(
+            409,
+            "outcome_unknown",
+            "The operation outcome is unknown. Recover its existing receipt",
+        ));
     }
+    let admitted = match begin_request::<HttpAccessReply>(
+        tx,
+        RequestKey::new("access", &[request.client_id()], request.request_id()).raw(&id),
+        &fingerprint,
+        now_ms,
+    )
+    .map_err(crate::multi_server_orchestration::replay_error)?
+    {
+        CallerAdmission::Fresh(admitted) => admitted,
+        CallerAdmission::Replay(saved) => return pairing_reply(&saved, request.client_id()),
+    };
     let body = request.body();
     let mut result = identity.clone();
     let fields = result.as_object_mut().ok_or_else(|| {
@@ -789,11 +736,12 @@ fn apply_pair(
             .cloned()
             .unwrap_or_else(|| new_client(request, principal, now))
     };
-    client[format!("{prefix}RequestId")] = json!(request.request_id());
-    client[format!("{prefix}Hash")] = json!(fingerprint);
-    client[format!("{prefix}Receipt")] = result.clone();
-    // Preserve the stored response in the Python client's recovery fields. This
-    // is the commit evidence even when the outer response is lost.
+    // This client-lifetime fence authorizes an authenticated pairing retry.
+    // Its expiring response has a single owner in request_results.
+    if request.is_pairing() {
+        client["pairingRequestId"] = json!(request.request_id());
+        client["pairingHash"] = json!(fingerprint);
+    }
     auth::stored(
         "PersistedAccessClient",
         "runtime_access_clients",
@@ -801,7 +749,7 @@ fn apply_pair(
         &client.to_string(),
     )?;
     tx.execute("INSERT INTO runtime_access_clients(id,record) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET record=excluded.record",params![request.client_id(),client.to_string()])?;
-    save_receipt(tx, request, &fingerprint, &result, now)?;
+    save_receipt(tx, &admitted, &result, now)?;
     if snapshot.client().is_none() {
         tx.execute(
             "INSERT INTO runtime_access_audit(client,actor,action,created) VALUES(?1,?1,?2,?3)",
@@ -818,18 +766,64 @@ fn apply_pair(
     }
     Ok(result)
 }
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DevicePairReply {
+    protocol: u64,
+    server_id: String,
+    client_id: String,
+    label: String,
+    origin: String,
+    public_key: String,
+    tailscale_user: String,
+    paired: bool,
+}
+
+fn pairing_reply(
+    reply: &studio_runtime_store::multi_server_delivery::HttpAccessReply,
+    client: &str,
+) -> Result<Value, AccessError> {
+    let invalid = || {
+        refused(
+            503,
+            "receipt_invalid",
+            "The saved pairing response is invalid",
+        )
+    };
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&reply.body)
+        .map_err(|_| invalid())?;
+    let result: DevicePairReply = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
+    if reply.status != 200
+        || result.client_id != client
+        || !result.paired
+        || result.protocol != ACCESS_PROTOCOL_VERSION
+    {
+        return Err(invalid());
+    }
+    serde_json::from_slice(&bytes).map_err(|_| invalid())
+}
+
 fn save_receipt(
     tx: &Transaction<'_>,
-    request: &SignedRequest,
-    fingerprint: &str,
+    admitted: &studio_runtime_store::request_results::AdmittedRequest,
     result: &Value,
     now: f64,
 ) -> Result<(), AccessError> {
     let encoded = crate::remote_transport::canonical_json(result)
         .map_err(|_| refused(503, "receipt_invalid", "The pairing receipt is invalid"))?;
-    let receipt = json!({"status":200,"headers":[["content-type","application/json"],["content-length",encoded.len().to_string()],["cache-control","no-store"]],"body":base64::engine::general_purpose::STANDARD.encode(encoded.as_bytes()),"completed":now});
-    tx.execute("INSERT INTO runtime_access_receipts(client,request_id,hash,session,status,record) VALUES(?1,?2,?3,'rust','complete',?4) ON CONFLICT(client,request_id) DO UPDATE SET status='complete',record=excluded.record",params![request.client_id(),request.request_id(),fingerprint,receipt.to_string()])?;
-    Ok(())
+    let reply = studio_runtime_store::multi_server_delivery::HttpAccessReply {
+        status: 200,
+        headers: vec![
+            ("content-type".into(), "application/json".into()),
+            ("content-length".into(), encoded.len().to_string()),
+            ("cache-control".into(), "no-store".into()),
+        ],
+        body: base64::engine::general_purpose::STANDARD.encode(encoded.as_bytes()),
+        completed: now,
+    };
+    crate::event_write::settle_request(tx, admitted, None, &reply)
+        .map_err(crate::multi_server_orchestration::replay_error)
 }
 fn new_client(request: &SignedRequest, principal: &VerifiedPrincipal, now: f64) -> Value {
     let server = principal.kind() == "server";

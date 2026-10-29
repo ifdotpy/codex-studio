@@ -185,26 +185,6 @@ pub(crate) fn write_state(bytes: &[u8], root: &Path) {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CapturedCase {
-    case: Value,
-    database: DatabaseSeed,
-}
-
-pub(crate) fn database_cases(bytes: &[u8], root: &Path) -> Vec<Value> {
-    let cases: Vec<CapturedCase> = load(bytes);
-    cases
-        .into_iter()
-        .map(|mut captured| {
-            let path = root.join(captured.case["path"].as_str().expect("fixture filename"));
-            captured.database.write(&path);
-            captured.case["path"] = serde_json::json!(path);
-            captured.case
-        })
-        .collect()
-}
-
 pub(crate) struct FrozenResponses(BTreeMap<String, Value>);
 impl FrozenResponses {
     pub(crate) fn new(bytes: &[u8]) -> Self {

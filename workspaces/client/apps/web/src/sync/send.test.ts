@@ -1,4 +1,4 @@
-import { DeliveryMomentInput } from "../generated/api";
+import { DeliveryStatus, DeliveryMomentInput } from "../generated/api";
 import type { deliver as Deliver } from "./send";
 import assert from "node:assert/strict";
 import { afterEach, it, vi } from "vitest";
@@ -56,7 +56,7 @@ it("accepts only receipts matching the immutable message identity", () => {
 
   assert.equal(
     matchesMessageDelivery(
-      { id: "message-2", status: "delivered" },
+      { id: "message-2", status: DeliveryStatus.delivered },
       "message-1",
     ),
     false,
@@ -100,15 +100,15 @@ it("distinguishes durable local queue state from a server delivery receipt", () 
       created: 1,
       receipt: {
         id: "message-1",
-        status: "delivered",
-        deliveries: { peer: "delivered" },
+        status: DeliveryStatus.delivered,
+        deliveries: { peer: { status: DeliveryStatus.delivered, error: null } },
       },
     }),
     {
       kind: "server",
       id: "message-1",
-      status: "delivered",
-      deliveries: { peer: "delivered" },
+      status: DeliveryStatus.delivered,
+      deliveries: { peer: { status: DeliveryStatus.delivered, error: null } },
       queued: false,
     },
   );

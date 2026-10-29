@@ -760,6 +760,7 @@ async fn run(
     state = state
         .with_title_request_port(Arc::new(provider_ports::ProviderTitleRequestPort::new(
             Arc::clone(&account_session),
+            Arc::clone(&store),
         )))
         .with_diagnostics_provider(Arc::new(provider_ports::ProviderDiagnostics {
             accounts: account_driver.clone(),
@@ -908,11 +909,6 @@ async fn run(
             )
             .with_continuation_wake(Arc::clone(&continuation_scheduler_wake)),
         );
-    match studio_runtime_services::voice::provider::purge_settled_delete_intents(&store).await {
-        Ok(purged) if purged > 0 => eprintln!("removed {purged} settled voice deletion receipts"),
-        Ok(_) => {}
-        Err(error) => eprintln!("settled voice deletion receipts remain: {error}"),
-    }
     if let Err(error) = studio_runtime_services::agent_lifecycle_runtime::LifecyclePorts::committed(
         lifecycle_ports.as_ref(),
     )
@@ -2105,7 +2101,7 @@ mod targeted_scheduler_wake_tests {
                 tx.execute(
                     "INSERT INTO runtime_server_outbox(\
                         id,server,body,state,created_at,next_at,fingerprint,attempts\
-                     ) VALUES('outbox-event','peer','{}','queued',1,1,'fingerprint',0)",
+                     ) VALUES('outbox-event','peer','{\"action\":\"event\"}','queued',1,1,'fingerprint',0)",
                     [],
                 )?;
                 Ok(())

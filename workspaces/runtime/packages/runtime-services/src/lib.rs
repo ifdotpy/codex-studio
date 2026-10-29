@@ -91,6 +91,7 @@ pub mod linux_vm_runtime;
 pub mod linux_vm_settings;
 #[cfg(unix)]
 pub mod linux_vm_share;
+pub mod linux_vm_update;
 pub mod liveness;
 pub mod mac_sync;
 pub mod maintenance;

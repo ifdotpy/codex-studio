@@ -1,6 +1,5 @@
 //! Atomic annotation writes with durable scheduler events.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(unix)]
@@ -9,6 +8,10 @@ pub(crate) use studio_runtime_process::clock::monotonic_ns;
 use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
 use studio_runtime_schema::delivery::DeliveryMoment;
+use studio_runtime_schema::persistence::RequestIdentity;
+use studio_runtime_store::request_results::{
+    Admission, AdmittedRequest, RequestResultError, RequestResults, ResultEnvelope,
+};
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, AgentStatus, EventWriteRepository, QueueEvent,
     QueueEventId, QueueWriteRepository, Transaction,
@@ -23,7 +26,108 @@ pub fn request_signature(value: &Value) -> String {
     studio_runtime_store::sha256_hex(python_json(value).as_bytes())
 }
 
-static GENERATED_ANNOTATION_ID: AtomicU64 = AtomicU64::new(0);
+/// Authorization belongs to the caller and must precede replay disclosure.
+pub fn replay_request<R: serde::de::DeserializeOwned>(
+    connection: &studio_runtime_store::Connection,
+    id: &str,
+    signature: &str,
+    now_ms: i64,
+) -> Result<Option<ResultEnvelope<R>>, RequestResultError> {
+    RequestResults::replay(connection, id, signature, now_ms)?
+        .map(|stored| serde_json::from_str(&stored.result).map_err(Into::into))
+        .transpose()
+}
+
+pub fn settle_request<R: serde::Serialize>(
+    transaction: &Transaction<'_>,
+    admitted: &AdmittedRequest,
+    actor: Option<&str>,
+    reply: &R,
+) -> Result<(), RequestResultError> {
+    RequestResults::settle(
+        transaction,
+        admitted,
+        &ResultEnvelope {
+            actor: actor.map(str::to_owned),
+            reply,
+            references: Vec::new(),
+        },
+    )?;
+    Ok(())
+}
+
+pub enum CallerAdmission<R> {
+    Fresh(AdmittedRequest),
+    Replay(R),
+}
+
+#[derive(Clone, Copy)]
+pub struct RequestKey<'a> {
+    pub raw: &'a str,
+    pub namespace: &'a str,
+    pub authority: &'a [&'a str],
+    pub root: &'a str,
+    pub operation: &'a [&'a str],
+}
+impl<'a> RequestKey<'a> {
+    pub fn new(namespace: &'a str, authority: &'a [&'a str], root: &'a str) -> Self {
+        Self {
+            raw: root,
+            namespace,
+            authority,
+            root,
+            operation: &[],
+        }
+    }
+    pub fn raw(mut self, raw: &'a str) -> Self {
+        self.raw = raw;
+        self
+    }
+    pub fn operation(mut self, operation: &'a [&'a str]) -> Self {
+        self.operation = operation;
+        self
+    }
+}
+
+/// The common public-caller flow: authorized exact lookup, then UUIDv7 admission.
+pub fn begin_request<R: serde::de::DeserializeOwned>(
+    transaction: &Transaction<'_>,
+    key: RequestKey<'_>,
+    signature: &str,
+    now_ms: i64,
+) -> Result<CallerAdmission<R>, RequestResultError> {
+    if let Some(saved) = replay_request(transaction, key.raw, signature, now_ms)? {
+        return Ok(CallerAdmission::Replay(saved.reply));
+    }
+    Ok(
+        match RequestResults::admit(transaction, &request_identity(&key)?, signature, now_ms)? {
+            Admission::Fresh(admitted) => CallerAdmission::Fresh(admitted),
+            Admission::Replay(saved) => {
+                let saved: ResultEnvelope<R> = serde_json::from_str(&saved.result)?;
+                CallerAdmission::Replay(saved.reply)
+            }
+        },
+    )
+}
+
+/// Read-only recovery follows the same keys without admitting an operation.
+pub fn saved_request<R: serde::de::DeserializeOwned>(
+    connection: &studio_runtime_store::Connection,
+    key: RequestKey<'_>,
+    signature: &str,
+    now_ms: i64,
+) -> Result<Option<R>, RequestResultError> {
+    if let Some(saved) = replay_request(connection, key.raw, signature, now_ms)? {
+        return Ok(Some(saved.reply));
+    }
+    let identity = request_identity(&key)?;
+    Ok(replay_request(connection, identity.id(), signature, now_ms)?.map(|saved| saved.reply))
+}
+
+fn request_identity(key: &RequestKey<'_>) -> Result<RequestIdentity, RequestResultError> {
+    RequestIdentity::new(key.namespace, key.authority, key.root, key.operation)
+        .map_err(|_| RequestResultError::Expired)
+}
 
 /// Python `str.strip()` includes four ASCII separators Rust's whitespace predicate omits.
 pub fn python_strip(value: &str) -> &str {
@@ -34,6 +138,8 @@ pub fn python_strip(value: &str) -> &str {
 
 #[derive(Debug, Error)]
 pub enum EventWriteError {
+    #[error(transparent)]
+    RequestResult(#[from] RequestResultError),
     #[error("invalid request: {0}")]
     InvalidRequest(&'static str),
     #[error("{0}")]
@@ -85,27 +191,27 @@ pub fn annotate(
         return Err(EventWriteError::InvalidRequest("Invalid turn ID"));
     }
     let created = unix_time()?;
-    let has_request_identity = input.id.as_deref().is_some_and(|value| !value.is_empty());
     let id = input
         .id
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| generated_annotation_id(created));
+        .unwrap_or_else(RequestIdentity::issue_root);
     let event_id = format!("annotation:{id}");
-    if let Some(receipt) = EventWriteRepository::receipt(connection, &id)? {
-        let record: Value = serde_json::from_str(&receipt.result)
-            .map_err(|_| invalid_stored("runtime_operation_receipts", &id))?;
-        if receipt.signature != input.signature {
-            return Err(EventWriteError::Conflict(
-                "This request id has different content",
-            ));
+    let now_ms = (created * 1000.0) as i64;
+    let admitted = match begin_request::<studio_runtime_store::AnnotationRecord>(
+        connection,
+        RequestKey::new("annotation", &[&input.agent_id], &id),
+        &input.signature,
+        now_ms,
+    )? {
+        CallerAdmission::Replay(reply) => {
+            EventWriteRepository::validate_annotation(connection, &id, reply.value())?;
+            return Ok(WriteResult {
+                record: reply.into_value(),
+                event_inserted: false,
+            });
         }
-        EventWriteRepository::validate_annotation(connection, &id, &record)
-            .map_err(|_| invalid_stored("runtime_annotations", &id))?;
-        return Ok(WriteResult {
-            record,
-            event_inserted: false,
-        });
-    }
+        CallerAdmission::Fresh(admitted) => admitted,
+    };
     if EventWriteRepository::event_exists(connection, &event_id)? {
         return Err(EventWriteError::Conflict(
             "The annotation event identity is already in use",
@@ -130,12 +236,15 @@ pub fn annotate(
             .map(|turn| format!(" (reported turn {turn})"))
             .unwrap_or_default(),
     );
-    let record_json = serialize(&record)?;
     EventWriteRepository::put_annotation(connection, &id, &record)?;
     let event_inserted = enqueue_event(connection, &agent, event_id, "user", event_text, created)?;
-    if has_request_identity {
-        EventWriteRepository::put_receipt(connection, &id, &input.signature, &record_json)?;
-    }
+    settle_request(
+        connection,
+        &admitted,
+        Some(&input.agent_id),
+        &studio_runtime_store::AnnotationRecord::from_value(record.clone())
+            .map_err(studio_runtime_store::StoreError::from)?,
+    )?;
     Ok(WriteResult {
         record,
         event_inserted,
@@ -184,12 +293,12 @@ fn enqueue(
         QueueWriteRepository::metadata(transaction, &id)?.unwrap_or_else(|| json!({}));
     let delivery = DeliveryMoment::for_event(kind, &text, Some(&metadata))
         .map_err(|_| EventWriteError::InvalidRequest("Invalid delivery moment"))?;
-    if studio_runtime_store::QueueEventRepository::get(
+    let existing = studio_runtime_store::QueueEventRepository::get(
         transaction,
         &QueueEventId::from(id.as_str()),
     )?
-    .is_none()
-    {
+    .is_some();
+    if !existing {
         metadata["delivery"] = json!(delivery);
         QueueWriteRepository::put_metadata(transaction, &id, &metadata)?;
     }
@@ -212,6 +321,24 @@ fn enqueue(
         error: None,
     };
     if let Some((server, link, is_anchor)) = remote_owner(agent)? {
+        let request_id = match metadata.get("remoteRequestId") {
+            Some(Value::String(root)) if !root.is_empty() => root.clone(),
+            Some(_) => return Err(EventWriteError::Conflict("Remote event outcome is unknown")),
+            None if existing => {
+                return Err(EventWriteError::Conflict("Remote event outcome is unknown"));
+            }
+            None => {
+                let root = uuid::Uuid::parse_str(&id)
+                    .ok()
+                    .filter(|id| id.get_version_num() == 7)
+                    .map(|_| id.clone())
+                    .unwrap_or_else(RequestIdentity::issue_root);
+                metadata["remoteRequestId"] = json!(root);
+                QueueWriteRepository::put_metadata(transaction, &id, &metadata)?;
+                root
+            }
+        };
+
         // Remote anchors forward user input through the paired input protocol;
         // remote workers use its worker form. Neither proxy queues native work
         // on this server.
@@ -261,7 +388,6 @@ fn enqueue(
                 .get("remoteEpoch")
                 .and_then(Value::as_i64)
                 .unwrap_or(0);
-            let request_id = crate::relocation::identity(&["input", &id]);
             let payload = json!({
                 "link":link,
                 "worker":agent.id.0,
@@ -320,7 +446,6 @@ fn enqueue(
             let mut stored = event.clone();
             stored.status = "stored_only".to_owned();
             EventWriteRepository::insert_event(transaction, &stored)?;
-            let request_id = crate::relocation::identity(&["anchor-input", &id]);
             let mut payload = json!({
                 "link": link,
                 "parentEpoch": parent_epoch,
@@ -341,11 +466,6 @@ fn enqueue(
             .map_err(|_| EventWriteError::Conflict("Remote anchor input could not be queued"))?;
             return Ok(true);
         }
-        let request_id = uuid::Uuid::new_v5(
-            &uuid::Uuid::NAMESPACE_URL,
-            format!("studio-cross-server:event:{id}").as_bytes(),
-        )
-        .to_string();
         let payload = json!({
             "link": link,
             "parentEpoch": parent_epoch,
@@ -495,45 +615,6 @@ pub fn assert_delegation(agent: &AgentRecord) -> Result<(), EventWriteError> {
     Ok(())
 }
 
-pub fn read_receipt(
-    transaction: &Transaction<'_>,
-    request_id: Option<&str>,
-    signature: &str,
-    object: &'static str,
-    identity: &str,
-    validate: impl Fn(&Value) -> bool,
-) -> Result<Option<Value>, EventWriteError> {
-    let Some(request_id) = request_id.filter(|id| !id.is_empty()) else {
-        return Ok(None);
-    };
-    let Some(receipt) = EventWriteRepository::receipt(transaction, request_id)? else {
-        return Ok(None);
-    };
-    if receipt.signature != signature {
-        return Err(EventWriteError::Conflict(
-            "This request id has different content",
-        ));
-    }
-    let result: Value = serde_json::from_str(&receipt.result)
-        .map_err(|_| invalid_stored("runtime_operation_receipts", request_id))?;
-    if !validate(&result) {
-        return Err(invalid_stored(object, identity));
-    }
-    Ok(Some(result))
-}
-
-pub fn save_receipt(
-    transaction: &Transaction<'_>,
-    request_id: Option<&str>,
-    signature: &str,
-    result: &Value,
-) -> Result<(), EventWriteError> {
-    if let Some(request_id) = request_id.filter(|id| !id.is_empty()) {
-        EventWriteRepository::put_receipt(transaction, request_id, signature, &serialize(result)?)?;
-    }
-    Ok(())
-}
-
 pub fn recovery_pending(agent: &AgentRecord) -> bool {
     let extra = &agent.extra;
     let matches = |recovery: &Value| {
@@ -565,20 +646,6 @@ pub fn recovery_pending(agent: &AgentRecord) -> bool {
     recovery || truthy(extra.get("moveImportPending"))
 }
 
-fn serialize(value: &Value) -> Result<String, EventWriteError> {
-    serde_json::to_string(value)
-        .map_err(studio_runtime_store::StoreError::from)
-        .map_err(EventWriteError::from)
-}
-
-fn generated_annotation_id(created: f64) -> String {
-    let sequence = GENERATED_ANNOTATION_ID.fetch_add(1, Ordering::Relaxed);
-    format!(
-        "annotation-{}-{sequence}",
-        (created * 1_000_000_000.0) as u128
-    )
-}
-
 fn invalid_stored(object: &'static str, id: &str) -> EventWriteError {
     EventWriteError::InvalidStoredObject {
         object,
@@ -601,10 +668,33 @@ mod tests {
     use serde_json::{Value, json};
     use std::collections::BTreeMap;
     use studio_runtime_schema::delivery::DeliveryMoment;
+    use studio_runtime_store::request_results::RequestResultError;
     use studio_runtime_store::{
         AgentId, AgentRecord, AgentRepository, AgentStatus, Connection, QueueWriteRepository,
         Transaction,
     };
+
+    #[test]
+    fn retired_non_v7_request_is_expired_before_mutation() {
+        let mut db = Connection::open_in_memory().expect("database");
+        studio_runtime_store::receipt_schema::create(&db).expect("receipts");
+        db.execute_batch("CREATE TABLE counter(n INTEGER NOT NULL); INSERT INTO counter VALUES(0)")
+            .expect("owner");
+        let tx = db.transaction().expect("transaction");
+        let root = "279bc183-b81e-4003-a05c-bb8e3f440bc4";
+        let result = super::begin_request::<Value>(
+            &tx,
+            super::RequestKey::new("work", &[], root),
+            "signature",
+            1_000_001,
+        );
+        assert!(matches!(result, Err(RequestResultError::Expired)));
+        assert_eq!(
+            tx.query_row("SELECT n FROM counter", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
 
     fn database() -> Connection {
         let connection = Connection::open_in_memory().expect("memory database opens");
@@ -614,11 +704,11 @@ mod tests {
                  CREATE TABLE runtime_plans(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE runtime_annotations(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL);
-                 CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL);
+                 CREATE TABLE runtime_orchestration_settings(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE runtime_access_clients(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE runtime_server_links(id TEXT PRIMARY KEY,record TEXT NOT NULL);
-                 CREATE TABLE runtime_server_outbox(id TEXT PRIMARY KEY,server TEXT NOT NULL,body TEXT NOT NULL,state TEXT NOT NULL,result TEXT,attempts INTEGER NOT NULL DEFAULT 0,next_at REAL NOT NULL DEFAULT 0,error TEXT,created_at REAL NOT NULL DEFAULT 0,completed_at REAL NOT NULL DEFAULT 0,fingerprint TEXT);
+                 CREATE TABLE runtime_server_outbox(id TEXT PRIMARY KEY,server TEXT NOT NULL,body TEXT NOT NULL,state TEXT NOT NULL,result TEXT,attempts INTEGER NOT NULL DEFAULT 0,next_at REAL NOT NULL DEFAULT 0,error TEXT,created_at REAL NOT NULL DEFAULT 0,completed_at REAL NOT NULL DEFAULT 0,fingerprint TEXT,admission TEXT);
                  CREATE TABLE runtime_rules(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,text TEXT,status TEXT,created REAL,epoch INTEGER,turn_id TEXT,error TEXT);
                  CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,PRIMARY KEY(collection,id));
@@ -630,7 +720,16 @@ mod tests {
         connection
             .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
             .expect("volatile agent table creates");
+        studio_runtime_store::receipt_schema::create(&connection).expect("request result schema");
         let agent = AgentRecord {
+            title_job: None,
+            start_outcome_hold: None,
+            fired_events: Default::default(),
+            native_review_thread: None,
+            vm_launch: None,
+            credential_copy: None,
+            vm_auth_bootstrap: None,
+            native_release: None,
             id: AgentId::from("a"),
             root_id: AgentId::from("a"),
             epoch: 3,
@@ -743,6 +842,20 @@ mod tests {
         .expect("invalid moment refused");
     }
 
+    fn fixture_request_id(label: &str) -> String {
+        static ISSUANCE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        let root = uuid::Uuid::parse_str(
+            ISSUANCE.get_or_init(studio_runtime_schema::persistence::RequestIdentity::issue_root),
+        )
+        .expect("v7");
+        let mut bytes =
+            uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, label.as_bytes()).into_bytes();
+        bytes[..6].copy_from_slice(&root.as_bytes()[..6]);
+        bytes[6] = (bytes[6] & 15) | 0x70;
+        bytes[8] = (bytes[8] & 63) | 0x80;
+        uuid::Uuid::from_bytes(bytes).to_string()
+    }
+
     #[test]
     fn recovery_pending_event_is_stored_without_queue_or_timing_metadata() {
         let mut connection = database();
@@ -790,7 +903,7 @@ mod tests {
         let mut connection = database();
         let input = AnnotationWrite {
             agent_id: "a".into(),
-            id: Some("note-1".into()),
+            id: Some(fixture_request_id("note-1")),
             path: "file.rs".into(),
             line: 1,
             text: "comment".into(),
@@ -816,7 +929,8 @@ mod tests {
                     ..annotation("note-1")
                 }
             )),
-            Err(EventWriteError::Conflict(_))
+            Err(EventWriteError::Conflict(_)
+                | EventWriteError::RequestResult(RequestResultError::Conflict { .. }))
         ));
         assert_eq!(counts(&connection), before_replay);
         let conflict = AnnotationWrite {
@@ -829,30 +943,58 @@ mod tests {
                 transaction,
                 conflict
             )),
-            Err(EventWriteError::Conflict(_))
+            Err(EventWriteError::Conflict(_)
+                | EventWriteError::RequestResult(RequestResultError::Conflict { .. }))
         ));
         assert_eq!(counts(&connection), before_replay);
     }
 
     #[test]
-    fn python_annotation_receipt_with_unverifiable_signature_is_a_conflict() {
+    fn expired_annotation_never_creates_an_event() {
+        let mut connection = database();
+        let mut input = annotation("expired");
+        input.id = Some(uuid::Uuid::from_u128((1u128 << 80) | (7 << 76) | (2 << 62)).to_string());
+        let before = counts(&connection);
+        assert!(matches!(
+            with_transaction(&mut connection, |tx| annotate(tx, input)),
+            Err(EventWriteError::RequestResult(
+                RequestResultError::Identity(
+                    studio_runtime_schema::persistence::RequestIdentityError::Expired { .. }
+                )
+            ))
+        ));
+        assert_eq!(counts(&connection), before);
+    }
+
+    #[test]
+    fn imported_annotation_receipt_with_unverifiable_signature_is_a_conflict() {
         let mut connection = database();
         let saved = json!({
             "id":"note-1", "agent":"a", "rootId":"a", "path":"file.rs",
             "line":1, "text":"comment", "created":123.0
         });
-        let saved_json = serde_json::to_string(&saved).expect("saved annotation serializes");
         connection
             .execute(
-                "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3)",
-                ("note-1", "python-canonical-body-signature", saved_json),
+                "INSERT INTO request_results(id,signature,result,created) VALUES(?1,?2,?3,?4)",
+                (
+                    "note-1",
+                    "python-canonical-body-signature",
+                    json!({"actor":"a","reply":saved,"references":[]}).to_string(),
+                    chrono::Utc::now().timestamp_millis(),
+                ),
             )
             .expect("Python-style receipt inserts");
         let before = counts(&connection);
         let replay = with_transaction(&mut connection, |transaction| {
-            annotate(transaction, annotation("note-1"))
+            let mut input = annotation("note-1");
+            input.id = Some("note-1".into());
+            annotate(transaction, input)
         });
-        assert!(matches!(replay, Err(EventWriteError::Conflict(_))));
+        assert!(matches!(
+            replay,
+            Err(EventWriteError::Conflict(_)
+                | EventWriteError::RequestResult(RequestResultError::Conflict { .. }))
+        ));
         assert_eq!(counts(&connection), before);
     }
 
@@ -906,12 +1048,20 @@ mod tests {
     fn invalid_typed_receipt_records_refuse_before_any_write() {
         let mut connection = database();
         connection
-            .execute_batch("INSERT INTO runtime_operation_receipts VALUES('n','sig','{}');")
-            .expect("invalid receipts insert");
+            .execute(
+                "INSERT INTO request_results VALUES(?1,?2,?3,?4)",
+                rusqlite::params![
+                    fixture_request_id("n"),
+                    "sig",
+                    json!({"actor":null,"reply":{},"references":[]}).to_string(),
+                    chrono::Utc::now().timestamp_millis()
+                ],
+            )
+            .expect("invalid imported reply");
         let before = counts(&connection);
         assert!(matches!(
             with_transaction(&mut connection, |tx| annotate(tx, annotation("n"))),
-            Err(EventWriteError::InvalidStoredObject { .. })
+            Err(EventWriteError::RequestResult(RequestResultError::Json(_)))
         ));
         assert_eq!(counts(&connection), before);
     }
@@ -986,13 +1136,91 @@ mod tests {
         .expect("paired input queues");
         assert!(result);
         let (server, body): (String, String) = connection
-            .query_row(
-                "SELECT server,body FROM runtime_server_outbox WHERE id=?1",
-                [crate::relocation::identity(&["input", "message-1"])],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
+            .query_row("SELECT server,body FROM runtime_server_outbox", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
             .expect("stable outbox row");
         let body: Value = serde_json::from_str(&body).expect("outbox envelope JSON");
+        let root = body["requestId"].as_str().expect("root");
+        assert_eq!(uuid::Uuid::parse_str(root).unwrap().get_version_num(), 7);
+        assert_eq!(
+            with_transaction(&mut connection, |tx| Ok(QueueWriteRepository::metadata(
+                tx,
+                "message-1"
+            )?))
+            .unwrap()
+            .unwrap()["remoteRequestId"],
+            root
+        );
+        with_transaction(&mut connection, |tx| {
+            enqueue_event(
+                tx,
+                &agent,
+                "message-1".into(),
+                "user",
+                unicode_text.clone(),
+                101.0,
+            )
+        })
+        .expect("lost response retry");
+        let retry: String = connection
+            .query_row("SELECT body FROM runtime_server_outbox", [], |r| r.get(0))
+            .expect("same outbox");
+        assert_eq!(
+            serde_json::from_str::<Value>(&retry).unwrap()["requestId"],
+            root
+        );
+        let count: i64 = connection
+            .query_row("SELECT count(*) FROM runtime_server_outbox", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 1);
+        let public = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        with_transaction(&mut connection, |tx| {
+            enqueue_event(tx, &agent, public.clone(), "user", "public".into(), 102.0)
+        })
+        .expect("public root forwards");
+        assert_eq!(
+            with_transaction(&mut connection, |tx| Ok(QueueWriteRepository::metadata(
+                tx, &public
+            )?))
+            .unwrap()
+            .unwrap()["remoteRequestId"],
+            public
+        );
+        for preserved in [
+            json!(uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, b"imported").to_string()),
+            Value::Null,
+        ] {
+            with_transaction(&mut connection, |tx| {
+                QueueWriteRepository::put_metadata(
+                    tx,
+                    "imported-event",
+                    &json!({"remoteRequestId":preserved}),
+                )?;
+                Ok(())
+            })
+            .unwrap();
+            let before = counts(&connection);
+            assert!(
+                with_transaction(&mut connection, |tx| enqueue_event(
+                    tx,
+                    &agent,
+                    "imported-event".into(),
+                    "user",
+                    "old".into(),
+                    103.0
+                ))
+                .is_err()
+            );
+            assert_eq!(
+                counts(&connection),
+                before,
+                "an imported miss cannot mint or send"
+            );
+        }
+
         assert_eq!(server, "remote");
         assert_eq!(body["action"], "input");
         assert_eq!(body["payload"]["worker"], "a");
@@ -1008,7 +1236,7 @@ mod tests {
     fn annotation(id: &str) -> AnnotationWrite {
         AnnotationWrite {
             agent_id: "a".into(),
-            id: Some(id.into()),
+            id: Some(fixture_request_id(id)),
             path: "file.rs".into(),
             line: 1,
             text: "comment".into(),

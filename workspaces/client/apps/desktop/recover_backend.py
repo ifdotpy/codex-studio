@@ -19,9 +19,9 @@ from desktop_process import startup_backend_birth, startup_backend_facts, recove
 
 
 # Supervisor protocol version that the Rust backend uses to start providers. Owner:
-# workspaces/runtime/packages/runtime-providers/src/supervisor_protocol.rs (SUPERVISOR_PROTOCOL_V2);
+# workspaces/runtime/packages/runtime-providers/src/supervisor_protocol.rs (SUPERVISOR_PROTOCOL_VERSION);
 # recovery-test.py checks this copy against it.
-SUPERVISOR_PROTOCOL_V2 = 2
+SUPERVISOR_PROTOCOL_VERSION = 3
 # Owner: MAX_SUPERVISOR_FRAME_BYTES in runtime-process/src/supervisor_contract.rs.
 # recovery-test.py checks parity; includes the JSON line delimiter.
 MAX_SUPERVISOR_FRAME_BYTES = 33554432
@@ -192,7 +192,7 @@ def startup_supervisor_handles(state, expected):
         raise RuntimeError("The retained provider PID or generation changed")
     health = supervisor_request(state, SupervisorAction.HEALTH)
     recovery = health.get("recovery")
-    if (health.get("protocol") != SUPERVISOR_PROTOCOL_V2 or health.get("stateDir") != str(state)
+    if (health.get("protocol") != SUPERVISOR_PROTOCOL_VERSION or health.get("stateDir") != str(state)
             or not isinstance(recovery, dict) or recovery.get("blocked")
             or recovery.get("degraded") or recovery.get("fallbackReady")
             or not isinstance(health.get("handles"), list)):
@@ -930,10 +930,10 @@ def supervisor_request(state: Path, action: SupervisorAction) -> dict[str, objec
                 return json.loads(line)
 
             role = "operator" if action is SupervisorAction.FINISH_FALLBACK else "probe"
-            hello = SupervisorHello(**exchange({"protocol": SUPERVISOR_PROTOCOL_V2,
+            hello = SupervisorHello(**exchange({"protocol": SUPERVISOR_PROTOCOL_VERSION,
                               "stateDir": str(state), role: True}))
-            if hello.ok is not True or hello.protocol != SUPERVISOR_PROTOCOL_V2:
-                raise RuntimeError("The running process supervisor does not serve protocol 2.")
+            if hello.ok is not True or hello.protocol != SUPERVISOR_PROTOCOL_VERSION:
+                raise RuntimeError("The running process supervisor uses an incompatible protocol.")
             reply = SupervisorReply(**exchange({"requestId": 1, "action": action}))
             if reply.requestId != 1 or reply.error is not None or reply.result is None:
                 raise RuntimeError(reply.error or "The supervisor reply does not match the request.")

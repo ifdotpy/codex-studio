@@ -8,10 +8,7 @@ import {
 import { randomUUID } from "../../uuid";
 import { ProviderKind, providerLabel } from "../../generated/providerKind.ts";
 import { clearSettingsRequest, settingsRequestId } from "../settingsRequestId";
-import {
-  isModelWhitelisted,
-  useModelWhitelist,
-} from "../models/modelWhitelist";
+import { isModelEnabled, useModelChoices } from "../models/modelChoices";
 import { useServerApi } from "../../servers/ServerServicesContext";
 import { accountCanStart } from "../../accountName";
 import {
@@ -743,7 +740,7 @@ function ScopedExecutionSettings({
     : readOnlyReason
       ? inheritedCatalog
       : parentCatalog;
-  const allowedModels = useModelWhitelist();
+  const allowedModels = useModelChoices();
   const connectedAccounts = accounts.filter((account) =>
     accountCanStart(account),
   );
@@ -1084,7 +1081,7 @@ function ScopedExecutionSettings({
       const usable = offered.filter(
         (row) =>
           !row.hidden &&
-          isModelWhitelisted(
+          isModelEnabled(
             {
               ...row,
               provider:

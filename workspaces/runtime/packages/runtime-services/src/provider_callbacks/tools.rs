@@ -6,6 +6,18 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 use studio_runtime_providers::{RequestId, ResponseBody};
 use studio_runtime_store::{RuntimeStore, system_reads as records};
 
+fn raw_tool_result(
+    raw: &serde_json::value::RawValue,
+    success: bool,
+) -> Result<Value, CallbackError> {
+    let text = if raw.get().starts_with('"') {
+        serde_json::from_str::<String>(raw.get())?
+    } else {
+        raw.get().to_owned()
+    };
+    Ok(json!({"success":success,"contentItems":[{"type":"inputText","text":text}]}))
+}
+
 fn dispatch_gate_key(state_dir: &std::path::Path, id: &str) -> String {
     format!("{}:{id}", state_dir.display())
 }
@@ -61,6 +73,7 @@ impl From<tool_requests::ToolRequestError> for CallbackError {
     fn from(error: tool_requests::ToolRequestError) -> Self {
         match error {
             tool_requests::ToolRequestError::Store(error) => Self::Store(error),
+            tool_requests::ToolRequestError::RequestResult(error) => error.into(),
             tool_requests::ToolRequestError::Payload(_) => {
                 Self::Stored("runtime_tool_requests payload".into())
             }
@@ -237,6 +250,31 @@ pub(crate) fn put(tx: &Transaction<'_>, record: &Value) -> Result<(), CallbackEr
     )?;
     Ok(())
 }
+fn authorize_call(
+    tx: &Transaction<'_>,
+    snapshot: &CallbackSnapshot,
+    call: &ToolCall,
+) -> Result<(), CallbackError> {
+    if call.name == "orchestration_monitor_input" {
+        let actor = crate::managed_host_tools::Actor::from_record(
+            snapshot.actor(),
+            &snapshot.context().agent,
+            snapshot.context().epoch,
+        )
+        .map_err(services::managed_error)?;
+        runtime_dispatch::authorize_monitor_input_in_transaction(
+            tx,
+            &actor,
+            call.args
+                .get("monitor_id")
+                .and_then(Value::as_str)
+                .ok_or(CallbackError::Invalid("Missing monitor_id"))?,
+        )
+        .map_err(services::managed_error)?;
+    }
+    Ok(())
+}
+
 pub(super) async fn dispatch_with_ports(
     store: Arc<RuntimeStore>,
     context: &CallbackContext,
@@ -244,7 +282,70 @@ pub(super) async fn dispatch_with_ports(
     now: f64,
     ports: Arc<dyn crate::managed_host_tools::Ports<Prepared = ()>>,
 ) -> Result<CallbackDecision, CallbackError> {
-    let call = ToolCall::parse(input, context)?;
+    let mut call = ToolCall::parse(input, context)?;
+    let origin = ReplyIdentity::new(context, &input.id);
+    let input_for_owner = input.clone();
+    let call_for_owner = call.clone();
+    let origin_for_owner = origin.clone();
+    let owner_id = store
+        .transaction_with(move |tx| {
+            let snapshot = storage::snapshot(tx, &origin_for_owner.context)?;
+            snapshot.active()?;
+            authorize_call(tx, &snapshot, &call_for_owner)?;
+            let mut owner =
+                storage::admit_owner(tx, &origin_for_owner, &input_for_owner.signature())?;
+            let id = if let Some(id) = &owner.payload.tool_request {
+                id.clone()
+            } else {
+                let alias = call_for_owner
+                    .alias
+                    .as_deref()
+                    .unwrap_or(&call_for_owner.call);
+                let existing = tool_requests::resolve(tx, &origin_for_owner.context.agent, alias)?;
+                let id = if let Some(existing) = existing {
+                    if existing["stage"] == "ambiguous" {
+                        return Err(CallbackError::Unknown);
+                    }
+                    if existing["signature"] != call_for_owner.signature {
+                        return Err(CallbackError::Conflict);
+                    }
+                    if existing["accountKey"] != origin_for_owner.context.account
+                        || existing["threadId"] != origin_for_owner.context.thread
+                    {
+                        return Err(CallbackError::Stale);
+                    }
+                    existing["id"]
+                        .as_str()
+                        .ok_or(CallbackError::Unknown)?
+                        .to_owned()
+                } else {
+                    studio_runtime_schema::persistence::RequestIdentity::issue_root()
+                };
+                owner.payload.tool_request = Some(id.clone());
+                id
+            };
+            storage::put_owner(tx, &owner)?;
+            let call = &call_for_owner;
+            let context = &origin_for_owner.context;
+            let mut candidate = json!({
+                "id":id, "agent":context.agent, "threadId":context.thread,
+                "callId":call.call, "tool":call.name, "signature":call.signature,
+                "arguments":call.args,
+                "rpcId":input_for_owner.id, "turnId":context.turn, "epoch":context.epoch,
+                "accountKey":context.account, "connectionId":context.connection,
+                "supervisor":{"generation":context.generation},
+                "created":chrono::Utc::now().timestamp_millis() as f64 / 1000.0, "updated":now,
+                "readOnly":services::read_only(&call.name,&call.args),
+                "stage":"queued", "outcome":"pending", "cancelRequested":false
+            });
+            if let Some(alias) = &call.alias {
+                candidate["request_id"] = json!(alias);
+            }
+            admission::reserve(tx, candidate, &call.call, &call.prefix, call.alias.clone())?;
+            Ok::<_, CallbackError>(id)
+        })
+        .await?;
+    call.id = owner_id;
     // A durable claim prevents duplicate execution across restart. Within one
     // process, serialize the same request so a concurrent replay can observe
     // the first request's committed result instead of racing its service call.
@@ -253,52 +354,6 @@ pub(super) async fn dispatch_with_ports(
     if matches!(call.kind, ToolKind::Unknown) {
         return Ok(CallbackDecision::Unsupported);
     }
-    // The complete call identity and arguments commit before a service can act.
-    let context_for_admission = context.clone();
-    let call_for_admission = call.clone();
-    let input_for_admission = input.clone();
-    store
-        .transaction_with(move |tx| {
-            let context = &context_for_admission;
-            let call = &call_for_admission;
-            let input = &input_for_admission;
-            let snapshot = storage::snapshot(tx, context)?;
-            snapshot.active()?;
-            if call.name == "orchestration_monitor_input" {
-                let actor = crate::managed_host_tools::Actor::from_record(
-                    snapshot.actor(),
-                    &context.agent,
-                    context.epoch,
-                )
-                .map_err(services::managed_error)?;
-                runtime_dispatch::authorize_monitor_input_in_transaction(
-                    tx,
-                    &actor,
-                    call.args
-                        .get("monitor_id")
-                        .and_then(Value::as_str)
-                        .ok_or(CallbackError::Invalid("Missing monitor_id"))?,
-                )
-                .map_err(services::managed_error)?;
-            }
-            let mut candidate = json!({
-                "id":call.id, "agent":context.agent, "threadId":context.thread,
-                "callId":call.call, "tool":call.name, "signature":call.signature,
-                "arguments":call.args,
-                "rpcId":input.id, "turnId":context.turn, "epoch":context.epoch,
-                "accountKey":context.account, "connectionId":context.connection,
-                "supervisor":{"generation":context.generation},
-                "created":now, "updated":now,
-                "readOnly":services::read_only(&call.name,&call.args),
-                "stage":"queued", "outcome":"pending", "cancelRequested":false
-            });
-            if let Some(alias) = &call.alias {
-                candidate["request_id"] = json!(alias);
-            }
-            admission::reserve(tx, candidate, &call.call, &call.prefix, call.alias.clone())?;
-            Ok::<_, CallbackError>(())
-        })
-        .await?;
     enum DispatchState {
         Result(Value),
         Claimed,
@@ -325,10 +380,13 @@ pub(super) async fn dispatch_with_ports(
             {
                 return Err(CallbackError::Stale);
             }
-            let cached = records::get(tx, "runtime_tool_results", &call.id)?
+            let cached = tool_requests::saved_result(tx, &call.id)?
                 .or_else(|| record.get("result").filter(|v| v.is_object()).cloned());
             if let Some(saved) = cached {
                 return Ok(DispatchState::Result(saved));
+            }
+            if lifecycle::terminal(&record)? {
+                return Err(CallbackError::Unknown);
             }
             if record["connectionId"] != context.connection
                 || record
@@ -408,8 +466,6 @@ pub(super) async fn dispatch_with_ports(
     if !signals.is_empty() && ports.release(&signals).is_err() {
         eprintln!("Could not wake owners of managed tool request {}", call.id);
     }
-    // The durable tool result is the only copy of the answer: a replay of this
-    // request rebuilds the same reply from it, so no reply row is kept.
     let call_id = call.id.clone();
     let outcome = store
         .transaction_with(move |tx| {
@@ -419,13 +475,21 @@ pub(super) async fn dispatch_with_ports(
         })
         .await?;
     let projected = super::project_tool_result(&result, &call.id, &outcome)?;
-    // Every replay rebuilds the identical reply: its attempt is the tool request.
-    let mut identity = ReplyIdentity::new(context, &input.id);
-    identity.attempt = call.id;
-    Ok(CallbackDecision::Answer(Reply {
-        identity,
-        body: ResponseBody::Result(projected),
-    }))
+    let input = input.clone();
+    store
+        .transaction_with(move |tx| {
+            if let Some(decision) = storage::saved_decision(tx, &origin, &input)? {
+                return Ok(decision);
+            }
+            let reply = Reply::new(origin, ResponseBody::Result(projected))?;
+            storage::save_reply(tx, &input, &reply)?;
+            let mut response =
+                storage::response(tx, &reply.identity)?.ok_or(CallbackError::Unknown)?;
+            response.payload.tool_request = Some(call.id);
+            storage::put_response(tx, &response)?;
+            Ok(CallbackDecision::Answer(reply))
+        })
+        .await
 }
 
 pub(super) async fn production_ports(
@@ -475,19 +539,16 @@ fn claim_settlement(
 ) -> Box<ClaimFailure> {
     use crate::managed_host_tools::{DeliveryCertainty, DispatchedOperation, OperationResult};
     let operation = match certainty {
-        DeliveryCertainty::NotSent => DispatchedOperation::NotSent(OperationResult {
-            value: json!(error.to_string()),
-            signals: Vec::new(),
-        }),
+        DeliveryCertainty::NotSent => {
+            DispatchedOperation::NotSent(OperationResult::reply(&error.to_string()))
+        }
         #[cfg(test)]
-        DeliveryCertainty::Written => DispatchedOperation::Unknown(OperationResult {
-            value: json!(unknown_outcome(&call.name, &call.id, &error)),
-            signals: Vec::new(),
-        }),
-        DeliveryCertainty::Unknown => DispatchedOperation::Unknown(OperationResult {
-            value: json!(unknown_outcome(&call.name, &call.id, &error)),
-            signals: Vec::new(),
-        }),
+        DeliveryCertainty::Written => DispatchedOperation::Unknown(OperationResult::reply(
+            &unknown_outcome(&call.name, &call.id, &error),
+        )),
+        DeliveryCertainty::Unknown => DispatchedOperation::Unknown(OperationResult::reply(
+            &unknown_outcome(&call.name, &call.id, &error),
+        )),
     };
     Box::new(ClaimFailure { error, operation })
 }
@@ -579,7 +640,7 @@ async fn run_claimed(
                 let mut record = records::get(tx, "runtime_tool_requests", &call.id)?
                     .ok_or(CallbackError::Invalid("Unknown tool receipt"))?;
                 check_claim_owner(&record, &context_for_finish, call)?;
-                if let Some(saved) = records::get(tx, "runtime_tool_results", &call.id)? {
+                if let Some(saved) = tool_requests::saved_result(tx, &call.id)? {
                     return Ok((saved, Vec::new()));
                 }
                 finalize_dispatched(tx, &call.id, &mut record, now, dispatched)
@@ -634,7 +695,7 @@ async fn run_claimed(
                 let mut record = records::get(tx, "runtime_tool_requests", &call.id)?
                     .ok_or(CallbackError::Invalid("Unknown tool receipt"))?;
                 check_claim_owner(&record, context, call)?;
-                if let Some(saved) = records::get(tx, "runtime_tool_results", &call.id)? {
+                if let Some(saved) = tool_requests::saved_result(tx, &call.id)? {
                     return Ok((saved, Vec::new()));
                 }
                 if let Ok(Some(payloads)) = &payloads {
@@ -680,7 +741,7 @@ fn settle_claim(
     now: f64,
     operation: crate::managed_host_tools::DispatchedOperation,
 ) -> Result<(Value, Vec<crate::managed_host_tools::WakeSignal>), CallbackError> {
-    if let Some(saved) = records::get(tx, "runtime_tool_results", id)? {
+    if let Some(saved) = tool_requests::saved_result(tx, id)? {
         return Ok((saved, Vec::new()));
     }
     let mut record = records::get(tx, "runtime_tool_requests", id)?
@@ -753,14 +814,11 @@ impl Drop for ClaimGuard {
         };
         runtime.spawn(async move {
             let operation = crate::managed_host_tools::DispatchedOperation::Unknown(
-                crate::managed_host_tools::OperationResult {
-                    value: json!(unknown_outcome(
-                        &tool,
-                        &id,
-                        &"the callback ended before its result was recorded"
-                    )),
-                    signals: Vec::new(),
-                },
+                crate::managed_host_tools::OperationResult::reply(&unknown_outcome(
+                    &tool,
+                    &id,
+                    &"the callback ended before its result was recorded",
+                )),
             );
             record_settlement(&store, &id, &signature, now, operation).await;
         });
@@ -796,7 +854,17 @@ fn execute_once(
     let (mut value, signals) = match effect {
         Ok(staged) => {
             tx.execute_batch("RELEASE callback_service")?;
-            (tool_result(staged.value, true), staged.signals)
+            let mut value = raw_tool_result(&staged.value, true)?;
+            if (staged.handle || staged.output_ref)
+                && let Some(expires) = staged.output_expires_at
+            {
+                value["serverOutputExpiresAt"] = json!(expires);
+                tx.execute(
+                    "INSERT OR IGNORE INTO runtime_server_output_tools VALUES (?1,?2)",
+                    params![call.id, expires],
+                )?;
+            }
+            (value, staged.signals)
         }
         Err(CallbackError::InvalidResultSchema(message)) => {
             tx.execute_batch("ROLLBACK TO callback_service; RELEASE callback_service")?;
@@ -835,28 +903,8 @@ fn execute_once(
     record["updated"] = json!(now);
     record["finished"] = json!(now);
     put(tx, record)?;
-    records::validate("runtime_tool_results", &call.id, value.clone())?;
-    tx.execute(
-        "INSERT INTO runtime_tool_results(id,result) VALUES(?1,?2)",
-        params![call.id, value.to_string()],
-    )?;
+    tool_requests::settle_result(tx, &call.id, &value)?;
     Ok((value, signals))
-}
-
-/// Python `codex_server_exec.output_expiry`: the command expiry in a server
-/// receipt or an output-reference page.
-fn output_expiry(value: &Value) -> Option<f64> {
-    if let Some(expires) = value.get("outputExpiresAt").filter(|v| v.is_number())
-        && (value.get("handle").is_some() || value.get("outputRef").is_some())
-    {
-        return expires.as_f64();
-    }
-    ["value", "result"].into_iter().find_map(|field| {
-        value
-            .get(field)
-            .filter(|nested| nested.is_object())
-            .and_then(output_expiry)
-    })
 }
 
 fn finalize_dispatched(
@@ -879,9 +927,13 @@ fn finalize_dispatched(
         record["tool"].as_str(),
         Some("orchestration_servers" | "orchestration_read")
     )
-    .then(|| output_expiry(&result.value))
+    .then(|| {
+        (result.handle || result.output_ref)
+            .then_some(result.output_expires_at)
+            .flatten()
+    })
     .flatten();
-    let mut value = tool_result(result.value, success);
+    let mut value = raw_tool_result(&result.value, success)?;
     if let Some(expires) = output_expires {
         value["serverOutputExpiresAt"] = json!(expires);
         tx.execute(
@@ -902,14 +954,11 @@ fn finalize_dispatched(
         lifecycle::settle(record, &value, true)?;
     }
     record["result"] = value.clone();
+    record["result"] = value.clone();
     record["updated"] = json!(now);
     record["finished"] = json!(now);
     put(tx, record)?;
-    records::validate("runtime_tool_results", id, value.clone())?;
-    tx.execute(
-        "INSERT INTO runtime_tool_results(id,result) VALUES(?1,?2)",
-        params![id, value.to_string()],
-    )?;
+    tool_requests::settle_result(tx, id, &value)?;
     Ok((value, result.signals))
 }
 
@@ -918,6 +967,22 @@ mod local_failure_tests {
     use super::{CallbackError, LocalFailure, ToolCall, ToolKind};
     use crate::managed_host_tools::DispatchedOperation;
     use serde_json::json;
+
+    #[test]
+    fn raw_tool_result_keeps_strings_and_json_payloads() {
+        let text = crate::managed_host_tools::OperationResult::reply(&"line\nquoted");
+        assert_eq!(
+            super::raw_tool_result(&text.value, true).unwrap()["contentItems"][0]["text"],
+            "line\nquoted"
+        );
+        let object = crate::managed_host_tools::OperationResult::reply(
+            &json!({"status":"queued","count":2}),
+        );
+        let result = super::raw_tool_result(&object.value, true).unwrap();
+        let decoded: serde_json::Value =
+            serde_json::from_str(result["contentItems"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(decoded, json!({"status":"queued","count":2}));
+    }
 
     fn call() -> ToolCall {
         ToolCall {
@@ -939,12 +1004,8 @@ mod local_failure_tests {
         ))
         .settlement(&call());
         assert!(matches!(failure.operation, DispatchedOperation::Unknown(_)));
-        let text = failure
-            .operation
-            .result()
-            .value
-            .as_str()
-            .expect("unknown outcome text");
+        let value = failure.operation.result().test_value();
+        let text = value.as_str().expect("unknown outcome text");
         assert!(text.contains("outcome is unknown"), "{text}");
     }
 

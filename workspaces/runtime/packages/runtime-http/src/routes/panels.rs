@@ -138,6 +138,8 @@ fn profile_read_error(error: StoreError) -> ApiError {
         {
             ApiError::invalid_stored("runtime_profiles", "<schema>")
         }
+        StoreError::RequestResult(error) => error.into(),
+        StoreError::Outbox(error) => error.into(),
         StoreError::StateDirectory(_)
         | StoreError::AlreadyOwned
         | StoreError::MissingDatabase(_)

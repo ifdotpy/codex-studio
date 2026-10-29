@@ -190,10 +190,7 @@ pub(crate) async fn run(
             {
                 value["reason"] = reason.clone();
             }
-            DispatchedOperation::Applied(OperationResult {
-                value,
-                signals: Vec::new(),
-            })
+            DispatchedOperation::Applied(OperationResult::reply(&value))
         }
         Ok(_) => crate::host_exec::unknown("The layr command has no proven result.".into()),
         // Nothing reached the guest: a connection or request check failed first.
@@ -248,10 +245,7 @@ pub(crate) async fn run_native(
     )
     .await;
     match outcome {
-        Ok(Ok(value)) => DispatchedOperation::Applied(OperationResult {
-            value,
-            signals: Vec::new(),
-        }),
+        Ok(Ok(value)) => DispatchedOperation::Applied(OperationResult::reply(&value)),
         Ok(Err(error @ crate::layr_native::NativeLayrError::Refused(_))) => {
             crate::host_exec::refused(error.to_string())
         }

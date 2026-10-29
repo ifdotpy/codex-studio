@@ -213,22 +213,39 @@ async fn vm_existing_reattach_refuses_unproved_native_identity_and_authority_rac
 
 #[tokio::test]
 async fn vm_existing_reattach_refuses_missing_or_unfinished_start_receipts() {
-    for result in [None, Some("reserved"), Some("not_sent")] {
+    use studio_runtime_schema::persistence::WorkEffectStatus;
+    for result in [
+        None,
+        Some(WorkEffectStatus::Submitted),
+        Some(WorkEffectStatus::NotSent),
+    ] {
         let (state, guest) = existing_actor(false).await;
         let actor = state.agent.clone();
         let epoch = state.epoch;
-        state.bridge.run(move |store| async move {
-            store.transaction(move |tx| {
-                let key = format!("linux-vm-provider-start:{actor}:{epoch}");
-                if let Some(phase) = result {
-                    tx.execute("UPDATE runtime_operation_receipts SET result=json_set(result,'$.phase',?1) WHERE id=?2", rusqlite::params![phase,key])?;
-                } else {
-                    tx.execute("DELETE FROM runtime_operation_receipts WHERE id=?1", [key])?;
-                }
+        state
+            .bridge
+            .run(move |store| async move {
+                store
+                    .transaction(move |tx| {
+                        let mut agent = AgentRepository::get(tx, &AgentId::from(actor.as_str()))?
+                            .expect("VM actor");
+                        assert_eq!(agent.epoch, epoch);
+                        if let Some(status) = result {
+                            agent
+                                .vm_launch
+                                .as_mut()
+                                .expect("current launch owner")
+                                .status = status;
+                        } else {
+                            agent.vm_launch = None;
+                        }
+                        AgentRepository::put(tx, &agent)
+                    })
+                    .await?;
                 Ok(())
-            }).await?;
-            Ok(())
-        }).await.unwrap();
+            })
+            .await
+            .unwrap();
         let (_peer, mut worker) = existing_worker(&state, guest.clone()).await;
         worker_barrier(&worker).await;
         assert_eq!(
@@ -628,6 +645,8 @@ async fn vm_existing_reattach_on_demand_read_reuses_the_existing_actor_connectio
     *guest.info_override.lock().unwrap() = None;
     let port = worker.retained_session();
     let request = SessionRequest {
+        root_request_id: studio_runtime_schema::persistence::RequestIdentity::issue_root(),
+        admitted_request: None,
         scope: port.scope().clone(),
         expected_scope: None,
         operation: "existing-vm-read".into(),
@@ -645,12 +664,20 @@ async fn vm_existing_reattach_on_demand_read_reuses_the_existing_actor_connectio
     assert!(matches!(receipt.result, RequestResult::Reply(_)));
     assert_eq!(guest.infos.load(std::sync::atomic::Ordering::SeqCst), 2);
     let repeated = port.request(request).await.unwrap();
-    assert!(repeated.replayed);
+    assert!(
+        !repeated.replayed,
+        "side-effect-free reads bypass replay storage"
+    );
     {
         let native = guest.inner.state.lock().unwrap();
         assert_eq!(native.starts, 1);
-        assert_eq!(native.writes.len(), 1);
-        assert_eq!(native.writes[0]["method"], "thread/read");
+        assert_eq!(native.writes.len(), 2);
+        assert!(
+            native
+                .writes
+                .iter()
+                .all(|write| write["method"] == "thread/read")
+        );
         assert!(native.stops.is_empty());
     }
     worker.shutdown().await.unwrap();
@@ -670,6 +697,8 @@ async fn vm_reattach_read_waits_for_handshake_and_rechecks_authority() {
         *guest.reattach_gate.lock().unwrap() = Some((held.clone(), release.clone()));
         let port = worker.retained_session();
         let request = SessionRequest {
+            root_request_id: studio_runtime_schema::persistence::RequestIdentity::issue_root(),
+            admitted_request: None,
             scope: port.scope().clone(),
             expected_scope: None,
             operation: "held-vm-read".into(),
@@ -714,11 +743,19 @@ async fn vm_reattach_read_waits_for_handshake_and_rechecks_authority() {
             assert!(guest.inner.state.lock().unwrap().writes.is_empty());
         } else {
             assert!(matches!(result.unwrap().result, RequestResult::Reply(_)));
-            assert!(port.request(request).await.unwrap().replayed);
+            assert!(
+                !port.request(request).await.unwrap().replayed,
+                "side-effect-free reads bypass replay storage"
+            );
             let native = guest.inner.state.lock().unwrap();
             assert_eq!(native.starts, 1);
-            assert_eq!(native.writes.len(), 1);
-            assert_eq!(native.writes[0]["method"], "thread/read");
+            assert_eq!(native.writes.len(), 2);
+            assert!(
+                native
+                    .writes
+                    .iter()
+                    .all(|write| write["method"] == "thread/read")
+            );
             assert!(native.stops.is_empty());
         }
         worker.shutdown().await.unwrap();

@@ -101,6 +101,7 @@ fn resolve_payload_response(state_root: &std::path::Path, value: Value) -> Resul
 }
 fn error(error: ToolRequestError) -> ApiError {
     match error {
+        ToolRequestError::RequestResult(error) => error.into(),
         ToolRequestError::InvalidRequest(message) => {
             ApiError::new(StatusCode::BAD_REQUEST, message)
         }
