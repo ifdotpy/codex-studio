@@ -3164,6 +3164,7 @@ async fn accepted_turn_reattaches_and_keeps_notification_effects() {
     worker.shutdown().await.unwrap();
     let mut peer = Peer::new();
     peer.cursor = 2;
+    peer.trace.store(true, std::sync::atomic::Ordering::Relaxed);
     eprintln!("reattach: waiting for replacement worker readiness");
     let mut worker = peer.worker(state.bridge.clone()).await;
     eprintln!("reattach: waiting for item acknowledgment");
@@ -3173,7 +3174,24 @@ async fn accepted_turn_reattaches_and_keeps_notification_effects() {
     let count = state.bridge.run(move |store| async move { Ok(store.test_reader()?.query_row("SELECT COUNT(*) FROM runtime_items WHERE json_extract(record,'$.text')='after restart'", [], |r|r.get::<_,i64>(0))?) }).await.unwrap();
     assert_eq!(count, 1);
     eprintln!("reattach: waiting for turn acknowledgment");
-    peer.completed().await;
+    let cursor = peer.frame(json!({"method":"turn/completed","params":{"threadId":"fake-thread-0","turn":{"id":"turn","status":"completed"}}})).await;
+    loop {
+        tokio::select! {
+            ack = tokio::time::timeout(std::time::Duration::from_secs(120), peer.acks.recv()) => {
+                let got = ack.expect("settlement deadline").expect("session acknowledges").0;
+                eprintln!("reattach: received ACK {got}, expected {cursor}");
+                if got >= cursor {
+                    assert_eq!(got, cursor);
+                    break;
+                }
+            }
+            wire = peer.writes.recv() => {
+                let wire = wire.expect("provider write channel closed");
+                panic!("reattach: unexpected provider write before ACK {cursor}: method={} id={} receipt=pending", wire.value["method"], wire.value["id"]);
+            }
+            result = worker.completion() => panic!("reattach: worker exited before ACK {cursor}: {result:?}"),
+        }
+    }
     eprintln!("reattach: waiting for final record");
     assert_eq!(state.record().await["status"], "completed");
     eprintln!("reattach: waiting for replacement worker shutdown");
