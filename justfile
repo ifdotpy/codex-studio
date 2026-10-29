@@ -138,6 +138,10 @@ test-crash-matrix-full *args:
 test-rust-session-fairness:
     @cargo nextest run -p studio-runtime-services --run-ignored only -E 'test(replenished_journal_and_settlement_lanes_allow_command_and_receipt_progress)'
 
+[doc("Manual heavy check: a provider child must exit within the 1-second reap grace on an idle machine.")]
+test-provider-reap-timing:
+    @cargo nextest run -p studio-runtime-process --test integration --run-ignored only -E 'test(provider_stdio::explicit_cancel_stops_and_reaps_child)'
+
 [doc("Run the 200-agent single-account two-exchange scenario for both providers (manual heavy tier).")]
 test-rust-many-agents:
     @cargo nextest run -p studio-runtime-services --lib --run-ignored only -E 'test(two_hundred_agents_complete_two_exchanges)'
@@ -192,5 +196,11 @@ test-guest-runner-processes:
     @node --test workspaces/runtime/apps/vm-guest/run-guest-suite-processes.test.mts
 
 [doc("Manual process check: run detached host_exec startup, replacement and guest broker scenarios.")]
+test-real-process-probe:
+    @STUDIO_REAL_PROCESS_TESTS=1 python3 -I -B workspaces/client/apps/desktop/startup-delivery-test.py StartupDeliveryTests.test_owned_launcher_probe_observes_its_real_kernel_companion_without_runtime_state
+
+test-live-handover:
+    @cargo nextest run -j 4 -p studio-runtime-server --test integration --run-ignored only --test-threads 1 -E 'test(/^live_handover::/)'
+
 test-host-exec-processes:
     @cargo nextest run -j 4 -p studio-runtime-server --test integration --run-ignored only --test-threads 1 -E 'test(/^host_exec_service::/)'

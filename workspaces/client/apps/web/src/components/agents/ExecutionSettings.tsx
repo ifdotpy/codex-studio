@@ -1,4 +1,6 @@
+import { appendAppLog } from "../../appLog";
 import {
+  AgentStatus,
   AccountTransferScope,
   AccountTransferStatus as GeneratedAccountTransferStatus,
   TransferScope,
@@ -6,14 +8,12 @@ import {
 import { randomUUID } from "../../uuid";
 import { ProviderKind, providerLabel } from "../../generated/providerKind.ts";
 import { clearSettingsRequest, settingsRequestId } from "../settingsRequestId";
-import {
-  isModelWhitelisted,
-  useModelWhitelist,
-} from "../models/modelWhitelist";
+import { isModelEnabled, useModelChoices } from "../models/modelChoices";
 import { useServerApi } from "../../servers/ServerServicesContext";
 import { accountCanStart } from "../../accountName";
 import {
   Button,
+  Modal,
   Popover,
   Drawer,
   Switch,
@@ -61,6 +61,10 @@ import { useMediaQuery } from "@mantine/hooks";
 import { AgentSetupPicker, type SetupRole } from "./AgentSetupPicker";
 import "./execution-settings.css";
 import { SettingsSection } from "../ui/primitives";
+import {
+  observeSettingsChange,
+  type SettingsChange,
+} from "./liveSettingsStatus";
 
 type Catalog = ReturnType<typeof useWorkerModels>;
 type ConversationBody = PostBody<"/api/conversation">;
@@ -131,6 +135,7 @@ type SettingsProps = {
   onAccountChange?: (key: string) => void;
   accountDisabled?: boolean;
   accountModalOpen?: boolean;
+  transferOpenRequest?: number;
   onDraftChange?: (patch: Partial<ConversationBody>) => void;
 };
 const accountOf = (agent: Pick<Agent, "accountKey">) =>
@@ -259,6 +264,78 @@ const sameRoleSettings = (left: Agent, right: Agent, role: SetupRole) =>
         settingsFor(right, role === "worker"),
       );
 function ExecutionSettingsController(props: ControllerProps) {
+  const [changeStatus, setChangeStatus] = useState<SettingsChange | null>(null);
+  const [statusOpen, setStatusOpen] = useState(false);
+  useEffect(() => {
+    setChangeStatus((current) =>
+      current ? observeSettingsChange(current, props.agent) : null,
+    );
+  }, [props.agent, changeStatus?.phase]);
+  const loggedFailure = useRef<SettingsChange | null>(null);
+  useEffect(() => {
+    if (
+      changeStatus?.phase === "failed" &&
+      !changeStatus.errorLogged &&
+      loggedFailure.current !== changeStatus
+    ) {
+      loggedFailure.current = changeStatus;
+      appendAppLog({
+        at: Date.now(),
+        level: "error",
+        title: "Execution settings change failed",
+        reason: changeStatus.error || "The settings change failed.",
+      });
+    }
+  }, [changeStatus]);
+  const statusModal = changeStatus && (
+    <Modal
+      opened={statusOpen}
+      onClose={() => setStatusOpen(false)}
+      title="Settings change"
+      centered
+      zIndex={layerZIndex.modalAbovePopover}
+    >
+      <Stack gap="sm">
+        <Text role="status">
+          {changeStatus.phase === "saving"
+            ? "Saving…"
+            : changeStatus.phase === "queued"
+              ? "Queued for the next turn"
+              : changeStatus.phase === "saved"
+                ? "Saved"
+                : "Failed"}
+        </Text>
+        <Text size="sm">
+          {changeStatus.before.model || "Default"} →{" "}
+          {changeStatus.requested.model || "Default"} ·{" "}
+          {changeStatus.before.effort || "Default"} →{" "}
+          {changeStatus.requested.effort || "Default"} · Fast{" "}
+          {changeStatus.before.fastMode ? "on" : "off"} →{" "}
+          {changeStatus.requested.fastMode ? "on" : "off"}
+        </Text>
+        {changeStatus.phase === "queued" && (
+          <Text size="sm">
+            {props.agent.status === AgentStatus.idle ||
+            props.agent.status === AgentStatus.completed
+              ? "If still queued, the change applies when this agent next runs. Check current settings for its latest state."
+              : "If still queued, the change applies at the next turn. Check current settings for its latest state."}
+          </Text>
+        )}
+        {changeStatus.phase === "saving" && changeStatus.error && (
+          <Text size="sm">
+            {changeStatus.error} Use Check settings save to confirm the same
+            request.
+          </Text>
+        )}
+        {changeStatus.phase === "failed" && (
+          <Text size="sm">
+            {changeStatus.error} See App errors for details.
+          </Text>
+        )}
+        <Button onClick={() => setStatusOpen(false)}>Close</Button>
+      </Stack>
+    </Modal>
+  );
   const [confirmed, setConfirmed] = useState<
     Partial<Record<SetupRole, SettingsReceipt>>
   >({});
@@ -341,6 +418,10 @@ function ExecutionSettingsController(props: ControllerProps) {
     props.initialRole || (props.agent.isLead ? "orchestrator" : "worker"),
   );
   const [opened, setOpened] = useState(false);
+  const [transferOpen, setTransferOpen] = useState(false);
+  useEffect(() => {
+    if (props.transferOpenRequest) setTransferOpen(true);
+  }, [props.transferOpenRequest]);
   const triggerRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     if ((props.openRequest || 0) > 0) {
@@ -387,6 +468,38 @@ function ExecutionSettingsController(props: ControllerProps) {
       key={scope}
       {...props}
       beginSettingsSave={beginSettingsSave}
+      transferOpen={transferOpen}
+      setTransferOpen={setTransferOpen}
+      onSettingsChange={(change) => {
+        setChangeStatus(change);
+        setStatusOpen(true);
+      }}
+      onSettingsFailure={(key, message, uncertain) =>
+        setChangeStatus((current) =>
+          current &&
+          current.requestKey === key &&
+          projected.current.agent.id === current.agentId &&
+          accountOf(projected.current.agent) === current.accountKey
+            ? {
+                ...current,
+                phase: uncertain ? "saving" : "failed",
+                error: message,
+                errorLogged: true,
+              }
+            : current,
+        )
+      }
+      onSettingsConfirmed={(key, nextTurn) =>
+        setChangeStatus((current) =>
+          current &&
+          current.phase !== "failed" &&
+          current.requestKey === key &&
+          projected.current.agent.id === current.agentId &&
+          accountOf(projected.current.agent) === current.accountKey
+            ? { ...current, phase: nextTurn ? "queued" : "saved" }
+            : current,
+        )
+      }
       presentation={props.renderTrigger ? "panel" : props.presentation}
       agent={agent}
       inheritedUnavailable={inheritedRole && !props.lead}
@@ -403,12 +516,20 @@ function ExecutionSettingsController(props: ControllerProps) {
       setOpened={changeOpened}
     />
   );
-  if (!props.renderTrigger || props.section) return controls;
+  if (props.section) return controls;
+  if (!props.renderTrigger)
+    return (
+      <>
+        {controls}
+        {statusModal}
+      </>
+    );
   return (
     <ExecutionMenu
       opened={opened}
       setOpened={changeOpened}
-      accountModalOpen={props.accountModalOpen}
+      accountModalOpen={props.accountModalOpen || transferOpen || statusOpen}
+      statusModal={statusModal}
       label={settingsLabel(
         agent,
         role,
@@ -456,8 +577,18 @@ function ScopedExecutionSettings({
   triggerRef,
   setOpened,
   beginSettingsSave,
+  transferOpen,
+  setTransferOpen,
+  onSettingsChange,
+  onSettingsFailure,
+  onSettingsConfirmed,
 }: ControllerProps & {
+  transferOpen: boolean;
+  setTransferOpen: (value: boolean) => void;
   beginSettingsSave: (role: SetupRole) => (agent: Agent) => boolean;
+  onSettingsChange: (change: SettingsChange) => void;
+  onSettingsFailure: (key: string, message: string, uncertain: boolean) => void;
+  onSettingsConfirmed: (key: string, nextTurn: boolean) => void;
   teamDefaults: boolean;
   readOnlyReason?: string | undefined;
   inheritedUnavailable: boolean;
@@ -512,6 +643,7 @@ function ScopedExecutionSettings({
         event.key === "Escape" &&
         !cameFromModal &&
         !accountModalOpen &&
+        !transferOpen &&
         (event.target as HTMLElement | null)?.getAttribute(
           "data-mantine-stop-propagation",
         ) !== "true"
@@ -523,7 +655,7 @@ function ScopedExecutionSettings({
     };
     document.addEventListener("keydown", close, true);
     return () => document.removeEventListener("keydown", close, true);
-  }, [accountModalOpen, opened]);
+  }, [accountModalOpen, transferOpen, opened]);
   const [saving, setSaving] = useState(false);
   const saveLock = useRef(false);
   const refreshGeneration = useRef(0);
@@ -608,7 +740,7 @@ function ScopedExecutionSettings({
     : readOnlyReason
       ? inheritedCatalog
       : parentCatalog;
-  const allowedModels = useModelWhitelist();
+  const allowedModels = useModelChoices();
   const connectedAccounts = accounts.filter((account) =>
     accountCanStart(account),
   );
@@ -802,6 +934,25 @@ function ScopedExecutionSettings({
       teamDefaults ? "worker" : "orchestrator",
     );
     request = { ...request, expected_account_key: accountOf(agent) };
+    const statusKey = request.request_id || randomUUID();
+    if (!teamDefaults && !onDraftChange) {
+      onSettingsChange({
+        agentId: agent.id,
+        accountKey: accountOf(agent),
+        requestKey: statusKey,
+        phase: "saving",
+        before: {
+          model: current.model,
+          effort: current.effort,
+          fastMode: current.fast_mode,
+        },
+        requested: {
+          model: request.model ?? null,
+          effort: request.effort ?? null,
+          fastMode: !!request.fast_mode,
+        },
+      });
+    }
     const previousPending = pending;
     setSaving(true);
     setError("");
@@ -860,6 +1011,8 @@ function ScopedExecutionSettings({
           "The settings account changed. Check the current settings.",
         );
       confirmed = true;
+      if (!teamDefaults)
+        onSettingsConfirmed(statusKey, request.next_turn === true);
       if (request.next_turn) {
         clearReceipt();
         if (mounted.current) setUnconfirmed(null);
@@ -882,6 +1035,19 @@ function ScopedExecutionSettings({
           clearReceipt();
           if (mounted.current) setUnconfirmed(null);
         }
+      }
+      if (!teamDefaults && !confirmed) {
+        const uncertain = !!request.next_turn && !rejected;
+        appendAppLog({
+          at: Date.now(),
+          level: "error",
+          title: uncertain
+            ? "Execution settings save unconfirmed"
+            : "Execution settings change failed",
+          reason: errorText(failure),
+          detail: `Agent: ${agent.id}; account: ${accountOf(agent)}; request: ${statusKey}`,
+        });
+        onSettingsFailure(statusKey, errorText(failure), uncertain);
       }
       if (!mounted.current) return;
       setStatus(null);
@@ -915,7 +1081,7 @@ function ScopedExecutionSettings({
       const usable = offered.filter(
         (row) =>
           !row.hidden &&
-          isModelWhitelisted(
+          isModelEnabled(
             {
               ...row,
               provider:
@@ -991,6 +1157,7 @@ function ScopedExecutionSettings({
         : randomUUID();
     save(subagentTransferReceiptKey, { target, request_id: requestId });
     saveLock.current = true;
+    setTransferOpen(true);
     const previousPending = accountPending;
     setSaving(true);
     setError("");
@@ -1026,6 +1193,12 @@ function ScopedExecutionSettings({
       if (!mounted.current) return;
       setAccountPending(previousPending);
       setStatus(null);
+      appendAppLog({
+        at: Date.now(),
+        level: "error",
+        title: "Account transfer failed",
+        reason: errorText(failure),
+      });
       setError(errorText(failure));
       setRetryTarget(target);
       return;
@@ -1091,6 +1264,18 @@ function ScopedExecutionSettings({
     (responseIsNewer || transfer.baseline === JSON.stringify(snapshotTransfer))
       ? transfer.value
       : snapshotTransfer || transfer?.value;
+  useEffect(() => {
+    for (const member of shownTransfer?.blocked ?? []) {
+      const key = JSON.stringify([shownTransfer?.id, member.id, member.reason]);
+      appendAppLog({
+        at: Date.now(),
+        level: "error",
+        title: "Account transfer blocked",
+        dedupeKey: `account-transfer:${key}`,
+        reason: `${member.name || "Agent"}: ${member.reason}`,
+      });
+    }
+  }, [shownTransfer]);
   const shownTransferTarget = accounts.find(
     (account) => account.id === shownTransfer?.targetAccountKey,
   );
@@ -1125,6 +1310,12 @@ function ScopedExecutionSettings({
         });
       refreshConfirmed(generation, "Transfer updated.");
     } catch (failure) {
+      appendAppLog({
+        at: Date.now(),
+        level: "error",
+        title: `Account transfer ${action} failed`,
+        reason: errorText(failure),
+      });
       if (mounted.current) setError(errorText(failure));
     } finally {
       saveLock.current = false;
@@ -1567,19 +1758,35 @@ function ScopedExecutionSettings({
             {setupAccountName(activeAccount)}
           </Button>
         )}
-      {!readOnlyReason && (teamDefaults || agent.isLead) && shownTransfer && (
-        <AccountTransferStatus
-          transfer={shownTransfer}
-          targetLabel={
-            teamDefaults
-              ? setupAccountName(shownTransferTarget)
-              : shownTransferTarget?.email ||
-                setupAccountName(shownTransferTarget)
-          }
-          showCompleted
-          pending={saving}
-          onAction={(action) => void runTeamTransferAction(action)}
-        />
+      {!readOnlyReason &&
+        (teamDefaults || agent.isLead) &&
+        (shownTransfer || transferOpen) && (
+          <AccountTransferStatus
+            opened={transferOpen}
+            onClose={() => setTransferOpen(false)}
+            transfer={shownTransfer}
+            targetLabel={
+              teamDefaults
+                ? setupAccountName(shownTransferTarget)
+                : shownTransferTarget?.email ||
+                  setupAccountName(shownTransferTarget)
+            }
+            error={error}
+            retryStart={
+              retryTarget ? () => void moveExisting(retryTarget) : undefined
+            }
+            pending={saving}
+            onAction={(action) => void runTeamTransferAction(action)}
+          />
+        )}
+      {shownTransfer && !transferOpen && (
+        <Button
+          size="compact-xs"
+          variant="subtle"
+          onClick={() => setTransferOpen(true)}
+        >
+          View transfer status
+        </Button>
       )}
       {status && (
         <p role="status" className="notice execution-status">
@@ -1915,7 +2122,7 @@ function ScopedExecutionSettings({
       <ExecutionMenu
         opened={opened}
         setOpened={setOpened}
-        accountModalOpen={accountModalOpen}
+        accountModalOpen={accountModalOpen || transferOpen}
         label={label}
         trigger={trigger}
       >
@@ -1939,6 +2146,7 @@ function ExecutionMenu({
   opened,
   setOpened,
   accountModalOpen = false,
+  statusModal,
   label,
   trigger,
   children,
@@ -1946,6 +2154,7 @@ function ExecutionMenu({
   opened: boolean;
   setOpened: (value: boolean) => void;
   accountModalOpen?: boolean | undefined;
+  statusModal?: ReactNode;
   label: string;
   trigger: ReactElement;
   children: ReactNode;
@@ -1973,6 +2182,7 @@ function ExecutionMenu({
             {children}
           </div>
         </Drawer>
+        {statusModal}
       </>
     );
   return (
@@ -2004,6 +2214,7 @@ function ExecutionMenu({
           {children}
         </Popover.Dropdown>
       </Popover>
+      {statusModal}
     </>
   );
 }

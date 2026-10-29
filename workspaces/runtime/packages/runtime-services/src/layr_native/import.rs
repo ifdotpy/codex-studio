@@ -1053,6 +1053,33 @@ fn escape_pattern(name: &str) -> String {
         })
         .collect()
 }
+
+/// Adds cache paths to the project `regenerable` setting, which every line reads, and keeps the
+/// paths already set. `config -l` always exits 0, so an unset setting reads as an empty list.
+fn add_regenerable(state: &Path, cwd: &Path, paths: &[String]) -> Result<()> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let listed = super::run(state, cwd, &["config", "-l"])?;
+    let mut all: Vec<String> = match listed
+        .lines()
+        .find_map(|line| line.strip_prefix("regenerable="))
+    {
+        Some(value) => serde_json::from_str(value)
+            .map_err(|error| NativeLayrError::Refused(error.to_string()))?,
+        None => Vec::new(),
+    };
+    for path in paths {
+        if !all.contains(path) {
+            all.push(path.clone());
+        }
+    }
+    let value =
+        serde_json::to_string(&all).map_err(|error| NativeLayrError::Refused(error.to_string()))?;
+    super::run(state, cwd, &["config", "regenerable", &value])?;
+    Ok(())
+}
+
 impl Plan {
     fn write_ignores(&self, destination: &Directory) -> Result<()> {
         use rustix::fs::{Mode, OFlags};
@@ -1191,13 +1218,12 @@ impl Plan {
 
     pub fn warm_caches(&self, state: &Path, cwd: &Path, relative: &Path) -> Result<()> {
         let project = Directory::open(cwd)?;
-        for cache in &self.caches {
-            super::run(
-                state,
-                cwd,
-                &["cache", "add", &relative.join(cache).to_string_lossy()],
-            )?;
-        }
+        let paths: Vec<String> = self
+            .caches
+            .iter()
+            .map(|cache| relative.join(cache).to_string_lossy().into_owned())
+            .collect();
+        add_regenerable(state, cwd, &paths)?;
         let destination = project.child(relative, false)?;
         self.stage_entries(&destination, true)?;
         self.rewrite_submodules(&destination, &project, relative, true)?;

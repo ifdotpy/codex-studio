@@ -79,10 +79,10 @@ becomes a cache in the VM:
 
 The import keeps a nested repository and the files that Git tracks in an ignored folder.
 Such a folder has versioned files, so it stays a plain folder in each line.
-`layr save --caches` and `layr cache list` show `not a cache: has versioned files` for it.
+`layr save --caches` and `layr overlay list` show `not a cache: has versioned files` for it.
 To make it a cache, remove its files from history first.
 A record of an older layr that lists such a folder as a cache does not change this: a new line
-takes the folder from the state. `layr cache repair` (at each turn end) or the next
+takes the folder from the state. `layr overlay repair <overlay>` (at each turn end) or the next
 `layr save --caches` makes such a cache in a working folder a plain folder again.
 
 Studio does not choose the build command or when a build is good enough to save.
@@ -153,6 +153,29 @@ Each import attempt removes `import-error.json` when it gets the project lock an
 writes it again if the attempt fails. The project entity changes when an attempt
 gets the lock, when it ends, at backend start, and with each project write.
 Linux servers send no `layrReadiness`.
+
+## Move a VM chat to this device
+
+`POST /api/agents/move-to-host` (`id`, `request_id`; menu item **Move to this device**) moves an idle
+VM chat to host execution. It keeps the chat ID, thread ID and history. A lead moves with its
+workers; a worker moves alone after its parent. Code: `vm_to_host.rs` in `runtime-services`.
+
+1. The action refuses unless the whole chat tree is idle (the in-place switch rules) and every
+   worker line is contained in main (`layr merge-base head main` equals `layr rev-parse head`).
+2. It checks the free space of the project folder volume and the state volume. It needs the bytes
+   to write plus `DISK_FULL_EXIT_FREE_BYTES`, or it refuses and names both numbers.
+3. A Mac folder sync round brings the project folder to the VM main line. It transfers only
+   differences. The move continues only when the next plan has nothing left to transfer or decide.
+4. Each chat copies its provider history from the guest, in 1 MiB chunks, to the account profile
+   of this device: the Claude session file and the bridge session files, or the Codex rollout
+   files. The copy keeps the relative path, is verified by SHA-256, never replaces different bytes,
+   and appears in its place by a hard link. Claude carries the session to the new folder on resume.
+5. One transaction sets `executionMode` to `native`, `workspaceMode` to `shared`, `cwd` and
+   `hostProjectPath` to the project folder, removes the `layr*` fields, and saves the receipt of the
+   request ID. A repeat with the same request ID returns that receipt and copies nothing.
+
+Limits: the moved chats work in the project folder, not in a Layr line. The VM keeps its copy of
+the files until the owner removes it.
 
 ## Reviewers
 

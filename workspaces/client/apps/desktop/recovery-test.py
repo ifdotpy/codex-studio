@@ -50,9 +50,22 @@ class RecoveryTest(unittest.TestCase):
             self.assertEqual(status, "waiting for runtime owner")
             spawn.assert_not_called()
 
+    def test_a_listener_between_two_owners_never_starts_a_backend(self):
+        # A live handover holds the port while nobody accepts (docs/live-handover.md).
+        for identity in ({"side_effect": TimeoutError("timeout")}, {"return_value": None}):
+            with patch.object(recovery, "identity", **identity), \
+                    patch.object(recovery, "listener_pids", return_value=[4242]), \
+                    patch.object(recovery.subprocess, "Popen") as spawn:
+                child, status = recovery.tick(self.config, self.state)
+            self.assertIsNone(child)
+            self.assertEqual(status, "waiting for the port listener")
+            spawn.assert_not_called()
+
     def test_uncertain_or_incompatible_identity_never_starts(self):
         for error in (TimeoutError("timeout"), ValueError("invalid body"), RuntimeError("wrong state")):
-            with patch.object(recovery, "identity", side_effect=error), patch.object(recovery.subprocess, "Popen") as spawn:
+            with patch.object(recovery, "identity", side_effect=error), \
+                    patch.object(recovery, "listener_pids", return_value=[]), \
+                    patch.object(recovery.subprocess, "Popen") as spawn:
                 with self.assertRaises(type(error)):
                     recovery.tick(self.config, self.state)
                 spawn.assert_not_called()

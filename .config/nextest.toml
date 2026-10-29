@@ -81,6 +81,7 @@ inherits = "ci"
 # Supervisor health witnesses: Accept the maintained protocol and preserve exact handles; reject foreign identity and blocked recovery.
 # Desktop projection witness: Keep private native rotation receipts on disk while validating the public status strictly.
 # Retained watcher registrations and analytics connections avoid repeated tree walks and opens.
+# Reviewer permissions stay read-only under yolo across preparation, turns, and monitors.
 default-filter = '''
     (package(studio-runtime-services) & test(/conversation_signatures_preserve_nullable_setting_identity|confirmed_restart_is_atomic_replay_safe_and_waits_for_exit/)) |
     (package(studio-runtime-http) & test(/conversation_catalog_admission_tests::|branch_draft_keeps_the_historical_generated_request_identity|http_restart_uses_checked_request|monitor_restart_http_preserves_identity_and_waits_for_old_exit/)) |
@@ -166,6 +167,8 @@ default-filter = '''
     (package(=studio-runtime-schema) & kind(lib) & test(usage::persisted::tests::)) |
     (package(=studio-runtime-services) & kind(lib) & test(/::(managed_reviewer_defaults_reach_public_spawn_tool|reviewer_defaults_are_explained_in_emitted_tools_and_role_guidance|review_fast_mode_defaults_preserve_explicit_false_and_inheritance|child_creation_routes_profile_to_compatible_account)$/)) |
     (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(review_fast_mode_uses_optional_team_default_before_actor))
+    | (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(codex_reviewer_under_yolo_is_read_only_on_start_resume_and_turn))
+    | (package(=studio-runtime-services) & kind(lib) & (test(monitor_settings_match_turn_permission_and_sandbox_fallback) | test(native_review_without_a_role_is_a_reviewer)))
     | (package(=studio-runtime-schema) & kind(lib) & test(workspace_modes::tests::))
     | (package(=studio-runtime-services) & kind(lib) & (test(legacy_image_workspace::tests::) | test(legacy_finished_worker_archives_without_a_native_executor) | test(native_child_requires_a_native_parent) | test(legacy_worker_archives_through_current_tool_without_losing_its_row) | test(review_regression_) | test(platform_defaults_require_the_native_linux_capability) | test(native_capability_)))
     | (package(=studio-runtime-server) & kind(test) & binary(=integration) & test(legacy_image_rows_finish_without_provider_launch_or_row_loss) | test(review_regression_legacy_pending_recovery_does_not_start_provider))
@@ -217,7 +220,7 @@ default-filter = '''
     | (package(=studio-runtime-http) & kind(lib) & (test(subscription_add_streams_bounded_transcript_snapshot_after_ack) | test(transcript_window_reasoning_boundary_retains_a_resolvable_older_cursor) | test(state_stream_subscription_added_oversized_initial_data_stays_revisions_only) | test(routes::entity_transfer::tests::) | test(cold_entity_pull_reuses_complete_seed_without_scanning_source_rows) | test(entity_pull_with_current_projections_does_not_wait_for_the_maintenance_lock)))
     | (package(=studio-runtime-store) & kind(lib) & test(entity_replay_and_patch_preserve_sequence_until_value_or_deletion_changes))
     | (package(=studio-runtime-http) & (kind(lib) | binary(integration)) & test(startup_model))
-    | (package(=studio-runtime-services) & kind(lib) & test(sync_policy::tests::model_whitelist))
+    | (package(=studio-runtime-services) & kind(lib) & test(sync_policy::tests::model_choices))
     | (package(=studio-runtime-services) & kind(lib) & test(sync_policy::tests::preference_validation_rejects_unknown_fields_and_scope_leaks))
     | (package(=studio-client-core) & kind(lib) & test(studio_error_entities_reach_native_state_and_dismissal_removes_them))
     | ((package(=studio-runtime-services)) & ((kind(lib) | kind(test))) & (test(/^worktree_root::tests::/) | test(/workspace_cleanup_runtime::tests::(archive_keeps_repository_default_worktrees_manageable_after_configuration|archive_removes_a_worktree_under_the_configured_root|worktree_outside_a_worker_directory_is_not_owned|substituted_worker_link_is_refused_and_target_survives|substituted_worker_ancestor_is_refused_and_target_survives|archive_manages_a_configured_root_named_like_the_default|worker_provisioned_from_a_linked_source_stays_owned|legacy_worker_under_a_linked_default_root_stays_owned)$/) | test(/::(configured_root_places_the_worktree_outside_the_repository|missing_configured_root_fails_closed)$/)))
@@ -357,6 +360,7 @@ platform = 'cfg(target_os = "linux")'
 # Transport safety: unsent cancellation, strict replies, and shared per-thread ordering.
 # Supervisor health witnesses: Accept the maintained protocol and preserve exact handles; reject foreign identity and blocked recovery.
 # Desktop projection witness: Keep private native rotation receipts on disk while validating the public status strictly.
+# Reviewer permissions stay read-only under yolo across preparation, turns, and monitors.
 default-filter = '''
     (package(studio-runtime-services) & test(/conversation_signatures_preserve_nullable_setting_identity|confirmed_restart_is_atomic_replay_safe_and_waits_for_exit/)) |
     (package(studio-runtime-http) & test(/conversation_catalog_admission_tests::|branch_draft_keeps_the_historical_generated_request_identity|http_restart_uses_checked_request|monitor_restart_http_preserves_identity_and_waits_for_old_exit/)) |
@@ -442,6 +446,8 @@ default-filter = '''
     (package(=studio-runtime-schema) & kind(lib) & test(usage::persisted::tests::)) |
     (package(=studio-runtime-services) & kind(lib) & test(/::(managed_reviewer_defaults_reach_public_spawn_tool|reviewer_defaults_are_explained_in_emitted_tools_and_role_guidance|review_fast_mode_defaults_preserve_explicit_false_and_inheritance|child_creation_routes_profile_to_compatible_account)$/)) |
     (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(review_fast_mode_uses_optional_team_default_before_actor))
+    | (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(codex_reviewer_under_yolo_is_read_only_on_start_resume_and_turn))
+    | (package(=studio-runtime-services) & kind(lib) & (test(monitor_settings_match_turn_permission_and_sandbox_fallback) | test(native_review_without_a_role_is_a_reviewer)))
     | (package(=studio-runtime-schema) & kind(lib) & test(workspace_modes::tests::))
     | (package(=studio-runtime-services) & kind(lib) & (test(legacy_image_workspace::tests::) | test(legacy_finished_worker_archives_without_a_native_executor) | test(native_child_requires_a_native_parent) | test(legacy_worker_archives_through_current_tool_without_losing_its_row) | test(review_regression_) | test(platform_defaults_require_the_native_linux_capability) | test(native_capability_)))
     | (package(=studio-runtime-server) & kind(test) & binary(=integration) & test(legacy_image_rows_finish_without_provider_launch_or_row_loss) | test(review_regression_legacy_pending_recovery_does_not_start_provider))
@@ -493,7 +499,7 @@ default-filter = '''
     | (package(=studio-runtime-http) & kind(lib) & (test(subscription_add_streams_bounded_transcript_snapshot_after_ack) | test(transcript_window_reasoning_boundary_retains_a_resolvable_older_cursor) | test(state_stream_subscription_added_oversized_initial_data_stays_revisions_only) | test(routes::entity_transfer::tests::) | test(cold_entity_pull_reuses_complete_seed_without_scanning_source_rows) | test(entity_pull_with_current_projections_does_not_wait_for_the_maintenance_lock)))
     | (package(=studio-runtime-store) & kind(lib) & test(entity_replay_and_patch_preserve_sequence_until_value_or_deletion_changes))
     | (package(=studio-runtime-http) & (kind(lib) | binary(integration)) & test(startup_model))
-    | (package(=studio-runtime-services) & kind(lib) & test(sync_policy::tests::model_whitelist))
+    | (package(=studio-runtime-services) & kind(lib) & test(sync_policy::tests::model_choices))
     | (package(=studio-runtime-services) & kind(lib) & test(sync_policy::tests::preference_validation_rejects_unknown_fields_and_scope_leaks))
     | (package(=studio-client-core) & kind(lib) & test(studio_error_entities_reach_native_state_and_dismissal_removes_them))
     | ((package(=studio-runtime-services)) & ((kind(lib) | kind(test))) & (test(/^worktree_root::tests::/) | test(/workspace_cleanup_runtime::tests::(archive_keeps_repository_default_worktrees_manageable_after_configuration|archive_removes_a_worktree_under_the_configured_root|worktree_outside_a_worker_directory_is_not_owned|substituted_worker_link_is_refused_and_target_survives|substituted_worker_ancestor_is_refused_and_target_survives|archive_manages_a_configured_root_named_like_the_default|worker_provisioned_from_a_linked_source_stays_owned|legacy_worker_under_a_linked_default_root_stays_owned)$/) | test(/::(configured_root_places_the_worktree_outside_the_repository|missing_configured_root_fails_closed)$/)))

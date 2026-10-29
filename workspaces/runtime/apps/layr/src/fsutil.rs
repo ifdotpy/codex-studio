@@ -995,6 +995,32 @@ pub fn unlink_at(dir: &File, name: &str) {
     let _ = rustix::fs::unlinkat(dir, name, rustix::fs::AtFlags::empty());
 }
 
+/// Make the folders of the `.git` folder that layr made in the working folder `w` writable or
+/// read only (0755 or 0555), so git cannot take lock files or write objects. Files keep their
+/// modes. A `.git` folder that the line owner made is left alone. Never follows a link.
+pub fn git_writable(w: &Path, writable: bool) {
+    use rustix::fs::{Mode, OFlags};
+    let Ok(g) = open_dir_nofollow(&w.join(".git")) else { return };
+    let Ok(m) = g.metadata() else { return };
+    if !is_layer(w, ".git", &meta_of(&m)) {
+        return;
+    }
+    let mode = Mode::from_raw_mode(if writable { 0o755 } else { 0o555 });
+    // Writable first for the top folder, read only last, so every child stays reachable.
+    let subs = ["info", "objects/info", "objects", "refs/tags", "refs/heads", "refs"];
+    if writable {
+        let _ = rustix::fs::fchmod(&g, mode);
+    }
+    for s in subs {
+        if let Ok(fd) = rustix::fs::openat(&g, s, OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty()) {
+            let _ = rustix::fs::fchmod(&fd, mode);
+        }
+    }
+    if !writable {
+        let _ = rustix::fs::fchmod(&g, mode);
+    }
+}
+
 /// Whether a known directory is a nested storage root.
 pub fn is_layer(root: &Path, rel: &str, m: &Meta) -> bool {
     #[cfg(all(target_os = "linux", not(feature = "overlayfs")))]

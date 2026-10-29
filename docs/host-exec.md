@@ -276,8 +276,8 @@ folder. Otherwise the next transfer replaces them with the line version.
 
 ## Cache folders
 
-layr keeps cache folders outside states (`layr cache list`; the folders that
-`.layrattributes` marks `regenerable`). `layr export --all` does not write their
+layr keeps cache folders outside states (`layr overlay list`; the folders of cache overlays,
+which the project `regenerable` setting or `.layrattributes` names). `layr export --all` does not write their
 files. The guest reads the line's cache folders from the line folder itself and
 sends them to the slot. Content hashes select the files, so a warm slot receives
 only the files that differ from the previous line.
@@ -288,8 +288,8 @@ a command transfers it: a changed file stops the transfer with a checksum error.
 Then cancel the operation to release its slot.
 
 A command from a line without the cache folder removes the folder from the slot,
-but not its Mac-only paths. A plain folder at a cache path (`layr cache list` shows
-`plain folder` or `not a cache`) is part of the state and follows the normal source rules.
+but not its Mac-only paths. A plain folder at a cache path (`layr overlay list` shows
+the state `plain folder` or `not a cache`) is part of the state and follows the normal source rules.
 
 ### Clones from the project folder on the Mac
 

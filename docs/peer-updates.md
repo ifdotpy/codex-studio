@@ -34,39 +34,36 @@ actions, all read-only on the offering server except their export file:
 | `update.chunk`   | `{export, offset}` | `{offset, nextOffset, data, sha256}`, 512 KiB of data                                                                                                                 |
 | `update.release` | `{export}`         | `{released: true}`                                                                                                                                                    |
 
-`codex_peer_updates.py` owns the actions and their limits. `update.export` waits up to 90 seconds
-for the archive; after that it answers `preparing` and the puller asks again every 10 seconds, for
-up to 20 minutes. The archive is at most 1 GiB. `update.release` deletes the archive when every
-server that exported it released it; the hourly prune deletes archives older than a day. The
-receipt of an `update.chunk` keeps no archive data. Every action is a read, so the puller uses a
-new request ID for each call.
+[`peer_updates.rs`](../workspaces/runtime/packages/runtime-services/src/peer_updates.rs) owns the
+actions and their limits. `update.export` waits up to 5 seconds (`EXPORT_WAIT`) for the archive, so
+that a request does not hold the 20-second shutdown grace of the server. After that it answers
+`preparing`. The puller asks again every 10 seconds, for up to 20 minutes
+(`EXPORT_POLL`, `EXPORT_PREPARE` in `peer_update_pull.rs`). The archive is at most 1 GiB
+(`MAX_ARCHIVE_BYTES`). `update.release` deletes the archive when every server that exported it
+released it. The server also deletes archives older than a day (`EXPORT_AGE`) when a puller asks
+for an offer or an export. The receipt of an `update.chunk` keeps no archive data. Every action is a
+read, so the puller uses a new request ID for each call.
 
 An older peer refuses the actions. It answers "Supply a remote-parent link" (`not_applied`),
 because it sends an unknown action to the remote-parent checks. The puller treats any refusal of
 `update.offer` as no offer and records no failure.
 
-The Rust backend answers the same four actions
-(`workspaces/runtime/packages/runtime-services/src/peer_updates.rs`). Its limits come from
-`codex_peer_updates.py`; a unit test compares them. Its `update.export` waits up to 5 seconds, so
-that a request does not hold the 20-second shutdown grace of the server; the puller asks again
-after `preparing`. It removes update archives older than a day when a puller asks for an offer or
-an export. It does not serve the QUIC export stream, so a
-puller receives the archive in `update.chunk` answers. A Rust backend before this module refused
-the actions with HTTP 501. A paired Python server then got no offer and kept its older build,
-and the UI hid that server's projects because its API schema hash differed. The Rust backend
-has no puller yet: a Mac on the Rust backend does not take a newer build from a paired server.
+The Rust backend does not serve a QUIC export stream, so a puller receives the archive in
+`update.chunk` answers.
 
 ## Pull and verify (backend)
 
-`codex_peer_updates.py` runs in the backend of an installed app. Every 10 minutes, and 2 minutes
-after the start, when the setting `autoUpdate` is on:
+`peer_update_pull.rs` (runtime-services) runs in the Rust backend of the installed app. `runtime-server`
+starts it only when the process runs from `/Applications/Codex Studio.app`. One timer task makes every
+pass, 2 minutes after the start and then every 10 minutes. A pass runs only when the setting `autoUpdate` is on:
 
 1. Ask each paired server that is online for `update.offer`.
 2. Take the newest offer with `builtAt` greater than the local stamp. Skip a build that failed
    verification before (kept in `<state>/peer-update.json`).
-3. Export, pull every chunk, and check each chunk hash and the whole file hash. Over the QUIC
-   link (`docs/peer-link.md`) the archive comes as one stream; the chunks continue from the
-   received offset when the stream stops.
+3. Export, pull every chunk, and check each chunk hash and the whole file hash. The archive
+   comes as `update.chunk` answers only. A stream over the QUIC link (`docs/peer-link.md`) is not
+   built: the Rust backend serves no export stream route. A lost chunk fails the pull, and the next
+   pull starts again after the 1-hour retry.
 4. Extract with `ditto -x -k` into a new private folder `<state>/updates/.extract-*`. The
    folder must then hold only `Codex Studio.app`. Another program can write into the
    `<builtAt>` folder at any time (Finder writes `.DS_Store` into a folder that a window shows),
@@ -79,8 +76,10 @@ after the start, when the setting `autoUpdate` is on:
 6. Move the app to `<state>/updates/<builtAt>/Codex Studio.app`. Write
    `<state>/pending-update.json`: `{id, app, build, from}`. Release the peer export.
 
-Only one pull runs at a time. A failure is recorded with its reason in `peer-update.json` and
-does not repeat the same build for 1 hour. A failed install receipt (below) also skips that build
+Only one pull runs at a time, because one timer task makes the passes. A failure is recorded
+with its reason in `peer-update.json` (`failures`, keyed by `builtAt:commit`; kept 24 hours) and
+does not repeat the same build for 1 hour. `peer-update.json` also holds `checkedAt` and `lastPull`.
+A failed install receipt (below) also skips that build
 for 1 hour. A pending update for a build that is not newer than the installed app is removed.
 The backend never replaces the installed app itself.
 

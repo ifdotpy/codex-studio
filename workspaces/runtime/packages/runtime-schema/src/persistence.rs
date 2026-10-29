@@ -85,7 +85,7 @@ domain!(RequestCardStatus { Pending=>"pending", Answering=>"answering", Answered
 domain!(TerminalActionFailure { UnknownOutcome=>"unknown_outcome", Rejected=>"rejected", Disconnected=>"disconnected" });
 domain!(NativeReleasePhase { Checking=>"checking", Unsubscribing=>"unsubscribing", Unknown=>"unknown", Released=>"released", Blocked=>"blocked", Resumed=>"resumed" });
 domain!(ServerFetchState { Preparing=>"preparing", Fetching=>"fetching", Complete=>"complete" });
-domain!(ServerOperationKind { Event=>"event", Input=>"input", Message=>"message", MoveSend=>"move_send", MoveStatus=>"move_status", LocationInfo=>"location_info", LocationMatches=>"location_matches", Stop=>"stop", ExecEvent=>"exec_event", Projects=>"projects", Folders=>"folders", Git=>"git", Export=>"export", Chunk=>"chunk", ExecRead=>"exec_read", ExecInput=>"exec_input", ExecCancel=>"exec_cancel", Release=>"release", UpdateOffer=>"update.offer", UpdateExport=>"update.export", UpdateChunk=>"update.chunk", UpdateRelease=>"update.release", Task=>"task", Complaint=>"complaint", Context=>"context", Directory=>"directory", ChatRead=>"chat_read", MoveManage=>"move_manage", MoveInterrupt=>"move_interrupt", MoveSpawn=>"move_spawn", Exec=>"exec", ExecReceipt=>"exec_receipt", BrowserCallback=>"browser_callback", AddLocation=>"add_location", RemoveLocation=>"remove_location", MoveValidate=>"move_validate", MoveBegin=>"move_begin" });
+domain!(ServerOperationKind { Event=>"event", Input=>"input", Message=>"message", MoveSend=>"move_send", MoveStatus=>"move_status", LocationInfo=>"location_info", LocationMatches=>"location_matches", Stop=>"stop", ExecEvent=>"exec_event", Projects=>"projects", ProjectsChanged=>"projects.changed", Folders=>"folders", Git=>"git", Export=>"export", Chunk=>"chunk", ExecRead=>"exec_read", ExecInput=>"exec_input", ExecCancel=>"exec_cancel", Release=>"release", UpdateOffer=>"update.offer", UpdateExport=>"update.export", UpdateChunk=>"update.chunk", UpdateRelease=>"update.release", Task=>"task", Complaint=>"complaint", Context=>"context", Directory=>"directory", ChatRead=>"chat_read", MoveManage=>"move_manage", MoveInterrupt=>"move_interrupt", MoveSpawn=>"move_spawn", Exec=>"exec", ExecReceipt=>"exec_receipt", BrowserCallback=>"browser_callback", AddLocation=>"add_location", RemoveLocation=>"remove_location", MoveValidate=>"move_validate", MoveBegin=>"move_begin" });
 domain!(RecoveryReceiptStatus { Unknown=>"unknown", Unconfirmed=>"unconfirmed", Blocked=>"blocked", Skipped=>"skipped", Superseded=>"superseded", HistoryMissing=>"history_missing", InputRestored=>"input_restored", Held=>"held", Reconciled=>"reconciled", Adopted=>"adopted", Accepted=>"accepted", Checked=>"checked", Released=>"released" });
 domain!(NativeSettingsStatus { Submitted=>"submitted", Acknowledged=>"acknowledged", NotSent=>"not_sent", Unknown=>"unknown", Rejected=>"rejected" });
 domain!(SafetyRetryStage { Turns=>"turns", Items=>"items", Interrupt=>"interrupt", VerifyTurns=>"verify_turns", VerifyItems=>"verify_items", Fork=>"fork", Start=>"start", Running=>"running", Unknown=>"unknown", Failed=>"failed", Cancelled=>"cancelled" });
@@ -216,6 +216,17 @@ pub fn enum_check<T: VariantNames>(column: &str) -> String {
         .collect::<Vec<_>>()
         .join(",");
     format!("CHECK(\"{}\" IN ({values}))", column.replace('"', "\"\""))
+}
+
+/// Exact reply retained for a completed move from a virtual machine.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct VmToHostReply {
+    pub id: String,
+    pub execution_mode: String,
+    pub workspace_mode: String,
+    pub cwd: String,
+    pub moved_agents: Vec<String>,
 }
 
 /// A collision-free tuple. The UUID root is explicit, never inferred from a key prefix.

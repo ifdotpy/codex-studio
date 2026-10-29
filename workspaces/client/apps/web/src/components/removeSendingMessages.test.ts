@@ -52,11 +52,10 @@ vi.stubGlobal("localStorage", {
 
 // This test writes every saved cancellation document in the same process.
 function savedRequestId(key: string): unknown {
-  const saved = JSON.parse(storage.get(key)!) as Extract<
-    PostBody<"/api/queue">,
-    { action: "cancel" }
-  >;
-  return saved.request_id;
+  const saved: unknown = JSON.parse(storage.get(key)!);
+  return saved && typeof saved === "object" && "request_id" in saved
+    ? saved.request_id
+    : undefined;
 }
 
 afterEach(() => {

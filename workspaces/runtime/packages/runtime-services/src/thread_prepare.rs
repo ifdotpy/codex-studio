@@ -76,6 +76,14 @@ pub struct Settings {
     pub cyber_access_program: Stored<Option<String>>,
 }
 
+pub(crate) fn effective_yolo_mode(role: Role, yolo_mode: Option<bool>) -> Option<bool> {
+    if role == Role::Reviewer {
+        Some(false)
+    } else {
+        yolo_mode
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Actor {
     pub id: String,
@@ -623,7 +631,7 @@ pub fn plan(s: &Snapshot, next_attempt_id: &str, transport_ticket: &str) -> Outc
     if let Some(model) = s.settings.model.as_ref().filter(|m| !m.is_empty()) {
         params.insert("model".into(), json!(model));
     }
-    match s.settings.yolo_mode {
+    match effective_yolo_mode(s.settings.role, s.settings.yolo_mode) {
         Some(true) => {
             params.insert("approvalPolicy".into(), json!("never"));
             params.insert("sandbox".into(), json!("danger-full-access"));
@@ -638,9 +646,6 @@ pub fn plan(s: &Snapshot, next_attempt_id: &str, transport_ticket: &str) -> Outc
                     "workspace-write"
                 }),
             );
-        }
-        None if s.settings.role == Role::Reviewer => {
-            params.insert("sandbox".into(), json!("read-only"));
         }
         None => {}
     }
@@ -815,7 +820,7 @@ pub fn turn_params(s: &Snapshot, input: &TurnInput) -> Result<Map<String, Value>
     if let Some(effort) = effort {
         params.insert("effort".into(), json!(effort));
     }
-    if let Some(yolo) = s.settings.yolo_mode {
+    if let Some(yolo) = effective_yolo_mode(s.settings.role, s.settings.yolo_mode) {
         let sandbox = if yolo {
             json!({"type":"dangerFullAccess"})
         } else if s.settings.role == Role::Reviewer {

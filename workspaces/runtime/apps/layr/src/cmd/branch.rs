@@ -153,6 +153,7 @@ fn line_command(ctx: &Ctx, args: &[String], sub: &str) -> Result<i32> {
             );
             rec.data = serde_json::json!({"name": l.name, "final_state": last});
             repo.commit_record(ctx, rec)?;
+            crate::fsutil::git_writable(&repo.working(&l), true);
             crate::storage::delete_tree(&repo.working(&l))?;
             repo.drop_stage(&l)?;
             repo.set_pending_moves(&l, &Default::default())?;

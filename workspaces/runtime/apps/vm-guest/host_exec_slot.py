@@ -5,7 +5,7 @@ line, `layr export --all` writes the state into the folder (incrementally after 
 and the collect step brings the paths that the Mac command changed back into the line with a
 three-way merge against that held state (host_exec_slot_io.py, as the agent).
 
-layr keeps cache folders (`layr cache list`) outside states, so the export has none of their files.
+layr keeps cache folders (`layr overlay list`) outside states, so the export has none of their files.
 The Mac receives them from the line folder itself, and changes inside them never return.
 """
 from __future__ import annotations
@@ -282,12 +282,11 @@ class HostSlotHandlers:
             marker = "they cannot coexist on APFS):"
             if marker in output:
                 bad = [line.strip() for line in output.split(marker, 1)[1].splitlines() if line.strip()]
-            # Lines "<path>\tcache"; a plain folder at a cache path is in the state and the export.
+            # A folder overlay whose state is "cache" is outside the state; a plain folder at its path is in the export.
             caches = []
-            for row in (await self.layr(context, ["cache", "list"])).splitlines():
-                path, _, kind = row.partition("\t")
-                if kind == "cache":
-                    caches.append(relative(path))
+            for overlay in json.loads(await self.layr(context, ["overlay", "list", "--json"])):
+                if overlay.get("state") == "cache":
+                    caches.append(relative(overlay["folder"]))
             # The line's git layer (layr gitbridge) is outside states too. The slot gets it like a
             # cache folder, without its objects: the Mac links the project's own objects, and git
             # changes in the slot never return to the line.

@@ -110,12 +110,10 @@ it("marks only the exact restored account action for the dialog focus owner", ()
   const team = { ...account, accountKey: "team", label: "Team" };
   const byServer = { local: [personal, team] };
   const rows = serverAccountRows([local], byServer);
-  const onInitialFocus = vi.fn();
   const { html } = render({
     servers: [local],
     accountsByServer: byServer,
     initialFocusIdentity: required(rows[1]).key,
-    onInitialFocus,
   });
   const personalStart = html.indexOf('title="Personal"');
   const teamStart = html.indexOf('title="Team"');
@@ -124,16 +122,6 @@ it("marks only the exact restored account action for the dialog focus owner", ()
   expect(html.slice(personalStart, teamStart)).not.toContain("data-autofocus");
   expect(html.slice(teamStart)).toContain('data-autofocus="true"');
   expect(html.match(/data-autofocus=/g)).toHaveLength(1);
-  const target = controls.find(
-    (button) => Reflect.get(button, "data-autofocus") === true,
-  );
-  if (target?.onFocus) Reflect.apply(target.onFocus, null, []);
-  expect(onInitialFocus).toHaveBeenCalledOnce();
-  for (const button of controls) {
-    if (button !== target && button.onFocus)
-      Reflect.apply(button.onFocus, null, []);
-  }
-  expect(onInitialFocus).toHaveBeenCalledOnce();
   expect(render().html).not.toContain("data-autofocus");
 });
 

@@ -37,6 +37,21 @@ fn vm_review_guest_ids(
     Ok((guest_request_id, turn_id))
 }
 
+/// A new worker uses its parent's workspace mode unless the reviewer or VM rule applies.
+/// A lead switched to Layr therefore creates Layr workers.
+pub(crate) fn default_workspace<'a>(role: &str, vm_actor: bool, parent: &'a Value) -> &'a str {
+    if role == "reviewer" && !vm_actor && !crate::layr_native::is_native(parent) {
+        "shared"
+    } else if vm_actor {
+        "layr"
+    } else {
+        parent
+            .get("workspaceMode")
+            .and_then(Value::as_str)
+            .unwrap_or("worktree")
+    }
+}
+
 fn validate_vm_parent_workspace(workspace: &str, vm_parent: bool) -> Result<(), Error> {
     if matches!(workspace, "layr" | "linux") && !vm_parent {
         return Err(crate::managed_host_tools::Error::Invalid(
@@ -643,17 +658,7 @@ pub(crate) async fn spawn_agents(
         let workspace = spec
             .get("workspace")
             .and_then(Value::as_str)
-            .or_else(|| {
-                if role == "reviewer" && !vm_actor && !crate::layr_native::is_native(&parent_value)
-                {
-                    Some("shared")
-                } else if vm_actor {
-                    Some("layr")
-                } else {
-                    parent_value.get("workspaceMode").and_then(Value::as_str)
-                }
-            })
-            .unwrap_or("worktree");
+            .unwrap_or_else(|| default_workspace(role, vm_actor, &parent_value));
         validate_vm_parent_workspace(workspace, vm_actor)?;
         if workspace == "layr-native" && !crate::layr_native::is_native(&parent_value) {
             return Err(crate::managed_host_tools::Error::Invalid(

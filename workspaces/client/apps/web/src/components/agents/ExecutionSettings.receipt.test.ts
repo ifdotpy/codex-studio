@@ -8,6 +8,7 @@ import {
 import { Button, NativeSelect, Switch, Textarea } from "@mantine/core";
 import type { PostBody, PostResult } from "../../apiTypes";
 import { ApiError } from "../../api";
+import * as appLog from "../../appLog";
 import { AccountTransferStatus } from "../Accounts";
 import { required, type ComponentHookCell } from "../componentTestFixtures";
 import type { EffectCallback, PropsWithChildren, ComponentProps } from "react";
@@ -50,6 +51,7 @@ const h = vi.hoisted(() => ({
   scoped: "",
   cursor: 0,
   effects: [] as Array<() => unknown>,
+  report: vi.fn(),
   read: vi.fn(),
   post: vi.fn(),
   refresh: vi.fn(async () => {}),
@@ -106,6 +108,7 @@ vi.mock("react", async (load) => ({
   useId: () => "settings-role",
   useCallback: (callback: unknown) => callback,
 }));
+vi.mock("../../appLog", () => ({ appendAppLog: h.report }));
 vi.mock("../../servers/ServerServicesContext", () => ({
   useServerStorage: () => ({
     setItem: (key: string, raw: string) => h.storage.set(key, JSON.parse(raw)),
@@ -121,9 +124,9 @@ vi.mock("@mantine/hooks", async (load) => ({
   ...(await load<typeof import("@mantine/hooks")>()),
   useMediaQuery: () => false,
 }));
-vi.mock("../models/modelWhitelist", () => ({
-  useModelWhitelist: () => null,
-  isModelWhitelisted: () => true,
+vi.mock("../models/modelChoices", () => ({
+  useModelChoices: () => ({}),
+  isModelEnabled: () => true,
 }));
 vi.mock("./WorkerModelPicker", async (load) => ({
   ...(await load<typeof import("./WorkerModelPicker")>()),
@@ -189,6 +192,7 @@ function render(
   label: unknown;
   picker: ComponentProps<typeof AgentSetupPicker>;
   triggerAgent: Agent;
+  statusModal: ReactNode;
 };
 function render(
   agent: Agent,
@@ -199,12 +203,20 @@ function render(
   label: string;
   picker: Partial<ComponentProps<typeof AgentSetupPicker>>;
   triggerAgent: Agent;
+  statusModal: ReactNode;
 };
 function render(
   agent = initial,
   permissions = false,
   onDraftChange?: ComponentProps<typeof ExecutionSettings>["onDraftChange"],
-) {
+): {
+  controls: ReturnType<typeof invoke>;
+  model: ReactNode;
+  label: unknown;
+  picker: Partial<ComponentProps<typeof AgentSetupPicker>>;
+  triggerAgent: Agent;
+  statusModal: ReactNode;
+} {
   const controller = invoke(
     createElement(permissions ? ExecutionPermissions : ExecutionSettings, {
       agent,
@@ -250,6 +262,7 @@ function render(
       model: "",
       label: "",
       picker: {},
+      statusModal: null,
       triggerAgent: agent,
     };
   const picker = children(controls).find(
@@ -271,6 +284,9 @@ function render(
     model,
     label: trigger.props["aria-label"],
     picker: picker.props as ComponentProps<typeof AgentSetupPicker>,
+    statusModal: isValidElement(menu.props.statusModal)
+      ? menu.props.statusModal
+      : null,
     triggerAgent: (
       menu.props.trigger as ReactElement<
         ComponentProps<typeof ExecutionSummaryTrigger>
@@ -285,6 +301,7 @@ afterEach(() => {
   h.storage.clear();
   h.scoped = "";
   h.effects = [];
+  h.report.mockClear();
   h.read.mockReset();
   h.post.mockReset();
   h.refresh.mockClear();
@@ -313,10 +330,14 @@ test("transfer actions retain response identity and retry the same request after
     );
     return required(status).props;
   };
+  expect(transfer()).toHaveProperty("opened", false);
   h.post.mockRejectedValueOnce(new Error("response lost"));
   transfer().onAction?.("retry");
   await vi.waitFor(() => expect(transfer().pending).toBe(false));
   expect(transfer().transfer).toBe(operation);
+  expect(h.report).toHaveBeenCalledWith(
+    expect.objectContaining({ level: "error", reason: "response lost" }),
+  );
   const response = {
     ...operation,
     updated: 3,
@@ -333,6 +354,68 @@ test("transfer actions retain response identity and retry the same request after
     request_id: operation.id,
   });
   expect(transfer().transfer).toBe(response);
+});
+
+test("a remote transfer does not open the modal", () => {
+  render(initial);
+  const agent = {
+    ...initial,
+    accountTransfer: {
+      id: "remote",
+      status: TransferStatus.pending,
+      scope: TransferScope.team,
+    },
+  };
+  render(agent);
+  const controls = render(agent).controls;
+  const modal = children(controls).find(
+    (node) => node.type === AccountTransferStatus,
+  );
+  expect(required(modal).props.opened).toBe(false);
+});
+
+test("the transfer modal shows an action failure even without a start retry", () => {
+  const modal = AccountTransferStatus({
+    transfer: { id: "transfer", status: "pending" },
+    error: "Cancel response lost",
+    onAction: () => {},
+  });
+  expect(
+    children(modal).some(
+      (node) =>
+        node.props.role === "alert" &&
+        node.props.children === "Cancel response lost",
+    ),
+  ).toBe(true);
+});
+
+test("blocked members are reported but provider mismatches are not", () => {
+  render({
+    ...initial,
+    accountTransfer: {
+      id: "transfer",
+      status: "pending",
+      scope: TransferScope.team,
+      blocked: [{ id: "blocked", name: "Worker", reason: "Receipt missing" }],
+      leftOnSource: [
+        {
+          id: "left",
+          name: "Other",
+          provider: ProviderKind.claude,
+          reason: "Uses claude",
+        },
+      ],
+    },
+  });
+  expect(h.report).toHaveBeenCalledWith(
+    expect.objectContaining({
+      level: "error",
+      reason: "Worker: Receipt missing",
+    }),
+  );
+  expect(h.report).not.toHaveBeenCalledWith(
+    expect.objectContaining({ reason: expect.stringContaining("Uses claude") }),
+  );
 });
 
 for (const provider of ["Future Provider", "codex", "claude"]) {
@@ -624,6 +707,259 @@ test("queued settings and account changes keep their canonical scope", async () 
   expect(render(queued).label).toContain("Lead Luna 6 High");
   expect(render({ ...initial, accountKey: "other" }).model).toBe("Astra 6");
   expect(render(initial).model).toBe("Astra 6");
+});
+
+for (const role of ["implementer", "reviewer"] as const) {
+  test(`${role} queued settings update its own summary before SSE`, async () => {
+    const agent: Agent = {
+      ...initial,
+      id: role,
+      isLead: false,
+      role,
+      yoloMode: false,
+      status: AgentStatus.running,
+      nextTurnSettingsSupported: true,
+    };
+    const queued: Agent = {
+      ...agent,
+      pendingSettings: { model: "gpt-6-luna", effort: "high", fastMode: true },
+      pendingSettingsAccountKey: "default",
+    };
+    h.post.mockResolvedValue(queued);
+    render(agent).picker.onModel("gpt-6-luna");
+    await vi.waitFor(() => expect(h.post).toHaveBeenCalledOnce());
+    expect(required(h.post.mock.calls[0])[0]).toBe("/api/conversation");
+    expect(required(required(h.post.mock.calls[0])[1])).toMatchObject({
+      id: role,
+      next_turn: true,
+    });
+    expect(required(required(h.post.mock.calls[0])[1])).not.toHaveProperty(
+      "yolo_mode",
+    );
+    expect(render(agent).triggerAgent.yoloMode).toBe(false);
+    expect(render(agent).model).toBe("Luna 6");
+    expect(render(agent).label).toContain("Agent Luna 6 High");
+  });
+}
+
+test("a direct settings save shows Saved instead of Queued", async () => {
+  h.post.mockResolvedValue({ ...initial, model: "gpt-6-luna" });
+  render(initial).picker.onModel("gpt-6-luna");
+  await vi.waitFor(() => expect(h.post).toHaveBeenCalledOnce());
+  await Promise.resolve();
+  expect(
+    children(render(initial).statusModal).map((node) => node.props.children),
+  ).toContain("Saved");
+});
+
+test("late success cannot revive a failed account change after returning to the original account", async () => {
+  let finish!: (agent: Agent) => void;
+  h.post.mockImplementationOnce(
+    () =>
+      new Promise<Agent>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const agent: Agent = {
+    ...initial,
+    status: AgentStatus.running,
+    nextTurnSettingsSupported: true,
+  };
+  render(agent).picker.onModel("gpt-6-luna");
+  const other = { ...agent, accountKey: "other" };
+  render(other);
+  render(other);
+  render(agent);
+  finish({
+    ...agent,
+    pendingSettings: { model: "gpt-6-luna", effort: "medium", fastMode: false },
+    pendingSettingsAccountKey: "default",
+  });
+  await Promise.resolve();
+  expect(
+    children(render(agent).statusModal).map((node) => node.props.children),
+  ).toContain("Failed");
+});
+
+test("earlier matching pending and applied events cannot confirm an unresolved save", async () => {
+  const agent: Agent = {
+    ...initial,
+    fastMode: false,
+    status: AgentStatus.running,
+    nextTurnSettingsSupported: true,
+  };
+  h.post.mockImplementationOnce(() => new Promise<Agent>(() => {}));
+  render(agent).picker.onFast();
+  const oldPending: Agent = {
+    ...agent,
+    pendingSettings: {
+      model: agent.model,
+      effort: agent.effort,
+      fastMode: true,
+    },
+    pendingSettingsAccountKey: "default",
+  };
+  render(oldPending);
+  render({ ...agent, fastMode: true });
+  const modal = render({ ...agent, fastMode: true }).statusModal;
+  expect(children(modal).map((node) => node.props.children)).toContain(
+    "Saving…",
+  );
+});
+
+test("a recovered next-turn receipt confirms the modal after settings already applied", async () => {
+  const agent: Agent = {
+    ...initial,
+    fastMode: true,
+    status: AgentStatus.idle,
+    nextTurnSettingsSupported: true,
+  };
+  const request = {
+    id: agent.id,
+    next_turn: true,
+    request_id: "recover-1",
+    model: agent.model,
+    effort: agent.effort,
+    fast_mode: true,
+  };
+  h.storage.set(
+    `next-turn-settings:${JSON.stringify([agent.id, "default"])}`,
+    request,
+  );
+  h.post.mockResolvedValue(agent);
+  const retry = children(render(agent).controls).find(
+    (node) =>
+      node.type === Button && node.props.children === "Check settings save",
+  );
+  expect(retry).toBeDefined();
+  (required(retry).props.onClick as () => void)();
+  await vi.waitFor(() => expect(h.post).toHaveBeenCalledOnce());
+  await Promise.resolve();
+  const modal = render(agent).statusModal;
+  expect(children(modal).map((node) => node.props.children)).toContain(
+    "Queued for the next turn",
+  );
+});
+
+test("a live change opens a modal and follows agent updates", async () => {
+  const agent: Agent = {
+    ...initial,
+    status: AgentStatus.running,
+    nextTurnSettingsSupported: true,
+  };
+  h.post.mockResolvedValue({
+    ...agent,
+    pendingSettings: { model: "gpt-6-luna", effort: "medium", fastMode: false },
+    pendingSettingsAccountKey: "default",
+  });
+  render(agent).picker.onModel("gpt-6-luna");
+  let modal = render(agent).statusModal;
+  expect(children(modal).map((node) => node.props.children)).toContain(
+    "Saving…",
+  );
+  await vi.waitFor(() => expect(h.post).toHaveBeenCalledOnce());
+  const queued: Agent = {
+    ...agent,
+    pendingSettings: { model: "gpt-6-luna", effort: "medium", fastMode: false },
+    pendingSettingsAccountKey: "default",
+  };
+  render(queued);
+  modal = render(queued).statusModal;
+  expect(children(modal).map((node) => node.props.children)).toContain(
+    "Queued for the next turn",
+  );
+  const applied: Agent = {
+    ...agent,
+    model: "gpt-6-luna",
+    effort: "medium",
+    fastMode: false,
+  };
+  render(applied);
+  modal = render(applied).statusModal;
+  expect(children(modal).map((node) => node.props.children)).toContain(
+    "Queued for the next turn",
+  );
+});
+
+test("a refused live settings change appears in App errors", async () => {
+  const agent: Agent = {
+    ...initial,
+    status: AgentStatus.running,
+    nextTurnSettingsSupported: true,
+  };
+  const logged = vi.spyOn(appLog, "appendAppLog");
+  h.post.mockRejectedValue(new ApiError("Model unavailable", 400));
+  render(agent).picker.onModel("gpt-6-luna");
+  await vi.waitFor(() => expect(h.post).toHaveBeenCalledOnce());
+  render(agent);
+  render(agent);
+  expect(logged).toHaveBeenCalledWith(
+    expect.objectContaining({
+      level: "error",
+      title: "Execution settings change failed",
+      reason: "Model unavailable",
+    }),
+  );
+  logged.mockRestore();
+});
+
+test("an old rejection cannot fail a newer account's settings change", async () => {
+  const logged = vi.spyOn(appLog, "appendAppLog");
+  let rejectOld!: (error: Error) => void;
+  h.post.mockImplementationOnce(
+    () =>
+      new Promise<Agent>((_, reject) => {
+        rejectOld = reject;
+      }),
+  );
+  h.post.mockImplementationOnce(() => new Promise<Agent>(() => {}));
+  const first: Agent = {
+    ...initial,
+    status: AgentStatus.running,
+    nextTurnSettingsSupported: true,
+  };
+  const second: Agent = { ...first, accountKey: "other" };
+  render(first).picker.onModel("gpt-6-luna");
+  render(second).picker.onModel("gpt-6-luna");
+  rejectOld(new ApiError("Old account refused", 400));
+  await Promise.resolve();
+  expect(logged).toHaveBeenCalledWith(
+    expect.objectContaining({
+      reason: "Old account refused",
+      detail: expect.stringContaining("account: default"),
+    }),
+  );
+  const modal = render(second).statusModal;
+  expect(children(modal).map((node) => node.props.children)).not.toContain(
+    "Failed",
+  );
+  logged.mockRestore();
+});
+
+test("a rejected save is logged even after the controller unmounts", async () => {
+  let rejectSave!: (error: Error) => void;
+  const logged = vi.spyOn(appLog, "appendAppLog");
+  h.post.mockImplementationOnce(
+    () =>
+      new Promise<Agent>((_, reject) => {
+        rejectSave = reject;
+      }),
+  );
+  const agent: Agent = {
+    ...initial,
+    status: AgentStatus.running,
+    nextTurnSettingsSupported: true,
+  };
+  render(agent).picker.onModel("gpt-6-luna");
+  for (const cells of h.cells.values())
+    for (const cell of cells) cell.cleanup?.();
+  rejectSave(new ApiError("Save refused", 400));
+  await vi.waitFor(() =>
+    expect(logged).toHaveBeenCalledWith(
+      expect.objectContaining({ level: "error", reason: "Save refused" }),
+    ),
+  );
+  logged.mockRestore();
 });
 
 test("switching picker roles keeps acknowledged worker defaults in the summary", async () => {

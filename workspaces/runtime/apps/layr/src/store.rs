@@ -92,14 +92,31 @@ fn hostname() -> String {
     fs::read_to_string("/etc/hostname").map(|s| s.trim().to_string()).unwrap_or_else(|_| "machine".into())
 }
 
+/// The store root with the links above it resolved once (for example `/tmp` to `/private/tmp`).
+/// Links below the root stay refused: the no-follow walks in `sys` open every component of a
+/// path, so a link inside the store cannot redirect a write.
+pub fn resolve_root(root: &Path) -> Result<PathBuf> {
+    fn existing(path: &Path) -> std::io::Result<PathBuf> {
+        match path.canonicalize() {
+            Ok(p) => Ok(p),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => match (path.parent(), path.file_name()) {
+                (Some(parent), Some(name)) => Ok(existing(parent)?.join(name)),
+                _ => Err(e),
+            },
+            Err(e) => Err(e),
+        }
+    }
+    Ok(existing(&std::path::absolute(root)?)?)
+}
+
 impl Store {
     pub fn open(root: &Path) -> Result<Store> {
         if !root.exists() {
             mkdir_mode(root, 0o755)?;
         }
         // Resolve aliases once at the store boundary. Paths inside a line still refuse links.
-        let canonical_root = root.canonicalize().context("resolve store root")?;
-        let root = canonical_root.as_path();
+        let root = resolve_root(root)?;
+        let root = root.as_path();
         let version_guard = crate::store_version::Guard::open(root)?;
         #[cfg(not(feature = "overlayfs"))]
         if root.join(".layr-overlayfs").exists() {
@@ -733,6 +750,19 @@ impl<'a> Project<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_store_root_below_a_link_is_resolved_once() -> Result<()> {
+        let base = std::env::temp_dir().join(format!("layr-root-{}", ids::new_id()));
+        let real = base.join("real");
+        fs::create_dir_all(&real)?;
+        std::os::unix::fs::symlink(&real, base.join("link"))?;
+        let opened = Store::open(&base.join("link/store"));
+        let expected = real.canonicalize()?.join("store");
+        let _ = fs::remove_dir_all(&base);
+        assert_eq!(opened?.root, expected);
+        Ok(())
+    }
 
     #[test]
     fn an_overlay_lives_in_the_private_folder_of_its_project() {

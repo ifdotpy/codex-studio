@@ -125,7 +125,7 @@ pub async fn convert(
         let teams=live_teams(project["peerTeams"].as_array().map(Vec::as_slice).unwrap_or_default(),&all,&path,&prepared)?;
         if !teams.iter().any(|t|t["members"].as_array().is_some_and(|m|m.contains(&json!(source)))) { return Err(ProjectsError::Invalid("The source chat must belong to a peer team")); }
         let tree=records::all(db,"runtime_agents")?.into_iter().filter(|a|matches!(a["rootId"].as_str(),Some(root) if root==source.as_str() || root==target.as_str())).collect::<Vec<_>>();
-        idle(db,&tree)?;
+        idle(db,&tree,true)?;
         let moving=tree.iter().filter(|a|a["rootId"]==source).collect::<Vec<_>>();
         let moving_ids=moving.iter().filter_map(|a|a["id"].as_str()).collect::<Vec<_>>();
         let affected=records::all(db,"runtime_rooms")?.into_iter().filter(|r| matches!(r["rootId"].as_str(),Some(root) if root==source.as_str() || root==target.as_str()) || r["members"].as_array().is_some_and(|m|m.iter().any(|id|moving_ids.contains(&id.as_str().unwrap_or_default()) || teams.iter().any(|t|t["members"].as_array().is_some_and(|members|members.contains(id)))))).collect::<Vec<_>>();
@@ -223,7 +223,15 @@ fn put(db: &Transaction<'_>, table: &'static str, value: &Value) -> Result<(), P
     )?;
     Ok(())
 }
-fn idle(db: &Connection, agents: &[Value]) -> Result<(), ProjectsError> {
+/// Shared idle gate for user actions that change a chat's owner or workspace.
+/// `uncertain_blocks` is true for a move to another owner, which must carry an
+/// unknown outcome (input or tool request); a switch in place keeps the thread
+/// and those records as they are.
+pub(crate) fn idle(
+    db: &Connection,
+    agents: &[Value],
+    uncertain_blocks: bool,
+) -> Result<(), ProjectsError> {
     let ids = agents
         .iter()
         .filter_map(|a| a["id"].as_str())
@@ -237,34 +245,29 @@ fn idle(db: &Connection, agents: &[Value]) -> Result<(), ProjectsError> {
             )
             || (a["status"] == "queued" && truthy(a.get("autoWake")))
             || truthy(a.get("startAttempt"))
-            || truthy(a.get("prepareAttempt"))
         {
             return Err(ProjectsError::Invalid(
-                "Finish the active or queued turn before moving",
+                "Finish the active or queued turn first",
             ));
         }
         if truthy(a.get("workspaceOperation")) {
             return Err(ProjectsError::Invalid(
-                "Finish the pending workspace operation before moving",
+                "Finish the pending workspace operation first",
             ));
         }
         if truthy(a.get("accountTransferId"))
             || truthy(a.get("lazyAccountTransfer"))
             || a["accountTransfer"]["status"] == "pending"
         {
-            return Err(ProjectsError::Invalid(
-                "Finish the account transfer before moving",
-            ));
+            return Err(ProjectsError::Invalid("Finish the account transfer first"));
         }
         if matches!(
             a["nativeRelease"]["phase"].as_str(),
             Some("pending" | "checking" | "releasing")
         ) {
-            return Err(ProjectsError::Invalid(
-                "Finish the native release before moving",
-            ));
+            return Err(ProjectsError::Invalid("Finish the native release first"));
         }
-        if db.query_row("SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND status IN ('pending','reserved','dispatching','uncertain'))",[a["id"].as_str().unwrap_or_default()],|r|r.get::<_,bool>(0))? {return Err(ProjectsError::Invalid("Finish pending input before moving these chats"));}
+        if db.query_row("SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND (status IN ('pending','reserved','dispatching') OR (?2 AND status='uncertain')))",rusqlite::params![a["id"].as_str().unwrap_or_default(),uncertain_blocks],|r|r.get::<_,bool>(0))? {return Err(ProjectsError::Invalid("Finish pending input first"));}
     }
     for table in [
         "runtime_tasks",
@@ -276,7 +279,8 @@ fn idle(db: &Connection, agents: &[Value]) -> Result<(), ProjectsError> {
         "runtime_account_transfers",
         "runtime_rooms",
     ] {
-        for r in records::all(db, table)? {
+        let owners = ids.iter().copied().collect::<Vec<_>>();
+        for r in records::owned_by(db, table, &owners)? {
             let belongs = ids.contains(r["agent"].as_str().unwrap_or_default());
             let busy = match table {
                 "runtime_tasks" | "runtime_monitors" => {
@@ -290,7 +294,8 @@ fn idle(db: &Connection, agents: &[Value]) -> Result<(), ProjectsError> {
                 "runtime_tool_requests" => {
                     belongs
                         && !truthy(r.get("readOnly"))
-                        && matches!(r["outcome"].as_str(), Some("pending" | "unknown"))
+                        && (r["outcome"] == "pending"
+                            || (uncertain_blocks && r["outcome"] == "unknown"))
                 }
                 "runtime_rules" => belongs && r["inFlight"] == true,
                 "runtime_workspace_operations" => {
@@ -316,9 +321,7 @@ fn idle(db: &Connection, agents: &[Value]) -> Result<(), ProjectsError> {
                 _ => false,
             };
             if busy {
-                return Err(ProjectsError::Invalid(
-                    "Finish pending operations before moving these chats",
-                ));
+                return Err(ProjectsError::Invalid("Finish pending operations first"));
             }
         }
     }

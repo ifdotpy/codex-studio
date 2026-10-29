@@ -336,6 +336,11 @@ test("execution settings canonical browser", async ({ page }) => {
       await page.evaluate(() => window.canonicalRefreshRelease!());
     });
     await check("account-default-transfer-confirmation", async () => {
+      await page.setViewportSize({ width: 1280, height: 1400 });
+      await page.evaluate(() => {
+        document.getElementById("root")!.style.marginTop = "900px";
+      });
+      page.setDefaultTimeout(5000);
       // Moving existing subagents is an explicit action of its own; the receipt
       // rules of a transfer are unchanged.
       await reset({
@@ -360,6 +365,9 @@ test("execution settings canonical browser", async ({ page }) => {
       });
       await move.click();
       await page.waitForFunction(() => !!window.transferRelease);
+      await expect(
+        page.getByRole("dialog", { name: "Account transfer" }),
+      ).toBeVisible();
       assert.deepEqual(
         await page.evaluate(() =>
           window.transfers.map((row) => [row.account_key, row.scope]),
@@ -385,6 +393,10 @@ test("execution settings canonical browser", async ({ page }) => {
       assert.equal(await account.inputValue(), "second");
       assert.equal(await account.isDisabled(), false);
       await expect(page.getByText("2 waiting", { exact: true })).toBeVisible();
+      await page.getByText("2 waiting", { exact: true }).click();
+      await expect(
+        page.getByRole("dialog", { name: "Account transfer" }),
+      ).toBeVisible();
       // A running transfer offers no second move.
       await expect(move).toHaveCount(0);
       assert.equal(
@@ -456,13 +468,17 @@ test("execution settings canonical browser", async ({ page }) => {
         };
         window.transferRelease!();
       });
-      await expect(page.getByRole("alert")).toContainText(
-        "The server did not confirm this account transfer.",
-      );
+      await expect(
+        page
+          .getByRole("dialog", { name: "Account transfer" })
+          .getByRole("alert"),
+      ).toContainText("The server did not confirm this account transfer.");
       assert.equal(await account.inputValue(), "second");
       assert.equal(await page.evaluate(() => window.refreshCount), 0);
       await expect(
-        page.getByRole("button", { name: "Retry", exact: true }),
+        page
+          .getByRole("dialog", { name: "Account transfer" })
+          .getByRole("button", { name: "Retry", exact: true }),
       ).toBeVisible();
     });
     await check("transfer-response-before-old-summary", async () => {
@@ -744,7 +760,10 @@ test("execution settings canonical browser", async ({ page }) => {
         }),
       );
       // Members with one reason share one line, and each line has its own row.
-      const leftLine = dialog.getByText(
+      const transferDialog = page.getByRole("dialog", {
+        name: "Account transfer",
+      });
+      const leftLine = transferDialog.getByText(
         "Claude worker, Claude helper left on source (claude): Uses claude",
       );
       await leftLine.waitFor();
@@ -752,6 +771,7 @@ test("execution settings canonical browser", async ({ page }) => {
         await leftLine.evaluate((node) => getComputedStyle(node).display),
         "block",
       );
+      await transferDialog.getByRole("button", { name: "Close" }).click();
       // A lost transfer response offers Retry with the same request id.
       await page.evaluate(() => (window.transferFail = true));
       await move.click();

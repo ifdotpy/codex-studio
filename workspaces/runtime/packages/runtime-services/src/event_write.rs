@@ -1019,6 +1019,8 @@ mod tests {
 
     #[test]
     fn active_event_rule_does_not_block_annotation_writes() {
+        // Python enqueues user events through Runtime.enqueue,
+        // whose rule hook matches only rule event names; user events are not one.
         let mut connection = database();
         let rule = r#"{"id":"r-event","agent":"a","status":"active","kind":"event","event":"worker_completed"}"#;
         connection

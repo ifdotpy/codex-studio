@@ -11,7 +11,7 @@ use studio_runtime_store::path_identity::CanonicalPath;
 
 type Result<T> = std::result::Result<T, NativeLayrError>;
 
-fn git(directory: &Path, args: &[&str]) -> Result<String> {
+pub(super) fn git(directory: &Path, args: &[&str]) -> Result<String> {
     let output = crate::bounded_child::run_without_git_environment(crate::bounded_child::Request {
         program: std::ffi::OsStr::new("git"),
         git_directory: Some(directory.as_os_str()),
@@ -468,62 +468,9 @@ pub fn migrate_with_options(
                 allocation.preflight(&main)
             },
             || {
-                run(state_dir, &main, &["line", "new", &name, "main"])?;
-                let cwd = main
-                    .parent()
-                    .ok_or_else(|| NativeLayrError::Refused("Missing lines directory".into()))?
-                    .join(&name);
-                let line_directory = super::private_tree::Directory::open(&cwd)?;
-                let destination = line_directory.child(&relative, true)?;
-                let root_mode = destination.mode()?;
-                // Move only the entry itself through the pinned destination parent.
-                let saved_git = if destination.exists(std::ffi::OsStr::new(".git"))? {
-                    Some(tempfile::tempdir_in(state_dir.join(NATIVE_LAYR_DIRECTORY))?)
-                } else {
-                    None
-                };
-                let saved_directory = saved_git
-                    .as_ref()
-                    .map(|saved| super::private_tree::Directory::open(saved.path()))
-                    .transpose()?;
-                with_git_aside(&destination, saved_directory.as_ref(), || {
-                    let mut cache_roots: BTreeSet<PathBuf> =
-                        run(state_dir, &cwd, &["cache", "list"])?
-                            .lines()
-                            .filter_map(|line| line.split_once('\t'))
-                            .filter(|(_, kind)| *kind == "cache")
-                            .map(|(path, _)| PathBuf::from(path))
-                            .collect();
-                    let versioned_roots: Vec<_> = cache_roots
-                        .iter()
-                        .filter(|cache| {
-                            cache
-                                .strip_prefix(&relative)
-                                .is_ok_and(|local| plan.has_versioned_files_under(local))
-                        })
-                        .cloned()
-                        .collect();
-                    for cache in versioned_roots {
-                        discard_inherited_cache(&line_directory, &cache)?;
-                        cache_roots.remove(&cache);
-                    }
-                    let cache_roots = cache_roots
-                        .iter()
-                        .filter_map(|cache| cache.strip_prefix(&relative).ok().map(Path::to_owned))
-                        .collect();
-                    clear_at(&destination, &cache_roots)?;
-                    // Reuse the pinned subtree even if its pathname was replaced after opening it.
-                    plan.stage_open(&destination, &line_directory, &relative)
-                })?;
-                // A top-level line is a private container, distinct from a nested repository root.
-                if relative.as_os_str().is_empty() {
-                    destination.set_mode(root_mode)?;
-                }
-                super::git_guard::install_hook(state_dir, &cwd)?;
-                runtime::save_imported_tree(state_dir, &cwd, "Import Git worktree")?;
-                plan.warm_caches(state_dir, &cwd, &relative)?;
+                let state_id = import_worktree_line(state_dir, &main, &plan, &relative, &name)?;
                 Ok(
-                    json!({"line":name,"headCommit":imported_head,"worktreeSelection":selection,"stateId":run(state_dir,&cwd,&["rev-parse","head"])?}),
+                    json!({"line":name,"headCommit":imported_head,"worktreeSelection":selection,"stateId":state_id}),
                 )
             },
         )?;
@@ -536,20 +483,103 @@ pub fn migrate_with_options(
     Ok(report)
 }
 
+/// Create line `name` from main and replace its `relative` repository subtree with
+/// the worktree files of `plan`, including ignored data and warm caches.
+/// Callers run this inside a receipt; the source folder stays unchanged.
+pub(super) fn import_worktree_line(
+    state_dir: &Path,
+    main: &Path,
+    plan: &super::import::Plan,
+    relative: &Path,
+    name: &str,
+) -> Result<String> {
+    run(state_dir, main, &["line", "new", name, "main"])?;
+    let cwd = main
+        .parent()
+        .ok_or_else(|| NativeLayrError::Refused("Missing lines directory".into()))?
+        .join(name);
+    let line_directory = super::private_tree::Directory::open(&cwd)?;
+    let destination = line_directory.child(relative, true)?;
+    let root_mode = destination.mode()?;
+    // Move only the entry itself through the pinned destination parent.
+    let saved_git = if destination.exists(std::ffi::OsStr::new(".git"))? {
+        Some(tempfile::tempdir_in(state_dir.join(NATIVE_LAYR_DIRECTORY))?)
+    } else {
+        None
+    };
+    let saved_directory = saved_git
+        .as_ref()
+        .map(|saved| super::private_tree::Directory::open(saved.path()))
+        .transpose()?;
+    with_git_aside(&destination, saved_directory.as_ref(), || {
+        let overlays: Vec<Value> =
+            serde_json::from_str(&run(state_dir, &cwd, &["overlay", "list", "--json"])?)
+                .map_err(|error| NativeLayrError::Refused(error.to_string()))?;
+        let mut cache_roots: BTreeSet<PathBuf> = overlays
+            .iter()
+            .filter(|overlay| overlay["state"] == "cache")
+            .filter_map(|overlay| overlay["folder"].as_str())
+            .map(PathBuf::from)
+            .collect();
+        let versioned_roots: Vec<_> = cache_roots
+            .iter()
+            .filter(|cache| {
+                cache
+                    .strip_prefix(relative)
+                    .is_ok_and(|local| plan.has_versioned_files_under(local))
+            })
+            .cloned()
+            .collect();
+        for cache in versioned_roots {
+            discard_inherited_cache(&line_directory, &cache)?;
+            cache_roots.remove(&cache);
+        }
+        let cache_roots = cache_roots
+            .iter()
+            .filter_map(|cache| cache.strip_prefix(relative).ok().map(Path::to_owned))
+            .collect();
+        clear_at(&destination, &cache_roots)?;
+        // Reuse the pinned subtree even if its pathname was replaced after opening it.
+        plan.stage_open(&destination, &line_directory, relative)
+    })?;
+    // A top-level line is a private container, distinct from a nested repository root.
+    if relative.as_os_str().is_empty() {
+        destination.set_mode(root_mode)?;
+    }
+    super::git_guard::install_hook(state_dir, &cwd)?;
+    runtime::save_imported_tree(state_dir, &cwd, "Import Git worktree")?;
+    plan.warm_caches(state_dir, &cwd, relative)?;
+    run(state_dir, &cwd, &["rev-parse", "head"])
+}
+
 /// Runs `work` with the line's `.git` moved into `saved` and puts it back
 /// afterwards, also when `work` fails: `saved` is a temporary folder that is
-/// deleted on drop.
+/// deleted on drop. Layr keeps a `.git` folder that it made read only (0555), and a
+/// folder cannot move to another parent without write access, so the folder is opened
+/// for the move and gets its old mode back.
 fn with_git_aside<T>(
     destination: &super::private_tree::Directory,
     saved: Option<&super::private_tree::Directory>,
     work: impl FnOnce() -> Result<T>,
 ) -> Result<T> {
+    let mut sealed = None;
     if let Some(saved) = saved {
+        let git = destination.child(Path::new(".git"), false)?;
+        let mode = git.mode()?;
+        if mode & 0o200 == 0 {
+            git.set_mode(mode | 0o200)?;
+            sealed = Some(mode);
+        }
         destination.rename(Path::new(".git"), saved, Path::new("git"))?;
     }
     let result = work();
     if let Some(saved) = saved {
         saved.rename(Path::new("git"), destination, Path::new(".git"))?;
+        if let Some(mode) = sealed {
+            destination
+                .child(Path::new(".git"), false)?
+                .set_mode(mode)?;
+        }
     }
     result
 }
@@ -572,7 +602,7 @@ mod tests {
         let aside = super::super::private_tree::Directory::open(saved.path()).expect("aside");
         let failed: Result<()> = with_git_aside(&destination, Some(&aside), || {
             assert!(!line.join(".git").exists());
-            Err(NativeLayrError::Refused("cache list failed".into()))
+            Err(NativeLayrError::Refused("overlay list failed".into()))
         });
         assert!(failed.is_err());
         drop(saved);
@@ -580,6 +610,30 @@ mod tests {
             fs::read_to_string(line.join(".git/HEAD")).expect("git folder is back"),
             "ref: refs/heads/main\n"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_sealed_line_git_folder_moves_aside_and_is_sealed_again() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = tempfile::tempdir().expect("fixture");
+        let line = fixture.path().join("line");
+        fs::create_dir_all(line.join(".git")).expect("git folder");
+        fs::write(line.join(".git/HEAD"), "ref: refs/heads/main\n").expect("head");
+        fs::set_permissions(line.join(".git"), fs::Permissions::from_mode(0o555)).expect("seal");
+        let saved = tempfile::tempdir_in(fixture.path()).expect("saved");
+        let destination = super::super::private_tree::Directory::open(&line).expect("line");
+        let aside = super::super::private_tree::Directory::open(saved.path()).expect("aside");
+        with_git_aside(&destination, Some(&aside), || {
+            assert!(!line.join(".git").exists());
+            Ok(())
+        })
+        .expect("a sealed folder moves");
+        let mode = fs::metadata(line.join(".git"))
+            .expect("git folder")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o555);
     }
 
     #[test]
@@ -955,18 +1009,17 @@ mod tests {
             fs::read_to_string(line.join("sub/target/from-main")).expect("warm worktree cache"),
             "base-data"
         );
-        let caches = run(&state, &line, &["cache", "list"]).expect("line cache list");
         assert!(
-            caches
-                .lines()
-                .any(|entry| entry.starts_with("target\tnot a cache: has versioned files"))
+            super::super::overlay_folder_state(&state, &line, "target")
+                .is_some_and(|folder| folder.starts_with("not a cache: has versioned files"))
         );
-        assert!(caches.lines().any(|entry| entry == "sub/target\tcache"));
-        assert!(
-            run(&state, &main, &["cache", "list"])
-                .expect("main caches")
-                .lines()
-                .any(|entry| entry == "target\tcache")
+        assert_eq!(
+            super::super::overlay_folder_state(&state, &line, "sub/target").as_deref(),
+            Some("cache")
+        );
+        assert_eq!(
+            super::super::overlay_folder_state(&state, &main, "target").as_deref(),
+            Some("cache")
         );
         assert_eq!(
             run(&state, &main, &["show", "head:sub/target/from-main"])

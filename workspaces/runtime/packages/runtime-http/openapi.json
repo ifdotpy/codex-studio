@@ -6366,6 +6366,73 @@
         "title": "AgentMode",
         "type": "string"
       },
+      "AgentMoveToHostRequest": {
+        "additionalProperties": false,
+        "description": "Move one idle VM chat to this device. A lead moves with its workers. The chat keeps its thread and history.",
+        "properties": {
+          "id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "request_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "request_id"
+        ],
+        "title": "AgentMoveToHostRequest",
+        "type": "object"
+      },
+      "AgentMoveToHostResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "cwd": {
+            "title": "Cwd",
+            "type": "string"
+          },
+          "executionMode": {
+            "enum": [
+              "native"
+            ],
+            "title": "Executionmode",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "movedAgents": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Movedagents",
+            "type": "array"
+          },
+          "workspaceMode": {
+            "enum": [
+              "shared"
+            ],
+            "title": "Workspacemode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "executionMode",
+          "workspaceMode",
+          "cwd",
+          "movedAgents"
+        ],
+        "title": "AgentMoveToHostResponse",
+        "type": "object"
+      },
       "AgentNativeRelease": {
         "additionalProperties": false,
         "properties": {
@@ -10272,6 +10339,73 @@
           "id"
         ],
         "title": "AgentSummaryEntityDto",
+        "type": "object"
+      },
+      "AgentWorkspaceModeRequest": {
+        "additionalProperties": false,
+        "description": "Switch one idle WT chat to the Layr workspace mode. The chat keeps its thread and history.",
+        "properties": {
+          "id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "workspaceMode": {
+            "enum": [
+              "layr-native"
+            ],
+            "title": "Workspacemode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "workspaceMode"
+        ],
+        "title": "AgentWorkspaceModeRequest",
+        "type": "object"
+      },
+      "AgentWorkspaceModeResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "cwd": {
+            "title": "Cwd",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "layrLine": {
+            "title": "Layrline",
+            "type": "string"
+          },
+          "layrProjectId": {
+            "title": "Layrprojectid",
+            "type": "string"
+          },
+          "layrStateId": {
+            "title": "Layrstateid",
+            "type": "string"
+          },
+          "workspaceMode": {
+            "enum": [
+              "layr-native"
+            ],
+            "title": "Workspacemode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "workspaceMode",
+          "cwd",
+          "layrProjectId",
+          "layrLine",
+          "layrStateId"
+        ],
+        "title": "AgentWorkspaceModeResponse",
         "type": "object"
       },
       "AmbiguousToolRequestResponse": {
@@ -29980,6 +30114,27 @@
         "title": "ModelCatalogResponse",
         "type": "object"
       },
+      "ModelChoice": {
+        "description": "A user's explicit model picker choice. Pickers offer every model that is\nnot blacklisted, so a model new to the catalog starts untouched and enabled.",
+        "enum": [
+          "untouched",
+          "whitelisted",
+          "blacklisted"
+        ],
+        "type": "string"
+      },
+      "ModelChoices": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/ModelChoice"
+        },
+        "description": "Server preference value keyed by provider-qualified model identity; an\nabsent key is untouched. The schema is the server validator.",
+        "maxProperties": 2048,
+        "propertyNames": {
+          "maxLength": 512,
+          "pattern": "^[a-z][a-z0-9_-]*:\\S+$"
+        },
+        "type": "object"
+      },
       "ModelEntityDto": {
         "allOf": [
           {
@@ -35041,30 +35196,27 @@
         "description": "The build stamp in Contents/Resources/studio-build.json (docs/peer-updates.md).",
         "properties": {
           "branch": {
-            "title": "Branch",
             "type": "string"
           },
           "builtAt": {
             "description": "Packaging time on the build Mac, in seconds since the epoch.",
-            "title": "Builtat",
+            "format": "double",
             "type": "number"
           },
           "commit": {
-            "title": "Commit",
             "type": "string"
           },
           "commitTime": {
             "description": "Commit time, in seconds since the epoch.",
-            "maximum": 9007199254740991,
+            "format": "uint64",
             "minimum": 0,
-            "title": "Committime",
             "type": "integer"
           },
           "version": {
-            "const": 1,
+            "description": "Format version of the stamp. Always 1.",
+            "format": "uint8",
             "maximum": 1,
             "minimum": 1,
-            "title": "Version",
             "type": "integer"
           }
         },
@@ -35075,23 +35227,19 @@
           "commitTime",
           "branch"
         ],
-        "title": "PeerUpdateBuild",
         "type": "object"
       },
       "PeerUpdateEvent": {
         "additionalProperties": false,
+        "description": "The last pull or install attempt of the update puller.",
         "properties": {
           "at": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "number"
-              }
-            ],
             "description": "Time of the pull or install attempt, in seconds since the epoch.",
-            "title": "At"
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
           },
           "build": {
             "anyOf": [
@@ -35104,38 +35252,23 @@
             ]
           },
           "outcome": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "title": "Outcome"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "reason": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "title": "Reason"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "server": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
             "description": "The paired server that offered the build.",
-            "title": "Server"
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -35145,17 +35278,16 @@
           "outcome",
           "reason"
         ],
-        "title": "PeerUpdateEvent",
         "type": "object"
       },
       "PeerUpdatePending": {
         "additionalProperties": false,
+        "description": "The staged update that the desktop installer takes next.",
         "properties": {
           "build": {
             "$ref": "#/components/schemas/PeerUpdateBuild"
           },
           "server": {
-            "title": "Server",
             "type": "string"
           }
         },
@@ -35163,11 +35295,11 @@
           "build",
           "server"
         ],
-        "title": "PeerUpdatePending",
         "type": "object"
       },
       "PeerUpdateStatus": {
         "additionalProperties": false,
+        "description": "The update state from a paired server, as `/api/desktop` shows it (`peerUpdate`).",
         "properties": {
           "build": {
             "anyOf": [
@@ -35181,15 +35313,12 @@
             "description": "The build of the installed app; null for a source checkout."
           },
           "checkedAt": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "number"
-              }
-            ],
-            "title": "Checkedat"
+            "description": "Time of the last check, in seconds since the epoch.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
           },
           "lastInstall": {
             "anyOf": [
@@ -35229,7 +35358,6 @@
           "pending",
           "lastInstall"
         ],
-        "title": "PeerUpdateStatus",
         "type": "object"
       },
       "PendingSettingsRecordResponse": {
@@ -37404,6 +37532,17 @@
               }
             ],
             "title": "Projectaliases"
+          },
+          "serverLabel": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Serverlabel"
           },
           "updated": {
             "anyOf": [
@@ -46807,6 +46946,7 @@
               "stop",
               "exec_event",
               "projects",
+              "projects.changed",
               "folders",
               "git",
               "export",
@@ -67431,6 +67571,256 @@
           }
         },
         "summary": "Finder View"
+      }
+    },
+    "/api/agents/move-to-host": {
+      "post": {
+        "operationId": "move_to_host_api_agents_move_to_host_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentMoveToHostRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentMoveToHostResponse"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              },
+              "Access-Control-Expose-Headers": {
+                "$ref": "#/components/headers/AccessControlExposeHeaders"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              },
+              "Content-Encoding": {
+                "$ref": "#/components/headers/ContentEncoding"
+              },
+              "Content-Length": {
+                "$ref": "#/components/headers/ContentLength"
+              },
+              "Content-Security-Policy": {
+                "$ref": "#/components/headers/ContentSecurityPolicy"
+              },
+              "Content-Type": {
+                "$ref": "#/components/headers/ContentType"
+              },
+              "Referrer-Policy": {
+                "$ref": "#/components/headers/ReferrerPolicy"
+              },
+              "Server-Timing": {
+                "$ref": "#/components/headers/ServerTiming"
+              },
+              "Vary": {
+                "$ref": "#/components/headers/Vary"
+              },
+              "X-Content-Type-Options": {
+                "$ref": "#/components/headers/XContentTypeOptions"
+              },
+              "X-Studio-API-Schema": {
+                "$ref": "#/components/headers/StudioApiSchema"
+              },
+              "X-Studio-Server": {
+                "$ref": "#/components/headers/StudioServer"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError400",
+            "description": "Bad Request"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError401",
+            "description": "Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError403",
+            "description": "Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/ApiError404",
+            "description": "Not Found"
+          },
+          "408": {
+            "$ref": "#/components/responses/ApiError408",
+            "description": "Request Timeout"
+          },
+          "409": {
+            "$ref": "#/components/responses/ApiError409",
+            "description": "Conflict"
+          },
+          "410": {
+            "$ref": "#/components/responses/ApiError410",
+            "description": "Gone"
+          },
+          "413": {
+            "$ref": "#/components/responses/ApiError413",
+            "description": "Content Too Large"
+          },
+          "415": {
+            "$ref": "#/components/responses/ApiError415",
+            "description": "Unsupported Media Type"
+          },
+          "426": {
+            "$ref": "#/components/responses/ApiError426",
+            "description": "Upgrade Required"
+          },
+          "429": {
+            "$ref": "#/components/responses/ApiError429",
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ApiError500",
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "$ref": "#/components/responses/ApiError502",
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "$ref": "#/components/responses/ApiError503",
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Move an idle VM chat to this device"
+      }
+    },
+    "/api/agents/workspace-mode": {
+      "post": {
+        "operationId": "switch_workspace_mode_api_agents_workspace_mode_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentWorkspaceModeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentWorkspaceModeResponse"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              },
+              "Access-Control-Expose-Headers": {
+                "$ref": "#/components/headers/AccessControlExposeHeaders"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              },
+              "Content-Encoding": {
+                "$ref": "#/components/headers/ContentEncoding"
+              },
+              "Content-Length": {
+                "$ref": "#/components/headers/ContentLength"
+              },
+              "Content-Security-Policy": {
+                "$ref": "#/components/headers/ContentSecurityPolicy"
+              },
+              "Content-Type": {
+                "$ref": "#/components/headers/ContentType"
+              },
+              "Referrer-Policy": {
+                "$ref": "#/components/headers/ReferrerPolicy"
+              },
+              "Server-Timing": {
+                "$ref": "#/components/headers/ServerTiming"
+              },
+              "Vary": {
+                "$ref": "#/components/headers/Vary"
+              },
+              "X-Content-Type-Options": {
+                "$ref": "#/components/headers/XContentTypeOptions"
+              },
+              "X-Studio-API-Schema": {
+                "$ref": "#/components/headers/StudioApiSchema"
+              },
+              "X-Studio-Server": {
+                "$ref": "#/components/headers/StudioServer"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError400",
+            "description": "Bad Request"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError401",
+            "description": "Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError403",
+            "description": "Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/ApiError404",
+            "description": "Not Found"
+          },
+          "408": {
+            "$ref": "#/components/responses/ApiError408",
+            "description": "Request Timeout"
+          },
+          "409": {
+            "$ref": "#/components/responses/ApiError409",
+            "description": "Conflict"
+          },
+          "410": {
+            "$ref": "#/components/responses/ApiError410",
+            "description": "Gone"
+          },
+          "413": {
+            "$ref": "#/components/responses/ApiError413",
+            "description": "Content Too Large"
+          },
+          "415": {
+            "$ref": "#/components/responses/ApiError415",
+            "description": "Unsupported Media Type"
+          },
+          "426": {
+            "$ref": "#/components/responses/ApiError426",
+            "description": "Upgrade Required"
+          },
+          "429": {
+            "$ref": "#/components/responses/ApiError429",
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ApiError500",
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "$ref": "#/components/responses/ApiError502",
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "$ref": "#/components/responses/ApiError503",
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Switch an idle WT chat to Layr in place"
       }
     },
     "/api/analytics": {

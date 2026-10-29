@@ -33,7 +33,11 @@ use super::{
     ABSENT, MAX_SYNC_FILE_BYTES, MacSyncError, contained_path, fetch_entry, hex_sha, lock_round,
     now_seconds, project_directory, project_record, read_json, save_json, upload_archive,
 };
-use crate::{bounded_child, linux_vm_guest::GuestRpc, tar_gzip::TarGzipWriter};
+use crate::{
+    bounded_child,
+    linux_vm_guest::{GuestError, GuestRpc},
+    tar_gzip::TarGzipWriter,
+};
 
 /// Folders and files that never sync, wherever they are.
 const ALWAYS_SKIPPED: [&str; 8] = [
@@ -1542,6 +1546,7 @@ impl<'a> ProjectSync<'a> {
                 })
         };
         let mut lists: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+        let mut write_bytes = 0_u64;
         let paths = manifest
             .keys()
             .chain(current.keys())
@@ -1573,6 +1578,9 @@ impl<'a> ProjectSync<'a> {
                 if vm.is_none() {
                     "macDeletions"
                 } else {
+                    write_bytes += main
+                        .get(&rel)
+                        .map_or(0, |item| item["size"].as_u64().unwrap_or(0));
                     "macWrites"
                 }
             } else {
@@ -1610,6 +1618,7 @@ impl<'a> ProjectSync<'a> {
                 "paths": items.iter().take(PLAN_SAMPLE).collect::<Vec<_>>(),
             });
         }
+        plan["macWrites"]["bytes"] = json!(write_bytes);
         let mac_deletions = plan["deletionsToMain"]["count"].as_u64().unwrap_or(0) as usize;
         let main_deletions = plan["macDeletions"]["count"].as_u64().unwrap_or(0) as usize;
         plan["guards"] = json!({
@@ -1761,6 +1770,16 @@ impl<'a> ProjectSync<'a> {
             {
                 Ok(result) => result,
                 Err(error) => {
+                    if replayed && receipt_without_result(&error) {
+                        // The guest stopped during this operation and kept no result. It
+                        // applies one operation per project at a time, so no copy still
+                        // runs. The plan above compares the real Mac files with the manifest,
+                        // and the guest folds them onto the real main files. A copy that ran
+                        // partly set files to target states, and the new operation sets the
+                        // same states. Start a new operation from that plan.
+                        self.remove("pending.json")?;
+                        return self.round_locked(paths.as_ref());
+                    }
                     if !error.uncertain() && error.code() != Some("outcome_unknown") {
                         // The guest refused the operation: repeating it cannot help.
                         self.remove("pending.json")?;
@@ -2429,6 +2448,15 @@ impl<'a> ProjectSync<'a> {
 }
 
 /// Whether `count` deletions wait for the user's confirmation.
+/// The guest answer for a receipt row without a response. `receipt` in
+/// `vm-guest/common.py` owns the text; a parity test reads it.
+pub(crate) const RECEIPT_WITHOUT_RESULT: &str =
+    "The request has no proven result; inspect the saved state";
+
+fn receipt_without_result(error: &GuestError) -> bool {
+    error.code() == Some("outcome_unknown") && error.detail() == Some(RECEIPT_WITHOUT_RESULT)
+}
+
 fn too_many(count: usize, allowed: usize, agreed: usize) -> bool {
     count > DELETE_FLOOR
         && count > allowed
@@ -2440,6 +2468,14 @@ fn too_many(count: usize, allowed: usize, agreed: usize) -> bool {
 mod tests {
     use super::*;
     use std::io::{Seek, SeekFrom};
+
+    #[test]
+    fn receipt_text_matches_the_guest_owner() {
+        let owner = include_str!("../../../../apps/vm-guest/common.py");
+        assert!(owner.contains(&format!(
+            "GuestError(\"outcome_unknown\", \"{RECEIPT_WITHOUT_RESULT}\")"
+        )));
+    }
 
     fn temporary() -> (tempfile::TempDir, PathBuf) {
         let temp = tempfile::tempdir().unwrap();

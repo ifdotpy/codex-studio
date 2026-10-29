@@ -23,6 +23,7 @@ import { createDraftStorage } from "../sync/draftStorage";
 import { useNativeDrafts } from "../native/useNativeDrafts";
 import { createOutbox } from "../sync/send";
 import { createSyncClient } from "../sync/client";
+import { nativeProjectionStore } from "../sync/nativeProjections";
 import { createServerSubscriptions } from "../sync/subscriptions/server";
 import { createTranscriptCache } from "../sync/transcriptCache";
 import { createTokenRateCache } from "../usage/tokenRate";
@@ -49,6 +50,9 @@ export function createServerServices(server: StudioServer) {
   });
   const storage = preferenceStorageForServer(transport.owner.id);
   const accountLimits = createAccountLimitsCache(storage);
+  // The native core stores the projections of the local server; every other server keeps the page cache.
+  const localNativeClient = () =>
+    transport.owner.id === "local" && hasNativeClient();
   const sequences = createEntitySequenceScope();
   const activity = createServerActivity();
   const api = createApiScope({
@@ -81,12 +85,15 @@ export function createServerServices(server: StudioServer) {
       tokenRates,
       sync: () => sync,
       owner: transport.owner,
+      nativeCore: localNativeClient,
     });
     sync = createSyncClient({
       api,
       resources,
       sequences,
       transcripts,
+      projectionStore: () =>
+        localNativeClient() ? nativeProjectionStore : undefined,
       databaseSuffix:
         transport.owner.id === "local"
           ? ""
@@ -102,7 +109,7 @@ export function createServerServices(server: StudioServer) {
   };
   const outbox = createOutbox({
     api,
-    syncDatabase: () => synchronization().sync.syncDatabase(),
+    syncDatabase: () => synchronization().sync.outboxDatabase(),
     storage,
   });
   let browserDrafts: ReturnType<typeof createBrowserDrafts> | undefined;

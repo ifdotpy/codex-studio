@@ -38,6 +38,23 @@ test("desktop resources include a verified native Layr executable", async () => 
   assert.match(source, /await bundleLayrBinary\(/);
 });
 
+test("Layr version output may carry a build id, as install.rs accepts", async () => {
+  const { layrVersionMatches } =
+    await import("../../../../client/apps/desktop/layr-binary.ts");
+  assert.ok(layrVersionMatches("layr version 0.4.0", "0.4.0"));
+  assert.ok(
+    layrVersionMatches(
+      "layr version 0.4.0 (73eb679-dirty 2026-10-28)",
+      "0.4.0",
+    ),
+  );
+  assert.ok(!layrVersionMatches("layr version 0.4.01", "0.4.0"));
+  assert.ok(
+    !layrVersionMatches("layr version 0.3.0 (73eb679 2026-10-28)", "0.4.0"),
+  );
+  assert.ok(!layrVersionMatches("layr version 0.4.0 (unclosed", "0.4.0"));
+});
+
 test("packages Layr once, reuses its release cache and hashes the signed binary", async () => {
   const { bundleLayrBinary, verifyBundledLayr, layrBundleContract } =
     await import("../../../../client/apps/desktop/layr-binary.ts");
@@ -49,7 +66,8 @@ test("packages Layr once, reuses its release cache and hashes the signed binary"
     const cachedTarget = targetDirectory;
     await mkdir(path.join(cachedTarget, "release"), { recursive: true });
     const built = path.join(cachedTarget, "release/layr");
-    const script = `#!/bin/sh\nprintf '%s\\n' 'layr version ${version}'\n`;
+    // The real binary appends its build id and date (layr #46).
+    const script = `#!/bin/sh\nprintf '%s\\n' 'layr version ${version} (d730ca3 2026-10-29)'\n`;
     await writeFile(built, script, { mode: 0o755 });
     const workspace = path.join(temporary, "Contents/Resources/workspace");
     const builds: {
@@ -98,7 +116,7 @@ test("packages Layr once, reuses its release cache and hashes the signed binary"
       execFileSync(path.join(workspace, "bin/layr"), ["--version"], {
         encoding: "utf8",
       }).trim(),
-      `layr version ${version}`,
+      `layr version ${version} (d730ca3 2026-10-29)`,
     );
     const manifest = JSON.parse(
       await readFile(path.join(workspace, "bin", manifestName), "utf8"),

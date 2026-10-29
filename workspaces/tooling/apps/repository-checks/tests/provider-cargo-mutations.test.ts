@@ -19,7 +19,7 @@ import test from "node:test";
 const root = fileURLToPath(new URL("../../../../..", import.meta.url));
 test(
   "Cargo refuses stale sources and regenerated incompatible vendor types",
-  { timeout: 180000 },
+  { timeout: 900000 },
   async (context) => {
     const copy = mkdtempSync(path.join(tmpdir(), "studio-contract-compile-"));
     try {
@@ -55,16 +55,21 @@ test(
       writeFileSync(path.join(copy, "Cargo.toml"), manifest);
       const env = {
         ...process.env,
-        CARGO_TARGET_DIR:
-          process.env.CARGO_TARGET_DIR ||
-          path.join(tmpdir(), "studio-provider-contract-compile"),
+        // Own target folder: the gate's Rust lane holds the lock of the shared one for
+        // minutes, and each blocked check here waited out its whole timeout. It stays in
+        // the checkout's target/ so dependency builds stay warm between runs.
+        CARGO_TARGET_DIR: path.join(
+          root,
+          "target",
+          "provider-contract-compile",
+        ),
       };
       const run = (command: string, args: string[]) =>
         spawnSync(command, args, {
           cwd: copy,
           env,
           encoding: "utf8",
-          timeout: 120000,
+          timeout: 300000,
         });
       const check = () =>
         run("cargo", [

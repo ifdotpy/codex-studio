@@ -37,6 +37,18 @@ _remote_spawn (codex_multi_server_orchestration.py:895)
 RuntimeError: No installed Codex version passed the protocol checks
 ```
 
+This trace comes from the Python backend, which was removed on 2026-10-22. The Rust backend has
+these owners today:
+
+- Remote receive: `OrchestrationDriver::receive` in
+  `workspaces/runtime/packages/runtime-services/src/multi_server_orchestration.rs`.
+- Local spawn: `spawn` in `workspaces/runtime/packages/runtime-services/src/managed_host_tools.rs`.
+- Rejection text: `workspaces/runtime/packages/runtime-services/src/native_runtime.rs`.
+- npm launcher resolution: `resolve_npm_launcher` in
+  `workspaces/runtime/packages/runtime-services/src/provider_binaries.rs`.
+- `orchestration-errors.log` (owner-only, 1 MiB, 2 backups): `ORCHESTRATION_ERRORS_LOG` in
+  `workspaces/runtime/packages/runtime-process/src/operational_log.rs`.
+
 The live `native-runtime/status.json` contains the same rejection.
 Discovery selects `/opt/homebrew/lib/node_modules/@openai/codex/bin/codex.js`.
 It rejects that launcher because `codex-code-mode-host` is absent beside it.

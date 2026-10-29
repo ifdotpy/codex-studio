@@ -552,6 +552,9 @@ test("accounts settings show per-server state and provider choices", async ({
   });
   await expect(remoteActions).toBeEnabled();
   await expect(remoteActions).toBeFocused();
+  await page.setViewportSize({ width: 500, height: 1000 });
+  await page.setViewportSize({ width: 1280, height: 1000 });
+  await expect(remoteActions).toHaveAttribute("data-autofocus", "true");
   await remoteActions.click();
   await page.getByRole("menuitem", { name: "Configure", exact: true }).click();
   await expect(settings).toBeHidden();
@@ -625,6 +628,7 @@ test("accounts settings show per-server state and provider choices", async ({
     await settings.getByRole("button", { name: "Back", exact: true }).click();
   await settings.getByRole("tab", { name: "Accounts", exact: true }).click();
 
+  await expect(remoteActions).not.toHaveAttribute("data-autofocus");
   await accounts
     .getByRole("button", { name: "Add account", exact: true })
     .click();

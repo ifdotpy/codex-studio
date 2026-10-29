@@ -84,6 +84,7 @@ export const ServerOperationKindValues = [
   "stop",
   "exec_event",
   "projects",
+  "projects.changed",
   "folders",
   "git",
   "export",

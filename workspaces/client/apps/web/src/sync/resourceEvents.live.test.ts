@@ -81,6 +81,7 @@ async function fixture(
   session = true,
   peerOwner = false,
   baseline = true,
+  independent = false,
 ) {
   vi.useFakeTimers();
   const browser = new EventTarget();
@@ -94,7 +95,7 @@ async function fixture(
   const lockNames: string[] = [];
   const channelNames: string[] = [];
   let acquire: ((lock: Lock | null) => Promise<void>) | undefined;
-  vi.stubGlobal("navigator", {
+  const navigatorStub = {
     onLine: true,
     ...(follower || peerOwner
       ? {
@@ -122,25 +123,40 @@ async function fixture(
           },
         }
       : {}),
-  });
+  };
+  if (independent)
+    Object.defineProperty(navigatorStub, "locks", {
+      get() {
+        throw new Error("An independent page must not use Web Locks.");
+      },
+    });
+  vi.stubGlobal("navigator", navigatorStub);
   vi.stubGlobal("location", { origin: "http://studio.test" });
   let deliverPeer: ((event: MessageEvent) => void) | undefined;
   const posted: OutgoingTabMessage[] = [];
   vi.stubGlobal(
     "BroadcastChannel",
-    follower || peerOwner
+    independent
       ? class {
-          onmessage: ((event: MessageEvent) => void) | null = null;
-          constructor(name: string) {
-            channelNames.push(name);
-            deliverPeer = (event) => this.onmessage?.(event);
+          constructor() {
+            throw new Error(
+              "An independent page must not use a BroadcastChannel.",
+            );
           }
-          postMessage(message: OutgoingTabMessage) {
-            posted.push(structuredClone(message));
-          }
-          close() {}
         }
-      : undefined,
+      : follower || peerOwner
+        ? class {
+            onmessage: ((event: MessageEvent) => void) | null = null;
+            constructor(name: string) {
+              channelNames.push(name);
+              deliverPeer = (event) => this.onmessage?.(event);
+            }
+            postMessage(message: OutgoingTabMessage) {
+              posted.push(structuredClone(message));
+            }
+            close() {}
+          }
+        : undefined,
   );
   let peerSequence = 0;
   const peer = (name: string, event: unknown) =>
@@ -199,6 +215,7 @@ async function fixture(
       return source;
     },
     storageName: (name) => name,
+    ...(independent ? { independent: true } : {}),
   });
   disposals.push(transport.dispose);
   const state = { kind: "state" } as const;
@@ -373,6 +390,13 @@ it("reports a rejected local write as a local-state-error", async () => {
   await vi.advanceTimersByTimeAsync(0);
   expect(details).toContain("local-state-error");
   error.mockRestore();
+});
+
+it("an independent page owns its stream without Web Locks or a BroadcastChannel", async () => {
+  const f = await fixture(false, true, false, true, true);
+  expect(f.sources).toHaveLength(1);
+  expect(f.persist).toHaveBeenCalled();
+  expect(f.source.closed).toBe(false);
 });
 
 it("publishes each resource event without a listener flush timer", async () => {

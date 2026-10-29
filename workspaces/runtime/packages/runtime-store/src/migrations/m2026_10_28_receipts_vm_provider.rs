@@ -16,7 +16,7 @@ use studio_runtime_schema::persistence::{
 
 pub(super) struct Family;
 pub(super) const SOURCES: &[&str] = &["runtime_operation_receipts"];
-const SELECT: &str = "source.id GLOB 'linux-vm-provider-start:*' OR source.id GLOB 'linux-vm-credential-copy:*' OR source.id GLOB 'account-worker:vm-auth-bootstrap:*'";
+const SELECT: &str = "source.id GLOB 'vm-to-host:*' OR source.id GLOB 'linux-vm-provider-start:*' OR source.id GLOB 'linux-vm-credential-copy:*' OR source.id GLOB 'account-worker:vm-auth-bootstrap:*'";
 
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -95,6 +95,31 @@ fn owner(
 }
 
 fn migrate(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()> {
+    if let Some(root) = row.id.strip_prefix("vm-to-host:") {
+        let reply: studio_runtime_schema::persistence::VmToHostReply = row.json(SOURCES[0])?;
+        let expected = crate::sha256_hex(
+            crate::python_json(&json!({"operation":"vm-to-host","id":reply.id})).as_bytes(),
+        );
+        if root.is_empty()
+            || reply.id.is_empty()
+            || reply.execution_mode != "native"
+            || reply.workspace_mode != "shared"
+            || row.signature != expected
+        {
+            return Err(fail(row));
+        }
+        return import_result(
+            tx,
+            &row.id,
+            &row.signature,
+            &ResultEnvelope {
+                actor: Some("owner-api".into()),
+                reply,
+                references: Vec::new(),
+            },
+            cutover,
+        );
+    }
     if let Some(hash) = row.id.strip_prefix("linux-vm-credential-copy:") {
         if hash.len() != 48
             || row.signature.len() != 64
@@ -364,6 +389,43 @@ mod tests {
         tx.execute_batch("CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL);CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL)").expect("sources");
         tx.commit().expect("commit");
         db
+    }
+    #[test]
+    fn move_to_host_legacy_reply_is_imported_for_exact_replay() {
+        let mut db = database();
+        let tx = db.transaction().expect("transaction");
+        let reply = json!({"id":"agent","executionMode":"native","workspaceMode":"shared","cwd":"/project","movedAgents":["agent"]});
+        let signature = crate::sha256_hex(
+            crate::python_json(&json!({"operation":"vm-to-host","id":"agent"})).as_bytes(),
+        );
+        tx.execute(
+            "INSERT INTO runtime_operation_receipts VALUES(?1,?2,?3)",
+            params!["vm-to-host:legacy", signature, reply.to_string()],
+        )
+        .unwrap();
+        let cp = MigrationCheckpoint::begin(&tx, Family.id(), SOURCES[0], 1000).unwrap();
+        Family.move_batch(&tx, SOURCES[0], &cp).unwrap();
+        let saved = crate::request_results::RequestResults::replay(
+            &tx,
+            "vm-to-host:legacy",
+            &signature,
+            1001,
+        )
+        .unwrap()
+        .unwrap();
+        let envelope: ResultEnvelope<studio_runtime_schema::persistence::VmToHostReply> =
+            serde_json::from_str(&saved.result).unwrap();
+        assert_eq!(envelope.reply.id, "agent");
+        assert_eq!(envelope.reply.moved_agents, ["agent"]);
+        assert!(
+            crate::request_results::RequestResults::replay(
+                &tx,
+                "vm-to-host:legacy",
+                "different",
+                1001
+            )
+            .is_err()
+        );
     }
     #[test]
     fn receipt_vm_provider_obsolete_launch_unknown_never_becomes_not_sent() {

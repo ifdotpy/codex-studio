@@ -1556,10 +1556,6 @@
       "fingerprint": "4bf8ba4d2d21bb908196f15eaefd3d0645dd3c0c1402a54fda399ebc3668eae8:1"
     },
     {
-      "file": "workspaces/runtime/packages/runtime-process/tests/supervisor/deadlines.rs",
-      "fingerprint": "b012ad0b917246a4c0cfe10d02252181d2e62c26c30a66b83e82d67dac16fa30:0"
-    },
-    {
       "file": "workspaces/runtime/packages/runtime-providers/src/codec.rs",
       "fingerprint": "312911564fb4a1d9dd6e1e8a6c33cf1ce2caa3faa28eed0984f1e532a0fe6db9:0"
     },
@@ -2268,10 +2264,6 @@
       "fingerprint": "a8a2929f25fa5a52e86b1aaa53c30a886d25438e0ca884d8e019bc756c5bfd99:0"
     },
     {
-      "file": "workspaces/runtime/apps/runtime-server/src/account_registry.rs",
-      "fingerprint": "a8a2929f25fa5a52e86b1aaa53c30a886d25438e0ca884d8e019bc756c5bfd99:0"
-    },
-    {
       "file": "workspaces/runtime/apps/runtime-server/src/host_runtime.rs",
       "fingerprint": "a8a2929f25fa5a52e86b1aaa53c30a886d25438e0ca884d8e019bc756c5bfd99:0"
     },
@@ -2366,18 +2358,6 @@
     {
       "file": "workspaces/runtime/packages/runtime-http/tests/retained_worktrees.rs",
       "fingerprint": "a8a2929f25fa5a52e86b1aaa53c30a886d25438e0ca884d8e019bc756c5bfd99:0"
-    },
-    {
-      "file": "workspaces/runtime/packages/runtime-process/src/supervisor_child.rs",
-      "fingerprint": "a8a2929f25fa5a52e86b1aaa53c30a886d25438e0ca884d8e019bc756c5bfd99:0"
-    },
-    {
-      "file": "workspaces/runtime/packages/runtime-process/tests/supervisor/deadlines.rs",
-      "fingerprint": "a8a2929f25fa5a52e86b1aaa53c30a886d25438e0ca884d8e019bc756c5bfd99:0"
-    },
-    {
-      "file": "workspaces/runtime/packages/runtime-process/tests/supervisor/deadlines.rs",
-      "fingerprint": "a8a2929f25fa5a52e86b1aaa53c30a886d25438e0ca884d8e019bc756c5bfd99:1"
     },
     {
       "file": "workspaces/runtime/packages/runtime-process/tests/supervisor_v2.rs",
@@ -2797,42 +2777,6 @@
       "fingerprint": "632f99f99f5300ca136cf77c004d141e7214b2307bb4d5ddc836505ddb4c1923:0"
     },
     {
-      "file": "workspaces/runtime/apps/layr/crates/layr-model/examples/index_bench.rs",
-      "fingerprint": "7e6f74fb7ef5acdded9d3d0f18e0c756e745e11f3931e45483bcd1f8137502e5:0"
-    },
-    {
-      "file": "workspaces/runtime/apps/layr/crates/layr-model/examples/index_bench.rs",
-      "fingerprint": "f3ccf033be3a1fa0ad592e6d0f2d87e4153e7eb0292b1a561deb1a25618bb9ea:0"
-    },
-    {
-      "file": "workspaces/runtime/apps/layr/crates/layr-model/tests/index.rs",
-      "fingerprint": "20d4f95f55ccb54f49b18087f3e1eba9563f2f91bd67eba37e037c36d4046097:0"
-    },
-    {
-      "file": "workspaces/runtime/apps/layr/crates/layr-model/tests/index.rs",
-      "fingerprint": "65d574016a827c9af25fde6f4ba91b0662d08ade4bbc1d86886df36187bf2abd:0"
-    },
-    {
-      "file": "workspaces/runtime/apps/layr/crates/layr-model/tests/index.rs",
-      "fingerprint": "a4d0798b97148592378b96805da61edb32a90dd9f7d5cfaa05f810b56b0dcc7f:0"
-    },
-    {
-      "file": "workspaces/runtime/apps/layr/src/cmd/replicate.rs",
-      "fingerprint": "8c247275bc45fe986c5c87492f84d1144dc2d7dc94d61295715420a4f04c0454:0"
-    },
-    {
-      "file": "workspaces/runtime/apps/layr/src/store_remote/legacy.rs",
-      "fingerprint": "ee8a3166c521f95b254620245f53f0af152e6b397ce65422bb7008fafb7ca0a7:0"
-    },
-    {
-      "file": "workspaces/runtime/apps/layr/src/store_remote/writer.rs",
-      "fingerprint": "92b710c6e9a9fa4de762549ef5bd66146fc67b85698319c708af85c8b7aaab06:0"
-    },
-    {
-      "file": "workspaces/runtime/apps/layr/src/store_remote/writer.rs",
-      "fingerprint": "9820bb674e3934b10ec1d4902c8f67767f110cf50a9f48c36c5d0a30703aeeda:0"
-    },
-    {
       "file": "workspaces/runtime/packages/runtime-http/src/routes/agent_management.rs",
       "fingerprint": "3996adf15d9b3ae4148a33e47f14a9cc69f904777e4266585f558b7405ff61a5:0"
     },
@@ -3113,14 +3057,6 @@
     {
       "file": "workspaces/client/packages/client-core/src/backend.rs",
       "fingerprint": "96259e540b3f5f319eb30da96b6ace77a3210c3aec2fbcbe9e5a111aa6d494b0:0"
-    },
-    {
-      "file": "workspaces/runtime/apps/layr/crates/layr-model/src/probes.rs",
-      "fingerprint": "4108ab7e58dab40efa43ec4f3d93bf014f33b7abf5489689179d503500b04f32:0"
-    },
-    {
-      "file": "workspaces/runtime/apps/layr/src/probes.rs",
-      "fingerprint": "4108ab7e58dab40efa43ec4f3d93bf014f33b7abf5489689179d503500b04f32:0"
     },
     {
       "file": "workspaces/runtime/packages/runtime-services/src/analytics_history_schedule.rs",
@@ -4138,14 +4074,6 @@
     {
       "file": "workspaces/client/apps/web/src/components/conversation-results/conversationResultModel.ts",
       "fingerprint": "f01e944d16680ca56e4af149b78b271b61ed1b8c6e57b242a5f49da9fc73f7b8:0"
-    },
-    {
-      "file": "workspaces/client/apps/web/src/components/models/modelWhitelist.ts",
-      "fingerprint": "0bc5baaf3c460ffb6ada678fa5c341c4a9277a5e382adcede629fe2bea254ae1:0"
-    },
-    {
-      "file": "workspaces/client/apps/web/src/components/removeSendingMessages.test.ts",
-      "fingerprint": "857b9923deed044644ba41cc33c29625e96722781c5f75cc6570999b26618a6d:0"
     },
     {
       "file": "workspaces/client/apps/web/src/native/legacyDrafts.ts",

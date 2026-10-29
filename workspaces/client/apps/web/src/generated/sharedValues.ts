@@ -7,10 +7,8 @@ export const SHELL_POLICY_DEFAULTS = {
 };
 export const SHELL_PRESSURE_IDLE_MINUTES = 30;
 export const MAX_SAFE_INTEGER = 9007199254740991;
-export const MODEL_WHITELIST_PREFERENCE_KEY = "studio-model-whitelist-v1";
-export const MODEL_WHITELIST_MAX_KEYS = 2048;
-export const MODEL_WHITELIST_KEY_MAX_CODEPOINTS = 512;
-export const MODEL_WHITELIST_KEY_PATTERN = "^[a-z][a-z0-9_-]*:\\S+$";
+export const MODEL_CHOICES_PREFERENCE_KEY = "studio-model-choices-v1";
+export const RETIRED_MODEL_WHITELIST_KEY = "studio-model-whitelist-v1";
 export const SYNC_TERMINAL_STREAM_MAX_CHARS = 16384;
 export const MAX_SYNC_RESOURCE_COUNT = 256;
 export const SYNC_ENTITY_TRANSFER_ID_MAX_CODEPOINTS = 128;

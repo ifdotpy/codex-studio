@@ -236,16 +236,6 @@ impl Backend {
             .send()
             .await
             .map_err(Self::network)?;
-        let response = if response.status().as_u16() == 404 {
-            self.client
-                .get(self.url("/api/state?view=chat")?)
-                .timeout(Duration::from_secs(15))
-                .send()
-                .await
-                .map_err(Self::network)?
-        } else {
-            response
-        };
         let value = Self::decode(response).await?;
         let token = value
             .get("token")
@@ -659,10 +649,6 @@ pub(crate) mod tests {
         ] {
             assert!(backend.url(path).is_err(), "{path}");
         }
-        assert_eq!(
-            backend.url("/api/state?view=chat").unwrap().as_str(),
-            "http://127.0.0.1:4620/api/state?view=chat"
-        );
     }
 
     pub(crate) async fn read_http(stream: &mut tokio::net::TcpStream) -> (String, Value) {
@@ -802,6 +788,35 @@ pub(crate) mod tests {
         assert!(response.error.is_none());
         assert_eq!(response.result.unwrap()["status"], 204);
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_missing_session_route_reports_its_own_error_without_a_state_probe() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut session, _) = listener.accept().await.unwrap();
+            assert!(
+                read_http(&mut session)
+                    .await
+                    .0
+                    .starts_with("GET /api/session ")
+            );
+            let body = r#"{"error":"Not found"}"#;
+            let response = format!(
+                "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            session.write_all(response.as_bytes()).await.unwrap();
+        });
+        let error = Backend::new(&origin)
+            .unwrap()
+            .prepare_session()
+            .await
+            .unwrap_err();
+        server.await.unwrap();
+        assert_eq!(error.status, Some(404));
+        assert_eq!(error.message, "Not found");
     }
 
     #[tokio::test]

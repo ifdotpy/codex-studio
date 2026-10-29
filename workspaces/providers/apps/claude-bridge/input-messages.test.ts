@@ -33,6 +33,36 @@ test("unmarked input retains the legacy user message shape", async () => {
   );
 });
 
+// Claude CLI marks a task-notification message as "NOT USER INPUT". When it
+// followed the human text, the model applied that mark to the human message.
+test("the human text is the last message, after the Studio event", async () => {
+  const messages = sdkInputMessages(
+    "session",
+    "input",
+    await inputGroups(
+      [
+        { type: "text", text: "question", inputOrigin: "human" },
+        { type: "text", text: "receipt time", inputOrigin: "studio_event" },
+      ],
+      convert,
+    ),
+    // @ts-expect-error The identity callback deliberately bypasses native UUID encoding.
+    (id) => id,
+  );
+  assert.deepEqual(
+    messages.map((message) => [
+      message.uuid,
+      message.message.content,
+      "origin" in message,
+      message.shouldQuery,
+    ]),
+    [
+      ["input:part:0", [{ type: "text", text: "receipt time" }], true, false],
+      ["input", [{ type: "text", text: "question" }], false, undefined],
+    ],
+  );
+});
+
 test("unknown input origins fail before conversion", async () => {
   let converted = false;
   await assert.rejects(

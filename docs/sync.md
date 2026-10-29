@@ -1,8 +1,13 @@
 # UI synchronization
 
-[`workspaces/runtime/apps/server/src/codex_sync.py`](../workspaces/runtime/apps/server/src/codex_sync.py) owns the production
-`SyncStore`, constructed by [`workspaces/runtime/apps/server/src/studio_api/context.py`](../workspaces/runtime/apps/server/src/studio_api/context.py).
-The HTTP integration is in [`workspaces/runtime/apps/server/src/studio_api/sync/router.py`](../workspaces/runtime/apps/server/src/studio_api/sync/router.py).
+[`workspaces/runtime/packages/runtime-store/src/repositories/sync_documents.rs`](../workspaces/runtime/packages/runtime-store/src/repositories/sync_documents.rs)
+owns the durable sync document and entity tables (schema in
+[`sync_schema.sql`](../workspaces/runtime/packages/runtime-store/src/sync_schema.sql)).
+[`sync_policy.rs`](../workspaces/runtime/packages/runtime-services/src/sync_policy.rs) owns the retention
+and window policy. The HTTP integration is in
+[`routes/sync.rs`](../workspaces/runtime/packages/runtime-http/src/routes/sync.rs),
+[`routes/sync_documents.rs`](../workspaces/runtime/packages/runtime-http/src/routes/sync_documents.rs),
+and [`routes/sync_stream.rs`](../workspaces/runtime/packages/runtime-http/src/routes/sync_stream.rs).
 The client and server wire contract is in [`sync-protocol.md`](sync-protocol.md).
 
 The store serves the entity-based workspace projection, sparse transcript
@@ -41,14 +46,11 @@ sequences. Sparse item deltas and the existing tombstone floor remain intact.
 New transcript projections and browser draft writes still require a durable
 write; saturated physical storage can delay those commits.
 
-Runtime tool receipts and notification effects share writer-first admission in
-[`Runtime.write_db`](../workspaces/runtime/apps/server/src/codex_runtime.py).
-Writer contention waits outside the runtime state lock. After admission, state
-changes and their commit retain the lock, and a failed body or uncertain commit
-is never retried by the admission helper. Historical usage capture also uses
-writer-first admission and saves one bounded history page per transaction,
-then advances the separate analytics checkpoint. Application and commit retain
-the runtime lock so a whole-record lifecycle update cannot erase budget fields.
+Runtime tool receipts and notification effects write through the serialized writer lane of
+[`RuntimeStore`](../workspaces/runtime/packages/runtime-store/src/lib.rs) (`transaction_with`).
+Historical usage capture also
+uses the writer lane and saves one bounded history page per transaction,
+then advances the separate analytics checkpoint.
 Exact response IDs make replay
 safe after a lost response or failed analytics checkpoint. Runtime WAL and
 `synchronous=FULL` remain unchanged.

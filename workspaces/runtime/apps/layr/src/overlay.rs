@@ -61,6 +61,158 @@ impl Mode {
     }
 }
 
+/// How a merge combines a follow overlay (`overlay.<name>.merge`, docs/cache-overlays.md).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MergeKind {
+    /// A three-way merge with conflicts, as in the shared set.
+    #[default]
+    ThreeWay,
+    /// Every file of both sides; the incoming side wins on the same path; no conflicts.
+    UnionTheirs,
+}
+
+impl MergeKind {
+    pub fn parse(s: &str) -> Option<MergeKind> {
+        match s {
+            "three-way" => Some(MergeKind::ThreeWay),
+            "union-theirs" => Some(MergeKind::UnionTheirs),
+            _ => None,
+        }
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            MergeKind::ThreeWay => "three-way",
+            MergeKind::UnionTheirs => "union-theirs",
+        }
+    }
+}
+
+/// The properties of an overlay (docs/cache-overlays.md, section 2). Each one is the setting
+/// `overlay.<name>.<property>`; a missing setting is the default, which keeps the behaviour of
+/// overlays without properties.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Props {
+    /// The number of states each overlay line keeps on its first-parent chain. None: all.
+    pub history: Option<u32>,
+    /// The overlay files are not in status, diff and add; a named save takes them from the
+    /// working folder.
+    pub quiet: bool,
+    pub merge: MergeKind,
+    /// `gc lru:<size>`: the size limit in bytes of the overlay in each working folder.
+    pub gc_lru: Option<u64>,
+}
+
+/// The property names, in the order that `overlay list` shows them.
+pub const PROPS: &[&str] = &["history", "quiet", "merge", "gc"];
+
+/// `all`, `last` or a count of states (at least 1).
+pub fn parse_history(s: &str) -> Option<Option<u32>> {
+    match s {
+        "all" => Some(None),
+        "last" => Some(Some(1)),
+        n => n.parse::<u32>().ok().filter(|n| *n > 0).map(Some),
+    }
+}
+
+/// A size with an optional unit: `500M`, `20G`, `1T`, `4096` (bytes). Units are powers of 1024.
+pub fn parse_size(s: &str) -> Option<u64> {
+    let s = s.trim();
+    let (num, mult) = match s.char_indices().last()? {
+        (i, 'K' | 'k') => (&s[..i], 1u64 << 10),
+        (i, 'M' | 'm') => (&s[..i], 1 << 20),
+        (i, 'G' | 'g') => (&s[..i], 1 << 30),
+        (i, 'T' | 't') => (&s[..i], 1 << 40),
+        _ => (s, 1),
+    };
+    num.parse::<u64>().ok().filter(|n| *n > 0).and_then(|n| n.checked_mul(mult))
+}
+
+/// `none` or `lru:<size>`. The outer None is an invalid value.
+pub fn parse_gc(s: &str) -> Option<Option<u64>> {
+    match s {
+        "none" => Some(None),
+        _ => s.strip_prefix("lru:").and_then(parse_size).map(Some),
+    }
+}
+
+impl Props {
+    /// The setting value of one property (`PROPS`); null for the default.
+    pub fn value(&self, prop: &str) -> serde_json::Value {
+        use serde_json::json;
+        match prop {
+            "history" => self.history.map(|n| json!(n)).unwrap_or(json!(null)),
+            "quiet" => {
+                if self.quiet {
+                    json!(true)
+                } else {
+                    json!(null)
+                }
+            }
+            "merge" => {
+                if self.merge == MergeKind::ThreeWay {
+                    json!(null)
+                } else {
+                    json!(self.merge.name())
+                }
+            }
+            "gc" => self.gc_lru.map(|n| json!(format!("lru:{n}"))).unwrap_or(json!(null)),
+            _ => json!(null),
+        }
+    }
+
+    /// Read the properties from the settings: `get(<property>)` gives `overlay.<name>.<property>`.
+    /// An unknown value is the default, so a newer record never breaks an older binary's reads.
+    pub fn from_settings(get: impl Fn(&str) -> Option<serde_json::Value>) -> Props {
+        let mut p = Props::default();
+        if let Some(v) = get("history") {
+            p.history = v.as_u64().and_then(|n| u32::try_from(n).ok()).filter(|n| *n > 0);
+        }
+        p.quiet = get("quiet").and_then(|v| v.as_bool()).unwrap_or(false);
+        p.merge = get("merge").and_then(|v| v.as_str().and_then(MergeKind::parse)).unwrap_or_default();
+        p.gc_lru = get("gc").and_then(|v| v.as_str().and_then(parse_gc)).flatten();
+        p
+    }
+
+    /// The properties that differ from the default, as `overlay list` shows them.
+    pub fn describe(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        match self.history {
+            Some(1) => out.push("history=last".to_string()),
+            Some(n) => out.push(format!("history={n}")),
+            None => {}
+        }
+        if self.quiet {
+            out.push("quiet".into());
+        }
+        if self.merge != MergeKind::ThreeWay {
+            out.push(format!("merge={}", self.merge.name()));
+        }
+        if let Some(n) = self.gc_lru {
+            out.push(format!("gc=lru:{}", show_size(n)));
+        }
+        out
+    }
+
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "history": self.history.map(|n| serde_json::json!(n)).unwrap_or(serde_json::json!("all")),
+            "quiet": self.quiet,
+            "merge": self.merge.name(),
+            "gc": self.gc_lru.map(|n| format!("lru:{n}")).unwrap_or_else(|| "none".into()),
+        })
+    }
+}
+
+/// A byte count with the largest unit that divides it (`20G`, `512M`, `4096`).
+pub fn show_size(n: u64) -> String {
+    for (unit, shift) in [("T", 40), ("G", 30), ("M", 20), ("K", 10)] {
+        if n >= 1 << shift && n % (1 << shift) == 0 {
+            return format!("{}{unit}", n >> shift);
+        }
+    }
+    n.to_string()
+}
+
 /// An overlay as the project knows it (setting `overlay.<name>`).
 #[derive(Clone, Debug)]
 pub struct Info {
@@ -430,6 +582,53 @@ impl<'a> Repo<'a> {
     pub fn need_overlay(&self, name: &str) -> Result<Info> {
         self.overlay_info(name)?
             .ok_or_else(|| crate::cmd::exit(1, format!("error: no overlay '{name}' in project {}", self.p.name)))
+    }
+
+    /// The setting `overlay.<name>.<suffix>`: in the project's records, or for a hidden overlay
+    /// in the overlay's own records.
+    pub fn overlay_setting(&self, name: &str, suffix: &str) -> Result<Option<serde_json::Value>> {
+        let key = format!("overlay.{name}.{suffix}");
+        if self.need_overlay(name)?.hidden {
+            return self.overlay_project(name)?.db.overlay_config(&key);
+        }
+        self.p.db.overlay_config(&key)
+    }
+
+    /// The properties of an overlay (docs/cache-overlays.md, section 2).
+    pub fn overlay_props(&self, name: &str) -> Result<Props> {
+        let mut values = BTreeMap::new();
+        for prop in PROPS {
+            if let Some(v) = self.overlay_setting(name, prop)? {
+                values.insert(*prop, v);
+            }
+        }
+        Ok(Props::from_settings(|k| values.get(k).cloned()))
+    }
+
+    /// The files of the quiet overlays of a line's stack and the paths that `overlay move` sends
+    /// to them: `status`, `diff` and `add` leave them out, and a named save takes them from the
+    /// working folder.
+    pub fn quiet_paths(&self, line: &Line) -> Result<BTreeSet<String>> {
+        let mut out = BTreeSet::new();
+        if self.p.is_overlay() {
+            return Ok(out);
+        }
+        let layers = self.layers(line)?;
+        let mut quiet = BTreeSet::new();
+        for l in &layers {
+            if self.overlay_info(&l.overlay)?.is_some() && self.overlay_props(&l.overlay)?.quiet {
+                quiet.insert(l.overlay.clone());
+                if let Some(root) = self.layer_root(l) {
+                    out.extend(files_of(&root)?);
+                }
+            }
+        }
+        for (p, o) in self.pending_moves(line) {
+            if quiet.contains(&o) {
+                out.insert(p);
+            }
+        }
+        Ok(out)
     }
 
     /// Names of the overlays of this project on this machine.
@@ -876,6 +1075,65 @@ impl<'a> Repo<'a> {
         }
     }
 
+    /// Apply `history=<n>` to overlay `name`: keep the newest n states on the first-parent chain
+    /// of each overlay line, the states that lines of the project show, and the empty first
+    /// state; delete the others. Their records stay (a `gc` record in the overlay names them).
+    /// The caller holds the project lock and no lock of the overlay. Returns the deleted states.
+    pub fn apply_history(&self, ctx: &Ctx, name: &str) -> Result<Vec<String>> {
+        let info = match self.overlay_info(name)? {
+            Some(i) => i,
+            None => return Ok(Vec::new()),
+        };
+        let keep_n = match self.overlay_props(name)?.history {
+            Some(n) => n as usize,
+            None => return Ok(Vec::new()),
+        };
+        let orepo = self.overlay_repo(name)?;
+        let _lock = orepo.p.lock()?;
+        let mut keep: BTreeSet<String> = BTreeSet::from([info.root.clone()]);
+        // A cache overlay keeps nothing for a line that is gone (docs/cache-overlays.md).
+        let cache = self.overlay_setting(name, "cache")?.and_then(|v| v.as_bool()).unwrap_or(false);
+        let live: BTreeSet<String> = self.lines()?.into_iter().map(|l| format!("line-{}", l.id)).collect();
+        for ol in orepo.p.db.lines()? {
+            if cache && !live.contains(&ol.name) {
+                continue;
+            }
+            let mut at = Some(ol.head.clone());
+            for _ in 0..keep_n {
+                let Some(id) = at.take() else { break };
+                at = orepo.p.db.state(&id)?.and_then(|s| s.parents.first().cloned());
+                keep.insert(id);
+            }
+        }
+        for line in self.lines()? {
+            for l in self.layers(&line)? {
+                if l.overlay == name {
+                    keep.insert(l.state);
+                }
+            }
+        }
+        let mut deleted = Vec::new();
+        for (id, _) in orepo.p.db.present_states()? {
+            if !keep.contains(&id) && orepo.p.delete_state(&id)? {
+                deleted.push(id);
+            }
+        }
+        if !deleted.is_empty() {
+            let mut rec = Record::new("gc");
+            rec.data = serde_json::json!({"deleted": deleted, "history": keep_n});
+            orepo.commit_record(ctx, rec)?;
+        }
+        Ok(deleted)
+    }
+
+    /// `apply_history` after an overlay line moved. A failure leaves old states on the disk for
+    /// the next `gc`; it never fails the operation that made the new state.
+    pub fn after_overlay_move(&self, ctx: &Ctx, name: &str) {
+        if let Err(e) = self.apply_history(ctx, name) {
+            eprintln!("warning: overlay '{name}': old states stay until the next gc: {e:#}");
+        }
+    }
+
     /// The layers a new line of `owner` takes from the line it starts from: the overlays of the
     /// source that the owner reads. A follow overlay gets a new overlay line at the source's
     /// state; a shared one uses the owner's line (made at the source's state when missing).
@@ -945,6 +1203,48 @@ pub fn next_state(
         cache_shared: false,
         cache_platform: None,
     })
+}
+
+/// The `union-theirs` merge of an overlay line (docs/cache-overlays.md, section 5): a writable
+/// snapshot of `ours`, every file of `theirs` copied over it (the incoming file wins), read-only.
+/// A file of `ours` where `theirs` has a folder, and the files of `ours` below a path where
+/// `theirs` has a file, go. No conflicts. No record is written.
+pub fn union_state(orepo: &Repo, ctx: &Ctx, ol: &Line, ours: &str, theirs: &str, message: &str) -> Result<StateRec> {
+    let theirs_root = orepo.state_root(theirs)?;
+    let ours_files: BTreeSet<String> = files_of(&orepo.state_root(ours)?)?.into_iter().collect();
+    let ops = union_ops(&ours_files, files_of(&theirs_root)?);
+    next_state(
+        orepo,
+        ctx,
+        ours,
+        &theirs_root,
+        &ops,
+        orepo.own(ol),
+        vec![ours.to_string(), theirs.to_string()],
+        message,
+        Some(&ol.id),
+    )
+}
+
+/// The changes that put every file of `theirs` over a tree with the files `ours`.
+pub(crate) fn union_ops(ours: &BTreeSet<String>, theirs: Vec<String>) -> Ops {
+    let mut ops = Ops::default();
+    for p in theirs {
+        let mut at = 0;
+        while let Some(i) = p[at..].find('/') {
+            let parent = &p[..at + i];
+            if ours.contains(parent) {
+                ops.dels.insert(parent.to_string());
+            }
+            at += i + 1;
+        }
+        let below = format!("{p}/");
+        for q in ours.range(below.clone()..).take_while(|q| q.starts_with(&below)) {
+            ops.dels.insert(q.clone());
+        }
+        ops.puts.insert(p);
+    }
+    ops
 }
 
 /// A record in an overlay that moves an overlay line to `head` (with the new states it names).
@@ -1128,6 +1428,9 @@ pub fn commit_layers(
     }
     let fds = if summary { crate::diff::file_diffs(&base, &new_tree.path, &s.list)? } else { Vec::new() };
     repo.install_base(line, new_tree, &new_head, &new_layers)?;
+    for (name, _) in &overlays {
+        repo.after_overlay_move(ctx, name);
+    }
     Ok(Some(Committed { shared, overlays, fds }))
 }
 
@@ -1168,6 +1471,46 @@ mod tests {
         assert_eq!(Mode::parse("follow"), Some(Mode::Follow));
         assert_eq!(Mode::parse("shared").map(|m| m.name()), Some("shared"));
         assert_eq!(Mode::parse("ephemeral"), None);
+    }
+
+    #[test]
+    fn union_takes_every_incoming_file_and_clears_type_changes() {
+        let ours: BTreeSet<String> = ["a.txt", "keep.txt", "dir", "tree/x", "tree/y"].iter().map(|s| s.to_string()).collect();
+        let ops = union_ops(&ours, vec!["a.txt".into(), "dir/inner".into(), "tree".into(), "new/z".into()]);
+        assert!(ops.moves.is_empty());
+        let puts: Vec<&str> = ops.puts.iter().map(|s| s.as_str()).collect();
+        assert_eq!(puts, ["a.txt", "dir/inner", "new/z", "tree"]);
+        let dels: Vec<&str> = ops.dels.iter().map(|s| s.as_str()).collect();
+        assert_eq!(dels, ["dir", "tree/x", "tree/y"], "keep.txt stays: a union never deletes a file of ours");
+    }
+
+    #[test]
+    fn properties_parse_store_and_read_back() {
+        assert_eq!(parse_history("all"), Some(None));
+        assert_eq!(parse_history("last"), Some(Some(1)));
+        assert_eq!(parse_history("3"), Some(Some(3)));
+        assert_eq!(parse_history("0"), None);
+        assert_eq!(parse_history("x"), None);
+        assert_eq!(parse_size("20G"), Some(20 << 30));
+        assert_eq!(parse_size("512m"), Some(512 << 20));
+        assert_eq!(parse_size("4096"), Some(4096));
+        assert_eq!(parse_size("0"), None);
+        assert_eq!(parse_size("G"), None);
+        assert_eq!(parse_gc("none"), Some(None));
+        assert_eq!(parse_gc("lru:1G"), Some(Some(1 << 30)));
+        assert_eq!(parse_gc("lru"), None);
+        assert_eq!(MergeKind::parse("union-theirs"), Some(MergeKind::UnionTheirs));
+        assert_eq!(MergeKind::parse("ours"), None);
+        let p = Props { history: Some(1), quiet: true, merge: MergeKind::UnionTheirs, gc_lru: Some(20 << 30) };
+        let values: BTreeMap<&str, serde_json::Value> = PROPS.iter().map(|k| (*k, p.value(k))).collect();
+        assert_eq!(Props::from_settings(|k| values.get(k).cloned().filter(|v| !v.is_null())), p);
+        assert_eq!(p.describe(), ["history=last", "quiet", "merge=union-theirs", "gc=lru:20G"]);
+        // Defaults are no settings at all, and unknown values read as defaults.
+        assert!(PROPS.iter().all(|k| Props::default().value(k).is_null()));
+        let odd = Props::from_settings(|k| Some(serde_json::json!(if k == "history" { "many" } else { "?" })));
+        assert_eq!(odd, Props::default());
+        assert_eq!(show_size(1536), "1536");
+        assert_eq!(show_size(3 << 20), "3M");
     }
 
     #[test]

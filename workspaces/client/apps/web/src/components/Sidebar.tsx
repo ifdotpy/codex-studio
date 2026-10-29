@@ -63,6 +63,10 @@ import {
 import SidebarRow from "./SidebarRow";
 import { needsYou, projectStateCounts } from "./sidebar/fleet";
 import ProjectStateCounts from "./sidebar/ProjectStateCounts";
+import RemoteProjects, {
+  remoteProjectGroups,
+  type RemoteProjectList,
+} from "./sidebar/RemoteProjects";
 import { SidebarWarningsTarget } from "./SidebarWarnings";
 import {
   activeLayrReadiness,
@@ -131,6 +135,8 @@ export type SidebarProps = {
   newChat: (path?: string, folder?: string) => void;
   newSharedChat?: (path?: string) => void;
   addProject: () => void;
+  /** Projects of paired servers, listed read-only below this server's projects. */
+  remoteProjects?: RemoteProjectList;
   changeProject: (agent: Agent) => void;
   projectAccount: (path: string) => void;
   projectFolders?: (path: string) => void;
@@ -856,6 +862,10 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
     [projectOrderKey, sorting.order],
   );
   const allProjectGroups = projectPaths.map((path) => groupMap.get(path)!);
+  const remoteGroups = useMemo(
+    () => remoteProjectGroups(p.remoteProjects, query),
+    [p.remoteProjects, query],
+  );
   const projectGroups = allProjectGroups.filter(
     (group) =>
       (group.registered ||
@@ -1991,7 +2001,8 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
             </section>
           );
         })}
-        {!filtered.length && !projectGroups.length && (
+        <RemoteProjects groups={remoteGroups} />
+        {!filtered.length && !projectGroups.length && !remoteGroups.length && (
           <p className="notice">
             {query ? "No matching chats." : "No chats yet."}
           </p>

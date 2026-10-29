@@ -11,7 +11,7 @@ pub(super) struct Source {
     source: dispatch2::DispatchRetained<DispatchSource>,
 }
 impl Source {
-    pub(super) fn new(critical: Arc<AtomicBool>) -> Self {
+    pub(super) fn new(critical: &Arc<AtomicBool>) -> Self {
         let queue = dispatch2::DispatchQueue::new("studio.shell-memory-pressure", None);
         let mask = (MemoryLevel::DISPATCH_MEMORYPRESSURE_NORMAL.0
             | MemoryLevel::DISPATCH_MEMORYPRESSURE_WARN.0
@@ -28,7 +28,7 @@ impl Source {
         };
         let context = Box::new(PressureContext {
             source: std::ptr::from_ref(&*source),
-            critical: Arc::clone(&critical),
+            critical: Arc::clone(critical),
         });
         // SAFETY: The context remains owned by the source until its cancel
         // handler runs, after its last event handler completes.

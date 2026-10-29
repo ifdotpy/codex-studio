@@ -120,7 +120,8 @@ mod registry_hints {
                             | ObservedTable::RuntimeRequests
                             | ObservedTable::RuntimeToolRequests
                             | ObservedTable::AccountState
-                            | ObservedTable::AnalyticsProjection => return self.wake.notify_one(),
+                            | ObservedTable::AnalyticsProjection
+                            | ObservedTable::Projects => return self.wake.notify_one(),
                         };
                         if rows.len() + ids.len() > MAX_PENDING_ROW_HINTS {
                             rows.clear();
@@ -2119,7 +2120,7 @@ mod bounded_reconcile_tests {
                         vm_auth_bootstrap: None,
                         native_release: None,
                         id: id.clone(),
-                        root_id: id.clone(),
+                        root_id: id,
                         epoch: 1,
                         status: AgentStatus::Queued,
                         extra: BTreeMap::from([
