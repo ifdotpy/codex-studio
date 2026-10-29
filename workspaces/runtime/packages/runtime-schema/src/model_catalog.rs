@@ -162,12 +162,35 @@ impl ModelCatalog {
     }
 }
 
+/// A user's explicit model picker choice. Pickers offer every model that is
+/// not blacklisted, so a model new to the catalog starts untouched and enabled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ModelChoice {
+    Untouched,
+    Whitelisted,
+    Blacklisted,
+}
+
+/// Server preference value keyed by provider-qualified model identity; an
+/// absent key is untouched. The schema is the server validator.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[schemars(extend(
+    "maxProperties" = crate::shared_values::MODEL_CHOICES_MAX_KEYS,
+    "propertyNames" = {
+        "pattern": crate::shared_values::MODEL_CHOICE_KEY_PATTERN,
+        "maxLength": crate::shared_values::MODEL_CHOICE_KEY_MAX_CODEPOINTS,
+    },
+))]
+pub struct ModelChoices(pub std::collections::BTreeMap<String, ModelChoice>);
+
 pub fn schemas() -> Map<String, Value> {
     let mut generator = schemars::generate::SchemaSettings::draft2020_12()
         .for_serialize()
         .with(|settings| settings.definitions_path = "/components/schemas".into())
         .into_generator();
     generator.subschema_for::<ModelCatalog>();
+    generator.subschema_for::<ModelChoices>();
     let mut schemas = generator.take_definitions(true);
     // OpenAPI's existing JsonValue owns the recursive opaque JSON leaf.
     for schema in schemas.values_mut() {

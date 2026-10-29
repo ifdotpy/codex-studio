@@ -30062,6 +30062,27 @@
         "title": "ModelCatalogResponse",
         "type": "object"
       },
+      "ModelChoice": {
+        "description": "A user's explicit model picker choice. Pickers offer every model that is\nnot blacklisted, so a model new to the catalog starts untouched and enabled.",
+        "enum": [
+          "untouched",
+          "whitelisted",
+          "blacklisted"
+        ],
+        "type": "string"
+      },
+      "ModelChoices": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/ModelChoice"
+        },
+        "description": "Server preference value keyed by provider-qualified model identity; an\nabsent key is untouched. The schema is the server validator.",
+        "maxProperties": 2048,
+        "propertyNames": {
+          "maxLength": 512,
+          "pattern": "^[a-z][a-z0-9_-]*:\\S+$"
+        },
+        "type": "object"
+      },
       "ModelEntityDto": {
         "allOf": [
           {

@@ -124,9 +124,9 @@ vi.mock("@mantine/hooks", async (load) => ({
   ...(await load<typeof import("@mantine/hooks")>()),
   useMediaQuery: () => false,
 }));
-vi.mock("../models/modelWhitelist", () => ({
-  useModelWhitelist: () => null,
-  isModelWhitelisted: () => true,
+vi.mock("../models/modelChoices", () => ({
+  useModelChoices: () => ({}),
+  isModelEnabled: () => true,
 }));
 vi.mock("./WorkerModelPicker", async (load) => ({
   ...(await load<typeof import("./WorkerModelPicker")>()),

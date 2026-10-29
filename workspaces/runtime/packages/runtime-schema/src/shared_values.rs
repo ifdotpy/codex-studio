@@ -343,14 +343,16 @@ pub const IDLE_COMPACTION_MAX_LATE_SECONDS: f64 = 60.0;
 /// One-hour prompt cache lifetime, in seconds.
 pub const IDLE_COMPACTION_CACHE_SECONDS: f64 = 3600.0;
 
-/// Server-scoped preference scalar storing enabled provider-qualified model keys.
-pub const MODEL_WHITELIST_PREFERENCE_KEY: &str = "studio-model-whitelist-v1";
-/// Maximum model identities in one explicit whitelist. Unit: keys.
-pub const MODEL_WHITELIST_MAX_KEYS: usize = 2048;
+/// Server-scoped preference storing `model_catalog::ModelChoices`.
+pub const MODEL_CHOICES_PREFERENCE_KEY: &str = "studio-model-choices-v1";
+/// Retired preference that stored an exclusive model allowlist.
+pub const RETIRED_MODEL_WHITELIST_KEY: &str = "studio-model-whitelist-v1";
+/// Maximum model identities in one choice map. Unit: keys.
+pub const MODEL_CHOICES_MAX_KEYS: usize = 2048;
 /// Maximum provider-qualified identity length. Unit: Unicode code points.
-pub const MODEL_WHITELIST_KEY_MAX_CODEPOINTS: usize = 512;
-/// Provider namespace and nonempty model identifier; shared with the renderer validator.
-pub const MODEL_WHITELIST_KEY_PATTERN: &str = r"^[a-z][a-z0-9_-]*:\S+$";
+pub const MODEL_CHOICE_KEY_MAX_CODEPOINTS: usize = 512;
+/// Provider namespace and nonempty model identifier.
+pub const MODEL_CHOICE_KEY_PATTERN: &str = r"^[a-z][a-z0-9_-]*:\S+$";
 
 #[cfg(test)]
 mod tests {

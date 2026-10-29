@@ -4632,10 +4632,6 @@
       "fingerprint": "f01e944d16680ca56e4af149b78b271b61ed1b8c6e57b242a5f49da9fc73f7b8:0"
     },
     {
-      "file": "workspaces/client/apps/web/src/components/models/modelWhitelist.ts",
-      "fingerprint": "0bc5baaf3c460ffb6ada678fa5c341c4a9277a5e382adcede629fe2bea254ae1:0"
-    },
-    {
       "file": "workspaces/client/apps/web/src/native/legacyDrafts.ts",
       "fingerprint": "f4460a93e520362395430f70e9746a214762e88a945eb8538acd252eafbf2678:0"
     },
