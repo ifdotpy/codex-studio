@@ -5,7 +5,9 @@ use crate::{
     protocol::{Request, Response},
 };
 use rusqlite::{Connection, OptionalExtension, params};
-use serde_json::{Value, json};
+use serde_json::Value;
+#[cfg(test)]
+use serde_json::json;
 use std::{
     collections::{BTreeMap, BTreeSet},
     time::{SystemTime, UNIX_EPOCH},
@@ -151,11 +153,24 @@ pub fn view(db: &Connection, workspace: &str) -> Result<DraftSnapshot, String> {
     })
 }
 
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DraftRow {
+    pub new_document_state: Document,
+    pub assumed_master_state: Option<Document>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+pub(crate) struct PendingDrafts {
+    pub rows: Vec<DraftRow>,
+    pub checkpoint: u64,
+}
+
 #[derive(serde::Serialize)]
 #[serde(untagged)]
 enum DraftResult {
     Snapshot(DraftSnapshot),
-    Pending(Value),
+    Pending(PendingDrafts),
 }
 
 fn execute(db: &Connection, request: &Request) -> Result<DraftResult, String> {
@@ -240,7 +255,15 @@ fn execute(db: &Connection, request: &Request) -> Result<DraftResult, String> {
             view(db, workspace).map(DraftResult::Snapshot)
         }
         "drafts.pending" => {
-            let rows=rows(db,workspace)?.into_iter().filter(|(_,_,dirty)|*dirty).take(100).map(|(local,master,_)|json!({"newDocumentState":local,"assumedMasterState":master})).collect::<Vec<_>>();
+            let rows = rows(db, workspace)?
+                .into_iter()
+                .filter(|(_, _, dirty)| *dirty)
+                .take(100)
+                .map(|(local, master, _)| DraftRow {
+                    new_document_state: local,
+                    assumed_master_state: master,
+                })
+                .collect::<Vec<_>>();
             let checkpoint = sql(db
                 .query_row(
                     "SELECT checkpoint FROM client_draft_scopes WHERE workspace=?1",
@@ -249,9 +272,7 @@ fn execute(db: &Connection, request: &Request) -> Result<DraftResult, String> {
                 )
                 .optional())?
             .unwrap_or(0);
-            Ok(DraftResult::Pending(
-                json!({"rows":rows,"checkpoint":checkpoint}),
-            ))
+            Ok(DraftResult::Pending(PendingDrafts { rows, checkpoint }))
         }
         "drafts.receive" => {
             let incoming: Vec<Document> =
@@ -506,6 +527,31 @@ mod tests {
                 .is_none()
         );
     }
+    #[test]
+    fn pending_producer_reads_old_documents_before_emitting_typed_rows() {
+        let mut store = crate::store::Store::open(std::path::Path::new(":memory:")).unwrap();
+        let workspace = "a".repeat(32);
+        let local = json!({"id":"device:room","payload":"{}","seq":7,"legacy":true});
+        let master = json!({"id":"device:room","payload":"{}","seq":3,"_deleted":true,"extra":[1]});
+        store
+            .connection
+            .execute(
+                "INSERT INTO client_draft_branches VALUES(?1,?2,?3,?4,1)",
+                params![
+                    workspace,
+                    "device:room",
+                    local.to_string(),
+                    master.to_string()
+                ],
+            )
+            .unwrap();
+        let pending = command(&mut store, "pending", "drafts.pending", json!({}));
+        assert_eq!(
+            pending["rows"],
+            json!([{"newDocumentState":{"id":"device:room","payload":"{}","seq":7,"_deleted":false},"assumedMasterState":{"id":"device:room","payload":"{}","seq":3,"_deleted":true}}])
+        );
+    }
+
     #[test]
     fn late_push_ack_and_replayed_edit_cannot_erase_newer_text_after_restart() {
         let directory = tempfile::tempdir().unwrap();
