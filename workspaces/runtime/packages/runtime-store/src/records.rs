@@ -1931,9 +1931,12 @@ fn checked_agent_projection(
             let detail = studio_runtime_schema::first_error(AgentRecord::SCHEMA, value)
                 .ok()
                 .flatten();
-            let (pointer, reason) =
-                detail.unwrap_or_else(|| ("/".to_owned(), "record_decode".to_owned()));
-            invalid_agent_field(row_id, &pointer, &reason, Some(value))
+            match detail {
+                Some((pointer, reason)) => {
+                    invalid_agent_field(row_id, &pointer, &reason, Some(value))
+                }
+                None => invalid_agent_field(row_id, "", "record_decode", None),
+            }
         })?;
     if projection.id != row_id {
         return Err(invalid_agent_field(
@@ -2793,7 +2796,7 @@ mod agent_projection_tests {
             .expect("agents");
         db.execute_batch(crate::agent_volatile::agent_volatile_table_sql())
             .expect("volatile");
-        let raw = json!({"id":"a","rootId":"r","epoch":1.0,"status":"future","accountKey":null,
+        let raw = json!({"id":"a","rootId":"r","epoch":1,"status":"future","accountKey":null,
             "activity":false,"titleJob":{"malformed":true},"startOutcomeHold":[null],"vmLaunch":false,
             "vendor":{"nested":[null,true]}});
         db.execute(
@@ -2817,6 +2820,31 @@ mod agent_projection_tests {
                 .is_err(),
             "narrow business evidence remains independently checked"
         );
+    }
+
+    #[test]
+    fn fractional_spelling_of_root_epoch_is_rejected_by_projection_and_business_decode() {
+        let db = Connection::open_in_memory().expect("database");
+        db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+            .expect("agents");
+        db.execute_batch(crate::agent_volatile::agent_volatile_table_sql())
+            .expect("volatile");
+        let raw = r#"{"id":"a","rootId":"r","epoch":1.0,"status":"idle"}"#;
+        db.execute(
+            "INSERT INTO runtime_agents(id,record) VALUES('a',?1)",
+            [raw],
+        )
+        .expect("agent");
+        assert!(decode_agent_value(&db, "a", raw).is_err());
+        assert!(
+            Table::<AgentRecord>::new(&db)
+                .get(&AgentId::from("a"))
+                .is_err()
+        );
+        let raw = r#"{"id":"a","rootId":"r","epoch":1,"status":"idle","events":1.0,"agentArchive":{"at":1,"epoch":1.0}}"#;
+        let value = decode_agent_value(&db, "a", raw).expect("nested decimal aliases");
+        assert_eq!(value["events"], json!(1.0));
+        assert_eq!(value["agentArchive"]["epoch"], json!(1.0));
     }
 
     #[test]

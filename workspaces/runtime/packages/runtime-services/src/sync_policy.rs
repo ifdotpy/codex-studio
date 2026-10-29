@@ -2667,6 +2667,17 @@ pub async fn push_preferences(
 #[allow(clippy::unwrap_used)]
 mod tests {
     #[test]
+    fn changed_agent_publication_rejects_decimal_root_epoch() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+            .unwrap();
+        db.execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
+            .unwrap();
+        let raw = r#"{"id":"a","rootId":"r","epoch":1.0,"status":"idle"}"#;
+        assert!(super::CheckedAgentRow::decode(&db, 1, "a", raw).is_err());
+    }
+
+    #[test]
     fn event_window_triggers_use_the_event_window_owner() {
         let sql = include_str!("../../runtime-store/src/sync_schema.sql");
         let limits = sql.match_indices("LIMIT ").count();

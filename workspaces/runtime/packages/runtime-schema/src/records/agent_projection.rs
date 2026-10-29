@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 pub struct AgentProjection {
     pub id: String,
     pub root_id: String,
-    pub epoch: AgentCounter,
+    pub epoch: RootAgentEpoch,
     pub status: String,
     #[serde(default, skip_serializing_if = "Field::is_missing")]
     pub workspace_mode: Field<StringWorkspaceMode>,
@@ -123,6 +123,28 @@ pub enum DeletionMarker {
     Number(Number),
 }
 
+/// Root fencing epochs retain the historical integer-only JSON representation.
+#[derive(Serialize)]
+#[serde(transparent)]
+pub struct RootAgentEpoch(AgentCounter);
+impl RootAgentEpoch {
+    pub fn as_i64(&self) -> i64 {
+        self.0.as_i64()
+    }
+}
+impl<'de> Deserialize<'de> for RootAgentEpoch {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let counter = AgentCounter::deserialize(deserializer)?;
+        if counter.0.number().is_i64() || counter.0.number().is_u64() {
+            Ok(Self(counter))
+        } else {
+            Err(serde::de::Error::custom(
+                "root epoch must use an integer representation",
+            ))
+        }
+    }
+}
+
 #[derive(Serialize)]
 #[serde(transparent)]
 pub struct AgentCounter(StoredJsonInteger);
@@ -178,7 +200,7 @@ mod tests {
 
     #[test]
     fn projection_matches_schema_and_preserves_wire_values() {
-        let base = json!({"id":"a","rootId":"r","epoch":1.0,"status":"future-status",
+        let base = json!({"id":"a","rootId":"r","epoch":1,"status":"future-status",
             "provider":"future", "titleJob":{"malformed":"opaque"}, "startOutcomeHold":[1,null], "vmLaunch":false,
             "accountKey":null,"activity":{"at":0.0,"phase":null,"dismissed":false,"responseStarted":true,"showBufferingUi":false,"turnId":"turn","vendor":[1]},
             "agentArchive":{"at":2.0,"epoch":1.0,"cleanupPending":null,"vendor":true},
@@ -276,7 +298,8 @@ mod tests {
         for value in records {
             let valid = crate::first_error("PersistedAgentRecord", &value)
                 .expect("schema")
-                .is_none();
+                .is_none()
+                && value.get("epoch").and_then(Value::as_i64).is_some();
             let parsed = serde_json::from_value::<JsonObject<AgentProjection>>(value.clone());
             assert_eq!(parsed.is_ok(), valid, "{value}");
             if let Ok(parsed) = parsed {
