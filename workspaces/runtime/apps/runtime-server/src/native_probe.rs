@@ -11,7 +11,8 @@ use std::{
     time::Duration,
 };
 
-use serde_json::{Value, json};
+use serde::{Deserialize, de::IgnoredAny};
+use serde_json::{Number, Value, json};
 use studio_runtime_services::{
     native_runtime::{
         CompatibilityEvidence, CompatibilityProbe, CompatibilityRefusal, CompatibilityResult,
@@ -86,6 +87,42 @@ impl CompatibilityProbe for SystemCompatibilityProbe {
     }
 }
 
+#[derive(Deserialize)]
+struct CompanionReady {
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(rename = "selectedVersion")]
+    version: Number,
+    capabilities: Vec<IgnoredAny>,
+}
+#[derive(Deserialize)]
+struct InitializeResult {
+    #[serde(rename = "userAgent")]
+    _user_agent: String,
+}
+#[derive(Deserialize)]
+struct ConfigResult {
+    config: BTreeMap<String, IgnoredAny>,
+}
+#[derive(Deserialize)]
+struct LoadedResult {
+    data: Vec<IgnoredAny>,
+}
+fn probe_result<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, ()> {
+    if !value.is_object() {
+        return Err(());
+    }
+    T::deserialize(value).map_err(|_| ())
+}
+fn companion_ready(value: Value) -> Result<(), ()> {
+    let ready: CompanionReady = probe_result(value)?;
+    if ready.kind != "connection/ready" || ready.version != Number::from(1) {
+        return Err(());
+    }
+    let _capabilities = ready.capabilities;
+    Ok(())
+}
+
 async fn check_bundle(
     executable: &Path,
     bundle: &Path,
@@ -129,12 +166,7 @@ async fn check_bundle(
         }
         let value: Value = serde_json::from_slice(&reply[4..])
             .map_err(|_| CompatibilityRefusal::CompanionCheck)?;
-        if value.get("type").and_then(Value::as_str) != Some("connection/ready")
-            || value.get("selectedVersion") != Some(&json!(1))
-            || !value.get("capabilities").is_some_and(Value::is_array)
-        {
-            return Err(CompatibilityRefusal::CompanionCheck);
-        }
+        companion_ready(value).map_err(|_| CompatibilityRefusal::CompanionCheck)?;
         companions.insert(name.to_owned(), json!({"smoke":true}));
     }
 
@@ -271,27 +303,18 @@ async fn smoke(executable: &Path, home: &Path) -> Result<(), ()> {
             ),
         );
         write_frame(&mut input, &initialize).await?;
-        let initialized = response(&mut reader, 1, deadline).await?;
-        if initialized
-            .get("userAgent")
-            .and_then(Value::as_str)
-            .is_none()
-        {
-            return Err(());
-        }
+        let _: InitializeResult = probe_result(response(&mut reader, 1, deadline).await?)?;
         write_frame(&mut input, &json!({"method":"initialized"})).await?;
         write_frame(
             &mut input,
             &request(2, "config/read", json!({"includeLayers":false})),
         )
         .await?;
-        let config = response(&mut reader, 2, deadline).await?;
-        if !config.get("config").is_some_and(Value::is_object) {
-            return Err(());
-        }
+        let config: ConfigResult = probe_result(response(&mut reader, 2, deadline).await?)?;
+        let _config = config.config;
         write_frame(&mut input, &request(3, "thread/loaded/list", json!({}))).await?;
-        let loaded = response(&mut reader, 3, deadline).await?;
-        if loaded.get("data") != Some(&json!([])) {
+        let loaded: LoadedResult = probe_result(response(&mut reader, 3, deadline).await?)?;
+        if !loaded.data.is_empty() {
             return Err(());
         }
         Ok(())
@@ -559,6 +582,93 @@ mod tests {
                 legacy(line.as_bytes()),
                 "{line}"
             );
+        }
+    }
+
+    #[test]
+    fn probe_payload_views_match_legacy_admission() {
+        use super::{ConfigResult, InitializeResult, LoadedResult, companion_ready, probe_result};
+        use serde_json::Value;
+        for raw in [
+            r#"{"type":"connection/ready","selectedVersion":1,"capabilities":[null,{},1]}"#,
+            r#"{"type":"connection/ready","selectedVersion":1.0,"capabilities":[]}"#,
+            r#"{"type":"bad","type":"connection/ready","selectedVersion":0,"selectedVersion":1,"capabilities":[]}"#,
+            r#"{"type":"connection/ready","selectedVersion":1,"capabilities":{}}"#,
+            r#"{"userAgent":"","config":{"anything":[null,1]},"data":[]}"#,
+            r#"{"userAgent":null,"config":[],"data":[null]}"#,
+            "null",
+            "[]",
+            "5",
+            "{}",
+            r#"{"unknown":1e400}"#,
+            "{",
+        ] {
+            let parsed: Result<Value, _> = serde_json::from_str(raw);
+            if let Ok(value) = parsed {
+                let ready = value.get("type").and_then(Value::as_str) == Some("connection/ready")
+                    && value.get("selectedVersion") == Some(&json!(1))
+                    && value.get("capabilities").is_some_and(Value::is_array);
+                assert_eq!(companion_ready(value.clone()).is_ok(), ready, "{raw}");
+                assert_eq!(
+                    probe_result::<InitializeResult>(value.clone()).is_ok(),
+                    value.get("userAgent").and_then(Value::as_str).is_some(),
+                    "{raw}"
+                );
+                assert_eq!(
+                    probe_result::<ConfigResult>(value.clone()).is_ok(),
+                    value.get("config").is_some_and(Value::is_object),
+                    "{raw}"
+                );
+                let loaded = probe_result::<LoadedResult>(value.clone())
+                    .is_ok_and(|row| row.data.is_empty());
+                assert_eq!(loaded, value.get("data") == Some(&json!([])), "{raw}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn probe_smoke_fake_executable_rejects_invalid_payloads() {
+        let root = tempfile::tempdir().unwrap();
+        let program = root.path().join("fake");
+        for (initialize, config, loaded, valid) in [
+            (
+                r#"{"userAgent":""}"#,
+                r#"{"config":{"future":null}}"#,
+                r#"{"data":[]}"#,
+                true,
+            ),
+            (
+                r#"{"userAgent":null}"#,
+                r#"{"config":{}}"#,
+                r#"{"data":[]}"#,
+                false,
+            ),
+            (
+                r#"{"userAgent":"x"}"#,
+                r#"{"config":[]}"#,
+                r#"{"data":[]}"#,
+                false,
+            ),
+            (
+                r#"{"userAgent":"x"}"#,
+                r#"{"config":{}}"#,
+                r#"{"data":[1]}"#,
+                false,
+            ),
+        ] {
+            let script = format!(
+                r##"#!/bin/sh
+read -r line
+printf '%s\n' '{{"id":1,"result":{initialize}}}'
+read -r line
+read -r line
+printf '%s\n' '{{"id":2,"result":{config}}}'
+read -r line
+printf '%s\n' '{{"id":3,"result":{loaded}}}'
+"##
+            );
+            write_executable(&program, &script);
+            assert_eq!(super::smoke(&program, root.path()).await.is_ok(), valid);
         }
     }
 
