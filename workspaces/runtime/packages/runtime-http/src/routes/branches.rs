@@ -947,6 +947,68 @@ async fn branch_needs_catalog(
         .await
 }
 
+// Historical copy rows have a looser shape than selected transcript records.
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BranchTurn {
+    #[serde(default)]
+    turn_id: Value,
+}
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BranchItem {
+    #[serde(default)]
+    turn_id: Value,
+    #[serde(default, deserialize_with = "copy_text")]
+    role: Option<String>,
+    #[serde(default, deserialize_with = "copy_text")]
+    title: Option<String>,
+    #[serde(default, deserialize_with = "copy_text")]
+    text: Option<String>,
+    #[serde(default, deserialize_with = "copy_present")]
+    assets: Option<Value>,
+    #[serde(default, deserialize_with = "copy_inputs")]
+    inputs: Option<Vec<BranchInput>>,
+}
+#[derive(Default, Deserialize)]
+struct BranchInput {
+    #[serde(default, deserialize_with = "copy_present")]
+    id: Option<Value>,
+    #[serde(default, deserialize_with = "copy_present")]
+    kind: Option<Value>,
+    #[serde(default, deserialize_with = "copy_present")]
+    created: Option<Value>,
+    #[serde(default, deserialize_with = "copy_present")]
+    at: Option<Value>,
+    #[serde(default, deserialize_with = "copy_present")]
+    assets: Option<Value>,
+    #[serde(default, deserialize_with = "copy_text")]
+    text: Option<String>,
+}
+fn copy_text<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(Value::deserialize(d)?.as_str().map(str::to_owned))
+}
+fn copy_present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Value>, D::Error> {
+    Value::deserialize(d).map(Some)
+}
+fn copy_inputs<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<Vec<BranchInput>>, D::Error> {
+    Ok(match Value::deserialize(d)? {
+        Value::Array(inputs) => Some(inputs.into_iter().map(copy_object).collect()),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) | Value::Object(_) => {
+            None
+        }
+    })
+}
+fn copy_object<T: for<'de> Deserialize<'de> + Default>(value: Value) -> T {
+    if value.is_object() {
+        T::deserialize(value).unwrap_or_default()
+    } else {
+        T::default()
+    }
+}
+
 struct BranchCopy<'a> {
     source: &'a str,
     target: &'a str,
@@ -1002,19 +1064,18 @@ async fn copy_branch_history(
         let rows=stmt.query_map([source.as_str()],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,f64>(2)?)))?.collect::<Result<Vec<_>,_>>()?;
         drop(stmt);
         let cutoff=match fork_turn {
-            Some(fork_turn) => rows.iter().filter_map(|(_,raw,created)|serde_json::from_str::<Value>(raw).ok().filter(|r|r["turnId"].as_str()==Some(fork_turn.as_str())).map(|_|*created)).reduce(f64::max).unwrap_or(f64::NEG_INFINITY),
+            Some(fork_turn) => rows.iter().filter_map(|(_,raw,created)|serde_json::from_str::<Value>(raw).ok().map(copy_object::<BranchTurn>).filter(|r|r.turn_id.as_str()==Some(fork_turn.as_str())).map(|_|*created)).reduce(f64::max).unwrap_or(f64::NEG_INFINITY),
             None => f64::NEG_INFINITY,
         };
         let mut assets=BTreeMap::<String,Value>::new();
         for (old_id, raw, _created) in rows.into_iter().take_while(|(_, _, created)| *created <= cutoff) {
             let source_record: Value = serde_json::from_str(&raw)?;
-            if before && source_record["turnId"].as_str()==selected.record.extra("turnId").and_then(Value::as_str){continue;}
+            let source_record: BranchItem = copy_object(source_record);
+            if before && source_record.turn_id.as_str()==selected.record.extra("turnId").and_then(Value::as_str){continue;}
             let local_id=old_id.split_once(':').map(|(_,id)|id).unwrap_or(&old_id);
             let id=format!("{target}:{local_id}");
-            let role = source_record["role"].as_str().unwrap_or("assistant");
-            let source_title = source_record
-                .get("title")
-                .and_then(Value::as_str)
+            let role = source_record.role.as_deref().unwrap_or("assistant");
+            let source_title = source_record.title.as_deref()
                 .filter(|title| !title.is_empty());
             let index_kind = source_title.unwrap_or(role).to_owned();
             let title = source_title.map(str::to_owned).unwrap_or_else(|| match role {
@@ -1023,29 +1084,29 @@ async fn copy_branch_history(
                     "system" => "System".to_owned(),
                     other => other.to_owned(),
                 });
-            let mut item_assets = source_record.get("assets").cloned().unwrap_or_else(|| json!([]));
+            let mut item_assets = source_record.assets.clone().unwrap_or_else(|| json!([]));
             copy_asset_views(tx,&source,&target,&mut item_assets,&mut assets)?;
-            let source_inputs = source_record.get("inputs").and_then(Value::as_array);
+            let source_inputs = source_record.inputs.as_ref();
             let mut inputs = Vec::new();
             if let Some(source_inputs) = source_inputs {
                 let mut remaining = 20_000usize;
                 for input in source_inputs {
-                    let mut input_assets = input.get("assets").cloned().unwrap_or_else(|| json!([]));
+                    let mut input_assets = input.assets.clone().unwrap_or_else(|| json!([]));
                     copy_asset_views(tx,&source,&target,&mut input_assets,&mut assets)?;
-                    let input_text = input.get("text").and_then(Value::as_str).unwrap_or_default();
+                    let input_text = input.text.as_deref().unwrap_or_default();
                     let excerpt = input_text.chars().take(remaining).collect::<String>();
                     remaining = remaining.saturating_sub(excerpt.chars().count());
                     inputs.push(json!({
-                        "id":input.get("id"),
-                        "at":input.get("created").or_else(|| input.get("at")),
-                        "kind":input.get("kind"),
+                        "id":input.id,
+                        "at":input.created.as_ref().or(input.at.as_ref()),
+                        "kind":input.kind,
                         "text":excerpt,
                         "truncated":excerpt.chars().count() < input_text.chars().count(),
                         "assets":input_assets
                     }));
                 }
             }
-            let text = source_record.get("text").and_then(Value::as_str).unwrap_or_default();
+            let text = source_record.text.as_deref().unwrap_or_default();
             let visible_text = text.chars().take(20_000).collect::<String>();
             let copied_at = unix_time();
             let mut record = json!({
@@ -1055,7 +1116,7 @@ async fn copy_branch_history(
                 "text":visible_text,
                 "truncated":text.chars().count() > 20_000,
                 "at":copied_at,
-                "turnId":source_record.get("turnId"),
+                "turnId":source_record.turn_id,
                 "streaming":false,
                 "assets":item_assets
             });
@@ -1294,6 +1355,186 @@ mod tests {
         AccountSessionFuture, ConnectionScope, SessionReceipt,
     };
     use studio_runtime_store::AgentRecord;
+
+    #[tokio::test]
+    async fn branch_history_copy_preserves_partial_rows_and_rolls_back_missing_assets() {
+        let root = tempfile::tempdir().unwrap();
+        let store = RuntimeStore::open(Some(root.path())).await.unwrap();
+        let source = json!({"id":"source","rootId":"source","epoch":0,"status":"idle","provider":"codex","cwd":"/tmp","workspaceReservationId":"op"});
+        let child = json!({"id":"child","rootId":"child","epoch":0,"status":"idle","provider":"codex","cwd":"/tmp"});
+        let source_identity = CheckpointsRepository::workspace_source(&source);
+        store.transaction(move |tx| {
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('source',?1)", [source.to_string()])?;
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('child',?1)", [child.to_string()])?;
+            tx.execute("INSERT INTO runtime_workspace_operations(id,record) VALUES('op',?1)", [json!({"source":source_identity,"phase":"provider_ready"}).to_string()])?;
+            tx.execute("INSERT INTO runtime_assets(id,record) VALUES('asset',?1)", [json!({"id":"asset","agent":"source","name":"file.txt","path":"/tmp/file.txt","mime":"text/plain","image":false,"size":1,"hash":"h","created":1}).to_string()])?;
+            tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES('source:a','source',?1,1)", [r#"{"role":9,"text":"old","text":"first","turnId":"t","assets":[{"id":"asset"}],"inputs":[null,{"text":"second","created":null,"at":2,"assets":[{"id":"asset"}]}]}"#])?;
+            tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES('source:b','source',?1,1)", [r#"{"turnId":"t","text":null,"assets":null}"#])?;
+            tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES('source:c','source',?1,1)", [json!({"turnId":7,"text":"🦀".repeat(20_001),"inputs":[{"text":"Ж".repeat(19_999)},{"text":"AB"}]}).to_string()])?;
+            tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES('source:d','source','42',1)", [])?;
+            tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES('source:after','source',?1,2)", [r#"{"turnId":"later","future":1e400}"#])?;
+            Ok(())
+        }).await.unwrap();
+        let selected = studio_runtime_store::TranscriptItem {
+            id: "source:a".into(),
+            agent: "source".into(),
+            record: studio_runtime_store::TranscriptItemRecord::from_value(
+                json!({"id":"source:a","turnId":"t"}),
+            )
+            .unwrap(),
+        };
+        let provider = json!({"thread":{"id":"fork"}});
+        let copy = || BranchCopy {
+            source: "source",
+            target: "child",
+            selected: &selected,
+            message_id: "source:a",
+            fork_turn: Some("t"),
+            before: false,
+            provider: &provider,
+            operation_id: "op",
+        };
+        copy_branch_history(&store, copy(), Arc::new(tokio::sync::Notify::new()))
+            .await
+            .unwrap();
+        let rows = store
+            .read_async("fixture", |db| {
+                let mut stmt = db.prepare(
+                    "SELECT id,record FROM runtime_items WHERE agent='child' ORDER BY id",
+                )?;
+                let rows = stmt
+                    .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok::<_, studio_runtime_store::StoreError>(rows)
+            })
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 4);
+        let a: Value = serde_json::from_str(&rows[0].1).unwrap();
+        let b: Value = serde_json::from_str(&rows[1].1).unwrap();
+        assert_eq!(a["role"], "assistant");
+        assert_eq!(a["text"], "first");
+        assert_eq!(a["inputs"][1]["at"], Value::Null);
+        assert_eq!(a["assets"][0]["id"], a["inputs"][1]["assets"][0]["id"]);
+        assert!(a["assets"][0].get("path").is_none());
+        assert_eq!(b["assets"], Value::Null);
+        let c: Value = serde_json::from_str(&rows[2].1).unwrap();
+        let d: Value = serde_json::from_str(&rows[3].1).unwrap();
+        assert_eq!(c["turnId"], 7);
+        assert_eq!(c["text"].as_str().unwrap().chars().count(), 20_000);
+        assert_eq!(c["truncated"], true);
+        assert_eq!(
+            c["inputs"][0]["text"].as_str().unwrap().chars().count(),
+            19_999
+        );
+        assert_eq!(c["inputs"][1]["text"], "A");
+        assert_eq!(c["inputs"][1]["truncated"], true);
+        assert_eq!(d["role"], "assistant");
+        assert_eq!(d["text"], "");
+        store
+            .read_async("fixture", |db| {
+                let item = TranscriptRepository::item(db, "child", "child:c")
+                    .unwrap()
+                    .unwrap();
+                let text = TranscriptRepository::full_text(db, &item).unwrap().unwrap();
+                assert_eq!(text.chars().count(), 20_001);
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .await
+            .unwrap();
+        store.transaction(|tx| {
+            tx.execute("DELETE FROM runtime_items WHERE agent='child'", [])?;
+            tx.execute("DELETE FROM runtime_assets WHERE id <> 'asset'", [])?;
+            tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.workspaceReservationId','op') WHERE id='source'", [])?;
+            tx.execute("UPDATE runtime_workspace_operations SET record=json_set(record,'$.phase','provider_ready') WHERE id='op'", [])?;
+            Ok(())
+        }).await.unwrap();
+        let selected_without_turn = studio_runtime_store::TranscriptItem {
+            id: "source:a".into(),
+            agent: "source".into(),
+            record: studio_runtime_store::TranscriptItemRecord::from_value(
+                json!({"id":"source:a"}),
+            )
+            .unwrap(),
+        };
+        let before_copy = BranchCopy {
+            source: "source",
+            target: "child",
+            selected: &selected_without_turn,
+            message_id: "source:a",
+            fork_turn: Some("t"),
+            before: true,
+            provider: &provider,
+            operation_id: "op",
+        };
+        copy_branch_history(&store, before_copy, Arc::new(tokio::sync::Notify::new()))
+            .await
+            .unwrap();
+        store
+            .read_async("fixture", |db| {
+                let ids = db
+                    .prepare("SELECT id FROM runtime_items WHERE agent='child' ORDER BY id")?
+                    .query_map([], |r| r.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                assert_eq!(ids, ["child:a", "child:b"]);
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .await
+            .unwrap();
+        store.transaction(|tx| {
+            tx.execute("DELETE FROM runtime_items WHERE agent='child'", [])?;
+            tx.execute("DELETE FROM runtime_assets WHERE id <> 'asset'", [])?;
+            tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.workspaceReservationId','op') WHERE id='source'", [])?;
+            tx.execute("UPDATE runtime_workspace_operations SET record=json_set(record,'$.phase','provider_ready') WHERE id='op'", [])?;
+            tx.execute("UPDATE runtime_items SET record=json_set(record,'$.assets',json('[{\"id\":\"missing\"}]')) WHERE id='source:b'", [])?;
+            Ok(())
+        }).await.unwrap();
+        assert!(
+            copy_branch_history(&store, copy(), Arc::new(tokio::sync::Notify::new()))
+                .await
+                .is_err()
+        );
+        store.read_async("fixture", |db| {
+            let count:i64 = db.query_row("SELECT count(*) FROM runtime_items WHERE agent='child'", [], |r|r.get(0))?;
+            let asset_count:i64 = db.query_row("SELECT count(*) FROM runtime_assets", [], |r|r.get(0))?;
+            let phase:String = db.query_row("SELECT json_extract(record,'$.phase') FROM runtime_workspace_operations WHERE id='op'", [], |r|r.get(0))?;
+            assert_eq!(count,0);
+            assert_eq!(asset_count,1);
+            assert_eq!(phase,"provider_ready");
+            Ok::<_,studio_runtime_store::StoreError>(())
+        }).await.unwrap();
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "UPDATE runtime_items SET record=?1 WHERE id='source:a'",
+                    [r#"{"turnId":"t","future":1e400}"#],
+                )?;
+                tx.execute(
+                    "UPDATE runtime_items SET record=?1 WHERE id='source:b'",
+                    [r#"{"turnId":"t","assets":null}"#],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        assert!(
+            copy_branch_history(&store, copy(), Arc::new(tokio::sync::Notify::new()))
+                .await
+                .is_err()
+        );
+        store
+            .read_async("fixture", |db| {
+                let count: i64 = db.query_row(
+                    "SELECT count(*) FROM runtime_items WHERE agent='child'",
+                    [],
+                    |r| r.get(0),
+                )?;
+                assert_eq!(count, 0);
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .await
+            .unwrap();
+    }
 
     #[tokio::test]
     async fn legacy_branch_operation_catalog_and_settlement_preserve_evidence() {
