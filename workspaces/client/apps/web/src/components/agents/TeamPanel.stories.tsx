@@ -8,6 +8,7 @@ import { useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fn, userEvent, waitFor, within } from "storybook/test";
 import type { Agent, Snapshot } from "../../types";
+import type { Account } from "../Accounts";
 import { chatIndicators } from "../chat-status/chatStatusModel";
 import TeamPanel from "./TeamPanel";
 
@@ -407,24 +408,15 @@ export const SharedGutter: Story = {
 export const ComfortableStrips: Story = {
   play: async ({ canvasElement }) => {
     const panel = canvasElement.querySelector("#team")!;
-    const probe = document.createElement("div");
-    probe.style.width = "var(--mantine-spacing-sm)";
-    probe.style.height = "var(--mantine-spacing-xs)";
-    panel.append(probe);
-    const { width: inlinePadding, height: blockPadding } =
-      probe.getBoundingClientRect();
-    probe.remove();
+    const step = stripStep(panel);
     for (const strip of panel.querySelectorAll<HTMLElement>(".worker-entry")) {
       const style = getComputedStyle(strip);
-      await expect(parseFloat(style.paddingInlineStart)).toBeGreaterThanOrEqual(
-        inlinePadding,
-      );
-      await expect(parseFloat(style.paddingBlockStart)).toBeGreaterThanOrEqual(
-        blockPadding,
-      );
-      await expect(parseFloat(style.paddingBlockEnd)).toBeGreaterThanOrEqual(
-        blockPadding,
-      );
+      for (const padding of [
+        style.paddingInlineStart,
+        style.paddingBlockStart,
+        style.paddingBlockEnd,
+      ])
+        await expect(parseFloat(padding)).toBeCloseTo(step, 1);
       const name = strip
         .querySelector(".worker-name-line")!
         .getBoundingClientRect();
@@ -438,4 +430,183 @@ export const ComfortableStrips: Story = {
       await expect(model.top - activity.bottom).toBeGreaterThan(0);
     }
   },
+};
+
+/** Width of the Team strip spacing step, in CSS pixels. */
+function stripStep(panel: Element) {
+  const probe = document.createElement("div");
+  probe.style.width = "var(--studio-strip-step)";
+  panel.append(probe);
+  const step = probe.getBoundingClientRect().width;
+  probe.remove();
+  return step;
+}
+
+const rowAccounts = [
+  { id: "default", label: "Personal" },
+  { id: "personal-2", label: "Personal account with a long label" },
+].map(
+  (account) =>
+    ({
+      ...account,
+      home: "/storybook",
+      source: "storybook",
+      provider: "codex",
+      status: "ready",
+    }) as Account,
+);
+const rowTask =
+  "Own task work-1792784011234567890-17: make the Team panel rows fit the Duo drawer and the desktop dock.";
+const rowFixtures: (Pick<Agent, "id" | "name"> & Partial<Agent>)[] = [
+  {
+    id: "long",
+    name: "duo-ios-shell-and-bonjour-discovery",
+    commandProgress: [
+      {
+        monitorId: "long-command",
+        stage:
+          "sleep 3; cd /tmp/duo-ios-shell && pnpm exec playwright test --project=client tests/teams/team-panel-ui.spec.ts",
+        startedAt: now - 2652,
+        lastOutputLine: "",
+      },
+    ],
+    overview: { task: rowTask, resultFile: "reports/duo-ios-shell.md" },
+  },
+  {
+    id: "short",
+    name: "chat-fixes",
+    activity: { phase: "thinking", at: now - 71 },
+    environment: "linux",
+    overview: { task: rowTask },
+  },
+  {
+    id: "wide",
+    name: "release-verification-pipeline-audit",
+    activity: { phase: "tool", at: now - 12 },
+    commandProgress: [
+      {
+        monitorId: "wide-command",
+        stage: "cd /Users/igor/Projects/codex-agents && just test-fast",
+        startedAt: now - 12,
+        lastOutputLine: "",
+      },
+    ],
+    overview: { task: "Short task", resultFile: "reports/wide.md" },
+  },
+];
+const rowWorkers: Agent[] = rowFixtures.map((agent) => ({
+  ...agent,
+  source: "managed",
+  status: "running",
+  inFlight: true,
+  rootId: lead.id,
+  parentId: lead.id,
+  provider: "codex",
+  model: "gpt-6-luna",
+  effort: "high",
+  accountKey: "personal-2",
+  created: now - 4229 * 60,
+}));
+
+/** Rows at one Team panel width, with long names, commands and tasks. */
+function rowStory(width: number): Story {
+  return {
+    args: { workers: rowWorkers, accounts: rowAccounts },
+    render: (args) => (
+      <div
+        style={
+          {
+            height: "100dvh",
+            width: `${width}px`,
+            display: "flex",
+            "--studio-team-size": `${width}px`,
+          } as import("react").CSSProperties
+        }
+      >
+        <TeamPanel {...args} />
+      </div>
+    ),
+    play: async ({ canvasElement }) => {
+      // Rows use content-visibility: auto; measure after their first rendered frame.
+      for (let frame = 0; frame < 2; frame++)
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+      const panel = canvasElement.querySelector("#team")!;
+      await expect(panel.getBoundingClientRect().width).toBeCloseTo(width, 0);
+      await expect(panel.scrollWidth).toBeLessThanOrEqual(panel.clientWidth);
+      const step = stripStep(panel);
+      const rows = panel.querySelectorAll<HTMLElement>(".worker-entry");
+      await expect(rows).toHaveLength(rowWorkers.length);
+      for (const row of rows) {
+        const box = row.getBoundingClientRect();
+        const nameLine = row
+          .querySelector(".worker-name-line")!
+          .getBoundingClientRect();
+        // Line 1: the first 16 name characters stay visible.
+        const strong = row.querySelector("strong")!;
+        const range = document.createRange();
+        range.setStart(strong.firstChild!, 0);
+        range.setEnd(
+          strong.firstChild!,
+          Math.min(16, strong.textContent!.length),
+        );
+        await expect(range.getBoundingClientRect().width).toBeLessThanOrEqual(
+          strong.clientWidth + 1,
+        );
+        // Line 1: elapsed time is right aligned.
+        await expect(
+          row.querySelector(".worker-elapsed")!.getBoundingClientRect().right,
+        ).toBeCloseTo(nameLine.right, 0);
+        // Line 2: one activity line; the task is on its own line below.
+        const live = row.querySelector(".worker-live-line")!;
+        await expect(live.querySelector(".worker-task")).toBeNull();
+        await expect(live.getBoundingClientRect().height).toBeLessThan(
+          parseFloat(getComputedStyle(live).lineHeight) * 1.5,
+        );
+        const task = row.querySelector(".worker-task")!;
+        await expect(task.getBoundingClientRect().top).toBeGreaterThanOrEqual(
+          live.getBoundingClientRect().bottom,
+        );
+        // Line 3: meta items wrap whole; the account drops when narrow.
+        for (const item of row.querySelectorAll<HTMLElement>(
+          ".worker-meta > *",
+        ))
+          if (item.getClientRects().length)
+            await expect(item.scrollWidth).toBeLessThanOrEqual(
+              item.clientWidth + 1,
+            );
+        await expect(
+          row.querySelector(".worker-account")!.getClientRects().length > 0,
+        ).toBe(width > 320);
+        // The divider spans the content column; padding is on the 8 px step.
+        const after = getComputedStyle(row, "::after");
+        await expect(box.left + parseFloat(after.left)).toBeCloseTo(
+          nameLine.left,
+          0,
+        );
+        await expect(parseFloat(after.right)).toBe(0);
+        const style = getComputedStyle(row);
+        for (const padding of [
+          style.paddingInlineStart,
+          style.paddingBlockStart,
+          style.paddingBlockEnd,
+        ])
+          await expect(parseFloat(padding)).toBeCloseTo(step, 1);
+        // The result button sits inside the row on the content column.
+        const result = row.querySelector(".worker-result");
+        if (result) {
+          const button = result.getBoundingClientRect();
+          await expect(button.left).toBeCloseTo(nameLine.left, 0);
+          await expect(button.bottom).toBeLessThanOrEqual(box.bottom);
+        }
+      }
+    },
+  };
+}
+export const Rows320 = rowStory(320);
+export const Rows470 = rowStory(470);
+export const Rows600 = rowStory(600);
+/** Long rows in the default desktop dock beside the conversation. */
+export const RowsWorkspace: Story = {
+  ...Workspace,
+  args: { workers: rowWorkers, accounts: rowAccounts },
 };

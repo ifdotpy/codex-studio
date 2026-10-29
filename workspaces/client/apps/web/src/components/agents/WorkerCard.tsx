@@ -7,6 +7,7 @@ import { ActionIcon, Button, Menu, UnstyledButton } from "@mantine/core";
 import {
   ChevronRight,
   CircleAlert,
+  FileCheck,
   FileText,
   MoreHorizontal,
   Trash2,
@@ -311,15 +312,12 @@ const WorkerCardView = memo(function WorkerCardView({
               >
                 {activityText}
               </span>
-              {agent.overview?.task && (
-                <span className="worker-task" title={agent.overview.task}>
-                  {agent.overview.task}
-                </span>
-              )}
-              {agent.environment === "linux" && (
-                <span className="worker-environment">VM</span>
-              )}
             </span>
+            {agent.overview?.task && !(error && !diskHeld && !stopReason) && (
+              <span className="worker-task" title={agent.overview.task}>
+                {agent.overview.task}
+              </span>
+            )}
           </span>
         </UnstyledButton>
         {remove && (
@@ -358,6 +356,9 @@ const WorkerCardView = memo(function WorkerCardView({
             <span className="worker-account">
               {accountDisplayName(account)}
             </span>
+          )}
+          {agent.environment === "linux" && (
+            <span className="worker-environment">VM</span>
           )}
           <TokenRate agent={agent} variant="worker" />
         </span>
@@ -411,18 +412,23 @@ const WorkerCardView = memo(function WorkerCardView({
         </div>
       </div>
       {overview?.resultFile && (
-        <Button
-          component="a"
-          href={overview.resultFile}
-          size="compact-xs"
-          variant="subtle"
-          onClick={(event) => {
-            event.preventDefault();
-            previewResult();
-          }}
-        >
-          Open submitted result
-        </Button>
+        <div className="worker-actions">
+          <Button
+            component="a"
+            className="worker-result"
+            href={overview.resultFile}
+            size="compact-xs"
+            variant="subtle"
+            color="gray"
+            leftSection={<FileCheck size={12} aria-hidden="true" />}
+            onClick={(event) => {
+              event.preventDefault();
+              previewResult();
+            }}
+          >
+            Open submitted result
+          </Button>
+        </div>
       )}
     </div>
   );
