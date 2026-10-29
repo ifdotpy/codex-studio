@@ -700,53 +700,11 @@ async fn run(
                 "runtime-server/tailscale-whoami",
                 || {
                     let raw = multi_server_owner::tailscale_json(&["whoami", "--json"]).ok();
-                    let user = raw.as_ref().and_then(|value| {
-                        value
-                            .get("UserProfile")
-                            .or_else(|| value.get("User"))
-                            .and_then(|profile| {
-                                profile.get("LoginName").or_else(|| profile.get("Name"))
-                            })
-                            .and_then(serde_json::Value::as_str)
-                            .filter(|login| !login.trim().is_empty())
-                            .map(|login| login.trim().to_ascii_lowercase())
-                    });
-                    let node = raw.as_ref().and_then(|value| {
-                        value
-                            .get("Self")
-                            .or_else(|| value.get("Machine"))
-                            .and_then(|self_node| self_node.get("ID"))
-                            .cloned()
-                    });
-                    let owner_login = multi_server_owner::tailscale_json(&["status", "--json"])
-                        .ok()
-                        .and_then(|status| {
-                            let local = status.get("Self")?;
-                            let users = status.get("User")?.as_object()?;
-                            let profile = users.get(&local.get("UserID")?.to_string())?;
-                            if status
-                                .get("BackendState")
-                                .and_then(serde_json::Value::as_str)
-                                != Some("Running")
-                                || local
-                                    .get("Tags")
-                                    .and_then(serde_json::Value::as_array)
-                                    .is_some_and(|tags| !tags.is_empty())
-                            {
-                                return None;
-                            }
-                            profile
-                                .get("LoginName")
-                                .and_then(serde_json::Value::as_str)
-                                .filter(|login| !login.trim().is_empty() && login.len() <= 254)
-                                .map(|login| login.trim().to_ascii_lowercase())
-                        });
-                    Some(serde_json::json!({
-                        "status": if user.is_some() { "verified" } else { "unavailable" },
-                        "user": user,
-                        "node": node,
-                        "ownerLogin": owner_login,
-                    }))
+                    let status = multi_server_owner::tailscale_json(&["status", "--json"]).ok();
+                    Some(multi_server_owner::whoami_projection(
+                        raw.as_ref(),
+                        status.as_ref(),
+                    ))
                 },
             )
             .await
