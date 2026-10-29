@@ -1,5 +1,6 @@
 //! Typed persisted rules, including open extension fields.
-use crate::stored_record::{StoredJsonInteger, present_nullable};
+use crate::queue_command::Field;
+use crate::stored_record::StoredJsonInteger;
 use serde::{Deserialize, Serialize};
 use serde_json::{Number, Value};
 use std::{borrow::Cow, collections::BTreeMap};
@@ -76,11 +77,12 @@ fn present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
 ) -> Result<Option<T>, D::Error> {
     T::deserialize(d).map(Some)
 }
-fn present_launch<'de, D: serde::Deserializer<'de>>(
-    d: D,
-) -> Result<Option<Option<LaunchIntent>>, D::Error> {
-    Option::<crate::json_object::JsonObject<LaunchIntent>>::deserialize(d)
-        .map(|v| Some(v.map(|o| o.0)))
+fn present_launch<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Field<LaunchIntent>, D::Error> {
+    Field::<crate::json_object::JsonObject<LaunchIntent>>::deserialize(d).map(|v| match v {
+        Field::Missing => Field::Missing,
+        Field::Null => Field::Null,
+        Field::Value(value) => Field::Value(value.0),
+    })
 }
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -194,13 +196,9 @@ pub struct RuleRecord {
     )]
     #[schemars(with = "RuleInteger<0, 9007199254740991>")]
     pub epoch: Option<RuleInteger<0, 9007199254740991>>,
-    #[serde(
-        default,
-        deserialize_with = "present_nullable",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
     #[schemars(with = "Option<String>")]
-    pub error: Option<Option<String>>,
+    pub error: Field<String>,
     #[serde(
         default,
         deserialize_with = "present",
@@ -229,21 +227,15 @@ pub struct RuleRecord {
     )]
     #[schemars(with = "RuleInteger<0, 9007199254740991>")]
     pub file_generation: Option<RuleInteger<0, 9007199254740991>>,
-    #[serde(
-        default,
-        deserialize_with = "present_nullable",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
     #[schemars(
         with = "Option<(RuleInteger<-9223372036854775808, 9223372036854775807>, RuleInteger<0, 18446744073709551615>, RuleInteger<0, 18446744073709551615>)>"
     )]
-    pub fingerprint: Option<
-        Option<(
-            RuleInteger<-9223372036854775808, 9223372036854775807>,
-            RuleInteger<0, 18446744073709551615>,
-            RuleInteger<0, 18446744073709551615>,
-        )>,
-    >,
+    pub fingerprint: Field<(
+        RuleInteger<-9223372036854775808, 9223372036854775807>,
+        RuleInteger<0, 18446744073709551615>,
+        RuleInteger<0, 18446744073709551615>,
+    )>,
     pub id: String,
     #[serde(
         default,
@@ -280,13 +272,9 @@ pub struct RuleRecord {
     )]
     #[schemars(with = "String")]
     pub last_event: Option<String>,
-    #[serde(
-        default,
-        deserialize_with = "present_nullable",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
     #[schemars(with = "Option<StoredJsonInteger>")]
-    pub last_exit_code: Option<Option<StoredJsonInteger>>,
+    pub last_exit_code: Field<StoredJsonInteger>,
     #[serde(
         default,
         deserialize_with = "present",
@@ -301,20 +289,12 @@ pub struct RuleRecord {
     )]
     #[schemars(with = "RuleText<12000>")]
     pub last_output: Option<RuleText<12000>>,
-    #[serde(
-        default,
-        deserialize_with = "present_nullable",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
     #[schemars(with = "Option<String>")]
-    pub last_stall_error: Option<Option<String>>,
-    #[serde(
-        default,
-        deserialize_with = "present_nullable",
-        skip_serializing_if = "Option::is_none"
-    )]
+    pub last_stall_error: Field<String>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
     #[schemars(with = "Option<StoredJsonInteger>")]
-    pub last_stall_exit_code: Option<Option<StoredJsonInteger>>,
+    pub last_stall_exit_code: Field<StoredJsonInteger>,
     #[serde(
         default,
         deserialize_with = "present",
@@ -325,10 +305,10 @@ pub struct RuleRecord {
     #[serde(
         default,
         deserialize_with = "present_launch",
-        skip_serializing_if = "Option::is_none"
+        skip_serializing_if = "Field::is_missing"
     )]
     #[schemars(with = "Option<LaunchIntent>")]
-    pub launch_intent: Option<Option<LaunchIntent>>,
+    pub launch_intent: Field<LaunchIntent>,
     #[serde(
         default,
         deserialize_with = "present",
@@ -336,13 +316,9 @@ pub struct RuleRecord {
     )]
     #[schemars(with = "RuleText<12000>")]
     pub liveness_command: Option<RuleText<12000>>,
-    #[serde(
-        default,
-        deserialize_with = "present_nullable",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
     #[schemars(with = "Option<Number>")]
-    pub low_since: Option<Option<Number>>,
+    pub low_since: Field<Number>,
     #[serde(
         default,
         deserialize_with = "present",
@@ -364,27 +340,15 @@ pub struct RuleRecord {
     )]
     #[schemars(with = "Number")]
     pub next_at: Option<Number>,
-    #[serde(
-        default,
-        deserialize_with = "present_nullable",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
     #[schemars(with = "Option<OwnerHold>")]
-    pub owner_hold: Option<Option<OwnerHold>>,
-    #[serde(
-        default,
-        deserialize_with = "present_nullable",
-        skip_serializing_if = "Option::is_none"
-    )]
+    pub owner_hold: Field<OwnerHold>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
     #[schemars(with = "Option<String>")]
-    pub path: Option<Option<String>>,
-    #[serde(
-        default,
-        deserialize_with = "present_nullable",
-        skip_serializing_if = "Option::is_none"
-    )]
+    pub path: Field<String>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
     #[schemars(with = "Option<BTreeMap<String, Value>>")]
-    pub restart_check: Option<Option<BTreeMap<String, Value>>>,
+    pub restart_check: Field<BTreeMap<String, Value>>,
     #[serde(
         default,
         deserialize_with = "present",
@@ -485,6 +449,7 @@ mod tests {
 
     #[test]
     fn typed_rule_matches_stored_schema_on_each_field_and_bounds() {
+        check_schema_parity().unwrap();
         let schema: Value =
             serde_json::from_slice(include_bytes!("schemas/persisted-rule-record.schema.json"))
                 .unwrap();
@@ -496,6 +461,7 @@ mod tests {
             json!(""),
             json!("active"),
             json!("interval"),
+            json!("archived"),
             json!(0),
             json!(-1),
             json!(1),

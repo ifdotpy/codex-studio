@@ -161,8 +161,8 @@ impl Rule {
         }
         let kind = required!(kind, "kind");
         let status = required!(status, "status");
-        let fingerprint = match &record.fingerprint {
-            Some(Some((a, b, c))) => Some((
+        let fingerprint = match record.fingerprint.value() {
+            Some((a, b, c)) => Some((
                 a.number().as_i64().ok_or_else(|| invalid("fingerprint"))?,
                 b.number().as_u64().ok_or_else(|| invalid("fingerprint"))?,
                 c.number().as_u64().ok_or_else(|| invalid("fingerprint"))?,
@@ -197,7 +197,7 @@ impl Rule {
                 .ok_or_else(|| invalid("created"))?,
             command: required!(command, "command").as_str().to_owned(),
             text: required!(text, "text"),
-            path: record.path.clone().flatten(),
+            path: record.path.value().cloned(),
             event: record.event.clone().unwrap_or_default(),
             in_flight: record.in_flight.unwrap_or(false),
             checks: integer!(checks, "checks", 0),
@@ -232,11 +232,7 @@ impl Rule {
                 record.duration_minutes.as_ref().map(|n| n.number()),
                 "durationMinutes",
             )?,
-            low_since: record
-                .low_since
-                .as_ref()
-                .and_then(|n| n.as_ref())
-                .and_then(|n| n.as_f64()),
+            low_since: record.low_since.value().and_then(|n| n.as_f64()),
             alerted: record.alerted.unwrap_or(false),
             last_event: record.last_event.clone(),
             event_text: record
@@ -244,22 +240,18 @@ impl Rule {
                 .as_ref()
                 .map(|s| s.as_str().to_owned())
                 .unwrap_or_default(),
-            owner_hold: record
-                .owner_hold
-                .as_ref()
-                .and_then(|v| v.as_ref())
-                .map(|v| {
-                    match v {
-                        studio_runtime_schema::rule_record::OwnerHold::FailedInputHeld => {
-                            "failed_input_held"
-                        }
-                        studio_runtime_schema::rule_record::OwnerHold::NativeFailureHold => {
-                            "native_failure_hold"
-                        }
-                        studio_runtime_schema::rule_record::OwnerHold::Archived => "archived",
+            owner_hold: record.owner_hold.value().map(|v| {
+                match v {
+                    studio_runtime_schema::rule_record::OwnerHold::FailedInputHeld => {
+                        "failed_input_held"
                     }
-                    .to_owned()
-                }),
+                    studio_runtime_schema::rule_record::OwnerHold::NativeFailureHold => {
+                        "native_failure_hold"
+                    }
+                    studio_runtime_schema::rule_record::OwnerHold::Archived => "archived",
+                }
+                .to_owned()
+            }),
         })
     }
     /// Only an active rule without a check in flight can change in a tick.
@@ -453,7 +445,7 @@ impl RuleSnapshot {
         }
         Ok(Self {
             raw: rule,
-            launch_intent: record.launch_intent.flatten(),
+            launch_intent: record.launch_intent.value().cloned(),
             owner_raw: owner,
             rule: parsed,
             owner: agent,
