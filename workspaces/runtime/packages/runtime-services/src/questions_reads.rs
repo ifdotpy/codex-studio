@@ -52,7 +52,7 @@ pub(crate) fn question_history_entity(raw: &str) -> Result<Option<Value>, Questi
 
 pub fn complaint_detail(stored: Option<ComplaintRecord>) -> Result<Value, QuestionsReadsError> {
     let record = stored.ok_or(QuestionsReadsError::UnknownComplaint)?;
-    Ok(record.value().clone())
+    Ok(record.into_value())
 }
 
 pub fn checkpoint_list(

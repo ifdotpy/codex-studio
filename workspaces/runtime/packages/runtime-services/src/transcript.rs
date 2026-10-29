@@ -494,7 +494,7 @@ fn search_item_in(
         Table::<ComplaintRecord>::new(connection)
             .get(&String::from(identity))
             .map_err(|_| TranscriptError::Store)?
-            .map(|row| (row.value().clone(), "complaint"))
+            .map(|row| (row.into_value(), "complaint"))
     };
     let Some((mut record, kind)) = result else {
         return Err(TranscriptError::SearchResultUnavailable);

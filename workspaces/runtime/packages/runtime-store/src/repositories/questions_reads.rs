@@ -39,7 +39,6 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
 mod tests {
     use super::{QuestionsReadsRepository, REQUIREMENTS};
     use rusqlite::Connection;
-    use serde_json::json;
 
     #[test]
     fn bootstrapped_record_families_are_required() {
@@ -82,8 +81,8 @@ mod tests {
             QuestionsReadsRepository::complaint(&db, "c")
                 .expect("complaint read")
                 .expect("complaint exists")
-                .value()["text"],
-            json!("Review")
+                .text(),
+            Some("Review")
         );
         assert_eq!(
             QuestionsReadsRepository::checkpoints(&db).expect("checkpoint read")[0].id(),

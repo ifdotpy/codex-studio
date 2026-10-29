@@ -12,6 +12,7 @@ pub mod claude_options;
 pub mod claude_failure;
 pub mod claude_login;
 mod codex_generated;
+pub mod complaint_record;
 pub mod complaints;
 pub mod contracts;
 pub mod continuation_snapshot;

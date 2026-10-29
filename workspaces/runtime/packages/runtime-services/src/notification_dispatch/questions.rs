@@ -68,14 +68,13 @@ pub(crate) fn submit_agent_complaint(
     )
     .to_string();
     if let Some(previous) = Table::<ComplaintRecord>::new(tx).get(&complaint_id)? {
-        let previous = previous.value();
-        if previous["text"] != text
-            || previous["author"] != agent_id
-            || previous["leadId"] != lead_id
+        if previous.text() != Some(text)
+            || previous.author() != Some(agent_id)
+            || previous.lead_id() != Some(lead_id)
         {
             return Err(NotificationDispatchError::ConflictingInput);
         }
-        return Ok(previous.clone());
+        return Ok(previous.into_value());
     }
     let recipient = if agent_id == lead_id { "user" } else { "lead" };
     let record = json!({"id":complaint_id,"leadId":lead_id,"author":agent_id,"text":text,"recipient":recipient,"version":1,"status":"open","created":at,"updated":at,"readAt":null,"responses":[]});
@@ -226,9 +225,14 @@ pub(crate) fn agent_complaint_action(
                 .ok_or(NotificationDispatchError::invalid())?;
             let raw = studio_runtime_store::QuestionsWriteRepository::complaint(tx, id)?
                 .ok_or(NotificationDispatchError::invalid())?;
-            let mut complaint: Value =
+            let complaint: ComplaintRecord =
                 serde_json::from_str(&raw).map_err(|_| stored("runtime_complaints", id))?;
-            if complaint["leadId"] != actor_id || complaint["recipient"] == "user" {
+            if complaint.id() != id {
+                return Err(stored("runtime_complaints", id));
+            }
+            let authorized = complaint.lead_id() == Some(actor_id);
+            let mut complaint = complaint.into_value();
+            if !authorized || complaint["recipient"] == "user" {
                 return Err(NotificationDispatchError::invalid());
             }
             let text = args["text"]
@@ -341,11 +345,14 @@ fn reconcile_complaint_notifications(
                 all_answered = false;
                 break;
             };
-            let Ok(complaint) = serde_json::from_str::<Value>(&raw) else {
+            let Ok(complaint) = serde_json::from_str::<ComplaintRecord>(&raw) else {
                 all_answered = false;
                 break;
             };
-            if complaint["leadId"] != lead_id || needs_agent_response(&complaint) {
+            if complaint.id() != id
+                || complaint.lead_id() != Some(lead_id)
+                || needs_agent_response(&complaint.into_value())
+            {
                 all_answered = false;
                 break;
             }

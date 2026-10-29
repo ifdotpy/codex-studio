@@ -761,9 +761,13 @@ fn parse_complaint(
     id: &str,
     validate: &impl Fn(&Value) -> bool,
 ) -> Result<Value, QuestionsWriteError> {
-    let complaint: Value =
+    let complaint: studio_runtime_store::ComplaintRecord =
         serde_json::from_str(raw).map_err(|_| invalid_stored("runtime_complaints", id))?;
-    if complaint.get("id").and_then(Value::as_str) != Some(id) || !validate(&complaint) {
+    if complaint.id() != id {
+        return Err(invalid_stored("runtime_complaints", id));
+    }
+    let complaint = complaint.into_value();
+    if !validate(&complaint) {
         return Err(invalid_stored("runtime_complaints", id));
     }
     Ok(complaint)

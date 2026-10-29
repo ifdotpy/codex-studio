@@ -68,6 +68,13 @@ impl QuestionsWriteRepository {
     }
 
     pub fn put_complaint(transaction: &Transaction<'_>, id: &str, record: &str) -> StoreResult<()> {
+        let typed: crate::ComplaintRecord = serde_json::from_str(record)?;
+        if typed.id() != id {
+            return Err(crate::StoreError::InvalidStoredObject {
+                table: "runtime_complaints",
+                id: id.to_owned(),
+            });
+        }
         transaction.execute(
             "INSERT INTO runtime_complaints(id,record) VALUES (?1,?2) \
              ON CONFLICT(id) DO UPDATE SET record=excluded.record",

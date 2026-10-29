@@ -854,14 +854,82 @@ record_newtype!(
     key = PayloadId,
     query = JsonAgent
 );
-record_newtype!(
-    ComplaintRecord,
-    String,
-    table = "runtime_complaints",
-    schema = "PersistedComplaintRecord",
-    key = PayloadId,
-    query = None
-);
+pub use studio_runtime_schema::complaint_record::ComplaintRecord;
+impl JsonRecord for ComplaintRecord {
+    type Id = String;
+    const TABLE: &'static str = "runtime_complaints";
+    const SCHEMA: &'static str = "PersistedComplaintRecord";
+    const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
+    const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
+    const TYPED_SHAPE: bool = true;
+    const DIRECT_TYPED_DECODE: bool = true;
+    fn record_key(&self) -> Option<&Self::Id> {
+        Some(self.id())
+    }
+}
+#[cfg(test)]
+mod complaint_typed_tests {
+    use super::{ComplaintRecord, Table};
+    use serde_json::json;
+
+    #[test]
+    fn complaint_deserialization_enforces_shape_and_preserves_open_status() {
+        for value in [
+            json!(["c"]),
+            json!({"id":"c","author":1}),
+            json!({"id":"c","status":false}),
+            json!({"id":"c","leadId":[]}),
+        ] {
+            assert!(serde_json::from_value::<ComplaintRecord>(value).is_err());
+        }
+        for value in [
+            json!({"id":"c"}),
+            json!({"id":"c","author":null,"leadId":"l","status":"future","text":null,"future":[1]}),
+        ] {
+            let decoded: ComplaintRecord = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(serde_json::to_value(decoded).unwrap(), value);
+        }
+    }
+
+    #[test]
+    fn complaint_storage_preserves_extensions_and_enforces_identity() {
+        let mut db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE runtime_complaints(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
+        )
+        .unwrap();
+        let tx = db.transaction().unwrap();
+        let raw = r#"{ "id":"c", "status":"future", "author":null, "future":{"a":1} }"#;
+        crate::QuestionsWriteRepository::put_complaint(&tx, "c", raw).unwrap();
+        let saved: String = tx
+            .query_row(
+                "SELECT record FROM runtime_complaints WHERE id='c'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(saved, raw);
+        assert_eq!(
+            Table::<ComplaintRecord>::new(&tx)
+                .get(&"c".to_owned())
+                .unwrap()
+                .unwrap()
+                .into_value(),
+            serde_json::from_str::<serde_json::Value>(raw).unwrap()
+        );
+        assert!(crate::QuestionsWriteRepository::put_complaint(&tx, "other", raw).is_err());
+        tx.execute(
+            "UPDATE runtime_complaints SET record=?1",
+            [r#"{"id":"other","id":"c"}"#],
+        )
+        .unwrap();
+        assert!(
+            Table::<ComplaintRecord>::new(&tx)
+                .get(&"c".to_owned())
+                .is_err()
+        );
+    }
+}
 pub use studio_runtime_schema::checkpoint_record::CheckpointRecord;
 impl JsonRecord for CheckpointRecord {
     type Id = String;
