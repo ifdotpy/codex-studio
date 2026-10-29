@@ -2833,4 +2833,33 @@ describe("shared resource event transport", () => {
     expect(Source.instances).toHaveLength(1);
     expect(source.restart).toHaveBeenCalledOnce();
   });
+
+  it("native stream counts each failed core reconnect and resumes the second without cursors", async () => {
+    const { readSubscriptionCursor } = await import("./client");
+    vi.mocked(readSubscriptionCursor).mockResolvedValue({
+      seq: 1,
+      workspaceId,
+    });
+    const { source } = await openNative();
+    // The core keeps one source object; each resume is a new connection.
+    const failAndResume = async (session: string) => {
+      source.emitRaw("resources", null);
+      source.onresume?.();
+      await vi.advanceTimersByTimeAsync(0);
+      const path = new URL(
+        String(source.resume.mock.calls.at(-1)![0]),
+        "http://studio.test",
+      );
+      source.open();
+      source.emit("session", { sessionId: session });
+      source.emit("api-schema", { hash: API_SCHEMA_HASH });
+      const since: unknown = JSON.parse(path.searchParams.get("since")!);
+      if (!Array.isArray(since)) throw new TypeError("since is not a list");
+      return since.length;
+    };
+    const first = await failAndResume("session-two");
+    const second = await failAndResume("session-three");
+    expect(source.restart).toHaveBeenCalledTimes(2);
+    expect([first, second]).toEqual([1, 0]);
+  });
 });

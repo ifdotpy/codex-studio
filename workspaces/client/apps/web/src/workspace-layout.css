@@ -270,19 +270,49 @@
   margin: 0;
 }
 
-/* Delivery metadata uses the existing message gap, never the bubble's size. */
+/* Delivery metadata has its own row under the bubble, never the bubble's size.
+   The row is as tall as its label or its action control, whichever is taller. */
+.ai-conversation {
+  --message-delivery-row: 24px;
+}
+@media (pointer: coarse) {
+  .ai-conversation {
+    --message-delivery-row: var(--studio-touch-target);
+  }
+}
 .ai-conversation .message.user .message-delivery-heading,
 .ai-conversation .message.user .message-delivery-inline {
   position: absolute;
   top: 100%;
   right: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   width: max-content;
   max-width: min(680px, calc(100vw - 48px));
-  height: 24px;
+  height: var(--message-delivery-row);
   margin: 0;
   line-height: 24px;
   font-size: var(--studio-text-meta);
   white-space: nowrap;
+}
+/* Reserve the row and keep a gap below it, so the status and its control
+   never cover the next transcript item. */
+#conversation.ai-conversation
+  .message.user:has(.message-delivery-heading, .message-delivery-inline) {
+  margin-bottom: calc(var(--message-delivery-row) + 20px);
+}
+/* Desktop message actions sit under the bubble too: stack them below the row. */
+@media (min-width: 761px) and (hover: hover) and (pointer: fine) {
+  #conversation.ai-conversation
+    .message.user:has(.message-delivery-heading, .message-delivery-inline)
+    .message-bottom {
+    top: calc(100% + var(--message-delivery-row));
+  }
+  #conversation.ai-conversation
+    .message.user:has(.message-delivery-heading, .message-delivery-inline) {
+    margin-bottom: calc(var(--message-delivery-row) + 52px);
+  }
 }
 .ai-conversation
   .message.user

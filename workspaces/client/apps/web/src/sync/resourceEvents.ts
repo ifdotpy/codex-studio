@@ -377,6 +377,18 @@ export function createResourceEvents(options: ResourceEventsOptions) {
 
   let coordinatorIdleStopTimer: ReturnType<typeof setTimeout> | undefined;
 
+  // Consecutive streams that ended in a local frame application failure, of
+  // any kind. It is the backoff floor. A server heartbeat, a new epoch or a
+  // coordinator stop clears it; frames applied before a failure do not.
+  // Streams are numbered: a native source keeps one object across reconnects.
+  let streamNumber = 0;
+  let failedStreams = 0;
+  let failedStream: number | undefined;
+  // From the second failed stream, the next stream opens without cursors.
+  // The first frame applied on that stream clears it.
+  let fullBaseline = false;
+  let fullBaselineStream: number | undefined;
+
   let preHandshakeFailures = 0;
 
   let preHandshakeResponseGeneration: number | undefined;
@@ -771,6 +783,8 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     }
     const epochChanged = lastEpoch !== event.epoch;
     if (epochChanged) {
+      // A new server epoch is a new history; the first epoch is not a change.
+      if (lastEpoch !== undefined) clearFailedStreams();
       lastEpoch = event.epoch;
       lastRevision = undefined;
       lastHeartbeatRevision = undefined;
@@ -1015,6 +1029,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
             listener(version);
         }
       }
+      if (source && streamNumber === fullBaselineStream) fullBaseline = false;
     } catch (error) {
       frameFailed(error, "local-state-error");
     }
@@ -1336,6 +1351,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     }
     if (fromPeer) return;
     lastHeartbeatRevision = heartbeat.revision;
+    clearFailedStreams();
     refreshHeartbeatTimeout();
     confirmConnectionActivity();
     if (owner) broadcast({ kind: "leader-heartbeat" });
@@ -1357,12 +1373,30 @@ export function createResourceEvents(options: ResourceEventsOptions) {
   ) {
     if (error !== undefined)
       console.error("Sync stream frame could not be applied", error);
+    if (source && streamNumber !== failedStream) {
+      failedStream = streamNumber;
+      failedStreams++;
+      if (failedStreams > 1) fullBaseline = true;
+    }
     reconnectNow(
       failure,
       error === undefined
         ? undefined
         : String((error as Error)?.message ?? error),
     );
+  }
+
+  /** Numbers each new connection, including a native reconnect. */
+  function beginStream() {
+    streamNumber++;
+    fullBaselineStream = fullBaseline ? streamNumber : undefined;
+  }
+
+  function clearFailedStreams() {
+    failedStreams = 0;
+    failedStream = undefined;
+    fullBaseline = false;
+    fullBaselineStream = undefined;
   }
 
   function refreshHeartbeatTimeout() {
@@ -1680,7 +1714,8 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       connectionState.phase === "reconnecting"
         ? connectionState.attempt + 1
         : 1;
-    const delay = retryDelay(attempt);
+    // Applied frames reset the attempt; failed streams keep the backoff growing.
+    const delay = retryDelay(Math.max(attempt, failedStreams));
     reconnectTimer = setTimeout(() => {
       cancelReconnect();
       if (!coordinatorReady) void initialize();
@@ -1773,7 +1808,10 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     > = {
       protocol: String(SYNC_PROTOCOL_VERSION),
       resources: JSON.stringify(currentResources),
-      since: JSON.stringify(since.filter((entry) => entry.since)),
+      // Repeated failures get a full baseline, not the same interval again.
+      since: JSON.stringify(
+        fullBaseline ? [] : since.filter((entry) => entry.since),
+      ),
       tokenRates: currentTokenRates,
       reconnect: connectionState.phase === "reconnecting",
       [API_SCHEMA_HASH_PARAM]: API_SCHEMA_HASH,
@@ -1792,6 +1830,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     if (source !== connected) return;
     if (path === undefined) closeSource();
     else {
+      beginStream();
       connected.resume!(path);
     }
     setActivity(path === undefined ? "stopped" : "connecting");
@@ -1904,6 +1943,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         return;
       }
       source = connected;
+      beginStream();
       openingSource = undefined;
       setActivity("connecting");
       if (source !== connected) return;
@@ -2390,6 +2430,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     peerHealth.clear();
     coordinatorReady = false;
     workspaceId = undefined;
+    clearFailedStreams();
     lastEpoch = undefined;
     lastRevision = undefined;
     lastHeartbeatRevision = undefined;
