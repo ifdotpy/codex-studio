@@ -185,19 +185,36 @@ enum Grant { Full, Observe }                // Observe: read commands only
 the agent tools (`managed_host_tools`), and peer servers (orchestration) use it. Checks,
 idempotency, and states are therefore the same for all callers.
 
-A command is an API concept, not a table. Its result lives in the row of the entity that
-it changes:
+Every write command is recorded in one table, `request_results`, without a copy of the
+response ([#587](https://github.com/ifdotpy/layr-studio/issues/587)). State lives only in
+the entity tables.
 
-- **A command that creates a row** (message, spawn, upload): the client id is the row id,
-  and the row keeps the hash of the body. The row is the receipt. The same id with a
-  different body is a conflict.
-- **A command that changes state** is idempotent by its target: `interrupt` names a turn,
-  `configure` carries the expected revision, `delete` does nothing when the row is gone.
-  It needs no receipt.
-- **A separate record** stays only for the cases that have no main row (section 3 of the
-  [schema overview](../audits/db-schema-2026-10-28.md)).
-- A lost outcome is a state of the row (for example `Delivery::Unknown`). It never runs
-  again by itself. Exactly-once applies only to the write to the provider.
+```sql
+CREATE TABLE request_results (
+  id        TEXT PRIMARY KEY,  -- client request id
+  signature TEXT NOT NULL,     -- canonical body hash; same id with another body = conflict
+  status    TEXT NOT NULL,     -- applied | rejected (generated trigger check)
+  ref_kind  TEXT,              -- closed enum of entity kinds
+  ref_id    TEXT,              -- the row that the command created or changed
+  ref_rev   INTEGER,           -- the revision of that row after the command
+  created   INTEGER NOT NULL
+);
+```
+
+- **Every write command gets replay protection by default** through this one code path.
+  A new command needs no rule of its own.
+- **A create command** uses the request id as the row id, and the row keeps the body hash.
+  The row is the receipt, so it needs no `request_results` row.
+- **The response of a write command** is `{status, ref_kind, ref_id, rev}`, not the row.
+  The client gets the row from the stream. A replay returns the same reference, so it is
+  exact without a history of row revisions.
+- **Reads are not recorded.** A repeated read is safe. The tool call and its full result
+  stay in the conversation as an Item.
+- **`Unknown` is not a status here.** A lost outcome belongs to external I/O, so it is a
+  state of the outbox entry and of the entity row (for example `Delivery::Unknown`). It
+  never runs again by itself. Exactly-once applies only to the write to the provider.
+- **Retention:** 30 days, longer than the longest retry of a client (the unsent input
+  buffer of an offline phone). Older rows are service data.
 
 Command rules:
 
@@ -456,9 +473,9 @@ BEGIN SELECT RAISE(ABORT, 'invalid delivery state'); END;
 | ------------------------------ | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
 | Conversation                   | Provider file, `runtime_items`, transcript rows and cached pages in `sync_entities`                                  | `runtime_items`                                               | The provider file stays as the provider's own cache. Transcript pages are built at read time |
 | Entity state for sync          | Main tables and their copies in `sync_entities`                                                                      | The main tables, with a `seq` column                          | Tombstones for deletes                                                                       |
-| Large text                     | Inside item records and agent JSON                                                                                   | `blobs/`, addressed by hash and compressed                    | Rows keep the hash and the size                                                              |
+| Large text                     | Inside item records and agent JSON; the full text of a cut item in `runtime_item_fulltext`                           | `blobs/`, addressed by hash and compressed                    | Rows keep the hash and the size                                                              |
 | Server projections on a client | Client SQLite in `client-core`, RxDB in the web client                                                               | The server                                                    | A remote frontend keeps only the thin cache                                                  |
-| Command results                | About 10 receipt tables (`runtime_operation_receipts` has 2.83M rows for 3,378 chats)                                | The row of the changed entity                                 | A separate record only where no main row exists                                              |
+| Command results                | About 10 receipt tables (`runtime_operation_receipts` has 2.83M rows for 3,378 chats)                                | The row of the changed entity                                 | One `request_results` table with a reference, no response copy                               |
 | Outgoing requests              | 4 outboxes (`runtime_server_outbox`, `runtime_federation_outbox`, `runtime_access_outbound`, `runtime_server_fetch`) | One outbox with `kind` and `target`                           | The same request id and exact body on each retry                                             |
 | Signatures and nonces          | 2 schemes and 2 nonce tables                                                                                         | `studio-multi-server-v1`, with federation as a principal kind | Separate trust lists stay                                                                    |
 | Device keys                    | One key for each pair of device and server                                                                           | One key for each device, in the shared trust list             | Revocation spreads through the list                                                          |
@@ -486,6 +503,9 @@ BEGIN SELECT RAISE(ABORT, 'invalid delivery state'); END;
 - Blob order: write the blob, fsync, then write the row. Blob collection uses mark and sweep with a delay.
 - Move client drafts, uploads, and recordings to the server before the client store is deleted.
 - Move a receipt table in one transaction. Keep the old table read-only until it is empty.
+- A cut item keeps its full text in `runtime_item_fulltext` today (on 2026-10-29: 257 of
+  the latest 2,559 MCP tool call items, about 148 KB each). Move it to a blob before any
+  receipt copy or fulltext row is deleted.
 
 ## Risks
 
