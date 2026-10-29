@@ -125,6 +125,8 @@ fn apply(
                 return Err(ContinuationError::Invalid("/events/identity".into()));
             }
 
+            let agent = serde_json::from_value(snapshot.agent.clone())
+                .map_err(|_| ContinuationError::Invalid("/agent".into()))?;
             if prior.is_none() {
                 studio_runtime_store::QueueWriteRepository::put_metadata(
                     tx,
@@ -134,7 +136,7 @@ fn apply(
             }
             crate::event_write::enqueue_event(
                 tx,
-                snapshot.agent_record(),
+                &agent,
                 id.clone(),
                 "followup",
                 text.clone(),
@@ -186,4 +188,28 @@ fn apply(
         fault.at(Boundary::AfterMetadata)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn followup_uses_snapshot_agent_after_pending_settings_mutation() {
+        let root = tempfile::tempdir().unwrap();
+        let store = studio_runtime_store::RuntimeStore::open(Some(root.path()))
+            .await
+            .unwrap();
+        store.transaction_with_error(|tx| -> Result<()> {
+            let agent = json!({"id":"a","rootId":"a","provider":"codex","epoch":1,"status":"failed","autoWake":true});
+            let mut snapshot = Snapshot::from_records(json!({"agent":agent}))?;
+            snapshot.agent["autoWake"] = json!(false);
+            let decision = Decision { effects: vec![Effect::Followup { id:"follow".into(), text:"continue".into() }], ..Decision::default() };
+            apply_in_transaction(tx, &snapshot, ContinuationTable::Usage, &decision, 1.0)?;
+            let status: String = tx.query_row("SELECT status FROM runtime_events WHERE id='follow'", [], |row| row.get(0)).map_err(studio_runtime_store::StoreError::from)?;
+            assert_eq!(status, "cancelled");
+            Ok(())
+        }).await.unwrap();
+    }
 }
