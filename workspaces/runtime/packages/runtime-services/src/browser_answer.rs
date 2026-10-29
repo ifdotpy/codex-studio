@@ -350,10 +350,10 @@ pub async fn answer<V: Fn(&Value) -> bool + Send + Sync + 'static>(
                 .ok_or(BrowserAnswerError::Invalid(
                     "The sign-in request is invalid",
                 ))?;
-        let forward_state = json!({
-            "tokenHash":studio_runtime_store::sha256_hex(token.as_bytes()),
-            "expiresAt":expires_at
-        });
+        let forward_state = crate::browser_cards::BrowserForward {
+            token_hash: Some(studio_runtime_store::sha256_hex(token.as_bytes())),
+            expires_at: json!(expires_at),
+        };
         Some(json!({
             "server":server,
             "bridgeId":bridge_id,

@@ -181,6 +181,11 @@ async fn pending_links_become_cards_once_and_unknown_chats_are_refused() {
     assert_eq!(card["agent"], VM_AGENT);
     assert_eq!(card["status"], "pending");
     assert_eq!(card["params"]["redirect"], redirect);
+    assert_eq!(card["params"]["url"], KUBE);
+    assert_eq!(
+        card["params"]["host"],
+        item(&kube, VM_AGENT, KUBE, redirect.clone(), "pending", 1)["host"]
+    );
     assert_eq!(card["params"]["source"], "vm");
     assert_eq!(card["params"]["userCode"], Value::Null);
     let device_card = request(&store, &device).expect("device card");
@@ -208,6 +213,37 @@ async fn pending_links_become_cards_once_and_unknown_chats_are_refused() {
         created,
         "a second poll never makes a second card"
     );
+}
+
+#[tokio::test]
+async fn non_string_url_or_host_never_creates_a_browser_card() {
+    let (_dir, store) = store().await;
+    let guest = Arc::new(WaitGuest {
+        batches: Mutex::new(VecDeque::new()),
+        calls: Mutex::new(Vec::new()),
+    });
+    let source = CardSource {
+        source: "vm",
+        guest,
+        forwarder: None,
+        http_providers: Default::default(),
+    };
+    for (id, field) in [("d".repeat(32), "url"), ("e".repeat(32), "host")] {
+        let mut input = item(
+            &id,
+            VM_AGENT,
+            KUBE,
+            json!({"host":"localhost","port":8000,"path":"/"}),
+            "pending",
+            1,
+        );
+        input[field] = json!(42);
+        let result = super::apply(&store, &source, input, 1.0)
+            .await
+            .expect("apply");
+        assert!(result.refused.is_some());
+        assert!(request(&store, &id).is_none());
+    }
 }
 
 #[tokio::test]

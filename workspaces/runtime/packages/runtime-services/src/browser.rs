@@ -302,8 +302,8 @@ impl BrowserCallbackReceiver {
         }
         let expected = parsed
             .as_ref()
-            .and_then(|params| params.forward.get("tokenHash"))
-            .and_then(Value::as_str)
+            .and_then(|params| params.forward.as_ref())
+            .and_then(|forward| forward.token_hash.as_deref())
             .ok_or_else(|| {
                 refused(
                     403,
@@ -1855,6 +1855,22 @@ mod tests {
                 403,
             ),
             (
+                r#"{"method":"browser/open","params":{"bridgeId":"0123456789abcdef0123456789abcdef","forward":null}}"#,
+                403,
+            ),
+            (
+                r#"{"method":"browser/open","params":{"bridgeId":"0123456789abcdef0123456789abcdef","forward":123}}"#,
+                403,
+            ),
+            (
+                r#"{"method":"browser/open","params":{"bridgeId":"0123456789abcdef0123456789abcdef","forward":{"tokenHash":null,"extra":true}}}"#,
+                403,
+            ),
+            (
+                r#"{"method":"browser/open","params":{"bridgeId":"wrong","forward":{"tokenHash":false}}}"#,
+                404,
+            ),
+            (
                 r#"{"method":"wrong","method":"browser/open","params":{"bridgeId":"0123456789abcdef0123456789abcdef","forward":{"tokenHash":"bad"}}}"#,
                 403,
             ),
@@ -1872,6 +1888,25 @@ mod tests {
                 .expect_err("refused before callback");
             assert_eq!(error.status(), expected, "{raw}");
         }
+        let key = id.clone();
+        let valid = json!({"method":"browser/open","params":{"bridgeId":bridge,"forward":{"tokenHash":studio_runtime_store::sha256_hex(b"token"),"extra":true}}}).to_string();
+        store
+            .transaction_with(move |tx| {
+                studio_runtime_store::QuestionsWriteRepository::put_request(tx, &key, &valid)
+            })
+            .await
+            .expect("valid token fixture");
+        let error = receiver
+            .receive(&json!({"bridgeId":bridge,"token":"token","target":"/"}))
+            .await
+            .expect_err("redirect absent");
+        assert!(matches!(
+            error,
+            crate::multi_server_auth::AccessError::Refused {
+                code: "browser_redirect_missing",
+                ..
+            }
+        ));
     }
 
     #[test]

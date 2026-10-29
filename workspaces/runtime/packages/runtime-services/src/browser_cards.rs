@@ -58,10 +58,35 @@ pub(crate) struct BrowserParams {
     pub phase: Option<String>,
     #[serde(default)]
     pub redirect: Value,
-    #[serde(default, skip_serializing_if = "Value::is_null")]
-    pub forward: Value,
+    #[serde(default, skip_serializing, deserialize_with = "browser_forward")]
+    pub forward: Option<BrowserForward>,
     #[serde(flatten)]
     pub extra: serde_json::Map<String, Value>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BrowserForward {
+    #[serde(
+        default,
+        deserialize_with = "browser_text",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub token_hash: Option<String>,
+    #[serde(default)]
+    pub expires_at: Value,
+}
+
+fn browser_forward<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<BrowserForward>, D::Error> {
+    use serde::Deserialize;
+    let raw = Value::deserialize(d)?;
+    Ok(
+        studio_runtime_schema::json_object::JsonObject::<BrowserForward>::deserialize(&raw)
+            .ok()
+            .map(|object| object.0),
+    )
 }
 
 fn browser_text<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
