@@ -237,12 +237,21 @@ mod tests {
         for raw in [
             r#"{"id":"wrong"}"#,
             r#"{"id":"m","status":"unknown"}"#,
-            r#"{"id":"m","id":"m"}"#,
+            r#"{"id":"m","id":"wrong"}"#,
         ] {
             db.execute("UPDATE runtime_monitors SET record=?1", [raw])
                 .unwrap();
             assert!(MonitorsRepository::get(&db, "m").is_err());
         }
+        db.execute(
+            "UPDATE runtime_monitors SET record=?1",
+            [r#"{"id":"wrong","id":"m","future":[1]}"#],
+        )
+        .unwrap();
+        assert_eq!(
+            MonitorsRepository::get(&db, "m").unwrap().unwrap().value(),
+            serde_json::json!({"id":"m","future":[1]})
+        );
     }
 
     #[test]
