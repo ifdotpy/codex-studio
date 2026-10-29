@@ -147,7 +147,11 @@ pub fn stored(db: &mut Connection, request: &Request) -> Response {
 async fn stored_request(sender: &StoreSender, request: Request) -> Response {
     let id = request.id.clone();
     let (reply, receive) = tokio::sync::oneshot::channel();
-    if sender.send((request, reply)).await.is_err() {
+    if sender
+        .send(crate::delivery::StoreCommand::Request(request, reply))
+        .await
+        .is_err()
+    {
         return Response::failure(id, "core_failed", "The state worker stopped.");
     }
     receive
@@ -417,8 +421,8 @@ mod tests {
                 tokio::sync::mpsc::channel::<crate::delivery::StoreCommand>(64);
             let thread = std::thread::spawn(move || {
                 let mut store = Store::open(&path).unwrap();
-                while let Some((request, reply)) = receive.blocking_recv() {
-                    drop(reply.send(store.dispatch(request)));
+                while let Some(command) = receive.blocking_recv() {
+                    command.execute(&mut store);
                 }
             });
             (sender, thread)

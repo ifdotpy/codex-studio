@@ -6,13 +6,183 @@ use crate::{
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
 
-pub type StoreCommand = (Request, oneshot::Sender<Response>);
+pub enum StoreCommand {
+    Request(Request, oneshot::Sender<Response>),
+    PutDocuments {
+        workspace: String,
+        scope: String,
+        documents: Vec<crate::projections::CheckedDocument>,
+        reply: oneshot::Sender<Response>,
+    },
+    ApplyEntities {
+        workspace: String,
+        changes: Vec<studio_client_domain::sync_entity::EntityChange>,
+        replace: bool,
+        checkpoint: Option<u64>,
+        expected_revision: Option<u64>,
+        reply: oneshot::Sender<Response>,
+    },
+}
 pub type StoreSender = mpsc::Sender<StoreCommand>;
+
+impl StoreCommand {
+    #[cfg(test)]
+    pub(crate) fn execute(self, store: &mut crate::store::Store) -> bool {
+        self.execute_with(store, || {})
+    }
+    pub(crate) fn execute_with(
+        self,
+        store: &mut crate::store::Store,
+        notify: impl FnOnce(),
+    ) -> bool {
+        let (reply, response, mutation) = match self {
+            Self::Request(request, reply) => {
+                let mutation = matches!(
+                    request.method.as_str(),
+                    "drafts.import"
+                        | "drafts.edit"
+                        | "drafts.dismiss"
+                        | "drafts.receive"
+                        | "drafts.acknowledge"
+                        | "drafts.sync_status"
+                        | "draft.set"
+                        | "preferences.set"
+                        | "preferences.import"
+                        | "preferences.raw_set"
+                        | "preferences.raw_remove"
+                        | "identity.set"
+                        | "projection.put"
+                        | "outbox.enqueue"
+                        | "outbox.change"
+                        | "outbox.display"
+                        | "outbox.acknowledge"
+                        | "outbox.acknowledge_many"
+                        | "outbox.claim"
+                        | "outbox.receipt"
+                        | "outbox.failure"
+                );
+                (reply, store.dispatch(request), mutation)
+            }
+            Self::PutDocuments {
+                workspace,
+                scope,
+                documents,
+                reply,
+            } => {
+                let result = crate::projections::put_documents(
+                    &store.connection,
+                    &workspace,
+                    &scope,
+                    &documents,
+                );
+                (reply, projection_response(result), !documents.is_empty())
+            }
+            Self::ApplyEntities {
+                workspace,
+                changes,
+                replace,
+                checkpoint,
+                expected_revision,
+                reply,
+            } => {
+                let result = crate::projections::apply_entity_batch(
+                    &store.connection,
+                    &workspace,
+                    &changes,
+                    replace,
+                    checkpoint,
+                    expected_revision,
+                );
+                (reply, projection_response(result), false)
+            }
+        };
+        let changed = mutation && response.error.is_none();
+        if changed {
+            notify();
+        }
+        drop(reply.send(response));
+        changed
+    }
+    pub(crate) fn unavailable(self, error: &str) {
+        let (id, reply) = match self {
+            Self::Request(request, reply) => (request.id, reply),
+            Self::PutDocuments { reply, .. } | Self::ApplyEntities { reply, .. } => {
+                ("core-delivery".into(), reply)
+            }
+        };
+        drop(reply.send(Response::failure(id, "client_state_unavailable", error)));
+    }
+}
+fn projection_response(result: Result<Value, String>) -> Response {
+    match result {
+        Ok(value) => Response::success("core-delivery".into(), value),
+        Err(error) => Response::failure("core-delivery".into(), "projection_error", error),
+    }
+}
+async fn typed_state(
+    sender: &StoreSender,
+    command: StoreCommand,
+    receive: oneshot::Receiver<Response>,
+) -> Result<Value, String> {
+    sender
+        .send(command)
+        .await
+        .map_err(|_| "The state worker stopped.")?;
+    let response = receive.await.map_err(|_| "The state worker stopped.")?;
+    response.result.ok_or_else(|| {
+        response
+            .error
+            .map(|error| error.message)
+            .unwrap_or_else(|| "Missing state response.".into())
+    })
+}
+pub(crate) async fn put_documents(
+    sender: &StoreSender,
+    workspace: &str,
+    scope: &str,
+    documents: Vec<crate::projections::CheckedDocument>,
+) -> Result<Value, String> {
+    let (reply, receive) = oneshot::channel();
+    typed_state(
+        sender,
+        StoreCommand::PutDocuments {
+            workspace: workspace.into(),
+            scope: scope.into(),
+            documents,
+            reply,
+        },
+        receive,
+    )
+    .await
+}
+pub(crate) async fn apply_entities(
+    sender: &StoreSender,
+    workspace: &str,
+    changes: Vec<studio_client_domain::sync_entity::EntityChange>,
+    replace: bool,
+    checkpoint: Option<u64>,
+    expected_revision: Option<u64>,
+) -> Result<Value, String> {
+    let (reply, receive) = oneshot::channel();
+    typed_state(
+        sender,
+        StoreCommand::ApplyEntities {
+            workspace: workspace.into(),
+            changes,
+            replace,
+            checkpoint,
+            expected_revision,
+            reply,
+        },
+        receive,
+    )
+    .await
+}
 
 pub async fn state(sender: &StoreSender, method: &str, params: Value) -> Result<Value, String> {
     let (reply, receive) = oneshot::channel();
     sender
-        .send((
+        .send(StoreCommand::Request(
             Request {
                 id: "core-delivery".into(),
                 method: method.into(),
@@ -218,8 +388,8 @@ mod tests {
         let (sender, mut receiver) = mpsc::channel::<StoreCommand>(64);
         let worker = std::thread::spawn(move || {
             let mut store = Store::open(&path).unwrap();
-            while let Some((request, reply)) = receiver.blocking_recv() {
-                drop(reply.send(store.dispatch(request)));
+            while let Some(command) = receiver.blocking_recv() {
+                command.execute(&mut store);
             }
         });
         (sender, worker)
@@ -228,7 +398,7 @@ mod tests {
     async fn user(sender: &StoreSender, id: &str, method: &str, params: Value) -> Response {
         let (reply, receive) = oneshot::channel();
         sender
-            .send((
+            .send(StoreCommand::Request(
                 Request {
                     id: id.into(),
                     method: method.into(),

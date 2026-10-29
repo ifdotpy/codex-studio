@@ -260,7 +260,7 @@ pub async fn dispatch(backend: &Backend, sender: &StoreSender, request: Request)
             let mut params=p.clone();params["workspace"]=json!(workspace);
             if request.method=="uploads.pending"{return state(sender,"uploads.list",params).await;}
             let (reply,receive)=tokio::sync::oneshot::channel();
-            sender.send((Request{id:request.id.clone(),method:"uploads.queue".into(),params},reply)).await.map_err(|e|e.to_string())?;
+            sender.send(crate::delivery::StoreCommand::Request(Request{id:request.id.clone(),method:"uploads.queue".into(),params},reply)).await.map_err(|e|e.to_string())?;
             let response=receive.await.map_err(|e|e.to_string())?;
             return response.result.ok_or_else(||response.error.map(|e|e.message).unwrap_or("Missing file state response.".into()));
         }
@@ -429,8 +429,8 @@ mod tests {
                 tokio::sync::mpsc::channel::<crate::delivery::StoreCommand>(64);
             let thread = std::thread::spawn(move || {
                 let mut store = Store::open(&path).unwrap();
-                while let Some((request, reply)) = receive.blocking_recv() {
-                    drop(reply.send(store.dispatch(request)));
+                while let Some(command) = receive.blocking_recv() {
+                    command.execute(&mut store);
                 }
             });
             (sender, thread)

@@ -64,39 +64,17 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
         .name("studio-state".into())
         .spawn(move || {
             let mut state = open_store(&config.state_directory);
-            while let Some((request, reply)) = store_receiver.blocking_recv() {
-                let mutation = matches!(
-                    request.method.as_str(),
-                    "drafts.import"
-                        | "drafts.edit"
-                        | "drafts.dismiss"
-                        | "drafts.receive"
-                        | "drafts.acknowledge"
-                        | "drafts.sync_status"
-                        | "draft.set"
-                        | "preferences.set"
-                        | "preferences.import"
-                        | "preferences.raw_set"
-                        | "preferences.raw_remove"
-                        | "identity.set"
-                        | "projection.put"
-                        | "outbox.enqueue"
-                        | "outbox.change"
-                        | "outbox.display"
-                        | "outbox.acknowledge"
-                        | "outbox.acknowledge_many"
-                        | "outbox.claim"
-                        | "outbox.receipt"
-                        | "outbox.failure"
-                );
-                let response = match &mut state {
-                    Ok((store, _lock)) => store.dispatch(request),
-                    Err(error) => Response::failure(request.id, "client_state_unavailable", error),
-                };
-                if mutation && response.error.is_none() {
-                    changes.send_modify(|version| *version = version.wrapping_add(1));
+            while let Some(command) = store_receiver.blocking_recv() {
+                match &mut state {
+                    Ok((store, _lock)) => {
+                        command.execute_with(store, || {
+                            changes.send_modify(|version| *version = version.wrapping_add(1));
+                        });
+                    }
+                    Err(error) => {
+                        command.unavailable(error);
+                    }
                 }
-                drop(reply.send(response));
             }
         })
         .map_err(|error| error.to_string())?;
@@ -268,7 +246,7 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                     let id = request.id.clone();
                     let (reply, receive) = tokio::sync::oneshot::channel();
                     store_sender
-                        .send((request, reply))
+                        .send(crate::delivery::StoreCommand::Request(request, reply))
                         .await
                         .map_err(|_| "The state worker stopped.")?;
                     Work::Stored(id, receive)

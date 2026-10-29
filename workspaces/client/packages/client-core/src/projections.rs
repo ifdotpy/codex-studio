@@ -329,6 +329,36 @@ fn apply_entities(
 ) -> Result<Value, String> {
     let changes =
         Vec::<EntityChange>::deserialize(&params["changes"]).map_err(|e| e.to_string())?;
+    apply_entities_inner(connection, workspace, &changes, params)
+}
+
+pub(crate) fn apply_entity_batch(
+    connection: &Connection,
+    workspace: &str,
+    changes: &[EntityChange],
+    replace: bool,
+    checkpoint: Option<u64>,
+    expected_revision: Option<u64>,
+) -> Result<Value, String> {
+    if !valid_workspace(workspace) {
+        return Err("Invalid projection identity.".into());
+    }
+    let mut params = json!({"replace":replace});
+    if let Some(checkpoint) = checkpoint {
+        params["checkpoint"] = json!(checkpoint);
+    }
+    if let Some(expected) = expected_revision {
+        params["expectedRevision"] = json!(expected);
+    }
+    apply_entities_inner(connection, workspace, changes, &params)
+}
+
+fn apply_entities_inner(
+    connection: &Connection,
+    workspace: &str,
+    changes: &[EntityChange],
+    params: &Value,
+) -> Result<Value, String> {
     let transaction = Transaction::new_unchecked(connection, TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
     let previous = get(&transaction, workspace, "state")?.unwrap_or(Value::Null);
@@ -353,7 +383,7 @@ fn apply_entities(
             WHERE excluded.seq>client_projections.seq",
             )
             .map_err(|e| e.to_string())?;
-        for change in &changes {
+        for change in changes {
             let scope = change.scope();
             changed |= insert
                 .execute(params![
@@ -409,6 +439,63 @@ fn apply_entities(
     };
     transaction.commit().map_err(|e| e.to_string())?;
     Ok(result)
+}
+
+/// A document checked against its local scope and payload constraints.
+pub struct CheckedDocument(Document);
+
+pub(crate) fn check_document(scope: &str, document: Document) -> Result<CheckedDocument, String> {
+    if document.id != scope || document.seq > MAX_SAFE_INTEGER as u64 {
+        return Err("Invalid projection document.".into());
+    }
+    if !document.deleted {
+        serde_json::from_str::<Value>(&document.payload).map_err(|e| e.to_string())?;
+    }
+    Ok(CheckedDocument(document))
+}
+
+fn write_document(
+    connection: &Connection,
+    workspace: &str,
+    document: &CheckedDocument,
+) -> Result<(), String> {
+    let document = &document.0;
+    connection
+        .execute(
+            "INSERT INTO client_projections(workspace,scope,document,seq) VALUES(?1,?2,?3,?4)
+        ON CONFLICT(workspace,scope) DO UPDATE SET document=excluded.document,seq=excluded.seq
+        WHERE excluded.seq>client_projections.seq",
+            params![
+                workspace,
+                document.id,
+                serde_json::to_string(document).map_err(|e| e.to_string())?,
+                document.seq as i64
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub(crate) fn put_documents(
+    connection: &Connection,
+    workspace: &str,
+    scope: &str,
+    documents: &[CheckedDocument],
+) -> Result<Value, String> {
+    if !valid_workspace(workspace) || scope.is_empty() || scope.len() > MAX_PROJECTION_SCOPE_BYTES {
+        return Err("Invalid projection identity.".into());
+    }
+    let transaction = Transaction::new_unchecked(connection, TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    for document in documents {
+        if document.0.id != scope {
+            return Err("Invalid projection document.".into());
+        }
+        write_document(&transaction, workspace, document)?;
+    }
+    let value = get(&transaction, workspace, scope)?.unwrap_or(Value::Null);
+    transaction.commit().map_err(|e| e.to_string())?;
+    Ok(value)
 }
 
 fn execute(connection: &Connection, request: &Request) -> Result<Value, String> {
@@ -502,16 +589,8 @@ fn execute(connection: &Connection, request: &Request) -> Result<Value, String> 
         "projection.put" => {
             let document: Document = serde_json::from_value(request.params["document"].clone())
                 .map_err(|e| e.to_string())?;
-            if document.id != scope || document.seq > MAX_SAFE_INTEGER as u64 {
-                return Err("Invalid projection document.".into());
-            }
-            if !document.deleted {
-                serde_json::from_str::<Value>(&document.payload).map_err(|e| e.to_string())?;
-            }
-            connection.execute("INSERT INTO client_projections(workspace,scope,document,seq) VALUES(?1,?2,?3,?4)
-                ON CONFLICT(workspace,scope) DO UPDATE SET document=excluded.document,seq=excluded.seq
-                WHERE excluded.seq>client_projections.seq", params![workspace,scope,serde_json::to_string(&document).map_err(|e|e.to_string())?,document.seq as i64])
-                .map_err(|e|e.to_string())?;
+            let document = check_document(scope, document)?;
+            write_document(connection, workspace, &document)?;
             Ok(serde_json::to_value(get(connection, workspace, scope)?)
                 .map_err(|e| e.to_string())?)
         }
@@ -567,6 +646,38 @@ mod tests {
         let snapshot: Value =
             serde_json::from_str(removed.result.unwrap()["payload"].as_str().unwrap()).unwrap();
         assert_eq!(snapshot["runtime"]["studioErrors"], json!([]));
+    }
+
+    #[test]
+    fn document_batch_rolls_back_earlier_writes_on_later_sql_failure() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = crate::store::Store::open(&directory.path().join("client.sqlite3")).unwrap();
+        let workspace = "a".repeat(32);
+        store.connection.execute_batch("CREATE TEMP TRIGGER reject_second_document BEFORE UPDATE ON client_projections WHEN NEW.seq=2 BEGIN SELECT RAISE(ABORT, 'injected failure'); END;").unwrap();
+        let documents = [
+            Document {
+                id: "transcript:a".into(),
+                payload: "{}".into(),
+                seq: 1,
+                deleted: false,
+            },
+            Document {
+                id: "transcript:a".into(),
+                payload: "{}".into(),
+                seq: 2,
+                deleted: false,
+            },
+        ];
+        let documents = documents
+            .into_iter()
+            .map(|document| check_document("transcript:a", document).unwrap())
+            .collect::<Vec<_>>();
+        assert!(put_documents(&store.connection, &workspace, "transcript:a", &documents).is_err());
+        assert!(
+            get(&store.connection, &workspace, "transcript:a")
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
