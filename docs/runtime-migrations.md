@@ -29,7 +29,14 @@ Unsupported source versions must be refused without guessing their meaning.
 The runtime must hold its existing state-directory lock and validate migration
 preconditions before changing existing state. Successful migration and strict
 current-format validation are prerequisites for request serving and worker
-admission. All normal server launch paths use the same startup barrier.
+admission. All normal server launch paths use the same startup barrier. While
+startup is in progress, the server answers `GET /health` with a `migrating`
+status and the current receipt-family source and rowid position (`done` and
+`total` are rowid positions, not row counts). Other endpoints return HTTP 503
+until migration and startup complete. A restart resumes committed receipt
+batches; it does not serve commands against partially migrated data. Serving
+commands during data migration would require compatibility for every affected
+reader and writer and remains a future architecture follow-up.
 
 The supervisor owns its journal under its own lock. It uses the same migration
 contract before its own recovery and listener startup. The server must not
