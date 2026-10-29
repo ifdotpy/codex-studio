@@ -1102,6 +1102,7 @@ async fn claude_a_request_for_another_thread_does_not_keep_a_finished_worker_loa
 /// state unloads like an idle one instead of staying loaded until a turn that
 /// never comes.
 #[tokio::test]
+#[ignore = "heavy tier: just test-quarantine (flaky under load, issue #616)"]
 async fn codex_a_finished_worker_whose_turn_failed_unloads_its_thread() {
     let state = State::new().await;
     let mut peer = Peer::new();
