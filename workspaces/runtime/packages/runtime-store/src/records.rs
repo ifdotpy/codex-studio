@@ -810,6 +810,87 @@ impl JsonRecord for TaskRecord {
     }
 }
 pub use studio_runtime_schema::plan_record::PlanRecord;
+
+#[cfg(test)]
+mod duplicate_stored_record_tests {
+    use super::*;
+
+    fn check<R: JsonRecord>(raw: &str, row_id: &str) {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(&format!(
+            "CREATE TABLE {}(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
+            R::TABLE
+        ))
+        .unwrap();
+        db.execute(
+            &format!("INSERT INTO {}(id,record) VALUES(?1,?2)", R::TABLE),
+            [row_id, raw],
+        )
+        .unwrap();
+        let expected: Value = serde_json::from_str(raw).unwrap();
+        assert!(studio_runtime_schema::validate(R::SCHEMA, &expected).unwrap());
+        let record = Table::<R>::new(&db)
+            .get(&R::Id::from(row_id.to_owned()))
+            .unwrap()
+            .unwrap();
+        let encoded = serde_json::to_string(&record).unwrap();
+        let actual: Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(actual, expected);
+        db.execute(&format!("UPDATE {} SET id='different'", R::TABLE), [])
+            .unwrap();
+        let other = Table::<R>::new(&db).get(&R::Id::from("different".to_owned()));
+        if R::KEY_MODE == RecordKeyMode::PayloadId {
+            assert!(matches!(
+                other,
+                Err(crate::StoreError::InvalidStoredObject { .. })
+            ));
+        } else {
+            assert!(other.unwrap().is_some());
+        }
+    }
+
+    #[test]
+    fn duplicate_stored_record_plan() {
+        check::<PlanRecord>(
+            r#"{"id":"first","id":"last","rootId":"r","text":"x","version":1.0,"updated":null,"extra":{"x":1}}"#,
+            "external",
+        );
+    }
+    #[test]
+    fn duplicate_stored_record_annotation() {
+        check::<AnnotationRecord>(r#"{"id":"other","id":"a","line":1.0,"future":null}"#, "a");
+    }
+    #[test]
+    fn duplicate_stored_record_complaint() {
+        check::<ComplaintRecord>(
+            r#"{"id":"other","id":"c","status":"future","extra":[1]}"#,
+            "c",
+        );
+    }
+    #[test]
+    fn duplicate_stored_record_checkpoint() {
+        check::<CheckpointRecord>(r#"{"id":"other","id":"c","agent":null,"future":[1]}"#, "c");
+    }
+    #[test]
+    fn duplicate_stored_record_monitor() {
+        check::<MonitorRecord>(r#"{"id":"other","id":"m","future":null}"#, "m");
+    }
+    #[test]
+    fn duplicate_stored_record_asset() {
+        check::<TranscriptAssetRecord>(
+            r#"{"id":"other","id":"a","agent":"owner","name":"n","path":"p","mime":"m","image":false,"size":1.0,"hash":"h","created":2,"future":[1]}"#,
+            "a",
+        );
+    }
+    #[test]
+    fn duplicate_stored_record_workspace() {
+        check::<WorkspaceOperationRecord>(
+            r#"{"id":"other","id":"op","agent":"a","kind":"branch","phase":"provider_pending","other":{"opaque":[1,null]}}"#,
+            "op",
+        );
+    }
+}
+
 impl JsonRecord for PlanRecord {
     type Id = AgentId;
     const TABLE: &'static str = "runtime_plans";
@@ -817,7 +898,6 @@ impl JsonRecord for PlanRecord {
     const KEY_MODE: RecordKeyMode = RecordKeyMode::External;
     const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
     const TYPED_SHAPE: bool = true;
-    const DIRECT_TYPED_DECODE: bool = true;
     fn record_key(&self) -> Option<&Self::Id> {
         None
     }
@@ -843,7 +923,7 @@ mod plan_typed_tests {
     }
 
     #[test]
-    fn plan_store_uses_external_key_and_rejects_duplicate_fields() {
+    fn plan_store_uses_external_key_and_keeps_last_duplicate() {
         let db = rusqlite::Connection::open_in_memory().unwrap();
         db.execute_batch("CREATE TABLE runtime_plans(id TEXT PRIMARY KEY,record TEXT NOT NULL)")
             .unwrap();
@@ -864,7 +944,14 @@ mod plan_typed_tests {
             [r#"{"id":"a","id":"b","rootId":"r","text":"","version":0,"updated":null}"#],
         )
         .unwrap();
-        assert!(Table::<PlanRecord>::new(&db).get(&key).is_err());
+        assert_eq!(
+            Table::<PlanRecord>::new(&db)
+                .get(&key)
+                .unwrap()
+                .unwrap()
+                .into_value()["id"],
+            "b"
+        );
     }
 }
 pub use studio_runtime_schema::annotation_record::AnnotationRecord;
@@ -875,7 +962,6 @@ impl JsonRecord for AnnotationRecord {
     const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
     const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
     const TYPED_SHAPE: bool = true;
-    const DIRECT_TYPED_DECODE: bool = true;
     fn record_key(&self) -> Option<&Self::Id> {
         Some(self.id())
     }
@@ -919,7 +1005,7 @@ mod annotation_typed_tests {
     }
 
     #[test]
-    fn annotation_store_preserves_identity_extensions_and_rejects_duplicate_keys() {
+    fn annotation_store_preserves_identity_extensions_and_last_duplicate() {
         let db = rusqlite::Connection::open_in_memory().unwrap();
         db.execute_batch(
             "CREATE TABLE runtime_annotations(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
@@ -941,10 +1027,13 @@ mod annotation_typed_tests {
             [r#"{"id":"other","id":"a"}"#],
         )
         .unwrap();
-        assert!(
+        assert_eq!(
             Table::<AnnotationRecord>::new(&db)
                 .get(&"a".to_owned())
-                .is_err()
+                .unwrap()
+                .unwrap()
+                .into_value()["id"],
+            "a"
         );
         db.execute(
             "UPDATE runtime_annotations SET record=?1 WHERE id='a'",
@@ -1021,7 +1110,6 @@ impl JsonRecord for ComplaintRecord {
     const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
     const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
     const TYPED_SHAPE: bool = true;
-    const DIRECT_TYPED_DECODE: bool = true;
     fn record_key(&self) -> Option<&Self::Id> {
         Some(self.id())
     }
@@ -1083,10 +1171,13 @@ mod complaint_typed_tests {
             [r#"{"id":"other","id":"c"}"#],
         )
         .unwrap();
-        assert!(
+        assert_eq!(
             Table::<ComplaintRecord>::new(&tx)
                 .get(&"c".to_owned())
-                .is_err()
+                .unwrap()
+                .unwrap()
+                .into_value()["id"],
+            "c"
         );
     }
 }
@@ -1098,7 +1189,6 @@ impl JsonRecord for CheckpointRecord {
     const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
     const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::JsonAgent;
     const TYPED_SHAPE: bool = true;
-    const DIRECT_TYPED_DECODE: bool = true;
     fn record_key(&self) -> Option<&Self::Id> {
         Some(self.id())
     }
@@ -1111,7 +1201,6 @@ impl JsonRecord for MonitorRecord {
     const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
     const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::JsonAgent;
     const TYPED_SHAPE: bool = true;
-    const DIRECT_TYPED_DECODE: bool = true;
     fn record_key(&self) -> Option<&Self::Id> {
         Some(self.id())
     }
@@ -1271,7 +1360,6 @@ impl JsonRecord for WorkspaceOperationRecord {
     const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
     const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
     const TYPED_SHAPE: bool = true;
-    const DIRECT_TYPED_DECODE: bool = true;
     fn record_key(&self) -> Option<&Self::Id> {
         Some(&self.id)
     }
@@ -1303,7 +1391,6 @@ impl JsonRecord for TranscriptAssetRecord {
     const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
     const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::JsonAgent;
     const TYPED_SHAPE: bool = true;
-    const DIRECT_TYPED_DECODE: bool = true;
     fn record_key(&self) -> Option<&Self::Id> {
         Some(self.id())
     }
