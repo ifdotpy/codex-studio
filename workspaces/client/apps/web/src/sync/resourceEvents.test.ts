@@ -2852,11 +2852,13 @@ describe("shared resource event transport", () => {
       source.open();
       source.emit("session", { sessionId: session });
       source.emit("api-schema", { hash: API_SCHEMA_HASH });
-      return JSON.parse(path.searchParams.get("since")!) as unknown[];
+      const since: unknown = JSON.parse(path.searchParams.get("since")!);
+      if (!Array.isArray(since)) throw new TypeError("since is not a list");
+      return since.length;
     };
     const first = await failAndResume("session-two");
     const second = await failAndResume("session-three");
     expect(source.restart).toHaveBeenCalledTimes(2);
-    expect([first.length, second.length]).toEqual([1, 0]);
+    expect([first, second]).toEqual([1, 0]);
   });
 });

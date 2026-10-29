@@ -831,9 +831,10 @@ async function failedStreamFixture() {
     while (f.sources.length === count) await vi.advanceTimersByTimeAsync(100);
     const source = f.sources.at(-1)!;
     source.emit("api-schema", { hash: API_SCHEMA_HASH });
-    const since = JSON.parse(
+    const since: unknown = JSON.parse(
       new URL(f.urls.at(-1)!, "http://studio.test").searchParams.get("since")!,
-    ) as unknown[];
+    );
+    if (!Array.isArray(since)) throw new TypeError("since is not a list");
     return { source, delay: Date.now() - started, cursors: since.length };
   };
   return { f, apply, fail, reopen };
