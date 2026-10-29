@@ -85,8 +85,9 @@ inherits = "ci"
 default-filter = '''
     (package(studio-client-domain) & test(/^sync_entity::tests::/)) |
     (package(studio-client-core) & test(/^(sync|projections|delivery)::tests::|^views::(flow_tests|patch_tests)::|typed_voice_commands_validate_before_effects_and_preserve_ids/)) |
-    (package(studio-runtime-schema) & test(/^(rule_record|monitor_record)::tests::/)) |
-    (package(studio-runtime-store) & test(/^repositories::(execution_history|work_items|monitors|rules)::tests::|typed_registry_decode_preserves_order_and_error_location/)) |
+    (package(studio-runtime-schema) & test(/^(rule_record|monitor_record|tool_result|workspace_operation|task_record)::tests::/)) |
+    (package(studio-runtime-store) & test(/^repositories::(execution_history|work_items|monitors|rules|workspace_operations)::tests::|typed_registry_decode_preserves_order_and_error_location|tool_result_table_checks_shell_and_preserves_extensions/)) |
+    (package(studio-runtime-services) & kind(lib) & test(/^monitor_policy::typed_conversion_tests::|^rules_engine::tests::|arbitrary_legacy_result_round_trips_through_settlement_and_replay/)) |
     (package(studio-runtime-services) & test(/conversation_signatures_preserve_nullable_setting_identity|confirmed_restart_is_atomic_replay_safe_and_waits_for_exit/)) |
     (package(studio-runtime-http) & test(/conversation_catalog_admission_tests::|branch_draft_keeps_the_historical_generated_request_identity|http_restart_uses_checked_request|monitor_restart_http_preserves_identity_and_waits_for_old_exit/)) |
     (package(studio-runtime-schema) & test(/^(continuation_snapshot|claude_login|usage_limits|checkpoint_record|complaint_record|stored_record)::tests::/)) |
@@ -368,8 +369,9 @@ platform = 'cfg(target_os = "linux")'
 default-filter = '''
     (package(studio-client-domain) & test(/^sync_entity::tests::/)) |
     (package(studio-client-core) & test(/^(sync|projections|delivery)::tests::|^views::(flow_tests|patch_tests)::|typed_voice_commands_validate_before_effects_and_preserve_ids/)) |
-    (package(studio-runtime-schema) & test(/^(rule_record|monitor_record)::tests::/)) |
-    (package(studio-runtime-store) & test(/^repositories::(execution_history|work_items|monitors|rules)::tests::|typed_registry_decode_preserves_order_and_error_location/)) |
+    (package(studio-runtime-schema) & test(/^(rule_record|monitor_record|tool_result|workspace_operation|task_record)::tests::/)) |
+    (package(studio-runtime-store) & test(/^repositories::(execution_history|work_items|monitors|rules|workspace_operations)::tests::|typed_registry_decode_preserves_order_and_error_location|tool_result_table_checks_shell_and_preserves_extensions/)) |
+    (package(studio-runtime-services) & kind(lib) & test(/^monitor_policy::typed_conversion_tests::|^rules_engine::tests::|arbitrary_legacy_result_round_trips_through_settlement_and_replay/)) |
     (package(studio-runtime-services) & test(/conversation_signatures_preserve_nullable_setting_identity|confirmed_restart_is_atomic_replay_safe_and_waits_for_exit/)) |
     (package(studio-runtime-http) & test(/conversation_catalog_admission_tests::|branch_draft_keeps_the_historical_generated_request_identity|http_restart_uses_checked_request|monitor_restart_http_preserves_identity_and_waits_for_old_exit/)) |
     (package(studio-runtime-schema) & test(/^(continuation_snapshot|claude_login|usage_limits|checkpoint_record|complaint_record|stored_record)::tests::/)) |

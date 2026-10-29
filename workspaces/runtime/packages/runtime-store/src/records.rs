@@ -1213,7 +1213,9 @@ impl JsonRecord for WorkspaceOperationRecord {
     const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
     const TYPED_SHAPE: bool = true;
     const DIRECT_TYPED_DECODE: bool = true;
-    fn record_key(&self) -> Option<&Self::Id> { Some(&self.id) }
+    fn record_key(&self) -> Option<&Self::Id> {
+        Some(&self.id)
+    }
 }
 pub use studio_runtime_schema::rule_record::RuleRecord;
 impl JsonRecord for RuleRecord {
@@ -1224,7 +1226,9 @@ impl JsonRecord for RuleRecord {
     const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
     const TYPED_SHAPE: bool = true;
     const DIRECT_TYPED_DECODE: bool = true;
-    fn record_key(&self) -> Option<&Self::Id> { Some(self.id()) }
+    fn record_key(&self) -> Option<&Self::Id> {
+        Some(self.id())
+    }
 }
 record_newtype!(
     TranscriptItemRecord,

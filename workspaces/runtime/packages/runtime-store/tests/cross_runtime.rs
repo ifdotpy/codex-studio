@@ -165,7 +165,7 @@ async fn fixture_records_are_readable_and_writable_in_rust() {
             AgentRepository::put(transaction, &agent)?;
             let mut task = TaskRepository::get(transaction, &TaskId::from("cross-task"))?
                 .expect("record fixture contains the task");
-            task.set("status", json!("running"));
+            task.set_status("running");
             TaskRepository::put(transaction, &task)?;
             let work_table = Table::<WorkItemRecord>::new(transaction);
             let mut work = work_table

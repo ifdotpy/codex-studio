@@ -369,7 +369,7 @@ async fn live_schema_opens_and_supported_repositories_preserve_the_catalog() {
 
             let mut task = TaskRepository::get(tx, &TaskId::from("fixture-task"))?
                 .expect("seeded task exists");
-            task.set("status", json!("running"));
+            task.set_status("running");
             TaskRepository::put(tx, &task)?;
 
             QueueEventRepository::put(
