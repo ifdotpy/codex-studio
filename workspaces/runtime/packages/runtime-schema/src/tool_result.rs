@@ -68,12 +68,28 @@ impl ToolResultRecord {
         self.success.value().copied()
     }
     pub fn into_value(self) -> Value {
-        // The fields contain only JSON values and serializable scalars.
-        self.serialize(serde_json::value::Serializer)
-            .expect("tool result is JSON serializable")
+        let mut fields = self.extra.into_iter().collect();
+        move_field(&mut fields, "success", self.success, Value::Bool);
+        move_field(&mut fields, "contentItems", self.content_items, |items| {
+            Value::Array(items.into_iter().map(ToolContent::into_value).collect())
+        });
+        move_field(
+            &mut fields,
+            "serverOutputExpiresAt",
+            self.server_output_expires_at,
+            Value::Number,
+        );
+        Value::Object(fields)
     }
 }
 impl ToolContent {
+    fn into_value(self) -> Value {
+        let mut fields = self.extra.into_iter().collect();
+        move_field(&mut fields, "type", self.kind, Value::String);
+        move_field(&mut fields, "text", self.text, Value::String);
+        Value::Object(fields)
+    }
+
     fn text(text: String) -> Self {
         Self {
             kind: Field::Value("inputText".into()),
@@ -179,8 +195,43 @@ pub(crate) fn check_schema_parity() -> Result<(), String> {
     Ok(())
 }
 
+fn move_field<T>(
+    fields: &mut serde_json::Map<String, Value>,
+    key: &str,
+    field: Field<T>,
+    convert: impl FnOnce(T) -> Value,
+) {
+    match field {
+        Field::Missing => {}
+        Field::Null => {
+            fields.insert(key.into(), Value::Null);
+        }
+        Field::Value(value) => {
+            fields.insert(key.into(), convert(value));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn consuming_projection_preserves_owned_allocations() {
+        let record = ToolResultRecord::deserialize(serde_json::json!({"contentItems":[{"text":"owned-text"}],"opaque":["owned-extension"]})).unwrap();
+        let text = record.content_items.value().unwrap()[0]
+            .text
+            .value()
+            .unwrap()
+            .as_ptr();
+        let extension = record.extra["opaque"].as_array().unwrap().as_ptr();
+        let expected = serde_json::json!(&record);
+        let value = record.into_value();
+        assert_eq!(value, expected);
+        assert_eq!(
+            value["contentItems"][0]["text"].as_str().unwrap().as_ptr(),
+            text
+        );
+        assert_eq!(value["opaque"].as_array().unwrap().as_ptr(), extension);
+    }
     use super::*;
     use serde_json::json;
     #[test]

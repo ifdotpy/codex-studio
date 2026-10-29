@@ -166,8 +166,34 @@ impl TaskRecord {
             .expect("task fields are JSON serializable")
     }
     pub fn into_value(self) -> Value {
-        self.serialize(serde_json::value::Serializer)
-            .expect("task fields are JSON serializable")
+        let mut fields: serde_json::Map<String, Value> = self.extra.into_iter().collect();
+        fields.insert("id".into(), Value::String(self.id.0));
+        move_field(&mut fields, "agent", self.agent, Value::String);
+        move_field(&mut fields, "completedAtMs", self.completed_at_ms, |n| {
+            Value::Number(n.number().clone())
+        });
+        move_field(&mut fields, "created", self.created, |n| {
+            Value::Number(n.number().clone())
+        });
+        move_field(&mut fields, "durationMs", self.duration_ms, |n| {
+            Value::Number(n.number().clone())
+        });
+        move_field(&mut fields, "itemId", self.item_id, Value::String);
+        move_field(&mut fields, "kind", self.kind, Value::String);
+        move_field(
+            &mut fields,
+            "outputTruncated",
+            self.output_truncated,
+            Value::Bool,
+        );
+        move_field(&mut fields, "startedAtMs", self.started_at_ms, |n| {
+            Value::Number(n.number().clone())
+        });
+        move_field(&mut fields, "status", self.status, Value::String);
+        move_field(&mut fields, "tail", self.tail, Value::String);
+        move_field(&mut fields, "turnId", self.turn_id, Value::String);
+        move_field(&mut fields, "type", self.task_type, Value::String);
+        Value::Object(fields)
     }
 }
 
@@ -184,8 +210,39 @@ pub(crate) fn check_schema_parity() -> Result<(), String> {
     Ok(())
 }
 
+fn move_field<T>(
+    fields: &mut serde_json::Map<String, Value>,
+    key: &str,
+    field: Field<T>,
+    convert: impl FnOnce(T) -> Value,
+) {
+    match field {
+        Field::Missing => {}
+        Field::Null => {
+            fields.insert(key.into(), Value::Null);
+        }
+        Field::Value(value) => {
+            fields.insert(key.into(), convert(value));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn consuming_projection_preserves_owned_allocations() {
+        let record = TaskRecord::deserialize(
+            serde_json::json!({"id":"t","tail":"owned-tail","opaque":["owned-extension"]}),
+        )
+        .unwrap();
+        let text = record.tail().unwrap().as_ptr();
+        let extension = record.extra["opaque"].as_array().unwrap().as_ptr();
+        let expected = serde_json::json!(&record);
+        let value = record.into_value();
+        assert_eq!(value, expected);
+        assert_eq!(value["tail"].as_str().unwrap().as_ptr(), text);
+        assert_eq!(value["opaque"].as_array().unwrap().as_ptr(), extension);
+    }
     use super::*;
     use serde_json::json;
 
