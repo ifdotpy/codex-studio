@@ -87,8 +87,36 @@ const MAX_ROW_BATCH: usize = 500;
 // Largest `rangeRows` reply in bytes of row JSON. One native message holds it.
 const MAX_ROWS_REPLY_BYTES: usize = crate::protocol::MAX_MESSAGE / 4;
 
-fn row_prefix(params: &Value) -> Result<&str, String> {
-    let prefix = params["prefix"].as_str().ok_or("Missing row prefix.")?;
+// Invalid field types retain the historical missing-field behavior at each access.
+fn optional_text<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(Value::deserialize(d)?.as_str().map(str::to_owned))
+}
+fn optional_number<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
+    Ok(Value::deserialize(d)?.as_u64())
+}
+
+#[derive(Default, Deserialize)]
+struct RowCommand {
+    #[serde(default, deserialize_with = "optional_text")]
+    prefix: Option<String>,
+    #[serde(default, deserialize_with = "optional_text")]
+    gte: Option<String>,
+    #[serde(default, deserialize_with = "optional_text")]
+    gt: Option<String>,
+    #[serde(default, deserialize_with = "optional_text")]
+    lt: Option<String>,
+    #[serde(default, deserialize_with = "optional_number")]
+    limit: Option<u64>,
+}
+#[derive(Default, Deserialize)]
+struct RowIdentity {
+    #[serde(default, deserialize_with = "optional_text")]
+    id: Option<String>,
+    #[serde(default, deserialize_with = "optional_number")]
+    seq: Option<u64>,
+}
+fn row_prefix(params: &RowCommand) -> Result<&str, String> {
+    let prefix = params.prefix.as_deref().ok_or("Missing row prefix.")?;
     if prefix.is_empty()
         || prefix.len() > MAX_ROW_PREFIX_BYTES
         || !prefix
@@ -107,9 +135,14 @@ fn row_scope(prefix: &str, id: &str) -> Result<String, String> {
     Ok(format!("{ROW_NAMESPACE}{prefix}/{id}"))
 }
 
-fn get_rows(connection: &Connection, workspace: &str, params: &Value) -> Result<Value, String> {
+fn get_rows(
+    connection: &Connection,
+    workspace: &str,
+    params: &RowCommand,
+    raw: &Value,
+) -> Result<Value, String> {
     let prefix = row_prefix(params)?;
-    let ids = params["ids"].as_array().ok_or("Missing row identities.")?;
+    let ids = raw["ids"].as_array().ok_or("Missing row identities.")?;
     if ids.len() > MAX_ROW_BATCH {
         return Err("Too many row identities.".into());
     }
@@ -125,18 +158,20 @@ fn get_rows(connection: &Connection, workspace: &str, params: &Value) -> Result<
 
 /// Rows with `gte` (or `gt`) <= id < `lt`, in id order. A reply that reaches
 /// `limit` or the byte bound sets `more`; the caller continues after its last id.
-fn range_rows(connection: &Connection, workspace: &str, params: &Value) -> Result<Value, String> {
+fn range_rows(
+    connection: &Connection,
+    workspace: &str,
+    params: &RowCommand,
+) -> Result<Value, String> {
     let prefix = row_prefix(params)?;
     let base = format!("{ROW_NAMESPACE}{prefix}/");
-    let (lower, inclusive) = match (params["gte"].as_str(), params["gt"].as_str()) {
+    let (lower, inclusive) = match (params.gte.as_deref(), params.gt.as_deref()) {
         (Some(id), None) => (id, true),
         (None, Some(id)) => (id, false),
         _ => return Err("A range needs exactly one of gte and gt.".into()),
     };
-    let upper = params["lt"].as_str().ok_or("A range needs lt.")?;
-    let limit = params["limit"]
-        .as_u64()
-        .map_or(usize::MAX, |limit| limit as usize);
+    let upper = params.lt.as_deref().ok_or("A range needs lt.")?;
+    let limit = params.limit.map_or(usize::MAX, |limit| limit as usize);
     let mut statement = connection
         .prepare_cached(&format!(
             "SELECT document FROM client_projections WHERE workspace=?1 AND scope{}?2 AND scope<?3 ORDER BY scope",
@@ -166,18 +201,31 @@ fn range_rows(connection: &Connection, workspace: &str, params: &Value) -> Resul
 
 /// Store rows unconditionally in one transaction. Ordering by server sequence
 /// stays the caller's rule: a reset must be able to lower a row's sequence.
-fn put_rows(connection: &Connection, workspace: &str, params: &Value) -> Result<Value, String> {
+fn put_rows(
+    connection: &Connection,
+    workspace: &str,
+    params: &RowCommand,
+    raw: &Value,
+) -> Result<Value, String> {
     let prefix = row_prefix(params)?;
-    let rows = params["rows"].as_array().ok_or("Missing rows.")?;
+    let rows = raw["rows"].as_array().ok_or("Missing rows.")?;
     if rows.len() > MAX_ROW_BATCH {
         return Err("Too many rows.".into());
     }
     let transaction = Transaction::new_unchecked(connection, TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
     for row in rows {
-        let scope = row_scope(prefix, row["id"].as_str().ok_or("Invalid row identity.")?)?;
-        let seq = row["seq"]
-            .as_u64()
+        let identity: RowIdentity = if row.is_object() {
+            RowIdentity::deserialize(row).unwrap_or_default()
+        } else {
+            RowIdentity::default()
+        };
+        let scope = row_scope(
+            prefix,
+            identity.id.as_deref().ok_or("Invalid row identity.")?,
+        )?;
+        let seq = identity
+            .seq
             .filter(|seq| *seq <= MAX_SAFE_INTEGER as u64)
             .ok_or("Invalid row sequence.")?;
         transaction
@@ -193,7 +241,11 @@ fn put_rows(connection: &Connection, workspace: &str, params: &Value) -> Result<
 }
 
 /// Drop every row cache whose prefix is not `prefix` (older formats).
-fn prune_rows(connection: &Connection, workspace: &str, params: &Value) -> Result<Value, String> {
+fn prune_rows(
+    connection: &Connection,
+    workspace: &str,
+    params: &RowCommand,
+) -> Result<Value, String> {
     let prefix = row_prefix(params)?;
     // ';' follows ':' and '0' follows '/': the bounds enclose the namespace and the kept prefix.
     let removed = connection
@@ -586,12 +638,25 @@ fn execute(connection: &Connection, request: &Request) -> Result<Value, String> 
     if !valid_workspace(workspace) {
         return Err("Invalid projection identity.".into());
     }
-    match request.method.as_str() {
-        "projection.getRows" => return get_rows(connection, workspace, &request.params),
-        "projection.rangeRows" => return range_rows(connection, workspace, &request.params),
-        "projection.putRows" => return put_rows(connection, workspace, &request.params),
-        "projection.pruneRows" => return prune_rows(connection, workspace, &request.params),
-        _ => {}
+    if matches!(
+        request.method.as_str(),
+        "projection.getRows"
+            | "projection.rangeRows"
+            | "projection.putRows"
+            | "projection.pruneRows"
+    ) {
+        let command: RowCommand = if request.params.is_object() {
+            RowCommand::deserialize(&request.params).unwrap_or_default()
+        } else {
+            RowCommand::default()
+        };
+        return match request.method.as_str() {
+            "projection.getRows" => get_rows(connection, workspace, &command, &request.params),
+            "projection.rangeRows" => range_rows(connection, workspace, &command),
+            "projection.putRows" => put_rows(connection, workspace, &command, &request.params),
+            "projection.pruneRows" => prune_rows(connection, workspace, &command),
+            _ => unreachable!(),
+        };
     }
     if request.method == "projection.applyEntities" {
         return apply_entities(connection, workspace, &request.params);
@@ -1254,5 +1319,88 @@ mod tests {
             .error
             .is_some()
         );
+    }
+
+    #[tokio::test]
+    async fn page_rows_sender_preserves_error_order_rollback_and_range_fallback() {
+        use crate::delivery::StoreCommand;
+        use tokio::sync::{mpsc, oneshot};
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("client.sqlite3");
+        let (sender, mut receiver) = mpsc::channel::<StoreCommand>(8);
+        let worker = std::thread::spawn(move || {
+            let mut store = crate::store::Store::open(&path).unwrap();
+            while let Some(command) = receiver.blocking_recv() {
+                command.execute(&mut store);
+            }
+        });
+        async fn send(
+            sender: &mpsc::Sender<StoreCommand>,
+            method: &str,
+            params: Value,
+        ) -> Response {
+            let (reply, receive) = oneshot::channel();
+            sender
+                .send(StoreCommand::Request(
+                    Request {
+                        id: "test".into(),
+                        method: method.into(),
+                        params,
+                    },
+                    reply,
+                ))
+                .await
+                .unwrap();
+            receive.await.unwrap()
+        }
+        let workspace = "a".repeat(32);
+        let foreign = send(
+            &sender,
+            "projection.putRows",
+            json!({"workspace":"bad","prefix":42,"rows":null}),
+        )
+        .await;
+        assert_eq!(
+            foreign.error.as_ref().map(|error| error.message.as_str()),
+            Some("Invalid projection identity.")
+        );
+        for invalid in [
+            json!({"id":"bad","seq":null}),
+            json!({"id":"bad","seq":1.0}),
+            json!({"seq":1}),
+            json!(["bad", 1]),
+        ] {
+            let result = send(
+                &sender,
+                "projection.putRows",
+                json!({"workspace":workspace,"prefix":"v1","rows":[{"id":"good","seq":1},invalid]}),
+            )
+            .await;
+            assert!(result.error.is_some());
+        }
+        let found = send(
+            &sender,
+            "projection.getRows",
+            json!({"workspace":workspace,"prefix":"v1","ids":["good"]}),
+        )
+        .await;
+        assert_eq!(found.result, Some(json!([])));
+        assert!(send(&sender, "projection.putRows", json!({"workspace":workspace,"prefix":"v1","rows":[{"id":"good","seq":1,"opaque":{"value":null}}]})).await.error.is_none());
+        for limit in [json!(null), json!("bad"), json!(-1), json!(1.0)] {
+            let found = send(&sender, "projection.rangeRows", json!({"workspace":workspace,"prefix":"v1","gte":"a","gt":7,"lt":"z","limit":limit})).await;
+            assert_eq!(
+                found.result.unwrap()["rows"][0]["opaque"],
+                json!({"value":null})
+            );
+        }
+        let other = send(
+            &sender,
+            "projection.getRows",
+            json!({"workspace":"b".repeat(32),"prefix":"v1","ids":["good"]}),
+        )
+        .await;
+        assert_eq!(other.result, Some(json!([])));
+        drop(sender);
+        worker.join().unwrap();
     }
 }
