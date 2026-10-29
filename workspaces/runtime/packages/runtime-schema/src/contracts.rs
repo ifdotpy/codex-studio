@@ -611,6 +611,7 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
     crate::terminal_record::check_schema_parity()?;
     crate::workspace_operation::check_schema_parity()?;
     crate::task_record::check_schema_parity()?;
+    crate::transcript_record::check_schema_parity()?;
     for (schema, provider) in PROVIDER_NATIVE_DISCRIMINATORS {
         let path = format!("/components/schemas/{schema}/properties/provider/const");
         if openapi.pointer(&path) != Some(&serde_json::json!(provider)) {
@@ -1332,6 +1333,10 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
         Rendered {
             path: "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-task-record.schema.json".into(),
             text: run_node(root, "node_modules/oxfmt/bin/oxfmt", "--stdin-filepath=workspaces/runtime/packages/runtime-schema/src/schemas/persisted-task-record.schema.json", &serde_json::to_string_pretty(&crate::task_record::schema()).map_err(|error| error.to_string())?)?,
+        },
+        Rendered {
+            path: "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-transcript-record.schema.json".into(),
+            text: run_node(root, "node_modules/oxfmt/bin/oxfmt", "--stdin-filepath=workspaces/runtime/packages/runtime-schema/src/schemas/persisted-transcript-record.schema.json", &serde_json::to_string_pretty(&crate::transcript_record::schema()).map_err(|error| error.to_string())?)?,
         },
         Rendered {
             path: "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-complaint-record.schema.json".into(),

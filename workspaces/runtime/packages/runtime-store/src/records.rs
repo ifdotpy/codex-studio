@@ -138,8 +138,8 @@ string_id!(AgentId);
 pub use studio_runtime_schema::task_record::TaskId;
 string_id!(QueueEventId);
 string_id!(ChatMessageId);
-string_id!(TranscriptItemId);
 pub use studio_runtime_schema::transcript_asset::{TranscriptAssetId, TranscriptAssetRecord};
+pub use studio_runtime_schema::transcript_record::TranscriptItemId;
 
 /// A future agent status that is distinct from every known status.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1230,14 +1230,18 @@ impl JsonRecord for RuleRecord {
         Some(self.id())
     }
 }
-record_newtype!(
-    TranscriptItemRecord,
-    TranscriptItemId,
-    table = "runtime_items",
-    schema = "PersistedTranscriptRecord",
-    key = PayloadId,
-    query = PhysicalAgent
-);
+pub use studio_runtime_schema::transcript_record::TranscriptItemRecord;
+impl JsonRecord for TranscriptItemRecord {
+    type Id = TranscriptItemId;
+    const TABLE: &'static str = "runtime_items";
+    const SCHEMA: &'static str = "PersistedTranscriptRecord";
+    const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
+    const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::PhysicalAgent;
+    const TYPED_SHAPE: bool = true;
+    fn record_key(&self) -> Option<&Self::Id> {
+        Some(self.id())
+    }
+}
 impl JsonRecord for TranscriptAssetRecord {
     type Id = TranscriptAssetId;
     const TABLE: &'static str = "runtime_assets";

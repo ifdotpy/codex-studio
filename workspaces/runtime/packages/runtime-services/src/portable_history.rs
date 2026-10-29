@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use studio_runtime_store::{
-    AgentId, AgentRepository, QueueEventId, QueueEventRepository, RuntimeStore, TranscriptItem,
+    AgentId, AgentRepository, QueueEventId, QueueEventRepository, RuntimeStore,
     TranscriptRepository, truthy,
 };
 use thiserror::Error;
@@ -992,14 +992,7 @@ fn stored_items(
         if !item.is_object() || item.get("id").and_then(Value::as_str) != Some(&id) {
             return Err(PortableHistoryError::InvalidArchive("Studio item identity"));
         }
-        let full_text = TranscriptRepository::full_text(
-            transaction,
-            &TranscriptItem {
-                id: id.clone(),
-                agent: agent_id.to_owned(),
-                record: item.clone(),
-            },
-        )?;
+        let full_text = TranscriptRepository::full_text_raw(transaction, &id, &item)?;
         let inputs = match item.get("inputs") {
             None => Vec::new(),
             Some(Value::Array(inputs)) => inputs.clone(),

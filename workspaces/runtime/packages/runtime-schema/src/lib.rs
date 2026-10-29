@@ -55,6 +55,7 @@ pub mod task_record;
 pub mod task_results;
 pub mod terminal_record;
 pub mod transcript_asset;
+pub mod transcript_record;
 pub mod usage;
 pub mod usage_limits;
 pub mod workspace_operation;

@@ -3424,7 +3424,7 @@ mod tests {
         let item = TranscriptRepository::item(&connection, "agent", "agent:answer")
             .expect("transcript read succeeds")
             .expect("answer exists");
-        assert_eq!(item.record["text"], "hello");
+        assert_eq!(item.record.value()["text"], "hello");
         let agent = NotificationDispatchRepository::agent_record(
             &connection
                 .unchecked_transaction()
@@ -3526,7 +3526,7 @@ mod tests {
         let answer = TranscriptRepository::item(&transaction, "agent", "agent:answer")
             .expect("answer reads")
             .expect("answer exists");
-        assert_eq!(answer.record["text"], "basependinglate");
+        assert_eq!(answer.record.value()["text"], "basependinglate");
         transaction.commit().expect("persisted-base case commits");
 
         // Without a persisted base, the flush uses the current snapshot row and
@@ -3559,7 +3559,7 @@ mod tests {
         let answer = TranscriptRepository::item(&transaction, "agent", "agent:answer")
             .expect("answer reads")
             .expect("answer exists");
-        assert_eq!(answer.record["text"], "snapshotpendinglate");
+        assert_eq!(answer.record.value()["text"], "snapshotpendinglate");
         transaction.commit().expect("snapshot-base case commits");
     }
 
@@ -3614,7 +3614,7 @@ mod tests {
         let item = TranscriptRepository::item(&connection, "agent", "agent:rollback")
             .expect("retried item reads")
             .expect("retried item exists");
-        assert_eq!(item.record["text"], "written then refused");
+        assert_eq!(item.record.value()["text"], "written then refused");
     }
 
     #[test]
@@ -3702,8 +3702,8 @@ mod tests {
         let item = TranscriptRepository::item(&connection, "agent", "agent:e1")
             .expect("item reads")
             .expect("item exists");
-        assert_eq!(item.record["text"], retry.text);
-        assert_eq!(item.record["inputs"][1]["text"], "more");
+        assert_eq!(item.record.value()["text"], retry.text);
+        assert_eq!(item.record.value()["inputs"][1]["text"], "more");
         assert_eq!(
             connection
                 .query_row("SELECT count(*) FROM request_results", [], |row| row
@@ -3843,9 +3843,12 @@ mod tests {
         let item = TranscriptRepository::item(&connection, "agent", "agent:e1")
             .expect("user item reads")
             .expect("batch row exists");
-        assert_eq!(item.record["text"], submission.text);
-        assert_eq!(item.record["inputs"][1]["kind"], "followup");
-        assert_eq!(item.record["inputs"][0]["assets"][0]["id"], "asset-1");
+        assert_eq!(item.record.value()["text"], submission.text);
+        assert_eq!(item.record.value()["inputs"][1]["kind"], "followup");
+        assert_eq!(
+            item.record.value()["inputs"][0]["assets"][0]["id"],
+            "asset-1"
+        );
         for event_id in ["e1", "e2"] {
             let meta: String = connection
                 .query_row(
@@ -3915,7 +3918,8 @@ mod tests {
             TranscriptRepository::item(&tx, "agent", "agent:e1")
                 .expect("item")
                 .expect("published input")
-                .record["text"],
+                .record
+                .value()["text"],
             submission.text
         );
     }
@@ -4113,11 +4117,11 @@ mod tests {
         let item = TranscriptRepository::item(&connection, "agent", "agent:answer")
             .expect("replacement item reads")
             .expect("replacement item exists");
-        assert_eq!(item.record["text"], "replacement");
-        assert_eq!(item.record["turnId"], "turn");
+        assert_eq!(item.record.value()["text"], "replacement");
+        assert_eq!(item.record.value()["turnId"], "turn");
         for field in ["afterRestore", "inputs", "assets", "obsolete"] {
             assert!(
-                item.record.get(field).is_none(),
+                item.record.value().get(field).is_none(),
                 "old field {field} survived"
             );
         }
@@ -4147,7 +4151,7 @@ mod tests {
         let item = TranscriptRepository::item(&connection, "agent", "agent:no-turn")
             .expect("null-turn item reads")
             .expect("null-turn item exists");
-        assert_eq!(item.record.get("turnId"), Some(&Value::Null));
+        assert_eq!(item.record.value().get("turnId"), Some(&Value::Null));
         let agent = TranscriptRepository::agent(&connection, "agent")
             .expect("updated agent reads")
             .expect("updated agent exists");
@@ -4284,7 +4288,7 @@ mod tests {
         let item = TranscriptRepository::item(&transaction, "agent", "agent:answer")
             .expect("read")
             .expect("item");
-        assert_eq!(item.record["text"], "beforeafter");
+        assert_eq!(item.record.value()["text"], "beforeafter");
         assert!(
             serde_json::from_str::<Value>(&serde_json::to_string(&streams).expect("stream state"))
                 .expect("JSON")["entries"][0]["base"]
@@ -4320,7 +4324,12 @@ mod tests {
                 .expect("item exists");
             TranscriptRepository::full_text(tx, &item)
                 .expect("full text")
-                .unwrap_or_else(|| item.record["text"].as_str().expect("text").to_owned())
+                .unwrap_or_else(|| {
+                    item.record.value()["text"]
+                        .as_str()
+                        .expect("text")
+                        .to_owned()
+                })
         };
         // A long answer, flushed after every delta.
         let mut expected = String::new();

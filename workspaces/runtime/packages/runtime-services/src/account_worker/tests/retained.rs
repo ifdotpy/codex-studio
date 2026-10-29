@@ -1730,8 +1730,8 @@ async fn restart_history_case(outcome: &str) {
                         .await
                         .unwrap()
                         .expect("recovered transcript item");
-                    assert_eq!(item.record["text"], "recovered answer");
-                    assert_eq!(item.record["turnStatus"], "completed");
+                    assert_eq!(item.record.value()["text"], "recovered answer");
+                    assert_eq!(item.record.value()["turnStatus"], "completed");
                     let publications = recovered_publications(&state).await;
                     assert_eq!(publications.len(), 2);
                     assert_eq!(publications[0].1, "item/completed");
@@ -2702,7 +2702,7 @@ async fn restart_terminal_commit_before_wake_converges_on_next_worker_start() {
         .await
         .unwrap()
         .expect("terminal item is committed with the settlement");
-    assert_eq!(item.record["turnStatus"], "completed");
+    assert_eq!(item.record.value()["turnStatus"], "completed");
     let mut peer = Peer::new();
     let publications = Arc::new(RecoveredPublicationRecorder::default());
     let mut worker = peer

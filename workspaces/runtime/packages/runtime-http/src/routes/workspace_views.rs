@@ -125,22 +125,17 @@ fn reported_changes(connection: &Connection, agent: &str) -> Result<Value, ApiEr
     }) else {
         return Ok(empty_reported_changes());
     };
-    if studio_runtime_services::event_write::truthy(item.record.get("afterRestore")) {
+    if studio_runtime_services::event_write::truthy(item.record.extra("afterRestore")) {
         return Ok(empty_reported_changes());
     }
     let text = TranscriptRepository::full_text(connection, &item).map_err(map_transcript_error)?;
-    if item.record.get("truncated").and_then(Value::as_bool) == Some(true) && text.is_none() {
+    if item.record.extra("truncated").and_then(Value::as_bool) == Some(true) && text.is_none() {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
             "The complete reported changes are unavailable",
         ));
     }
-    let raw = text.or_else(|| {
-        item.record
-            .get("text")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-    });
+    let raw = text.or_else(|| item.record.text().value().cloned());
     let payload: Value = serde_json::from_str(raw.as_deref().unwrap_or_default())
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "The recorded changes are invalid"))?;
     let diff = payload.get("diff").and_then(Value::as_str).ok_or_else(|| {
@@ -151,7 +146,7 @@ fn reported_changes(connection: &Connection, agent: &str) -> Result<Value, ApiEr
     let diff = diff.chars().take(300_000).collect::<String>();
     Ok(json!({
         "scope":"chat", "git":true, "files":files, "diff":diff, "patch":diff,
-        "truncated":truncated, "turnId":payload.get("turnId"), "reportedAt":item.record.get("at"),
+        "truncated":truncated, "turnId":payload.get("turnId"), "reportedAt":item.record.extra("at"),
     }))
 }
 

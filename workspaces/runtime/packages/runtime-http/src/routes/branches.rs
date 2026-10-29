@@ -113,10 +113,10 @@ async fn branch(
             .await?
     };
     let source = snapshot.agent.record.clone();
-    if selected.record.get("afterRestore").is_some()
+    if selected.record.extra("afterRestore").is_some()
         || selected
             .record
-            .get("turnId")
+            .extra("turnId")
             .and_then(Value::as_str)
             .is_none_or(str::is_empty)
     {
@@ -130,7 +130,7 @@ async fn branch(
         .is_none_or(str::is_empty)
         || source.get("inFlight").and_then(Value::as_bool) == Some(true)
         || source.get("turnId").and_then(Value::as_str)
-            == selected.record.get("turnId").and_then(Value::as_str)
+            == selected.record.extra("turnId").and_then(Value::as_str)
     {
         return Err(bad_request("Wait for this turn to finish before branching"));
     }
@@ -275,7 +275,7 @@ async fn branch(
                         "phase":"provider_pending","signature":signature,
                         "rootRequestId":studio_runtime_schema::persistence::RequestIdentity::issue_root(),
                         "source":source_stamp,"message_id":message_id,
-                        "turn_id":selected.record["turnId"],
+                        "turn_id":selected.record.extra("turnId"),
                         "previousStatus":source.get("status"),
                         "previousAutoWake":source.get("autoWake"),
                         "previousWorkspaceOperation":source.get("workspaceOperation"),
@@ -342,7 +342,11 @@ async fn branch(
         "gpt-5.6-sol"
     };
     let before = body.before.unwrap_or(false);
-    let selected_turn = selected.record["turnId"].as_str().map(str::to_owned);
+    let selected_turn = selected
+        .record
+        .extra("turnId")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
     let fork_turn = if before {
         async {
             // Stable per-page operation IDs let the retained broker replay a known
@@ -945,7 +949,7 @@ async fn copy_branch_history(
         let mut assets=BTreeMap::<String,Value>::new();
         for (old_id, raw, _created) in rows.into_iter().take_while(|(_, _, created)| *created <= cutoff) {
             let source_record: Value = serde_json::from_str(&raw)?;
-            if before && source_record["turnId"].as_str()==selected.record["turnId"].as_str(){continue;}
+            if before && source_record["turnId"].as_str()==selected.record.extra("turnId").and_then(Value::as_str){continue;}
             let local_id=old_id.split_once(':').map(|(_,id)|id).unwrap_or(&old_id);
             let id=format!("{target}:{local_id}");
             let role = source_record["role"].as_str().unwrap_or("assistant");
@@ -1086,38 +1090,40 @@ fn branch_draft_payload(
     assets: &mut BTreeMap<String, Value>,
 ) -> Result<Value, studio_runtime_store::StoreError> {
     let record = &selected.record;
-    let inputs = record.get("inputs").and_then(Value::as_array);
+    let inputs = record.inputs().value();
     let prompt_index = inputs.and_then(|inputs| {
         inputs.iter().enumerate().position(|(index, input)| {
             let display_id = input
-                .get("id")
-                .and_then(Value::as_str)
+                .id()
                 .map(|id| format!("{source}:{id}"))
                 .unwrap_or_else(|| format!("{}:{index}", selected.id));
             display_id == message_id
         })
     });
-    let prompt = prompt_index
-        .and_then(|index| inputs.and_then(|inputs| inputs.get(index)))
-        .unwrap_or(record);
+    let prompt = prompt_index.and_then(|index| inputs.and_then(|inputs| inputs.get(index)));
     let text = prompt
-        .get("text")
-        .and_then(Value::as_str)
-        .unwrap_or_else(|| record.get("text").and_then(Value::as_str).unwrap_or(""));
+        .and_then(|input| input.text())
+        .or_else(|| record.text().value().map(String::as_str))
+        .unwrap_or("");
     let mut prefix = Vec::new();
     let mut prefix_assets = Vec::new();
     if let (Some(inputs), Some(prompt_index)) = (inputs, prompt_index) {
-        for input in inputs[..prompt_index].iter() {
-            if input.get("kind").and_then(Value::as_str) != Some("user") {
+        for input in &inputs[..prompt_index] {
+            if input.kind() != Some("user") {
                 continue;
             }
-            prefix.push(input.get("text").and_then(Value::as_str).unwrap_or(""));
-            if let Some(views) = input.get("assets").cloned() {
+            prefix.push(input.text().unwrap_or(""));
+            if let Some(views) = input.extra("assets").cloned() {
                 prefix_assets.push(views);
             }
         }
     }
-    let mut prompt_assets = prompt.get("assets").cloned().unwrap_or_else(|| json!([]));
+    let mut prompt_assets = match prompt {
+        Some(input) => input.extra("assets"),
+        None => record.extra("assets"),
+    }
+    .cloned()
+    .unwrap_or_else(|| json!([]));
     let mut prefix_asset_views = Value::Array(
         prefix_assets
             .into_iter()
@@ -1229,6 +1235,45 @@ mod tests {
         AccountSessionFuture, ConnectionScope, SessionReceipt,
     };
     use studio_runtime_store::AgentRecord;
+
+    #[test]
+    fn branch_draft_uses_typed_input_identity_and_prefix() {
+        let mut db = rusqlite::Connection::open_in_memory().unwrap();
+        let tx = db.transaction().unwrap();
+        let record = studio_runtime_store::TranscriptItemRecord::from_value(json!({
+            "id":"agent:parent", "role":"user", "text":"parent",
+            "inputs":[{"id":"one","kind":"user","text":"first"}, {"id":null,"kind":"user","text":"second"}]
+        })).unwrap();
+        let selected = studio_runtime_store::TranscriptItem {
+            id: "agent:parent".into(),
+            agent: "agent".into(),
+            record,
+        };
+        let mut assets = BTreeMap::new();
+        let payload = branch_draft_payload(
+            &tx,
+            "agent",
+            "child",
+            &selected,
+            "agent:parent:1",
+            &mut assets,
+        )
+        .unwrap();
+        assert_eq!(
+            payload,
+            json!({"text":"second","prefixText":"first","assets":[]})
+        );
+        let parent = branch_draft_payload(
+            &tx,
+            "agent",
+            "child",
+            &selected,
+            "agent:parent",
+            &mut assets,
+        )
+        .unwrap();
+        assert_eq!(parent, json!({"text":"parent","prefixText":"","assets":[]}));
+    }
 
     #[test]
     fn branch_draft_keeps_the_historical_generated_request_identity() {

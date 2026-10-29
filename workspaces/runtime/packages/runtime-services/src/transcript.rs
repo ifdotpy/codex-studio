@@ -318,7 +318,12 @@ fn item_in(connection: &Connection, agent: &str, identity: &str) -> Result<Value
     let row = TranscriptRepository::resolve_item(connection, agent, identity)?
         .ok_or(TranscriptError::UnknownMessage)?;
     validate_parent(&row)?;
-    if let Some(inputs) = stored_inputs(&row.record, &row.id)?.filter(|inputs| !inputs.is_empty()) {
+    if let Some(inputs) = row
+        .record
+        .inputs()
+        .value()
+        .filter(|inputs| !inputs.is_empty())
+    {
         for (index, input) in inputs.iter().enumerate() {
             let candidate = hydrate_input(&row, input, index, agent, Some(identity), |id| {
                 Ok(TranscriptRepository::event_text(connection, agent, id)?)
@@ -365,10 +370,10 @@ fn search_in(
     }
     let mut results = Vec::new();
     for row in TranscriptRepository::items_for_agent(connection, agent)? {
-        let candidates = if let Some(inputs) = stored_inputs(&row.record, &row.id)? {
+        let candidates = if let Some(inputs) = row.record.inputs().value() {
             let mut candidates = Vec::with_capacity(inputs.len());
             for (index, input) in inputs.iter().enumerate() {
-                let input_id = optional_string(input, "id", "runtime_items", &row.id)?;
+                let input_id = input.id();
                 let Some(mut candidate) = hydrate_input(&row, input, index, agent, None, |id| {
                     Ok(TranscriptRepository::event_text(connection, agent, id)?)
                 })?
@@ -443,13 +448,14 @@ fn search_item_in(
             .find(|agent| agent.id.as_ref() == Some(&row.agent))
             .ok_or(TranscriptError::SearchResultUnavailable)?;
         if actor.deleted_at.as_ref().is_some_and(Deletion::is_deleted)
-            || truthy(row.record.get("afterRestore"))
+            || truthy(row.record.extra("afterRestore"))
         {
             return Err(TranscriptError::SearchResultUnavailable);
         }
         let text = searchable_text(connection, &row)?;
         let mut result = row
             .record
+            .value()
             .as_object()
             .cloned()
             .ok_or_else(|| invalid_stored("runtime_items", &row.id))?;
@@ -740,9 +746,7 @@ fn searchable_text(
     row: &TranscriptItem,
 ) -> Result<String, TranscriptError> {
     let mut full = TranscriptRepository::full_text(connection, row)?;
-    if full.as_deref() == Some("")
-        && stored_inputs(&row.record, &row.id)?.is_some_and(|v| !v.is_empty())
-    {
+    if full.as_deref() == Some("") && row.record.inputs().value().is_some_and(|v| !v.is_empty()) {
         // The repository's fallback may be the empty legacy parent, not a body.
         let persisted = connection.query_row(
             "SELECT EXISTS(SELECT 1 FROM runtime_item_fulltext WHERE id=?1 AND body IS NOT NULL)",
@@ -806,7 +810,7 @@ fn excerpt(body: &str, query: &str) -> String {
 
 fn project(
     row: &TranscriptItem,
-    input: Option<&Value>,
+    input: Option<&studio_runtime_schema::transcript_record::TranscriptInput>,
     source_id: &str,
     identity: &str,
     agent: &str,
@@ -814,12 +818,8 @@ fn project(
     complete: bool,
 ) -> Result<Value, TranscriptError> {
     validate_parent(row)?;
-    optional_string(&row.record, "text", "runtime_items", &row.id)?;
-    let input_is_user = input
-        .and_then(|value| value.get("kind"))
-        .and_then(Value::as_str)
-        == Some("user");
-    let parent_role = optional_string(&row.record, "role", "runtime_items", &row.id)?;
+    let input_is_user = input.and_then(|value| value.kind()) == Some("user");
+    let parent_role = row.record.role();
     let role = if input_is_user {
         Value::String("user".to_owned())
     } else {
@@ -831,23 +831,25 @@ fn project(
     };
     let mut projected = row
         .record
+        .value()
         .as_object()
         .cloned()
         .ok_or_else(|| invalid_stored("runtime_items", &row.id))?;
     if let Some(input) = input {
-        let fields = input
+        let input_value = input.value();
+        let fields = input_value
             .as_object()
             .ok_or_else(|| invalid_stored("runtime_items", &row.id))?;
-        optional_string(input, "text", "runtime_items", &row.id)?;
-        optional_string(input, "kind", "runtime_items", &row.id)?;
-        optional_string(input, "turnId", "runtime_items", &row.id)?;
-        optional_string(input, "clientMessageId", "runtime_items", &row.id)?;
         projected.extend(fields.clone());
     }
-    optional_string(&row.record, "clientMessageId", "runtime_items", &row.id)?;
+    optional_extra_string(
+        row.record.extra("clientMessageId"),
+        "runtime_items",
+        &row.id,
+    )?;
     let turn_id = input
-        .and_then(|value| value.get("turnId"))
-        .or_else(|| row.record.get("turnId"));
+        .and_then(|value| value.extra("turnId"))
+        .or_else(|| row.record.extra("turnId"));
     if let Some(turn_id) = turn_id
         && !turn_id.is_null()
         && !turn_id.is_string()
@@ -865,7 +867,7 @@ fn project(
 
 fn hydrate_input<F>(
     row: &TranscriptItem,
-    input: &Value,
+    input: &studio_runtime_schema::transcript_record::TranscriptInput,
     index: usize,
     agent: &str,
     requested_identity: Option<&str>,
@@ -875,7 +877,7 @@ where
     F: FnOnce(&str) -> Result<Option<String>, TranscriptError>,
 {
     let truncated = validate_input(input, &row.id)?;
-    let input_id = optional_string(input, "id", "runtime_items", &row.id)?;
+    let input_id = input.id();
     let identity = input_id.map_or_else(
         || format!("{}:{index}", row.id),
         |id| format!("{agent}:{id}"),
@@ -889,7 +891,7 @@ where
     }
     let complete = !truncated || event.is_some();
     let text = event
-        .or(optional_string(input, "text", "runtime_items", &row.id)?.map(str::to_owned))
+        .or(input.text().map(str::to_owned))
         .unwrap_or_default();
     project(row, Some(input), &row.id, &identity, agent, text, complete).map(Some)
 }
@@ -905,18 +907,18 @@ where
 {
     let truncated = validate_parent(row)?;
     if full.is_none()
-        && let Some(inputs) = stored_inputs(&row.record, &row.id)?
+        && let Some(inputs) = row.record.inputs().value()
     {
         let mut pieces = Vec::new();
         for input in inputs {
             validate_input(input, &row.id)?;
-            let input_id = optional_string(input, "id", "runtime_items", &row.id)?;
+            let input_id = input.id();
             let event = input_id.map(&mut event_lookup).transpose()?.flatten();
             if let Some(event) = event {
                 pieces.push(event);
             } else if input_id.is_none()
-                && !optional_bool(input, "truncated", "runtime_items", &row.id)?.unwrap_or(false)
-                && let Some(text) = optional_string(input, "text", "runtime_items", &row.id)?
+                && !input.truncated().unwrap_or(false)
+                && let Some(text) = input.text()
             {
                 pieces.push(text.to_owned());
             }
@@ -930,63 +932,47 @@ where
     }
     let complete = !truncated || full.is_some();
     let text = full
-        .or(optional_string(&row.record, "text", "runtime_items", &row.id)?.map(str::to_owned))
+        .or(row.record.text().value().cloned())
         .unwrap_or_default();
     project(row, None, &row.id, &row.id, agent, text, complete)
 }
 
 fn validate_parent(row: &TranscriptItem) -> Result<bool, TranscriptError> {
-    match row.record.get("id") {
-        Some(Value::String(id)) if id == &row.id => {}
-        _ => return Err(invalid_stored("runtime_items", &row.id)),
+    if row.record.id().as_ref() != row.id {
+        return Err(invalid_stored("runtime_items", &row.id));
     }
-    optional_bool(&row.record, "truncated", "runtime_items", &row.id)
+    optional_extra_bool(row.record.extra("truncated"), "runtime_items", &row.id)
         .map(|value| value.unwrap_or(false))
 }
 
-fn optional_string<'a>(
-    object: &'a Value,
-    field: &str,
-    stored_object: &'static str,
+fn optional_extra_string<'a>(
+    value: Option<&'a Value>,
+    table: &'static str,
     id: &str,
 ) -> Result<Option<&'a str>, TranscriptError> {
-    match object.get(field) {
+    match value {
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(value)) => Ok(Some(value)),
-        _ => Err(invalid_stored(stored_object, id)),
+        _ => Err(invalid_stored(table, id)),
     }
 }
-
-fn stored_inputs<'a>(record: &'a Value, id: &str) -> Result<Option<&'a [Value]>, TranscriptError> {
-    match record.get("inputs") {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::Array(inputs)) => Ok(Some(inputs)),
-        _ => Err(invalid_stored("runtime_items", id)),
-    }
+fn validate_input(
+    input: &studio_runtime_schema::transcript_record::TranscriptInput,
+    id: &str,
+) -> Result<bool, TranscriptError> {
+    optional_extra_string(input.extra("turnId"), "runtime_items", id)?;
+    optional_extra_string(input.extra("clientMessageId"), "runtime_items", id)?;
+    Ok(input.truncated().unwrap_or(false))
 }
-
-fn validate_input(input: &Value, id: &str) -> Result<bool, TranscriptError> {
-    if !input.is_object() {
-        return Err(invalid_stored("runtime_items", id));
-    }
-    optional_string(input, "kind", "runtime_items", id)?;
-    optional_string(input, "text", "runtime_items", id)?;
-    optional_string(input, "id", "runtime_items", id)?;
-    optional_string(input, "turnId", "runtime_items", id)?;
-    optional_string(input, "clientMessageId", "runtime_items", id)?;
-    Ok(optional_bool(input, "truncated", "runtime_items", id)?.unwrap_or(false))
-}
-
-fn optional_bool(
-    object: &Value,
-    field: &str,
-    stored_object: &'static str,
+fn optional_extra_bool(
+    value: Option<&Value>,
+    table: &'static str,
     id: &str,
 ) -> Result<Option<bool>, TranscriptError> {
-    match object.get(field) {
+    match value {
         None | Some(Value::Null) => Ok(None),
         Some(Value::Bool(value)) => Ok(Some(*value)),
-        _ => Err(invalid_stored(stored_object, id)),
+        _ => Err(invalid_stored(table, id)),
     }
 }
 
@@ -1065,7 +1051,7 @@ mod tests {
             let row = TranscriptItem {
                 id: record.id().as_ref().to_owned(),
                 agent: "agent-1".to_owned(),
-                record: record.value().clone(),
+                record,
             };
 
             let projected = parent_projection(
@@ -1094,11 +1080,11 @@ mod tests {
             let row = TranscriptItem {
                 id: record.id().as_ref().to_owned(),
                 agent: "agent-1".to_owned(),
-                record: record.value().clone(),
+                record,
             };
             let projected = hydrate_input(
                 &row,
-                &row.record["inputs"][0],
+                &row.record.inputs().value().unwrap()[0],
                 0,
                 "agent-1",
                 Some("agent-1:input-1"),
