@@ -1,8 +1,8 @@
 //! The concurrent part of a submission. The durable `submitted` commit runs
 //! in the agent's own task, concurrently with other agents; the account worker
-//! keeps only the provider write. The FULL commit still returns before the
-//! write starts, so a crash between them leaves a durable submitted receipt
-//! with an Unknown outcome, never an unrecorded write.
+//! keeps only the provider write. The submitted commit returns before the
+//! write starts. With synchronous=NORMAL an unclean stop can lose that commit,
+//! so startup must hold the earlier reservation as an unknown outcome.
 use super::*;
 use crate::provider_session_task::PreparedRequest;
 use rusqlite::OptionalExtension;
@@ -39,7 +39,7 @@ pub(super) enum Committed {
         Box<Commit>,
         Box<Result<Option<preparation::VmProviderLaunchRequest>, WorkerError>>,
     ),
-    /// The FULL submitted commit returned; only the write remains.
+    /// The submitted commit returned; only the write remains.
     Ready(Box<Ready>),
 }
 

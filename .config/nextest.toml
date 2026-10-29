@@ -83,6 +83,9 @@ inherits = "ci"
 # Retained watcher registrations and analytics connections avoid repeated tree walks and opens.
 # Reviewer permissions stay read-only under yolo across preparation, turns, and monitors.
 default-filter = '''
+    ((package(=studio-runtime-store) | package(=studio-runtime-services)) & kind(lib) & test(unclean_)) |
+    (package(=studio-runtime-server) & kind(bin) & binary(=studio-runtime-server) & test(clean_marker_is_consumed_before_the_next_run)) |
+    (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(unclean_restart_holds_title_after_lost_submission_commit)) |
     (package(=studio-runtime-server) & kind(lib) & test(/^host_runtime::voice_composition_tests::(stale_unsent_voice_stop_reaches_real_worker_after_lifecycle_stop|voice_speech_http_reserves_and_replays_through_real_worker|migrated_voice_stop_replays_unknown_with_real_worker_without_resending)$/)) |
     (package(=studio-runtime-store) & kind(test) & binary(=integration) & test(/^receipts_cutover::/)) |
     (package(=studio-runtime-server) & kind(lib) & test(direct_generation_uses_only_migrated_account_counter)) |
@@ -327,6 +330,9 @@ platform = 'cfg(target_os = "linux")'
 # Desktop projection witness: Keep private native rotation receipts on disk while validating the public status strictly.
 # Reviewer permissions stay read-only under yolo across preparation, turns, and monitors.
 default-filter = '''
+    ((package(=studio-runtime-store) | package(=studio-runtime-services)) & kind(lib) & test(unclean_)) |
+    (package(=studio-runtime-server) & kind(bin) & binary(=studio-runtime-server) & test(clean_marker_is_consumed_before_the_next_run)) |
+    (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(unclean_restart_holds_title_after_lost_submission_commit)) |
     (package(=studio-runtime-server) & kind(lib) & test(/^host_runtime::voice_composition_tests::(stale_unsent_voice_stop_reaches_real_worker_after_lifecycle_stop|voice_speech_http_reserves_and_replays_through_real_worker|migrated_voice_stop_replays_unknown_with_real_worker_without_resending)$/)) |
     (package(=studio-runtime-store) & kind(test) & binary(=integration) & test(/^receipts_cutover::/)) |
     (package(=studio-runtime-server) & kind(lib) & test(direct_generation_uses_only_migrated_account_counter)) |

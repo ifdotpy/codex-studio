@@ -1,0 +1,33 @@
+//! Hold obligations whose sending commit may have been lost during an unclean stop.
+use studio_runtime_store::{RuntimeStore, SchedulerRepository, StoreError};
+
+#[derive(Debug, thiserror::Error)]
+pub enum RecoveryError {
+    #[error(transparent)]
+    Store(#[from] StoreError),
+    #[error(transparent)]
+    Provider(#[from] crate::account_worker::WorkerError),
+    #[error(transparent)]
+    Callback(#[from] crate::provider_callbacks::CallbackError),
+    #[error(transparent)]
+    Voice(#[from] crate::voice::provider::VoiceProviderError),
+    #[error(transparent)]
+    Native(#[from] crate::native_actions::NativeError),
+    #[error(transparent)]
+    Title(#[from] crate::title_generation::TitleError),
+}
+
+pub async fn hold(store: &RuntimeStore) -> Result<(), RecoveryError> {
+    store
+        .transaction_with(|tx| {
+            SchedulerRepository::hold_unclean_steers(tx)?;
+            SchedulerRepository::hold_unclean_starts(tx)?;
+            crate::account_worker::retained::hold_unclean_provider_calls(tx)?;
+            crate::provider_callbacks::storage::hold_unclean_responses(tx)?;
+            crate::voice::hold_unclean_effects(tx)?;
+            crate::native_actions::hold_unclean_actions(tx)?;
+            crate::title_generation::hold_unclean_jobs(tx)?;
+            Ok::<_, RecoveryError>(())
+        })
+        .await
+}
