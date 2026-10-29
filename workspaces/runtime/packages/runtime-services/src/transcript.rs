@@ -490,7 +490,7 @@ fn search_item_in(
         .get(&TaskId::from(identity))
         .map_err(|_| TranscriptError::Store)?
     {
-        Some((row.value().clone(), "work"))
+        Some((row.into_value(), "work"))
     } else if let Some(row) = Table::<PlanRecord>::new(connection)
         .get(&AgentId::from(identity))
         .map_err(|_| TranscriptError::Store)?

@@ -85,9 +85,9 @@ inherits = "ci"
 default-filter = '''
     (package(studio-client-domain) & test(/^sync_entity::tests::/)) |
     (package(studio-client-core) & test(/^(sync|projections|delivery|actions|file_save|uploads)::tests::|^server_transport::tests::pairing_|^views::(flow_tests|patch_tests)::|typed_voice_commands_validate_before_effects_and_preserve_ids/)) |
-    (package(studio-runtime-schema) & test(/^(rule_record|monitor_record|tool_result|workspace_operation|task_record|transcript_record|usage_resume_record|event_metadata)::tests::/)) |
+    (package(studio-runtime-schema) & test(/^(rule_record|monitor_record|tool_result|workspace_operation|task_record|transcript_record|usage_resume_record|event_metadata|work_item_record)::tests::/)) |
     (package(studio-runtime-store) & test(/^repositories::(execution_history|work_items|monitors|rules|workspace_operations|usage)::tests::|raw_writers_keep_legacy_admission_and_checked_reads_enforce_shell|typed_input_resolution_preserves_visibility_and_physical_owner|consuming_json_record_projection_moves_value_tree|typed_registry_decode_preserves_order_and_error_location|tool_result_table_checks_shell_and_preserves_extensions/)) |
-    (package(studio-runtime-services) & kind(lib) & test(/^event_write::tests::|^work_policy::tests::|^monitor_policy::typed_conversion_tests::|^rules_engine::tests::|arbitrary_legacy_result_round_trips_through_settlement_and_replay/)) |
+    (package(studio-runtime-services) & kind(lib) & test(/^continuation::tests::|^event_write::tests::|^work_policy::tests::|^monitor_policy::typed_conversion_tests::|^rules_engine::tests::|arbitrary_legacy_result_round_trips_through_settlement_and_replay/)) |
     (package(studio-runtime-services) & test(/conversation_signatures_preserve_nullable_setting_identity|confirmed_restart_is_atomic_replay_safe_and_waits_for_exit/)) |
     (package(studio-runtime-http) & test(/queue_recovery::send_now|conversation_catalog_admission_tests::|branch_draft_keeps_the_historical_generated_request_identity|http_restart_uses_checked_request|monitor_restart_http_preserves_identity_and_waits_for_old_exit/)) |
     (package(studio-runtime-schema) & test(/^(continuation_snapshot|claude_login|usage_limits|checkpoint_record|complaint_record|stored_record)::tests::/)) |
@@ -109,7 +109,7 @@ default-filter = '''
     (package(studio-runtime-services) & test(/managed_status_watch::tests::|rules::tests::/)) |
     (package(studio-runtime-http) & test(/rules_owner_hold::/)) |
     (package(studio-runtime-process) & test(/lease_tests/)) |
-    (package(studio-runtime-services) & test(/continuation_corpus::|continuation_recovery::|wave7_p12_completion::|claude_login_actor::|wave7_p18_account_session::|account_session_runtime::limits_|layr_native::mapping|provider_callbacks::projection::tests|model_projection_matches_python_and_keeps_full_result|checkpoint_summaries_filter_agents_and_strip_payloads|workspace_operations_corpus::|current_uses_the_agent_after_pending_settings_are_applied/)) |
+    (package(studio-runtime-services) & test(/wave7_p16_assignment::|agent_creation_assigns_task_and_replays_without_reassignment|continuation_corpus::|continuation_recovery::|wave7_p12_completion::|claude_login_actor::|wave7_p18_account_session::|account_session_runtime::limits_|layr_native::mapping|provider_callbacks::projection::tests|model_projection_matches_python_and_keeps_full_result|checkpoint_summaries_filter_agents_and_strip_payloads|workspace_operations_corpus::|current_uses_the_agent_after_pending_settings_are_applied/)) |
 (package(=studio-runtime-store) & kind(lib) & (test(annotation_typed_tests::) | test(plan_typed_tests::) | test(plan_returns_checked_value_without_a_text_round_trip))) |
 (package(=studio-runtime-services) & kind(lib) & (test(plan_notification_updates_typed_record) | test(read_json_preserves_objects_and_defaults_for_invalid_files) | test(read_object_preserves_objects_and_rejects_invalid_files))) |
 (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(snapshot_rejects_object_encoded_request_state)) |
@@ -369,9 +369,9 @@ platform = 'cfg(target_os = "linux")'
 default-filter = '''
     (package(studio-client-domain) & test(/^sync_entity::tests::/)) |
     (package(studio-client-core) & test(/^(sync|projections|delivery|actions|file_save|uploads)::tests::|^server_transport::tests::pairing_|^views::(flow_tests|patch_tests)::|typed_voice_commands_validate_before_effects_and_preserve_ids/)) |
-    (package(studio-runtime-schema) & test(/^(rule_record|monitor_record|tool_result|workspace_operation|task_record|transcript_record|usage_resume_record|event_metadata)::tests::/)) |
+    (package(studio-runtime-schema) & test(/^(rule_record|monitor_record|tool_result|workspace_operation|task_record|transcript_record|usage_resume_record|event_metadata|work_item_record)::tests::/)) |
     (package(studio-runtime-store) & test(/^repositories::(execution_history|work_items|monitors|rules|workspace_operations|usage)::tests::|raw_writers_keep_legacy_admission_and_checked_reads_enforce_shell|typed_input_resolution_preserves_visibility_and_physical_owner|consuming_json_record_projection_moves_value_tree|typed_registry_decode_preserves_order_and_error_location|tool_result_table_checks_shell_and_preserves_extensions/)) |
-    (package(studio-runtime-services) & kind(lib) & test(/^event_write::tests::|^work_policy::tests::|^monitor_policy::typed_conversion_tests::|^rules_engine::tests::|arbitrary_legacy_result_round_trips_through_settlement_and_replay/)) |
+    (package(studio-runtime-services) & kind(lib) & test(/^continuation::tests::|^event_write::tests::|^work_policy::tests::|^monitor_policy::typed_conversion_tests::|^rules_engine::tests::|arbitrary_legacy_result_round_trips_through_settlement_and_replay/)) |
     (package(studio-runtime-services) & test(/conversation_signatures_preserve_nullable_setting_identity|confirmed_restart_is_atomic_replay_safe_and_waits_for_exit/)) |
     (package(studio-runtime-http) & test(/queue_recovery::send_now|conversation_catalog_admission_tests::|branch_draft_keeps_the_historical_generated_request_identity|http_restart_uses_checked_request|monitor_restart_http_preserves_identity_and_waits_for_old_exit/)) |
     (package(studio-runtime-schema) & test(/^(continuation_snapshot|claude_login|usage_limits|checkpoint_record|complaint_record|stored_record)::tests::/)) |
@@ -393,7 +393,7 @@ default-filter = '''
     (package(studio-runtime-services) & test(/managed_status_watch::tests::|rules::tests::/)) |
     (package(studio-runtime-http) & test(/rules_owner_hold::/)) |
     (package(studio-runtime-process) & test(/lease_tests/)) |
-    (package(studio-runtime-services) & test(/continuation_corpus::|continuation_recovery::|wave7_p12_completion::|claude_login_actor::|wave7_p18_account_session::|account_session_runtime::limits_|layr_native::mapping|provider_callbacks::projection::tests|model_projection_matches_python_and_keeps_full_result|checkpoint_summaries_filter_agents_and_strip_payloads|workspace_operations_corpus::|current_uses_the_agent_after_pending_settings_are_applied/)) |
+    (package(studio-runtime-services) & test(/wave7_p16_assignment::|agent_creation_assigns_task_and_replays_without_reassignment|continuation_corpus::|continuation_recovery::|wave7_p12_completion::|claude_login_actor::|wave7_p18_account_session::|account_session_runtime::limits_|layr_native::mapping|provider_callbacks::projection::tests|model_projection_matches_python_and_keeps_full_result|checkpoint_summaries_filter_agents_and_strip_payloads|workspace_operations_corpus::|current_uses_the_agent_after_pending_settings_are_applied/)) |
 (package(=studio-runtime-store) & kind(lib) & (test(annotation_typed_tests::) | test(plan_typed_tests::) | test(plan_returns_checked_value_without_a_text_round_trip))) |
 (package(=studio-runtime-services) & kind(lib) & (test(plan_notification_updates_typed_record) | test(read_json_preserves_objects_and_defaults_for_invalid_files) | test(read_object_preserves_objects_and_rejects_invalid_files))) |
 (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(snapshot_rejects_object_encoded_request_state)) |

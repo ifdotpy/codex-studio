@@ -336,7 +336,7 @@ async fn run_accepted_archive(
         None if prior_status == WorkEffectStatus::Unknown => return Ok(ArchiveRun::Skipped),
         None => {
             let guard = ArchiveGuard {
-                work: work.value().clone(),
+                work: work.value(),
                 owner: owner_snapshot.clone().expect("preflight requires owner"),
                 task_id: task_id.clone(),
                 owner_id: owner_id.clone(),
@@ -392,7 +392,7 @@ async fn run_accepted_archive(
     let owner_for_settlement = owner_id.clone();
     let root_for_settlement = root_id.clone();
     let terminal_guard = verify_terminal.then(|| ArchiveGuard {
-        work: work.value().clone(),
+        work: work.value(),
         owner: owner_snapshot.expect("preflight requires owner"),
         task_id: task_id.clone(),
         owner_id: owner_id.clone(),
