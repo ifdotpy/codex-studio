@@ -534,6 +534,12 @@ impl MonitorSnapshot {
     pub fn id(&self) -> &str {
         &self.fields.id
     }
+    pub fn status(&self) -> MonitorStatus {
+        self.fields.status
+    }
+    pub fn rule_id(&self) -> Option<&str> {
+        self.fields.rule_id.as_deref()
+    }
     pub fn agent(&self) -> &str {
         &self.fields.agent
     }

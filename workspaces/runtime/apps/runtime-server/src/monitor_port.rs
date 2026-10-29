@@ -548,12 +548,10 @@ impl RetainedMonitorPort {
         self.store
             .transaction_with(move |tx| {
                 let (snapshot, _) = studio_runtime_services::monitor_runtime::snapshot(tx, &id)?;
-                if snapshot.record()["status"] != "starting"
+                if snapshot.status()
+                    != studio_runtime_schema::studio_errors::MonitorStatus::Starting
                     || snapshot.operation().is_some()
-                    || snapshot
-                        .record()
-                        .get("ruleId")
-                        .is_some_and(|value| !value.is_null())
+                    || snapshot.rule_id().is_some()
                 {
                     return Ok(());
                 }
@@ -628,11 +626,9 @@ impl RetainedMonitorPort {
             .transaction_with(move |tx| {
                 let (snapshot, _actor) =
                     studio_runtime_services::monitor_runtime::snapshot(tx, &monitor_id)?;
-                if snapshot.record()["status"] != "starting"
-                    || snapshot
-                        .record()
-                        .get("ruleId")
-                        .is_some_and(|value| !value.is_null())
+                if snapshot.status()
+                    != studio_runtime_schema::studio_errors::MonitorStatus::Starting
+                    || snapshot.rule_id().is_some()
                     || snapshot.operation().is_some()
                 {
                     return Err(MonitorError::Refused(
@@ -646,44 +642,44 @@ impl RetainedMonitorPort {
                 if agent.id().as_ref() != snapshot.agent() {
                     return Err(MonitorError::Refused("Monitor owner changed"));
                 }
-                Ok((
-                    saved.value(),
-                    serde_json::to_value(agent).map_err(studio_runtime_store::StoreError::from)?,
-                ))
+                Ok((saved, agent))
             })
             .await?;
-        let timing: CommandTiming = serde_json::from_value(monitor.clone())
+        // PreparedStart's transactional fence compares the original JSON shape.
+        let monitor_value = monitor.value();
+        let timing: CommandTiming = serde_json::from_value(monitor_value.clone())
             .map_err(studio_runtime_store::StoreError::from)?;
         if now >= timing.created + timing.timeout_ms as f64 / 1000.0 {
             return Err(MonitorError::Refused("Monitor startup deadline expired"));
         }
-        let agent_id = monitor["agent"]
-            .as_str()
+        let agent_id = monitor
+            .agent()
             .ok_or(MonitorError::Refused("Monitor owner is invalid"))?;
-        let epoch = monitor["epoch"]
-            .as_u64()
+        let epoch = monitor
+            .epoch
+            .value()
+            .and_then(|value| value.number().as_u64())
             .ok_or(MonitorError::Refused("Monitor epoch is invalid"))?;
-        if actor["epoch"].as_u64() != Some(epoch)
-            || actor["autoWake"] != true
-            || actor["deletedAt"]
-                .as_f64()
+        if u64::try_from(actor.epoch).ok() != Some(epoch)
+            || actor.extra.get("autoWake") != Some(&Value::Bool(true))
+            || actor
+                .extra
+                .get("deletedAt")
+                .and_then(Value::as_f64)
                 .is_some_and(|deleted| deleted != 0.0)
         {
             return Err(MonitorError::Refused(
                 studio_runtime_schema::shared_values::MONITOR_OWNER_STOPPED_ERROR,
             ));
         }
-        let cwd = monitor["cwd"]
-            .as_str()
+        let cwd = monitor
+            .cwd
+            .as_deref()
             .filter(|cwd| Path::new(cwd).is_absolute())
             .ok_or(MonitorError::Refused(
                 "Monitor working directory is unavailable",
             ))?;
-        let account = monitor["accountKey"]
-            .as_str()
-            .filter(|account| !account.is_empty())
-            .or_else(|| actor["accountKey"].as_str())
-            .unwrap_or("default");
+        let account = monitor_account(&monitor, &actor);
         let scope = self
             .session
             .ensure_session(account)
@@ -764,23 +760,29 @@ impl RetainedMonitorPort {
                 });
             }
         };
-        let command = monitor["command"]
-            .as_str()
+        let command = monitor
+            .command
+            .as_ref()
+            .map(|value| value.as_str())
             .ok_or(MonitorError::Refused("Monitor command is invalid"))?;
-        let argv = monitor_command(command, &config, actor["executionMode"] == "vm")
-            .map_err(|_| MonitorError::Refused("Monitor command preparation was refused"))?;
+        let argv = monitor_command(
+            command,
+            &config,
+            actor.extra.get("executionMode") == Some(&json!("vm")),
+        )
+        .map_err(|_| MonitorError::Refused("Monitor command preparation was refused"))?;
         let mut params = json!({
             "command":argv,
             "cwd":cwd,
             "processId":id,
             "streamStdoutStderr":true,
-            "timeoutMs":monitor["timeout_ms"],
+            "timeoutMs":timing.timeout_ms,
         });
         apply_turn_permissions(&mut params, &prepared.settings, &actor)
             .map_err(|_| MonitorError::Refused("Monitor sandbox policy refused the command"))?;
         let start = studio_runtime_services::monitor_runtime::PreparedStart {
-            monitor,
-            actor,
+            monitor: monitor_value,
+            actor: serde_json::to_value(actor).map_err(studio_runtime_store::StoreError::from)?,
             operation,
             params,
         };
@@ -915,9 +917,7 @@ impl RetainedMonitorPort {
             .await
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "Rule agent is unavailable".to_owned())?;
-        let actor_value = serde_json::to_value(&actor).map_err(|error| error.to_string())?;
-        let approved = actor_value["yoloMode"] == true
-            || actor_value["approvalPolicy"].as_str() == Some("never");
+        let approved = rule_liveness_approved(&actor);
         if check.liveness && !approved {
             return Ok(CheckSubmission::NotSubmitted {
                 error: "Liveness command not run because monitor approval is required.".into(),
@@ -947,16 +947,17 @@ impl RetainedMonitorPort {
             .store
             .read_async("runtime-server/rule-monitor-admission", move |db| {
                 MonitorsRepository::get(db, &monitor_id)?
-                    .map(|record| record.value())
                     .ok_or(MonitorError::Refused("Rule monitor disappeared"))
             })
             .await
             .map_err(|error| error.to_string())?;
-        if monitor["status"] == "approval" || monitor["status"] != "starting" {
+        if monitor.status() != Some(studio_runtime_schema::studio_errors::MonitorStatus::Starting) {
             return Ok(CheckSubmission::Accepted);
         }
-        let cwd = actor_value["cwd"]
-            .as_str()
+        let cwd = actor
+            .extra
+            .get("cwd")
+            .and_then(Value::as_str)
             .filter(|cwd| Path::new(cwd).is_absolute())
             .ok_or_else(|| "Rule working directory is unavailable".to_owned())?;
         let scope = self
@@ -1005,7 +1006,7 @@ impl RetainedMonitorPort {
         let command = monitor_command(
             &check.command,
             &config,
-            actor_value["executionMode"] == "vm",
+            actor.extra.get("executionMode") == Some(&json!("vm")),
         )?;
         let mut params = json!({
             "command":command,
@@ -1014,10 +1015,10 @@ impl RetainedMonitorPort {
             "streamStdoutStderr":true,
             "timeoutMs":check.timeout_ms,
         });
-        apply_turn_permissions(&mut params, &prepared_action.settings, &actor_value)?;
+        apply_turn_permissions(&mut params, &prepared_action.settings, &actor)?;
         let prepared = studio_runtime_services::monitor_runtime::PreparedStart {
-            monitor: monitor.clone(),
-            actor: actor_value,
+            monitor: monitor.value(),
+            actor: serde_json::to_value(&actor).map_err(|error| error.to_string())?,
             operation: operation.clone(),
             params,
         };
@@ -1705,8 +1706,6 @@ impl MonitorPort for RetainedMonitorPort {
             let dispatch_wake = self.dispatch_wake.get().cloned();
             let id = id.to_owned();
             let command = command.to_owned();
-            let actor = serde_json::to_value(actor)
-                .map_err(|_| MonitorError::Refused("Monitor actor is invalid"))?;
             let probe_task = tokio::spawn(async move {
                 let prepare_store = Arc::clone(&store);
                 let prepare_resources = Arc::clone(&resources);
@@ -1794,7 +1793,7 @@ struct MonitorProbeRequest<'a> {
     generation: i64,
     command: &'a str,
     operation: &'a studio_runtime_services::monitor_policy::Operation,
-    actor: Value,
+    actor: studio_runtime_store::AgentRecord,
 }
 
 async fn run_probe(
@@ -1810,15 +1809,13 @@ async fn run_probe(
         operation,
         actor,
     } = request;
-    if actor["yoloMode"]
-        .as_bool()
-        .or_else(|| actor["approvalPolicy"].as_str().map(|v| v == "never"))
-        != Some(true)
-    {
+    if !probe_liveness_approved(&actor) {
         return Err("Liveness command not run because monitor approval is required.".into());
     }
-    let cwd = actor["cwd"]
-        .as_str()
+    let cwd = actor
+        .extra
+        .get("cwd")
+        .and_then(Value::as_str)
         .filter(|cwd| Path::new(cwd).is_absolute())
         .ok_or_else(|| "Thread working directory is unavailable".to_owned())?;
     let config_operation = format!("monitor-config:{id}:{generation}");
@@ -1846,7 +1843,7 @@ async fn run_probe(
     if !config.is_object() {
         return Err("Provider configuration is invalid; liveness command was not submitted".into());
     }
-    let guest = actor["executionMode"].as_str() == Some("vm");
+    let guest = actor.extra.get("executionMode").and_then(Value::as_str) == Some("vm");
     let argv = monitor_command(command, &config, guest)?;
     let mut params = json!({
         "command":argv,
@@ -1987,10 +1984,45 @@ async fn provider_request(
     Ok(receipt)
 }
 
+fn monitor_account<'a>(
+    monitor: &'a studio_runtime_store::MonitorRecord,
+    actor: &'a studio_runtime_store::AgentRecord,
+) -> &'a str {
+    monitor
+        .extra
+        .get("accountKey")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .or_else(|| actor.extra.get("accountKey").and_then(Value::as_str))
+        .unwrap_or("default")
+}
+
+// Rule launch and existing probes intentionally use different precedence:
+// a boolean false overrides the policy only for an already-running probe.
+fn rule_liveness_approved(actor: &studio_runtime_store::AgentRecord) -> bool {
+    actor.extra.get("yoloMode") == Some(&Value::Bool(true))
+        || actor.extra.get("approvalPolicy").and_then(Value::as_str) == Some("never")
+}
+
+fn probe_liveness_approved(actor: &studio_runtime_store::AgentRecord) -> bool {
+    actor
+        .extra
+        .get("yoloMode")
+        .and_then(Value::as_bool)
+        .or_else(|| {
+            actor
+                .extra
+                .get("approvalPolicy")
+                .and_then(Value::as_str)
+                .map(|value| value == "never")
+        })
+        == Some(true)
+}
+
 fn apply_turn_permissions(
     params: &mut Value,
     settings: &Value,
-    actor: &Value,
+    actor: &studio_runtime_store::AgentRecord,
 ) -> Result<(), String> {
     if let Some(policy) = settings
         .get("sandboxPolicy")
@@ -2000,12 +2032,19 @@ fn apply_turn_permissions(
         return Ok(());
     }
     let sandbox = actor
+        .extra
         .get("sandbox")
         .filter(|value| studio_runtime_store::truthy(Some(value)));
     if sandbox.is_none() {
         return Err("Thread sandbox is unknown; refusing liveness command".into());
     }
-    if let Some(profile) = actor["profile"]["id"].as_str().filter(|id| !id.is_empty()) {
+    if let Some(profile) = actor
+        .extra
+        .get("profile")
+        .and_then(|profile| profile.get("id"))
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+    {
         params["permissionProfile"] = json!(profile);
     } else {
         params["sandboxPolicy"] = sandbox.cloned().unwrap_or(Value::Null);
@@ -2022,6 +2061,52 @@ mod tests {
 
     struct NoSession;
     impl AccountSessionPort for NoSession {}
+
+    #[test]
+    fn monitor_account_fallback_matches_partial_json() {
+        for monitor_account in [Value::Null, json!(""), json!("watch-account"), json!(2)] {
+            for actor_account in [Value::Null, json!(""), json!("owner-account"), json!(false)] {
+                let mut raw_monitor = starting_watch(Path::new("/"), "watch");
+                raw_monitor["accountKey"] = monitor_account.clone();
+                let mut raw_actor = owner(Path::new("/"), true);
+                raw_actor["accountKey"] = actor_account.clone();
+                let monitor = studio_runtime_store::MonitorRecord::from_value(raw_monitor.clone())
+                    .expect("monitor");
+                let actor = studio_runtime_store::AgentRecord::from_value(raw_actor.clone())
+                    .expect("actor");
+                let legacy = raw_monitor["accountKey"]
+                    .as_str()
+                    .filter(|value| !value.is_empty())
+                    .or_else(|| raw_actor["accountKey"].as_str())
+                    .unwrap_or("default");
+                assert_eq!(super::monitor_account(&monitor, &actor), legacy);
+            }
+        }
+    }
+
+    #[test]
+    fn monitor_actor_permissions_preserve_partial_json_precedence() {
+        for yolo in [Value::Null, json!(true), json!(false), json!("bad")] {
+            for policy in [Value::Null, json!("never"), json!("ask"), json!(3)] {
+                let mut raw = owner(Path::new("/"), true);
+                raw["yoloMode"] = yolo.clone();
+                raw["approvalPolicy"] = policy.clone();
+                let actor: studio_runtime_store::AgentRecord =
+                    serde_json::from_value(raw.clone()).expect("actor fixture");
+                assert_eq!(
+                    rule_liveness_approved(&actor),
+                    raw["yoloMode"] == true || raw["approvalPolicy"].as_str() == Some("never")
+                );
+                assert_eq!(
+                    probe_liveness_approved(&actor),
+                    raw["yoloMode"]
+                        .as_bool()
+                        .or_else(|| raw["approvalPolicy"].as_str().map(|v| v == "never"))
+                        == Some(true)
+                );
+            }
+        }
+    }
 
     #[test]
     fn terminal_exit_requires_a_definitive_outcome() {
@@ -3850,6 +3935,34 @@ mod tests {
         assert_eq!(watch.value()["status"], "lost");
         assert_eq!(owner.status, studio_runtime_store::AgentStatus::Queued);
         assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn monitor_start_inactive_owner_fence_precedes_deadline() {
+        let root = tempfile::tempdir().expect("state root");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        let actor = owner(root.path(), false);
+        let watch = starting_watch(root.path(), "watch");
+        store
+            .transaction(move |tx| {
+                AgentRepository::put(tx, &AgentRecord::from_value(actor)?)?;
+                studio_runtime_store::Table::new(tx)
+                    .put(&studio_runtime_store::MonitorRecord::from_value(watch)?)?;
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .await
+            .expect("seed watch");
+        let port = RetainedMonitorPort::new(store, Arc::new(NoSession));
+        let error = port
+            .dispatch_monitor_start("watch", 62.0)
+            .await
+            .expect_err("expired start");
+        assert!(
+            error
+                .to_string()
+                .contains("Monitor owner is no longer active"),
+            "{error}"
+        );
     }
 
     #[tokio::test]
