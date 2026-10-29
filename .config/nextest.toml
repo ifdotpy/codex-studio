@@ -122,6 +122,7 @@ default-filter = '''
 (package(=studio-runtime-store) & kind(lib) & (test(annotation_typed_tests::) | test(plan_typed_tests::) | test(plan_returns_checked_value_without_a_text_round_trip))) |
 (package(=studio-runtime-services) & kind(lib) & (test(plan_notification_updates_typed_record) | test(read_json_preserves_objects_and_defaults_for_invalid_files) | test(read_object_preserves_objects_and_rejects_invalid_files))) |
 (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(snapshot_rejects_object_encoded_request_state)) |
+(package(=studio-runtime-http) & kind(lib) & (test(legacy_branch_operation_catalog_and_settlement_preserve_evidence) | test(branch_retry_keeps_unknown_broker_identity) | test(branch_failed_retry_clears_old_evidence_only))) |
 (package(=studio-runtime-http) & kind(lib) & test(asset_upload_uses_nullable_fields_and_base64_precedence)) |
 (package(=studio-runtime-schema) & kind(lib) & (test(account_registry::tests::) | test(invite_view_tracks_schema_and_preserves_extensions))) |
 (package(=studio-runtime-store) & kind(lib) & test(typed_registry_decode_preserves_order_and_error_location)) |
@@ -437,6 +438,7 @@ default-filter = '''
 (package(=studio-runtime-store) & kind(lib) & (test(annotation_typed_tests::) | test(plan_typed_tests::) | test(plan_returns_checked_value_without_a_text_round_trip))) |
 (package(=studio-runtime-services) & kind(lib) & (test(plan_notification_updates_typed_record) | test(read_json_preserves_objects_and_defaults_for_invalid_files) | test(read_object_preserves_objects_and_rejects_invalid_files))) |
 (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(snapshot_rejects_object_encoded_request_state)) |
+(package(=studio-runtime-http) & kind(lib) & (test(legacy_branch_operation_catalog_and_settlement_preserve_evidence) | test(branch_retry_keeps_unknown_broker_identity) | test(branch_failed_retry_clears_old_evidence_only))) |
 (package(=studio-runtime-http) & kind(lib) & test(asset_upload_uses_nullable_fields_and_base64_precedence)) |
 (package(=studio-runtime-schema) & kind(lib) & (test(account_registry::tests::) | test(invite_view_tracks_schema_and_preserves_extensions))) |
 (package(=studio-runtime-store) & kind(lib) & test(typed_registry_decode_preserves_order_and_error_location)) |
