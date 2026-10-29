@@ -121,7 +121,11 @@ pub fn origin(value: &str) -> Result<String, String> {
     Ok(url.origin().ascii_serialization())
 }
 pub fn field<'a>(value: &'a Value, name: &str) -> Result<&'a str, String> {
-    value[name]
+    field_value(&value[name], name)
+}
+
+pub(crate) fn field_value<'a>(value: &'a Value, name: &str) -> Result<&'a str, String> {
+    value
         .as_str()
         .filter(|v| !v.is_empty() && v.len() <= 16384)
         .ok_or_else(|| format!("Missing or invalid {name}."))

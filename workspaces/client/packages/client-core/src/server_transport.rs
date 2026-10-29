@@ -42,6 +42,7 @@ fn transport_diagnostic(method: &str, url: &reqwest::Url, status: u16, kind: &st
 
 // These fields are the complete pairing ingress. Identity evidence remains JSON:
 // an existing draft can be retried with values that predate string validation.
+#[derive(Default)]
 struct PairIngress {
     code: Option<String>,
     protocol: Option<u64>,
@@ -56,20 +57,43 @@ struct PairIngress {
 
 impl<'de> serde::Deserialize<'de> for PairIngress {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let mut fields =
-            <serde_json::Map<String, Value> as serde::Deserialize>::deserialize(deserializer)?;
-        let mut take = |name| fields.remove(name).unwrap_or(Value::Null);
-        Ok(Self {
-            code: take("code").as_str().map(str::to_owned),
-            protocol: take("protocol").as_u64(),
-            paired: take("paired").as_bool(),
-            server_id: take("serverId"),
-            client_id: take("clientId"),
-            origin: take("origin"),
-            public_key: take("publicKey"),
-            tailscale_user: take("tailscaleUser"),
-            label: take("label").as_str().map(str::to_owned),
-        })
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = PairIngress;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a pairing reply object")
+            }
+
+            fn visit_map<M: serde::de::MapAccess<'de>>(
+                self,
+                mut map: M,
+            ) -> Result<PairIngress, M::Error> {
+                let mut receipt = PairIngress::default();
+                while let Some(name) = map.next_key::<String>()? {
+                    match name.as_str() {
+                        "code" => {
+                            receipt.code = map.next_value::<Value>()?.as_str().map(str::to_owned)
+                        }
+                        "protocol" => receipt.protocol = map.next_value::<Value>()?.as_u64(),
+                        "paired" => receipt.paired = map.next_value::<Value>()?.as_bool(),
+                        "serverId" => receipt.server_id = map.next_value()?,
+                        "clientId" => receipt.client_id = map.next_value()?,
+                        "origin" => receipt.origin = map.next_value()?,
+                        "publicKey" => receipt.public_key = map.next_value()?,
+                        "tailscaleUser" => receipt.tailscale_user = map.next_value()?,
+                        "label" => {
+                            receipt.label = map.next_value::<Value>()?.as_str().map(str::to_owned)
+                        }
+                        _ => {
+                            map.next_value::<serde::de::IgnoredAny>()?;
+                        }
+                    }
+                }
+                Ok(receipt)
+            }
+        }
+        deserializer.deserialize_map(Visitor)
     }
 }
 
@@ -111,13 +135,13 @@ fn pair_reply(
         || receipt.paired != Some(true)
         || receipt.server_id != invitation["serverId"]
         || receipt.client_id != draft["clientId"]
-        || server_keys::origin(field(&json!({"origin": receipt.origin}), "origin")?)? != origin
+        || server_keys::origin(server_keys::field_value(&receipt.origin, "origin")?)? != origin
         || receipt.public_key != invitation["publicKey"]
         || receipt.tailscale_user != invitation["tailscaleUser"]
     {
         return Err("The pairing reply does not match the invitation.".into());
     }
-    let server = field(&json!({"serverId": receipt.server_id}), "serverId")?.to_owned();
+    let server = server_keys::field_value(&receipt.server_id, "serverId")?.to_owned();
     Ok(PairReply::Accepted(PairReceipt {
         label: receipt.label.unwrap_or_else(|| server.clone()),
         server_id: server,
@@ -709,6 +733,53 @@ mod tests {
                 ..
             }))
         ));
+    }
+    #[test]
+    fn pairing_ingress_matches_json_field_semantics() {
+        // Compare with the former Value indexing path, including duplicate keys.
+        for bytes in [
+            br#"{}"#.as_slice(),
+            br#"{"protocol":1,"protocol":"1","paired":true,"paired":null,"code":"invite_unavailable","code":false}"#,
+            br#"{"protocol":2,"protocol":1,"paired":false,"paired":true,"serverId":7,"clientId":[1],"origin":null,"publicKey":{"x":1},"tailscaleUser":[true],"label":[],"label":"last"}"#,
+        ] {
+            let old: Value = serde_json::from_slice(bytes).unwrap();
+            let ingress: PairIngress = serde_json::from_slice(bytes).unwrap();
+            assert_eq!(ingress.code.as_deref(), old["code"].as_str());
+            assert_eq!(ingress.protocol, old["protocol"].as_u64());
+            assert_eq!(ingress.paired, old["paired"].as_bool());
+            assert_eq!(ingress.server_id, old["serverId"]);
+            assert_eq!(ingress.client_id, old["clientId"]);
+            assert_eq!(ingress.origin, old["origin"]);
+            assert_eq!(ingress.public_key, old["publicKey"]);
+            assert_eq!(ingress.tailscale_user, old["tailscaleUser"]);
+            assert_eq!(ingress.label.as_deref(), old["label"].as_str());
+        }
+        let invitation = json!({});
+        let draft = json!({});
+        let duplicate = br#"{"code":"other","code":"invite_unavailable"}"#;
+        assert!(matches!(
+            pair_reply(
+                duplicate,
+                reqwest::StatusCode::FORBIDDEN,
+                &invitation,
+                &draft,
+                ""
+            ),
+            Ok(PairReply::InviteUnavailable)
+        ));
+        let duplicate = br#"{"code":"invite_unavailable","code":"other"}"#;
+        assert_eq!(
+            pair_reply(
+                duplicate,
+                reqwest::StatusCode::FORBIDDEN,
+                &invitation,
+                &draft,
+                ""
+            )
+            .err()
+            .unwrap(),
+            "Pairing failed. Retry the same invitation."
+        );
     }
     #[tokio::test]
     async fn pairing_retry_reuses_draft_after_mismatched_receipt() {
