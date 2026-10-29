@@ -11,7 +11,7 @@ native-test-filter := "package(=studio-native-client)"
 
 [doc("Build and install the Rust command links, migrating same-checkout Python links. Does not install or restart services.")]
 install *args:
-    cargo build --locked -p studio-runtime-server -p studio-process-supervisor -p studio-diagnostics
+    cargo build --locked -p studio-runtime-server -p studio-process-supervisor -p studio-diagnostics -p studio-operator-cli
     {{quote(rust-http-server)}} install-cli --project {{quote(justfile_directory())}} "$@"
 
 [doc("Build the web UI and release Rust runtime server for service installation and delivery.")]

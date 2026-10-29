@@ -5512,6 +5512,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "studio-operator-cli"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "studio-client-core",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "studio-peer-link"
 version = "0.1.0"
 dependencies = [
