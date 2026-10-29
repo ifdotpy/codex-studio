@@ -264,12 +264,7 @@ impl MonitorCreatePort for ManagedMonitorCreateAdapter {
                     "Supply exactly one of command or monitor_id",
                 ));
             }
-            let account = actor
-                .record()
-                .extra
-                .get("accountKey")
-                .and_then(Value::as_str)
-                .unwrap_or("default");
+            let account = actor.record().account_key.as_str();
             if let Some(id) = monitor_id {
                 if id.is_empty()
                     || id.chars().count() > 200
@@ -402,12 +397,7 @@ impl ManagedMonitorCreateAdapter {
         let Some(id) = record["id"].as_str() else {
             return Ok(record);
         };
-        let account = actor
-            .record()
-            .extra
-            .get("accountKey")
-            .and_then(Value::as_str)
-            .unwrap_or("default");
+        let account = actor.record().account_key.as_str();
         match self
             .runtime
             .observe(

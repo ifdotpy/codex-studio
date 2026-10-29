@@ -2524,6 +2524,13 @@ mod voice_composition_tests {
                         root_id: id,
                         epoch: 3,
                         status: AgentStatus::Idle,
+                        account_key: "voice-account".into(),
+                        thread_id: Some("voice-thread".into()),
+                        auto_wake: None,
+                        in_flight: None,
+                        execution_mode: None,
+                        turn_epoch: None,
+                        turn_id: None,
                         extra: [
                             ("isLead".into(), Value::Bool(true)),
                             (
@@ -2531,8 +2538,6 @@ mod voice_composition_tests {
                                 serde_json::to_value(studio_runtime_schema::ProviderKind::Codex)
                                     .unwrap(),
                             ),
-                            ("threadId".into(), Value::String("voice-thread".into())),
-                            ("accountKey".into(), Value::String("voice-account".into())),
                         ]
                         .into(),
                     },

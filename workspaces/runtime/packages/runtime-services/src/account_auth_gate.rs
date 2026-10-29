@@ -176,8 +176,8 @@ pub async fn hold_unstarted(
                 };
                 if agent.status != AgentStatus::Queued
                     || agent.epoch != epoch
-                    || agent.extra.get("autoWake") != Some(&json!(true))
-                    || studio_runtime_store::truthy(agent.extra.get("inFlight"))
+                    || agent.auto_wake != Some(true)
+                    || agent.in_flight == Some(true)
                     || agent.extra.contains_key("startAttempt")
                     || studio_runtime_store::truthy(agent.extra.get("deletedAt"))
                 {

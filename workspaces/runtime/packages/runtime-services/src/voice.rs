@@ -24,6 +24,7 @@ pub use audio::{VoiceAudioError, save_audio};
 pub mod policy;
 
 mod effects;
+pub(crate) use effects::hold_unclean_effects;
 #[path = "voice/provider.rs"]
 pub mod provider;
 
@@ -229,9 +230,8 @@ pub async fn speak(request: SpeakRequest) -> Result<Value, provider::VoiceProvid
                         "Voice is available in an orchestrator chat only",
                     ));
                 };
-                if epoch.is_some_and(|epoch| {
-                    agent.epoch != epoch || agent.extra.get("autoWake") != Some(&Value::Bool(true))
-                }) {
+                if epoch.is_some_and(|epoch| agent.epoch != epoch || agent.auto_wake != Some(true))
+                {
                     return Err(VoiceError::InvalidRequest(
                         "The orchestrator turn is stopped or replaced",
                     ));

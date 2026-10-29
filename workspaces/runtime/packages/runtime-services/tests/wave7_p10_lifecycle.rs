@@ -112,6 +112,14 @@ async fn seed(store: &RuntimeStore, records: Records) {
 
 // Frozen fixtures used numeric tickets before the current agent view stored strings.
 fn use_current_ticket_shape(row: &mut Value) {
+    if row.get("accountKey").is_none_or(Value::is_null) {
+        row["accountKey"] = json!("default");
+    }
+    for key in ["threadId", "turnId"] {
+        if row.get(key).is_some_and(Value::is_null) {
+            row.as_object_mut().expect("agent row").remove(key);
+        }
+    }
     if let Some(ticket) = row.pointer_mut("/startAttempt/requestTicket")
         && let Some(number) = ticket.as_i64()
     {
@@ -745,11 +753,11 @@ impl InterruptFixture {
                             continue;
                         }
                         let attempt = agent.extra.get("startAttempt").unwrap_or(&Value::Null);
-                        let needs_settlement = agent.extra.get("inFlight").and_then(Value::as_bool)
-                            == Some(true)
-                            || agent.extra.get("turnId").is_some_and(|turn| {
-                                turn.as_str().is_some_and(|value| !value.is_empty())
-                            })
+                        let needs_settlement = agent.in_flight == Some(true)
+                            || agent
+                                .turn_id
+                                .as_deref()
+                                .is_some_and(|turn| !turn.is_empty())
                             || attempt.get("activeAtReservation").and_then(Value::as_bool)
                                 == Some(true)
                             || agent
@@ -762,8 +770,8 @@ impl InterruptFixture {
                         if !needs_settlement {
                             continue;
                         }
-                        agent.extra.insert("inFlight".to_owned(), json!(false));
-                        agent.extra.insert("turnId".to_owned(), Value::Null);
+                        agent.in_flight = Some(false);
+                        agent.turn_id = None;
                         agent.extra.insert("activity".to_owned(), Value::Null);
                         agent.extra.insert("activeTools".to_owned(), json!([]));
                         if let Some(attempt) = agent.extra.get_mut("startAttempt")
@@ -996,6 +1004,9 @@ fn assert_records(store: &RuntimeStore, case: &Value) {
         if table == "runtime_agents" {
             for row in expected.as_array_mut().expect("expected agent rows") {
                 row["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
+                if row.get("accountKey").is_none() {
+                    row["accountKey"] = json!("default");
+                }
                 use_current_ticket_shape(row);
             }
             for rows in [&mut actual, &mut expected] {
@@ -1046,6 +1057,9 @@ fn assert_records(store: &RuntimeStore, case: &Value) {
             let mut payload: Value = serde_json::from_str(row[2].as_str().expect("agent payload"))
                 .expect("frozen agent JSON");
             payload["value"]["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
+            if payload["value"].get("accountKey").is_none() {
+                payload["value"]["accountKey"] = json!("default");
+            }
             row[2] = json!(payload.to_string());
         }
         *row = json!([row[0], row[1], row[2], row[3]]);
@@ -1549,6 +1563,9 @@ async fn production_child_notification_matches_python_corpus() {
             let mut payload: Value = serde_json::from_str(row[2].as_str().expect("agent payload"))
                 .expect("frozen agent JSON");
             payload["value"]["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
+            if payload["value"].get("accountKey").is_none() {
+                payload["value"]["accountKey"] = json!("default");
+            }
             row[2] = json!(payload.to_string());
         }
     }

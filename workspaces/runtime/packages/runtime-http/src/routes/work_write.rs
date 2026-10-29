@@ -1069,8 +1069,8 @@ mod managed_work_port_tests {
         store
             .transaction(|tx| {
                 let mut agent = AgentRepository::get(tx, &"lead".into())?.expect("lead");
-                agent.extra.insert("threadId".into(), json!("thread"));
-                agent.extra.insert("turnId".into(), json!("turn"));
+                agent.thread_id = Some("thread".to_string());
+                agent.turn_id = Some("turn".to_string());
                 AgentRepository::put(tx, &agent)?;
                 Ok(())
             })

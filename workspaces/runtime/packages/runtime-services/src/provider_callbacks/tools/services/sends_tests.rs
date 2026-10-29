@@ -1449,7 +1449,11 @@ async fn callback_blob_case(race: BlobRace) {
     dispatch(
         Arc::clone(&store),
         &context,
-        &frame("saved", "orchestration_request", json!({"action":"list"})),
+        &frame(
+            "saved",
+            "orchestration_task",
+            json!({"action":"create","title":"Receipt fixture"}),
+        ),
         10.0,
     )
     .await

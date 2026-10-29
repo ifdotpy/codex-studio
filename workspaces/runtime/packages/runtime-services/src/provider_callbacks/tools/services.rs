@@ -736,24 +736,46 @@ impl From<crate::coordination::CoordinationError> for CallbackError {
     }
 }
 pub(super) fn read_only(name: &str, args: &Value) -> bool {
-    (name == "orchestration_monitor"
-        && args["monitor_id"].is_string()
-        && args.get("command").is_none())
-        || matches!(
-            name,
-            "orchestration_read"
-                | "orchestration_peers"
-                | "orchestration_search"
-                | "orchestration_chat_read"
-        )
-        || name == "orchestration_task"
+    #[derive(serde::Deserialize)]
+    struct Arguments {
+        action: Option<String>,
+        monitor_id: Option<String>,
+        #[serde(default, deserialize_with = "present")]
+        command: bool,
+    }
+    fn present<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
+        <serde::de::IgnoredAny as serde::Deserialize>::deserialize(deserializer)?;
+        Ok(true)
+    }
+    let Ok(args) = <Arguments as serde::Deserialize>::deserialize(args) else {
+        return false;
+    };
+    let action = args.action.as_deref().unwrap_or("list");
+    matches!(
+        name,
+        "orchestration_read"
+            | "orchestration_peers"
+            | "orchestration_search"
+            | "orchestration_chat_read"
+            | "orchestration_status"
+            | "orchestration_context"
+            | "layr_read"
+    ) || name == "orchestration_monitor"
+        && args.monitor_id.is_some()
+        && !args.command
+        && action != "cancel"
+        || name == "orchestration_task" && matches!(action, "list" | "get" | "read" | "history")
+        || name == "orchestration_request" && matches!(action, "list" | "get")
+        || name == "orchestration_watch" && action == "list"
+        || name == "orchestration_complaint" && action == "read"
+        || name == "orchestration_agent_manage"
             && matches!(
-                args["action"].as_str().unwrap_or("list"),
-                "list" | "get" | "read" | "history"
+                action,
+                "list" | "list_archived" | "list_parked" | "inspect" | "maintenance_report"
             )
-        || name == "orchestration_request"
-            && matches!(args["action"].as_str().unwrap_or("list"), "list" | "get")
+        || name == "orchestration_servers" && action == "list"
 }
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn execute(
     tx: &Transaction<'_>,
@@ -1326,5 +1348,45 @@ mod pagination_tests {
             )
             .is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod read_only_tests {
+    #[test]
+    fn distinguishes_reads_from_mutations() {
+        for (name, args, expected) in [
+            ("orchestration_monitor", r#"{"monitor_id":"m"}"#, true),
+            (
+                "orchestration_monitor",
+                r#"{"monitor_id":"m","action":"cancel"}"#,
+                false,
+            ),
+            (
+                "orchestration_monitor",
+                r#"{"monitor_id":"m","command":null}"#,
+                false,
+            ),
+            ("orchestration_monitor", r#"{"command":"echo test"}"#, false),
+            ("orchestration_task", r#"{"action":"list"}"#, true),
+            ("orchestration_task", r#"{"action":"create"}"#, false),
+            ("orchestration_request", r#"{"action":"get"}"#, true),
+            ("orchestration_request", r#"{"action":"cancel"}"#, false),
+            ("orchestration_watch", r#"{"action":"list"}"#, true),
+            ("orchestration_watch", r#"{"action":"save"}"#, false),
+            ("orchestration_complaint", r#"{"action":"read"}"#, true),
+            ("orchestration_complaint", r#"{"action":"respond"}"#, false),
+            (
+                "orchestration_agent_manage",
+                r#"{"action":"inspect"}"#,
+                true,
+            ),
+            ("orchestration_agent_manage", r#"{"action":"park"}"#, false),
+            ("orchestration_servers", r#"{"action":"list"}"#, true),
+            ("orchestration_servers", r#"{"action":"fetch"}"#, false),
+        ] {
+            let value = serde_json::from_str(args).expect("fixture JSON");
+            assert_eq!(super::read_only(name, &value), expected, "{name} {args}");
+        }
     }
 }

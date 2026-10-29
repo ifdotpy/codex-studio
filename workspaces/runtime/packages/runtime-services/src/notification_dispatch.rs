@@ -614,7 +614,7 @@ pub fn dispatch_notification_with_effects(
                         reason: TURN_ENDED_REASON.into(),
                     }
                 } else {
-                    match next_streams.enqueue_delta(key, "", params) {
+                    match next_streams.enqueue_delta(key, "", params, 0) {
                         EnqueueResult::Buffered => DispatchOutcome::Written,
                         EnqueueResult::Closed => DispatchOutcome::Ignored {
                             reason: "closed-stream".into(),
@@ -637,7 +637,7 @@ pub fn dispatch_notification_with_effects(
                         reason: TURN_ENDED_REASON.into(),
                     }
                 } else {
-                    match next_streams.enqueue_delta(key, delta, params) {
+                    match next_streams.enqueue_delta(key, delta, params, 0) {
                         EnqueueResult::Buffered => DispatchOutcome::Written,
                         EnqueueResult::Closed => DispatchOutcome::Ignored {
                             reason: "closed-stream".into(),
@@ -1414,7 +1414,16 @@ fn write_text_notification(
         method: "item/agentMessage/delta".to_owned(),
     };
     if let TextUpdate::Delta(delta) = update {
-        return match streams.enqueue_delta(key.clone(), delta, params) {
+        // A stream opened or recovered now continues the text that the item already holds.
+        let stored_chars = if streams.live_unseeded(&key) {
+            NotificationDispatchRepository::transcript_item(transaction, agent_id, &id)?
+                .map(|(record, _)| saved_text(transaction, &id, &record))
+                .transpose()?
+                .map_or(0, |text| text.chars().count() as u64)
+        } else {
+            0
+        };
+        return match streams.enqueue_delta(key.clone(), delta, params, stored_chars) {
             EnqueueResult::Buffered => Ok(true),
             EnqueueResult::FlushRequired => {
                 flush_text_stream(
@@ -2769,6 +2778,77 @@ mod tests {
         );
     }
 
+    /// A stream rebuilt from the saved buffer, or opened over an item that already holds text,
+    /// publishes its next delta at the end of the stored text, not at 0.
+    #[tokio::test]
+    async fn live_text_continues_at_the_end_of_the_stored_item() {
+        let root = tempfile::tempdir().unwrap();
+        let store = RuntimeStore::open(Some(root.path())).await.unwrap();
+        store
+            .transaction_with(|tx| {
+                AgentRepository::put(
+                    tx,
+                    &AgentRecord::from_value(json!({
+                        "id":"agent","rootId":"agent","epoch":1,"status":"running",
+                        "threadId":"thread","accountKey":"default","provider":"codex",
+                        "turnId":"turn","inFlight":true,"autoWake":false,
+                        "activeTools":[],"events":0
+                    }))
+                    .unwrap(),
+                )?;
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .await
+            .unwrap();
+        let delta = |text: &str| json!({"method":"item/agentMessage/delta","params":{"threadId":"thread","turnId":"turn","itemId":"answer","delta":text}});
+        let mut streams = NotificationStreamBuffer::default();
+        let mut offsets = Vec::new();
+        for (index, (text, restart)) in [("Hel😀", false), ("lo", true), (" you", false)]
+            .into_iter()
+            .enumerate()
+        {
+            if restart {
+                streams.forget_memory_state();
+            }
+            let current = streams.clone();
+            let notification = delta(text);
+            let (next, live) = store
+                .transaction_with(move |tx| {
+                    let publication = PublicationContext::default();
+                    let result = super::dispatch_notification_with_effects(
+                        tx,
+                        "agent",
+                        &publication,
+                        &current,
+                        &identity(index as u64 + 1),
+                        &frame(&notification),
+                        100.0 + index as f64,
+                        &crate::notification_runtime_effects::RuntimeNotificationEffects,
+                    )?;
+                    let mut next = result.stream_update.unwrap_or(current);
+                    let live = next.take_live();
+                    // Flush after the first delta only: the item holds "Hel😀" at the restart.
+                    if index == 0
+                        && let Some(update) = super::flush_notification_streams(
+                            tx,
+                            "agent",
+                            &publication,
+                            &next,
+                            100.5,
+                        )?
+                    {
+                        next = update;
+                    }
+                    Ok::<_, super::NotificationDispatchError>((next, live))
+                })
+                .await
+                .unwrap();
+            streams = next;
+            offsets.extend(live.into_iter().map(|delta| delta.offset));
+        }
+        assert_eq!(offsets, vec![0, 4, 6]);
+    }
+
     /// Hot notifications that change only volatile agent fields (storage
     /// format 2026-10-20) never write `runtime_agents`, for either provider.
     #[tokio::test]
@@ -3192,7 +3272,7 @@ mod tests {
                 assert_eq!(event.turn_id.as_deref(), Some("turn-1"));
                 let agent =
                     AgentRepository::get(tx, &"agent".into())?.expect("accepted agent remains");
-                assert_eq!(agent.extra["turnId"], "turn-1");
+                assert_eq!(agent.turn_id.as_deref(), Some("turn-1"));
                 assert_eq!(agent.extra["events"], 1);
                 assert!(agent.extra["lastEvent"].is_string());
                 let message = MessageRepository::get(tx, &ChatMessageId::from("message-1"))?

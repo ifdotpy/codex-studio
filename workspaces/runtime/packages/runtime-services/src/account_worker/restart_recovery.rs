@@ -475,7 +475,7 @@ impl CompletionWriter for RestartInputCompletion {
         agent.extra.remove("contextRepairWait");
         agent.extra.remove("nativeFailureHold");
         agent.start_outcome_hold = None;
-        agent.extra.insert("autoWake".into(), json!(true));
+        agent.auto_wake = Some(true);
         agent.extra.insert("error".into(), Value::Null);
         if let Some(marker) = agent.extra.get_mut("restartRecovery") {
             marker["stage"] = json!("finished");
@@ -585,7 +585,7 @@ impl CompletionWriter for RestartInputCompletion {
                     agent: settled_agent.value(),
                     method: "turn/completed".into(),
                     params: json!({
-                        "threadId":settled_agent.extra.get("threadId").cloned().unwrap_or(Value::Null),
+                        "threadId":settled_agent.thread_id.map(Value::String).unwrap_or(Value::Null),
                         "turnId":turn_id,
                         "turn":turn
                     }),

@@ -8346,6 +8346,22 @@ export interface components {
        */
       turnId?: string | null | undefined;
     };
+    AnnotationCommandResponse: {
+      ref_id: string;
+      /** @enum {string} */
+      ref_kind:
+        | "agent"
+        | "annotation"
+        | "complaint"
+        | "message"
+        | "project"
+        | "room"
+        | "work";
+      rev: number;
+      rows: components["schemas"]["SyncEntity"][];
+      /** @enum {string} */
+      status: "applied" | "rejected";
+    };
     /** AnnotationEntityDto */
     AnnotationEntityDto: {
       /** Agent */
@@ -19737,6 +19753,20 @@ export interface components {
       workspaceId: string;
     };
     /**
+     * ResourceLiveDeltaEvent
+     * @description Named `live-delta` SSE payload: model text that was committed but may not yet be in the durable transcript item. `offset` is the item text length (Unicode scalars) before `text`. Sent only to streams that subscribe to the agent's transcript. A lost frame is harmless; the durable item replaces the live text.
+     */
+    ResourceLiveDeltaEvent: {
+      /** Agentid */
+      agentId: string;
+      /** Itemid */
+      itemId: string;
+      /** Offset */
+      offset: number;
+      /** Text */
+      text: string;
+    };
+    /**
      * ResourceNotifyAck
      * @description Acknowledgement for a newly published or exactly deduplicated request.
      */
@@ -30457,7 +30487,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["AnnotationReceipt"];
+          "application/json": components["schemas"]["AnnotationCommandResponse"];
         };
       };
       /** @description Bad Request */
@@ -37050,6 +37080,7 @@ export interface operations {
             | components["schemas"]["ApiSchemaEvent"]
             | components["schemas"]["ResourceChangeEvent"]
             | components["schemas"]["ResourceHeartbeatEvent"]
+            | components["schemas"]["ResourceLiveDeltaEvent"]
             | components["schemas"]["ResourceTokenRatesEvent"]
             | components["schemas"]["SyncSessionEvent"]
             | components["schemas"]["SyncSubscriptionAck"]

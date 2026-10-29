@@ -167,8 +167,8 @@ const UNSAFE_RUST_ALLOWLIST: [string, string][] = [
     "Opt-in GNU allocator summary through a bounded private diagnostic buffer.",
   ],
   [
-    "workspaces/client/apps/native/src-tauri/src/lib.rs",
-    "Single-instance flock on the native shell lock file.",
+    "workspaces/client/packages/client-core/src/operator.rs",
+    "Single-instance flock on the native profile lock file.",
   ],
   [
     "workspaces/client/apps/native/src-tauri/src/ios_shell.rs",

@@ -85,7 +85,7 @@ async fn saved_start_effect_of_a_held_attempt_does_not_end_the_restarted_worker(
                 let mut agent =
                     AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?.unwrap();
                 agent.extra.remove("startAttempt");
-                agent.extra.insert("autoWake".into(), json!(false));
+                agent.auto_wake = Some(false);
                 agent.status = studio_runtime_store::AgentStatus::Interrupted;
                 AgentRepository::put(tx, &agent)?;
                 Ok::<_, WorkerError>(())
@@ -113,7 +113,7 @@ async fn saved_start_effect_of_a_held_attempt_does_not_end_the_restarted_worker(
             scheduler::lifecycle_transaction_with(&store, move |tx| {
                 let mut agent =
                     AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?.unwrap();
-                agent.extra.insert("autoWake".into(), json!(true));
+                agent.auto_wake = Some(true);
                 agent.extra.insert("error".into(), Value::Null);
                 agent.extra.remove("nativeFailureHold");
                 AgentRepository::put(tx, &agent)?;

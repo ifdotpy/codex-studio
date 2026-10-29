@@ -529,7 +529,19 @@ impl RemoteClient {
                             && matches!(object.body, TextField::Text(_)))
                 ))
             }
-
+            "servers.list" => {
+                let state = self.vault.read()?.into_value();
+                Ok(Value::Array(
+                    state["servers"]
+                        .as_object()
+                        .ok_or("Invalid server key store.")?
+                        .iter()
+                        .map(|(id, s)| {
+                            json!({"id":id,"origin":s["origin"],"label":s["label"].as_str().unwrap_or(id)})
+                        })
+                        .collect(),
+                ))
+            }
             "servers.forget" => {
                 let _guard = self.mutation.lock().await;
                 let mut state = self.vault.read()?;

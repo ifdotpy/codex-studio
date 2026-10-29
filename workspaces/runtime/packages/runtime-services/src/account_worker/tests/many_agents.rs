@@ -29,10 +29,7 @@ async fn agents(state: &State, count: usize) -> Vec<String> {
                     let mut row = template.clone();
                     row.id = AgentId::from(id.as_str());
                     row.root_id = AgentId::from(id.as_str());
-                    row.extra.insert(
-                        "threadId".into(),
-                        json!(format!("{THREAD_PREFIX}{}", offset + 1)),
-                    );
+                    row.thread_id = Some(format!("{THREAD_PREFIX}{}", offset + 1));
                     AgentRepository::put(tx, &row)?;
                 }
                 Ok(())

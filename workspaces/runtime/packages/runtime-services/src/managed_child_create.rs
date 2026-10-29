@@ -1044,10 +1044,10 @@ fn recheck_actor(
         AgentRepository::get(tx, &actor.id)?.ok_or(crate::managed_host_tools::Error::Stale)?;
     if current.epoch != actor.epoch
         || current.root_id != actor.root_id
-        || current.extra.get("accountKey") != actor.extra.get("accountKey")
+        || current.account_key != actor.account_key
         || current.extra.get("provider") != actor.extra.get("provider")
         || event_write::truthy(current.extra.get("deletedAt"))
-        || !event_write::truthy(current.extra.get("autoWake"))
+        || current.auto_wake != Some(true)
     {
         return Err(crate::managed_host_tools::Error::Stale);
     }
@@ -1378,12 +1378,7 @@ pub(crate) async fn request_review(
     environment: &dyn ManagedCreationEnvironment,
 ) -> Result<crate::managed_host_tools::DispatchedOperation, Error> {
     let actor_record = actor.record().clone();
-    if actor_record
-        .extra
-        .get("executionMode")
-        .and_then(Value::as_str)
-        == Some("vm")
-    {
+    if actor_record.execution_mode == Some(studio_runtime_store::AgentExecutionMode::Vm) {
         if actor_record.extra.get("isLead").and_then(Value::as_bool) != Some(true) {
             return Err(crate::managed_host_tools::Error::Invalid(
                 "Only the lead can create a layr reviewer",

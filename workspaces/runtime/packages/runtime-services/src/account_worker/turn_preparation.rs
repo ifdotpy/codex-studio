@@ -173,13 +173,7 @@ async fn claim(wake: &Wake) -> Result<Result<TurnIntent, Unclaimed>, WorkerError
                 .read_async("runtime-services/pending_metadata", move |db| {
                     let owned = AgentRepository::get(db, &AgentId::from(read_owner.as_str()))?
                         .is_some_and(|agent| {
-                            agent.epoch == epoch
-                                && agent
-                                    .extra
-                                    .get("accountKey")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or("default")
-                                    == read_account
+                            agent.epoch == epoch && agent.account_key.as_str() == read_account
                         });
                     if owned {
                         SchedulerRepository::invalid_pending_metadata(db, &read_owner, epoch)
@@ -191,15 +185,7 @@ async fn claim(wake: &Wake) -> Result<Result<TurnIntent, Unclaimed>, WorkerError
             if !invalid.is_empty() {
                 scheduler::lifecycle_transaction_with(&store, move |tx| {
                     if AgentRepository::get(tx, &AgentId::from(owner.as_str()))?.is_some_and(
-                        |agent| {
-                            agent.epoch == epoch
-                                && agent
-                                    .extra
-                                    .get("accountKey")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or("default")
-                                    == owner_account
-                        },
+                        |agent| agent.epoch == epoch && agent.account_key.as_str() == owner_account,
                     ) {
                         let invalid =
                             SchedulerRepository::invalid_pending_metadata(tx, &owner, epoch)?;
@@ -476,12 +462,7 @@ async fn advance_transfer(wake: &Wake) -> Result<bool, WorkerError> {
                             .unwrap_or_default();
                     let lazy_here =
                         studio_runtime_store::truthy(agent.extra.get("lazyAccountTransfer"))
-                            && agent
-                                .extra
-                                .get("accountKey")
-                                .and_then(Value::as_str)
-                                .unwrap_or("default")
-                                == a;
+                            && agent.account_key.as_str() == a;
                     Ok(Some((phase, lazy_here)))
                 })
                 .await

@@ -369,7 +369,18 @@ fn clear_startup_agent_state(transaction: &rusqlite::Transaction<'_>) -> Result<
         studio_runtime_store::agent_volatile::merge(transaction, &id, &mut agent)?;
         let in_flight_changed = agent.get("inFlight") != Some(&Value::Bool(false));
         agent["inFlight"] = json!(false);
-        let keep_attempt = preparation_eligible(&agent);
+        let unclean_hold = AgentRecord::from_value(agent.clone())
+            .ok()
+            .and_then(|record| record.start_outcome_hold)
+            .is_some_and(|hold| {
+                matches!(
+                    hold,
+                    studio_runtime_store::StoredStartOutcomeHold::Known(
+                        studio_runtime_store::StartOutcomeHold::Held { reason: Some(reason), .. }
+                    ) if reason == SchedulerRepository::UNCLEAN_START_HOLD
+                )
+            });
+        let keep_attempt = preparation_eligible(&agent) || unclean_hold;
         let removed_attempt = if keep_attempt {
             false
         } else {
@@ -799,12 +810,12 @@ pub(crate) fn claim_selected_event_in_transaction(
         agent_id: agent_id.to_owned(),
         epoch,
         attempt_id: attempt_id.to_owned(),
-        account_key: field("accountKey").unwrap_or("default").to_owned(),
+        account_key: claimed.agent.account_key.clone(),
         provider: studio_runtime_providers::ProviderKind::of_field(
             claimed.agent.extra.get("provider"),
         )
         .map_err(|_| StoreError::RecordContract("agent provider"))?,
-        thread_id: field("threadId").map(str::to_owned),
+        thread_id: claimed.agent.thread_id.clone(),
         cwd: field("cwd").map(str::to_owned),
         model: field("model").map(str::to_owned),
         events: claimed
@@ -861,12 +872,12 @@ fn claim_intent_selected(
         agent_id: agent_id.to_owned(),
         epoch,
         attempt_id: attempt_id.to_owned(),
-        account_key: field("accountKey").unwrap_or("default").to_owned(),
+        account_key: claimed.agent.account_key.clone(),
         provider: studio_runtime_providers::ProviderKind::of_field(
             claimed.agent.extra.get("provider"),
         )
         .map_err(|_| StoreError::RecordContract("agent provider"))?,
-        thread_id: field("threadId").map(str::to_owned),
+        thread_id: claimed.agent.thread_id.clone(),
         cwd: field("cwd").map(str::to_owned),
         model: field("model").map(str::to_owned),
         events: claimed
@@ -1258,8 +1269,8 @@ mod child_turn_parent_tests {
                     .expect("monitor");
                     studio_runtime_store::monitor_runtime::put(tx, monitor)?;
                     agent.status = AgentStatus::Completed;
-                    agent.extra.insert("turnId".into(), Value::Null);
-                    agent.extra.insert("inFlight".into(), json!(false));
+                    agent.turn_id = None;
+                    agent.in_flight = Some(false);
                     let mut value = agent.value();
                     crate::lifecycle_effects::ProductionRecoveryDelivery { at: 3.0 }
                         .terminal(
@@ -1369,7 +1380,7 @@ mod child_turn_parent_tests {
         )
         .expect("child reads")
         .expect("child exists");
-        assert_eq!(child.extra["autoWake"], false, "disconnect clears autoWake");
+        assert_eq!(child.auto_wake, Some(false), "disconnect clears autoWake");
     }
 
     async fn recover(store: &RuntimeStore, recovered: &Value, status: &str) {
@@ -1616,9 +1627,9 @@ mod child_turn_parent_tests {
                         &retry,
                     )?;
                     agent.status = AgentStatus::Starting;
+                    agent.in_flight = Some(true);
                     for (key, value) in [
                         ("capacityRetry", retry),
-                        ("inFlight", json!(true)),
                         (
                             "startAttempt",
                             json!({"id":format!("capacity:{parked}"),"epoch":1,"events":[],

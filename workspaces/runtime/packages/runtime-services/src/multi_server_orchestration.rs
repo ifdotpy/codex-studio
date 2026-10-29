@@ -1124,7 +1124,7 @@ impl RuntimeOrchestrationEffects {
                     refused(404, "parent_unavailable", "The parent agent is unavailable")
                 })?;
                 if parent.epoch as i64 != parent_epoch
-                    || parent.extra.get("autoWake") != Some(&Value::Bool(true))
+                    || parent.auto_wake != Some(true)
                     || studio_runtime_store::truthy(parent.extra.get("deletedAt"))
                 {
                     return Err(refused(409, "parent_stopped", "The home team was stopped"));
@@ -1144,7 +1144,7 @@ impl RuntimeOrchestrationEffects {
                 if worker.epoch != epoch
                     || worker.extra.get("remoteWorker") != Some(&expected_remote)
                     || !studio_runtime_store::truthy(worker.extra.get("movedTo"))
-                    || worker.extra.get("autoWake") != Some(&Value::Bool(true))
+                    || worker.auto_wake != Some(true)
                     || studio_runtime_store::truthy(worker.extra.get("deletedAt"))
                 {
                     return Err(refused(409, "worker_stopped", "The worker was stopped"));
@@ -1188,7 +1188,7 @@ impl RuntimeOrchestrationEffects {
                         if target.root_id != worker.root_id
                             || target.id == worker.id
                             || !is_descendant_of(tx, target_id, &worker_id)?
-                            || target.extra.get("autoWake") != Some(&Value::Bool(true))
+                            || target.auto_wake != Some(true)
                         {
                             return Err(refused(
                                 403,
@@ -2125,7 +2125,7 @@ impl RuntimeOrchestrationEffects {
                     refused(404, "parent_unavailable", "The parent agent is unavailable")
                 })?;
                 if typed.epoch != parent_epoch
-                    || typed.extra.get("autoWake") != Some(&Value::Bool(true))
+                    || typed.auto_wake != Some(true)
                     || studio_runtime_store::truthy(typed.extra.get("deletedAt"))
                 {
                     return applied(&json!({"stored":false,"reason":"The parent was stopped"}));

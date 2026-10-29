@@ -27,9 +27,8 @@ fn put_child(
     row.status = status;
     row.extra.insert("parentId".into(), json!(lead));
     row.extra.insert("isLead".into(), json!(false));
-    row.extra.insert("autoWake".into(), json!(false));
-    row.extra
-        .insert("threadId".into(), json!(format!("{child}-thread")));
+    row.auto_wake = Some(false);
+    row.thread_id = Some(format!("{child}-thread"));
     AgentRepository::put(tx, &row)?;
     Ok(())
 }

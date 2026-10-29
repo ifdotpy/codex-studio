@@ -219,11 +219,22 @@ fn assert_terminal(store: &RuntimeStore, call_id: &str, outcome: &str, certainty
     if let Some(certainty) = certainty {
         assert_eq!(row["deliveryCertainty"], certainty, "{call_id}: {row}");
     }
-    if outcome != "unknown" {
+    let read_only: bool = store.test_reader().unwrap().query_row(
+        "SELECT coalesce(json_extract(record,'$.readOnly'),0) FROM runtime_tool_requests WHERE kind='managed_tool' AND json_extract(record,'$.callId')=?1",
+        [call_id], |row| row.get(0),
+    ).unwrap();
+    if outcome != "unknown" && !read_only {
         assert!(
             row.get("result").is_none(),
             "completed replies have one owner"
         );
+    }
+    if read_only {
+        let recorded: bool = store.test_reader().unwrap().query_row(
+            "SELECT EXISTS(SELECT 1 FROM runtime_tool_requests t JOIN request_results r ON r.id=json_extract(t.record,'$.admitted.id') WHERE t.kind='managed_tool' AND json_extract(t.record,'$.callId')=?1)",
+            [call_id], |row| row.get(0),
+        ).unwrap();
+        assert!(!recorded, "read replies are not recorded");
     }
 }
 

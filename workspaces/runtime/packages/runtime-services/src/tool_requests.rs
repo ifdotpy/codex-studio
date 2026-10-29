@@ -41,6 +41,13 @@ pub enum Action<'a> {
 const TABLE: &str = "runtime_tool_requests";
 const PAYLOAD: &str = "payload-store/tool-request-recovery";
 
+pub(crate) fn read_only(
+    connection: &studio_runtime_store::Connection,
+    id: &str,
+) -> Result<bool, ToolRequestError> {
+    Ok(connection.query_row("SELECT coalesce(json_extract(record,'$.readOnly'),0) FROM runtime_tool_requests WHERE id=?1", [id], |row| row.get(0)).optional()?.unwrap_or(false))
+}
+
 fn admitted(task: &Value) -> Result<AdmittedRequest, ToolRequestError> {
     let value = &task["admitted"];
     let fields = value
@@ -77,7 +84,7 @@ pub fn saved_result(
     let Some(task) = records::get(connection, TABLE, id)? else {
         return Ok(None);
     };
-    if !terminal(&task)? {
+    if !terminal(&task)? || (read_only(connection, id)? && connection.query_row("SELECT coalesce(json_type(record,'$.result')='object',0) FROM runtime_tool_requests WHERE id=?1", [id], |row| row.get::<_, bool>(0))?) {
         return Ok(task.get("result").cloned());
     }
     let admitted = admitted(&task)?;
@@ -107,6 +114,9 @@ pub fn settle_result(
     let task = records::get(tx, TABLE, id)?
         .ok_or(ToolRequestError::InvalidRequest("Unknown tool task"))?;
     if !terminal(&task)? {
+        return Ok(());
+    }
+    if read_only(tx, id)? {
         return Ok(());
     }
     let admitted = admitted(&task)?;

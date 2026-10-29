@@ -287,7 +287,7 @@ pub(crate) async fn run(
         return refused(REVIEWER_REFUSAL.into());
     }
     let root_mode = if record.root_id == record.id {
-        record.extra.get("executionMode").cloned()
+        record.execution_mode
     } else {
         let root_id = record.root_id.clone();
         match store
@@ -296,12 +296,12 @@ pub(crate) async fn run(
             })
             .await
         {
-            Ok(root) => root.and_then(|root| root.extra.get("executionMode").cloned()),
+            Ok(root) => root.and_then(|root| root.execution_mode),
             Err(error) => return refused(format!("Could not read the root agent: {error}")),
         }
     };
-    if root_mode.as_ref().and_then(Value::as_str) != Some("vm")
-        || record.extra.get("executionMode").and_then(Value::as_str) != Some("vm")
+    if root_mode != Some(studio_runtime_store::AgentExecutionMode::Vm)
+        || record.execution_mode != Some(studio_runtime_store::AgentExecutionMode::Vm)
     {
         return refused(VM_ONLY_REFUSAL.into());
     }

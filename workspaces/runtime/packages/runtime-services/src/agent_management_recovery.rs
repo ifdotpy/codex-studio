@@ -172,7 +172,15 @@ impl AuthorizedRecoveryRequest {
         };
         match authorize(tx, &self.lead, target) {
             Ok((lead, worker)) => {
-                Ok(stable(&lead) == stable(&self.lead) && stable(&worker) == stable(&self.target))
+                let saved_lead =
+                    AgentRecord::from_value(stable(&self.lead)).map_err(|_| Error::Stale)?;
+                let saved_worker =
+                    AgentRecord::from_value(stable(&self.target)).map_err(|_| Error::Stale)?;
+                let current_lead =
+                    AgentRecord::from_value(stable(&lead)).map_err(|_| Error::Stale)?;
+                let current_worker =
+                    AgentRecord::from_value(stable(&worker)).map_err(|_| Error::Stale)?;
+                Ok(current_lead == saved_lead && current_worker == saved_worker)
             }
             Err(Error::Stale | Error::Invalid(_)) => Ok(false),
             Err(error) => Err(error),
@@ -1125,7 +1133,7 @@ mod tests {
                                 AgentRepository::get(tx, &AgentId::from("lead-00000000"))?
                                     .expect("lead");
                             lead.epoch += 1;
-                            lead.extra.insert("autoWake".into(), json!(false));
+                            lead.auto_wake = Some(false);
                             AgentRepository::put(tx, &lead)
                         })
                         .await
@@ -1507,7 +1515,7 @@ mod tests {
                 let mut lead =
                     AgentRepository::get(tx, &AgentId::from("lead-00000000"))?.expect("lead");
                 lead.epoch += 1;
-                lead.extra.insert("autoWake".into(), json!(false));
+                lead.auto_wake = Some(false);
                 AgentRepository::put(tx, &lead)
             })
             .await
@@ -1769,7 +1777,11 @@ mod tests {
                     let mut worker = AgentRepository::get(tx, &AgentId::from("worker-00000000"))?
                         .expect("worker");
                     worker.extra.insert("provider".into(), json!(provider));
-                    worker.extra.insert("executionMode".into(), json!(mode));
+                    worker.execution_mode = Some(if mode == "vm" {
+                        studio_runtime_store::AgentExecutionMode::Vm
+                    } else {
+                        studio_runtime_store::AgentExecutionMode::Native
+                    });
                     AgentRepository::put(tx, &worker)
                 })
                 .await

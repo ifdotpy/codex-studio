@@ -67,25 +67,11 @@ fn startup_resources(app: &tauri::App) -> Result<Resources, String> {
 }
 
 // Held for the entire host lifetime, including before local client creation.
-struct ProfileLock(#[allow(dead_code)] std::fs::File);
-// SAFETY: flock borrows the live file descriptor; ProfileLock retains the file.
-#[allow(unsafe_code)]
+use studio_client_core::operator::ProfileLock;
 fn lock_profile(directory: &std::path::Path) -> Result<ProfileLock, String> {
-    use std::os::fd::AsRawFd;
-    std::fs::create_dir_all(directory).map_err(|e| e.to_string())?;
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(directory.join("native-profile.lock"))
-        .map_err(|e| e.to_string())?;
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-        return Err(
-            "The native profile is already open. Close its desktop before importing keys.".into(),
-        );
-    }
-    Ok(ProfileLock(file))
+    studio_client_core::operator::try_lock_profile(directory)?.ok_or_else(|| {
+        "The native profile is already open. Close its desktop before importing keys.".into()
+    })
 }
 
 fn draft_workspace_allowed(verified: Option<&str>, params: &serde_json::Value) -> bool {
@@ -418,6 +404,29 @@ fn connected_view_method(method: &str) -> bool {
     )
 }
 
+/// The one server client of this profile, shared by the window and the operator socket.
+#[cfg(target_os = "macos")]
+async fn remote_client(
+    state: &Clients,
+    directory: &std::path::Path,
+) -> Result<Arc<studio_client_core::server_transport::RemoteClient>, String> {
+    let mut remote = state.remote.lock().await;
+    if remote.is_none() {
+        std::fs::create_dir_all(directory).map_err(|e| e.to_string())?;
+        let account = directory
+            .canonicalize()
+            .map_err(|e| e.to_string())?
+            .to_string_lossy()
+            .into_owned();
+        let vault = studio_client_core::server_keys::FileVault::new(directory);
+        studio_client_core::server_keys::move_keychain_keys(&vault, &account)?;
+        *remote = Some(Arc::new(
+            studio_client_core::server_transport::RemoteClient::new(Arc::new(vault))?,
+        ));
+    }
+    Ok(remote.as_ref().expect("remote client initialized").clone())
+}
+
 #[tauri::command]
 async fn client_request(
     window: WebviewWindow,
@@ -470,34 +479,16 @@ async fn client_request(
                     read(serde_json::json!({"path":"/api/multi-server","method":"GET"})).await?;
                 studio_client_core::pair_approval::approved_peer(&after, p, &approval)?;
             }
-            let client = {
-                let mut remote = state.remote.lock().await;
-                if remote.is_none() {
-                    let directory =
-                        match std::env::var_os("CODEX_DESKTOP_PROFILE").filter(|v| !v.is_empty()) {
-                            Some(path) => std::path::PathBuf::from(path),
-                            None => window
-                                .app_handle()
-                                .path()
-                                .app_data_dir()
-                                .map_err(|e| e.to_string())?,
-                        };
-                    std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
-                    let account = directory
-                        .canonicalize()
-                        .map_err(|e| e.to_string())?
-                        .to_string_lossy()
-                        .into_owned();
-                    let vault = studio_client_core::server_keys::FileVault::new(&directory);
-                    #[cfg(target_os = "macos")]
-                    studio_client_core::server_keys::move_keychain_keys(&vault, &account)?;
-                    *remote = Some(Arc::new(
-                        studio_client_core::server_transport::RemoteClient::new(Arc::new(vault))?,
-                    ));
-                }
-                // The branch above initializes the client while this lock is held.
-                remote.as_ref().expect("remote client initialized").clone()
-            };
+            let directory =
+                match std::env::var_os("CODEX_DESKTOP_PROFILE").filter(|v| !v.is_empty()) {
+                    Some(path) => std::path::PathBuf::from(path),
+                    None => window
+                        .app_handle()
+                        .path()
+                        .app_data_dir()
+                        .map_err(|e| e.to_string())?,
+                };
+            let client = remote_client(&state, &directory).await?;
             return match client.dispatch(&request.method, &request.params).await {
                 Ok(value) => Ok(Response::success(request.id, value)),
                 Err(error) => Ok(Response::failure(request.id, "server_error", error)),
@@ -745,6 +736,21 @@ pub fn run() {
             #[cfg(feature = "native-check")]
             let directory = native_check::directory().unwrap_or(directory);
             app.manage(lock_profile(&directory)?);
+            // The profile lock proves no other app owns the operator socket.
+            #[cfg(target_os = "macos")]
+            {
+                let handle = app.handle().clone();
+                let directory = directory.clone();
+                tauri::async_runtime::spawn(async move {
+                    let clients = handle.state::<Clients>();
+                    let served = remote_client(&clients, &directory)
+                        .await
+                        .and_then(|client| studio_client_core::operator::serve(&directory, client));
+                    if let Err(error) = served {
+                        eprintln!("The operator socket is unavailable: {error}");
+                    }
+                });
+            }
             studio_client_core::stream_log::start(&directory);
             #[cfg(desktop)]
             desktop_menu::install(app)?;

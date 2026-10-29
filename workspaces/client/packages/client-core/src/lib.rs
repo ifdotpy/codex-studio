@@ -16,6 +16,7 @@ pub use studio_client_domain::markdown;
 pub mod media;
 pub mod native;
 pub mod notifications;
+pub mod operator;
 mod ordered_json;
 pub mod outbox;
 pub mod pair_approval;

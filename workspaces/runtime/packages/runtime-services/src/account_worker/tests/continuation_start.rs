@@ -26,13 +26,9 @@ async fn child_of_lead(state: &State) {
                 lead.id = AgentId::from(LEAD);
                 lead.root_id = AgentId::from(LEAD);
                 lead.status = studio_runtime_store::AgentStatus::Completed;
-                for (key, value) in [
-                    ("threadId", json!("lead-thread")),
-                    ("inFlight", json!(false)),
-                    ("concurrency", json!(8)),
-                ] {
-                    lead.extra.insert(key.into(), value);
-                }
+                lead.in_flight = Some(false);
+                lead.thread_id = Some("lead-thread".to_string());
+                lead.extra.insert("concurrency".into(), json!(8));
                 lead.extra.remove("startAttempt");
                 AgentRepository::put(tx, &lead)?;
                 row.root_id = AgentId::from(LEAD);
@@ -734,7 +730,7 @@ async fn a_claude_limit_named_only_by_its_notice_waits_and_delivers_held_events(
                 child.status = studio_runtime_store::AgentStatus::Completed;
                 child.extra.insert("parentId".into(), json!(agent));
                 child.extra.insert("isLead".into(), json!(false));
-                child.extra.insert("threadId".into(), json!("held-child-thread"));
+                child.thread_id = Some("held-child-thread".to_string());
                 child.extra.remove("usageResume");
                 AgentRepository::put(tx, &child)?;
                 let text = json!({"agent":"held-child","name":"Child","status":"completed",

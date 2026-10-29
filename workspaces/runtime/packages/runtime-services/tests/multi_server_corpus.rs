@@ -417,6 +417,13 @@ async fn received_remote_event_replays_cached_receipt_after_restart_without_dupl
     }
     let (root, store) = store().await;
     let mut parent = AgentRecord {
+        in_flight: None,
+        account_key: "default".into(),
+        thread_id: None,
+        turn_id: None,
+        auto_wake: None,
+        execution_mode: None,
+        turn_epoch: None,
         title_job: None,
         start_outcome_hold: None,
         fired_events: Default::default(),
@@ -434,7 +441,7 @@ async fn received_remote_event_replays_cached_receipt_after_restart_without_dupl
             json!(studio_runtime_schema::ProviderKind::Codex),
         )]),
     };
-    parent.extra.insert("autoWake".into(), json!(true));
+    parent.auto_wake = Some(true);
     parent.extra.insert(
         "cwd".into(),
         json!(std::env::current_dir().unwrap().display().to_string()),
@@ -653,6 +660,13 @@ async fn moved_worker_send_reaches_a_local_descendant_once() {
 
     let (_root, store) = store().await;
     let mut parent = AgentRecord {
+        in_flight: None,
+        account_key: "default".into(),
+        thread_id: None,
+        turn_id: None,
+        auto_wake: None,
+        execution_mode: None,
+        turn_epoch: None,
         title_job: None,
         start_outcome_hold: None,
         fired_events: Default::default(),
@@ -670,13 +684,20 @@ async fn moved_worker_send_reaches_a_local_descendant_once() {
             json!(studio_runtime_schema::ProviderKind::Codex),
         )]),
     };
-    parent.extra.insert("autoWake".into(), json!(true));
+    parent.auto_wake = Some(true);
     parent.extra.insert(
         "cwd".into(),
         json!(std::env::current_dir().unwrap().display().to_string()),
     );
     parent.extra.insert("concurrency".into(), json!(32));
     let mut worker = AgentRecord {
+        in_flight: None,
+        account_key: "default".into(),
+        thread_id: None,
+        turn_id: None,
+        auto_wake: None,
+        execution_mode: None,
+        turn_epoch: None,
         title_job: None,
         start_outcome_hold: None,
         fired_events: Default::default(),
@@ -694,7 +715,7 @@ async fn moved_worker_send_reaches_a_local_descendant_once() {
             json!(studio_runtime_schema::ProviderKind::Codex),
         )]),
     };
-    worker.extra.insert("autoWake".into(), json!(true));
+    worker.auto_wake = Some(true);
     worker.extra.insert(
         "cwd".into(),
         json!(std::env::current_dir().unwrap().display().to_string()),
@@ -705,6 +726,13 @@ async fn moved_worker_send_reaches_a_local_descendant_once() {
         json!({"server":"peer-server","link":"move-link"}),
     );
     let mut child = AgentRecord {
+        in_flight: None,
+        account_key: "default".into(),
+        thread_id: None,
+        turn_id: None,
+        auto_wake: None,
+        execution_mode: None,
+        turn_epoch: None,
         title_job: None,
         start_outcome_hold: None,
         fired_events: Default::default(),
@@ -722,7 +750,7 @@ async fn moved_worker_send_reaches_a_local_descendant_once() {
             json!(studio_runtime_schema::ProviderKind::Codex),
         )]),
     };
-    child.extra.insert("autoWake".into(), json!(true));
+    child.auto_wake = Some(true);
     child.extra.insert(
         "cwd".into(),
         json!(std::env::current_dir().unwrap().display().to_string()),
@@ -795,6 +823,13 @@ async fn remote_worker_call_refuses_stopped_parent_without_writes() {
 
     let (_root, store) = store().await;
     let mut parent = AgentRecord {
+        in_flight: None,
+        account_key: "default".into(),
+        thread_id: None,
+        turn_id: None,
+        auto_wake: None,
+        execution_mode: None,
+        turn_epoch: None,
         title_job: None,
         start_outcome_hold: None,
         fired_events: Default::default(),
@@ -812,8 +847,15 @@ async fn remote_worker_call_refuses_stopped_parent_without_writes() {
             json!(studio_runtime_schema::ProviderKind::Codex),
         )]),
     };
-    parent.extra.insert("autoWake".into(), json!(false));
+    parent.auto_wake = Some(false);
     let mut worker = AgentRecord {
+        in_flight: None,
+        account_key: "default".into(),
+        thread_id: None,
+        turn_id: None,
+        auto_wake: None,
+        execution_mode: None,
+        turn_epoch: None,
         title_job: None,
         start_outcome_hold: None,
         fired_events: Default::default(),
@@ -831,7 +873,7 @@ async fn remote_worker_call_refuses_stopped_parent_without_writes() {
             json!(studio_runtime_schema::ProviderKind::Codex),
         )]),
     };
-    worker.extra.insert("autoWake".into(), json!(true));
+    worker.auto_wake = Some(true);
     worker.extra.insert("movedTo".into(), json!("server-two"));
     worker.extra.insert(
         "remoteWorker".into(),
@@ -886,6 +928,13 @@ async fn remote_stop_receiver_replays_exact_request_and_rejects_superseded_contr
 
     let (_root, store) = store().await;
     let mut parent = AgentRecord {
+        in_flight: None,
+        account_key: "default".into(),
+        thread_id: None,
+        turn_id: None,
+        auto_wake: None,
+        execution_mode: None,
+        turn_epoch: None,
         title_job: None,
         start_outcome_hold: None,
         fired_events: Default::default(),
@@ -903,9 +952,16 @@ async fn remote_stop_receiver_replays_exact_request_and_rejects_superseded_contr
             json!(studio_runtime_schema::ProviderKind::Codex),
         )]),
     };
-    parent.extra.insert("autoWake".into(), json!(true));
+    parent.auto_wake = Some(true);
     parent.extra.insert("cwd".into(), json!("/fixture"));
     let mut worker = AgentRecord {
+        in_flight: None,
+        account_key: "default".into(),
+        thread_id: None,
+        turn_id: None,
+        auto_wake: None,
+        execution_mode: None,
+        turn_epoch: None,
         title_job: None,
         start_outcome_hold: None,
         fired_events: Default::default(),
@@ -923,7 +979,7 @@ async fn remote_stop_receiver_replays_exact_request_and_rejects_superseded_contr
             json!(studio_runtime_schema::ProviderKind::Codex),
         )]),
     };
-    worker.extra.insert("autoWake".into(), json!(true));
+    worker.auto_wake = Some(true);
     worker.extra.insert("movedTo".into(), json!("server-two"));
     worker
         .extra
@@ -1089,6 +1145,13 @@ async fn stopping_remote_proxy_persists_and_replays_the_same_signed_intent() {
         .await
         .expect("paired peer");
     let mut proxy = AgentRecord {
+        in_flight: None,
+        account_key: "default".into(),
+        thread_id: None,
+        turn_id: None,
+        auto_wake: None,
+        execution_mode: None,
+        turn_epoch: None,
         title_job: None,
         start_outcome_hold: None,
         fired_events: Default::default(),
@@ -1106,7 +1169,7 @@ async fn stopping_remote_proxy_persists_and_replays_the_same_signed_intent() {
             json!(studio_runtime_schema::ProviderKind::Codex),
         )]),
     };
-    proxy.extra.insert("autoWake".into(), json!(true));
+    proxy.auto_wake = Some(true);
     proxy.extra.insert("cwd".into(), json!("/fixture"));
     proxy.extra.insert(
         "remoteWorker".into(),
@@ -1217,6 +1280,13 @@ async fn child_result_requires_link_membership_and_updates_proxy() {
 
     let (_root, store) = store().await;
     let mut parent = AgentRecord {
+        in_flight: None,
+        account_key: "default".into(),
+        thread_id: None,
+        turn_id: None,
+        auto_wake: None,
+        execution_mode: None,
+        turn_epoch: None,
         title_job: None,
         start_outcome_hold: None,
         fired_events: Default::default(),
@@ -1234,8 +1304,15 @@ async fn child_result_requires_link_membership_and_updates_proxy() {
             json!(studio_runtime_schema::ProviderKind::Codex),
         )]),
     };
-    parent.extra.insert("autoWake".into(), json!(true));
+    parent.auto_wake = Some(true);
     let mut child = AgentRecord {
+        in_flight: None,
+        account_key: "default".into(),
+        thread_id: None,
+        turn_id: None,
+        auto_wake: None,
+        execution_mode: None,
+        turn_epoch: None,
         title_job: None,
         start_outcome_hold: None,
         fired_events: Default::default(),
@@ -1986,6 +2063,13 @@ async fn exec_event_owner_checks_accept_the_receipt_form_like_python() {
         let name = &case.name;
         if let Some(lead) = case.lead {
             let mut record = AgentRecord {
+                in_flight: None,
+                account_key: "default".into(),
+                thread_id: None,
+                turn_id: None,
+                auto_wake: None,
+                execution_mode: None,
+                turn_epoch: None,
                 title_job: None,
                 start_outcome_hold: None,
                 fired_events: Default::default(),
@@ -2003,7 +2087,7 @@ async fn exec_event_owner_checks_accept_the_receipt_form_like_python() {
                     json!(studio_runtime_schema::ProviderKind::Codex),
                 )]),
             };
-            record.extra.insert("autoWake".into(), json!(true));
+            record.auto_wake = Some(true);
             record.extra.insert(
                 "cwd".into(),
                 json!(std::env::current_dir().unwrap().display().to_string()),

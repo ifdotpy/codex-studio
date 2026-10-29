@@ -427,7 +427,7 @@ impl studio_runtime_services::monitor_runtime::WorkspaceAdmission for VmManagedW
         if actor.id.0 != self.id
             || actor.epoch != self.epoch
             || extra.get("cwd").and_then(Value::as_str) != Some(self.cwd.as_str())
-            || extra.get("executionMode").and_then(Value::as_str) != Some("vm")
+            || actor.execution_mode != Some(studio_runtime_store::AgentExecutionMode::Vm)
             || extra.get("layrReady").and_then(Value::as_bool) != Some(true)
             || extra.get("layrProjectId").and_then(Value::as_str) != Some(self.project_id.as_str())
             || extra.get("layrLine").and_then(Value::as_str) != Some(self.line.as_str())

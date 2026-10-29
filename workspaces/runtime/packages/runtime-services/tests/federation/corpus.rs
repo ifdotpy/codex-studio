@@ -345,7 +345,7 @@ async fn callback_remote_message_uses_the_existing_federation_outbox() {
                 &studio_runtime_store::AgentId::from("lead"),
             )?
             .expect("callback actor fixture");
-            actor.extra.insert("autoWake".into(), json!(true));
+            actor.auto_wake = Some(true);
             actor.extra.insert("movedTo".into(), json!("server-two"));
             actor.extra.insert(
                 "remoteWorker".into(),

@@ -43,7 +43,7 @@ fn binding(
         record.epoch,
         account,
         Some(provider),
-    )? || fields.get("inFlight") != Some(&Value::Bool(true))
+    )? || record.in_flight != Some(true)
         || [
             "executionMove",
             "lazyAccountTransfer",
@@ -81,8 +81,8 @@ fn binding(
     if attempt["epoch"].as_i64() != Some(record.epoch)
         || attempt["accountKey"].as_str() != Some(account)
         || attempt["submitted"] != true
-        || fields.get("threadId").and_then(Value::as_str) != Some(thread.as_str())
-        || fields.get("turnId").and_then(Value::as_str) != Some(turn.as_str())
+        || record.thread_id.as_deref() != Some(thread.as_str())
+        || record.turn_id.as_deref() != Some(turn.as_str())
         || fields
             .get("nativeResponseTurn")
             .is_some_and(|value| !value.is_null() && value.as_str() != Some(turn.as_str()))

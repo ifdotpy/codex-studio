@@ -20,6 +20,30 @@ const STOP_SIGNATURE: &str = "lifecycle.voice-stop.v1";
 const DELETE_SIGNATURE: &str = "voice-agent-delete-v1";
 const PENDING_BATCH: u32 = 500;
 
+pub(crate) fn hold_unclean_effects(tx: &Transaction<'_>) -> Result<(), VoiceProviderError> {
+    for kind in [OutboxKind::VoiceStop, OutboxKind::VoiceDelete] {
+        let mut query = tx.prepare("SELECT id FROM runtime_outbox WHERE kind=?1 AND status=?2")?;
+        let ids = query
+            .query_map(rusqlite::params![kind, OutboxStatus::Pending], |row| {
+                row.get::<_, String>(0)
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(query);
+        for id in ids {
+            let mut row =
+                Outbox::get::<VoiceEffect>(tx, &id)?.ok_or(VoiceProviderError::ContextChanged)?;
+            let VoiceEffectAuthority::Admitted { outcome, .. } = &mut row.payload.authority else {
+                return Err(VoiceProviderError::ContextChanged);
+            };
+            *outcome = VoiceStopOutcome::Unknown;
+            row.status = OutboxStatus::Unknown;
+            row.next_at = None;
+            Outbox::put(tx, &row)?;
+        }
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VoiceDeleteSession {
     pub session_id: String,
@@ -84,17 +108,9 @@ pub fn capture_delete_sessions(
 ) -> Result<Vec<VoiceEffect>, VoiceProviderError> {
     let agent = AgentRepository::get(connection, &AgentId::from(agent_id))?
         .ok_or(VoiceProviderError::ContextUnavailable)?;
-    let account = match agent.extra.get("accountKey") {
-        None => "default",
-        Some(value) => value
-            .as_str()
-            .ok_or(VoiceProviderError::ContextUnavailable)?,
-    };
-    let thread = match agent.extra.get("threadId") {
-        None | Some(Value::Null) => return Ok(Vec::new()),
-        Some(value) => value
-            .as_str()
-            .ok_or(VoiceProviderError::ContextUnavailable)?,
+    let account = agent.account_key.as_str();
+    let Some(thread) = agent.thread_id.as_deref() else {
+        return Ok(Vec::new());
     };
     let mut query = connection.prepare("SELECT id,account_key,native_thread,connection_id FROM voice_sessions WHERE agent=?1 AND ended IS NULL AND state IS NOT NULL AND account_key=?2 AND native_thread=?3 ORDER BY created,id")?;
     let rows = query

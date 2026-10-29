@@ -381,9 +381,7 @@ pub fn recheck(
             .get("accountKey")
             .and_then(Value::as_str)
             .unwrap_or("default")
-            != field(&drafts[0], "accountKey")
-                .and_then(Value::as_str)
-                .unwrap_or("default")
+            != drafts[0].account_key
     {
         return Err(CreateError::IdentityChanged);
     }
@@ -422,7 +420,7 @@ pub fn recheck_worker(
     let frozen_cwd = field(draft, "_p02ParentCwd");
     let frozen_account = field(draft, "_p02ParentAccountKey");
     if field(&parent, "cwd") != frozen_cwd
-        || field(&parent, "accountKey") != frozen_account
+        || Some(parent.account_key.as_str()) != frozen_account.and_then(Value::as_str)
         || field(&parent, "projectId").and_then(Value::as_str)
             != field(draft, "_p02ParentProjectId").and_then(Value::as_str)
         || field(&parent, "projectServerId").and_then(Value::as_str)
@@ -436,7 +434,7 @@ pub fn recheck_worker(
     let project_path = field(draft, "_p02ParentProjectPath")
         .and_then(Value::as_str)
         .ok_or(CreateError::IdentityChanged)?;
-    if field(&parent, "executionMode").and_then(Value::as_str) == Some("vm")
+    if parent.execution_mode == Some(studio_runtime_store::AgentExecutionMode::Vm)
         && field(&parent, "hostProjectPath").and_then(Value::as_str) != Some(project_path)
     {
         return Err(CreateError::IdentityChanged);
@@ -477,7 +475,7 @@ fn recheck_parent_epoch(
     if expected_epoch < 0
         || parent.epoch != expected_epoch
         || field(&parent, "deletedAt").is_some_and(|value| !value.is_null())
-        || field(&parent, "autoWake").and_then(Value::as_bool) == Some(false)
+        || parent.auto_wake == Some(false)
         || parent.root_id != draft.root_id
     {
         return Err(CreateError::IdentityChanged);
@@ -486,7 +484,7 @@ fn recheck_parent_epoch(
         .ok_or(CreateError::IdentityChanged)?;
     if field(&root, "isLead").and_then(Value::as_bool) != Some(true)
         || field(&root, "deletedAt").is_some_and(|value| !value.is_null())
-        || field(&root, "autoWake").and_then(Value::as_bool) == Some(false)
+        || root.auto_wake == Some(false)
         || field(&root, "concurrency").and_then(Value::as_i64) == Some(0)
     {
         return Err(CreateError::IdentityChanged);
@@ -513,7 +511,7 @@ fn recheck_record(transaction: &Transaction<'_>, draft: &AgentRecord) -> Result<
             return Err(CreateError::IdentityChanged);
         };
         if field(&parent, "deletedAt").is_some_and(|value| !value.is_null())
-            || field(&parent, "autoWake").and_then(Value::as_bool) == Some(false)
+            || parent.auto_wake == Some(false)
             || parent.root_id != draft.root_id
         {
             return Err(CreateError::IdentityChanged);
@@ -556,7 +554,7 @@ fn validate_agent(record: &AgentRecord) -> Result<(), CreateError> {
             id: record.id.0.clone(),
         });
     }
-    for field in ["accountKey", "provider", "cwd", "workspaceMode", "model"] {
+    for field in ["provider", "cwd", "workspaceMode", "model"] {
         required_string(record, field)?;
     }
     if record.epoch < 0 {
@@ -1049,7 +1047,7 @@ mod tests {
             assert_eq!(draft.status, AgentStatus::Idle);
             assert_eq!(field(draft, "parentId"), Some(&Value::Null));
             assert_eq!(
-                field(draft, "accountKey").and_then(Value::as_str),
+                Some(draft.account_key.as_str()),
                 Some(if id == IDS[0] { "one" } else { "two" })
             );
             assert_eq!(
@@ -1165,6 +1163,16 @@ mod tests {
             )
             .expect("saved project after recheck");
         assert_eq!(before, after);
+    }
+
+    #[test]
+    fn worker_recheck_refuses_parent_with_auto_wake_disabled() {
+        let mut fixture = worker_draft_fixture("Named worker", "Do the task");
+        fixture.database.execute(
+            "UPDATE runtime_agents SET record=json_set(record,'$.autoWake',json('false')) WHERE id=?1",
+            [&fixture.parent_id.0],
+        ).expect("disable parent auto wake");
+        assert_worker_recheck_refuses_without_writes(&mut fixture);
     }
 
     #[test]
