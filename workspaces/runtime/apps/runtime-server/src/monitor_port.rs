@@ -834,8 +834,8 @@ impl RetainedMonitorPort {
                 let actor = AgentRepository::get(tx, &AgentId::from(check.agent_id.as_str()))?
                     .ok_or(MonitorError::Refused("Rule agent is unavailable"))?;
                 let check_snapshot =
-                    studio_runtime_services::rules_engine::RuleSnapshot::from_records(
-                        rule.value(),
+                    studio_runtime_services::rules_engine::RuleSnapshot::from_stored(
+                        &rule,
                         actor.value(),
                     )
                     .map_err(|_| MonitorError::Refused("Rule check record is invalid"))?;
@@ -4209,6 +4209,23 @@ mod tests {
             .await
             .expect("seed rule and owner");
         check
+    }
+
+    #[tokio::test]
+    async fn rule_monitor_admission_rejects_a_changed_check() {
+        let root = tempfile::tempdir().expect("state root");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        let mut check = seed_in_flight_rule(&store, root.path()).await;
+        check.command = "changed".into();
+        let port = RetainedMonitorPort::new(Arc::clone(&store), Arc::new(NoSession));
+        let error = port
+            .persist_rule_monitor(&check)
+            .await
+            .expect_err("stale check");
+        assert!(
+            error.contains("Rule check changed before monitor admission"),
+            "{error}"
+        );
     }
 
     async fn saved_rule(store: &RuntimeStore) -> Value {
