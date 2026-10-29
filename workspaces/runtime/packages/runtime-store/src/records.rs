@@ -18,96 +18,6 @@ pub(crate) mod validation_counts {
     }
 }
 
-macro_rules! row_key_accessor {
-    ($name:ident, $id:ty, PayloadId) => {
-        impl $name {
-            pub fn id(&self) -> &$id {
-                // `from_value` caches the required payload ID before a record
-                // can enter a typed table operation.
-                self.row_key.as_ref().expect("payload-id record has no id")
-            }
-        }
-    };
-    ($name:ident, $id:ty, External) => {};
-}
-
-macro_rules! record_newtype {
-    ($name:ident, $id:ty, table = $table:literal, schema = $schema:literal,
-     key = $key:ident, query = $query:ident) => {
-        #[derive(Clone, Debug, PartialEq)]
-        pub struct $name {
-            row_key: Option<$id>,
-            value: Value,
-        }
-
-        impl $name {
-            pub fn from_value(value: Value) -> Result<Self, serde_json::Error> {
-                let row_key = match RecordKeyMode::$key {
-                    RecordKeyMode::PayloadId => Some(<$id>::from(record_id(&value)?)),
-                    RecordKeyMode::External => None,
-                };
-                Ok(Self { row_key, value })
-            }
-
-            pub fn value(&self) -> &Value {
-                &self.value
-            }
-
-            pub fn into_value(self) -> Value {
-                self.value
-            }
-
-            pub fn get(&self, key: &str) -> Option<&Value> {
-                self.value.get(key)
-            }
-
-            pub fn set(&mut self, key: impl Into<String>, value: Value) {
-                if let Some(object) = self.value.as_object_mut() {
-                    object.insert(key.into(), value);
-                }
-            }
-
-            pub fn remove(&mut self, key: &str) -> Option<Value> {
-                self.value.as_object_mut()?.remove(key)
-            }
-        }
-
-        row_key_accessor!($name, $id, $key);
-
-        impl Serialize for $name {
-            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-            where
-                S: serde::Serializer,
-            {
-                self.value.serialize(serializer)
-            }
-        }
-
-        impl<'de> Deserialize<'de> for $name {
-            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-            where
-                D: serde::Deserializer<'de>,
-            {
-                Self::from_value(Value::deserialize(deserializer)?)
-                    .map_err(serde::de::Error::custom)
-            }
-        }
-
-        impl JsonRecord for $name {
-            type Id = $id;
-
-            const TABLE: &'static str = $table;
-            const SCHEMA: &'static str = $schema;
-            const KEY_MODE: RecordKeyMode = RecordKeyMode::$key;
-            const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::$query;
-
-            fn record_key(&self) -> Option<&Self::Id> {
-                self.row_key.as_ref()
-            }
-        }
-    };
-}
-
 macro_rules! string_id {
     ($name:ident) => {
         #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
@@ -1409,7 +1319,9 @@ impl JsonRecord for GraphAgentRecord {
     const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
     const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
     const TYPED_SHAPE: bool = true;
-    fn record_key(&self) -> Option<&Self::Id> { Some(self.id()) }
+    fn record_key(&self) -> Option<&Self::Id> {
+        Some(self.id())
+    }
 }
 
 impl WorkItemRecord {
@@ -1520,14 +1432,6 @@ impl WorkItemRecord {
     pub fn set_status(&mut self, status: WorkStatus) {
         self.0.set_status(status);
     }
-}
-
-fn record_id(value: &Value) -> Result<String, serde_json::Error> {
-    value
-        .get("id")
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-        .ok_or_else(|| serde::de::Error::custom("record id must be a string"))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
