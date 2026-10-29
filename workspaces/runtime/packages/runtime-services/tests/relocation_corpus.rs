@@ -1267,6 +1267,89 @@ async fn move_expiry_and_cache_failpoints_reopen_without_partial_effects() {
 }
 
 #[tokio::test]
+async fn move_status_saved_body_preserves_admission_and_identity_fences() {
+    let fixture = Fixture::new();
+    let case = fixture.data["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|case| case["name"] == "release-waiting-not-started")
+        .unwrap();
+    let key = text(&case["operation"], "id");
+    let generation = agent_move::MoveSnapshot::from_record(&case["operation"])
+        .unwrap()
+        .reconciliation_generation();
+    for variant in [
+        "malformed",
+        "scalar",
+        "null-payload",
+        "missing-move",
+        "wrong-move",
+        "number-generation",
+        "wrong-request",
+        "wrong-action",
+        "duplicate",
+    ] {
+        let (_, store) = fixture.store(variant).await;
+        fixture.seed(&store, case).await;
+        let store = Arc::new(store);
+        let ticket = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        save_status_ticket(
+            &store,
+            key,
+            &ticket,
+            json!(generation),
+            &case["targetReceipt"],
+        )
+        .await;
+        let mut body = json!({"requestId":ticket,"action":"move_status","payload":{"move":key,"reconciliationGeneration":generation}});
+        match variant {
+            "scalar" => body = json!(42),
+            "null-payload" => body["payload"] = Value::Null,
+            "missing-move" => {
+                body["payload"].as_object_mut().unwrap().remove("move");
+            }
+            "wrong-move" => body["payload"]["move"] = json!("foreign"),
+            "number-generation" => body["payload"]["reconciliationGeneration"] = json!(1.0),
+            "wrong-request" => body["requestId"] = json!("foreign"),
+            "wrong-action" => body["action"] = json!("other"),
+            _ => {}
+        }
+        let raw = if variant == "malformed" {
+            "{".to_owned()
+        } else if variant == "duplicate" {
+            format!(
+                "{{\"requestId\":\"wrong\",\"requestId\":{},\"action\":\"wrong\",\"action\":\"move_status\",\"payload\":{{\"move\":null,\"move\":{},\"reconciliationGeneration\":null,\"reconciliationGeneration\":{}}}}}",
+                json!(ticket),
+                json!(key),
+                json!(generation)
+            )
+        } else {
+            body.to_string()
+        };
+        let ticket_for_write = ticket.clone();
+        store.transaction(move |tx| {
+            assert_eq!(tx.execute("UPDATE request_results SET result=json_set(result,'$.reply.body',?1) WHERE json_extract(result,'$.reply.response.requestId')=?2", params![raw,ticket_for_write])?, 1);
+            Ok(())
+        }).await.unwrap();
+        let before = snapshot(&store);
+        let result = agent_move::release_untransferred(
+            &store,
+            key,
+            &ticket,
+            fixture.data["now"].as_f64().unwrap(),
+        )
+        .await;
+        if variant == "duplicate" {
+            assert!(result.unwrap());
+        } else {
+            assert!(result.is_err(), "{variant}");
+            assert_eq!(snapshot(&store), before, "{variant} must not mutate state");
+        }
+    }
+}
+
+#[tokio::test]
 async fn move_status_ticket_rejects_stale_generation_and_replay() {
     let fixture = Fixture::new();
     let case = fixture.data["cases"]
