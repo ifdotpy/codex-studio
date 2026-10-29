@@ -106,11 +106,86 @@ pub const LIMIT: usize = 20 * 1024 * 1024;
 pub fn initialize(db: &Connection) -> rusqlite::Result<()> {
     db.execute_batch("CREATE TABLE IF NOT EXISTS client_file_sources(id TEXT PRIMARY KEY,name TEXT NOT NULL,mime TEXT NOT NULL,bytes BLOB NOT NULL); CREATE TABLE IF NOT EXISTS client_uploads(id TEXT PRIMARY KEY,workspace TEXT NOT NULL,state_dir TEXT NOT NULL,agent TEXT NOT NULL,document TEXT NOT NULL,bytes BLOB NOT NULL); CREATE TABLE IF NOT EXISTS client_upload_tombstones(id TEXT PRIMARY KEY,cancelled INTEGER NOT NULL);")
 }
-fn text<'a>(p: &'a Value, key: &str) -> Result<&'a str, String> {
-    p[key]
+fn optional_string<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<String>, D::Error> {
+    Ok(Value::deserialize(deserializer)?
         .as_str()
+        .map(str::to_owned))
+}
+fn optional_files<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Vec<Value>>, D::Error> {
+    Ok(Value::deserialize(deserializer)?.as_array().cloned())
+}
+fn required<'a>(value: &'a Option<String>, key: &str) -> Result<&'a str, String> {
+    value
+        .as_deref()
         .filter(|v| !v.is_empty() && v.len() <= 4096)
         .ok_or_else(|| format!("{key} is required."))
+}
+
+// Each field is deliberately lenient until the caller reaches its original
+// validation point. File entries remain opaque until processed in order.
+#[derive(Default, Deserialize)]
+struct FileInput {
+    #[serde(default, deserialize_with = "optional_string")]
+    name: Option<String>,
+    #[serde(default, deserialize_with = "optional_string")]
+    text: Option<String>,
+    #[serde(default, deserialize_with = "optional_string")]
+    base64: Option<String>,
+    #[serde(default, deserialize_with = "optional_string")]
+    mime: Option<String>,
+}
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct QueueInput {
+    #[serde(default, deserialize_with = "optional_string")]
+    workspace: Option<String>,
+    #[serde(default, deserialize_with = "optional_string")]
+    state_dir: Option<String>,
+    #[serde(default, deserialize_with = "optional_string")]
+    agent: Option<String>,
+    #[serde(default, deserialize_with = "optional_files")]
+    files: Option<Vec<Value>>,
+}
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HandleInput {
+    #[serde(default, deserialize_with = "optional_string")]
+    native_handle: Option<String>,
+}
+#[derive(Default, Deserialize)]
+struct IdInput {
+    #[serde(default, deserialize_with = "optional_string")]
+    id: Option<String>,
+    #[serde(default)]
+    asset: Value,
+}
+#[derive(Default, Deserialize)]
+struct DeliveryInput {
+    #[serde(default, deserialize_with = "optional_string")]
+    workspace: Option<String>,
+    #[serde(default)]
+    row: Value,
+}
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExpectedRow {
+    #[serde(default, deserialize_with = "optional_string")]
+    id: Option<String>,
+    #[serde(default, deserialize_with = "optional_string")]
+    workspace: Option<String>,
+    #[serde(default, deserialize_with = "optional_string")]
+    state_dir: Option<String>,
+    #[serde(default, deserialize_with = "optional_string")]
+    agent: Option<String>,
+}
+fn input<T: Default + for<'de> Deserialize<'de>>(value: &Value) -> T {
+    if value.is_object() {
+        T::deserialize(value).unwrap_or_default()
+    } else {
+        T::default()
+    }
 }
 fn uuid() -> Result<String, String> {
     crate::platform::dispatch(&Request {
@@ -153,8 +228,10 @@ fn apply(db: &Connection, request: &Request) -> Result<Value, String> {
     let p = &request.params;
     match request.method.as_str() {
         "files.stage_many" => {
-            let files = p["files"]
-                .as_array()
+            let inputs: QueueInput = input(p);
+            let files = inputs
+                .files
+                .as_ref()
                 .filter(|v| v.len() <= 20)
                 .ok_or("Select at most 20 files.")?;
             let mut result = vec![];
@@ -171,19 +248,21 @@ fn apply(db: &Connection, request: &Request) -> Result<Value, String> {
             Ok(json!(result))
         }
         "files.stage" | "files.text" => {
-            let name = text(p, "name")?;
+            let file: FileInput = input(p);
+            let name = required(&file.name, "name")?;
             if name.contains(['\0', '/', '\\']) {
                 return Err("The file name must not contain a path.".into());
             }
             let bytes = if request.method == "files.text" {
-                p["text"]
-                    .as_str()
+                file.text
+                    .as_deref()
                     .ok_or("File text is required.")?
                     .as_bytes()
                     .to_vec()
             } else {
-                let value = p["base64"]
-                    .as_str()
+                let value = file
+                    .base64
+                    .as_deref()
                     .filter(|v| v.len() <= LIMIT.div_ceil(3) * 4)
                     .ok_or("Invalid file data.")?;
                 STANDARD.decode(value).map_err(|e| e.to_string())?
@@ -202,8 +281,9 @@ fn apply(db: &Connection, request: &Request) -> Result<Value, String> {
                 return Err("Save or remove the selected files before adding more files.".into());
             }
             let id = uuid()?;
-            let mime = p["mime"]
-                .as_str()
+            let mime = file
+                .mime
+                .as_deref()
                 .filter(|v| v.len() <= 255)
                 .unwrap_or("application/octet-stream");
             db.execute(
@@ -214,19 +294,22 @@ fn apply(db: &Connection, request: &Request) -> Result<Value, String> {
             Ok(json!({"nativeHandle":id,"name":name,"type":mime,"size":bytes.len()}))
         }
         "uploads.queue" => {
-            let workspace = text(p, "workspace")?;
+            let queue: QueueInput = input(p);
+            let workspace = required(&queue.workspace, "workspace")?;
             if !crate::projections::valid_workspace(workspace) {
                 return Err("Invalid workspace identity.".into());
             }
-            let state_dir = text(p, "stateDir")?;
-            let agent = text(p, "agent")?;
-            let files = p["files"]
-                .as_array()
+            let state_dir = required(&queue.state_dir, "stateDir")?;
+            let agent = required(&queue.agent, "agent")?;
+            let files = queue
+                .files
+                .as_ref()
                 .filter(|v| !v.is_empty() && v.len() <= 8)
                 .ok_or("Attach one to eight files.")?;
             let mut result = vec![];
             for (index, file) in files.iter().enumerate() {
-                let source = text(file, "nativeHandle")?;
+                let handle: HandleInput = input(file);
+                let source = required(&handle.native_handle, "nativeHandle")?;
                 let (name,mime,bytes):(String,String,Vec<u8>)=db.query_row("SELECT name,mime,bytes FROM client_file_sources WHERE id=?1",[source],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(|_|"The selected file is unavailable. Check saved uploads before selecting it again.")?;
                 let id = uuid()?;
                 let created = std::time::SystemTime::now()
@@ -266,10 +349,15 @@ fn apply(db: &Connection, request: &Request) -> Result<Value, String> {
         }
         "uploads.list" => {
             let mut query=db.prepare("SELECT document FROM client_uploads WHERE workspace=?1 AND state_dir=?2 ORDER BY json_extract(document,'$.created'),id").map_err(|e|e.to_string())?;
+            let queue: QueueInput = input(p);
             let rows = query
-                .query_map(params![text(p, "workspace")?, text(p, "stateDir")?], |r| {
-                    r.get::<_, String>(0)
-                })
+                .query_map(
+                    params![
+                        required(&queue.workspace, "workspace")?,
+                        required(&queue.state_dir, "stateDir")?
+                    ],
+                    |r| r.get::<_, String>(0),
+                )
                 .map_err(|e| e.to_string())?;
             let mut result = vec![];
             for row in rows {
@@ -280,10 +368,17 @@ fn apply(db: &Connection, request: &Request) -> Result<Value, String> {
             }
             encode(result)
         }
-        "uploads.status" => status(db, text(p, "id")?),
-        "uploads.get" => encode(row(db, text(p, "id")?)?),
+        "uploads.status" => {
+            let id: IdInput = input(p);
+            status(db, required(&id.id, "id")?)
+        }
+        "uploads.get" => {
+            let id: IdInput = input(p);
+            encode(row(db, required(&id.id, "id")?)?)
+        }
         "uploads.content" => {
-            let id = text(p, "id")?;
+            let input: IdInput = input(p);
+            let id = required(&input.id, "id")?;
             let bytes: Option<Vec<u8>> = db
                 .query_row("SELECT bytes FROM client_uploads WHERE id=?1", [id], |r| {
                     r.get(0)
@@ -295,7 +390,8 @@ fn apply(db: &Connection, request: &Request) -> Result<Value, String> {
                 .unwrap_or(Value::Null))
         }
         "uploads.cancel" | "uploads.finish" => {
-            let id = text(p, "id")?;
+            let input: IdInput = input(p);
+            let id = required(&input.id, "id")?;
             let cancelled = request.method == "uploads.cancel";
             db.execute("INSERT INTO client_upload_tombstones VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET cancelled=max(cancelled,excluded.cancelled)",params![id,cancelled]).map_err(|e|e.to_string())?;
             db.execute("DELETE FROM client_uploads WHERE id=?1", [id])
@@ -303,11 +399,12 @@ fn apply(db: &Connection, request: &Request) -> Result<Value, String> {
             Ok(Value::Null)
         }
         "uploads.receipt" => {
-            let id = text(p, "id")?;
-            if p["asset"]["id"] != id {
+            let input: IdInput = input(p);
+            let id = required(&input.id, "id")?;
+            if input.asset["id"] != id {
                 return Err("The upload response does not match the saved file.".into());
             }
-            let asset: Asset = decode(p["asset"].clone())?;
+            let asset: Asset = decode(input.asset)?;
             let Some(mut current) = row(db, id)? else {
                 return Ok(Value::Null);
             };
@@ -376,11 +473,12 @@ fn upload_lock(id: &str) -> Result<std::sync::Arc<tokio::sync::Mutex<()>>, Strin
 pub async fn dispatch(backend: &Backend, sender: &StoreSender, request: Request) -> Response {
     let result=async {
         let p=&request.params;
+        let delivery: DeliveryInput = input(p);
         if request.method=="uploads.pending"||request.method=="uploads.enqueue"{
-            if request.method=="uploads.enqueue" {text(p,"workspace")?;}
+            if request.method=="uploads.enqueue" {required(&delivery.workspace,"workspace")?;}
             let identity=crate::sync::open(backend,sender).await.map_err(|e|e.message)?;
             let workspace=identity["workspaceId"].as_str().ok_or("Workspace identity is unavailable.")?;
-            if p["workspace"].as_str().is_some_and(|expected| !expected.is_empty()&&expected!=workspace){return Err("The workspace changed. Saved files remain on this device.".into());}
+            if delivery.workspace.as_deref().is_some_and(|expected| !expected.is_empty()&&expected!=workspace){return Err("The workspace changed. Saved files remain on this device.".into());}
             let mut params=p.clone();params["workspace"]=json!(workspace);
             if request.method=="uploads.pending"{return state(sender,"uploads.list",params).await;}
             let (reply,receive)=tokio::sync::oneshot::channel();
@@ -388,12 +486,12 @@ pub async fn dispatch(backend: &Backend, sender: &StoreSender, request: Request)
             let response=receive.await.map_err(|e|e.to_string())?;
             return response.result.ok_or_else(||response.error.map(|e|e.message).unwrap_or("Missing file state response.".into()));
         }
-        let expected = &p["row"];
-        let id = text(expected, "id")?;
+        let expected: ExpectedRow = input(&delivery.row);
+        let id = required(&expected.id, "id")?;
         let lock=upload_lock(id)?;let _guard=lock.lock().await;
         let current: Option<Upload> = decode(state(sender,"uploads.get",json!({"id":id})).await?)?;
         let Some(current) = current else { return Ok(Value::Null); };
-        if expected["workspace"] != current.workspace || expected["agent"] != current.agent || expected["stateDir"] != current.state_dir {
+        if expected.workspace.as_deref() != Some(current.workspace.as_str()) || expected.agent.as_deref() != Some(current.agent.as_str()) || expected.state_dir.as_deref() != Some(current.state_dir.as_str()) {
             return Err("The saved upload belongs to another workspace or chat.".into());
         }
         let identity=crate::sync::identity(backend).await.map_err(|e|e.message)?;
@@ -423,6 +521,126 @@ mod tests {
             method: method.into(),
             params,
         }
+    }
+
+    #[test]
+    fn upload_inputs_preserve_validation_order_and_batch_rollback() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("client.sqlite3")).unwrap();
+        let error = |response: Response| response.error.unwrap().message;
+        assert_eq!(
+            error(store.dispatch(command(
+                "bad-name",
+                "files.text",
+                json!({"name":"a/b","text":false})
+            ))),
+            "The file name must not contain a path."
+        );
+        assert_eq!(
+            error(store.dispatch(command(
+                "bad-workspace",
+                "uploads.queue",
+                json!({"workspace":"bad","stateDir":null,"agent":false,"files":[]})
+            ))),
+            "Invalid workspace identity."
+        );
+        assert_eq!(
+            error(store.dispatch(command(
+                "bad-state",
+                "uploads.queue",
+                json!({"workspace":"a".repeat(32),"stateDir":null,"agent":false,"files":[]})
+            ))),
+            "stateDir is required."
+        );
+        assert_eq!(
+            error(store.dispatch(command(
+                "bad-receipt",
+                "uploads.receipt",
+                json!({"id":"saved","asset":{"id":"other","opaque":true}})
+            ))),
+            "The upload response does not match the saved file."
+        );
+        assert!(store.dispatch(command("batch", "files.stage_many", json!({"files":[{"name":"first","base64":"aGk="},{"name":"bad/path","base64":false}]}))).error.is_some());
+        let count: i64 = store
+            .connection
+            .query_row("SELECT count(*) FROM client_file_sources", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn upload_delivery_rejects_mismatched_row_before_http() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&calls);
+        let server = tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                observed.fetch_add(1, Ordering::SeqCst);
+                let _ = crate::backend::tests::read_http(&mut stream).await;
+                crate::backend::tests::reply(&mut stream, "{}").await;
+            }
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("client.sqlite3");
+        let row = {
+            let mut store = Store::open(&path).unwrap();
+            let file = store
+                .dispatch(command(
+                    "file",
+                    "files.text",
+                    json!({"name":"x","text":"bytes"}),
+                ))
+                .result
+                .unwrap();
+            store.dispatch(command("queue", "uploads.queue", json!({"workspace":"a".repeat(32),"stateDir":"/state","agent":"lead","files":[file]}))).result.unwrap()[0].clone()
+        };
+        let (sender, mut receive) = tokio::sync::mpsc::channel::<crate::delivery::StoreCommand>(8);
+        let thread = std::thread::spawn(move || {
+            let mut store = Store::open(&path).unwrap();
+            while let Some(command) = receive.blocking_recv() {
+                command.execute(&mut store);
+            }
+        });
+        let backend = Backend::new(&origin).unwrap();
+        let enqueue = dispatch(
+            &backend,
+            &sender,
+            command("enqueue", "uploads.enqueue", json!({"workspace":false})),
+        )
+        .await;
+        assert_eq!(enqueue.error.unwrap().message, "workspace is required.");
+        let invalid = dispatch(
+            &backend,
+            &sender,
+            command(
+                "invalid",
+                "uploads.deliver",
+                json!({"row":{"id":false,"workspace":false}}),
+            ),
+        )
+        .await;
+        assert_eq!(invalid.error.unwrap().message, "id is required.");
+        let mismatch = dispatch(&backend, &sender, command("mismatch", "uploads.deliver", json!({"row":{"id":row["id"],"workspace":false,"agent":"lead","stateDir":"/state"}}))).await;
+        assert_eq!(
+            mismatch.error.unwrap().message,
+            "The saved upload belongs to another workspace or chat."
+        );
+        let retained = state(&sender, "uploads.get", json!({"id":row["id"]}))
+            .await
+            .unwrap();
+        assert_eq!(retained, row);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        drop(sender);
+        thread.join().unwrap();
+        server.abort();
     }
     #[test]
     fn queue_is_atomic_and_cancelled_upload_cannot_return_after_restart() {
