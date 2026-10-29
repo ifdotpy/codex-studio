@@ -114,9 +114,25 @@ pub struct ResourceChanges {
     pub overflow: bool,
 }
 
+/// Buffered live deltas per subscriber (count). A subscriber that falls this far
+/// behind loses the oldest ones; the durable item catches it up.
+pub const LIVE_DELTA_CAPACITY: usize = 256;
+
+/// One model text delta of an item, sent in memory right after its commit. `offset` is the
+/// text length (Unicode scalars) that precedes `text` in the item.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LiveDelta {
+    pub agent_id: String,
+    /// Id of the durable transcript item that this text will fill.
+    pub item_id: String,
+    pub offset: u64,
+    pub text: String,
+}
+
 /// One instance per HTTP state's workspace; it shares the existing commit cursor.
 pub struct ResourceNotifications {
     changes: Arc<ChangeNotificationHub>,
+    live: tokio::sync::broadcast::Sender<LiveDelta>,
     publications: Mutex<Publications>,
     // Share completed projections without holding the guard during reads.
     content: tokio::sync::Mutex<VecDeque<ContentVersion>>,
@@ -126,6 +142,7 @@ impl ResourceNotifications {
     pub fn new(changes: Arc<ChangeNotificationHub>) -> Self {
         Self {
             changes,
+            live: tokio::sync::broadcast::channel(LIVE_DELTA_CAPACITY).0,
             content: tokio::sync::Mutex::new(VecDeque::new()),
             publications: Mutex::new(Publications {
                 receipts: VecDeque::new(),
@@ -135,6 +152,15 @@ impl ResourceNotifications {
                 entity_revision: 0,
             }),
         }
+    }
+
+    /// Send a committed text delta to every stream, without a store write or a timer.
+    pub fn publish_live(&self, delta: LiveDelta) {
+        let _no_subscriber = self.live.send(delta);
+    }
+
+    pub fn subscribe_live(&self) -> tokio::sync::broadcast::Receiver<LiveDelta> {
+        self.live.subscribe()
     }
 
     /// One post-commit wake; exact entity-only writes do not move the broad cursor.

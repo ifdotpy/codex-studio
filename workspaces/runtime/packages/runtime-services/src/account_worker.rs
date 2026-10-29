@@ -3955,6 +3955,10 @@ impl Worker {
             .journal_count
             .fetch_add(committed.len(), std::sync::atomic::Ordering::SeqCst);
         self.streams = streams; // commit precedes buffer replacement and ACK
+        // Live text goes out now; the durable item follows at the flush cadence.
+        for delta in self.streams.take_live() {
+            self.publication_sink.live_delta(delta);
+        }
         self.arm_flush();
         self.schedule_publication_drain()?;
         let committed_any = !committed.is_empty() || !parked.is_empty();

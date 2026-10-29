@@ -21,6 +21,7 @@ import {
   useServerOutbox,
 } from "../servers/ServerServicesContext";
 import { useServerActivity } from "../servers/activity";
+import { useLiveText, withLiveText } from "../conversation/liveText";
 import {
   type ChatWaitSource,
   type ConversationData,
@@ -457,10 +458,16 @@ export default function Conversation(p: {
     [history, p.outgoing, p.id, receipts],
   );
   const removed = useRemovedMessages(p.data.stateDir, kind, p.id);
+  const liveText = useLiveText(p.room ? undefined : (p.id ?? undefined));
   const items = useMemo(
     () =>
       [
         ...delivery.items.map((message) => {
+          const live = liveText.get(message.id);
+          if (live && message.role === "assistant") {
+            const text = withLiveText(message.text, live);
+            if (text !== message.text) return { ...message, text };
+          }
           if (!isSendingMessage(message)) return message;
           // A stale receipt must not make a restored display copy send again.
           return (
@@ -482,7 +489,7 @@ export default function Conversation(p: {
             ),
         ),
       ].filter((message) => !removed.hidden(message)),
-    [delivery.items, removed.hidden, removed.restored],
+    [delivery.items, liveText, removed.hidden, removed.restored],
   );
   const historyAgentId = p.id;
   const promptRecall = usePromptRecall(
