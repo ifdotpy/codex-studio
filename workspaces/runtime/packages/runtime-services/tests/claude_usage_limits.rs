@@ -65,7 +65,7 @@ fn sonnet_wait_uses_main_reset_and_ignores_full_opus_bucket() {
             .value()["dueAt"],
         1305.0
     );
-    let scheduled = Snapshot::from_records(json!({"agent":changed.agent,"record":changed.record.as_ref().map(|record| record.value())}))
+    let scheduled = Snapshot::from_records(json!({"agent":changed.agent.as_ref().map(|agent| agent.value()),"record":changed.record.as_ref().map(|record| record.value())}))
         .expect("rescheduled snapshot");
     let mut reset_data = data(20.0);
     reset_data["rateLimits"]["primary"]["resetsAt"] = json!(2300.0);
@@ -404,7 +404,7 @@ fn a_wait_resumes_once_after_the_provider_reset_when_limits_reads_fail() {
             }],
             "{case}"
         );
-        let agent = decision.agent.clone().expect("agent");
+        let agent = decision.agent.clone().expect("agent").into_value();
         assert_eq!(agent["status"], "queued", "{case}");
         assert!(agent.get("nativeFailureHold").is_none(), "{case}");
         // The started wait never sends its follow-up again.

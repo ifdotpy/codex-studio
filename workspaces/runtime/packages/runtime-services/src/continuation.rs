@@ -17,6 +17,8 @@ pub const POLL_SECONDS: f64 = 180.0;
 pub const MAX_RECORD_BYTES: usize = 8 * 1024 * 1024;
 #[cfg(test)]
 thread_local! { static REUSED_EMBEDDED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+#[cfg(test)]
+thread_local! { static IDENTITY_DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 #[derive(Debug, Error)]
 pub enum ContinuationError {
     #[error("invalid continuation snapshot at {0}")]
@@ -47,6 +49,7 @@ pub(crate) enum WaitStatus {
 #[derive(Clone)]
 pub struct Snapshot {
     identity: AgentRecord,
+    identity_current: bool,
     typed: Arc<ContinuationSnapshotRecord>,
     pub(crate) agent: Value,
     pub(crate) ancestors: Vec<Value>,
@@ -58,9 +61,17 @@ pub struct Snapshot {
     pub(crate) work: BTreeMap<String, Value>,
 }
 impl Snapshot {
+    #[cfg(test)]
     pub(crate) fn from_records_with_checked_record(
+        raw: Value,
+        record: ContinuationRecord,
+    ) -> Result<Self> {
+        Self::from_records_with_checked_record_and_agent(raw, record, None)
+    }
+    pub(crate) fn from_records_with_checked_record_and_agent(
         mut raw: Value,
         record: ContinuationRecord,
+        agent: Option<&AgentRecord>,
     ) -> Result<Self> {
         if crate::analytics_capture::encoded_len(&raw) > MAX_RECORD_BYTES {
             return Err(ContinuationError::Invalid("/size".into()));
@@ -78,14 +89,14 @@ impl Snapshot {
             REUSED_EMBEDDED.with(|count| count.set(count.get() + 1));
         }
         let raw_record = raw["record"].take();
-        let mut snapshot = match Self::from_records_inner(&raw) {
+        let mut snapshot = match Self::from_records_inner(&raw, agent) {
             Ok(snapshot) => snapshot,
             Err(_) => {
                 raw["record"] = raw_record;
                 if let (Some(key), Some(value)) = (reuse, embedded) {
                     raw["agent"][key] = value;
                 }
-                return Self::from_records_inner(&raw);
+                return Self::from_records_inner(&raw, agent);
             }
         };
         snapshot.record = (!raw_record.is_null()).then_some(raw_record);
@@ -110,12 +121,18 @@ impl Snapshot {
     }
     /// The only constructor. It accepts raw Python-written records, never trusted flags.
     pub fn from_records(raw: Value) -> Result<Self> {
-        if crate::analytics_capture::encoded_len(&raw) > MAX_RECORD_BYTES {
+        Self::from_records_with_agent(&raw, None)
+    }
+    pub(crate) fn from_records_with_agent(
+        raw: &Value,
+        agent: Option<&AgentRecord>,
+    ) -> Result<Self> {
+        if crate::analytics_capture::encoded_len(raw) > MAX_RECORD_BYTES {
             return Err(ContinuationError::Invalid("/size".into()));
         }
-        Self::from_records_inner(&raw)
+        Self::from_records_inner(raw, agent)
     }
-    fn from_records_inner(raw: &Value) -> Result<Self> {
+    fn from_records_inner(raw: &Value, checked_agent: Option<&AgentRecord>) -> Result<Self> {
         use serde::Deserialize;
         let typed =
             ContinuationSnapshotRecord::deserialize(raw).map_err(|_| invalid_snapshot(raw))?;
@@ -133,10 +150,18 @@ impl Snapshot {
                 .into_iter()
                 .collect()
         };
-        let identity = AgentRecord::deserialize(&raw["agent"])
-            .map_err(|_| ContinuationError::Invalid("/agent".into()))?;
+        let identity = match checked_agent {
+            Some(agent) => agent.clone(),
+            None => {
+                #[cfg(test)]
+                IDENTITY_DECODES.with(|count| count.set(count.get() + 1));
+                AgentRecord::deserialize(&raw["agent"])
+                    .map_err(|_| ContinuationError::Invalid("/agent".into()))?
+            }
+        };
         let snapshot = Self {
             identity,
+            identity_current: true,
             claims: typed
                 .0
                 .claims
@@ -182,6 +207,15 @@ impl Snapshot {
     }
     pub fn agent_id(&self) -> &str {
         &self.identity.id.0
+    }
+    pub(crate) fn agent_record(&self) -> &AgentRecord {
+        &self.identity
+    }
+    pub(crate) fn current_agent_record(&self) -> Option<&AgentRecord> {
+        self.identity_current.then_some(&self.identity)
+    }
+    pub(crate) fn invalidate_agent_record(&mut self) {
+        self.identity_current = false;
     }
     pub(crate) fn agent_epoch(&self) -> i64 {
         self.identity.epoch
@@ -674,9 +708,74 @@ impl ProposedRecord {
         }
     }
 }
+/// Agent evidence retains its JSON shape through pre-write validation while the
+/// checked agent follows ordinary typed mutations. Pending settings can make
+/// the checked projection stale; those are checked at the original boundary.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProposedAgent {
+    evidence: Value,
+    identity: Option<AgentRecord>,
+}
+impl ProposedAgent {
+    pub(crate) fn new(snapshot: &Snapshot) -> Self {
+        Self {
+            evidence: snapshot.agent.clone(),
+            identity: snapshot.identity_current.then(|| snapshot.identity.clone()),
+        }
+    }
+    pub fn value(&self) -> &Value {
+        &self.evidence
+    }
+    pub fn into_value(self) -> Value {
+        self.evidence
+    }
+    pub(crate) fn checked(&self) -> Option<&AgentRecord> {
+        self.identity.as_ref()
+    }
+    fn set_extra(&mut self, key: &str, value: Value) {
+        self.evidence[key] = value.clone();
+        if let Some(agent) = &mut self.identity {
+            agent.extra.insert(key.to_owned(), value);
+        }
+    }
+    pub(crate) fn continuation(&mut self, key: &str, value: Value) {
+        self.set_extra(key, value);
+    }
+    pub(crate) fn auth_attempt(&mut self, value: u64) {
+        self.set_extra("authResumeAttempt", json!(value));
+    }
+    pub(crate) fn usage_enabled(&mut self, value: bool) {
+        self.set_extra("usageResumeEnabled", json!(value));
+    }
+    pub(crate) fn capacity_count(&mut self, value: u64) {
+        self.set_extra("capacityRetryCount", json!(value));
+    }
+    pub(crate) fn clear_hold(&mut self) {
+        remove(&mut self.evidence, "nativeFailureHold");
+        if let Some(agent) = &mut self.identity {
+            agent.extra.remove("nativeFailureHold");
+        }
+    }
+    pub(crate) fn queued(&mut self) {
+        self.evidence["status"] = json!("queued");
+        if let Some(agent) = &mut self.identity {
+            agent.set_status(studio_runtime_store::AgentStatus::Queued);
+        }
+        self.set_extra("error", Value::Null);
+    }
+    pub(crate) fn failed(&mut self, reason: &str) {
+        self.evidence["status"] = json!("failed");
+        if let Some(agent) = &mut self.identity {
+            agent.set_status(studio_runtime_store::AgentStatus::Failed);
+        }
+        self.set_extra("inFlight", json!(false));
+        self.set_extra("error", json!(reason));
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Decision {
-    pub agent: Option<Value>,
+    pub agent: Option<ProposedAgent>,
     pub record: Option<ProposedRecord>,
     pub events: Vec<Value>,
     pub metadata: BTreeMap<String, Value>,
@@ -689,8 +788,8 @@ impl Decision {
         if matches!(record.0, ProposedRecordData::Existing { .. }) {
             record.update(ContinuationUpdate::UpdatedAt(now));
         }
-        let mut agent = s.agent.clone();
-        agent[key] = record.value();
+        let mut agent = ProposedAgent::new(s);
+        agent.continuation(key, record.value());
         Self {
             agent: Some(agent),
             record: Some(record),
@@ -754,6 +853,56 @@ pub(crate) fn native_thread_blocked(agent: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_snapshot_preserves_future_status_and_nullable_evidence() {
+        let agent = json!({"id":"a","rootId":"a","epoch":1,"status":"future-state","provider":"codex","titleJob":null,"nativeRelease":null,"firedEvents":[],"opaque":{"n":1}});
+        let snapshot = Snapshot::from_records(json!({"agent":agent})).unwrap();
+        assert_eq!(snapshot.agent, agent);
+        assert_eq!(snapshot.identity.status.as_str(), "future-state");
+        assert!(snapshot.identity.value().get("titleJob").is_none());
+        assert!(snapshot.identity.value().get("nativeRelease").is_none());
+        assert!(snapshot.identity.value().get("firedEvents").is_none());
+        let mut proposal = ProposedAgent::new(&snapshot);
+        assert_eq!(proposal.value(), &agent);
+        proposal.auth_attempt(0);
+        assert_eq!(proposal.value()["titleJob"], Value::Null);
+        assert_eq!(proposal.value()["nativeRelease"], Value::Null);
+        assert_eq!(proposal.value()["firedEvents"], json!([]));
+        assert_eq!(proposal.checked().unwrap().extra["authResumeAttempt"], 0);
+        assert_eq!(proposal.checked().unwrap().status.as_str(), "future-state");
+    }
+
+    #[test]
+    fn agent_snapshot_checks_original_wire_size_before_normalization() {
+        let mut agent = json!({"id":"a","rootId":"a","epoch":1,"status":"future","provider":"codex","titleJob":null,"nativeRelease":null,"firedEvents":[]});
+        agent["opaque"] = json!("x".repeat(MAX_RECORD_BYTES));
+        let error = Snapshot::from_records(json!({"agent":agent}))
+            .err()
+            .unwrap()
+            .to_string();
+        assert_eq!(error, "invalid continuation snapshot at /size");
+    }
+
+    #[test]
+    fn proposal_reuses_current_identity_and_fences_pending_settings() {
+        let raw = json!({"agent":{"id":"a","rootId":"a","epoch":1,"status":"failed","provider":"codex","titleJob":null}});
+        let mut original = Snapshot::from_records(raw.clone()).unwrap();
+        let proposal = ProposedAgent::new(&original);
+        IDENTITY_DECODES.with(|count| count.set(0));
+        Snapshot::from_records_with_agent(&raw, proposal.checked()).unwrap();
+        IDENTITY_DECODES.with(|count| assert_eq!(count.get(), 0));
+        original.agent["status"] = json!("future");
+        original.invalidate_agent_record();
+        let proposal = ProposedAgent::new(&original);
+        assert!(proposal.checked().is_none());
+        let applied = Snapshot::from_records_with_agent(
+            &json!({"agent":proposal.value()}),
+            proposal.checked(),
+        )
+        .unwrap();
+        assert_eq!(applied.agent_record().status.as_str(), "future");
+    }
 
     #[test]
     fn checked_snapshot_reuses_matching_embedded_usage_and_capacity() {

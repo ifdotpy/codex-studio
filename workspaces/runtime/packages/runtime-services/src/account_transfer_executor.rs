@@ -121,7 +121,8 @@ fn copy_native_history(
         ))?;
     let metadata: Value = serde_json::from_slice(&bytes[..first_end])
         .map_err(|_| TransferError::Refused("Native history metadata is invalid"))?;
-    if metadata["type"] != "session_meta" || metadata.pointer("/payload/history_base").is_some() {
+    let header = crate::analytics_history::SessionHeader::from_value(&metadata);
+    if !header.is_some_and(|header| header.is_session() && header.history_base().is_none()) {
         return Err(TransferError::Refused(
             "Native history ancestry requires the portable-history importer",
         ));
@@ -1554,6 +1555,33 @@ mod destination_settings_tests {
                 "The destination account has no available default model"
             ))
         ));
+    }
+
+    #[test]
+    fn native_history_copy_refuses_present_null_ancestry_before_publish() {
+        let root = tempfile::tempdir().expect("fixture");
+        let source = root.path().join("source");
+        let target = root.path().join("target");
+        let history = source.join("sessions").join("thread.jsonl");
+        fs::create_dir_all(history.parent().expect("parent")).expect("source");
+        fs::create_dir_all(&target).expect("target");
+        fs::write(
+            &history,
+            b"{\"type\":\"session_meta\",\"payload\":{\"history_base\":null}}\n",
+        )
+        .expect("history");
+        let result = copy_native_history(
+            source.to_str().unwrap(),
+            target.to_str().unwrap(),
+            history.to_str().unwrap(),
+        );
+        assert!(matches!(
+            result,
+            Err(TransferError::Refused(
+                "Native history ancestry requires the portable-history importer"
+            ))
+        ));
+        assert!(!target.join("sessions").exists());
     }
 
     #[test]

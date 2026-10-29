@@ -207,6 +207,7 @@ pub fn stage_capacity_retry_observed(
         {
             snapshot.agent[key] = value.clone();
         }
+        snapshot.invalidate_agent_record();
         let agent = snapshot
             .agent
             .as_object_mut()
@@ -870,7 +871,7 @@ fn collect_apply(
     let changed = decision
         .agent
         .as_ref()
-        .is_some_and(|agent| agent != &snapshot.agent)
+        .is_some_and(|agent| agent.value() != &snapshot.agent)
         || decision
             .record
             .as_ref()

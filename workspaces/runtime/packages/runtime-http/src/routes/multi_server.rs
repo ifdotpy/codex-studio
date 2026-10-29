@@ -564,7 +564,11 @@ async fn accept_invite(
                 "Invalid stored object runtime_access_clients",
             )
         })?;
-        if prior["status"] != "paired" || prior["publicKey"] != public_key {
+        let prior = studio_runtime_services::multi_server_discovery::StoredPeer::from_value(prior);
+        if !prior
+            .as_ref()
+            .is_some_and(|peer| peer.is_paired() && peer.public_key() == public_key)
+        {
             return Err(ApiError::new(
                 StatusCode::CONFLICT,
                 "The server identity is already registered or revoked",
@@ -750,8 +754,9 @@ async fn remote_set_server_name(
             "Invalid stored object runtime_access_clients",
         )
     })?;
-    let origin = peer["origin"].as_str().unwrap_or_default();
-    let public_key = peer["publicKey"].as_str().unwrap_or_default();
+    let peer = studio_runtime_services::multi_server_discovery::StoredPeer::from_value(peer);
+    let origin = peer.as_ref().map_or("", |peer| peer.origin());
+    let public_key = peer.as_ref().map_or("", |peer| peer.public_key());
     if origin.is_empty() || public_key.is_empty() {
         return Err(ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -881,18 +886,23 @@ async fn remote_set_server_name(
             let Some(raw) = raw else {
                 return Ok::<_, studio_runtime_store::StoreError>(false);
             };
-            let mut record: Value = serde_json::from_str(&raw).map_err(|_| {
+            let record: Value = serde_json::from_str(&raw).map_err(|_| {
                 studio_runtime_store::StoreError::SchemaMismatch(
                     "invalid stored object runtime_access_clients".into(),
                 )
             })?;
-            if record["status"] != "paired" || record["publicKey"] != public_key_for_finish {
+            let Some(mut record) =
+                studio_runtime_services::multi_server_discovery::StoredPeer::from_value(record)
+            else {
+                return Ok(false);
+            };
+            if !record.is_paired() || record.public_key() != public_key_for_finish {
                 return Ok(false);
             }
-            record["label"] = Value::String(refreshed_label);
+            record.set_label(refreshed_label);
             tx.execute(
                 "UPDATE runtime_access_clients SET record=?1 WHERE id=?2",
-                rusqlite::params![record.to_string(), target_for_finish],
+                rusqlite::params![serde_json::to_string(&record)?, target_for_finish],
             )?;
             Ok(true)
         })
@@ -1001,6 +1011,133 @@ fn map_discovery_error(error: studio_runtime_services::multi_server_auth::Access
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn remote_name_rejects_partial_peer_before_outbound_reservation() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            studio_runtime_store::RuntimeStore::open(Some(root.path()))
+                .await
+                .unwrap(),
+        );
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO runtime_access_clients(id,record) VALUES('peer',?1)",
+                    [r#"{"kind":"server","status":"paired","origin":false,"publicKey":"key"}"#],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let credentials = studio_runtime_services::federation_credentials::Credentials::default();
+        let error = remote_set_server_name(&store, &credentials, None, "peer", "Name", "request")
+            .await
+            .unwrap_err();
+        assert_eq!(
+            axum::response::IntoResponse::into_response(error).status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        let count: i64 = store
+            .test_reader()
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM runtime_access_name_targets",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn invite_replay_preserves_registered_peer_and_refuses_revoked() {
+        let root = tempfile::tempdir().unwrap();
+        let peer_root = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            studio_runtime_store::RuntimeStore::open(Some(root.path()))
+                .await
+                .unwrap(),
+        );
+        let peer_store = Arc::new(
+            studio_runtime_store::RuntimeStore::open(Some(peer_root.path()))
+                .await
+                .unwrap(),
+        );
+        let credentials = studio_runtime_services::federation_credentials::Credentials::default();
+        let peer_credentials =
+            studio_runtime_services::federation_credentials::Credentials::default();
+        let local_origin = "https://local.test.ts.net";
+        let peer_origin = "https://peer.test.ts.net";
+        let local = credentials
+            .identity(Arc::clone(&store), Some(local_origin))
+            .await
+            .unwrap();
+        let peer = peer_credentials
+            .identity(peer_store, Some(peer_origin))
+            .await
+            .unwrap();
+        let server_id = peer["serverId"].as_str().unwrap().to_owned();
+        let public_key = peer["publicKey"].as_str().unwrap().to_owned();
+        let request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let invitation = json!({"serverId":server_id,"origin":peer_origin,"publicKey":public_key,"protocol":studio_runtime_schema::multi_server_protocol::ACCESS_PROTOCOL_VERSION,"inviteId":"invite","token":"fixture","label":"Peer"});
+        let body = json!({"invitation":invitation,"requestId":request_id});
+        let request = json!({"protocol":studio_runtime_schema::multi_server_protocol::ACCESS_PROTOCOL_VERSION,"inviteId":"invite","token":"fixture","clientId":local["serverId"],"label":local["label"],"kind":"server","publicKey":local["publicKey"],"origin":local_origin,"requestId":request_id});
+        let raw = remote_transport::canonical_json(&request).unwrap();
+        let fingerprint = remote_transport::multi_server_request_fingerprint(
+            "POST",
+            &format!("{peer_origin}/api/multi-server/v1/pair"),
+            raw.as_bytes(),
+        )
+        .unwrap();
+        let response = json!({"paired":true,"serverId":server_id,"publicKey":public_key,"origin":peer_origin,"clientId":local["serverId"],"tailscaleUser":"owner@example.test"});
+        let seed_id = server_id.clone();
+        let seed_request = request_id.clone();
+        let seeded_at = unix_time_seconds().unwrap() as f64;
+        store.transaction(move |tx| {
+            studio_runtime_store::RemoteTransportRepository::reserve_multi_server_request(tx, &seed_id, &seed_request, &fingerprint, seeded_at)?;
+            studio_runtime_store::RemoteTransportRepository::complete_multi_server_request(tx, &seed_id, &seed_request, &fingerprint, &response, seeded_at)?;
+            tx.execute_batch("CREATE TRIGGER no_invite_network BEFORE INSERT ON runtime_access_outbound BEGIN SELECT RAISE(ABORT,'network forbidden'); END;")?;
+            Ok(())
+        }).await.unwrap();
+        let whoami: Arc<
+            dyn Fn() -> futures_util::future::BoxFuture<'static, Option<Value>> + Send + Sync,
+        > = Arc::new(|| Box::pin(async { Some(json!({"user":"owner@example.test"})) }));
+        accept_invite(
+            Arc::clone(&store),
+            &credentials,
+            Some(local_origin),
+            Some(Arc::clone(&whoami)),
+            &body,
+        )
+        .await
+        .unwrap();
+        accept_invite(
+            Arc::clone(&store),
+            &credentials,
+            Some(local_origin),
+            Some(Arc::clone(&whoami)),
+            &body,
+        )
+        .await
+        .unwrap();
+        let id = server_id.clone();
+        store.transaction(move |tx| { tx.execute("UPDATE runtime_access_clients SET record=json_set(record,'$.status','revoked') WHERE id=?1", [id])?; Ok(()) }).await.unwrap();
+        let error = accept_invite(
+            Arc::clone(&store),
+            &credentials,
+            Some(local_origin),
+            Some(whoami),
+            &body,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            axum::response::IntoResponse::into_response(error).status(),
+            StatusCode::CONFLICT
+        );
+    }
     use axum::response::IntoResponse;
     use std::sync::{
         Arc,

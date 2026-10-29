@@ -8,6 +8,7 @@ use rusqlite::params;
 use serde::Deserialize;
 use serde::de::IgnoredAny;
 use serde_json::{Value, json};
+use studio_runtime_schema::queue_command::Field as PresentField;
 use studio_runtime_store::RuntimeStore;
 
 use crate::multi_server_auth::{
@@ -18,6 +19,56 @@ use crate::multi_server_pairing::read_record;
 pub const MAX_CANDIDATES: usize = 64;
 pub const DISCOVERY_PORTS: [Option<u16>; 2] = [None, Some(8443)];
 const MAX_DISCOVERED: i64 = 256;
+
+/// Partial stored peer evidence used by readers that historically tolerate
+/// missing and malformed fields. Other properties survive status updates.
+#[derive(Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredPeer {
+    #[serde(default, skip_serializing_if = "PresentField::is_missing")]
+    origin: PresentField<Value>,
+    #[serde(default, skip_serializing_if = "PresentField::is_missing")]
+    public_key: PresentField<Value>,
+    #[serde(default, skip_serializing_if = "PresentField::is_missing")]
+    status: PresentField<Value>,
+    #[serde(flatten)]
+    extra: serde_json::Map<String, Value>,
+}
+
+impl StoredPeer {
+    /// Scalars have no fields, as in the historical JSON readers.
+    pub fn from_value(value: Value) -> Option<Self> {
+        studio_runtime_schema::json_object::JsonObject::<Self>::deserialize(value)
+            .ok()
+            .map(|object| object.0)
+    }
+
+    pub fn origin(&self) -> &str {
+        self.origin
+            .value()
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+    }
+
+    pub fn public_key(&self) -> &str {
+        self.public_key
+            .value()
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+    }
+
+    pub fn is_paired(&self) -> bool {
+        self.status.value().and_then(Value::as_str) == Some("paired")
+    }
+
+    pub fn mark_unreachable(&mut self) {
+        self.status = PresentField::Value(Value::String("unreachable".into()));
+    }
+
+    pub fn set_label(&mut self, label: String) {
+        self.extra.insert("label".into(), Value::String(label));
+    }
+}
 
 // Tailscale observations can contain malformed individual peer fields. Those
 // fields have always been treated as absent, while malformed tags fail closed.
@@ -291,6 +342,28 @@ pub async fn record_probe(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stored_peer_projection_preserves_partial_and_opaque_fields() {
+        for raw in ["null", "[]", "7", r#""text""#] {
+            assert!(StoredPeer::from_value(serde_json::from_str(raw).unwrap()).is_none());
+        }
+        let malformed =
+            StoredPeer::from_value(serde_json::from_str(r#"{"status":{"paired":null}}"#).unwrap())
+                .unwrap();
+        assert!(!malformed.is_paired());
+        let raw = r#"{"origin":false,"publicKey":["opaque"],"status":{"paired":null},"unknown":{"v":3},"status":"paired"}"#;
+        let mut peer = StoredPeer::from_value(serde_json::from_str(raw).unwrap()).unwrap();
+        assert_eq!(peer.origin(), "");
+        assert_eq!(peer.public_key(), "");
+        assert!(peer.is_paired());
+        peer.mark_unreachable();
+        let saved = serde_json::to_string(&peer).unwrap();
+        let saved: Value = serde_json::from_str(&saved).unwrap();
+        assert_eq!(saved["status"], "unreachable");
+        assert_eq!(saved["publicKey"], json!(["opaque"]));
+        assert_eq!(saved["unknown"]["v"], 3);
+    }
 
     #[test]
     fn discovery_tolerates_bad_peer_fields_and_rejects_tags() {

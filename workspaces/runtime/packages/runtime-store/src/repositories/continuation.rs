@@ -237,10 +237,13 @@ impl ContinuationRepository {
     }
     pub fn put_agent(db: &Connection, r: &Value) -> StoreResult<()> {
         let agent: AgentRecord = serde_json::from_value(r.clone())?;
+        Self::put_checked_agent(db, &agent)
+    }
+    pub fn put_checked_agent(db: &Connection, agent: &AgentRecord) -> StoreResult<()> {
         if AgentRepository::get(db, &AgentId::from(agent.id.0.as_str()))?.is_none() {
             return Err(StoreError::RecordContract("missing continuation agent"));
         }
-        AgentRepository::put(db, &agent)
+        AgentRepository::put(db, agent)
     }
     pub fn put_event(db: &Connection, r: &Value) -> StoreResult<()> {
         let count = db.execute(

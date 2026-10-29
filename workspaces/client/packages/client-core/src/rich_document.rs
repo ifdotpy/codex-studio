@@ -81,6 +81,22 @@ fn document(source: &str) -> Result<String, String> {
     }
     Ok(format!("{PREFIX}{source}</body></html>"))
 }
+#[derive(Default, serde::Deserialize)]
+struct DocumentSource<'a> {
+    #[serde(borrow)]
+    source: Option<&'a str>,
+}
+#[derive(Default, serde::Deserialize)]
+struct DocumentPage {
+    page: Option<u64>,
+}
+fn project<'a, T: serde::Deserialize<'a> + Default>(value: &'a Value) -> T {
+    if value.is_object() {
+        T::deserialize(value).unwrap_or_default()
+    } else {
+        T::default()
+    }
+}
 pub async fn dispatch(request: Request) -> Response {
     let result: Result<Value, String> = async {
         if !matches!(
@@ -89,9 +105,8 @@ pub async fn dispatch(request: Request) -> Response {
         ) {
             return Err("Unknown document command.".into());
         }
-        let source = request.params["source"]
-            .as_str()
-            .ok_or("HTML source is required.")?;
+        let input: DocumentSource<'_> = project(&request.params);
+        let source = input.source.ok_or("HTML source is required.")?;
         if request.method == "document.diagram" {
             if source.encode_utf16().count() > 50000 {
                 return Err("The diagram exceeds 50,000 characters.".into());
@@ -105,8 +120,9 @@ pub async fn dispatch(request: Request) -> Response {
                 return Err("Diagram preview requires macOS.".into());
             }
         }
-        let page = request.params["page"]
-            .as_u64()
+        let input: DocumentPage = project(&request.params);
+        let page = input
+            .page
             .filter(|p| *p < MAX_PAGES as u64)
             .ok_or("Invalid document page.")? as usize;
         let html = document(source)?;
@@ -570,6 +586,16 @@ mod tests {
     #[tokio::test]
     async fn invalid_requests_fail_before_starting_the_native_renderer() {
         for (method, params, expected) in [
+            (
+                "document.diagram",
+                serde_json::json!({"source":null,"page":0}),
+                "HTML source is required",
+            ),
+            (
+                "document.render",
+                serde_json::json!({"source":"x".repeat(SOURCE_LIMIT+1),"page":0.0}),
+                "Invalid document page",
+            ),
             (
                 "document.unknown",
                 serde_json::json!({"source":"ok","page":0}),

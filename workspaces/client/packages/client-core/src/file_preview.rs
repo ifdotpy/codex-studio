@@ -13,6 +13,27 @@ use std::{
 };
 use tokio::sync::Semaphore;
 
+#[derive(Default, Deserialize)]
+struct PreviewHandle<'a> {
+    #[serde(borrow)]
+    handle: Option<&'a str>,
+}
+#[derive(Default, Deserialize)]
+struct PreviewOffset {
+    offset: Option<u64>,
+}
+#[derive(Default, Deserialize)]
+struct PreviewPage {
+    page: Option<u64>,
+}
+fn project<'a, T: Deserialize<'a> + Default>(value: &'a Value) -> T {
+    if value.is_object() {
+        T::deserialize(value).unwrap_or_default()
+    } else {
+        T::default()
+    }
+}
+
 const FILE_LIMIT: usize = 20 * 1024 * 1024;
 const CACHE_LIMIT: usize = 256 * 1024 * 1024;
 const CHUNK: usize = 256 * 1024;
@@ -68,8 +89,9 @@ impl Previews {
         let file = files
             .get(handle(value)?)
             .ok_or("This file preview is closed.")?;
-        let offset = value["offset"]
-            .as_u64()
+        let offset: PreviewOffset = project(value);
+        let offset = offset
+            .offset
             .filter(|n| *n <= file.presentation.len() as u64)
             .ok_or("Invalid preview offset.")? as usize;
         if !file.presentation.is_char_boundary(offset) {
@@ -131,7 +153,8 @@ impl Previews {
                         }
                         file.bytes.clone()
                     };
-                    let page = request.params["page"].as_u64().ok_or("Invalid PDF page.")?;
+                    let input: PreviewPage = project(&request.params);
+                    let page = input.page.ok_or("Invalid PDF page.")?;
                     crate::pdf::page(bytes, page).await
                 }
                 "preview.release" => {
@@ -152,8 +175,9 @@ impl Previews {
     }
 }
 fn handle(value: &Value) -> Result<&str, String> {
-    value["handle"]
-        .as_str()
+    let input: PreviewHandle<'_> = project(value);
+    input
+        .handle
         .filter(|s| s.len() == 36)
         .ok_or("Invalid file preview handle.".into())
 }
@@ -391,6 +415,70 @@ fn delimited(source: &str, delimiter: char) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn command_inputs_keep_preview_error_order_and_unicode_offsets() {
+        let previews = Previews::default();
+        let request = |method: &str, params: Value| Request {
+            id: "fixture".into(),
+            method: method.into(),
+            params,
+        };
+        let invalid = previews
+            .dispatch(None, request("preview.open", json!({"target":null})))
+            .await;
+        assert_ne!(
+            invalid.error.unwrap().message,
+            "The native backend is unavailable."
+        );
+        let missing = previews
+            .dispatch(
+                None,
+                request(
+                    "preview.pdfPage",
+                    json!({"handle":"x".repeat(36),"page":null}),
+                ),
+            )
+            .await;
+        assert_eq!(
+            missing.error.unwrap().message,
+            "This file preview is closed."
+        );
+        let metadata = previews
+            .insert(File {
+                name: "fixture".into(),
+                format: "text",
+                bytes: Arc::new(vec![]),
+                presentation: "Ж🦀".into(),
+            })
+            .unwrap();
+        let handle = &metadata["handle"];
+        let wrong_format = previews
+            .dispatch(
+                None,
+                request("preview.pdfPage", json!({"handle":handle,"page":null})),
+            )
+            .await;
+        assert_eq!(
+            wrong_format.error.unwrap().message,
+            "This file is not a PDF."
+        );
+        for offset in [json!(1), json!(1.0), Value::Null] {
+            let reply = previews
+                .dispatch(
+                    None,
+                    request("preview.read", json!({"handle":handle,"offset":offset})),
+                )
+                .await;
+            assert_eq!(reply.error.unwrap().message, "Invalid preview offset.");
+        }
+        let reply = previews
+            .dispatch(
+                None,
+                request("preview.read", json!({"handle":handle,"offset":2})),
+            )
+            .await;
+        assert_eq!(reply.result.unwrap()["text"], "🦀");
+    }
     fn data(name: &str, mime: &str, bytes: &[u8]) -> FileContent {
         FileContent {
             name: name.into(),

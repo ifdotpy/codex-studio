@@ -128,6 +128,34 @@ fn row_prefix(params: &RowCommand) -> Result<&str, String> {
     Ok(prefix)
 }
 
+#[derive(Default, Deserialize)]
+struct IdentityInput {
+    #[serde(default, rename = "workspaceId", deserialize_with = "optional_text")]
+    workspace_id: Option<String>,
+    #[serde(default, rename = "chatState", deserialize_with = "optional_bool")]
+    chat_state: bool,
+}
+#[derive(Default, Deserialize)]
+struct ProjectionWorkspace {
+    #[serde(default, deserialize_with = "optional_text")]
+    workspace: Option<String>,
+}
+#[derive(Default, Deserialize)]
+struct ProjectionScope {
+    #[serde(default, deserialize_with = "optional_text")]
+    scope: Option<String>,
+}
+fn optional_bool<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    Ok(Value::deserialize(d)?.as_bool().unwrap_or(false))
+}
+fn projection<'de, T: Deserialize<'de> + Default>(value: &'de Value) -> T {
+    if value.is_object() {
+        T::deserialize(value).unwrap_or_default()
+    } else {
+        T::default()
+    }
+}
+
 fn row_scope(prefix: &str, id: &str) -> Result<String, String> {
     if id.is_empty() || id.len() > MAX_ROW_ID_BYTES {
         return Err("Invalid row identity.".into());
@@ -382,22 +410,35 @@ pub(crate) fn serialize_state(snapshot: &Value) -> Result<String, crate::protoco
 // One store command owns validation, entity writes, cursors and derived state.
 // The store worker serializes commands; the transaction also prevents readers
 // from observing a partially applied batch or a state built from older rows.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 enum CursorArgument {
+    #[default]
     Missing,
     Invalid,
     Value(u64),
 }
 impl CursorArgument {
-    fn from_wire(value: Option<&Value>) -> Self {
-        match value {
-            None => Self::Missing,
-            Some(value) => value.as_u64().map_or(Self::Invalid, Self::Value),
-        }
-    }
     fn from_checked(value: Option<u64>) -> Self {
         value.map_or(Self::Missing, Self::Value)
     }
+}
+
+impl<'de> Deserialize<'de> for CursorArgument {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(Value::deserialize(d)?
+            .as_u64()
+            .map_or(Self::Invalid, Self::Value))
+    }
+}
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EntityOptions {
+    #[serde(default, deserialize_with = "optional_bool")]
+    replace: bool,
+    #[serde(default)]
+    checkpoint: CursorArgument,
+    #[serde(default)]
+    expected_revision: CursorArgument,
 }
 
 fn apply_entities(
@@ -407,16 +448,14 @@ fn apply_entities(
 ) -> Result<Value, String> {
     let changes =
         Vec::<EntityChange>::deserialize(&params["changes"]).map_err(|e| e.to_string())?;
-    let replace = params["replace"].as_bool().unwrap_or(false);
-    let checkpoint = CursorArgument::from_wire(params.get("checkpoint"));
-    let expected_revision = CursorArgument::from_wire(params.get("expectedRevision"));
+    let options: EntityOptions = projection(params);
     apply_entities_inner(
         connection,
         workspace,
         &changes,
-        replace,
-        checkpoint,
-        expected_revision,
+        options.replace,
+        options.checkpoint,
+        options.expected_revision,
     )
 }
 
@@ -607,13 +646,15 @@ fn execute(connection: &Connection, request: &Request) -> Result<Value, String> 
             .map(|value| value.unwrap_or(Value::Null));
     }
     if request.method == "identity.set" {
-        let workspace = request.params["workspaceId"]
-            .as_str()
+        let input: IdentityInput = projection(&request.params);
+        let workspace = input
+            .workspace_id
+            .as_deref()
             .ok_or("Missing workspace identity.")?;
         if !valid_workspace(workspace) {
             return Err("Invalid workspace identity.".into());
         }
-        let identity = json!({"workspaceId":workspace,"chatState":request.params["chatState"].as_bool().unwrap_or(false)});
+        let identity = json!({"workspaceId":workspace,"chatState":input.chat_state});
         // Bind the store atomically, including concurrent opens. A changed
         // backend must not silently replace the identity used for offline data.
         let changed = connection
@@ -632,8 +673,10 @@ fn execute(connection: &Connection, request: &Request) -> Result<Value, String> 
         }
         return Ok(identity);
     }
-    let workspace = request.params["workspace"]
-        .as_str()
+    let input: ProjectionWorkspace = projection(&request.params);
+    let workspace = input
+        .workspace
+        .as_deref()
         .ok_or("Missing workspace identity.")?;
     if !valid_workspace(workspace) {
         return Err("Invalid projection identity.".into());
@@ -681,9 +724,8 @@ fn execute(connection: &Connection, request: &Request) -> Result<Value, String> 
             .map_err(|error| error.to_string())?;
         return Ok(Value::Bool(changed != 0));
     }
-    let scope = request.params["scope"]
-        .as_str()
-        .ok_or("Missing projection scope.")?;
+    let input: ProjectionScope = projection(&request.params);
+    let scope = input.scope.as_deref().ok_or("Missing projection scope.")?;
     if scope.is_empty() || scope.len() > MAX_PROJECTION_SCOPE_BYTES {
         return Err("Invalid projection identity.".into());
     }
@@ -693,8 +735,8 @@ fn execute(connection: &Connection, request: &Request) -> Result<Value, String> 
         }
         "projection.get" => Ok(get(connection, workspace, scope)?.unwrap_or(Value::Null)),
         "projection.put" => {
-            let document: Document = serde_json::from_value(request.params["document"].clone())
-                .map_err(|e| e.to_string())?;
+            let document: Document =
+                Document::deserialize(&request.params["document"]).map_err(|e| e.to_string())?;
             let document = check_document(scope, document)?;
             write_document(connection, workspace, &document)?;
             Ok(serde_json::to_value(get(connection, workspace, scope)?)
@@ -714,6 +756,97 @@ pub fn dispatch(connection: &Connection, request: &Request) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn projection_sender_preserves_validation_order_and_rollback_after_restart() {
+        use crate::delivery::StoreCommand;
+        use tokio::sync::{mpsc, oneshot};
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("client.sqlite3");
+        let worker_path = path.clone();
+        let (sender, mut receiver) = mpsc::channel::<StoreCommand>(8);
+        let worker = std::thread::spawn(move || {
+            let mut store = crate::store::Store::open(&worker_path).unwrap();
+            while let Some(command) = receiver.blocking_recv() {
+                command.execute(&mut store);
+            }
+        });
+        async fn send(
+            sender: &mpsc::Sender<StoreCommand>,
+            method: &str,
+            params: Value,
+        ) -> Response {
+            let (reply, receive) = oneshot::channel();
+            sender
+                .send(StoreCommand::Request(
+                    Request {
+                        id: "fixture".into(),
+                        method: method.into(),
+                        params,
+                    },
+                    reply,
+                ))
+                .await
+                .unwrap();
+            receive.await.unwrap()
+        }
+        let workspace = "a".repeat(32);
+        let bad = send(
+            &sender,
+            "projection.applyEntities",
+            json!({"workspace":"bad","changes":null,"checkpoint":null}),
+        )
+        .await;
+        assert_eq!(bad.error.unwrap().message, "Invalid projection identity.");
+        let bad = send(
+            &sender,
+            "projection.unknown",
+            json!({"workspace":workspace}),
+        )
+        .await;
+        assert_eq!(bad.error.unwrap().message, "Missing projection scope.");
+        let bad = send(
+            &sender,
+            "projection.applyEntities",
+            json!({"workspace":workspace,"changes":null,"expectedRevision":null}),
+        )
+        .await;
+        assert_ne!(
+            bad.error.unwrap().message,
+            "Entity state changed during synchronization. Retry the pull."
+        );
+        let change = json!({"op":"upsert","collection":"task","id":"a","seq":1,"value":{"id":"a"}});
+        let bad = send(
+            &sender,
+            "projection.applyEntities",
+            json!({"workspace":workspace,"changes":[change],"replace":true,"checkpoint":1.0}),
+        )
+        .await;
+        assert_eq!(bad.error.unwrap().message, "Invalid entity checkpoint.");
+        drop(sender);
+        worker.join().unwrap();
+        let mut store = crate::store::Store::open(&path).unwrap();
+        let result = store.dispatch(Request {
+            id: "get".into(),
+            method: "projection.entities".into(),
+            params: json!({"workspace":workspace,"scope":"entity:*"}),
+        });
+        assert_eq!(result.result, Some(json!([])));
+    }
+
+    #[test]
+    fn borrowed_document_decoding_keeps_old_errors() {
+        for value in [
+            json!(null),
+            json!([]),
+            json!({}),
+            json!({"id":3}),
+            json!({"id":"x","payload":"{}","seq":1.0}),
+        ] {
+            let old = serde_json::from_value::<Document>(value.clone()).map_err(|e| e.to_string());
+            let new = Document::deserialize(&value).map_err(|e| e.to_string());
+            assert_eq!(old.err(), new.err(), "{value}");
+        }
+    }
     #[test]
     fn agent_summary_renders_without_detail_and_owns_list_fields() {
         let summary: EntityChange = serde_json::from_str(r#"{"op":"upsert","collection":"agentSummary","id":"a","seq":0,"value":{"id":"a","name":"Current","status":"completed","lastCompletedTurn":"turn","readState":{"threadId":"thread","turnId":"turn","read":false,"revision":1}}}"#).expect("summary");

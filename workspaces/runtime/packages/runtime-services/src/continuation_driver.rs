@@ -93,11 +93,17 @@ fn apply(
 ) -> Result<()> {
     // Validate all resulting stored records with the same constructor used for reads.
     let proposed = d.record.as_ref().map(|record| record.value());
-    let mut validation = serde_json::json!({"agent":d.agent.as_ref().unwrap_or(&snapshot.agent),"record":proposed.as_ref().or(snapshot.record.as_ref()),"events":d.events,"ancestors":snapshot.ancestors,"claims":snapshot.claims});
+    let mut validation = serde_json::json!({"agent":d.agent.as_ref().map_or(&snapshot.agent, |agent| agent.value()),"record":proposed.as_ref().or(snapshot.record.as_ref()),"events":d.events,"ancestors":snapshot.ancestors,"claims":snapshot.claims});
     validation["metadata"] = serde_json::json!(d.metadata);
+    let agent = match d.agent.as_ref() {
+        Some(agent) => agent.checked(),
+        None => snapshot.current_agent_record(),
+    };
     let checked = match d.record.as_ref().and_then(|record| record.checked()) {
-        Some(record) => Snapshot::from_records_with_checked_record(validation, record)?,
-        None => Snapshot::from_records(validation)?,
+        Some(record) => {
+            Snapshot::from_records_with_checked_record_and_agent(validation, record, agent)?
+        }
+        None => Snapshot::from_records_with_agent(&validation, agent)?,
     };
     if d.record.is_some() {
         fault.at(Boundary::BeforeRecord)?;
@@ -154,7 +160,10 @@ fn apply(
             reason,
         } = effect
         {
-            let stopped = d.agent.as_ref().unwrap_or(&snapshot.agent);
+            let stopped = d
+                .agent
+                .as_ref()
+                .map_or(&snapshot.agent, |agent| agent.value());
             crate::lifecycle_effects::notify_continuation_hold(
                 tx,
                 &snapshot.agent,
@@ -172,9 +181,9 @@ fn apply(
         }
         fault.at(Boundary::AfterEffect)?;
     }
-    if let Some(agent) = &d.agent {
+    if d.agent.is_some() {
         fault.at(Boundary::BeforeAgent)?;
-        ContinuationRepository::put_agent(tx, agent)?;
+        ContinuationRepository::put_checked_agent(tx, checked.agent_record())?;
         fault.at(Boundary::AfterAgent)?;
     }
     for event in &d.events {
@@ -188,4 +197,28 @@ fn apply(
         fault.at(Boundary::AfterMetadata)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn followup_uses_snapshot_agent_after_pending_settings_mutation() {
+        let root = tempfile::tempdir().unwrap();
+        let store = studio_runtime_store::RuntimeStore::open(Some(root.path()))
+            .await
+            .unwrap();
+        store.transaction_with_error(|tx| -> Result<()> {
+            let agent = json!({"id":"a","rootId":"a","provider":"codex","epoch":1,"status":"failed","autoWake":true});
+            let mut snapshot = Snapshot::from_records(json!({"agent":agent}))?;
+            snapshot.agent["autoWake"] = json!(false);
+            let decision = Decision { effects: vec![Effect::Followup { id:"follow".into(), text:"continue".into() }], ..Decision::default() };
+            apply_in_transaction(tx, &snapshot, ContinuationTable::Usage, &decision, 1.0)?;
+            let status: String = tx.query_row("SELECT status FROM runtime_events WHERE id='follow'", [], |row| row.get(0)).map_err(studio_runtime_store::StoreError::from)?;
+            assert_eq!(status, "cancelled");
+            Ok(())
+        }).await.unwrap();
+    }
 }

@@ -797,16 +797,80 @@ pub(crate) fn open_confined_native_file(
 }
 
 /// Native session header identity; the first supported alias is authoritative.
+#[derive(serde::Deserialize)]
+pub(crate) struct SessionHeader {
+    #[serde(rename = "type", default)]
+    kind: Value,
+    #[serde(default)]
+    payload: SessionPayload,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum SessionPayload {
+    Object(studio_runtime_schema::json_object::JsonObject<SessionFields>),
+    Other(serde::de::IgnoredAny),
+}
+impl Default for SessionPayload {
+    fn default() -> Self {
+        Self::Other(serde::de::IgnoredAny)
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct SessionFields {
+    #[serde(default, rename = "id")]
+    raw_id: Value,
+    #[serde(default)]
+    session_id: Value,
+    #[serde(default, deserialize_with = "present_header_field")]
+    history_base: Option<Value>,
+}
+
+fn present_header_field<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Value>, D::Error> {
+    serde::Deserialize::deserialize(d).map(Some)
+}
+
+impl SessionHeader {
+    pub(crate) fn from_value(value: &Value) -> Option<Self> {
+        use serde::Deserialize;
+        studio_runtime_schema::json_object::JsonObject::<Self>::deserialize(value)
+            .ok()
+            .map(|value| value.0)
+    }
+
+    pub(crate) fn is_session(&self) -> bool {
+        self.kind == "session_meta"
+    }
+
+    fn fields(&self) -> Option<&SessionFields> {
+        match &self.payload {
+            SessionPayload::Object(fields) => Some(&fields.0),
+            SessionPayload::Other(_) => None,
+        }
+    }
+
+    pub(crate) fn exact_id(&self, thread: &str) -> bool {
+        self.fields().is_some_and(|fields| fields.raw_id == thread)
+    }
+
+    pub(crate) fn first_id(&self, thread: &str) -> bool {
+        self.fields().is_some_and(|fields| {
+            crate::analytics_capture::first(&[&fields.raw_id, &fields.session_id]) == thread
+        })
+    }
+
+    pub(crate) fn history_base(&self) -> Option<&Value> {
+        self.fields()
+            .and_then(|fields| fields.history_base.as_ref())
+    }
+}
+
 pub(crate) fn native_rollout_header_matches(header: &[u8], thread: &str) -> bool {
     serde_json::from_slice::<Value>(header)
         .ok()
-        .is_some_and(|value| {
-            value["type"] == "session_meta"
-                && crate::analytics_capture::first(&[
-                    &value["payload"]["id"],
-                    &value["payload"]["session_id"],
-                ]) == thread
-        })
+        .and_then(|value| SessionHeader::from_value(&value))
+        .is_some_and(|header| header.is_session() && header.first_id(thread))
 }
 
 pub fn prepare(
@@ -1402,6 +1466,56 @@ impl HistoryCollector {
 #[cfg(test)]
 mod invalid_record_tests {
     use super::*;
+
+    #[test]
+    fn session_header_projection_preserves_partial_and_presence_rules() {
+        for raw in [
+            "null",
+            "[]",
+            "{}",
+            r#"{"type":"session_meta","payload":null}"#,
+            r#"{"type":"session_meta","payload":{"id":"","session_id":"t","history_base":null}}"#,
+            r#"{"type":"session_meta","payload":{"id":7,"session_id":"t","history_base":false}}"#,
+            r#"{"type":"other","type":"session_meta","payload":{"id":"t","extra":1}}"#,
+            r#"{"type":"session_meta","payload":{"id":"t","id":"other"}}"#,
+        ] {
+            let value: Value = serde_json::from_str(raw).expect("valid fixture");
+            let header = SessionHeader::from_value(&value);
+            let session = value["type"] == "session_meta";
+            assert_eq!(
+                header.as_ref().is_some_and(SessionHeader::is_session),
+                session,
+                "{raw}"
+            );
+            assert_eq!(
+                header
+                    .as_ref()
+                    .is_some_and(|h| h.is_session() && h.exact_id("t")),
+                session && value["payload"]["id"] == "t",
+                "{raw}"
+            );
+            assert_eq!(
+                native_rollout_header_matches(raw.as_bytes(), "t"),
+                session
+                    && crate::analytics_capture::first(&[
+                        &value["payload"]["id"],
+                        &value["payload"]["session_id"]
+                    ]) == "t",
+                "{raw}"
+            );
+            assert_eq!(
+                header.as_ref().and_then(SessionHeader::history_base),
+                value.pointer("/payload/history_base"),
+                "{raw}"
+            );
+        }
+        let deep = format!("{}0{}", "[".repeat(140), "]".repeat(140));
+        assert!(!native_rollout_header_matches(deep.as_bytes(), "t"));
+        assert!(!native_rollout_header_matches(
+            br#"{"type":"session_meta"} trailing"#,
+            "t"
+        ));
+    }
 
     #[tokio::test]
     async fn invalid_history_checkpoint_is_quarantined_without_blocking_valid_row() {
