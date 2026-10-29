@@ -1,5 +1,6 @@
-import { existsSync, unwatchFile, watch, watchFile } from "node:fs";
+import { existsSync, watch } from "node:fs";
 import path from "node:path";
+import { scheduler } from "node:timers/promises";
 
 // Maximum wait for a scripted bridge fixture signal or bridge reply, in milliseconds. A bridge
 // child starts slowly while the gate keeps the machine busy (load above 30).
@@ -7,10 +8,10 @@ export const HANG_GUARD_MS = 25_000;
 
 // Observe before inspecting so creation, rename and append cannot fall between
 // the condition check and subscription. The timeout is only a failure guard.
-// On macOS, fs.watch starts its FSEvents stream after it returns and misses a
-// change made in that interval. A stat poll covers that interval; libuv runs
-// it, so a child with mocked timers still sees the change.
-const STAT_POLL_MS = 20;
+// Directory events can miss startup changes. watchFile can also take its first
+// stat sample after creation and report no change. Recheck the condition in real
+// time; scheduler.wait is outside the scripted child's mocked timer APIs.
+const CONDITION_POLL_MS = 20;
 export function waitForFile(
   file: string,
   {
@@ -36,13 +37,12 @@ export function waitForFile(
         );
     signal ??= controller.signal;
     const watcher = watch(path.dirname(file), check);
-    watchFile(file, { interval: STAT_POLL_MS }, check);
     const cleanup = () => {
       watcher.close();
-      unwatchFile(file, check);
       clearTimeout(deadline);
       signal!.removeEventListener("abort", abort);
       process.off("message", notified);
+      controller.abort();
     };
     function abort() {
       cleanup();
@@ -61,6 +61,12 @@ export function waitForFile(
     function notified(message: { fixtureFile?: string }) {
       if (message?.fixtureFile === file) check();
     }
+    async function poll() {
+      while (!controller.signal.aborted) {
+        await scheduler.wait(CONDITION_POLL_MS, { signal: controller.signal });
+        check();
+      }
+    }
     // Only scripted children opt in: test workers also have process.send, but
     // their IPC reference belongs to the test runner. A publisher notification
     // handles coalesced filesystem events; the file remains the durable condition.
@@ -75,5 +81,10 @@ export function waitForFile(
     signal.addEventListener("abort", abort, { once: true });
     if (signal.aborted) abort();
     else check();
+    void poll().catch((error: unknown) => {
+      if (controller.signal.aborted) return;
+      cleanup();
+      reject(error);
+    });
   });
 }
