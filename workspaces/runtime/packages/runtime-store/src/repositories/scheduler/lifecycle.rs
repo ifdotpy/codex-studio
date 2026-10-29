@@ -27,14 +27,6 @@ impl SchedulerRepository {
         let Some(events) = attempt.events.as_ref() else {
             return Ok(false);
         };
-        #[derive(serde::Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct HeldAgentScope {
-            thread_id: Option<String>,
-            auto_wake: Option<bool>,
-            in_flight: Option<bool>,
-        }
-        let scope: HeldAgentScope = serde_json::from_value(crate::projection_value(&agent))?;
         let held = matches!(&agent.start_outcome_hold,
             Some(crate::StoredStartOutcomeHold::Known(crate::StartOutcomeHold::Held { reason: Some(reason), attempt_id: Some(id), .. }))
                 if reason == Self::UNCLEAN_START_HOLD && id == &identity.attempt_id);
@@ -51,9 +43,9 @@ impl SchedulerRepository {
             || attempt.active_at_reservation == Some(true)
             || events.first().map(String::as_str) != Some(first_event)
             || turn.is_empty()
-            || scope.thread_id.as_deref() != Some(thread)
-            || scope.auto_wake != Some(false)
-            || scope.in_flight != Some(false)
+            || agent.thread_id.as_deref() != Some(thread)
+            || agent.auto_wake != Some(false)
+            || agent.in_flight != Some(false)
         {
             return Ok(false);
         }

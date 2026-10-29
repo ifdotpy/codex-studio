@@ -15,6 +15,7 @@ use crate::{
     task_recovery::TaskRecoverySnapshot,
     task_recovery_store::TaskCompletionWriter,
 };
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use studio_runtime_schema::{
@@ -189,7 +190,7 @@ async fn reconcile_first_pass(
             for job in jobs {
                 let agent = job.agent().record()["id"].as_str().map(str::to_owned);
                 let identity = job.agent().connection_recovery_id();
-                match reconcile_job(&store, account, &scope, &session, &control, job).await {
+                match reconcile_job(&store, account, &scope, &session, job).await {
                     Ok(Some((agent, epoch, outcome))) => {
                         if matches!(outcome.outcome, RecoveryOutcome::Applied(_)) {
                             recovered.push((agent, epoch));
@@ -232,7 +233,6 @@ async fn reconcile_job(
     account: &str,
     scope: &ConnectionScope,
     session: &super::retained::RetainedSessionPort,
-    control: &crate::provider_session_task::SessionControl,
     job: RecoveryJob,
 ) -> Result<Option<(String, i64, RecoveryEffectResult)>, RecoveryError> {
     // Restart and provider loss share the same guarded native-history pass.
@@ -278,24 +278,6 @@ async fn reconcile_job(
         }
     };
     let unclean_start = snapshot.is_unclean_start();
-    if unclean_start {
-        if let Ok(details) =
-            serde_json::from_str::<HeldStartDetails>(&snapshot.record().to_string())
-        {
-            let attempt = details.start_attempt.id;
-            let operation = format!(
-                "account:{}:{}:{}",
-                account,
-                attempt,
-                studio_runtime_providers::Method::TurnStart.as_str()
-            );
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_secs(2),
-                control.operation_status(studio_runtime_process::OperationId(operation)),
-            )
-            .await;
-        }
-    }
     let agent = snapshot.record()["id"]
         .as_str()
         .ok_or(RecoveryError::CommitFailed)?
@@ -559,10 +541,10 @@ impl CompletionWriter for RestartInputCompletion {
             return Err(RecoveryError::EffectsUnavailable);
         };
         if expected.is_unclean_start() {
-            let details: HeldStartDetails = serde_json::from_str(&expected.record().to_string())
+            let details = HeldStartDetails::deserialize(expected.record())
                 .map_err(|_| RecoveryError::CommitFailed)?;
             let history: HistoryTurn =
-                serde_json::from_str(&turn.to_string()).map_err(|_| RecoveryError::CommitFailed)?;
+                HistoryTurn::deserialize(turn).map_err(|_| RecoveryError::CommitFailed)?;
             if details.account_key.as_deref().unwrap_or("default") != scope.account {
                 return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Superseded));
             }
