@@ -24,7 +24,6 @@ const MAX_PENDING_FILE_EVENTS: usize = 8192;
 const MAX_PENDING_AGENT_ROW_HINTS: usize = 4096;
 /// Read-failure target classes owned by the server history runner.
 const ACCOUNT_REGISTRY: &str = "account registry";
-const AGENT_RECORD: &str = "agent record";
 const WATCH_DIRECTORY: &str = "watch directory";
 
 struct ManualHistoryTick {
@@ -377,7 +376,7 @@ impl HistoryRuntime {
     async fn read_roster(
         store: &RuntimeStore,
         settled: &BTreeMap<String, Value>,
-    ) -> Result<(Vec<i64>, Vec<Value>), HistoryError> {
+    ) -> Result<(Vec<i64>, Vec<AgentRecord>), HistoryError> {
         let rows = store
             .read_async("runtime-server/history_roster", |db| {
                 Table::<AgentRecord>::new(db).list_with_row_ids()
@@ -386,7 +385,6 @@ impl HistoryRuntime {
             .map_err(HistoryError::Store)?;
         Ok(rows
             .into_iter()
-            .map(|(row_id, agent)| (row_id, agent.value()))
             .filter(|(_, agent)| !is_retired(agent, settled))
             .unzip())
     }
@@ -394,7 +392,7 @@ impl HistoryRuntime {
     async fn step(
         &mut self,
         row_ids: &[i64],
-        actors: &[Value],
+        actors: &[AgentRecord],
         clock: HistoryClock,
     ) -> Result<bool, HistoryError> {
         let accounts = Arc::clone(&self.accounts);
@@ -693,12 +691,10 @@ async fn run_event_driven_with_wake(
                         .iter()
                         .filter(|actor| actor_matches_rollout(actor, &account, &path))
                     {
-                        runtime.collector.schedule.notify_rollout(
-                            actor["id"]
-                                .as_str()
-                                .ok_or(HistoryError::read(AGENT_RECORD))?,
-                            event.structural,
-                        )?;
+                        runtime
+                            .collector
+                            .schedule
+                            .notify_rollout(actor.id().as_ref(), event.structural)?;
                     }
                 } else if profile_tree_changed(&home, &path, event) {
                     runtime.collector.profile_changed(&home);
@@ -814,7 +810,7 @@ async fn restore_history_watcher(
     runtime: &mut HistoryRuntime,
     wake: &Arc<HistoryWake>,
     shutdown: &mut watch::Receiver<bool>,
-    roster: &[Value],
+    roster: &[AgentRecord],
     failures: &mut u32,
 ) -> Result<Option<HistoryWatcher>, HistoryError> {
     loop {
@@ -885,10 +881,17 @@ fn rollout_matches_thread(path: &Path, thread: &str) -> bool {
         .is_some_and(|name| name.starts_with("rollout-") && name.ends_with(&suffix))
 }
 
-fn actor_matches_rollout(actor: &Value, account: &str, path: &Path) -> bool {
-    actor["accountKey"].as_str().unwrap_or("default") == account
-        && actor["threadId"]
-            .as_str()
+fn actor_matches_rollout(actor: &AgentRecord, account: &str, path: &Path) -> bool {
+    actor
+        .extra
+        .get("accountKey")
+        .and_then(Value::as_str)
+        .unwrap_or("default")
+        == account
+        && actor
+            .extra
+            .get("threadId")
+            .and_then(Value::as_str)
             .is_some_and(|thread| rollout_matches_thread(path, thread))
 }
 
@@ -897,7 +900,7 @@ async fn read_roster_rows(
     store: &RuntimeStore,
     row_ids: Vec<i64>,
     settled: &BTreeMap<String, Value>,
-) -> Result<Vec<(i64, Option<Value>)>, HistoryError> {
+) -> Result<Vec<(i64, Option<AgentRecord>)>, HistoryError> {
     let rows = store
         .read_async("runtime-server/history_roster_rows", move |db| {
             let table = Table::<AgentRecord>::new(db);
@@ -910,27 +913,23 @@ async fn read_roster_rows(
         .map_err(HistoryError::Store)?;
     Ok(rows
         .into_iter()
-        .map(|(row_id, agent)| {
-            (
-                row_id,
-                agent
-                    .map(|agent| agent.value())
-                    .filter(|agent| !is_retired(agent, settled)),
-            )
-        })
+        .map(|(row_id, agent)| (row_id, agent.filter(|agent| !is_retired(agent, settled))))
         .collect())
 }
 
 /// A deleted agent leaves the roster once nothing is left to import for it: it never
 /// reached a thread, or its final checkpoint already saw this `deletedAt`.
-fn is_retired(agent: &Value, settled: &BTreeMap<String, Value>) -> bool {
-    let deleted_at = &agent["deletedAt"];
+fn is_retired(agent: &AgentRecord, settled: &BTreeMap<String, Value>) -> bool {
+    let deleted_at = agent.extra.get("deletedAt").unwrap_or(&Value::Null);
     !deleted_at.is_null()
-        && (agent["threadId"].as_str().is_none_or(str::is_empty)
-            || agent["id"]
-                .as_str()
-                .and_then(|id| settled.get(id))
-                .is_some_and(|final_deleted_at| final_deleted_at == deleted_at))
+        && (agent
+            .extra
+            .get("threadId")
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty)
+            || settled
+                .get(agent.id().as_ref())
+                .is_some_and(|value| value == deleted_at))
 }
 
 /// Final checkpoints of deleted agents, so a restart does not import every tombstone again.
@@ -961,14 +960,23 @@ fn read_settled_tombstones(root: &Path) -> Result<BTreeMap<String, Value>, Histo
 }
 
 /// Moves deleted agents whose import is final out of the roster, keeping row ids aligned.
-fn retire_settled(runtime: &mut HistoryRuntime, actors: &mut Vec<Value>, row_ids: &mut Vec<i64>) {
+fn retire_settled(
+    runtime: &mut HistoryRuntime,
+    actors: &mut Vec<AgentRecord>,
+    row_ids: &mut Vec<i64>,
+) {
     let mut index = 0;
     while index < actors.len() {
         let actor = &actors[index];
-        if !actor["deletedAt"].is_null() && runtime.collector.schedule.settled(actor) {
-            let id = actor["id"].as_str().unwrap_or_default().to_owned();
+        if let Some(deleted_at) = actor
+            .extra
+            .get("deletedAt")
+            .filter(|value| !value.is_null())
+            && runtime.collector.schedule.settled(actor)
+        {
+            let id = actor.id().as_ref().to_owned();
             runtime.collector.schedule.remove(&id);
-            runtime.settled.insert(id, actor["deletedAt"].clone());
+            runtime.settled.insert(id, deleted_at.clone());
             actors.remove(index);
             row_ids.remove(index);
         } else {
@@ -981,15 +989,15 @@ fn retire_settled(runtime: &mut HistoryRuntime, actors: &mut Vec<Value>, row_ids
 /// arrives under a new rowid with no delete hint for the old row, so the stale
 /// entry with the same agent id is removed first.
 fn apply_roster_rows(
-    actors: &mut Vec<Value>,
+    actors: &mut Vec<AgentRecord>,
     row_ids: &mut Vec<i64>,
-    changes: Vec<(i64, Option<Value>)>,
+    changes: Vec<(i64, Option<AgentRecord>)>,
 ) {
     for (row_id, value) in changes {
-        if let Some(agent_id) = value.as_ref().and_then(|value| value["id"].as_str()) {
+        if let Some(agent_id) = value.as_ref().map(|value| value.id()) {
             let mut index = 0;
             while index < actors.len() {
-                if row_ids[index] != row_id && actors[index]["id"].as_str() == Some(agent_id) {
+                if row_ids[index] != row_id && actors[index].id() == agent_id {
                     actors.remove(index);
                     row_ids.remove(index);
                 } else {
@@ -1012,17 +1020,18 @@ fn apply_roster_rows(
     }
 }
 
-fn notify_all_agents(runtime: &mut HistoryRuntime, roster: &[Value]) -> Result<(), HistoryError> {
+fn notify_all_agents(
+    runtime: &mut HistoryRuntime,
+    roster: &[AgentRecord],
+) -> Result<(), HistoryError> {
     for actor in roster {
-        if actor["threadId"]
-            .as_str()
+        if actor
+            .extra
+            .get("threadId")
+            .and_then(Value::as_str)
             .is_some_and(|thread| !thread.is_empty())
         {
-            runtime.collector.schedule.notify(
-                actor["id"]
-                    .as_str()
-                    .ok_or(HistoryError::read(AGENT_RECORD))?,
-            )?;
+            runtime.collector.schedule.notify(actor.id().as_ref())?;
         }
     }
     Ok(())
@@ -1030,20 +1039,23 @@ fn notify_all_agents(runtime: &mut HistoryRuntime, roster: &[Value]) -> Result<(
 
 fn notify_account_agents(
     runtime: &mut HistoryRuntime,
-    roster: &[Value],
+    roster: &[AgentRecord],
     account: &str,
 ) -> Result<(), HistoryError> {
     for actor in roster.iter().filter(|actor| {
-        actor["accountKey"].as_str().unwrap_or("default") == account
-            && actor["threadId"]
-                .as_str()
+        actor
+            .extra
+            .get("accountKey")
+            .and_then(Value::as_str)
+            .unwrap_or("default")
+            == account
+            && actor
+                .extra
+                .get("threadId")
+                .and_then(Value::as_str)
                 .is_some_and(|thread| !thread.is_empty())
     }) {
-        runtime.collector.schedule.notify(
-            actor["id"]
-                .as_str()
-                .ok_or(HistoryError::read(AGENT_RECORD))?,
-        )?;
+        runtime.collector.schedule.notify(actor.id().as_ref())?;
     }
     Ok(())
 }
@@ -1069,6 +1081,42 @@ mod tests {
     use super::*;
     use serde_json::{Value, json};
     use tempfile::tempdir;
+
+    fn typed_actor(mut value: Value) -> AgentRecord {
+        value["rootId"] = value["id"].clone();
+        value["epoch"] = json!(0);
+        value["status"] = json!("idle");
+        AgentRecord::from_value(value).expect("typed fixture actor")
+    }
+
+    #[test]
+    fn typed_roster_preserves_partial_identity_and_tombstone_rules() {
+        let path = Path::new("/fixture/rollout-thread.jsonl");
+        for value in [
+            json!({"id":"a"}),
+            json!({"id":"a", "threadId":""}),
+            json!({"id":"a", "threadId":"thread", "accountKey":null}),
+            json!({"id":"a", "threadId":"thread", "accountKey":"other", "deletedAt":{"at":1}}),
+            json!({"id":"a", "threadId":"thread", "deletedAt":42}),
+        ] {
+            let actor = typed_actor(value.clone());
+            let settled = BTreeMap::from([("a".to_owned(), json!({"at":1}))]);
+            let deleted = &value["deletedAt"];
+            let legacy_retired = !deleted.is_null()
+                && (value["threadId"].as_str().is_none_or(str::is_empty)
+                    || settled.get("a").is_some_and(|entry| entry == deleted));
+            let legacy_match = value["accountKey"].as_str().unwrap_or("default") == "default"
+                && value["threadId"]
+                    .as_str()
+                    .is_some_and(|thread| rollout_matches_thread(path, thread));
+            assert_eq!(is_retired(&actor, &settled), legacy_retired, "{value}");
+            assert_eq!(
+                actor_matches_rollout(&actor, "default", path),
+                legacy_match,
+                "{value}"
+            );
+        }
+    }
 
     #[tokio::test]
     async fn slow_filesystem_metadata_does_not_block_a_store_observer() {
@@ -1173,13 +1221,15 @@ mod tests {
     #[test]
     fn retired_tombstones_leave_the_roster_until_their_deletion_changes() {
         let settled = BTreeMap::from([("gone".to_owned(), json!("2026-10-18T00:00:00Z"))]);
-        let live = json!({"id":"live","threadId":"t","deletedAt":null});
-        let never_started = json!({"id":"empty","threadId":"","deletedAt":"2026-10-18T00:00:00Z"});
+        let live = typed_actor(json!({"id":"live","threadId":"t","deletedAt":null}));
+        let never_started =
+            typed_actor(json!({"id":"empty","threadId":"","deletedAt":"2026-10-18T00:00:00Z"}));
         let settled_tombstone =
-            json!({"id":"gone","threadId":"t","deletedAt":"2026-10-18T00:00:00Z"});
+            typed_actor(json!({"id":"gone","threadId":"t","deletedAt":"2026-10-18T00:00:00Z"}));
         let pending_tombstone =
-            json!({"id":"late","threadId":"t","deletedAt":"2026-10-18T00:00:00Z"});
-        let redeleted = json!({"id":"gone","threadId":"t","deletedAt":"2026-10-19T00:00:00Z"});
+            typed_actor(json!({"id":"late","threadId":"t","deletedAt":"2026-10-18T00:00:00Z"}));
+        let redeleted =
+            typed_actor(json!({"id":"gone","threadId":"t","deletedAt":"2026-10-19T00:00:00Z"}));
         assert!(!is_retired(&live, &settled));
         assert!(is_retired(&never_started, &settled));
         assert!(is_retired(&settled_tombstone, &settled));
@@ -1248,10 +1298,7 @@ mod tests {
         let (row_ids, roster) = HistoryRuntime::read_roster(&store, &settled)
             .await
             .expect("roster");
-        let ids = roster
-            .iter()
-            .map(|a| a["id"].as_str().expect("id"))
-            .collect::<Vec<_>>();
+        let ids = roster.iter().map(|a| a.id().as_ref()).collect::<Vec<_>>();
         assert_eq!(ids, ["live", "owed"]);
         assert_eq!(row_ids.len(), 2);
         let rows = read_roster_rows(&store, row_ids, &settled)
@@ -1262,28 +1309,35 @@ mod tests {
 
     #[test]
     fn roster_hints_replace_reinserted_agents_and_keep_rowid_order() {
-        let mut actors = vec![json!({"id":"a"}), json!({"id":"b"}), json!({"id":"c"})];
+        let mut actors = vec![
+            typed_actor(json!({"id":"a"})),
+            typed_actor(json!({"id":"b"})),
+            typed_actor(json!({"id":"c"})),
+        ];
         let mut row_ids = vec![1, 2, 3];
         // REPLACE gives agent "b" a new rowid and reports no delete for row 2.
         apply_roster_rows(
             &mut actors,
             &mut row_ids,
-            vec![(4, Some(json!({"id":"b","name":"replacement"})))],
+            vec![(4, Some(typed_actor(json!({"id":"b","name":"replacement"}))))],
         );
         assert_eq!(row_ids, vec![1, 3, 4]);
         assert_eq!(
             actors,
             vec![
-                json!({"id":"a"}),
-                json!({"id":"c"}),
-                json!({"id":"b","name":"replacement"}),
+                typed_actor(json!({"id":"a"})),
+                typed_actor(json!({"id":"c"})),
+                typed_actor(json!({"id":"b","name":"replacement"}))
             ]
         );
     }
 
     #[test]
     fn roster_hints_remove_physical_rows_and_keep_tombstones() {
-        let mut actors = vec![json!({"id":"a"}), json!({"id":"b"})];
+        let mut actors = vec![
+            typed_actor(json!({"id":"a"})),
+            typed_actor(json!({"id":"b"})),
+        ];
         let mut row_ids = vec![1, 2];
         apply_roster_rows(
             &mut actors,
@@ -1292,14 +1346,18 @@ mod tests {
                 (1, None),
                 (
                     2,
-                    Some(json!({"id":"b","deletedAt":"2026-10-18T00:00:00Z"})),
+                    Some(typed_actor(
+                        json!({"id":"b","deletedAt":"2026-10-18T00:00:00Z"}),
+                    )),
                 ),
             ],
         );
         assert_eq!(row_ids, vec![2]);
         assert_eq!(
             actors,
-            vec![json!({"id":"b","deletedAt":"2026-10-18T00:00:00Z"})]
+            vec![typed_actor(
+                json!({"id":"b","deletedAt":"2026-10-18T00:00:00Z"})
+            )]
         );
     }
 
@@ -1352,8 +1410,8 @@ mod tests {
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].0, row_b);
         assert_eq!(
-            changes[0].1.as_ref().expect("row exists")["id"],
-            json!("row-agent-b")
+            changes[0].1.as_ref().expect("row exists").id().as_ref(),
+            "row-agent-b"
         );
 
         store
@@ -1598,7 +1656,7 @@ mod tests {
             home,
             Path::new("/profile/sessions/2026/rollout-20261016-thread-id.jsonl/child")
         ));
-        let legacy_actor = json!({"id":"legacy","threadId":"thread-id"});
+        let legacy_actor = typed_actor(json!({"id":"legacy","threadId":"thread-id"}));
         assert!(actor_matches_rollout(&legacy_actor, "default", path));
         assert!(!actor_matches_rollout(&legacy_actor, "other-account", path));
     }
