@@ -416,17 +416,26 @@ fn delivery_in(
             &encode_line(&Reply::from(saved.payload.clone()).frame())
                 .map_err(|_| CallbackError::Invalid("Invalid callback response frame"))?,
         ));
-        let admission = owner
+        let read_only = saved
             .payload
-            .admission
-            .as_ref()
-            .ok_or(CallbackError::Unknown)?;
-        crate::event_write::settle_request(
-            tx,
-            admission,
-            Some(&identity.context.agent),
-            &saved.payload,
-        )?;
+            .tool_request
+            .as_deref()
+            .map(|id| tool_requests::read_only(tx, id))
+            .transpose()?
+            .unwrap_or(false);
+        if !read_only {
+            let admission = owner
+                .payload
+                .admission
+                .as_ref()
+                .ok_or(CallbackError::Unknown)?;
+            crate::event_write::settle_request(
+                tx,
+                admission,
+                Some(&identity.context.agent),
+                &saved.payload,
+            )?;
+        }
     }
     if let Some(card_id) = &saved.payload.card {
         let mut card =
@@ -467,6 +476,12 @@ fn delivery_in(
     put_owner(tx, &owner)?;
     if saved.status == OutboxStatus::Committed {
         Outbox::delete_settled(tx, &saved.id, &saved.signature)?;
+        if let Some(id) = saved.payload.tool_request.as_deref()
+            && tool_requests::read_only(tx, id)?
+        {
+            tx.execute("DELETE FROM runtime_tool_requests WHERE id=?1", [id])?;
+            tool_requests::delete_callback(tx, &owner.origin_key)?;
+        }
     } else {
         put_response(tx, &saved)?;
     }
