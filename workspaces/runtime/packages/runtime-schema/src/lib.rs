@@ -25,6 +25,7 @@ pub mod graph_agent_record;
 pub mod idle_compaction;
 pub mod json_compat;
 pub mod json_object;
+pub mod layr_evidence;
 pub mod model_catalog;
 pub mod monitor_record;
 pub mod multi_server_protocol;

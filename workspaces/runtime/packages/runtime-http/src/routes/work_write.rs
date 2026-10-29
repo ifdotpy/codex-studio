@@ -417,7 +417,11 @@ async fn prepare_vm_submission(
                     ));
                 }
             };
-            if response.get("stateId").and_then(Value::as_str) != Some(expected_revision.as_str()) {
+            let response =
+                studio_runtime_schema::layr_evidence::EvidenceResponse::from_value(&response);
+            if response.as_ref().and_then(|r| r.state_id.0.as_deref())
+                != Some(expected_revision.as_str())
+            {
                 let task_id = input.task_id.clone();
                 let operation_id = call.request_id;
                 finish_vm_submission(&store, &task_id, &operation_id, Err(false))
@@ -429,8 +433,8 @@ async fn prepare_vm_submission(
                 ));
             }
             let evidence = match (
-                response.get("projectId").and_then(Value::as_str),
-                response.get("line").and_then(Value::as_str),
+                response.as_ref().and_then(|r| r.project_id.0.as_deref()),
+                response.as_ref().and_then(|r| r.line.0.as_deref()),
             ) {
                 (Some(project), Some(line)) => studio_runtime_store::vm_work_intent::Evidence {
                     layr_project_id: project.to_owned(),

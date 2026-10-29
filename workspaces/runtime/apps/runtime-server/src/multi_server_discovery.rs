@@ -507,10 +507,12 @@ async fn save_auto_pair(
                     "invalid stored object runtime_access_clients".into(),
                 )
             })?;
-        if let Some(saved) = &saved
-            && (text(saved, "status") == "revoked"
-                || text(saved, "publicKey") != text(&peer, "publicKey")
-                || text(saved, "origin") != text(&peer, "origin"))
+        let existed = saved.is_some();
+        let saved = saved.and_then(multi_server_discovery::StoredPeer::from_value);
+        if existed
+            && (saved.as_ref().is_some_and(|saved| saved.is_revoked())
+                || saved.as_ref().map_or("", |saved| saved.public_key()) != text(&peer, "publicKey")
+                || saved.as_ref().map_or("", |saved| saved.origin()) != text(&peer, "origin"))
         {
             return Err(studio_runtime_store::StoreError::SchemaMismatch(
                 "auto-paired server identity changed".into(),
@@ -518,7 +520,7 @@ async fn save_auto_pair(
         }
         let created = saved
             .as_ref()
-            .and_then(|saved| saved.get("created"))
+            .and_then(|saved| saved.created())
             .cloned()
             .unwrap_or(json!(now));
         let record = json!({
@@ -542,7 +544,7 @@ async fn save_auto_pair(
             "INSERT INTO runtime_access_clients(id,record) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET record=excluded.record",
             params![id, record.to_string()],
         )?;
-        if saved.is_none() {
+        if !existed {
             tx.execute(
                 "INSERT INTO runtime_access_audit(client,actor,action,created) VALUES(?1,'local','auto_pair',?2)",
                 params![id, now],
@@ -631,6 +633,138 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    #[tokio::test]
+    async fn auto_pair_registration_preserves_partial_peer_and_created_evidence() {
+        let root = tempfile::tempdir().unwrap();
+        let store = RuntimeStore::open(Some(root.path())).await.unwrap();
+        let peer = json!({"serverId":"peer","origin":"https://peer.example","publicKey":"key","label":"Peer"});
+        let reply = json!({"paired":true,"clientId":"local","origin":"https://local.example","tailscaleUser":"owner"});
+        let cases = [
+            (None, Some(json!(100)), 1),
+            (
+                Some(r#"{"origin":"https://peer.example","publicKey":"key"}"#),
+                Some(json!(100)),
+                0,
+            ),
+            (
+                Some(r#"{"origin":"https://peer.example","publicKey":"key","created":null}"#),
+                Some(Value::Null),
+                0,
+            ),
+            (
+                Some(
+                    r#"{"origin":"https://peer.example","publicKey":"key","created":{"opaque":[1]}}"#,
+                ),
+                Some(json!({"opaque":[1]})),
+                0,
+            ),
+            (
+                Some(
+                    r#"{"origin":"wrong","origin":"https://peer.example","publicKey":"old","publicKey":"key","created":1,"created":"last"}"#,
+                ),
+                Some(json!("last")),
+                0,
+            ),
+            (
+                Some(r#"{"origin":"https://peer.example","publicKey":"key","status":"revoked"}"#),
+                None,
+                0,
+            ),
+            (
+                Some(r#"{"origin":"https://peer.example","publicKey":"other"}"#),
+                None,
+                0,
+            ),
+            (
+                Some(r#"{"origin":"https://other.example","publicKey":"key"}"#),
+                None,
+                0,
+            ),
+            (Some("null"), None, 0),
+            (Some("{bad"), None, 0),
+        ];
+        for (raw, expected_created, expected_audit) in cases {
+            let input = raw.map(str::to_owned);
+            store
+                .transaction(move |tx| {
+                    tx.execute("DELETE FROM runtime_access_clients WHERE id='peer'", [])?;
+                    tx.execute("DELETE FROM runtime_access_audit", [])?;
+                    if let Some(input) = input {
+                        tx.execute(
+                            "INSERT INTO runtime_access_clients(id,record) VALUES('peer',?1)",
+                            [input],
+                        )?;
+                    }
+                    Ok(())
+                })
+                .await
+                .unwrap();
+            let result = save_auto_pair(&store, &peer, "owner", "req", b"body", &reply, 100).await;
+            assert_eq!(result.is_ok(), expected_created.is_some(), "{raw:?}");
+            let db = store.test_reader().unwrap();
+            let stored: Option<String> = db
+                .query_row(
+                    "SELECT record FROM runtime_access_clients WHERE id='peer'",
+                    [],
+                    |row| row.get(0),
+                )
+                .optional()
+                .unwrap();
+            if let Some(expected) = expected_created {
+                let record: Value = serde_json::from_str(stored.as_deref().unwrap()).unwrap();
+                assert_eq!(record["created"], expected, "{raw:?}");
+                assert_eq!(record["status"], "paired");
+            } else {
+                assert_eq!(stored.as_deref(), raw);
+            }
+            let count: i64 = db
+                .query_row("SELECT count(*) FROM runtime_access_audit", [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(count, expected_audit, "{raw:?}");
+        }
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "UPDATE runtime_access_settings SET auto_pair=0 WHERE id=1",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        assert!(matches!(
+            save_auto_pair(&store, &peer, "owner", "req", b"body", &reply, 100).await,
+            Err(AccessError::Refused {
+                status: 403,
+                code: "auto_pair_disabled",
+                ..
+            })
+        ));
+        store.transaction(|tx| {
+            tx.execute("UPDATE runtime_access_settings SET auto_pair=1 WHERE id=1", [])?;
+            tx.execute("DELETE FROM runtime_access_clients WHERE id='peer'", [])?;
+            tx.execute_batch("CREATE TRIGGER reject_auto_audit BEFORE INSERT ON runtime_access_audit BEGIN SELECT RAISE(ABORT,'fixture'); END;")?;
+            Ok(())
+        }).await.unwrap();
+        assert!(
+            save_auto_pair(&store, &peer, "owner", "req", b"body", &reply, 100)
+                .await
+                .is_err()
+        );
+        let count: i64 = store
+            .test_reader()
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM runtime_access_clients WHERE id='peer'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0);
+    }
 
     #[tokio::test]
     async fn auto_pair_reservation_preserves_partial_json_evidence() {

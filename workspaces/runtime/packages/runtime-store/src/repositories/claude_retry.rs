@@ -1,6 +1,9 @@
 //! Frozen Claude start rows are loaded and saved under the caller's single transaction.
 use crate::schema::SchemaRequirements;
-use crate::{AgentId, AgentRepository, ClaudeAttemptRecord, StoreError, StoreResult, Transaction};
+use crate::{
+    AgentId, AgentRepository, ClaudeAttemptRecord, EventMetadataRecord, StoreError, StoreResult,
+    Transaction,
+};
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -40,12 +43,9 @@ impl ClaudeRetryRepository {
             let encoded = row["metadata"]
                 .as_str()
                 .ok_or_else(|| invalid(attempt_id))?;
-            row["metadata"] = serde_json::from_str(encoded)?;
-            if !studio_runtime_schema::validate("RuntimeEventMetadataRecord", &row["metadata"])
-                .map_err(|_| invalid(id))?
-            {
-                return Err(invalid(id));
-            }
+            let metadata: Value = serde_json::from_str(encoded)?;
+            let metadata = EventMetadataRecord::deserialize(metadata).map_err(|_| invalid(id))?;
+            row["metadata"] = metadata.into_value();
             events.push(row);
         }
         Ok(Some(ClaudeRetryRecords {

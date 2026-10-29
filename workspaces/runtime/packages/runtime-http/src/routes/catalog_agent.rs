@@ -483,27 +483,27 @@ async fn native_command_cancel(
             ("", None),
         )
         .await?;
-        let Some(entries) = page.get("data").and_then(Value::as_array) else {
-            return Err(ApiError::new(
-                StatusCode::BAD_REQUEST,
-                "Invalid native terminal list",
-            ));
-        };
-        if entries.len() > NATIVE_TERMINAL_ITEMS_PER_PAGE {
+        let studio_runtime_schema::json_object::JsonObject(page):
+            studio_runtime_schema::json_object::JsonObject<
+                studio_runtime_services::provider_pagination::Page<Value>,
+            > = serde::Deserialize::deserialize(page).map_err(|_| {
+            ApiError::new(StatusCode::BAD_REQUEST, "Invalid native terminal list")
+        })?;
+        if page.data.len() > NATIVE_TERMINAL_ITEMS_PER_PAGE {
             return Err(ApiError::new(
                 StatusCode::BAD_REQUEST,
                 "Invalid native terminal list",
             ));
         }
-        pages.extend(entries.iter().cloned());
-        let Some(cursor) = page
-            .get("nextCursor")
-            .and_then(Value::as_str)
-            .filter(|v| !v.is_empty())
+        pages.extend(page.data);
+        let studio_runtime_services::provider_pagination::Cursor::String(cursor) = page.next_cursor
         else {
             break;
         };
-        if page_number + 1 == NATIVE_TERMINAL_MAX_PAGES || !cursor_seen.insert(cursor.to_owned()) {
+        if cursor.is_empty() {
+            break;
+        }
+        if page_number + 1 == NATIVE_TERMINAL_MAX_PAGES || !cursor_seen.insert(cursor.clone()) {
             return Err(ApiError::new(
                 StatusCode::CONFLICT,
                 "Native terminal listing did not advance",
@@ -841,6 +841,180 @@ inventory::submit! {
 #[cfg(test)]
 mod native_command_tests {
     use super::*;
+
+    struct PagePort {
+        scope: studio_runtime_services::account_session_runtime::ConnectionScope,
+        pages: std::sync::Mutex<std::collections::VecDeque<Value>>,
+        calls: std::sync::Mutex<
+            Vec<studio_runtime_services::account_session_runtime::ProviderRequest>,
+        >,
+    }
+
+    impl studio_runtime_services::account_session_runtime::AccountSessionPort for PagePort {
+        fn ensure_session<'a>(
+            &'a self,
+            _: &'a str,
+        ) -> studio_runtime_services::account_session_runtime::AccountSessionFuture<
+            'a,
+            studio_runtime_services::account_session_runtime::ConnectionScope,
+        > {
+            Box::pin(async move { Ok(self.scope.clone()) })
+        }
+        fn provider_request<'a>(
+            &'a self,
+            request: studio_runtime_services::account_session_runtime::ProviderRequest,
+        ) -> studio_runtime_services::account_session_runtime::AccountSessionFuture<
+            'a,
+            studio_runtime_services::account_session_runtime::SessionReceipt,
+        > {
+            Box::pin(async move {
+                use studio_runtime_services::account_session_runtime::{
+                    ProviderResponse, SessionOutcome, SessionReceipt,
+                };
+                let value = if request.method.as_str() == "thread/backgroundTerminals/list" {
+                    self.pages.lock().unwrap().pop_front().expect("page")
+                } else {
+                    assert_eq!(
+                        request.method.as_str(),
+                        "thread/backgroundTerminals/terminate"
+                    );
+                    json!({"terminated":true})
+                };
+                let ticket = studio_runtime_providers::RequestTicket {
+                    generation: self.scope.generation,
+                    id: studio_runtime_providers::RequestId::String(request.operation.clone()),
+                    method: request.method,
+                };
+                let operation = request.operation.clone();
+                self.calls.lock().unwrap().push(request);
+                Ok(SessionReceipt {
+                    scope: self.scope.clone(),
+                    operation,
+                    replayed: false,
+                    outcome: SessionOutcome::Written {
+                        ticket,
+                        response: ProviderResponse::Reply(value),
+                    },
+                })
+            })
+        }
+    }
+
+    async fn page_fixture(
+        pages: Vec<Value>,
+    ) -> (tempfile::TempDir, HttpState, std::sync::Arc<PagePort>) {
+        let directory = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(
+            studio_runtime_store::RuntimeStore::open(Some(directory.path()))
+                .await
+                .unwrap(),
+        );
+        store.transaction_with(|tx| {
+            let owner = json!({"id":"owner","rootId":"owner","epoch":1,"status":"running","accountKey":"default","provider":"codex","threadId":"thread","turnId":"turn","inFlight":true,"autoWake":true});
+            let task = json!({"id":"owner:command","agent":"owner","kind":"command","itemId":"command","processId":"42","status":"running","ownerEpoch":1,"sourceAccountKey":"default","sourceConnectionId":"actual-uuid","sourceThreadId":"thread","turnId":"turn","created":1});
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('owner',?)", [owner.to_string()])?;
+            tx.execute("INSERT INTO runtime_tasks(id,record) VALUES('owner:command',?)", [task.to_string()])?;
+            Ok::<_, studio_runtime_store::StoreError>(())
+        }).await.unwrap();
+        let port = std::sync::Arc::new(PagePort {
+            scope: studio_runtime_services::account_session_runtime::ConnectionScope {
+                account: "default".into(),
+                connection: "actual-uuid".into(),
+                generation: 7,
+            },
+            pages: std::sync::Mutex::new(pages.into()),
+            calls: std::sync::Mutex::new(Vec::new()),
+        });
+        let mut state = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            directory.path().display().to_string(),
+            4621,
+            None,
+            Some(store),
+            None,
+        );
+        state.account_session = Some(port.clone());
+        (directory, state, port)
+    }
+
+    #[tokio::test]
+    async fn native_terminal_pagination_preserves_provider_calls_and_permissive_cursor() {
+        for cursor in [
+            json!(null),
+            json!(""),
+            json!(false),
+            json!(3),
+            json!({}),
+            json!([]),
+        ] {
+            let (_dir, state, port) = page_fixture(vec![
+                json!({"data":[null,{"other":true}],"nextCursor":"next"}),
+                json!({"data":[{"itemId":"command","processId":"42"}],"nextCursor":cursor}),
+            ])
+            .await;
+            let root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+            native_command_cancel(state, "owner:command".into(), root.clone())
+                .await
+                .expect("cancel");
+            let calls = port.calls.lock().unwrap();
+            assert_eq!(calls.len(), 3);
+            assert_eq!(calls[0].operation, format!("{root}:list"));
+            assert_eq!(
+                calls[1].operation,
+                format!("{root}:list:{}", studio_runtime_store::sha256_hex(b"next"))
+            );
+            assert_eq!(
+                calls[0].params,
+                json!({"threadId":"thread","limit":NATIVE_TERMINAL_ITEMS_PER_PAGE})
+            );
+            assert_eq!(
+                calls[1].params,
+                json!({"threadId":"thread","limit":NATIVE_TERMINAL_ITEMS_PER_PAGE,"cursor":"next"})
+            );
+            for call in calls.iter() {
+                assert_eq!(call.expected_scope.as_ref(), Some(&port.scope));
+                assert_eq!(call.actor.as_ref().unwrap().agent, "owner");
+                assert_eq!(call.actor.as_ref().unwrap().epoch, 1);
+            }
+            assert_eq!(
+                calls[2].params,
+                json!({"threadId":"thread","processId":"42"})
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn native_terminal_pagination_refuses_invalid_and_repeated_pages_before_effect() {
+        use axum::response::IntoResponse;
+        for (pages, status, count) in [
+            (vec![json!({})], 400, 1),
+            (vec![json!({"data":null})], 400, 1),
+            (vec![json!([[]])], 400, 1),
+            (
+                vec![json!({"data":vec![Value::Null; NATIVE_TERMINAL_ITEMS_PER_PAGE + 1]})],
+                400,
+                1,
+            ),
+            (
+                vec![
+                    json!({"data":[],"nextCursor":"again"}),
+                    json!({"data":[],"nextCursor":"again"}),
+                ],
+                409,
+                2,
+            ),
+        ] {
+            let (_dir, state, port) = page_fixture(pages).await;
+            let root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+            let error = match native_command_cancel(state, "owner:command".into(), root).await {
+                Ok(_) => panic!("expected refusal"),
+                Err(error) => error,
+            };
+            assert_eq!(error.into_response().status().as_u16(), status);
+            assert_eq!(port.calls.lock().unwrap().len(), count);
+        }
+    }
 
     #[test]
     fn native_command_requires_the_origin_request_identity_for_both_actions() {

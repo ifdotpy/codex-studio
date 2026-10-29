@@ -331,3 +331,100 @@ async fn retry_attempt_owner_preserves_nullable_identity_and_frozen_receipt() {
     assert_eq!(saved["future"], json!({"opaque":[1,null]}));
     assert_eq!(saved["claudeInputRequest"], case["frozen"]);
 }
+
+#[tokio::test]
+async fn retry_metadata_admission_and_frozen_assets_keep_legacy_evidence() {
+    use studio_runtime_store::ClaudeRetryRepository;
+    let root = tempfile::tempdir().expect("scratch");
+    let case = fixtures()
+        .into_iter()
+        .find(|case| case["retry"] != true)
+        .unwrap();
+    for (name, raw, expected) in [
+        ("missing", None, Some(json!({}))),
+        ("null", Some("null"), None),
+        ("assets-null", Some(r#"{"assets":null}"#), None),
+        (
+            "valid",
+            Some(r#"{"assets":[null,7,{"vendor":1.0}],"delivery":"after_turn","future":{"x":1}}"#),
+            Some(
+                json!({"assets":[null,7,{"vendor":1.0}],"delivery":"after_turn","future":{"x":1}}),
+            ),
+        ),
+        (
+            "duplicate",
+            Some(r#"{"assets":null,"assets":["last"],"future":1,"future":2}"#),
+            Some(json!({"assets":["last"],"future":2})),
+        ),
+        ("malformed", Some("{"), None),
+    ] {
+        let store = seeded(&root.path().join(name), &case).await;
+        let raw = raw.map(str::to_owned);
+        let expected_for_read = expected.clone();
+        store
+            .transaction(move |tx| {
+                if name == "malformed" {
+                    // The production expression indexes reject malformed writes; model an already-corrupt row.
+                    tx.execute_batch("DROP INDEX runtime_conversion_event_meta_rootId; DROP INDEX runtime_conversion_event_meta_leadId; DROP INDEX runtime_receipt_transcript_item;")?;
+                }
+                match raw {
+                    Some(raw) => {
+                        tx.execute(
+                            "UPDATE runtime_event_meta SET record=?1 WHERE id='one'",
+                            [raw],
+                        )?;
+                    }
+                    None => {
+                        tx.execute("DELETE FROM runtime_event_meta WHERE id='one'", [])?;
+                    }
+                }
+                match (name, ClaudeRetryRepository::load(tx, "agent", "attempt")) {
+                    ("malformed", Err(StoreError::Json(_))) => {}
+                    (
+                        "null" | "assets-null",
+                        Err(StoreError::InvalidStoredRecord { object, id }),
+                    ) => {
+                        assert_eq!(object, "claude retry");
+                        assert_eq!(id, "one");
+                    }
+                    (_, Ok(Some(saved))) => {
+                        assert_eq!(saved.events[0]["metadata"], expected_for_read.unwrap())
+                    }
+                    _ => panic!("unexpected admission for {name}"),
+                }
+                Ok::<_, StoreError>(())
+            })
+            .await
+            .unwrap();
+        if let Some(metadata) = expected {
+            freeze(&store, case.clone(), false)
+                .await
+                .expect("freeze valid metadata");
+            let attempt = row(
+                &store.test_reader().unwrap(),
+                "runtime_execution_attempts",
+                "attempt",
+            );
+            assert_eq!(
+                attempt["claudeInputRequest"]["events"][0]["assets"],
+                metadata.get("assets").cloned().unwrap_or(json!([]))
+            );
+        }
+    }
+    for (name, ids, missing_first) in [
+        ("missing-first", json!(["absent", "one"]), true),
+        ("invalid-first", json!(["one", "absent"]), false),
+    ] {
+        let store = seeded(&root.path().join(name), &case).await;
+        let mut attempt = case["attempt"].clone();
+        attempt["events"] = ids;
+        store.transaction(move |tx| {
+            tx.execute("UPDATE runtime_execution_attempts SET record=?1 WHERE id='attempt'", [attempt.to_string()])?;
+            tx.execute("UPDATE runtime_event_meta SET record='null' WHERE id='one'", [])?;
+            let result = ClaudeRetryRepository::load(tx, "agent", "attempt");
+            if missing_first { assert!(matches!(result, Ok(None))); }
+            else { assert!(matches!(result, Err(StoreError::InvalidStoredRecord { id, .. }) if id == "one")); }
+            Ok::<_, StoreError>(())
+        }).await.unwrap();
+    }
+}

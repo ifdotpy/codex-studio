@@ -733,7 +733,7 @@ printf '%s\n' "$*" >> "$LAYR_ROOT/commands"
 case "$3 $4" in
   'rev-parse head@{0}')
     if [ -f "$LAYR_ROOT/automatic" ]; then cat "$LAYR_ROOT/automatic"; else printf "head@{0}: line has only 0 automatic states\n" >&2; exit 128; fi ;;
-  'rev-parse head') printf 'full-named-state\n' ;;
+  'rev-parse head'|'rev-parse full-named-state') printf 'full-named-state\n' ;;
   'overlay list') printf '[]\n' ;;
 esac
 "#).expect("fixture operation succeeds");
@@ -749,6 +749,21 @@ esac
         fs::create_dir_all(main_path(state.path(), &project)).expect("fixture operation succeeds");
         let worker = json!({"id":"fast-worker","workspaceMode":"layr-native","role":"implementer","isLead":false,"layrReady":true,"layrProjectId":project,"layrLine":line,"cwd":cwd});
         (state, worker)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_layr_fake_evidence_retains_transport_fields() {
+        let (state, worker) = fast_fixture();
+        let response = evidence(state.path(), &worker, "full-named-state").unwrap();
+        assert_eq!(
+            response,
+            json!({"stateId":"full-named-state","projectId":worker["layrProjectId"],"line":worker["layrLine"]})
+        );
+        let mut unassociated = worker.clone();
+        unassociated["cwd"] = json!(state.path().join("elsewhere"));
+        assert!(evidence(state.path(), &unassociated, "full-named-state").is_err());
+        assert!(evidence(state.path(), &worker, "head").is_err());
     }
 
     #[cfg(unix)]

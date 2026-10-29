@@ -3363,6 +3363,73 @@ mod tests {
             .expect("turn/start acceptance commits chat delivery");
     }
 
+    #[tokio::test]
+    async fn chat_delivery_receipt_keeps_value_admission_and_exact_message_match() {
+        for (payload, delivered) in [
+            (
+                r#"{"message_id":"wrong","message_id":"message-1","room":"room-1","sender":"user","text":"answer this prompt","future":[null,1]}"#,
+                true,
+            ),
+            (
+                r#"{"message_id":"message-1","room":"room-1","sender":"user"}"#,
+                false,
+            ),
+            (
+                r#"{"message_id":"message-1","room":"room-1","sender":"other","text":"answer this prompt"}"#,
+                false,
+            ),
+            (
+                r#"{"message_id":"message-1","room":"room-1","sender":"user","text":"answer this prompt","future":1e999}"#,
+                false,
+            ),
+            (
+                r#"{"message_id":"message-1","room":"room-1","sender":"user","text":""}"#,
+                true,
+            ),
+            ("{", false),
+        ] {
+            let (_directory, store) = submitted_chat_runtime().await;
+            store
+                .transaction(move |tx| {
+                    tx.execute(
+                        "UPDATE runtime_events SET text=?1 WHERE id='chat:message-1:agent'",
+                        [payload],
+                    )?;
+                    if payload.contains(r#""text":"""#) {
+                        let mut message =
+                            MessageRepository::get(tx, &ChatMessageId::from("message-1"))?.unwrap();
+                        message.text.clear();
+                        MessageRepository::put(tx, &message)?;
+                    }
+                    SchedulerRepository::settle_started_provider(
+                        tx,
+                        "agent",
+                        1,
+                        "attempt-1",
+                        "ticket-1",
+                        "default",
+                        7,
+                        "thread",
+                        "turn-1",
+                    )?;
+                    let event =
+                        QueueEventRepository::get(tx, &QueueEventId::from("chat:message-1:agent"))?
+                            .unwrap();
+                    let message =
+                        MessageRepository::get(tx, &ChatMessageId::from("message-1"))?.unwrap();
+                    assert_eq!(event.status, "delivered");
+                    assert_eq!(
+                        message.deliveries["agent"],
+                        if delivered { "delivered" } else { "queued" },
+                        "{payload}"
+                    );
+                    Ok::<_, studio_runtime_store::StoreError>(())
+                })
+                .await
+                .unwrap();
+        }
+    }
+
     #[test]
     fn injected_unload_refusal_keeps_pending_text_and_has_no_receipt() {
         let mut connection = database();

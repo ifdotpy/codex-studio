@@ -168,7 +168,7 @@ class StateEvidence(unittest.IsolatedAsyncioTestCase):
             with self.subTest(state=state):
                 result = await self.handlers.dispatch_locked("evidence", "line.evidence",
                     {"agentId": "worker", "stateId": state}, None)
-                self.assertEqual(result["stateId"], state)
+                self.assertEqual(result, {"stateId": state, "projectId": "proof", "line": "worker"})
 
     async def test_merge_accepts_both_exact_state_forms_with_an_exact_expect(self):
         for state in (self.state_uuid, self.display):

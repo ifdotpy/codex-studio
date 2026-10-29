@@ -76,6 +76,52 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         self.with_claude_profile(key, |_, row| row.clone())
     }
 
+    /// Project the checked private row for launch, without copying the whole registry record.
+    pub fn claude_launch_profile(
+        &self,
+        key: &str,
+    ) -> Result<crate::claude_bridge::ClaudeLaunchProfile, ClaudeAccountError> {
+        use crate::account_policy::PublicString;
+        use studio_runtime_schema::account_registry::AccountStatus;
+        self.with_claude_profile(key, |account, row| {
+            let optional = |value: &Option<String>| {
+                value.as_ref().map_or(PublicString::Missing, |value| {
+                    PublicString::String(value.clone())
+                })
+            };
+            let status = match account.status {
+                AccountStatus::Ready => "ready",
+                AccountStatus::SignedOut => "signedOut",
+                AccountStatus::Pending => "pending",
+                AccountStatus::Error => "error",
+                AccountStatus::Changed => "changed",
+                AccountStatus::Duplicate => "duplicate",
+            };
+            crate::claude_bridge::ClaudeLaunchProfile {
+                provider: PublicString::String(account.provider.key().to_owned()),
+                status: PublicString::String(status.to_owned()),
+                account_id: optional(&account.account_id),
+                email: optional(&account.email),
+                plan: optional(&account.plan),
+                credential_identity: optional(&account.credential_identity),
+                home: PublicString::String(account.home.clone()),
+                binary_path: account
+                    .claude_options
+                    .as_ref()
+                    .and_then(|options| options.0.binary_path.as_ref())
+                    .map_or(PublicString::Missing, |value| {
+                        PublicString::String(value.clone())
+                    }),
+                native_auth_pending: false,
+                raw_options: row.get("claudeOptions").cloned(),
+                checked_options: account
+                    .claude_options
+                    .as_ref()
+                    .map(|options| options.0.clone()),
+            }
+        })
+    }
+
     fn with_claude_profile<T>(
         &self,
         key: &str,

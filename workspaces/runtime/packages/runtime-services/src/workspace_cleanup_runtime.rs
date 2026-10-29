@@ -89,6 +89,30 @@ pub enum CleanupEffect {
     RemoveWorktree { identity: Value },
 }
 
+/// Wire tags whose worktrees remain visible while cleanup is unresolved.
+pub(crate) const RETAINED_WORKTREE_EFFECTS: [&str; 2] = ["remove_worktree", "save_worktree_ref"];
+
+#[cfg(test)]
+#[test]
+fn retained_worktree_effect_tags_match_cleanup_effect_serialization() {
+    for (effect, tag) in [
+        (
+            CleanupEffect::RemoveWorktree {
+                identity: Value::Null,
+            },
+            RETAINED_WORKTREE_EFFECTS[0],
+        ),
+        (
+            CleanupEffect::SaveWorktreeRef {
+                identity: Value::Null,
+            },
+            RETAINED_WORKTREE_EFFECTS[1],
+        ),
+    ] {
+        assert_eq!(json!(effect)["kind"], tag);
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum EffectFailure {
     NotSent,

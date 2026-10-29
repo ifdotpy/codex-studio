@@ -3070,32 +3070,24 @@ impl SchedulerRepository {
             {
                 continue;
             }
-            let Ok(payload) = serde_json::from_str::<Value>(&event.text) else {
+            let Some(receipt) = studio_runtime_schema::notification_text::chat_receipt(&event.text)
+            else {
                 continue;
             };
-            let (Some(message_id), Some(room_id), Some(sender), Some(text)) = (
-                payload.get("message_id").and_then(Value::as_str),
-                payload.get("room").and_then(Value::as_str),
-                payload.get("sender").and_then(Value::as_str),
-                payload.get("text").and_then(Value::as_str),
-            ) else {
-                continue;
-            };
-            if message_id.is_empty()
-                || room_id.is_empty()
-                || sender.is_empty()
-                || event.id.0 != format!("chat:{message_id}:{agent_id}")
-            {
+            if event.id.0 != format!("chat:{}:{agent_id}", receipt.message_id) {
                 continue;
             }
             let Some(mut message) = crate::MessageRepository::get(
                 transaction,
-                &crate::ChatMessageId::from(message_id),
+                &crate::ChatMessageId::from(receipt.message_id.as_str()),
             )?
             else {
                 continue;
             };
-            if message.room != room_id || message.sender != sender || message.text != text {
+            if message.room != receipt.room
+                || message.sender != receipt.sender
+                || message.text != receipt.text
+            {
                 continue;
             }
             if let Some(delivery) = message
