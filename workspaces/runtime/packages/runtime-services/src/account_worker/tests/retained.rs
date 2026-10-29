@@ -419,6 +419,57 @@ async fn manual_recovery_reads_new_native_history_for_a_new_request_identity() {
 }
 
 #[tokio::test]
+async fn manual_unclean_start_settles_exact_history_without_replay() {
+    let state = State::new().await;
+    retained_schema(&state).await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    worker_barrier(&worker).await;
+    let port = worker.retained_session();
+    let mut auth = manual_start_authorization(&state, port.scope(), false).await;
+    let target_id = state.agent.clone();
+    let lead = auth.lead.clone();
+    let target = state.bridge.store.transaction(move |tx| {
+        let mut target = AgentRepository::get(tx, &AgentId::from(target_id.as_str()))?.expect("worker").value();
+        target["status"] = json!("interrupted");
+        target["inFlight"] = json!(false);
+        target["autoWake"] = json!(false);
+        target["startAttempt"]["submitted"] = json!(false);
+        target["startAttempt"].as_object_mut().unwrap().remove("executionOutcome");
+        target["startOutcomeHold"] = json!({"stage":"held","reason":SchedulerRepository::UNCLEAN_START_HOLD,"attemptId":"manual-unknown-attempt"});
+        AgentRepository::put(tx, &AgentRecord::from_value(target.clone())?)?;
+            tx.execute("UPDATE runtime_events SET error=?1 WHERE id='annotation:input'", [SchedulerRepository::UNCLEAN_START_HOLD])?;
+        Ok::<_, studio_runtime_store::StoreError>(target)
+    }).await.unwrap();
+    auth = state
+        .bridge
+        .store
+        .transaction(move |tx| {
+            seed_manual_authorization(
+                tx,
+                lead,
+                target,
+                "manual-unclean",
+                "manual-unclean-signature",
+            )
+        })
+        .await
+        .unwrap();
+    let sender = port.clone();
+    let task = tokio::spawn(async move { sender.recover_managed_agent(auth).await });
+    let history = peer.write("thread/turns/list").await;
+    peer.reply(&history, json!({"data":[{"id":"manual-turn","threadId":"fake-thread-0","status":"completed","items":[{"id":"input","type":"userMessage","clientId":"annotation:input","text":"input"}]}],"nextCursor":null})).await;
+    let receipt = task.await.unwrap().unwrap();
+    assert!(
+        matches!(receipt, crate::recovery::RecoveryReceipt::Applied(_)),
+        "{receipt:?}"
+    );
+    assert_eq!(state.event_status("input").await, "delivered");
+    assert!(peer.writes.try_recv().is_err());
+    worker.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn manual_recovery_accepts_a_live_exact_start_and_tracks_its_terminal_notice() {
     manual_active_start_case(false).await;
 }

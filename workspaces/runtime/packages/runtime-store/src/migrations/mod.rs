@@ -122,6 +122,7 @@ const WORKSPACE_LIMITS_ID: &str = "2026-10-26-workspace-limits";
 const RETIRED_WAITS_ID: &str = "2026-10-26-retired-waits";
 /// Stable migration identifier; includes the introduction date.
 const SUPERVISOR_ID: &str = "2026-10-26-supervisor-journal";
+const SUPERVISOR_WRITTEN_ID: &str = "2026-10-29-supervisor-written";
 /// Stable migration identifier; includes the introduction date.
 const TERMINAL_ERRORS_ID: &str = "2026-10-26-terminal-errors";
 const RETIRED_CANVAS_ID: &str = "2026-10-27-retired-canvas";
@@ -372,6 +373,16 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| crate::supervisor_journal::prepare_schema(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: SUPERVISOR_WRITTEN_ID,
+            introduced: OCTOBER_29,
+            target: MigrationTarget::Supervisor,
+            supported_source: "Supervisor receipts before written evidence",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| crate::supervisor_journal::prepare_written_schema(c.transaction),
     },
     &SqlMigration {
         definition: MigrationDefinition {

@@ -42,6 +42,7 @@ mod stop_after_reattach;
 mod submission;
 mod tool_reply_retirement;
 mod transport_reattach;
+mod unclean_history;
 mod unknown_thread_retry;
 mod unsent_start;
 mod vm_attachments;

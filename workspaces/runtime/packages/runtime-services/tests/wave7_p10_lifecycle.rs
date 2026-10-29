@@ -760,13 +760,12 @@ impl InterruptFixture {
                                 .is_some_and(|turn| !turn.is_empty())
                             || attempt.get("activeAtReservation").and_then(Value::as_bool)
                                 == Some(true)
-                            || agent
-                                .extra
-                                .get("status")
-                                .and_then(Value::as_str)
-                                .is_some_and(|status| {
-                                    ["running", "starting", "approval"].contains(&status)
-                                });
+                            || matches!(
+                                agent.status,
+                                studio_runtime_store::AgentStatus::Running
+                                    | studio_runtime_store::AgentStatus::Starting
+                                    | studio_runtime_store::AgentStatus::Approval
+                            );
                         if !needs_settlement {
                             continue;
                         }

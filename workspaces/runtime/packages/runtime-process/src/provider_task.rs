@@ -25,6 +25,7 @@ const RPC_TIMEOUT: Duration = Duration::from_secs(10);
 /// account-worker shutdown bound.
 pub const SUPERVISOR_DETACH_TIMEOUT: Duration = Duration::from_secs(2);
 
+#[derive(Clone)]
 pub struct SupervisorProviderTaskFactory {
     identity: BackendIdentity,
     endpoint: PathBuf,
@@ -61,6 +62,7 @@ struct Activation {
 pub struct PreparedProviderTask {
     generation: Generation,
     handle: ProviderHandle,
+    status_factory: SupervisorProviderTaskFactory,
     pending: std::sync::Mutex<Option<(ProviderAttachment, oneshot::Sender<Activation>)>>,
 }
 
@@ -101,6 +103,16 @@ impl ProviderTaskFactory for PreparedProviderTask {
             Ok(attachment)
         })
     }
+
+    fn operation_status(
+        &self,
+        handle: ProviderHandle,
+        operation: OperationId,
+        shutdown: Shutdown,
+    ) -> StatusFuture<'_> {
+        self.status_factory
+            .operation_status(handle, operation, shutdown)
+    }
 }
 
 impl SupervisorProviderTaskFactory {
@@ -134,6 +146,7 @@ impl SupervisorProviderTaskFactory {
         Ok(PreparedProviderTask {
             generation,
             handle,
+            status_factory: self.clone(),
             pending: std::sync::Mutex::new(Some((attachment, activate))),
         })
     }
@@ -234,6 +247,50 @@ impl ProviderTaskFactory for SupervisorProviderTaskFactory {
         shutdown: Shutdown,
     ) -> OpenFuture<'_> {
         self.start(handle, options, shutdown, None)
+    }
+
+    fn operation_status(
+        &self,
+        handle: ProviderHandle,
+        operation: OperationId,
+        shutdown: Shutdown,
+    ) -> StatusFuture<'_> {
+        Box::pin(async move {
+            let mut stop = shutdown.subscribe();
+            let socket = interruptible(&mut stop, async {
+                UnixStream::connect(&self.endpoint)
+                    .await
+                    .map_err(|error| SupervisorError::Io(error).into())
+            })
+            .await?;
+            let mut rpc = Rpc {
+                stream: BufReader::new(socket),
+                sequence: 0,
+                started: false,
+                received_at: Instant::now(),
+            };
+            let result = async {
+                let handshake = serialize_frame(&handshake_request_v2(&self.identity))?;
+                let reply = interruptible(&mut stop, rpc.exchange(&handshake)).await?;
+                validate_handshake_v2(&reply)?;
+                rpc.call(
+                    SupervisorAction::OperationStatus,
+                    OperationStatusRequest {
+                        handle: SupervisorHandle(handle.as_str().to_owned()),
+                        operation_id: operation,
+                        extra: Default::default(),
+                    },
+                    &mut stop,
+                )
+                .await
+            }
+            .await;
+            let cleanup = rpc.close().await;
+            match (result, cleanup) {
+                (Ok(status), Ok(())) => Ok(status),
+                (Err(error), _) | (Ok(_), Err(error)) => Err(error),
+            }
+        })
     }
 }
 

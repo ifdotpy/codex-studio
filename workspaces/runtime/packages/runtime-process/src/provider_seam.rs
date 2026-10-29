@@ -429,6 +429,17 @@ pub struct OpenOptions {
 
 pub type OpenFuture<'a> =
     Pin<Box<dyn Future<Output = Result<ProviderAttachment, AdapterError>> + Send + 'a>>;
+pub type StatusFuture<'a> = Pin<
+    Box<
+        dyn Future<
+                Output = Result<
+                    studio_runtime_providers::supervisor_protocol::ProviderOperationStatus,
+                    AdapterError,
+                >,
+            > + Send
+            + 'a,
+    >,
+>;
 
 /// Object safe without async-trait. Returns before socket startup; observe
 /// `status` and `completion` while draining replay and sending session commands.
@@ -439,6 +450,20 @@ pub trait ProviderTaskFactory: Send + Sync {
         options: OpenOptions,
         shutdown: Shutdown,
     ) -> OpenFuture<'_>;
+
+    fn operation_status(
+        &self,
+        _handle: ProviderHandle,
+        _operation: OperationId,
+        _shutdown: Shutdown,
+    ) -> StatusFuture<'_> {
+        Box::pin(async {
+            Ok(studio_runtime_providers::supervisor_protocol::ProviderOperationStatus {
+            state: studio_runtime_providers::supervisor_protocol::ProviderOperationState::Unknown,
+            native_id: None,
+        })
+        })
+    }
 }
 
 /// Stable Python-compatible identity for the session's initialized notification.

@@ -19,6 +19,7 @@ import {
 import { createHash } from "node:crypto";
 import { runLogged } from "./owned-process.ts";
 import { CARGO_BUILD_JOBS, scrubAgentEnvironment } from "./gate-config.ts";
+import { withGateLock } from "./gate-lock.ts";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -2645,20 +2646,24 @@ export async function main(argv = process.argv.slice(2)) {
   }
   const root = rootFrom();
   if (action === "test-fast") {
-    const result = await executeRecipe(
-      root,
-      "test-fast",
-      gateSteps(root, "test-fast"),
-    );
-    return result.exitCode;
+    return withGateLock(async () => {
+      const result = await executeRecipe(
+        root,
+        "test-fast",
+        gateSteps(root, "test-fast"),
+      );
+      return result.exitCode;
+    });
   }
   if (action === "test-comprehensive") {
-    const result = await executeRecipe(
-      root,
-      "test-comprehensive",
-      gateSteps(root, "test-comprehensive"),
-    );
-    return result.exitCode;
+    return withGateLock(async () => {
+      const result = await executeRecipe(
+        root,
+        "test-comprehensive",
+        gateSteps(root, "test-comprehensive"),
+      );
+      return result.exitCode;
+    });
   }
   if (action === "test-fast-rest") {
     const result = await executeRecipe(

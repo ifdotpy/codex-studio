@@ -141,6 +141,11 @@ default-filter = '''
     (package(=studio-runtime-services) & kind(lib) & (test(release_cache_uses_typed_fields_and_preserves_defaults) | test(registry_document_rejects_malformed_known_fields) | test(release_documents_reject_positional_arrays) | test(null_last_attempt_keeps_cache_entries) | test(blob_reference_shapes_preserve_validation) | test(cursor_accepts_only_null_or_nonempty_strings) | test(retained_account_projection_preserves_home_and_identity_rules) | test(discovery_tolerates_bad_peer_fields_and_rejects_tags) | test(snapshot_checks_options_shape_and_bridge_preserves_extensions) | test(numeric_epoch_alias_does_not_change_exact_receipt_identity))) |
     (package(=studio-runtime-services) & kind(test) & binary(=integration) & (test(recovery_record_typed_boundary_matches_schema) | test(pagination_requires_object_pages_and_valid_cursors) | test(profile_options_preserve_aliases_and_reject_invalid_shapes))) |
     (package(=studio-runtime-http) & kind(lib) & (test(acceptance_gate_typed_input_preserves_null_update_and_replay) | test(every_generated_resource_has_exactly_one_handler_and_data_contract))) |
+    (package(=studio-runtime-services) & kind(lib) & (test(unclean_held_start_recovers_exact_input_through_worker_history) | test(manual_unclean_start_settles_exact_history_without_replay))) |
+    (package(=studio-runtime-services) & kind(lib) & test(supervisor_written_is_fenced_to_the_original_provider_generation)) |
+    (package(=studio-runtime-store) & kind(lib) & test(supervisor_status_tracks_outbox_operation_from_accept_to_write)) |
+    (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(held_unclean_start_is_eligible_for_exact_history_only)) |
+    (package(=studio-runtime-process) & kind(test) & binary(=integration) & test(supervisor_outbox_status_reports_unknown_then_written)) |
     ((package(=studio-runtime-store) | package(=studio-runtime-services)) & kind(lib) & test(unclean_)) |
     (package(=studio-runtime-server) & kind(bin) & binary(=studio-runtime-server) & test(clean_marker_is_consumed_before_the_next_run)) |
     (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(unclean_restart_holds_title_after_lost_submission_commit)) |
@@ -230,6 +235,7 @@ default-filter = '''
     | ((package(=studio-runtime-providers)) & (kind(lib)) & (test(/^connection::request_body_tests::/)))
     | ((package(=studio-runtime-services)) & ((kind(lib) & test(provider_callbacks::tools::services::read_only_tests::)) | (kind(test) & binary(=integration) & test(provider_callbacks::provider_callbacks_read_reexecutes_without_a_receipt))))
     | ((package(=studio-runtime-http)) & (kind(test) & binary(=integration)) & test(queue_recovery::annotation_command_replays_reference_and_returns_latest_entity))
+    | ((package(=studio-runtime-services)) & kind(lib) & (test(coordination::tests::group_message_create_uses_its_row_as_identity) | test(coordination::tests::group_message_legacy_receipt_replays_original_outcome)))
     | ((package(=studio-runtime-schema)) & kind(lib) & test(annotation_command::tests::annotation_command_enums_match_the_rust_owners))
     | ((package(=studio-runtime-store)) & kind(lib) & (test(reference_replay_preserves_revision_and_reads_current_row) | test(old_shape_retains_exact_body_and_checks_reference_fields) | test(matching_legacy_annotation_becomes_a_reference_and_revision_advances)))
     | ((package(=studio-runtime-services)) & (kind(lib)) & (test(account_worker::tests::journal_publication::)))
@@ -485,6 +491,11 @@ default-filter = '''
     (package(=studio-runtime-services) & kind(lib) & (test(release_cache_uses_typed_fields_and_preserves_defaults) | test(registry_document_rejects_malformed_known_fields) | test(release_documents_reject_positional_arrays) | test(null_last_attempt_keeps_cache_entries) | test(blob_reference_shapes_preserve_validation) | test(cursor_accepts_only_null_or_nonempty_strings) | test(retained_account_projection_preserves_home_and_identity_rules) | test(discovery_tolerates_bad_peer_fields_and_rejects_tags) | test(snapshot_checks_options_shape_and_bridge_preserves_extensions) | test(numeric_epoch_alias_does_not_change_exact_receipt_identity))) |
     (package(=studio-runtime-services) & kind(test) & binary(=integration) & (test(recovery_record_typed_boundary_matches_schema) | test(pagination_requires_object_pages_and_valid_cursors) | test(profile_options_preserve_aliases_and_reject_invalid_shapes))) |
     (package(=studio-runtime-http) & kind(lib) & (test(acceptance_gate_typed_input_preserves_null_update_and_replay) | test(every_generated_resource_has_exactly_one_handler_and_data_contract))) |
+    (package(=studio-runtime-services) & kind(lib) & (test(unclean_held_start_recovers_exact_input_through_worker_history) | test(manual_unclean_start_settles_exact_history_without_replay))) |
+    (package(=studio-runtime-services) & kind(lib) & test(supervisor_written_is_fenced_to_the_original_provider_generation)) |
+    (package(=studio-runtime-store) & kind(lib) & test(supervisor_status_tracks_outbox_operation_from_accept_to_write)) |
+    (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(held_unclean_start_is_eligible_for_exact_history_only)) |
+    (package(=studio-runtime-process) & kind(test) & binary(=integration) & test(supervisor_outbox_status_reports_unknown_then_written)) |
     ((package(=studio-runtime-store) | package(=studio-runtime-services)) & kind(lib) & test(unclean_)) |
     (package(=studio-runtime-server) & kind(bin) & binary(=studio-runtime-server) & test(clean_marker_is_consumed_before_the_next_run)) |
     (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(unclean_restart_holds_title_after_lost_submission_commit)) |
@@ -574,6 +585,7 @@ default-filter = '''
     | ((package(=studio-runtime-providers)) & (kind(lib)) & (test(/^connection::request_body_tests::/)))
     | ((package(=studio-runtime-services)) & ((kind(lib) & test(provider_callbacks::tools::services::read_only_tests::)) | (kind(test) & binary(=integration) & test(provider_callbacks::provider_callbacks_read_reexecutes_without_a_receipt))))
     | ((package(=studio-runtime-http)) & (kind(test) & binary(=integration)) & test(queue_recovery::annotation_command_replays_reference_and_returns_latest_entity))
+    | ((package(=studio-runtime-services)) & kind(lib) & (test(coordination::tests::group_message_create_uses_its_row_as_identity) | test(coordination::tests::group_message_legacy_receipt_replays_original_outcome)))
     | ((package(=studio-runtime-schema)) & kind(lib) & test(annotation_command::tests::annotation_command_enums_match_the_rust_owners))
     | ((package(=studio-runtime-store)) & kind(lib) & (test(reference_replay_preserves_revision_and_reads_current_row) | test(old_shape_retains_exact_body_and_checks_reference_fields) | test(matching_legacy_annotation_becomes_a_reference_and_revision_advances)))
     | ((package(=studio-runtime-services)) & (kind(lib)) & (test(account_worker::tests::journal_publication::)))
