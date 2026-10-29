@@ -1098,7 +1098,7 @@ mod tests {
                 crate::backend::tests::read_http(&mut stream).await;
                 if index == 2 {
                     started.send(()).unwrap();
-                    let _ = released.await;
+                    drop(released.await);
                     break;
                 }
                 let body = if index == 0 {

@@ -322,6 +322,24 @@ pub(crate) fn serialize_state(snapshot: &Value) -> Result<String, crate::protoco
 // One store command owns validation, entity writes, cursors and derived state.
 // The store worker serializes commands; the transaction also prevents readers
 // from observing a partially applied batch or a state built from older rows.
+#[derive(Clone, Copy)]
+enum CursorArgument {
+    Missing,
+    Invalid,
+    Value(u64),
+}
+impl CursorArgument {
+    fn from_wire(value: Option<&Value>) -> Self {
+        match value {
+            None => Self::Missing,
+            Some(value) => value.as_u64().map_or(Self::Invalid, Self::Value),
+        }
+    }
+    fn from_checked(value: Option<u64>) -> Self {
+        value.map_or(Self::Missing, Self::Value)
+    }
+}
+
 fn apply_entities(
     connection: &Connection,
     workspace: &str,
@@ -330,8 +348,8 @@ fn apply_entities(
     let changes =
         Vec::<EntityChange>::deserialize(&params["changes"]).map_err(|e| e.to_string())?;
     let replace = params["replace"].as_bool().unwrap_or(false);
-    let checkpoint = params.get("checkpoint").map(Value::as_u64);
-    let expected_revision = params.get("expectedRevision").map(Value::as_u64);
+    let checkpoint = CursorArgument::from_wire(params.get("checkpoint"));
+    let expected_revision = CursorArgument::from_wire(params.get("expectedRevision"));
     apply_entities_inner(
         connection,
         workspace,
@@ -358,8 +376,8 @@ pub(crate) fn apply_entity_batch(
         workspace,
         changes,
         replace,
-        checkpoint.map(Some),
-        expected_revision.map(Some),
+        CursorArgument::from_checked(checkpoint),
+        CursorArgument::from_checked(expected_revision),
     )
 }
 
@@ -368,8 +386,8 @@ fn apply_entities_inner(
     workspace: &str,
     changes: &[EntityChange],
     replace: bool,
-    checkpoint: Option<Option<u64>>,
-    expected_revision: Option<Option<u64>>,
+    checkpoint: CursorArgument,
+    expected_revision: CursorArgument,
 ) -> Result<Value, String> {
     let transaction = Transaction::new_unchecked(connection, TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
@@ -377,10 +395,12 @@ fn apply_entities_inner(
     // This is a local materialization revision, never a server cursor. It also
     // fences HTTP reads started before a newer application or reset committed.
     let revision = previous["seq"].as_u64().unwrap_or(0);
-    if let Some(expected) = expected_revision
-        && expected != Some(revision)
-    {
-        return Err("Entity state changed during synchronization. Retry the pull.".into());
+    match expected_revision {
+        CursorArgument::Missing => {}
+        CursorArgument::Value(expected) if expected == revision => {}
+        CursorArgument::Invalid | CursorArgument::Value(_) => {
+            return Err("Entity state changed during synchronization. Retry the pull.".into());
+        }
     }
     if replace {
         transaction.execute("DELETE FROM client_projections WHERE workspace=?1 AND (scope LIKE 'entity:%' OR scope LIKE 'state:entities:%')", [workspace]).map_err(|e| e.to_string())?;
@@ -407,10 +427,13 @@ fn apply_entities_inner(
                 != 0;
         }
     }
-    if let Some(checkpoint) = checkpoint {
-        let seq = checkpoint
-            .filter(|seq| *seq <= MAX_SAFE_INTEGER as u64)
-            .ok_or("Invalid entity checkpoint.")?;
+    if !matches!(checkpoint, CursorArgument::Missing) {
+        let seq = match checkpoint {
+            CursorArgument::Value(seq) if seq <= MAX_SAFE_INTEGER as u64 => seq,
+            CursorArgument::Missing | CursorArgument::Invalid | CursorArgument::Value(_) => {
+                return Err("Invalid entity checkpoint.".into());
+            }
+        };
         for (scope, payload) in [
             ("state:entities:checkpoint", "{}"),
             ("state:entities:ready", "\"ready\""),
@@ -736,6 +759,32 @@ mod tests {
                 .unwrap()["seq"],
             5
         );
+    }
+
+    #[test]
+    fn entity_batch_preserves_missing_invalid_and_revision_error_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = crate::store::Store::open(&dir.path().join("client.sqlite3")).unwrap();
+        let workspace = "a".repeat(32);
+        let call = |params: Value| Request {
+            id: "batch".into(),
+            method: "projection.applyEntities".into(),
+            params,
+        };
+        let base = json!({"workspace":workspace,"changes":[]});
+        assert!(store.dispatch(call(base.clone())).error.is_none());
+        let mut both = base.clone();
+        both["expectedRevision"] = Value::Null;
+        both["checkpoint"] = Value::Null;
+        let failure = store.dispatch(call(both)).error.unwrap();
+        assert_eq!(
+            failure.message,
+            "Entity state changed during synchronization. Retry the pull."
+        );
+        let mut checkpoint = base;
+        checkpoint["checkpoint"] = Value::Null;
+        let failure = store.dispatch(call(checkpoint)).error.unwrap();
+        assert_eq!(failure.message, "Invalid entity checkpoint.");
     }
 
     #[test]
