@@ -529,7 +529,8 @@ async fn mark_missing_peers_unreachable(
     for raw in origins {
         let peer: Value = serde_json::from_str(&raw)
             .map_err(|_| unavailable("Stored discovery identity is invalid"))?;
-        let origin = text(&peer, "origin");
+        let peer = multi_server_discovery::StoredPeer::from_value(peer);
+        let origin = peer.as_ref().map_or("", |peer| peer.origin());
         if !snapshot.has_candidate(origin) {
             mark_origin_unreachable(store, origin).await?;
         }
@@ -550,15 +551,18 @@ async fn mark_origin_unreachable(store: &RuntimeStore, origin: &str) -> Result<(
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
             for (id, raw) in rows {
-                let mut peer: Value = serde_json::from_str(&raw).map_err(|_| {
+                let peer: Value = serde_json::from_str(&raw).map_err(|_| {
                     studio_runtime_store::StoreError::SchemaMismatch(
                         "invalid stored object runtime_access_discovered".into(),
                     )
                 })?;
-                peer["status"] = json!("unreachable");
+                let mut peer = multi_server_discovery::StoredPeer::from_value(peer).ok_or_else(|| {
+                    studio_runtime_store::StoreError::SchemaMismatch("invalid stored object runtime_access_discovered".into())
+                })?;
+                peer.mark_unreachable();
                 tx.execute(
                     "UPDATE runtime_access_discovered SET record=?1 WHERE id=?2",
-                    params![peer.to_string(), id],
+                    params![serde_json::to_string(&peer)?, id],
                 )?;
             }
             Ok::<_, studio_runtime_store::StoreError>(())
@@ -586,6 +590,38 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    #[tokio::test]
+    async fn discovered_reachability_keeps_partial_records_and_extensions() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
+        store.transaction(|tx| {
+            for (id, raw) in [("gone", r#"{"origin":"https://gone.example","status":"discovered","extra":{"x":1}}"#), ("partial", r#"{"origin":null,"status":false}"#), ("live", r#"{"origin":"https://peer.test.ts.net","status":"discovered"}"#)] {
+                tx.execute("INSERT INTO runtime_access_discovered(id,record) VALUES(?1,?2)", params![id,raw])?;
+            }
+            Ok(())
+        }).await.unwrap();
+        let snapshot = DiscoverySnapshot::from_status(&json!({"BackendState":"Running","Self":{"UserID":1,"DNSName":"local.test.ts.net"},"User":{"1":{"LoginName":"owner"}},"Peer":{"p":{"UserID":1,"DNSName":"peer.test.ts.net","Online":true,"Tags":[]}}}), "local", "https://local.test.ts.net").unwrap();
+        mark_missing_peers_unreachable(&store, &snapshot)
+            .await
+            .unwrap();
+        let db = store.test_reader().unwrap();
+        let get = |id: &str| -> Value {
+            serde_json::from_str(
+                &db.query_row(
+                    "SELECT record FROM runtime_access_discovered WHERE id=?1",
+                    [id],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            )
+            .unwrap()
+        };
+        assert_eq!(get("gone")["status"], "unreachable");
+        assert_eq!(get("gone")["extra"]["x"], 1);
+        assert_eq!(get("partial")["status"], false);
+        assert_eq!(get("live")["status"], "discovered");
+    }
 
     #[tokio::test]
     async fn auto_pair_request_identity_is_persisted_before_network_send() {
