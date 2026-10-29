@@ -1,5 +1,6 @@
 //! Read-only projections of startup-loaded account and usage state.
 
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
@@ -39,10 +40,334 @@ pub struct LimitsDiagnostic {
     pub keyword: String,
 }
 
+/// A public string field retains malformed and null values for historical consumers.
+#[derive(Clone, PartialEq, Eq, Default)]
+pub enum PublicString {
+    #[default]
+    Missing,
+    String(String),
+    Other(Value),
+}
+impl PublicString {
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            Self::String(value) => Some(value),
+            Self::Missing | Self::Other(_) => None,
+        }
+    }
+    pub fn equals_json(&self, other: &Value) -> bool {
+        match self {
+            Self::Missing => other.is_null(),
+            Self::String(value) => other.as_str() == Some(value),
+            Self::Other(value) => value == other,
+        }
+    }
+    pub fn is_present_non_null(&self) -> bool {
+        !matches!(self, Self::Missing | Self::Other(Value::Null))
+    }
+    fn is_missing(&self) -> bool {
+        matches!(self, Self::Missing)
+    }
+}
+impl Serialize for PublicString {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Missing => serializer.serialize_unit(),
+            Self::String(value) => value.serialize(serializer),
+            Self::Other(value) => value.serialize(serializer),
+        }
+    }
+}
+impl<'de> Deserialize<'de> for PublicString {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(match Value::deserialize(deserializer)? {
+            Value::String(value) => Self::String(value),
+            value @ (Value::Null
+            | Value::Bool(_)
+            | Value::Number(_)
+            | Value::Array(_)
+            | Value::Object(_)) => Self::Other(value),
+        })
+    }
+}
+
+/// A public boolean field retains non-boolean values for legacy consumers.
+#[derive(Clone, PartialEq, Eq, Default)]
+pub enum PublicBoolean {
+    #[default]
+    Missing,
+    Bool(bool),
+    Other(Value),
+}
+impl PublicBoolean {
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            Self::Bool(value) => Some(*value),
+            Self::Missing | Self::Other(_) => None,
+        }
+    }
+    pub fn truthy(&self) -> bool {
+        match self {
+            Self::Missing => false,
+            Self::Bool(value) => *value,
+            Self::Other(value) => crate::event_write::truthy(Some(value)),
+        }
+    }
+    fn is_missing(&self) -> bool {
+        matches!(self, Self::Missing)
+    }
+}
+impl Serialize for PublicBoolean {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Missing => serializer.serialize_unit(),
+            Self::Bool(value) => value.serialize(serializer),
+            Self::Other(value) => value.serialize(serializer),
+        }
+    }
+}
+impl<'de> Deserialize<'de> for PublicBoolean {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(match Value::deserialize(deserializer)? {
+            Value::Bool(value) => Self::Bool(value),
+            value @ (Value::Null
+            | Value::Number(_)
+            | Value::String(_)
+            | Value::Array(_)
+            | Value::Object(_)) => Self::Other(value),
+        })
+    }
+}
+
+fn public_string(value: Option<&Value>) -> PublicString {
+    match value {
+        None => PublicString::Missing,
+        Some(Value::String(value)) => PublicString::String(value.clone()),
+        Some(value) => PublicString::Other(value.clone()),
+    }
+}
+fn public_boolean(value: Option<&Value>) -> PublicBoolean {
+    match value {
+        None => PublicBoolean::Missing,
+        Some(Value::Bool(value)) => PublicBoolean::Bool(*value),
+        Some(value) => PublicBoolean::Other(value.clone()),
+    }
+}
+
+/// Exact provider options retain extensions and field presence for the public wire.
+/// The separate projection serves profile lookup without reparsing the options.
+#[derive(Clone, Eq)]
+pub struct PublicClaudeOptions {
+    raw: Value,
+    pub config_dir: PublicString,
+    pub binary_path: PublicString,
+    pub launch_args: PublicString,
+}
+impl PartialEq for PublicClaudeOptions {
+    fn eq(&self, other: &Self) -> bool {
+        self.raw == other.raw
+    }
+}
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ClaudeConfigView {
+    #[serde(default)]
+    config_dir: PublicString,
+    #[serde(default)]
+    binary_path: PublicString,
+    #[serde(default)]
+    launch_args: PublicString,
+}
+impl PublicClaudeOptions {
+    pub fn wire_object(&self) -> Option<Map<String, Value>> {
+        self.raw.as_object().cloned()
+    }
+}
+impl Serialize for PublicClaudeOptions {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.raw.serialize(serializer)
+    }
+}
+impl<'de> Deserialize<'de> for PublicClaudeOptions {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = Value::deserialize(deserializer)?;
+        let view = if raw.is_object() {
+            ClaudeConfigView::deserialize(&raw).map_err(serde::de::Error::custom)?
+        } else {
+            ClaudeConfigView::default()
+        };
+        Ok(Self {
+            raw,
+            config_dir: view.config_dir,
+            binary_path: view.binary_path,
+            launch_args: view.launch_args,
+        })
+    }
+}
+
+/// Partial public throttle observation; extensions and malformed fields remain visible.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicThrottleFields {
+    #[serde(default, skip_serializing_if = "PublicNumber::is_missing")]
+    pub burst: PublicNumber,
+    #[serde(default, skip_serializing_if = "PublicNumber::is_missing")]
+    pub pause_seconds: PublicNumber,
+    #[serde(default, skip_serializing_if = "PublicNumber::is_missing")]
+    pub max_running_turns: PublicNumber,
+    #[serde(flatten)]
+    pub extensions: Map<String, Value>,
+}
+#[derive(Clone, PartialEq, Eq, Default)]
+pub enum PublicNumber {
+    #[default]
+    Missing,
+    Number(serde_json::Number),
+    Other(Value),
+}
+impl PublicNumber {
+    pub fn as_u64(&self) -> Option<u64> {
+        match self {
+            Self::Number(value) => value.as_u64(),
+            Self::Missing | Self::Other(_) => None,
+        }
+    }
+    fn is_missing(&self) -> bool {
+        matches!(self, Self::Missing)
+    }
+}
+impl Serialize for PublicNumber {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Missing => serializer.serialize_unit(),
+            Self::Number(value) => value.serialize(serializer),
+            Self::Other(value) => value.serialize(serializer),
+        }
+    }
+}
+impl<'de> Deserialize<'de> for PublicNumber {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(match Value::deserialize(deserializer)? {
+            Value::Number(value) => Self::Number(value),
+            value @ (Value::Null
+            | Value::Bool(_)
+            | Value::String(_)
+            | Value::Array(_)
+            | Value::Object(_)) => Self::Other(value),
+        })
+    }
+}
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum PublicThrottle {
+    Fields(studio_runtime_schema::json_object::JsonObject<PublicThrottleFields>),
+    Other(Value),
+}
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum PublicOrganizationMismatch {
+    Checked(
+        studio_runtime_schema::json_object::JsonObject<
+            studio_runtime_schema::account_registry::OrganizationMismatch,
+        >,
+    ),
+    Other(Value),
+}
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum PublicOrganization {
+    Checked(studio_runtime_schema::account_registry::Organization),
+    Other(Value),
+}
+fn present<'de, D: Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Option<T>, D::Error> {
+    T::deserialize(d).map(Some)
+}
+
+/// Public account projection. Optional outer values preserve field presence.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicAccount {
+    #[serde(default, skip_serializing_if = "PublicString::is_missing")]
+    pub id: PublicString,
+    #[serde(default, skip_serializing_if = "PublicString::is_missing")]
+    pub home: PublicString,
+    #[serde(default, skip_serializing_if = "PublicString::is_missing")]
+    pub label: PublicString,
+    #[serde(default, skip_serializing_if = "PublicString::is_missing")]
+    pub source: PublicString,
+    #[serde(default, skip_serializing_if = "PublicString::is_missing")]
+    pub status: PublicString,
+    #[serde(default, skip_serializing_if = "PublicString::is_missing")]
+    pub provider: PublicString,
+    #[serde(default, skip_serializing_if = "PublicString::is_missing")]
+    pub account_id: PublicString,
+    #[serde(default, skip_serializing_if = "PublicString::is_missing")]
+    pub email: PublicString,
+    #[serde(default, skip_serializing_if = "PublicString::is_missing")]
+    pub error: PublicString,
+    #[serde(default, skip_serializing_if = "PublicString::is_missing")]
+    pub plan: PublicString,
+    #[serde(default, skip_serializing_if = "PublicBoolean::is_missing")]
+    pub deleted: PublicBoolean,
+    #[serde(default, skip_serializing_if = "PublicBoolean::is_missing")]
+    pub disconnected: PublicBoolean,
+    #[serde(default, skip_serializing_if = "PublicString::is_missing")]
+    pub duplicate_of: PublicString,
+    /// Provider-owned options, including arbitrary extension fields.
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub claude_options: Option<PublicClaudeOptions>,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub start_throttle: Option<PublicThrottle>,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub organization_mismatch: Option<PublicOrganizationMismatch>,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub organization: Option<PublicOrganization>,
+    #[serde(default, skip_serializing_if = "PublicBoolean::is_missing")]
+    pub can_attempt_native_proof: PublicBoolean,
+    #[serde(default, skip_serializing_if = "PublicString::is_missing")]
+    pub group: PublicString,
+    #[serde(default, skip_serializing_if = "PublicString::is_missing")]
+    pub authentication_recovery: PublicString,
+    #[serde(flatten)]
+    pub extensions: Map<String, Value>,
+}
+
+impl PublicAccount {
+    pub fn provider(
+        &self,
+    ) -> Result<ProviderKind, studio_runtime_schema::provider_kind::UnknownProvider> {
+        use studio_runtime_schema::provider_kind::UnknownProvider;
+        match &self.provider {
+            PublicString::String(value) => value.parse(),
+            PublicString::Missing => Err(UnknownProvider(None)),
+            PublicString::Other(value) => Err(UnknownProvider(Some(value.to_string()))),
+        }
+    }
+    pub fn provider_kind(&self) -> Option<ProviderKind> {
+        self.provider().ok()
+    }
+}
+
 #[derive(Clone, Eq, PartialEq)]
 pub struct AccountsSnapshot {
-    pub accounts: Vec<Value>,
-    pub archived_accounts: Vec<Value>,
+    pub accounts: Vec<PublicAccount>,
+    pub archived_accounts: Vec<PublicAccount>,
     pub default_account_key: Value,
     /// The default account order (`defaultAccountGroups`) from the account order
     /// file, see [`crate::account_preference::AccountOrder`].
@@ -56,16 +381,12 @@ pub fn apply_authentication_recovery(
     waiting_account_keys: &[String],
 ) {
     for account in &mut snapshot.accounts {
-        if account
-            .get("id")
-            .and_then(Value::as_str)
-            .is_some_and(|key| waiting_account_keys.iter().any(|waiting| waiting == key))
-            && let Some(account) = account.as_object_mut()
+        if waiting_account_keys
+            .iter()
+            .any(|waiting| Some(waiting.as_str()) == account.id.as_str())
         {
-            account.insert(
-                "authenticationRecovery".to_owned(),
-                Value::String(AUTHENTICATION_RECOVERY_MESSAGE.to_owned()),
-            );
+            account.authentication_recovery =
+                PublicString::String(AUTHENTICATION_RECOVERY_MESSAGE.to_owned());
         }
     }
 }
@@ -235,31 +556,100 @@ pub(crate) fn project_registry_typed(
     let mut archived = Vec::new();
     let mut known = HashSet::new();
     for key in &order.accounts {
-        let Some(mut row) = accounts_by_key.get(key).and_then(Value::as_object).cloned() else {
+        let Some(row) = accounts_by_key.get(key).and_then(Value::as_object) else {
             continue;
         };
         let Some(account) = typed.accounts.get(key).map(|account| &account.0) else {
             continue;
         };
         let provider = account.provider;
-        row.insert("provider".into(), Value::String(provider.key().into()));
         known.insert(key.clone());
-        if provider == ProviderKind::Claude
-            && let Some(organization) = crate::account_driver::claude_identity::organization(
+        let organization = if provider == ProviderKind::Claude {
+            crate::account_driver::claude_identity::organization(
                 account.credential_identity.as_deref(),
                 account.organization_name.as_deref(),
             )
-        {
-            row.insert("organization".into(), organization);
-        }
-        row.retain(|field, _| !field.starts_with('_'));
+        } else {
+            None
+        };
+        use studio_runtime_schema::account_registry::AccountStatus;
+        let status = match account.status {
+            AccountStatus::Ready => "ready",
+            AccountStatus::SignedOut => "signedOut",
+            AccountStatus::Pending => "pending",
+            AccountStatus::Error => "error",
+            AccountStatus::Changed => "changed",
+            AccountStatus::Duplicate => "duplicate",
+        };
+        let public = PublicAccount {
+            id: PublicString::String(account.id.clone()),
+            home: PublicString::String(account.home.clone()),
+            label: PublicString::String(account.label.clone()),
+            source: PublicString::String(account.source.clone()),
+            status: PublicString::String(status.to_owned()),
+            provider: PublicString::String(provider.key().to_owned()),
+            account_id: public_string(row.get("accountId")),
+            email: public_string(row.get("email")),
+            error: public_string(row.get("error")),
+            plan: public_string(row.get("plan")),
+            deleted: public_boolean(row.get("deleted")),
+            disconnected: public_boolean(row.get("disconnected")),
+            duplicate_of: public_string(row.get("duplicateOf")),
+            claude_options: row.get("claudeOptions").map(|raw| PublicClaudeOptions {
+                raw: raw.clone(),
+                launch_args: public_string(raw.get("launchArgs")),
+                binary_path: account
+                    .claude_options
+                    .as_ref()
+                    .and_then(|options| options.0.binary_path.as_ref())
+                    .map_or(PublicString::Missing, |value| {
+                        PublicString::String(value.clone())
+                    }),
+                config_dir: account
+                    .claude_options
+                    .as_ref()
+                    .and_then(|options| options.0.config_dir.as_ref())
+                    .map_or(PublicString::Missing, |value| {
+                        PublicString::String(value.clone())
+                    }),
+            }),
+            start_throttle: row
+                .get("startThrottle")
+                .map(|raw| match &account.start_throttle {
+                    Some(value) => PublicThrottle::Fields(
+                        studio_runtime_schema::json_object::JsonObject(PublicThrottleFields {
+                            burst: PublicNumber::Number(value.0.burst_number().clone()),
+                            pause_seconds: PublicNumber::Number(
+                                value.0.pause_seconds_number().clone(),
+                            ),
+                            max_running_turns: PublicNumber::Number(
+                                value.0.max_running_turns_number().clone(),
+                            ),
+                            extensions: Map::new(),
+                        }),
+                    ),
+                    None => PublicThrottle::Other(raw.clone()),
+                }),
+            organization_mismatch: account
+                .organization_mismatch
+                .clone()
+                .map(PublicOrganizationMismatch::Checked),
+            organization: organization.map(PublicOrganization::Checked),
+            can_attempt_native_proof: if account.deleted != Some(true)
+                && can_attempt_native_proof_typed(account)
+            {
+                PublicBoolean::Bool(true)
+            } else {
+                PublicBoolean::Missing
+            },
+            group: PublicString::Missing,
+            authentication_recovery: PublicString::Missing,
+            extensions: Map::new(),
+        };
         if account.deleted == Some(true) {
-            archived.push(Value::Object(row));
+            archived.push(public);
         } else if listed_account(key, account) {
-            if can_attempt_native_proof_typed(account) {
-                row.insert("canAttemptNativeProof".into(), Value::Bool(true));
-            }
-            accounts.push(Value::Object(row));
+            accounts.push(public);
         }
     }
     let mut logins = Vec::new();
@@ -331,11 +721,44 @@ mod tests {
     fn startup_projects_registry_in_file_order_and_never_reads_auth() {
         let state = AccountPolicyState::from_startup(Some(REGISTRY), []).expect("valid registry");
         let snapshot = state.accounts();
-        assert_eq!(snapshot.accounts[0]["id"], "z");
-        assert_eq!(snapshot.accounts[1]["id"], "default");
+        assert_eq!(snapshot.accounts[0].id.as_str(), Some("z"));
+        assert_eq!(snapshot.accounts[1].id.as_str(), Some("default"));
         assert_eq!(snapshot.logins[0]["requestId"], "login-r");
         assert!(state.has_account("default"));
         assert!(!state.has_account("missing"));
+    }
+
+    #[test]
+    fn public_account_projection_preserves_presence_and_nested_numbers() {
+        let registry = json!({"version":2,"defaultAccountKey":"default","accounts":{
+            "default":{"id":"default","provider":"codex","home":"/home","label":"A","source":"CLI","status":"ready",
+                "email":null,"accountId":"id","deleted":false,
+                "startThrottle":{"burst":2.0,"pauseSeconds":30.0,"maxRunningTurns":2.0},
+                "claudeOptions":{"configDir":null,"vendor":{"n":1.0}},
+                "organizationMismatch":{"expected":{"name":null,"idSuffix":"a"},"observed":{"name":"name","idSuffix":"b"}}}
+        },"logins":{}});
+        let state = AccountPolicyState::from_startup(Some(registry.to_string().as_bytes()), [])
+            .expect("valid registry");
+        let public = json!(&state.accounts().accounts[0]);
+        assert_eq!(public, registry["accounts"]["default"]);
+        assert!(public.get("plan").is_none());
+        assert_eq!(public["email"], Value::Null);
+        let reparsed: super::PublicAccount =
+            serde::Deserialize::deserialize(public).expect("public fixture");
+        assert!(reparsed == state.accounts().accounts[0]);
+    }
+
+    #[test]
+    fn public_fixture_ingress_keeps_malformed_and_null_fields() {
+        for row in [
+            json!({"id":null,"home":5,"status":false,"provider":"future","email":7,"group":null,"extra":{"n":1.0}}),
+            json!({"id":"a","provider":null,"startThrottle":{"burst":false},"organizationMismatch":null,"claudeOptions":{"configDir":7,"launchArgs":null,"vendor":[1,2]}}),
+            json!({"id":"a","provider":"codex","home":"","deleted":null,"duplicateOf":null}),
+        ] {
+            let account: super::PublicAccount =
+                serde::Deserialize::deserialize(row.clone()).expect("tolerant public row");
+            assert_eq!(json!(account), row);
+        }
     }
 
     #[test]

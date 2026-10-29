@@ -3587,8 +3587,8 @@ mod tests {
             .expect("register local Codex profile");
         assert_eq!(accounts.accounts.len(), 2);
         assert_eq!(
-            accounts.accounts[1]["provider"],
-            studio_runtime_schema::ProviderKind::Codex.key()
+            accounts.accounts[1].provider.as_str(),
+            Some(studio_runtime_schema::ProviderKind::Codex.key())
         );
         decode_registry(&fs::read(path).expect("saved registry"))
             .expect("strict current profile row");
@@ -4376,7 +4376,7 @@ exit 0
         let snapshot = driver
             .set_group("default", Some("personal"))
             .expect("set group");
-        assert_eq!(snapshot.accounts[0]["group"], "personal");
+        assert_eq!(snapshot.accounts[0].group.as_str(), Some("personal"));
         let order = vec!["personal".to_owned(), "work".to_owned()];
         let snapshot = driver.set_default_groups(&order).expect("set order");
         assert_eq!(snapshot.default_account_groups, order);
@@ -4388,7 +4388,7 @@ exit 0
         )
         .expect("reopen persisted registry");
         let snapshot = reopened.snapshot().expect("snapshot");
-        assert_eq!(snapshot.accounts[0]["group"], "personal");
+        assert_eq!(snapshot.accounts[0].group.as_str(), Some("personal"));
         assert_eq!(snapshot.default_account_groups, order);
         // Rollback: the registry stays byte for byte what an older build reads,
         // and its strict schema (unchanged by this feature) still accepts it.
@@ -4415,7 +4415,7 @@ exit 0
             Err(AccountDriverError::InvalidAccountOrder(_))
         ));
         let cleared = reopened.set_group("default", None).expect("clear group");
-        assert!(cleared.accounts[0].get("group").is_none());
+        assert!(cleared.accounts[0].group.as_str().is_none());
         let cleared = reopened.set_default_groups(&[]).expect("clear order");
         assert!(cleared.default_account_groups.is_empty());
         // An unreadable order file gives no order instead of failing account reads.

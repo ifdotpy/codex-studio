@@ -80,13 +80,13 @@ pub(super) fn accounts_response(
     let accounts = snapshot
         .accounts
         .into_iter()
-        .map(serde_json::from_value::<Account>)
+        .map(|account| serde_json::to_value(account).and_then(serde_json::from_value::<Account>))
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| crate::error::ApiError::internal())?;
     let archived_accounts = snapshot
         .archived_accounts
         .into_iter()
-        .map(serde_json::from_value::<Account>)
+        .map(|account| serde_json::to_value(account).and_then(serde_json::from_value::<Account>))
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| crate::error::ApiError::internal())?;
     let logins = snapshot

@@ -1808,7 +1808,7 @@ async fn read_limits_with_freshness(
         .accounts
         .iter()
         .chain(&snapshot.archived_accounts)
-        .any(|row| row["id"] == account)
+        .any(|row| row.id.as_str() == Some(account))
     {
         return Err(AccountSessionError::Refused("Unknown Codex account"));
     }

@@ -271,8 +271,8 @@ async fn run_native_action(
         let provider_home = accounts
             .accounts
             .iter()
-            .find(|row| row["id"] == account)
-            .and_then(|row| row["home"].as_str())
+            .find(|row| row.id.as_str() == Some(account.as_str()))
+            .and_then(|row| row.home.as_str())
             .ok_or_else(ApiError::internal)?;
         let mut resources = resources.as_ref().clone();
         resources.account_home = provider_home.to_owned();
@@ -501,8 +501,8 @@ impl NativeActionPreparationRun {
         accounts
             .accounts
             .iter()
-            .find(|row| row["id"] == account)
-            .and_then(|row| row["home"].as_str())
+            .find(|row| row.id.as_str() == Some(account))
+            .and_then(|row| row.home.as_str())
             .map(|home| Some(std::path::PathBuf::from(home)))
             .ok_or(NativeError::Unavailable("account-driver/provider-home"))
     }

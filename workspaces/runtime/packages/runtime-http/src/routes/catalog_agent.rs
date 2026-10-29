@@ -818,14 +818,12 @@ fn account_context(state: &HttpState, agent: &Value) -> Result<AccountContext, A
     let account = snapshot
         .accounts
         .iter()
-        .find(|row| row.get("id").and_then(Value::as_str) == Some(key));
+        .find(|row| row.id.as_str() == Some(key));
     Ok(AccountContext {
         key: key.to_owned(),
-        known: account
-            .is_some_and(|row| studio_runtime_providers::ProviderKind::of_record(row).is_ok()),
+        known: account.is_some_and(|row| row.provider_kind().is_some()),
         available: account.is_some_and(|row| {
-            row.get("disconnected") != Some(&Value::Bool(true))
-                && row.get("deleted") != Some(&Value::Bool(true))
+            row.disconnected.as_bool() != Some(true) && row.deleted.as_bool() != Some(true)
         }),
     })
 }

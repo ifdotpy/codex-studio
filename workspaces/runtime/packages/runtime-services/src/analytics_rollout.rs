@@ -75,11 +75,12 @@ impl RolloutContext {
         let mut actions = Vec::new();
         match record["type"].as_str().unwrap_or("") {
             "session_meta" => {
-                let window = p
-                    .get("context_window")
-                    .unwrap_or(&self.value["window"])
-                    .clone();
-                self.value["window"] = canonical_context_window(&window)?;
+                let header = crate::analytics_history::SessionHeader::from_value(record);
+                let window = header
+                    .as_ref()
+                    .and_then(|header| header.context_window())
+                    .unwrap_or(&self.value["window"]);
+                self.value["window"] = canonical_context_window(window)?;
             }
             "turn_context" => {
                 for (src, dst) in [
@@ -625,6 +626,23 @@ mod tests {
             )
             .expect("numeric provider window is preserved");
         assert_eq!(context.record()["window"], json!(128000));
+
+        context
+            .actions(
+                &json!({"type":"session_meta","payload":{}}),
+                "identity",
+                2.5,
+            )
+            .expect("missing window keeps previous value");
+        assert_eq!(context.record()["window"], json!(128000));
+        context
+            .actions(
+                &json!({"type":"session_meta","payload":{"context_window":null}}),
+                "identity",
+                2.5,
+            )
+            .expect("explicit null clears previous value");
+        assert!(context.record()["window"].is_null());
 
         context
             .actions(

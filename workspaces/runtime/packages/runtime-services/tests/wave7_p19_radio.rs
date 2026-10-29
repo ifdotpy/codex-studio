@@ -376,13 +376,13 @@ async fn run(store: std::sync::Arc<RuntimeStore>, case: &Value) -> Result<Value,
             std::sync::Arc::clone(&store),
             case["body"].clone(),
             "default".to_owned(),
-            vec![json!({"id":"default","status":"ready","canAttemptNativeProof":true})],
+            vec![serde::Deserialize::deserialize(json!({"id":"default","status":"ready","canAttemptNativeProof":true})).expect("account fixture")],
         ).await,
         "peer" => studio_runtime_services::projects::peer_team_write(
             std::sync::Arc::clone(&store),
             case["body"].clone(),
             "default".to_owned(),
-            vec![json!({"id":"default","status":"ready","canAttemptNativeProof":true})],
+            vec![serde::Deserialize::deserialize(json!({"id":"default","status":"ready","canAttemptNativeProof":true})).expect("account fixture")],
         ).await,
         "create" => {
             // Recreate the oracle project below the corpus's temporary root.

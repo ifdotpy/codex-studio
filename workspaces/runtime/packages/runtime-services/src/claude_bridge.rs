@@ -201,6 +201,23 @@ pub fn bridge_options(value: &Value) -> Result<Value, BridgeHold> {
     finish_bridge_options(options, args)
 }
 
+pub fn bridge_options_public(
+    options: Option<&crate::account_policy::PublicClaudeOptions>,
+) -> Result<Value, BridgeHold> {
+    use crate::account_policy::PublicString;
+    let mut output = match options {
+        Some(options) => options.wire_object().ok_or(BridgeHold::Options)?,
+        None => serde_json::Map::new(),
+    };
+    output.remove("launchArgs");
+    let args = match options.map(|options| &options.launch_args) {
+        None | Some(PublicString::Missing) => "",
+        Some(PublicString::String(value)) => value.as_str(),
+        Some(PublicString::Other(_)) => return Err(BridgeHold::Options),
+    };
+    finish_bridge_options(output, args)
+}
+
 fn bridge_options_checked(
     value: Option<&Value>,
     typed: &ClaudeOptionsRecord,
@@ -277,6 +294,34 @@ mod options_tests {
             json!({"customModels":[],"extension":{"key":1},"extraArgs":{"verbose":null}})
         );
         assert!(bridge_options(&json!({"launchArgs":null})).is_err());
+    }
+
+    #[test]
+    fn public_options_match_legacy_bridge_projection() {
+        for raw in [
+            json!({}),
+            json!({"launchArgs":"--verbose","vendor":{"n":1}}),
+            json!({"launchArgs":null}),
+            json!({"launchArgs":7}),
+            json!(null),
+            json!([]),
+        ] {
+            let profile: crate::account_policy::PublicAccount =
+                <crate::account_policy::PublicAccount as serde::Deserialize>::deserialize(
+                    json!({"claudeOptions": raw}),
+                )
+                .expect("public fixture");
+            let old = super::bridge_options(&raw);
+            let actual = super::bridge_options_public(profile.claude_options.as_ref());
+            assert_eq!(actual.is_ok(), old.is_ok(), "{raw}");
+            if let (Ok(actual), Ok(old)) = (actual, old) {
+                assert_eq!(actual, old);
+            }
+        }
+        assert_eq!(
+            super::bridge_options_public(None).expect("default"),
+            super::bridge_options(&json!({})).expect("default")
+        );
     }
 
     #[test]

@@ -2946,12 +2946,9 @@ mod startup_registry_tests {
         let accounts = policy.accounts();
         assert_eq!(accounts.default_account_key, "default");
         assert_eq!(accounts.accounts.len(), 1);
-        assert_eq!(accounts.accounts[0]["status"], "ready");
-        assert_eq!(accounts.accounts[0]["plan"], "API key");
-        assert_eq!(
-            accounts.accounts[0]["home"],
-            codex_home.to_str().expect("UTF-8 fixture path")
-        );
+        assert_eq!(accounts.accounts[0].status.as_str(), Some("ready"));
+        assert_eq!(accounts.accounts[0].plan.as_str(), Some("API key"));
+        assert_eq!(accounts.accounts[0].home.as_str(), codex_home.to_str());
         let driver = AccountDriver::open(&path).expect("the account driver opens it");
         assert_eq!(driver.get("default"), Ok(AccountStatus::Ready));
 
@@ -2984,7 +2981,10 @@ mod startup_registry_tests {
         let bytes = registry.bytes.expect("migrated bytes");
         let policy =
             AccountPolicyState::from_startup(Some(&bytes), []).expect("strict startup policy");
-        assert_eq!(policy.accounts().accounts[0]["provider"], "codex");
+        assert_eq!(
+            policy.accounts().accounts[0].provider.as_str(),
+            Some("codex")
+        );
         assert_eq!(fs::read(path).expect("durable registry"), bytes);
         drop(store);
     }

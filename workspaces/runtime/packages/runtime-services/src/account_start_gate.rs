@@ -111,6 +111,22 @@ impl StartThrottle {
         )
     }
 
+    /// Read a public account projection with the same fallback as the raw boundary.
+    pub fn of_public_account(row: &crate::account_policy::PublicAccount) -> Option<Self> {
+        let provider = row.provider_kind()?;
+        let stored = match &row.start_throttle {
+            Some(crate::account_policy::PublicThrottle::Fields(value)) => value
+                .0
+                .burst
+                .as_u64()
+                .zip(value.0.pause_seconds.as_u64())
+                .zip(value.0.max_running_turns.as_u64())
+                .and_then(|((burst, pause), running)| Self::new(burst, pause, running)),
+            None | Some(crate::account_policy::PublicThrottle::Other(_)) => None,
+        };
+        Some(stored.unwrap_or_else(|| Self::provider_default(provider)))
+    }
+
     /// The registry row value of this throttle.
     pub fn to_record(self) -> Value {
         json!({
@@ -968,6 +984,24 @@ mod tests {
         );
         assert!(gate.lock().running.is_empty());
         assert!(gate.lock().waiters.is_empty());
+    }
+
+    #[test]
+    fn public_throttle_matches_legacy_for_extensions_and_numeric_types() {
+        use serde_json::json;
+        for row in [
+            json!({"provider":"codex","startThrottle":{"burst":2,"pauseSeconds":5,"maxRunningTurns":3,"vendor":true}}),
+            json!({"provider":"codex","startThrottle":{"burst":2.0,"pauseSeconds":5,"maxRunningTurns":3}}),
+            json!({"provider":"codex","startThrottle":{"burst":2,"pauseSeconds":5}}),
+            json!({"provider":"unknown","startThrottle":null}),
+        ] {
+            let public = serde::Deserialize::deserialize(row.clone()).expect("public account");
+            assert_eq!(
+                StartThrottle::of_public_account(&public),
+                StartThrottle::of_record(&row),
+                "{row}"
+            );
+        }
     }
 
     #[test]

@@ -152,13 +152,8 @@ impl AccountOrder {
             .iter_mut()
             .chain(snapshot.archived_accounts.iter_mut())
         {
-            let group = row
-                .get("id")
-                .and_then(Value::as_str)
-                .and_then(|key| self.groups.get(key))
-                .cloned();
-            if let (Some(group), Some(object)) = (group, row.as_object_mut()) {
-                object.insert(ACCOUNT_GROUP_FIELD.to_owned(), Value::String(group));
+            if let Some(group) = row.id.as_str().and_then(|id| self.groups.get(id)) {
+                row.group = crate::account_policy::PublicString::String(group.clone());
             }
         }
         snapshot.default_account_groups = self.default_groups.clone();
@@ -232,29 +227,16 @@ pub fn group_rank(group: Option<&str>, groups: &[String]) -> usize {
         .unwrap_or(groups.len())
 }
 
-fn account_group(account: &Value) -> Option<&str> {
-    account.get(ACCOUNT_GROUP_FIELD).and_then(Value::as_str)
-}
-
-fn flag(account: &Value, field: &str) -> bool {
-    account.get(field).and_then(Value::as_bool) == Some(true)
-}
-
-fn provider(account: &Value) -> Option<ProviderKind> {
-    ProviderKind::of_record(account).ok()
-}
-
 /// Whether a new chat can start on this public account row.
 #[must_use]
-pub fn can_start(account: &Value) -> bool {
-    provider(account).is_some()
-        && !flag(account, "disconnected")
-        && !flag(account, "deleted")
-        && account
-            .get("duplicateOf")
-            .is_none_or(|value| value.is_null() || value.as_str() == Some(""))
-        && (account.get("status").and_then(Value::as_str) == Some("ready")
-            || flag(account, "canAttemptNativeProof"))
+pub fn can_start(account: &crate::account_policy::PublicAccount) -> bool {
+    account.provider_kind().is_some()
+        && account.disconnected.as_bool() != Some(true)
+        && account.deleted.as_bool() != Some(true)
+        && (!account.duplicate_of.is_present_non_null()
+            || account.duplicate_of.as_str() == Some(""))
+        && (account.status.as_str() == Some("ready")
+            || account.can_attempt_native_proof.as_bool() == Some(true))
 }
 
 /// The default account, model and effort of a new chat.
@@ -272,7 +254,7 @@ pub struct NewChatDefault {
 /// project record of the chat's folder, if any; `model` is the requested model.
 #[must_use]
 pub fn new_chat_default(
-    accounts: &[Value],
+    accounts: &[crate::account_policy::PublicAccount],
     default_account_key: &str,
     default_groups: &[String],
     project: Option<&Value>,
@@ -287,12 +269,12 @@ pub fn new_chat_default(
         .iter()
         .enumerate()
         .filter(|(_, row)| can_start(row))
-        .filter_map(|(index, row)| Some((index, row.get("id")?.as_str()?, row)))
+        .filter_map(|(index, row)| Some((index, row.id.as_str()?, row)))
         .filter(|(_, key, _)| allowed.is_empty() || allowed.iter().any(|item| item == key))
         .collect::<Vec<_>>();
     candidates.sort_by_key(|(index, key, row)| {
         (
-            group_rank(account_group(row), &groups),
+            group_rank(row.group.as_str(), &groups),
             Some(*key) != project_account,
             *key != default_account_key,
             *index,
@@ -302,17 +284,17 @@ pub fn new_chat_default(
         Some(model) => crate::provider_adapter::model_provider(model),
         None => candidates
             .iter()
-            .any(|(_, _, row)| provider(row) == Some(ProviderKind::Claude))
+            .any(|(_, _, row)| row.provider_kind() == Some(ProviderKind::Claude))
             .then_some(ProviderKind::Claude),
     };
     let chosen = candidates
         .iter()
-        .find(|(_, _, row)| wanted.is_none_or(|wanted| provider(row) == Some(wanted)))
+        .find(|(_, _, row)| wanted.is_none_or(|wanted| row.provider_kind() == Some(wanted)))
         .map(|(_, key, _)| (*key).to_owned())
         .unwrap_or_else(|| project_account.unwrap_or(default_account_key).to_owned());
     let claude = accounts.iter().any(|row| {
-        row.get("id").and_then(Value::as_str) == Some(chosen.as_str())
-            && provider(row) == Some(ProviderKind::Claude)
+        row.id.as_str() == Some(chosen.as_str())
+            && row.provider_kind() == Some(ProviderKind::Claude)
     });
     let defaults = model.is_none() && claude;
     NewChatDefault {
@@ -379,10 +361,15 @@ mod tests {
             if let Some(provider) = provider {
                 unknown["provider"] = provider;
             }
-            assert!(!can_start(&unknown), "{unknown}");
+            let unknown: crate::account_policy::PublicAccount =
+                serde::Deserialize::deserialize(unknown).expect("fixture");
+            assert!(!can_start(&unknown));
             let accounts = [
                 unknown,
-                json!({"id":"known","provider":"codex","status":"ready"}),
+                <crate::account_policy::PublicAccount as serde::Deserialize>::deserialize(
+                    json!({"id":"known","provider":"codex","status":"ready"}),
+                )
+                .expect("fixture"),
             ];
             assert_eq!(
                 new_chat_default(&accounts, "unknown", &[], None, Some("gpt-mini")).account_key,
@@ -391,7 +378,10 @@ mod tests {
         }
         for provider in ProviderKind::ALL {
             assert!(can_start(
-                &json!({"provider":provider.key(),"status":"ready"})
+                &<crate::account_policy::PublicAccount as serde::Deserialize>::deserialize(
+                    json!({"provider":provider.key(),"status":"ready"})
+                )
+                .expect("fixture")
             ));
         }
     }
@@ -406,10 +396,11 @@ mod tests {
         assert!(cases.len() >= 10);
         for case in cases {
             let name = case["name"].as_str().expect("name");
-            let accounts = case["accounts"].as_array().expect("accounts");
+            let accounts: Vec<crate::account_policy::PublicAccount> =
+                serde::Deserialize::deserialize(case["accounts"].clone()).expect("accounts");
             let project = case.get("project").filter(|value| !value.is_null());
             let actual = new_chat_default(
-                accounts,
+                &accounts,
                 case["defaultAccountKey"].as_str().expect("default key"),
                 &groups_of(case.get("defaultAccountGroups")),
                 project,

@@ -2,7 +2,7 @@
 use crate::{
     claude_options::ClaudeOptionsRecord, json_object::JsonObject, provider_kind::ProviderKind,
 };
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Number;
 use std::collections::BTreeMap;
 
@@ -65,7 +65,7 @@ pub enum AccountStatus {
     Duplicate,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AccountStartThrottle {
     #[serde(rename = "burst", deserialize_with = "burst")]
@@ -75,13 +75,24 @@ pub struct AccountStartThrottle {
     #[serde(rename = "maxRunningTurns", deserialize_with = "running")]
     _max_running_turns: Number,
 }
-#[derive(Deserialize)]
+impl AccountStartThrottle {
+    pub fn burst_number(&self) -> &Number {
+        &self._burst
+    }
+    pub fn pause_seconds_number(&self) -> &Number {
+        &self._pause_seconds
+    }
+    pub fn max_running_turns_number(&self) -> &Number {
+        &self._max_running_turns
+    }
+}
+#[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct OrganizationMismatch {
     pub expected: JsonObject<Organization>,
     pub observed: JsonObject<Organization>,
 }
-#[derive(Deserialize)]
+#[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Organization {
     #[serde(deserialize_with = "required_nullable")]
