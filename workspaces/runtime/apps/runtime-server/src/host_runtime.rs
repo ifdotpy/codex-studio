@@ -320,6 +320,14 @@ impl HostRuntime {
             if let Some(host_exec) = &host_exec {
                 vm.attach_host_exec(Arc::clone(host_exec));
             }
+            // The guest follows the installed build (docs/linux-vm-workspaces.md, "Guest updates").
+            match studio_runtime_services::linux_vm_update::GuestPayload::read(
+                install_root.workspace_root(),
+            ) {
+                Ok(Some(payload)) => vm.attach_guest_payload(payload),
+                Ok(None) => {}
+                Err(error) => eprintln!("linux-vm: the guest files are unreadable: {error}"),
+            }
             vm.attach_chat_notices(Arc::new(
                 studio_runtime_services::linux_vm_runtime::StoreChatNotices::new(store.clone()),
             ));
@@ -350,6 +358,16 @@ impl HostRuntime {
                 checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 loop {
                     checks.tick().await;
+                    // Idle moment of the watchdog: the guest follows the installed build.
+                    match vm.update_guest().await {
+                        Ok(outcome)
+                            if matches!(
+                                outcome.as_str(),
+                                "current" | "none" | "stopped" | "busy" | "deferred" | "no_key"
+                            ) => {}
+                        Ok(outcome) => eprintln!("linux-vm: guest update: {outcome}"),
+                        Err(error) => eprintln!("linux-vm: guest update failed: {error}"),
+                    }
                     match vm.check().await {
                         Ok(outcome)
                             if matches!(
