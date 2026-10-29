@@ -1,12 +1,12 @@
 //! Frozen Claude start rows are loaded and saved under the caller's single transaction.
 use crate::schema::SchemaRequirements;
-use crate::{AgentId, AgentRepository, StoreError, StoreResult, Transaction};
+use crate::{AgentId, AgentRepository, ClaudeAttemptRecord, StoreError, StoreResult, Transaction};
 use rusqlite::{OptionalExtension, params};
 use serde_json::{Value, json};
 
 pub struct ClaudeRetryRecords {
     pub agent: Value,
-    pub attempt: Value,
+    pub attempt: ClaudeAttemptRecord,
     pub events: Vec<Value>,
 }
 pub struct ClaudeRetryRepository;
@@ -25,16 +25,14 @@ impl ClaudeRetryRepository {
         };
         let attempt: Value = serde_json::from_str(&raw)?;
         validate_attempt(&attempt)?;
-        if attempt.get("id").and_then(Value::as_str) != Some(attempt_id) {
+        let attempt: ClaudeAttemptRecord =
+            serde_json::from_value(attempt).map_err(|_| invalid("attempt"))?;
+        if attempt.id() != attempt_id {
             return Err(invalid(attempt_id));
         }
-        let ids = attempt
-            .get("events")
-            .and_then(Value::as_array)
-            .ok_or_else(|| invalid(attempt_id))?;
+        let ids = attempt.events().ok_or_else(|| invalid(attempt_id))?;
         let mut events = Vec::new();
         for id in ids {
-            let id = id.as_str().ok_or_else(|| invalid(attempt_id))?;
             let row:Option<Value>=tx.query_row("SELECT e.id,e.agent,e.epoch,e.kind,e.text,e.created,e.status,e.turn_id,e.error,COALESCE(m.record,'{}') FROM runtime_events e LEFT JOIN runtime_event_meta m ON m.id=e.id WHERE e.id=?1",[id],|r|Ok(json!({"id":r.get::<_,String>(0)?,"agent":r.get::<_,String>(1)?,"epoch":r.get::<_,i64>(2)?,"kind":r.get::<_,String>(3)?,"text":r.get::<_,String>(4)?,"created":r.get::<_,f64>(5)?,"status":r.get::<_,String>(6)?,"turn_id":r.get::<_,Option<String>>(7)?,"error":r.get::<_,Option<String>>(8)?,"metadata":r.get::<_,String>(9)?}))).optional()?;
             let Some(mut row) = row else {
                 return Ok(None);
@@ -73,13 +71,15 @@ fn invalid(id: &str) -> StoreError {
 }
 
 impl ClaudeRetryRepository {
-    pub fn replace_attempt(tx: &Transaction<'_>, agent: &str, attempt: &Value) -> StoreResult<()> {
-        validate_attempt(attempt)?;
-        let id = attempt
-            .get("id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| invalid("attempt"))?;
-        let changed=tx.execute("UPDATE runtime_execution_attempts SET record=?1 WHERE id=?2 AND run IN (SELECT id FROM runtime_execution_runs WHERE agent=?3)",params![attempt.to_string(),id,agent])?;
+    pub fn replace_attempt(
+        tx: &Transaction<'_>,
+        agent: &str,
+        attempt: &ClaudeAttemptRecord,
+    ) -> StoreResult<()> {
+        let value = serde_json::to_value(attempt)?;
+        validate_attempt(&value)?;
+        let id = attempt.id();
+        let changed=tx.execute("UPDATE runtime_execution_attempts SET record=?1 WHERE id=?2 AND run IN (SELECT id FROM runtime_execution_runs WHERE agent=?3)",params![value.to_string(),id,agent])?;
         if changed != 1 {
             return Err(invalid(id));
         }

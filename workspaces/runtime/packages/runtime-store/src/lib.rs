@@ -109,6 +109,7 @@ pub use records::{
 };
 pub use repositories::agent_indexed_reads::{AgentIndexedReads, RESERVED_TURN_INPUT};
 pub use repositories::agent_move::{AgentMoveRepository, MoveRecord};
+pub use repositories::claude_records::ClaudeAttemptRecord;
 pub use repositories::claude_retry::{ClaudeRetryRecords, ClaudeRetryRepository};
 pub use repositories::context_repair::ContextRepairRepository;
 pub use repositories::continuation::{ContinuationRepository, ContinuationTable};
