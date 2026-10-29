@@ -6,7 +6,84 @@ use crate::{
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
 use rusqlite::{Connection, OptionalExtension, params};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
+// The durable receipt historically accepts any object with the matching id.
+// Other fields belong to the server or older providers and remain opaque.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct Asset {
+    id: String,
+    #[serde(flatten)]
+    fields: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(untagged)]
+enum UploadState {
+    Pending {},
+    Acknowledged { asset: Asset },
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Upload {
+    id: String,
+    workspace: String,
+    state_dir: String,
+    agent: String,
+    name: String,
+    mime: String,
+    size: usize,
+    created: serde_json::Number,
+    #[serde(flatten)]
+    state: UploadState,
+    #[serde(flatten)]
+    extensions: BTreeMap<String, Value>,
+}
+
+impl<'de> Deserialize<'de> for Upload {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Wire {
+            id: String,
+            workspace: String,
+            state_dir: String,
+            agent: String,
+            name: String,
+            mime: String,
+            size: usize,
+            created: serde_json::Number,
+            #[serde(default)]
+            asset: Option<Asset>,
+            #[serde(flatten)]
+            extensions: BTreeMap<String, Value>,
+        }
+        let wire = Wire::deserialize(deserializer)?;
+        Ok(Self {
+            id: wire.id,
+            workspace: wire.workspace,
+            state_dir: wire.state_dir,
+            agent: wire.agent,
+            name: wire.name,
+            mime: wire.mime,
+            size: wire.size,
+            created: wire.created,
+            extensions: wire.extensions,
+            state: match wire.asset {
+                Some(asset) => UploadState::Acknowledged { asset },
+                None => UploadState::Pending {},
+            },
+        })
+    }
+}
+fn encode<T: Serialize>(value: T) -> Result<Value, String> {
+    serde_json::to_value(value).map_err(|e| e.to_string())
+}
+fn decode<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, String> {
+    serde_json::from_value(value).map_err(|e| e.to_string())
+}
 pub const LIMIT: usize = 20 * 1024 * 1024;
 pub fn initialize(db: &Connection) -> rusqlite::Result<()> {
     db.execute_batch("CREATE TABLE IF NOT EXISTS client_file_sources(id TEXT PRIMARY KEY,name TEXT NOT NULL,mime TEXT NOT NULL,bytes BLOB NOT NULL); CREATE TABLE IF NOT EXISTS client_uploads(id TEXT PRIMARY KEY,workspace TEXT NOT NULL,state_dir TEXT NOT NULL,agent TEXT NOT NULL,document TEXT NOT NULL,bytes BLOB NOT NULL); CREATE TABLE IF NOT EXISTS client_upload_tombstones(id TEXT PRIMARY KEY,cancelled INTEGER NOT NULL);")
@@ -27,7 +104,7 @@ fn uuid() -> Result<String, String> {
     .and_then(|v| v.as_str().map(str::to_owned))
     .ok_or("Cannot create a file identity.".into())
 }
-fn row(db: &Connection, id: &str) -> Result<Value, String> {
+fn row(db: &Connection, id: &str) -> Result<Option<Upload>, String> {
     let raw: Option<String> = db
         .query_row(
             "SELECT document FROM client_uploads WHERE id=?1",
@@ -38,7 +115,6 @@ fn row(db: &Connection, id: &str) -> Result<Value, String> {
         .map_err(|e| e.to_string())?;
     raw.map(|s| serde_json::from_str(&s).map_err(|e| e.to_string()))
         .transpose()
-        .map(|v| v.unwrap_or(Value::Null))
 }
 fn status(db: &Connection, id: &str) -> Result<Value, String> {
     let cancelled: Option<bool> = db
@@ -136,17 +212,35 @@ fn apply(db: &Connection, request: &Request) -> Result<Value, String> {
                     .map_err(|e| e.to_string())?
                     .as_millis() as u64
                     + index as u64;
-                let document = json!({"id":id,"workspace":workspace,"stateDir":state_dir,"agent":agent,"name":name,"mime":mime,"size":bytes.len(),"created":created});
+                let document = Upload {
+                    id: id.clone(),
+                    workspace: workspace.into(),
+                    state_dir: state_dir.into(),
+                    agent: agent.into(),
+                    name,
+                    mime,
+                    size: bytes.len(),
+                    created: created.into(),
+                    extensions: BTreeMap::new(),
+                    state: UploadState::Pending {},
+                };
                 db.execute(
                     "INSERT INTO client_uploads VALUES(?1,?2,?3,?4,?5,?6)",
-                    params![id, workspace, state_dir, agent, document.to_string(), bytes],
+                    params![
+                        id,
+                        workspace,
+                        state_dir,
+                        agent,
+                        serde_json::to_string(&document).map_err(|e| e.to_string())?,
+                        bytes
+                    ],
                 )
                 .map_err(|e| e.to_string())?;
                 db.execute("DELETE FROM client_file_sources WHERE id=?1", [source])
                     .map_err(|e| e.to_string())?;
                 result.push(document);
             }
-            Ok(json!(result))
+            encode(result)
         }
         "uploads.list" => {
             let mut query=db.prepare("SELECT document FROM client_uploads WHERE workspace=?1 AND state_dir=?2 ORDER BY json_extract(document,'$.created'),id").map_err(|e|e.to_string())?;
@@ -158,14 +252,14 @@ fn apply(db: &Connection, request: &Request) -> Result<Value, String> {
             let mut result = vec![];
             for row in rows {
                 result.push(
-                    serde_json::from_str::<Value>(&row.map_err(|e| e.to_string())?)
+                    serde_json::from_str::<Upload>(&row.map_err(|e| e.to_string())?)
                         .map_err(|e| e.to_string())?,
                 );
             }
-            Ok(json!(result))
+            encode(result)
         }
         "uploads.status" => status(db, text(p, "id")?),
-        "uploads.get" => row(db, text(p, "id")?),
+        "uploads.get" => encode(row(db, text(p, "id")?)?),
         "uploads.content" => {
             let id = text(p, "id")?;
             let bytes: Option<Vec<u8>> = db
@@ -191,17 +285,25 @@ fn apply(db: &Connection, request: &Request) -> Result<Value, String> {
             if p["asset"]["id"] != id {
                 return Err("The upload response does not match the saved file.".into());
             }
-            let mut current = row(db, id)?;
-            if current.is_null() || status(db, id)?["settled"] == true {
+            let asset: Asset = decode(p["asset"].clone())?;
+            let Some(mut current) = row(db, id)? else {
+                return Ok(Value::Null);
+            };
+            if status(db, id)?["settled"] == true {
                 return Ok(Value::Null);
             }
-            current["asset"] = p["asset"].clone();
+            current.state = UploadState::Acknowledged {
+                asset: asset.clone(),
+            };
             db.execute(
                 "UPDATE client_uploads SET document=?2 WHERE id=?1",
-                params![id, current.to_string()],
+                params![
+                    id,
+                    serde_json::to_string(&current).map_err(|e| e.to_string())?
+                ],
             )
             .map_err(|e| e.to_string())?;
-            Ok(current["asset"].clone())
+            encode(asset)
         }
         _ => Err("Unknown upload command.".into()),
     }
@@ -264,18 +366,23 @@ pub async fn dispatch(backend: &Backend, sender: &StoreSender, request: Request)
             let response=receive.await.map_err(|e|e.to_string())?;
             return response.result.ok_or_else(||response.error.map(|e|e.message).unwrap_or("Missing file state response.".into()));
         }
-        let expected=&p["row"];let id=text(expected,"id")?;
+        let expected: Upload = decode(p["row"].clone())?;
+        let id = &expected.id;
         let lock=upload_lock(id)?;let _guard=lock.lock().await;
-        let current=state(sender,"uploads.get",json!({"id":id})).await?;
-        if current.is_null(){return Ok(Value::Null);}
-        for key in ["workspace","agent","stateDir"] {if current[key]!=expected[key]{return Err("The saved upload belongs to another workspace or chat.".into());}}
-        let workspace=text(&current,"workspace")?;
+        let current: Option<Upload> = decode(state(sender,"uploads.get",json!({"id":id})).await?)?;
+        let Some(current) = current else { return Ok(Value::Null); };
+        if current.workspace != expected.workspace || current.agent != expected.agent || current.state_dir != expected.state_dir {
+            return Err("The saved upload belongs to another workspace or chat.".into());
+        }
         let identity=crate::sync::identity(backend).await.map_err(|e|e.message)?;
-        if identity["workspaceId"]!=workspace{return Err("The server workspace changed. Saved files remain on this device.".into());}
-        if current["asset"].is_object(){return Ok(state(sender,"uploads.get",json!({"id":id})).await?["asset"].clone());}
+        if identity["workspaceId"]!=current.workspace{return Err("The server workspace changed. Saved files remain on this device.".into());}
+        if let UploadState::Acknowledged { .. } = current.state {
+            let latest: Option<Upload> = decode(state(sender,"uploads.get",json!({"id":id})).await?)?;
+            return match latest { Some(Upload { state: UploadState::Acknowledged { asset }, .. }) => encode(asset), _ => Ok(Value::Null) };
+        }
         let bytes=state(sender,"uploads.content",json!({"id":id})).await?;
         if bytes.is_null(){return Ok(Value::Null);}
-        let response=backend.dispatch(Request{id:request.id.clone(),method:"api.request".into(),params:json!({"path":"/api/assets","workspaceId":workspace,"timeoutMs":60000,"body":{"id":id,"agent":current["agent"],"name":current["name"],"base64":bytes}})}).await;
+        let response=backend.dispatch(Request{id:request.id.clone(),method:"api.request".into(),params:json!({"path":"/api/assets","workspaceId":current.workspace,"timeoutMs":60000,"body":{"id":id,"agent":current.agent,"name":current.name,"base64":bytes}})}).await;
         let value=response.result.ok_or_else(||response.error.map(|e|e.message).unwrap_or("Missing upload response.".into()))?;
         state(sender,"uploads.receipt",json!({"id":id,"asset":value.get("asset").unwrap_or(&value)})).await
     }.await;
@@ -364,6 +471,230 @@ mod tests {
                 .result,
             Some(Value::Null)
         );
+    }
+    #[test]
+    fn receipt_round_trips_through_list_get_and_rejects_invalid_assets() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("client.sqlite3");
+        let mut store = Store::open(&path).unwrap();
+        let file = store
+            .dispatch(command(
+                "file",
+                "files.text",
+                json!({"name":"x.txt","text":"hello"}),
+            ))
+            .result
+            .unwrap();
+        let workspace = "a".repeat(32);
+        let queued = store
+            .dispatch(command(
+                "queue",
+                "uploads.queue",
+                json!({"workspace":workspace,"stateDir":"/state","agent":"lead","files":[file]}),
+            ))
+            .result
+            .unwrap();
+        let id = &queued[0]["id"];
+        let asset = json!({"id":id,"agent":"lead","name":"x.txt","mime":"text/plain","image":false,"size":5,"hash":"h","created":1.0,"vendor":{"a":1}});
+        assert!(
+            store
+                .dispatch(command(
+                    "bad",
+                    "uploads.receipt",
+                    json!({"id":id,"asset":{"id":"wrong"}})
+                ))
+                .error
+                .is_some()
+        );
+        assert_eq!(
+            store
+                .dispatch(command(
+                    "receipt",
+                    "uploads.receipt",
+                    json!({"id":id,"asset":asset})
+                ))
+                .result,
+            Some(asset.clone())
+        );
+        drop(store);
+        let mut store = Store::open(&path).unwrap();
+        let got = store
+            .dispatch(command("get", "uploads.get", json!({"id":id})))
+            .result
+            .unwrap();
+        assert_eq!(got["asset"], asset);
+        let listed = store
+            .dispatch(command(
+                "list",
+                "uploads.list",
+                json!({"workspace":workspace,"stateDir":"/state"}),
+            ))
+            .result
+            .unwrap();
+        assert_eq!(listed[0], got);
+        assert!(
+            store
+                .dispatch(command("finish", "uploads.finish", json!({"id":id})))
+                .error
+                .is_none()
+        );
+        assert_eq!(
+            store
+                .dispatch(command(
+                    "late",
+                    "uploads.receipt",
+                    json!({"id":id,"asset":asset})
+                ))
+                .result,
+            Some(Value::Null)
+        );
+    }
+    #[test]
+    fn legacy_partial_receipt_and_unknown_fields_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("client.sqlite3")).unwrap();
+        let file = store
+            .dispatch(command(
+                "file",
+                "files.text",
+                json!({"name":"x","text":"x"}),
+            ))
+            .result
+            .unwrap();
+        let row = store.dispatch(command("queue", "uploads.queue", json!({"workspace":"a".repeat(32),"stateDir":"/state","agent":"lead","files":[file]}))).result.unwrap()[0].clone();
+        let id = &row["id"];
+        let asset = json!({"id":id,"created":1,"vendor":{"n":2}});
+        assert_eq!(
+            store
+                .dispatch(command(
+                    "receipt",
+                    "uploads.receipt",
+                    json!({"id":id,"asset":asset})
+                ))
+                .result,
+            Some(asset.clone())
+        );
+        let saved = store
+            .dispatch(command("get", "uploads.get", json!({"id":id})))
+            .result
+            .unwrap();
+        assert_eq!(saved["asset"], asset);
+        assert!(saved["asset"]["created"].as_u64().is_some());
+        let mut extended = saved.clone();
+        extended["future"] = json!({"opaque":true});
+        extended["created"] = json!(1.5);
+        store
+            .connection
+            .execute(
+                "UPDATE client_uploads SET document=?2 WHERE id=?1",
+                params![id.as_str().unwrap(), extended.to_string()],
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .dispatch(command("get-extended", "uploads.get", json!({"id":id})))
+                .result,
+            Some(extended.clone())
+        );
+        let replacement = json!({"id":id,"created":1.5});
+        assert_eq!(
+            store
+                .dispatch(command(
+                    "replace",
+                    "uploads.receipt",
+                    json!({"id":id,"asset":replacement})
+                ))
+                .result,
+            Some(replacement.clone())
+        );
+        extended["asset"] = replacement;
+        let listed = store
+            .dispatch(command(
+                "list-extended",
+                "uploads.list",
+                json!({"workspace":"a".repeat(32),"stateDir":"/state"}),
+            ))
+            .result
+            .unwrap();
+        assert_eq!(listed[0], extended);
+        store.dispatch(command("cancel", "uploads.cancel", json!({"id":id})));
+        assert_eq!(
+            store
+                .dispatch(command(
+                    "late",
+                    "uploads.receipt",
+                    json!({"id":id,"asset":{"id":id,"name":"x"}})
+                ))
+                .result,
+            Some(Value::Null)
+        );
+    }
+    #[tokio::test]
+    async fn delivery_persists_receipt_and_reuses_it() {
+        use crate::backend::tests::{read_http, reply};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let mut uploaded = false;
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let (headers, body) = read_http(&mut stream).await;
+                if headers.starts_with("GET /api/sync/identity ") {
+                    reply(
+                        &mut stream,
+                        &json!({"workspaceId":"a".repeat(32)}).to_string(),
+                    )
+                    .await;
+                } else if headers.starts_with("GET /api/session ") {
+                    reply(&mut stream, r#"{"token":"test"}"#).await;
+                } else {
+                    assert!(headers.starts_with("POST /api/assets "));
+                    assert!(!uploaded, "receipt reuse must not post again");
+                    uploaded = true;
+                    reply(&mut stream, &json!({"id":body["id"],"agent":"lead","name":"x.txt","mime":"text/plain","image":false,"size":5,"hash":"h","created":1.0,"vendor":true}).to_string()).await;
+                }
+            }
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("client.sqlite3");
+        let row = {
+            let mut store = Store::open(&path).unwrap();
+            let file = store
+                .dispatch(command(
+                    "file",
+                    "files.text",
+                    json!({"name":"x.txt","text":"hello"}),
+                ))
+                .result
+                .unwrap();
+            store.dispatch(command("queue", "uploads.queue", json!({"workspace":"a".repeat(32),"stateDir":"/state","agent":"lead","files":[file]}))).result.unwrap()[0].clone()
+        };
+        let (sender, mut receive) = tokio::sync::mpsc::channel::<crate::delivery::StoreCommand>(64);
+        let thread = std::thread::spawn(move || {
+            let mut store = Store::open(&path).unwrap();
+            while let Some((request, reply)) = receive.blocking_recv() {
+                drop(reply.send(store.dispatch(request)));
+            }
+        });
+        let backend = Backend::new(&origin).unwrap();
+        let first = dispatch(
+            &backend,
+            &sender,
+            command("deliver", "uploads.deliver", json!({"row":row})),
+        )
+        .await;
+        let asset = first.result.unwrap();
+        assert_eq!(asset["vendor"], true);
+        let second = dispatch(
+            &backend,
+            &sender,
+            command("again", "uploads.deliver", json!({"row":row})),
+        )
+        .await;
+        assert_eq!(second.result, Some(asset));
+        drop(sender);
+        thread.join().unwrap();
+        server.abort();
     }
     #[tokio::test]
     async fn upload_retry_keeps_exact_bytes_and_cancel_wins_over_a_late_http_receipt() {
