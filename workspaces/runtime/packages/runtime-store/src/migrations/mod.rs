@@ -684,8 +684,19 @@ fn apply_target(
     }
 }
 
+/// Position in the currently migrating source, measured in SQLite rowids.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct MigrationProgress {
+    pub id: String,
+    pub done: i64,
+    pub total: i64,
+}
+
 /// Run under runtime.lock, before ordinary recovery, workers, readers or readiness.
-pub(crate) fn run(root: &Path) -> StoreResult<()> {
+pub(crate) fn run(
+    root: &Path,
+    progress: Option<&(dyn Fn(MigrationProgress) + Send + Sync)>,
+) -> StoreResult<()> {
     let canvas_path = root.join("canvas.sqlite3");
     let analytics_path = root.join("analytics.sqlite3");
     crate::schema::verify_core(&canvas_path, &analytics_path)?;
@@ -714,15 +725,18 @@ pub(crate) fn run(root: &Path) -> StoreResult<()> {
         &accounts,
         SourceDatabase::Canvas(&source_canvas),
     )?;
-    run_receipt_migrations(&mut canvas)?;
+    run_receipt_migrations(&mut canvas, progress)?;
     RegistryMigration.apply(&Context::Registry(&registry))
 }
 
 /// Startup owns the state lock throughout all batches. Recovery and serving
 /// connections are created only after this function and final validation return.
-fn run_receipt_migrations(db: &mut Connection) -> StoreResult<()> {
+fn run_receipt_migrations(
+    db: &mut Connection,
+    progress: Option<&(dyn Fn(MigrationProgress) + Send + Sync)>,
+) -> StoreResult<()> {
     for migration in CATALOG.iter().filter_map(|entry| entry.receipt_family()) {
-        run_receipt_family(db, migration, &mut |_, _, _| Ok(()))?;
+        run_receipt_family_progress(db, migration, &mut |_, _, _| Ok(()), progress)?;
     }
     m2026_10_28_receipts_drop_old_tables::verify_absent(db)
         .map_err(|error| receipt_error(&error))?;
@@ -740,10 +754,20 @@ fn receipt_error(error: &receipt_migration_contract::ReceiptMigrationError) -> S
     StoreError::SchemaMismatch(error.to_string())
 }
 
+#[cfg(test)]
 fn run_receipt_family(
     db: &mut Connection,
     migration: &ReceiptMigration,
     fault: &mut impl FnMut(ReceiptMigrationPhase, CommitBoundary, i64) -> StoreResult<()>,
+) -> StoreResult<()> {
+    run_receipt_family_progress(db, migration, fault, None)
+}
+
+fn run_receipt_family_progress(
+    db: &mut Connection,
+    migration: &ReceiptMigration,
+    fault: &mut impl FnMut(ReceiptMigrationPhase, CommitBoundary, i64) -> StoreResult<()>,
+    progress: Option<&(dyn Fn(MigrationProgress) + Send + Sync)>,
 ) -> StoreResult<()> {
     let id = migration.family.id();
     let now = (m2026_10_26_canvas::unix_now() * 1000.0) as i64;
@@ -779,10 +803,26 @@ fn run_receipt_family(
     }
     receipt_checkpoint(db)?;
     for source in migration.sources {
+        let total = if crate::schema::table_exists(db, source)? {
+            db.query_row(
+                &format!("SELECT coalesce(max(rowid),0) FROM \"{source}\""),
+                [],
+                |row| row.get::<_, i64>(0),
+            )?
+        } else {
+            0
+        };
         loop {
             let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let checkpoint = MigrationCheckpoint::begin(&tx, id, source, now)
                 .map_err(|error| receipt_error(&error))?;
+            if let Some(progress) = progress {
+                progress(MigrationProgress {
+                    id: format!("{id}:{source}"),
+                    done: checkpoint.cursor,
+                    total: total.max(checkpoint.cursor),
+                });
+            }
             if checkpoint.status == MigrationStatus::Complete {
                 break;
             }
@@ -1100,6 +1140,41 @@ mod tests {
                 !crate::schema::table_exists(&db, "runtime_operation_receipts").expect("schema")
             );
         }
+    }
+
+    #[test]
+    fn receipt_progress_reports_committed_cursor() {
+        let root = tempfile::tempdir().expect("fixture");
+        let mut db = receipt_batch_fixture(&root.path().join("canvas.sqlite3"), 1001);
+        let family = ReceiptMigration {
+            family: &BatchWitness,
+            sources: &["runtime_operation_receipts"],
+        };
+        let positions = std::sync::Mutex::new(Vec::new());
+        let result = run_receipt_family_progress(
+            &mut db,
+            &family,
+            &mut |phase, boundary, cursor| {
+                if phase == ReceiptMigrationPhase::Move
+                    && boundary == CommitBoundary::Before
+                    && cursor > 500
+                {
+                    return Err(StoreError::RecordContract("interrupt second batch"));
+                }
+                Ok(())
+            },
+            Some(&|progress| positions.lock().expect("positions").push(progress)),
+        );
+        assert!(result.is_err());
+        let positions = positions.lock().expect("positions");
+        assert_eq!(positions.len(), 2);
+        assert_eq!(positions[0].done, 0);
+        assert_eq!(positions[1].done, 500);
+        assert_eq!(positions[1].total, 1001);
+        assert_eq!(
+            positions[1].id,
+            "2026-10-28-receipts-batch-witness:runtime_operation_receipts"
+        );
     }
 
     #[test]

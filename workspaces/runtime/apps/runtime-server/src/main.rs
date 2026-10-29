@@ -434,11 +434,31 @@ async fn run(
     if let Some(line) = handover_line.as_mut() {
         line.open()?;
     }
+    let (listener, kept_listener) = handover::listener(port, taken_listener)?;
+    let startup_listener = tokio::net::TcpListener::from_std(kept_listener.try_clone()?)?;
+    let startup_gate = studio_runtime_server::startup_gate::StartupGate::default();
+    let (startup_done, startup_done_rx) = tokio::sync::oneshot::channel::<()>();
+    let startup_router = studio_runtime_server::startup_gate::router(startup_gate.clone());
+    let startup_server = tokio::spawn(async move {
+        axum::serve(startup_listener, startup_router)
+            .with_graceful_shutdown(async move {
+                drop(startup_done_rx.await);
+            })
+            .await
+    });
     startup_trace("store-open-started");
     // Serving claims the state for Rust before the first write, whatever launched this process.
     let owner = studio_runtime_store::state_owner::StateOwnerClaim { backend_build };
-    let store =
-        Arc::new(RuntimeStore::open_claiming(configured_state_dir.as_deref(), &owner).await?);
+    let store = Arc::new(
+        RuntimeStore::open_claiming_with_progress(
+            configured_state_dir.as_deref(),
+            &owner,
+            &|progress| {
+                startup_gate.update(progress);
+            },
+        )
+        .await?,
+    );
     // Before the first runtime write: every writer transaction publishes the chats and
     // cards it changed.
     studio_runtime_services::entity_publication::install(&store).await?;
@@ -528,7 +548,6 @@ async fn run(
     startup_trace("account-registry-open-started");
     let account_driver = Arc::new(AccountDriver::open(&registry_path)?);
     startup_trace("account-registry-open-completed");
-    let (listener, kept_listener) = handover::listener(port, taken_listener)?;
     let (offered, release_offer) = handover::offer(&state_root, kept_listener)?;
     let handover_requested = handover::requested(offered);
     let handed: Arc<Mutex<Option<handover::Handed>>> = Arc::default();
@@ -966,7 +985,12 @@ async fn run(
             return Err(error);
         }
     };
-    let app = app.merge(web_assets::router(web_assets::WebAssets::discover()));
+    let app = app
+        .route(
+            "/health",
+            axum::routing::get(studio_runtime_server::startup_gate::ready),
+        )
+        .merge(web_assets::router(web_assets::WebAssets::discover()));
     startup_trace("http-router-completed");
     // Start the peer child only after listener bind and all fallible router
     // construction have succeeded. The pre-created advert is already shared
@@ -1337,6 +1361,10 @@ async fn run(
         }
     });
     startup_trace("readiness-output-started");
+    startup_done
+        .send(())
+        .map_err(|_| "startup status server stopped before readiness")?;
+    startup_server.await??;
     println!("Codex Canvas: http://{}:{}", address.ip(), address.port());
     if let Some(line) = handover_line.as_mut() {
         line.ready()?;
