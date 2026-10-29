@@ -440,28 +440,31 @@ pub(super) fn resolved(
     )?;
     let mut pending = false;
     for record in records {
-        let mut record = record.value().clone();
+        let connection_id = record.connection_id().map(str::to_owned);
+        let mut status = record.status().map(str::to_owned);
+        let mut record = record.into_value();
         // A card names its provider generation: the Rust account worker stores
         // it under `supervisor`; Python named the connection after it.
         let same_generation = record
             .pointer("/supervisor/generation")
             .and_then(Value::as_u64)
             == Some(generation)
-            || record["connectionId"] == format!("connection-{generation}");
+            || connection_id.as_deref() == Some(format!("connection-{generation}").as_str());
         if record["rpcId"] == params["requestId"]
             && record.get("accountKey").unwrap_or(&json!("default")) == account
             && same_generation
             && record["params"]["threadId"] == params["threadId"]
             && matches!(
-                record["status"].as_str(),
+                status.as_deref(),
                 Some("pending" | "answering" | "uncertain" | "blocked")
             )
         {
             record["status"] = json!("resolved");
+            status = Some("resolved".into());
             record["resolvedAt"] = json!(at);
             put_request(tx, &record)?;
         }
-        pending |= record["status"] == "pending";
+        pending |= status.as_deref() == Some("pending");
     }
     if agent["status"] == "approval"
         && !pending
@@ -473,8 +476,12 @@ pub(super) fn resolved(
     Ok(())
 }
 fn put_request(tx: &Transaction<'_>, record: &Value) -> Result<(), NotificationDispatchError> {
-    checked("runtime_requests", record)?;
-    let typed = RequestRecord::from_value(record.clone())?;
+    let typed = RequestRecord::from_value(record.clone()).map_err(|_| {
+        stored(
+            "runtime_requests",
+            record["id"].as_str().unwrap_or("<missing>"),
+        )
+    })?;
     Table::new(tx).put(&typed)?;
     let id = record["id"]
         .as_str()

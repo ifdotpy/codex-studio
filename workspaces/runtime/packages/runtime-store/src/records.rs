@@ -946,14 +946,57 @@ mod tool_result_typed_tests {
         assert!(table.get(&"r".into()).is_err());
     }
 }
-record_newtype!(
-    RequestRecord,
-    String,
-    table = "runtime_requests",
-    schema = "PersistedRequestRecord",
-    key = PayloadId,
-    query = JsonAgent
-);
+pub use studio_runtime_schema::request_record::RequestRecord;
+impl JsonRecord for RequestRecord {
+    type Id = String;
+    const TABLE: &'static str = "runtime_requests";
+    const SCHEMA: &'static str = "PersistedRequestRecord";
+    const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
+    const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::JsonAgent;
+    const TYPED_SHAPE: bool = true;
+    fn record_key(&self) -> Option<&String> {
+        Some(self.id())
+    }
+}
+#[cfg(test)]
+mod request_typed_tests {
+    use super::{RequestRecord, Table};
+    use serde_json::{Value, json};
+
+    #[test]
+    fn request_table_keeps_last_duplicate_and_checks_row_identity() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE runtime_requests(id TEXT PRIMARY KEY,record TEXT NOT NULL)")
+            .unwrap();
+        db.execute("INSERT INTO runtime_requests VALUES('r',?1)", [r#"{"id":"wrong","id":"r","status":false,"status":"future","method":"x","params":{"opaque":[1,null]}}"#]).unwrap();
+        let row = Table::<RequestRecord>::new(&db)
+            .get(&"r".into())
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.status(), Some("future"));
+        assert_eq!(row.into_value()["params"], json!({"opaque":[1,null]}));
+        db.execute(
+            "UPDATE runtime_requests SET record=?1",
+            [r#"{"id":"other","status":"pending"}"#],
+        )
+        .unwrap();
+        assert!(Table::<RequestRecord>::new(&db).get(&"r".into()).is_err());
+        db.execute(
+            "UPDATE runtime_requests SET record=?1",
+            [r#"{"id":"r","status":false}"#],
+        )
+        .unwrap();
+        assert!(Table::<RequestRecord>::new(&db).get(&"r".into()).is_err());
+        let unchanged: Value = serde_json::from_str(
+            &db.query_row("SELECT record FROM runtime_requests", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(unchanged["status"], false);
+    }
+}
 pub use studio_runtime_schema::complaint_record::ComplaintRecord;
 impl JsonRecord for ComplaintRecord {
     type Id = String;
@@ -2559,7 +2602,7 @@ mod tests {
             "id":"request-1", "connectionId":null
         }))
         .expect("Python may persist a request without a connection identity");
-        assert_eq!(request.get("connectionId"), Some(&Value::Null));
+        assert_eq!(request.value().get("connectionId"), Some(&Value::Null));
     }
 
     #[test]

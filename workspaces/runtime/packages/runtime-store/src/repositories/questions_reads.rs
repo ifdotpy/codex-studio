@@ -99,8 +99,8 @@ impl QuestionsReadsRepository {
         Table::<AgentRecord>::new(connection).list()
     }
 
-    pub fn questions(connection: &Connection) -> StoreResult<Vec<(RequestRecord, String)>> {
-        Table::<RequestRecord>::new(connection).list_with_raw()
+    pub fn questions(connection: &Connection) -> StoreResult<Vec<RequestRecord>> {
+        Table::<RequestRecord>::new(connection).list()
     }
 
     pub fn complaint(connection: &Connection, id: &str) -> StoreResult<Option<ComplaintRecord>> {
