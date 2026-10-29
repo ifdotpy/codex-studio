@@ -298,6 +298,7 @@ fn projection_log_rows(state: &State) -> i64 {
 /// frame costs one writer transaction. The projector then applies the row to
 /// analytics without a Canvas writer transaction.
 #[test]
+#[ignore = "heavy tier: just test-quarantine (flaky under load, issue #616)"]
 fn analytics_are_logged_in_the_journal_commit_and_projected_off_the_writer() {
     run_counting_probe(
         "account_worker::tests::publication_off_path::probe_analytics_are_logged_in_the_journal_commit_and_projected_off_the_writer",
