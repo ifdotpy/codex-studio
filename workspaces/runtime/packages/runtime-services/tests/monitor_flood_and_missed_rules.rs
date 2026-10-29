@@ -459,8 +459,8 @@ async fn missed_once_rule_is_atomic_durable_and_owner_can_resume_or_delete() {
     assert_eq!(fixtures::events(&store), original);
     let resumed = managed_status_watch::rules(
         &store,
-        "owner",
-        1,
+        ("owner", 1),
+        managed_status_watch::WatchAction::Resume,
         Some(&json!({"action":"resume","id":"once"})),
         &studio_runtime_schema::persistence::RequestIdentity::issue_root(),
         3000.0,
@@ -476,8 +476,8 @@ async fn missed_once_rule_is_atomic_durable_and_owner_can_resume_or_delete() {
     assert_eq!(monitor.0.load(std::sync::atomic::Ordering::SeqCst), 1);
     let deleted = managed_status_watch::rules(
         &store,
-        "owner",
-        1,
+        ("owner", 1),
+        managed_status_watch::WatchAction::Delete,
         Some(&json!({"action":"delete","id":"once"})),
         &studio_runtime_schema::persistence::RequestIdentity::issue_root(),
         3100.0,

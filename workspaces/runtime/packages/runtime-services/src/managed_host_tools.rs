@@ -468,6 +468,11 @@ impl<T> Ports for T where
 {
 }
 
+pub(crate) struct ManagedTool<'a> {
+    pub name: &'a str,
+    pub watch_action: Option<crate::managed_status_watch::WatchAction>,
+}
+
 pub(crate) trait PostCommitPort {
     /// Execute an operation after its callback claim has committed. `None`
     /// selects the leaf's transaction-local adapter; implementations return a
@@ -476,7 +481,7 @@ pub(crate) trait PostCommitPort {
         &'a self,
         _store: std::sync::Arc<studio_runtime_store::RuntimeStore>,
         _actor: &'a Actor,
-        _tool: &'a str,
+        _tool: ManagedTool<'a>,
         _args: &'a Value,
         _request_id: &'a str,
         _now: f64,
@@ -630,7 +635,7 @@ impl PostCommitPort for UnavailablePorts {
         &'a self,
         _: std::sync::Arc<studio_runtime_store::RuntimeStore>,
         _: &'a Actor,
-        _: &'a str,
+        _: ManagedTool<'a>,
         _: &'a Value,
         _: &'a str,
         _: f64,
