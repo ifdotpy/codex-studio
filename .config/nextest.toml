@@ -88,6 +88,7 @@ default-filter = '''
     (package(studio-native-client) & kind(lib) & test(/^profile::tests::/)) |
     (package(studio-runtime-http) & kind(lib) & test(/^routes::workspace_views::tests::/)) |
     (package(studio-runtime-services) & kind(lib) & test(/^shell_policy::receipt_tests::|parent_notifications_preserve_partial_work_and_replay_identity|notification_work_projection_keeps_legacy_shapes_and_duplicate_last_values|notification_reader_skips_rows_with_invalid_unused_json_values|malformed_work_json_remains_a_sql_query_error_without_writes/)) |
+    (package(=studio-runtime-services) & kind(lib) & test(/^liveness::observation_tests::/)) |
     (package(studio-client-domain) & test(/^sync_entity::tests::/)) |
     (package(studio-client-core) & test(/^(sync|projections|delivery|actions|file_save|uploads)::tests::|^server_transport::tests::pairing_|^views::(flow_tests|patch_tests)::|typed_voice_commands_validate_before_effects_and_preserve_ids/)) |
     (package(studio-runtime-schema) & test(/^(rule_record|monitor_record|tool_result|workspace_operation|task_record|transcript_record|usage_resume_record|event_metadata|work_item_record)::tests::/)) |
@@ -386,6 +387,7 @@ default-filter = '''
     (package(studio-native-client) & kind(lib) & test(/^profile::tests::/)) |
     (package(studio-runtime-http) & kind(lib) & test(/^routes::workspace_views::tests::/)) |
     (package(studio-runtime-services) & kind(lib) & test(/^shell_policy::receipt_tests::|parent_notifications_preserve_partial_work_and_replay_identity|notification_work_projection_keeps_legacy_shapes_and_duplicate_last_values|notification_reader_skips_rows_with_invalid_unused_json_values|malformed_work_json_remains_a_sql_query_error_without_writes/)) |
+    (package(=studio-runtime-services) & kind(lib) & test(/^liveness::observation_tests::/)) |
     (package(studio-client-domain) & test(/^sync_entity::tests::/)) |
     (package(studio-client-core) & test(/^(sync|projections|delivery|actions|file_save|uploads)::tests::|^server_transport::tests::pairing_|^views::(flow_tests|patch_tests)::|typed_voice_commands_validate_before_effects_and_preserve_ids/)) |
     (package(studio-runtime-schema) & test(/^(rule_record|monitor_record|tool_result|workspace_operation|task_record|transcript_record|usage_resume_record|event_metadata|work_item_record)::tests::/)) |

@@ -515,6 +515,7 @@ async fn liveness_rows_name_each_stuck_state() {
                 AgentRepository::put(tx, &record)?;
             }
             seed_rows(tx, now)?;
+            tx.execute("UPDATE runtime_usage_resumes SET record=?1 WHERE id='resume-1'", [format!(r#"{{"id":"first","id":"payload-resume","status":"scheduled","dueAt":{},"reason":false,"reason":"legacy reason"}}"#, now - 1200.0)])?;
             studio_runtime_services::liveness::record_session_start_failure(
                 tx,
                 "second",
@@ -583,6 +584,16 @@ async fn liveness_rows_name_each_stuck_state() {
             .as_str()
             .is_some_and(|subject| subject.contains("Usage resume")),
         "{resume}"
+    );
+    assert_eq!(
+        resume["id"],
+        "liveness:schedule_stalled:usage:payload-resume"
+    );
+    assert!(
+        resume["detail"]
+            .as_str()
+            .unwrap()
+            .contains("Last reason: legacy reason")
     );
     let transfer = row("schedule_stalled", "lead");
     assert!(
