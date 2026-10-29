@@ -530,6 +530,43 @@ fn transfers(host: &Host, member: &Value, tag: &str) -> Result<Vec<Transfer>> {
         .collect()
 }
 
+/// Prove that the line is contained in main: both hashes are present, the commands succeed
+/// and the hashes are equal. A review line cannot read the project as its own user, so the
+/// commands run as the lead.
+fn contained(host: &Host, member: &Value, tag: &str) -> Result<()> {
+    let id = member["id"].as_str().unwrap_or_default();
+    let user = if member["role"] == "reviewer" {
+        member["rootId"].as_str().unwrap_or(id)
+    } else {
+        id
+    };
+    let cwd = member["cwd"]
+        .as_str()
+        .unwrap_or_default()
+        .replace('\'', "'\\''");
+    let script = format!("cd '{cwd}' && layr merge-base HEAD main && layr rev-parse HEAD");
+    let check = guest_call(
+        host,
+        "layr.exec",
+        &json!({"agentId":user,"argv":["sh","-c",script]}),
+        Some(&format!("vm-to-host:{tag}:{id}:contained")),
+    )?;
+    let out = BASE64.decode(check["stdout"].as_str().unwrap_or_default())?;
+    let text = String::from_utf8_lossy(&out);
+    let hashes: Vec<&str> = text.lines().map(str::trim).collect();
+    let proven = check["exitCode"] == 0
+        && hashes.len() == 2
+        && !hashes[0].is_empty()
+        && hashes[0] == hashes[1];
+    if proven {
+        Ok(())
+    } else {
+        Err(refused(format!(
+            "The work of chat {id} is not proven to be in main. Merge or drop it, then move again"
+        )))
+    }
+}
+
 /// Refuse what cannot move, then bring the folder and the history.
 fn copy_everything(
     host: &Host,
@@ -544,19 +581,7 @@ fn copy_everything(
         // A line that main does not hold would lose its work in the VM.
         let line = member["layrLine"].as_str().unwrap_or("main");
         if line != "main" {
-            let id = member["id"].as_str().unwrap_or_default();
-            let check = guest_call(
-                host,
-                "layr.exec",
-                &json!({"agentId":id,"argv":["sh","-c",
-                    "test \"$(layr merge-base head main)\" = \"$(layr rev-parse head)\""]}),
-                Some(&format!("vm-to-host:{tag}:{id}:contained")),
-            )?;
-            if check["exitCode"] != 0 {
-                return Err(refused(format!(
-                    "The work of chat {id} is not in main. Merge or drop it, then move again"
-                )));
-            }
+            contained(host, member, tag)?;
         }
     }
     let mut needed: u64 = files

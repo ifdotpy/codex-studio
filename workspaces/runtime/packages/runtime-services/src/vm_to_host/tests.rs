@@ -7,7 +7,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// A guest that serves files, `find` and the containment check from memory.
 struct Guest {
     files: BTreeMap<String, Vec<u8>>,
-    contained: AtomicBool,
+    /// Exit code and text of the containment check, and the users that ran it.
+    check: Mutex<(i32, String)>,
+    check_users: Mutex<Vec<String>>,
     corrupt: AtomicBool,
     calls: Mutex<Vec<String>>,
 }
@@ -47,9 +49,12 @@ impl GuestRpc for Guest {
                     .filter_map(Value::as_str)
                     .collect();
                 if argv[0] == "sh" {
-                    return Ok(
-                        json!({"exitCode": i32::from(!self.contained.load(Ordering::SeqCst)), "stdout": ""}),
-                    );
+                    self.check_users
+                        .lock()
+                        .unwrap()
+                        .push(params["agentId"].as_str().unwrap().to_owned());
+                    let (code, text) = self.check.lock().unwrap().clone();
+                    return Ok(json!({"exitCode": code, "stdout": BASE64.encode(text)}));
                 }
                 let (directory, pattern) = (argv[1], argv[argv.len() - 2]);
                 let found: Vec<u8> = self
@@ -175,7 +180,8 @@ async fn fixture(status: &str, free: fn(&Path) -> Option<u64>, needed: u64) -> F
     ]);
     let guest = Arc::new(Guest {
         files,
-        contained: AtomicBool::new(true),
+        check: Mutex::new((0, "h1\nh1\n".to_owned())),
+        check_users: Mutex::new(Vec::new()),
         corrupt: AtomicBool::new(false),
         calls: Mutex::new(Vec::new()),
     });
@@ -241,18 +247,61 @@ async fn refuses_when_the_disk_is_too_small_and_copies_nothing() {
     assert_eq!(stored(&f.store, "lead").await["executionMode"], "vm");
 }
 
-#[tokio::test]
-async fn refuses_a_worker_line_that_main_does_not_hold() {
+async fn containment_outcome(code: i32, text: &str) -> std::result::Result<Value, MoveError> {
     let f = fixture("idle", plenty, 0).await;
-    f.guest.contained.store(false, Ordering::SeqCst);
-    let error = move_to_host(&f.store, &f.host, "lead", "r1")
-        .await
-        .unwrap_err();
+    *f.guest.check.lock().unwrap() = (code, text.to_owned());
+    move_to_host(&f.store, &f.host, "lead", "r1").await
+}
+
+fn assert_not_proven(outcome: std::result::Result<Value, MoveError>) {
+    let error = outcome.unwrap_err();
     assert!(
-        matches!(&error, MoveError::Refused(text) if text.contains("not in main")),
+        matches!(&error, MoveError::Refused(text) if text.contains("not proven to be in main")),
         "{error}"
     );
-    assert_eq!(*f.files.brought.lock().unwrap(), 0);
+}
+
+#[tokio::test]
+async fn refuses_a_worker_line_that_main_does_not_hold() {
+    assert_not_proven(containment_outcome(0, "h1\nh2\n").await);
+}
+
+#[tokio::test]
+async fn refuses_a_containment_check_with_empty_output() {
+    assert_not_proven(containment_outcome(0, "").await);
+    assert_not_proven(containment_outcome(0, "\n\n").await);
+}
+
+#[tokio::test]
+async fn refuses_a_containment_check_that_failed_with_a_permission_error() {
+    assert_not_proven(containment_outcome(1, "").await);
+    // Even equal output cannot prove containment when the command failed.
+    assert_not_proven(containment_outcome(128, "h1\nh1\n").await);
+}
+
+#[tokio::test]
+async fn accepts_a_worker_line_with_equal_hashes() {
+    containment_outcome(0, "h1\nh1\n").await.unwrap();
+}
+
+#[tokio::test]
+async fn a_review_line_is_checked_as_the_lead() {
+    let f = fixture("idle", plenty, 0).await;
+    store_role(&f.store, "worker", "reviewer").await;
+    move_to_host(&f.store, &f.host, "lead", "r1").await.unwrap();
+    assert_eq!(*f.guest.check_users.lock().unwrap(), ["lead"]);
+}
+
+async fn store_role(store: &RuntimeStore, id: &str, role: &str) {
+    let mut record = stored(store, id).await;
+    record["role"] = json!(role);
+    store
+        .transaction_with(move |tx| -> std::result::Result<(), StoreError> {
+            AgentRepository::put(tx, &AgentRecord::from_value(record)?)?;
+            Ok(())
+        })
+        .await
+        .unwrap();
 }
 
 #[tokio::test]

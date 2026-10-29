@@ -1,4 +1,4 @@
-//! Switch an idle WT chat to native Layr in place. The chat keeps its record,
+//! Switch an idle WT or shared chat to native Layr in place. The chat keeps its record,
 //! transcript and provider thread; only its workspace fields change.
 //! The provider adapter carries the native session to the new cwd on the next resume.
 use super::{
@@ -89,12 +89,15 @@ fn admit(
         return Err(NativeLayrError::Refused("The chat was deleted".into()));
     }
     let lead = record["isLead"] == true;
-    if record["workspaceMode"] != "worktree"
-        || record["executionMode"] == "vm"
+    // A chat moved off the VM is "shared" in the project folder; it has no worktree to retire.
+    if !matches!(
+        record["workspaceMode"].as_str(),
+        Some("worktree" | "shared")
+    ) || record["executionMode"] == "vm"
         || !(lead || record["role"] == "implementer")
     {
         return Err(NativeLayrError::Refused(
-            "Only a lead or implementer chat in WT mode can switch to Layr".into(),
+            "Only a lead or implementer chat in WT or shared mode on this device can switch to Layr".into(),
         ));
     }
     crate::peer_conversion::idle(tx, std::slice::from_ref(&record), false)
