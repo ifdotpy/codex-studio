@@ -878,7 +878,7 @@ fn apply_stream_metrics(
 }
 
 /// The compact JSON length of `value` in bytes, counted without building the text.
-fn encoded_len(value: &Value) -> usize {
+pub(crate) fn encoded_len(value: &Value) -> usize {
     struct Count(usize);
     impl std::io::Write for Count {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {

@@ -15,6 +15,8 @@ use thiserror::Error;
 
 pub const POLL_SECONDS: f64 = 180.0;
 pub const MAX_RECORD_BYTES: usize = 8 * 1024 * 1024;
+#[cfg(test)]
+thread_local! { static REUSED_EMBEDDED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 #[derive(Debug, Error)]
 pub enum ContinuationError {
     #[error("invalid continuation snapshot at {0}")]
@@ -60,32 +62,63 @@ impl Snapshot {
         mut raw: Value,
         record: ContinuationRecord,
     ) -> Result<Self> {
-        if raw.to_string().len() > MAX_RECORD_BYTES {
+        if crate::analytics_capture::encoded_len(&raw) > MAX_RECORD_BYTES {
             return Err(ContinuationError::Invalid("/size".into()));
         }
-        let original = raw.clone();
-        raw["record"] = Value::Null;
-        let mut snapshot = match Self::from_records(raw) {
-            Ok(snapshot) => snapshot,
-            Err(_) => return Self::from_records(original),
+        let key = match &record {
+            ContinuationRecord::Usage(_) => Some("usageResume"),
+            ContinuationRecord::Capacity(_) => Some("capacityRetry"),
+            ContinuationRecord::Auth(_) => None,
         };
-        snapshot.record = original
-            .get("record")
-            .filter(|value| !value.is_null())
-            .cloned();
-        Arc::get_mut(&mut snapshot.typed)
+        let reuse =
+            key.filter(|key| raw.get("agent").and_then(|a| a.get(*key)) == raw.get("record"));
+        let embedded = reuse.map(|key| raw["agent"][key].take());
+        #[cfg(test)]
+        if reuse.is_some() {
+            REUSED_EMBEDDED.with(|count| count.set(count.get() + 1));
+        }
+        let raw_record = raw["record"].take();
+        let mut snapshot = match Self::from_records_inner(&raw) {
+            Ok(snapshot) => snapshot,
+            Err(_) => {
+                raw["record"] = raw_record;
+                if let (Some(key), Some(value)) = (reuse, embedded) {
+                    raw["agent"][key] = value;
+                }
+                return Self::from_records_inner(&raw);
+            }
+        };
+        snapshot.record = (!raw_record.is_null()).then_some(raw_record);
+        if let (Some(key), Some(value)) = (reuse, embedded) {
+            snapshot.agent[key] = value.clone();
+            snapshot.identity.extra.insert(key.to_owned(), value);
+        }
+        let typed = &mut Arc::get_mut(&mut snapshot.typed)
             .expect("new snapshot is uniquely owned")
-            .0
-            .record = Some(record);
+            .0;
+        match (&record, reuse) {
+            (ContinuationRecord::Usage(value), Some("usageResume")) => {
+                typed.agent.usage_resume = Some(value.clone())
+            }
+            (ContinuationRecord::Capacity(value), Some("capacityRetry")) => {
+                typed.agent.capacity_retry = Some(value.clone())
+            }
+            _ => {}
+        }
+        typed.record = Some(record);
         Ok(snapshot)
     }
     /// The only constructor. It accepts raw Python-written records, never trusted flags.
     pub fn from_records(raw: Value) -> Result<Self> {
-        if raw.to_string().len() > MAX_RECORD_BYTES {
+        if crate::analytics_capture::encoded_len(&raw) > MAX_RECORD_BYTES {
             return Err(ContinuationError::Invalid("/size".into()));
         }
-        let typed: ContinuationSnapshotRecord =
-            serde_json::from_value(raw.clone()).map_err(|_| invalid_snapshot(&raw))?;
+        Self::from_records_inner(&raw)
+    }
+    fn from_records_inner(raw: &Value) -> Result<Self> {
+        use serde::Deserialize;
+        let typed =
+            ContinuationSnapshotRecord::deserialize(raw).map_err(|_| invalid_snapshot(raw))?;
         let get_vec = |key: &str| {
             raw.get(key)
                 .and_then(Value::as_array)
@@ -100,7 +133,7 @@ impl Snapshot {
                 .into_iter()
                 .collect()
         };
-        let identity = serde_json::from_value(raw["agent"].clone())
+        let identity = AgentRecord::deserialize(&raw["agent"])
             .map_err(|_| ContinuationError::Invalid("/agent".into()))?;
         let snapshot = Self {
             identity,
@@ -721,6 +754,67 @@ pub(crate) fn native_thread_blocked(agent: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn checked_snapshot_reuses_matching_embedded_usage_and_capacity() {
+        use serde::Deserialize;
+        let usage = json!({"id":"u","accountKey":"a","threadId":"t","epoch":1.0,"turnId":"v","status":"scheduled","cause":"auth","failedAt":1,"future":{"x":[1]}});
+        let capacity = json!({"id":"c","accountKey":"a","threadId":"t","epoch":1,"turnId":"v","status":"scheduled","cause":"serverOverloaded","cwd":"","settings":{},"attempt":1,"maxAttempts":4});
+        for (key, record) in [("usageResume", usage), ("capacityRetry", capacity)] {
+            let mut raw = json!({"agent":{"id":"a","rootId":"a","epoch":1,"status":"failed","provider":"codex"},"record":record});
+            raw["agent"][key] = record.clone();
+            let checked = ContinuationRecord::deserialize(record.clone()).unwrap();
+            REUSED_EMBEDDED.with(|count| count.set(0));
+            let snapshot =
+                Snapshot::from_records_with_checked_record(raw.clone(), checked).unwrap();
+            REUSED_EMBEDDED.with(|count| assert_eq!(count.get(), 1));
+            assert_eq!(snapshot.agent, raw["agent"]);
+            assert_eq!(snapshot.record, Some(record.clone()));
+            assert_eq!(json!(snapshot.checked_record().unwrap()), record);
+            assert_eq!(snapshot.identity.extra.get(key), Some(&record));
+            assert_eq!(
+                match key {
+                    "usageResume" => json!(snapshot.agent_view().usage_resume.as_ref().unwrap()),
+                    _ => json!(snapshot.agent_view().capacity_retry.as_ref().unwrap()),
+                },
+                record
+            );
+            raw["agent"][key]["id"] = json!("other");
+            REUSED_EMBEDDED.with(|count| count.set(0));
+            let checked = ContinuationRecord::deserialize(record).unwrap();
+            Snapshot::from_records_with_checked_record(raw, checked).unwrap();
+            REUSED_EMBEDDED.with(|count| assert_eq!(count.get(), 0));
+        }
+    }
+
+    #[test]
+    fn checked_snapshot_keeps_invalid_embedded_and_size_error_order() {
+        use serde::Deserialize;
+        let record = json!({"id":"u","accountKey":"a","threadId":"t","epoch":1,"turnId":"v","status":"scheduled","cause":"auth","failedAt":1});
+        let mut raw = json!({"agent":{"id":"a","rootId":"a","epoch":1,"status":"failed","provider":"codex","usageResume":record},"record":record});
+        raw["agent"]["usageResume"]["status"] = json!(false);
+        let expected = Snapshot::from_records(raw.clone())
+            .err()
+            .unwrap()
+            .to_string();
+        let checked = ContinuationRecord::deserialize(record.clone()).unwrap();
+        assert_eq!(
+            Snapshot::from_records_with_checked_record(raw.clone(), checked)
+                .err()
+                .unwrap()
+                .to_string(),
+            expected
+        );
+        raw["agent"]["extra"] = json!("x".repeat(MAX_RECORD_BYTES));
+        let checked = ContinuationRecord::deserialize(record).unwrap();
+        assert_eq!(
+            Snapshot::from_records_with_checked_record(raw, checked)
+                .err()
+                .unwrap()
+                .to_string(),
+            "invalid continuation snapshot at /size"
+        );
+    }
 
     #[test]
     fn checked_updates_match_full_untagged_deserialization() {
