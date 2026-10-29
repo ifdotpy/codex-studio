@@ -26,14 +26,13 @@ async fn claim_retry(state: &State) -> String {
                 .transaction_with(move |tx| {
                     let mut row =
                         AgentRepository::get(tx, &AgentId::from(agent.as_str()))?.unwrap();
+                    row.in_flight = Some(false);
+                    row.auto_wake = Some(true);
                     for (key, value) in [
                         ("lastCompletedTurn", json!(PREVIOUS_TURN)),
-                        ("autoWake", json!(true)),
+
                         ("status", json!("completed")),
-                        ("inFlight", json!(false)),
-                    ] {
-                        row.extra.insert(key.into(), value);
-                    }
+                    ] { row.extra.insert(key.into(), value); }
                     row.extra.remove("startAttempt");
                     AgentRepository::put(tx, &row)?;
                     let raw = ContinuationRepository::snapshot(

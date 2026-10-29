@@ -556,9 +556,7 @@ async fn competing_workers_transfer_claim_to_destination_session() {
                 .transaction_with(move |tx| {
                     let mut record =
                         AgentRepository::get(tx, &AgentId::from(agent.as_str()))?.unwrap();
-                    record
-                        .extra
-                        .insert("accountKey".into(), json!("destination"));
+                    record.account_key = "destination".to_string();
                     AgentRepository::put(tx, &record)?;
                     Ok(())
                 })
@@ -1185,7 +1183,7 @@ pub(super) async fn scenario_workspace_retry_wakes_after_restart() {
                     let mut owner = AgentRepository::get(tx, &AgentId::from(id.as_str()))?.unwrap();
                     owner.id = AgentId::from("workspace-owner");
                     owner.status = studio_runtime_store::AgentStatus::Waiting;
-                    owner.extra.insert("autoWake".into(), json!(false));
+                    owner.auto_wake = Some(false);
                     owner
                         .extra
                         .insert("workspaceOperation".into(), json!("capture"));
@@ -1256,8 +1254,7 @@ async fn agent_preparations_run_concurrently() {
                 .transaction_with(move |tx| {
                     let mut row = AgentRepository::get(tx, &AgentId::from(a.as_str()))?.unwrap();
                     row.id = AgentId::from(neighbor.as_str());
-                    row.extra
-                        .insert("threadId".into(), json!("neighbor-thread"));
+                    row.thread_id = Some("neighbor-thread".to_string());
                     AgentRepository::put(tx, &row)?;
                     Ok(())
                 })
@@ -1306,7 +1303,7 @@ async fn workspace_pending_wakes_when_the_blocking_owner_commits() {
                     let mut owner = AgentRepository::get(tx, &AgentId::from(id.as_str()))?.unwrap();
                     owner.id = AgentId::from("workspace-owner");
                     owner.status = studio_runtime_store::AgentStatus::Waiting;
-                    owner.extra.insert("autoWake".into(), json!(false));
+                    owner.auto_wake = Some(false);
                     owner
                         .extra
                         .insert("workspaceOperation".into(), json!("capture"));

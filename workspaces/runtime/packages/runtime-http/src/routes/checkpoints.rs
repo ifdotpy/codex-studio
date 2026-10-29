@@ -804,7 +804,7 @@ async fn settle_restore_failure(
                         .extra
                         .insert("workspaceOperation".into(), json!("restore_recovery"));
                     agent.extra.insert("status".into(), json!("interrupted"));
-                    agent.extra.insert("autoWake".into(), json!(false));
+                    agent.auto_wake = Some(false);
                     agent.extra.insert("error".into(), json!(message));
                 } else if agent
                     .extra

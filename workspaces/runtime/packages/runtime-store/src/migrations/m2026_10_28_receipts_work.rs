@@ -118,11 +118,22 @@ fn counter(row: &contract::SourceReceipt) -> Result<Counter> {
     Ok(value)
 }
 
+// Freeze the source-era fields and validation independently of AgentRecord.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SourceAgent {
+    id: crate::records::AgentId,
+    epoch: i64,
+    account_key: Option<String>,
+    thread_id: Option<String>,
+    turn_id: Option<String>,
+}
+
 // Source-era refusal hashes depended on the historical run selector.
 // Keep that frozen mapping here; runtime reads the persisted active execution pointer.
 fn source_submission_identity(
     connection: &rusqlite::Connection,
-    agent: &crate::AgentRecord,
+    agent: &SourceAgent,
 ) -> crate::StoreResult<Option<(String, Option<String>)>> {
     let table_exists: bool = connection.query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_execution_runs')",
@@ -133,19 +144,9 @@ fn source_submission_identity(
         return Ok(None);
     }
 
-    let account = agent
-        .extra
-        .get("accountKey")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("default");
-    let thread = agent
-        .extra
-        .get("threadId")
-        .and_then(serde_json::Value::as_str);
-    let turn = agent
-        .extra
-        .get("turnId")
-        .and_then(serde_json::Value::as_str);
+    let account = agent.account_key.as_deref().unwrap_or("default");
+    let thread = agent.thread_id.as_deref();
+    let turn = agent.turn_id.as_deref();
     let row: Option<(String, String)> = if let Some(turn) = turn {
         let mut statement = connection.prepare_cached(
             "SELECT id, record FROM runtime_execution_runs \
@@ -226,7 +227,7 @@ fn move_counter(
     let Some(raw) = raw else {
         return Ok(budget.include(row.result.len()));
     };
-    let agent: crate::AgentRecord = serde_json::from_str(&raw).map_err(|_| invalid())?;
+    let agent: SourceAgent = serde_json::from_str(&raw).map_err(|_| invalid())?;
     if agent.id.0 != owner {
         return Err(invalid());
     }

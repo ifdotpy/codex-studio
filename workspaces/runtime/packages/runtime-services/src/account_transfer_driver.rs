@@ -1794,7 +1794,7 @@ mod request_tests {
             } else {
                 studio_runtime_store::AgentStatus::Idle
             };
-            lead.extra.insert("inFlight".into(), json!(busy));
+            lead.in_flight = Some(busy);
             AgentRepository::put(tx, &lead)?;
             Ok::<_, studio_runtime_store::StoreError>(())
         }))

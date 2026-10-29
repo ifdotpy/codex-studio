@@ -122,12 +122,7 @@ impl WorkItemsRepository {
             })?;
         if run.id != id
             || run.agent != agent.id.0
-            || !agent
-                .extra
-                .get("accountKey")
-                .map_or(run.account_key == "default", |value| {
-                    *value == run.account_key
-                })
+            || run.account_key != agent.account_key
             || run.epoch.as_number().as_i64() != Some(agent.epoch)
         {
             return Err(invalid());

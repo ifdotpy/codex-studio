@@ -110,7 +110,7 @@ fn monitor_account_sql(agent_param: usize) -> String {
 pub fn vm_actor(connection: &rusqlite::Connection, agent: &str) -> Result<bool, WorkerError> {
     let record = AgentRepository::get(connection, &AgentId::from(agent))?;
     Ok(record.is_some_and(|record| {
-        record.extra.get("executionMode").and_then(Value::as_str) == Some("vm")
+        record.execution_mode == Some(studio_runtime_store::AgentExecutionMode::Vm)
     }))
 }
 
@@ -183,11 +183,7 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
         )
         .map_err(|error| WorkerError::PreparationRefused(error.to_string()));
     }
-    let agent_account = agent_record
-        .extra
-        .get("accountKey")
-        .and_then(Value::as_str)
-        .unwrap_or("default");
+    let agent_account = agent_record.account_key.as_str();
     let common_identity = agent_account == call.scope.account
         && !studio_runtime_store::truthy(agent_record.extra.get("deletedAt"))
         && agent_record.extra.get("deleted") != Some(&json!(true));
@@ -244,7 +240,7 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
                 && source["epoch"].as_i64() == Some(actor.epoch)
                 && source["accountKey"].as_str() == Some(call.scope.account.as_str())
                 && source["threadId"].as_str()
-                    == agent_record.extra.get("threadId").and_then(Value::as_str)
+                    == agent_record.thread_id.as_deref()
                 && path_is_absolute(&snapshot["sourcePath"])
                 && path_is_absolute(&snapshot["copyPath"])
                 && snapshot["sourceSha256"]
@@ -279,9 +275,9 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
             Method::TurnInterrupt | Method::ThreadBackgroundTerminalsClean
         )
         && actor.epoch.checked_add(1) == Some(agent_record.epoch)
-        && agent_record.extra.get("autoWake") == Some(&json!(false));
+        && agent_record.auto_wake == Some(false);
     let thread_matches = call.params["threadId"].as_str().is_some_and(|thread| {
-        agent_record.extra.get("threadId").and_then(Value::as_str) == Some(thread)
+        agent_record.thread_id.as_deref() == Some(thread)
     });
     let thread_start = call.method == Method::ThreadStart && call.params.get("threadId").is_none();
     let ephemeral_turn = if call.method == Method::TurnStart {
@@ -462,7 +458,7 @@ fn authorize_retained_monitor_control(
         .iter()
         .all(|field| attempt.get(*field) == record["operation"].get(*field));
     Ok(current.epoch == actor.epoch
-        && current.extra.get("autoWake") == Some(&json!(true))
+        && current.auto_wake == Some(true)
         && !studio_runtime_store::truthy(current.extra.get("deletedAt"))
         && current.extra.get("deleted") != Some(&json!(true))
         && record["interactive"] == true
@@ -484,7 +480,7 @@ fn authorize_recovered_monitor_cancel(
     current: &studio_runtime_store::AgentRecord,
 ) -> Result<bool, WorkerError> {
     let inactive = current.epoch != actor.epoch
-        || current.extra.get("autoWake") != Some(&json!(true))
+        || current.auto_wake != Some(true)
         || studio_runtime_store::truthy(current.extra.get("deletedAt"))
         || current.extra.get("deleted") == Some(&json!(true));
     if call.method != Method::CommandExecTerminate || !inactive {
@@ -1584,9 +1580,9 @@ mod replay_identity_tests {
             let mut agent = studio_runtime_store::AgentRecord::from_value(json!({"provider":"codex","id":"agent-1","rootId":"agent-1","epoch":7,"threadId":"thread-1","status":"idle","autoWake":true}))?;
             AgentRepository::put(tx,&agent)?;
             assert!(authorize(tx,&request).expect("eligible handoff"));
-            agent.extra.insert("inFlight".into(),json!(true)); AgentRepository::put(tx,&agent)?;
+            agent.in_flight = Some(true); AgentRepository::put(tx,&agent)?;
             assert!(!authorize(tx,&request).expect("active handoff refused"));
-            agent.extra.insert("inFlight".into(),json!(false)); AgentRepository::put(tx,&agent)?;
+            agent.in_flight = Some(false); AgentRepository::put(tx,&agent)?;
             request.params["settings"]["pressureCleanup"] = json!(false);
             assert!(!authorize(tx,&request).expect("settings mismatch refused"));
             Ok::<_,StoreError>(())
