@@ -173,7 +173,7 @@ mod tests {
         assert!(
             check_invitation(&json!({"invitation":params["invitation"]}), &params, &first).is_ok()
         );
-        let mut changed = snapshot.clone();
+        let mut changed = snapshot;
         changed["servers"][0]["created"] = json!(1);
         assert!(approved_peer(&changed, &params, &approval).is_err());
         changed["servers"][0]["serverId"] = json!("other");
