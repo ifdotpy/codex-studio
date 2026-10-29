@@ -202,5 +202,8 @@ test-real-process-probe:
 test-live-handover:
     @cargo nextest run -j 4 -p studio-runtime-server --test integration --run-ignored only --test-threads 1 -E 'test(/^live_handover::/)'
 
+test-quarantine:
+    @cargo nextest run --build-jobs 4 -p studio-runtime-services --run-ignored only --test-threads 1 -E 'test(=wave7_p04_review::answer_and_cancellation_restart_at_each_real_store_queue_and_transport_boundary) | test(=workspace_ready_git::tests::worktree_children_spawned_together_in_one_repository_all_start) | test(=terminal_pty::tests::printf_output_is_delivered_losslessly)'
+
 test-host-exec-processes:
     @cargo nextest run -j 4 -p studio-runtime-server --test integration --run-ignored only --test-threads 1 -E 'test(/^host_exec_service::/)'

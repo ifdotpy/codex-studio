@@ -89,12 +89,18 @@ their removed Python commands are not current instructions.
 | Provider child reap timing, manual heavy              | `just test-provider-reap-timing`         |
 | Detached host_exec lifecycle and guest broker, manual | `just test-host-exec-processes`          |
 | Live handover with real servers, manual               | `just test-live-handover`                |
+| Load-sensitive Rust tests, manual heavy               | `just test-quarantine`                   |
 | Real launcher process probe (lsof), manual            | `just test-real-process-probe`           |
 | Many-agent scenario, manual heavy                     | `just test-rust-many-agents`             |
 | Continuation corpus and store faults, manual heavy    | `just test-rust-usage-resume-corpora`    |
 | Hidden Electron profile migration, manual heavy       | `just test-native-profile-migration`     |
 | Hidden Rust native WebView scenarios, manual heavy    | `just test-native-webview`               |
 | Hidden Rust native WebView scenarios, manual heavy    | `just test-native-webview`               |
+
+Three Rust tests failed only under load and are `#[ignore]` until
+[issue #616](https://github.com/ifdotpy/layr-studio/issues/616) is fixed; `just test-quarantine`
+runs them. Six browser specs left the smoke subset and run only in the full
+browser tier (`just test-browser`, `just test-heavy`) until the same issue is fixed.
 
 The fast guest wrapper tests use an injected executor for ordered results,
 failure counts, and broken-pool cleanup. The actual guest suite remains in the

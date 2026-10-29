@@ -2120,6 +2120,7 @@ async fn reserve_provision(store: &std::sync::Arc<RuntimeStore>, id: &str) -> Pr
 }
 
 #[tokio::test]
+#[ignore = "heavy tier: just test-quarantine (flaky under load, issue #616)"]
 async fn worktree_children_spawned_together_in_one_repository_all_start() {
     const CHILDREN: usize = 4;
     // The Git budget of one phase. The test holds the repository lock longer

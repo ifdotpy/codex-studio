@@ -171,7 +171,7 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
   assert.match(comprehensive.command, /test:browser:smoke:prepared/);
 });
 
-test("real IndexedDB staging belongs to provisioned browser smoke, not Node units", () => {
+test("real IndexedDB staging belongs to the full browser tier, not Node units or smoke (issue #616)", () => {
   const web = "workspaces/client/apps/web";
   const spec = readFileSync(
     `${web}/tests/sync/entity-transfer-storage-browser.spec.ts`,
@@ -186,7 +186,7 @@ test("real IndexedDB staging belongs to provisioned browser smoke, not Node unit
   assert.ok(smoke);
   const grep = smoke.match(/--grep "([^"]+)"/)?.[1];
   assert.ok(grep, "package.json owns the smoke selector");
-  assert.match(title, new RegExp(grep));
+  assert.doesNotMatch(title, new RegExp(grep));
   assert.match(spec, /from "\.\.\/playwright\.ts"/);
   assert.equal(
     existsSync(`${web}/src/sync/entityTransfer.storage.test.ts`),
