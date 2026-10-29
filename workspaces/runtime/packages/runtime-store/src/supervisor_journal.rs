@@ -34,6 +34,7 @@ pub type Result<T> = std::result::Result<T, JournalError>;
 
 /// Sole DDL owner for both supervisor structure validation and installation.
 const SUPERVISOR_SCHEMA: &str = include_str!("supervisor_schema.sql");
+const WRITTEN_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS operation_writes(handle TEXT NOT NULL,operation_id TEXT NOT NULL,PRIMARY KEY(handle,operation_id));";
 
 #[derive(Clone, Copy)]
 pub(crate) enum SchemaPresence {
@@ -44,6 +45,7 @@ pub(crate) enum SchemaPresence {
 pub(crate) fn validate_schema(db: &Connection, presence: SchemaPresence) -> crate::StoreResult<()> {
     let expected = Connection::open_in_memory()?;
     expected.execute_batch(SUPERVISOR_SCHEMA)?;
+    expected.execute_batch(WRITTEN_SCHEMA)?;
     let mut tables = expected.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")?;
     for name in tables.query_map([], |row| row.get::<_, String>(0))? {
         let name = name?;
@@ -382,6 +384,44 @@ impl SupervisorJournal {
             None => Ok(json!({"accepted":false,"reason":"operation_missing"})),
         }
     }
+    pub fn mark_written(&self, handle: &str, operation: &str) -> Result<()> {
+        self.transaction(|tx, _| {
+            let changed = tx.execute("INSERT OR IGNORE INTO operation_writes(handle,operation_id) SELECT handle,operation_id FROM operations WHERE handle=?1 AND operation_id=?2", params![handle, operation])?;
+            if changed == 0 {
+                let exists: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM operation_writes WHERE handle=?1 AND operation_id=?2)", params![handle,operation], |row| row.get(0))?;
+                if !exists { return Err(Refusal("Supervisor operation is not accepted").into()); }
+            }
+            Ok(((), None))
+        })
+    }
+
+    pub fn provider_operation_status(
+        &self,
+        handle: &str,
+        operation: &str,
+    ) -> Result<studio_runtime_providers::supervisor_protocol::ProviderOperationStatus> {
+        use studio_runtime_providers::supervisor_protocol::{
+            ProviderOperationState, ProviderOperationStatus,
+        };
+        let db = self.lock()?;
+        let record = db.query_row("SELECT o.generation,h.generation,o.native_id,EXISTS(SELECT 1 FROM operation_writes w WHERE w.handle=o.handle AND w.operation_id=o.operation_id) FROM operations o JOIN handles h ON h.id=o.handle WHERE o.handle=?1 AND o.operation_id=?2", params![handle,operation], |row| Ok((row.get::<_,Option<i64>>(0)?,row.get::<_,i64>(1)?,stored_native_id(row.get_ref(2)?),row.get::<_,bool>(3)?))).optional()?;
+        match record {
+            Some((Some(generation), current, native_id, written)) if generation == current => {
+                Ok(ProviderOperationStatus {
+                    state: if written {
+                        ProviderOperationState::Written
+                    } else {
+                        ProviderOperationState::Accepted
+                    },
+                    native_id: native_id?,
+                })
+            }
+            _ => Ok(ProviderOperationStatus {
+                state: ProviderOperationState::Unknown,
+                native_id: None,
+            }),
+        }
+    }
     /// Candidate sequence stays fixed across retries and even a lost commit confirmation.
     pub fn append(
         &self,
@@ -531,6 +571,7 @@ impl SupervisorJournal {
             snapshot(tx, handle)?.retire(handle, generation, exited, readers_done)?;
             for table in [
                 "events",
+                "operation_writes",
                 "operations",
                 "child_identities",
                 "degraded_handles",
@@ -634,9 +675,69 @@ pub(crate) fn prepare_schema(db: &Transaction<'_>) -> crate::StoreResult<()> {
     Ok(())
 }
 
+pub(crate) fn prepare_written_schema(db: &Transaction<'_>) -> crate::StoreResult<()> {
+    db.execute_batch(WRITTEN_SCHEMA)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn supervisor_status_tracks_outbox_operation_from_accept_to_write() {
+        #[derive(serde::Serialize)]
+        struct Message {
+            method: &'static str,
+            id: i64,
+        }
+        #[derive(serde::Deserialize, Debug, PartialEq)]
+        #[serde(rename_all = "snake_case")]
+        enum State {
+            Unknown,
+            Accepted,
+            Written,
+        }
+        #[derive(serde::Deserialize)]
+        struct Status {
+            state: State,
+        }
+        let root = tempfile::tempdir().expect("journal root");
+        let journal = SupervisorJournal::open(root.path()).expect("journal");
+        journal
+            .reserve("account:a", "signature", 1.0)
+            .expect("reserve");
+        journal
+            .opened("account:a", "signature", 41, "start", None)
+            .expect("open");
+        let status = || -> State {
+            let raw = journal
+                .provider_operation_status("account:a", "outbox:effect")
+                .expect("status");
+            serde_json::from_str::<Status>(&serde_json::to_string(&raw).expect("serialize status"))
+                .expect("typed status")
+                .state
+        };
+        assert_eq!(status(), State::Unknown);
+        let message = crate::projection_value(&Message {
+            method: "turn/start",
+            id: 5,
+        });
+        journal
+            .accept(
+                "account:a",
+                "outbox:effect",
+                Some(&NativeId::Integer(5)),
+                &message,
+                2.0,
+            )
+            .expect("accept");
+        assert_eq!(status(), State::Accepted);
+        journal
+            .mark_written("account:a", "outbox:effect")
+            .expect("written");
+        assert_eq!(status(), State::Written);
+    }
 
     #[test]
     fn journal_epoch_names_one_handle_row_of_one_journal() {

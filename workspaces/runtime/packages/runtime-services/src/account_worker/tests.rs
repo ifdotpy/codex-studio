@@ -11,6 +11,7 @@ mod claude_preparation;
 #[cfg(unix)]
 mod continuation_start;
 mod disconnected_unknown_start;
+mod unclean_history;
 mod exited_generation_callback;
 mod idle_unload;
 mod input_origin;

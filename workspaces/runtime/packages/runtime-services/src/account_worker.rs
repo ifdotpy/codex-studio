@@ -1411,6 +1411,7 @@ impl Worker {
                     account: self.account.clone(),
                     scope: self.retained_session.scope().clone(),
                     session: self.retained_session.clone(),
+                    control: self.session.control.clone(),
                     commands: self.commands.clone(),
                 };
                 self.restart_recovery = Some(restart_recovery::start_first_pass(first_pass));

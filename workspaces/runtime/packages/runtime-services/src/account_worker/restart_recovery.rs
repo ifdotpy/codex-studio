@@ -28,6 +28,7 @@ pub(super) struct FirstPass {
     pub(super) account: String,
     pub(super) scope: ConnectionScope,
     pub(super) session: super::retained::RetainedSessionPort,
+    pub(super) control: crate::provider_session_task::SessionControl,
     pub(super) commands: tokio::sync::mpsc::Sender<AccountCommand>,
 }
 
@@ -61,6 +62,7 @@ pub(super) fn start_first_pass(first_pass: FirstPass) -> tokio::task::JoinHandle
             &first_pass.account,
             request_scope,
             first_pass.session.clone(),
+            first_pass.control.clone(),
         )
         .await;
         if let Some(streams) = result.streams
@@ -108,17 +110,71 @@ pub(super) fn start_first_pass(first_pass: FirstPass) -> tokio::task::JoinHandle
     })
 }
 
+async fn probe_provider_calls(
+    store: &RuntimeStore,
+    account: &str,
+    scope: &ConnectionScope,
+    control: &crate::provider_session_task::SessionControl,
+) -> Result<(), RecoveryError> {
+    use studio_runtime_providers::supervisor_protocol::{NativeId, ProviderOperationState};
+    let owner = account.to_owned();
+    let rows = store
+        .read_async("restart provider effects", move |tx| {
+            super::store::account_obligations(tx, &owner)
+        })
+        .await
+        .map_err(|_| RecoveryError::CommitFailed)?;
+    for row in rows {
+        if row.stream_id.as_deref() != Some(account)
+            || row.generation != i64::try_from(scope.generation).ok()
+        {
+            continue;
+        }
+        let status = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            control.operation_status(studio_runtime_process::OperationId(row.id.clone())),
+        )
+        .await;
+        let Ok(Ok(status)) = status else {
+            continue;
+        };
+        if status.state != ProviderOperationState::Written {
+            continue;
+        }
+        let remote = match status.native_id {
+            Some(NativeId::Integer(id)) => u64::try_from(id).ok(),
+            _ => None,
+        };
+        let account = account.to_owned();
+        store
+            .transaction_with(move |tx| {
+                super::store::record_supervisor_written(
+                    tx,
+                    &account,
+                    &row.id,
+                    row.generation,
+                    remote,
+                )
+            })
+            .await
+            .map_err(|_| RecoveryError::CommitFailed)?;
+    }
+    Ok(())
+}
+
 async fn reconcile_first_pass(
     store: Arc<RuntimeStore>,
     account: &str,
     scope: ConnectionScope,
     session: super::retained::RetainedSessionPort,
+    control: crate::provider_session_task::SessionControl,
 ) -> FirstPassResult {
     // The cursor advances past located refusals. Only a fatal error stops the sweep.
     let mut cursor = RecoveryCursor::sweep();
     let mut recovered = Vec::new();
     let mut recovered_streams = None;
     let result = async {
+        probe_provider_calls(&store, account, &scope, &control).await?;
         while !cursor.swept() {
             let jobs = match load_recovery_jobs(&store, account, &mut cursor).await {
                 Ok(jobs) => jobs,
@@ -133,7 +189,7 @@ async fn reconcile_first_pass(
             for job in jobs {
                 let agent = job.agent().record()["id"].as_str().map(str::to_owned);
                 let identity = job.agent().connection_recovery_id();
-                match reconcile_job(&store, account, &scope, &session, job).await {
+                match reconcile_job(&store, account, &scope, &session, &control, job).await {
                     Ok(Some((agent, epoch, outcome))) => {
                         if matches!(outcome.outcome, RecoveryOutcome::Applied(_)) {
                             recovered.push((agent, epoch));
@@ -176,6 +232,7 @@ async fn reconcile_job(
     account: &str,
     scope: &ConnectionScope,
     session: &super::retained::RetainedSessionPort,
+    control: &crate::provider_session_task::SessionControl,
     job: RecoveryJob,
 ) -> Result<Option<(String, i64, RecoveryEffectResult)>, RecoveryError> {
     // Restart and provider loss share the same guarded native-history pass.
@@ -210,9 +267,8 @@ async fn reconcile_job(
     };
     let snapshot = match &job {
         RecoveryJob::Turn(snapshot)
-            if snapshot.record()["restartRecovery"]["stage"] == "held"
-                && !snapshot.record()["contextRepairWait"].is_null()
-                && snapshot.eligibility().unconfirmed_start =>
+            if snapshot.eligibility().unconfirmed_start
+                && (snapshot.is_unclean_start() || snapshot.restart_input_wait()) =>
         {
             snapshot
         }
@@ -221,6 +277,25 @@ async fn reconcile_job(
             return Ok(None);
         }
     };
+    let unclean_start = snapshot.is_unclean_start();
+    if unclean_start {
+        if let Ok(details) =
+            serde_json::from_str::<HeldStartDetails>(&snapshot.record().to_string())
+        {
+            let attempt = details.start_attempt.id;
+            let operation = format!(
+                "account:{}:{}:{}",
+                account,
+                attempt,
+                studio_runtime_providers::Method::TurnStart.as_str()
+            );
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                control.operation_status(studio_runtime_process::OperationId(operation)),
+            )
+            .await;
+        }
+    }
     let agent = snapshot.record()["id"]
         .as_str()
         .ok_or(RecoveryError::CommitFailed)?
@@ -282,6 +357,9 @@ async fn reconcile_job(
         .await;
     scan.finish(&selected, std::time::Instant::now(), &outcome)?;
     let outcome = outcome?;
+    if unclean_start {
+        return Ok(None);
+    }
     Ok(Some((agent, epoch, outcome)))
 }
 
@@ -423,6 +501,39 @@ async fn claim_automatic_check(
     .await
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HeldStartDetails {
+    id: String,
+    epoch: i64,
+    account_key: Option<String>,
+    thread_id: String,
+    start_attempt: HeldAttempt,
+}
+#[derive(serde::Deserialize)]
+struct HeldAttempt {
+    id: String,
+    events: Vec<String>,
+}
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HistoryTurn {
+    id: String,
+    client_user_message_id: Option<String>,
+    items: Vec<HistoryItem>,
+}
+#[derive(serde::Deserialize)]
+#[serde(tag = "type")]
+enum HistoryItem {
+    #[serde(rename = "userMessage")]
+    UserMessage {
+        #[serde(rename = "clientId")]
+        client_id: Option<String>,
+    },
+    #[serde(other)]
+    Other,
+}
+
 #[derive(Default)]
 pub(super) struct RestartInputCompletion {}
 impl CompletionWriter for RestartInputCompletion {
@@ -447,6 +558,52 @@ impl CompletionWriter for RestartInputCompletion {
         let RecoveryAction::AcceptStart { turn } = action else {
             return Err(RecoveryError::EffectsUnavailable);
         };
+        if expected.is_unclean_start() {
+            let details: HeldStartDetails = serde_json::from_str(&expected.record().to_string())
+                .map_err(|_| RecoveryError::CommitFailed)?;
+            let history: HistoryTurn =
+                serde_json::from_str(&turn.to_string()).map_err(|_| RecoveryError::CommitFailed)?;
+            if details.account_key.as_deref().unwrap_or("default") != scope.account {
+                return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Superseded));
+            }
+            let first = details
+                .start_attempt
+                .events
+                .first()
+                .ok_or(RecoveryError::CommitFailed)?;
+            if history.client_user_message_id.as_deref() != Some(first.as_str())
+                && !history.items.iter().any(|item| matches!(item, HistoryItem::UserMessage { client_id: Some(id) } if id == first))
+            {
+                return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Unconfirmed));
+            }
+            let accepted = SchedulerRepository::settle_unclean_start(
+                tx,
+                &studio_runtime_store::TurnAttemptIdentity {
+                    agent_id: details.id,
+                    epoch: details.epoch,
+                    attempt_id: details.start_attempt.id,
+                },
+                &details.thread_id,
+                first,
+                &history.id,
+            )?;
+            #[derive(serde::Serialize)]
+            #[serde(rename_all = "camelCase")]
+            struct Accepted<'a> {
+                status: &'static str,
+                turn_id: &'a str,
+            }
+            return Ok(RecoveryEffectResult::plain(if accepted {
+                RecoveryOutcome::Applied(crate::recovery::RecoveryReceipt::Applied(
+                    studio_runtime_store::projection_value(&Accepted {
+                        status: "accepted",
+                        turn_id: &history.id,
+                    }),
+                ))
+            } else {
+                RecoveryOutcome::Superseded
+            }));
+        }
         let record = expected.record();
         let agent_id = record["id"].as_str().ok_or(RecoveryError::CommitFailed)?;
         let epoch = record["epoch"]

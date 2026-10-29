@@ -91,6 +91,34 @@ impl RecoverySnapshot {
             })
             .unwrap_or(&NULL_VALUE)
     }
+    pub(crate) fn restart_input_wait(&self) -> bool {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Marker {
+            stage: Option<String>,
+        }
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Record {
+            restart_recovery: Option<Marker>,
+            context_repair_wait: Option<serde::de::IgnoredAny>,
+        }
+        serde_json::from_str::<Record>(&self.agent.to_string())
+            .ok()
+            .is_some_and(|record| {
+                record
+                    .restart_recovery
+                    .and_then(|marker| marker.stage)
+                    .as_deref()
+                    == Some("held")
+                    && record.context_repair_wait.is_some()
+            })
+    }
+
+    pub(crate) fn is_unclean_start(&self) -> bool {
+        unclean_start_candidate(&self.agent.to_string()) && clear(&self.agent)
+    }
+
     pub fn eligibility(&self) -> Eligibility {
         eligibility(&self.agent)
     }
@@ -225,6 +253,99 @@ fn events_valid(t: &Value) -> bool {
 fn scope(a: &Value) -> Value {
     json!({"id":a["id"],"accountKey":a["accountKey"],"epoch":a["epoch"],"threadId":a["threadId"]})
 }
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UncleanStartCandidate {
+    epoch: i64,
+    account_key: Option<String>,
+    thread_id: Option<String>,
+    status: String,
+    in_flight: Option<bool>,
+    auto_wake: Option<bool>,
+    start_attempt: UncleanAttempt,
+    start_outcome_hold: UncleanHold,
+    deleted_at: Option<serde::de::IgnoredAny>,
+    native_failure_hold: Option<bool>,
+    account_transfer_id: Option<String>,
+    workspace_operation: Option<serde::de::IgnoredAny>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UncleanAttempt {
+    id: String,
+    epoch: i64,
+    account_key: Option<String>,
+    thread_id: Option<String>,
+    submitted: bool,
+    events: Vec<String>,
+    turn_id: Option<String>,
+    observed_turn_id: Option<String>,
+    action: Option<serde::de::IgnoredAny>,
+    active_at_reservation: Option<bool>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UncleanHold {
+    stage: String,
+    reason: Option<String>,
+    attempt_id: Option<String>,
+}
+
+fn unclean_start_candidate(raw: &str) -> bool {
+    let Ok(candidate) = serde_json::from_str::<UncleanStartCandidate>(raw) else {
+        return false;
+    };
+    let attempt = &candidate.start_attempt;
+    let hold = &candidate.start_outcome_hold;
+    let mut events = std::collections::BTreeSet::new();
+    candidate.status == "interrupted"
+        && candidate.in_flight == Some(false)
+        && candidate.auto_wake == Some(false)
+        && candidate.deleted_at.is_none()
+        && candidate.native_failure_hold != Some(true)
+        && candidate.account_transfer_id.is_none()
+        && candidate.workspace_operation.is_none()
+        && candidate
+            .thread_id
+            .as_deref()
+            .is_some_and(|thread| !thread.is_empty())
+        && attempt
+            .thread_id
+            .as_ref()
+            .is_none_or(|thread| Some(thread) == candidate.thread_id.as_ref())
+        && candidate.account_key.as_deref().unwrap_or("default")
+            == attempt.account_key.as_deref().unwrap_or("default")
+        && candidate.epoch == attempt.epoch
+        && !attempt.id.is_empty()
+        && !attempt.submitted
+        && attempt.turn_id.is_none()
+        && attempt.observed_turn_id.is_none()
+        && attempt.action.is_none()
+        && attempt.active_at_reservation != Some(true)
+        && !attempt.events.is_empty()
+        && attempt
+            .events
+            .iter()
+            .all(|event| !event.is_empty() && events.insert(event))
+        && hold.stage == "held"
+        && hold.reason.as_deref()
+            == Some(studio_runtime_store::SchedulerRepository::UNCLEAN_START_HOLD)
+        && hold.attempt_id.as_deref() == Some(attempt.id.as_str())
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HeldStartRecord {
+    start_outcome_hold: Option<HeldStartStage>,
+}
+#[derive(serde::Deserialize)]
+struct HeldStartStage {
+    stage: String,
+}
+
 fn eligibility(a: &Value) -> Eligibility {
     let r = &a["restartRecovery"];
     let t = a
@@ -244,8 +365,12 @@ fn eligibility(a: &Value) -> Eligibility {
         && has(a, "threadId")
         && !has(a, "deletedAt");
     let restart_input_wait = r["stage"] == "held" && has(a, "contextRepairWait");
-    let unconfirmed_start =
-        (has(a, "inFlight") || a["startOutcomeHold"]["stage"] == "held" || restart_input_wait)
+    let held_start = serde_json::from_str::<HeldStartRecord>(&a.to_string())
+        .ok()
+        .and_then(|record| record.start_outcome_hold)
+        .is_some_and(|hold| hold.stage == "held");
+    let unconfirmed_start = (unclean_start_candidate(&a.to_string()) && clear(a))
+        || (has(a, "inFlight") || held_start || restart_input_wait)
             && has(a, "autoWake")
             && !has(a, "turnId")
             && has(a, "threadId")

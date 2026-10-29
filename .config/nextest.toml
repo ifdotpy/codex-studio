@@ -83,6 +83,11 @@ inherits = "ci"
 # Retained watcher registrations and analytics connections avoid repeated tree walks and opens.
 # Reviewer permissions stay read-only under yolo across preparation, turns, and monitors.
 default-filter = '''
+    (package(=studio-runtime-services) & kind(lib) & test(unclean_held_start_recovers_exact_input_through_worker_history)) |
+    (package(=studio-runtime-services) & kind(lib) & test(supervisor_written_is_fenced_to_the_original_provider_generation)) |
+    (package(=studio-runtime-store) & kind(lib) & test(supervisor_status_tracks_outbox_operation_from_accept_to_write)) |
+    (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(held_unclean_start_is_eligible_for_exact_history_only)) |
+    (package(=studio-runtime-process) & kind(test) & binary(=integration) & test(supervisor_outbox_status_reports_unknown_then_written)) |
     ((package(=studio-runtime-store) | package(=studio-runtime-services)) & kind(lib) & test(unclean_)) |
     (package(=studio-runtime-server) & kind(bin) & binary(=studio-runtime-server) & test(clean_marker_is_consumed_before_the_next_run)) |
     (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(unclean_restart_holds_title_after_lost_submission_commit)) |
@@ -333,6 +338,11 @@ platform = 'cfg(target_os = "linux")'
 # Desktop projection witness: Keep private native rotation receipts on disk while validating the public status strictly.
 # Reviewer permissions stay read-only under yolo across preparation, turns, and monitors.
 default-filter = '''
+    (package(=studio-runtime-services) & kind(lib) & test(unclean_held_start_recovers_exact_input_through_worker_history)) |
+    (package(=studio-runtime-services) & kind(lib) & test(supervisor_written_is_fenced_to_the_original_provider_generation)) |
+    (package(=studio-runtime-store) & kind(lib) & test(supervisor_status_tracks_outbox_operation_from_accept_to_write)) |
+    (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(held_unclean_start_is_eligible_for_exact_history_only)) |
+    (package(=studio-runtime-process) & kind(test) & binary(=integration) & test(supervisor_outbox_status_reports_unknown_then_written)) |
     ((package(=studio-runtime-store) | package(=studio-runtime-services)) & kind(lib) & test(unclean_)) |
     (package(=studio-runtime-server) & kind(bin) & binary(=studio-runtime-server) & test(clean_marker_is_consumed_before_the_next_run)) |
     (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(unclean_restart_holds_title_after_lost_submission_commit)) |
