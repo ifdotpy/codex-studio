@@ -2309,7 +2309,7 @@ pub fn local_server_id(root: &Path) -> StoreResult<Option<String>> {
     };
     let server_id = identity
         .is_object()
-        .then(|| serde_json::from_value::<LocalPublicServerIdentity>(identity).ok())
+        .then(|| <LocalPublicServerIdentity as serde::Deserialize>::deserialize(identity).ok())
         .flatten()
         .and_then(|identity| identity.server_id)
         .ok_or_else(|| invalid_local_identity("missing serverId"))?;

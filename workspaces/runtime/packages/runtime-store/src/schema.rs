@@ -594,7 +594,7 @@ fn verify_analytics_migration(canvas: &Connection, analytics: &Connection) -> St
         )
     })?;
     let complete = decoded.is_object()
-        && serde_json::from_value::<AnalyticsFileMigrationMarker>(decoded)
+        && <AnalyticsFileMigrationMarker as serde::Deserialize>::deserialize(decoded)
             .ok()
             .and_then(|marker| marker.phase)
             .as_deref()

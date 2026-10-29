@@ -2,6 +2,7 @@
 use crate::schema::SchemaRequirements;
 use crate::{AgentId, AgentRepository, ClaudeAttemptRecord, StoreError, StoreResult, Transaction};
 use rusqlite::{OptionalExtension, params};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 pub struct ClaudeRetryRecords {
@@ -25,8 +26,7 @@ impl ClaudeRetryRepository {
         };
         let attempt: Value = serde_json::from_str(&raw)?;
         validate_attempt(&attempt)?;
-        let attempt: ClaudeAttemptRecord =
-            serde_json::from_value(attempt).map_err(|_| invalid("attempt"))?;
+        let attempt = ClaudeAttemptRecord::deserialize(attempt).map_err(|_| invalid("attempt"))?;
         if attempt.id() != attempt_id {
             return Err(invalid(attempt_id));
         }
@@ -76,7 +76,7 @@ impl ClaudeRetryRepository {
         agent: &str,
         attempt: &ClaudeAttemptRecord,
     ) -> StoreResult<()> {
-        let value = serde_json::to_value(attempt)?;
+        let value = attempt.serialize(serde_json::value::Serializer)?;
         validate_attempt(&value)?;
         let id = attempt.id();
         let changed=tx.execute("UPDATE runtime_execution_attempts SET record=?1 WHERE id=?2 AND run IN (SELECT id FROM runtime_execution_runs WHERE agent=?3)",params![value.to_string(),id,agent])?;

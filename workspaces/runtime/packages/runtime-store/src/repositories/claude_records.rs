@@ -84,8 +84,10 @@ mod tests {
             json!({"id":"attempt","events":[],"submitted":false}),
             json!({"id":"attempt","events":["event"],"submitted":true}),
         ] {
-            let record: ClaudeAttemptRecord = serde_json::from_value(input.clone()).unwrap();
-            assert_eq!(serde_json::to_value(&record).unwrap(), input);
+            let record = ClaudeAttemptRecord::deserialize(input.clone()).unwrap();
+            let encoded = serde_json::to_string(&record).unwrap();
+            let saved: Value = serde_json::from_str(&encoded).unwrap();
+            assert_eq!(saved, input);
             for field in ["id", "events", "submitted", "future"] {
                 assert!(record.matches_field(field, input.get(field)));
             }
