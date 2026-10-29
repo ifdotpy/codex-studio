@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 pub use crate::persistence::WorkStatus;
+pub mod agent_projection;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq, JsonSchema)]
 #[serde(rename_all = "snake_case")]

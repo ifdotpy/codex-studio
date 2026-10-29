@@ -679,6 +679,59 @@ impl JsonRecord for AgentRecord {
     fn record_key(&self) -> Option<&Self::Id> {
         Some(&self.id)
     }
+
+    fn decode_stored(connection: &Connection, row_id: &str, encoded: &str) -> StoreResult<Self> {
+        let projection = decode_agent_projection(connection, row_id, encoded)?;
+        let id = AgentId(projection.id.clone());
+        let root_id = AgentId(projection.root_id.clone());
+        let epoch = projection.epoch.as_i64();
+        let status = AgentStatus::parse(&projection.status);
+        let Value::Object(mut fields) = serde_json::to_value(projection)? else {
+            return Err(invalid_agent_field(row_id, "", "record_decode", None));
+        };
+        for key in ["id", "rootId", "epoch", "status"] {
+            fields.remove(key);
+        }
+        fn field<T: DeserializeOwned>(
+            fields: &mut serde_json::Map<String, Value>,
+            key: &str,
+        ) -> Result<Option<T>, serde_json::Error> {
+            fields
+                .remove(key)
+                .map(serde_json::from_value::<Option<T>>)
+                .transpose()
+                .map(Option::flatten)
+        }
+        let decode = |_: serde_json::Error| invalid_agent_field(row_id, "", "record_decode", None);
+        let title_job = field(&mut fields, "titleJob").map_err(decode)?;
+        let start_outcome_hold = field(&mut fields, "startOutcomeHold").map_err(decode)?;
+        let fired_events = fields
+            .remove("firedEvents")
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(decode)?
+            .unwrap_or_default();
+        let native_review_thread = field(&mut fields, "nativeReviewThread").map_err(decode)?;
+        let vm_launch = field(&mut fields, "vmLaunch").map_err(decode)?;
+        let credential_copy = field(&mut fields, "credentialCopy").map_err(decode)?;
+        let vm_auth_bootstrap = field(&mut fields, "vmAuthBootstrap").map_err(decode)?;
+        let native_release = field(&mut fields, "nativeRelease").map_err(decode)?;
+        Ok(Self {
+            id,
+            root_id,
+            epoch,
+            status,
+            title_job,
+            start_outcome_hold,
+            fired_events,
+            native_review_thread,
+            vm_launch,
+            credential_copy,
+            vm_auth_bootstrap,
+            native_release,
+            extra: fields.into_iter().collect(),
+        })
+    }
 }
 
 pub use studio_runtime_schema::records::WorkStatus;
@@ -1796,15 +1849,10 @@ pub(crate) fn decode_value(
 }
 
 pub(crate) fn decode_record<R: JsonRecord>(
-    connection: &Connection,
+    _connection: &Connection,
     row_id: &str,
     encoded: &str,
 ) -> StoreResult<R> {
-    if R::TABLE == AgentRecord::TABLE {
-        // The checked value already carries the typed fields; decode moves it.
-        return serde_json::from_value::<R>(decode_agent_value(connection, row_id, encoded)?)
-            .map_err(|_| invalid_agent_field(row_id, "", "record_decode", None));
-    }
     let invalid = || crate::StoreError::InvalidStoredObject {
         table: R::TABLE,
         id: row_id.to_owned(),
@@ -1836,9 +1884,18 @@ pub fn decode_agent_value(
     row_id: &str,
     encoded: &str,
 ) -> StoreResult<Value> {
+    let projection = decode_agent_projection(connection, row_id, encoded)?;
+    serde_json::to_value(projection).map_err(Into::into)
+}
+
+fn decode_agent_projection(
+    connection: &Connection,
+    row_id: &str,
+    encoded: &str,
+) -> StoreResult<studio_runtime_schema::records::agent_projection::AgentProjection> {
     let mut value = parse_agent_value(row_id, encoded)?;
     crate::agent_volatile::merge(connection, row_id, &mut value)?;
-    validate_agent_value(row_id, value)
+    checked_agent_projection(row_id, &value)
 }
 
 pub(crate) fn parse_agent_value(row_id: &str, encoded: &str) -> StoreResult<Value> {
@@ -1859,36 +1916,34 @@ pub(crate) fn parse_agent_value(row_id: &str, encoded: &str) -> StoreResult<Valu
 }
 
 pub(crate) fn validate_agent_value(row_id: &str, value: Value) -> StoreResult<Value> {
-    /// The fields [`AgentRecord`] types; every other field is free JSON.
-    #[derive(Deserialize)]
-    struct TypedFields<'a> {
-        id: &'a str,
-        #[serde(rename = "rootId")]
-        _root_id: &'a str,
-        #[serde(rename = "epoch")]
-        _epoch: i64,
-        #[serde(rename = "status")]
-        _status: &'a str,
-    }
-    if !studio_runtime_schema::validate(AgentRecord::SCHEMA, &value)
-        .map_err(crate::StoreError::SchemaValidation)?
-    {
-        let (pointer, reason) = studio_runtime_schema::first_error(AgentRecord::SCHEMA, &value)
-            .map_err(crate::StoreError::SchemaValidation)?
-            .unwrap_or_else(|| ("/".to_owned(), "schema_invalid".to_owned()));
-        return Err(invalid_agent_field(row_id, &pointer, &reason, Some(&value)));
-    }
-    let fields = TypedFields::deserialize(&value)
-        .map_err(|_| invalid_agent_field(row_id, "", "record_decode", None))?;
-    if fields.id != row_id {
+    let projection = checked_agent_projection(row_id, &value)?;
+    serde_json::to_value(projection).map_err(Into::into)
+}
+
+fn checked_agent_projection(
+    row_id: &str,
+    value: &Value,
+) -> StoreResult<studio_runtime_schema::records::agent_projection::AgentProjection> {
+    use studio_runtime_schema::json_object::JsonObject;
+    use studio_runtime_schema::records::agent_projection::AgentProjection;
+    let JsonObject(projection) =
+        JsonObject::<AgentProjection>::deserialize(value).map_err(|_| {
+            let detail = studio_runtime_schema::first_error(AgentRecord::SCHEMA, value)
+                .ok()
+                .flatten();
+            let (pointer, reason) =
+                detail.unwrap_or_else(|| ("/".to_owned(), "record_decode".to_owned()));
+            invalid_agent_field(row_id, &pointer, &reason, Some(value))
+        })?;
+    if projection.id != row_id {
         return Err(invalid_agent_field(
             row_id,
             "/id",
             "row_id_mismatch",
-            Some(&value),
+            Some(value),
         ));
     }
-    Ok(value)
+    Ok(projection)
 }
 
 pub(crate) fn invalid_agent_field(
@@ -2723,5 +2778,65 @@ mod tests {
             ),
             Err(StoreError::RecordContract(_))
         ));
+    }
+}
+
+#[cfg(test)]
+mod agent_projection_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn checked_projection_preserves_opaque_evidence_presence_and_volatile_override() {
+        let db = Connection::open_in_memory().expect("database");
+        db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+            .expect("agents");
+        db.execute_batch(crate::agent_volatile::agent_volatile_table_sql())
+            .expect("volatile");
+        let raw = json!({"id":"a","rootId":"r","epoch":1.0,"status":"future","accountKey":null,
+            "activity":false,"titleJob":{"malformed":true},"startOutcomeHold":[null],"vmLaunch":false,
+            "vendor":{"nested":[null,true]}});
+        db.execute(
+            "INSERT INTO runtime_agents(id,record) VALUES('a',?1)",
+            [raw.to_string()],
+        )
+        .expect("agent");
+        db.execute(
+            "INSERT INTO runtime_agent_volatile(id,activity,tail) VALUES('a',?1,?2)",
+            [r#"{"phase":"active","vendor":true}"#, r#""answer""#],
+        )
+        .expect("volatile row");
+        let value = decode_agent_value(&db, "a", &raw.to_string()).expect("merged projection");
+        let mut expected = raw;
+        expected["activity"] = json!({"phase":"active","vendor":true});
+        expected["tail"] = json!("answer");
+        assert_eq!(value, expected);
+        assert!(
+            Table::<AgentRecord>::new(&db)
+                .get(&AgentId::from("a"))
+                .is_err(),
+            "narrow business evidence remains independently checked"
+        );
+    }
+
+    #[test]
+    fn checked_projection_refuses_schema_errors_and_wrong_row_identity_without_content() {
+        let db = Connection::open_in_memory().expect("database");
+        db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+            .expect("agents");
+        db.execute_batch(crate::agent_volatile::agent_volatile_table_sql())
+            .expect("volatile");
+        for value in [
+            json!({"id":"a","rootId":"r","epoch":0,"status":"idle","activity":{"phase":{"secret-value":true}}}),
+            json!({"id":"wrong","rootId":"r","epoch":0,"status":"idle"}),
+        ] {
+            let error =
+                decode_agent_value(&db, "a", &value.to_string()).expect_err("invalid projection");
+            assert!(matches!(
+                error,
+                crate::StoreError::InvalidSyncObjectField { .. }
+            ));
+            assert!(!error.to_string().contains("secret-value"));
+        }
     }
 }
