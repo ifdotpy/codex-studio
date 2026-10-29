@@ -447,10 +447,9 @@ mod lifecycle_tests {
         assert!(
             super::super::run(state.path(), &main, &["show", "head:node_modules/warm"]).is_err()
         );
-        assert!(
-            super::super::run(state.path(), &main, &["cache", "list"])
-                .expect("cache list")
-                .contains("node_modules\tcache")
+        assert_eq!(
+            super::super::overlay_folder_state(state.path(), &main, "node_modules").as_deref(),
+            Some("cache")
         );
         assert!(main.join(".studio-native-import/git/objects").is_dir());
         assert_eq!(
@@ -497,10 +496,9 @@ mod lifecycle_tests {
                 & 0o777,
             0o700
         );
-        assert!(
-            super::super::run(state.path(), &line, &["cache", "list"])
-                .expect("migrated caches")
-                .contains("node_modules\tcache")
+        assert_eq!(
+            super::super::overlay_folder_state(state.path(), &line, "node_modules").as_deref(),
+            Some("cache")
         );
         assert_eq!(
             fs::read_to_string(line.join("node_modules/warm")).expect("migrated warm cache"),

@@ -7,6 +7,7 @@ pub mod branch;
 pub mod change;
 pub mod checks;
 pub mod history;
+pub mod layerpush;
 pub mod mergecmd;
 pub mod oci;
 pub mod overlaycmd;
@@ -206,7 +207,7 @@ Git bridge:
    git remote, fetch, pull, push, clone, sync
    queue add/list/remove/run
 Overlays (files with their own readers and history, shown in lines):
-   overlay create, list, readers, use, move, log, show, diff, grep, ls-files
+   overlay create, set, list, readers, use, move, remote, log, show, diff, grep, ls-files
 Projects and machines:
    init, projects, config, cache, export, gc, fsck, reindex, daemon
 
@@ -246,6 +247,7 @@ pub fn run(ctx: &Ctx, argv: &[String]) -> Result<i32> {
         "rebase" => Some("replay"),
         "revert" => Some("invert"),
         "checkout" | "switch" => return branch::removed_switch(ctx, &rest),
+        "cache" => return admin::removed_cache(&rest),
         _ => None,
     };
     if let Some(new) = replacement {
@@ -265,7 +267,7 @@ pub fn run(ctx: &Ctx, argv: &[String]) -> Result<i32> {
             Ok(0)
         }
         "version" | "--version" => {
-            outln!(ctx, "layr version {}", env!("CARGO_PKG_VERSION"));
+            outln!(ctx, "{}", version_line());
             Ok(0)
         }
         "status" => work::status(ctx, &rest),
@@ -322,8 +324,7 @@ pub fn run(ctx: &Ctx, argv: &[String]) -> Result<i32> {
         "machines" => Err(exit(128, "use layr remote list or layr remote trust <name> <machine>")),
         "debug" => admin::debug(ctx, &rest),
         "config" => admin::config(ctx, &rest),
-        "cache" => admin::cache(ctx, &rest),
-        "layer" => Err(exit(1, "this command was removed; use 'layr cache'")),
+        "layer" => Err(exit(1, "this command was removed; use 'layr overlay list'")),
         "remote" => remote::remote(ctx, &rest),
         "fetch" => remote::fetch(ctx, &rest),
         "pull" => remote::pull(ctx, &rest),
@@ -342,9 +343,25 @@ pub fn run(ctx: &Ctx, argv: &[String]) -> Result<i32> {
     }
 }
 
+/// The text of `layr version`: the package version, then the build identity (LAYR_BUILD_ID from
+/// build.rs) and the build date (LAYR_BUILD_DATE from build.rs).
+pub fn version_line() -> String {
+    format!("layr version {} ({} {})", env!("CARGO_PKG_VERSION"), env!("LAYR_BUILD_ID"), env!("LAYR_BUILD_DATE"))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::glob;
+    use super::{glob, version_line};
+
+    #[test]
+    fn version_line_names_the_build() {
+        let shape = format!(
+            r"^layr version {} \((unknown|[0-9a-f]{{7,40}}(-dirty)?) (unknown|\d{{4}}-\d{{2}}-\d{{2}})\)$",
+            regex::escape(env!("CARGO_PKG_VERSION"))
+        );
+        let line = version_line();
+        assert!(regex::Regex::new(&shape).unwrap().is_match(&line), "{line}");
+    }
 
     #[test]
     fn glob_matches() {

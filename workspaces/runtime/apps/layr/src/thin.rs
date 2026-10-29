@@ -371,6 +371,9 @@ fn same(a: &ScanEntry, b: &ScanEntry, link: impl Fn() -> Result<bool>) -> Result
     }
     match a.meta.ftype {
         FType::Dir => Ok(true),
+        // An empty file has no extents and so no data identity; equal metadata (size and times
+        // included) make two empty files the same.
+        FType::File if fa.3 == 0 => Ok(true),
         FType::File => Ok(a.data.zip(b.data).is_some_and(|(x, y)| {
             x.generation.is_some() && y.generation.is_some() && x.clone_id.is_some() && x.clone_id == y.clone_id
         })),

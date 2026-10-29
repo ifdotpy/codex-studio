@@ -61,6 +61,7 @@ pub(crate) struct PipeOutput {
 #[derive(Debug)]
 pub(crate) struct Output {
     pub(crate) stdout: PipeOutput,
+    pub(crate) stderr: PipeOutput,
 }
 
 pub(crate) struct Request<'a> {
@@ -241,7 +242,7 @@ fn run_with_environment(request: Request<'_>, remove_git: bool) -> Result<Output
             message
         }));
     }
-    Ok(Output { stdout })
+    Ok(Output { stdout, stderr })
 }
 
 fn receive_until<T>(

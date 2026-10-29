@@ -22,10 +22,14 @@ fn changed_paths(
     base: &(impl crate::fsutil::Src + ?Sized),
     child: &(impl crate::fsutil::Src + ?Sized),
     hidden: &BTreeSet<String>,
+    ignored: &crate::ignore_rules::Rules,
 ) -> Result<BTreeMap<String, i64>> {
     let mut out = BTreeMap::new();
     for change in changes::candidates(base, child)? {
+        // Ignored files (build output, node_modules) are not work that two lines can conflict on.
+        let is_dir = change.new.as_ref().or(change.old.as_ref()).is_some_and(|m| m.is_dir());
         if skip_path(&change.path)
+            || ignored.ignored(&change.path, is_dir)
             || hidden.contains(&change.path)
             || change.old_path.as_ref().is_some_and(|p| hidden.contains(p))
         {
@@ -59,9 +63,24 @@ impl Repo<'_> {
         Ok(hidden)
     }
 
+    /// The tree of our working folder to compare. APFS compares the live folder, as status does:
+    /// a copy would clone every file, cache folders included.
+    fn radar_tree(&self, line: &Line) -> Result<(Option<crate::repo::Temp>, std::path::PathBuf)> {
+        #[cfg(target_os = "macos")]
+        return Ok((None, self.working(line)));
+        #[cfg(not(target_os = "macos"))]
+        {
+            let t = self.scan(line)?;
+            let path = t.path.clone();
+            Ok((Some(t), path))
+        }
+    }
+
     pub fn overlaps(&self, ctx: &Ctx, line: &Line) -> Result<Vec<Overlap>> {
         self.can_read(ctx)?;
-        let ours = self.scan(line)?;
+        // Taking the working folder tree is costly; do it only when another line needs it.
+        let mut ours: Option<(Option<crate::repo::Temp>, std::path::PathBuf)> = None;
+        let ignored = crate::ignore_rules::Rules::new(&self.working(line));
         let our_hidden = self.radar_hidden(ctx, line)?;
         let our_private = self.private_paths(line)?;
         let mut ours_by_base = BTreeMap::new();
@@ -78,8 +97,12 @@ impl Repo<'_> {
                 Ok(root) => root,
                 Err(_) => continue,
             };
+            if ours.is_none() {
+                ours = Some(self.radar_tree(line)?);
+            }
+            let ours = &ours.as_ref().expect("scanned above").1;
             if !ours_by_base.contains_key(&base) {
-                ours_by_base.insert(base.clone(), changed_paths(&root, &ours.path, &our_private)?);
+                ours_by_base.insert(base.clone(), changed_paths(&root, ours, &our_private, &ignored)?);
             }
             let our_paths = &ours_by_base[&base];
             let hidden = self.radar_hidden(ctx, &other)?;
@@ -88,7 +111,7 @@ impl Repo<'_> {
             let state = self.last_auto(&other)?.filter(|s| s.time >= head.time).unwrap_or(head);
             let theirs = self.state_src(&state.id)?;
             let their_private = self.private_paths(&other)?;
-            for (path, time) in changed_paths(&root, &theirs, &their_private)? {
+            for (path, time) in changed_paths(&root, &theirs, &their_private, &ignored)? {
                 if our_paths.contains_key(&path) && !our_hidden.contains(&path) && !hidden.contains(&path) {
                     overlaps.push(Overlap {
                         path,
@@ -98,7 +121,7 @@ impl Repo<'_> {
                     });
                 }
             }
-            overlaps.extend(self.overlay_overlaps(ctx, line, &other, &ours.path, &our_hidden, &hidden)?);
+            overlaps.extend(self.overlay_overlaps(ctx, line, &other, ours, &our_hidden, &hidden)?);
         }
         overlaps.sort_by(|a, b| (&a.path, &a.line).cmp(&(&b.path, &b.line)));
         overlaps.dedup_by(|a, b| a.path == b.path && a.line == b.line);
@@ -141,9 +164,9 @@ impl Repo<'_> {
                 Ok(root) => root,
                 Err(_) => continue,
             };
-            let our_changes = changed_paths(&base_root, ours, our_hidden)?;
+            let our_changes = changed_paths(&base_root, ours, our_hidden, &crate::ignore_rules::Rules::new(ours))?;
             let state = repo.state(&theirs.state)?;
-            for (path, time) in changed_paths(&base_root, &their_root, their_hidden)? {
+            for (path, time) in changed_paths(&base_root, &their_root, their_hidden, &crate::ignore_rules::Rules::new(ours))? {
                 if our_changes.contains_key(&path) {
                     overlaps.push(Overlap {
                         path,

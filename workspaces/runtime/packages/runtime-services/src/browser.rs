@@ -1537,23 +1537,32 @@ pub fn prepare_browser_config(snapshot: BrowserConfigSnapshot) -> BrowserConfigD
     };
     let Some(reason) = reason else {
         let source = shared_node.unwrap_or(&Value::Null);
-        let mut node = target_node.cloned().unwrap_or_else(|| {
-            let mut value = Map::new();
-            for key in ["command", "args", "startup_timeout_sec"] {
-                if let Some(source_value) = source.get(key) {
-                    value.insert(key.into(), source_value.clone());
-                }
-            }
-            let env = source.pointer("/env").and_then(Value::as_object);
-            let mut filtered = Map::new();
-            for key in NODE_REPL_ENV_KEYS {
-                if let Some(value) = env.and_then(|map| map.get(key)) {
-                    filtered.insert(key.into(), value.clone());
-                }
-            }
-            value.insert("env".into(), Value::Object(filtered));
-            Value::Object(value)
+        // An account entry with the desktop's runtime is the login-time copy
+        // of the desktop entry. Use the current desktop entry, so a desktop
+        // update (a new browser plugin version) reaches the account.
+        let desktop_copy = target_node.filter(|node| {
+            node.get("command").is_some() && node.get("command") == source.get("command")
         });
+        let mut node = desktop_copy
+            .map_or(target_node, |_| Some(source))
+            .cloned()
+            .unwrap_or_else(|| {
+                let mut value = Map::new();
+                for key in ["command", "args", "startup_timeout_sec"] {
+                    if let Some(source_value) = source.get(key) {
+                        value.insert(key.into(), source_value.clone());
+                    }
+                }
+                let env = source.pointer("/env").and_then(Value::as_object);
+                let mut filtered = Map::new();
+                for key in NODE_REPL_ENV_KEYS {
+                    if let Some(value) = env.and_then(|map| map.get(key)) {
+                        filtered.insert(key.into(), value.clone());
+                    }
+                }
+                value.insert("env".into(), Value::Object(filtered));
+                Value::Object(value)
+            });
         let object = node
             .as_object_mut()
             .expect("checked BrowserConfigSnapshot guarantees an object node_repl");
@@ -2767,5 +2776,37 @@ mod tests {
         )
         .expect("snapshot");
         assert!(!bad.skill_available);
+    }
+
+    #[test]
+    fn login_copy_of_the_desktop_node_repl_follows_a_desktop_update() {
+        let homes = browser_homes();
+        let shared = std::fs::read_to_string(homes.shared.join("config.toml")).expect("shared");
+        // Login copied the desktop entry; a later desktop update moved the
+        // browser service to a new plugin version.
+        let account = shared.replace("/browser.mjs", "/old-browser.mjs");
+        assert_ne!(account, shared);
+        std::fs::write(homes.account.join("config.toml"), account).expect("stale copy");
+        let browser = account_browser(&homes.account, &homes.shared);
+        assert_eq!(browser.unavailable_reason, None);
+        let services =
+            browser.overrides["mcp_servers.node_repl"]["env"]["NODE_REPL_TRUSTED_SERVICES"]
+                .as_str()
+                .expect("services");
+        assert_eq!(
+            serde_json::from_str::<Value>(services).expect("json")["browser"],
+            json!(homes.root.path().join("browser.mjs"))
+        );
+
+        // A different runtime stays the account's own choice.
+        std::fs::write(
+            homes.account.join("config.toml"),
+            "[mcp_servers.node_repl]\ncommand = \"/own/node\"\n",
+        )
+        .expect("own runtime");
+        assert_eq!(
+            account_browser(&homes.account, &homes.shared).unavailable_reason,
+            Some("This account uses its own node_repl runtime".to_owned())
+        );
     }
 }

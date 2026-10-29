@@ -157,22 +157,25 @@ invitation secret.
 - `{action:"revoke",clientId,requestId}`
 - `{action:"accept_invite",invitation,requestId}` for native server pairing
 
-`Runtime.paired_access()` owns credentials. Its service provides
-`local_server_id`, `servers()`, `paired_server(id)`, and
-`request(id,method,path,body,request_id,timeout=15)`.
-The request method signs exact JSON bytes, pins the target identity, rejects
-redirects, and bounds the response. A Node fetch process has one deadline for
-DNS, TLS, and the response body. The parent stops that process at the deadline.
-The maximum orchestration request size is
-256 KiB. The maximum response size is 1 MiB. A timeout leaves the operation
-outcome unknown until its durable receipt is recovered.
-Response identity fields must match the stored peer ID and public key. Identity
-checks have a 30-second cache, limited to 256 addresses. A peer cache hit requires
-one `Tailscale-User-Login` header that matches the cached login. Without that
-header, the server calls `whois` again. An identity error clears the cache. One persistent crypto process signs and verifies requests. Each crypto
-operation has an 8-second deadline. A failed process closes and can restart.
+`OrchestrationDriver` and `HttpsPairedTransport`
+(`workspaces/runtime/packages/runtime-services/src/multi_server_orchestration.rs`) own outbound calls.
+They read paired-server credentials from `runtime_access_clients`. `PairedTransport::exchange(server,
+envelope, timeout)` sends one signed envelope. The driver default timeout is 20 seconds
+(`OrchestrationDriver::exchange`).
+The shared signed-request exchange tries QUIC first and falls back to HTTPS. Signing and transport
+run in process in
+`workspaces/runtime/packages/runtime-services/src/remote_transport.rs`. It signs with `ring`
+(Ed25519) and sends with `ureq` over `rustls`. `SignedHttpClient::exchange` allows HTTPS only,
+refuses redirects (`max_redirects(0)`), and applies one global deadline to DNS, TLS, and the response
+body. It bounds the response body. The maximum request size is 256 KiB. The maximum response size is
+1 MiB (`MAX_REQUEST_BYTES`, `MAX_RESPONSE_BYTES` in `multi_server_transport_limits.rs`). A timeout leaves
+the operation outcome unknown until its durable receipt is recovered.
+Response identity fields must match the stored peer ID and public key.
+`TailscaleOwnerLookup` (`workspaces/runtime/apps/runtime-server/src/multi_server_owner.rs`) observes the
+owner of a peer address through the Tailscale `whois` command with a 5-second limit. The Rust
+backend keeps no identity cache. Each signed request is observed again.
 
-`Runtime.multi_server()` owns cross-server orchestration. The signed
+`OrchestrationDriver::receive` owns cross-server orchestration. The signed
 `POST /api/servers/orchestration` route requires a server client. It calls
 `receive(principal.clientId,envelope)`. The envelope is
 `{requestId,action,payload}`. The request ID must equal the signed header.
@@ -258,7 +261,8 @@ mutation receipt. Revocation takes precedence over discovery and saved receipts.
 
 ### Discovery and local management
 
-The backend runs discovery at start and every 300 seconds. Each pass reads
+A discovery pass runs only on an explicit `discover` action (the **Find servers now**
+button). The backend has no startup or periodic pass. Each pass reads
 `tailscale status --json`. It selects online, untagged peers with Self's UserID
 and a valid Tailscale DNS name. It probes their identity endpoint over HTTPS.
 For already-paired peers, discovery refreshes the displayed name through the

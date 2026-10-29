@@ -81,6 +81,7 @@ inherits = "ci"
 # Supervisor health witnesses: Accept the maintained protocol and preserve exact handles; reject foreign identity and blocked recovery.
 # Desktop projection witness: Keep private native rotation receipts on disk while validating the public status strictly.
 # Retained watcher registrations and analytics connections avoid repeated tree walks and opens.
+# Reviewer permissions stay read-only under yolo across preparation, turns, and monitors.
 default-filter = '''
     (package(=studio-runtime-server) & kind(lib) & test(/^host_runtime::voice_composition_tests::(stale_unsent_voice_stop_reaches_real_worker_after_lifecycle_stop|voice_speech_http_reserves_and_replays_through_real_worker|migrated_voice_stop_replays_unknown_with_real_worker_without_resending)$/)) |
     (package(=studio-runtime-store) & kind(test) & binary(=integration) & test(/^receipts_cutover::/)) |
@@ -130,6 +131,8 @@ default-filter = '''
     (package(=studio-runtime-schema) & kind(lib) & test(usage::persisted::tests::)) |
     (package(=studio-runtime-services) & kind(lib) & test(/::(managed_reviewer_defaults_reach_public_spawn_tool|reviewer_defaults_are_explained_in_emitted_tools_and_role_guidance|review_fast_mode_defaults_preserve_explicit_false_and_inheritance|child_creation_routes_profile_to_compatible_account)$/)) |
     (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(review_fast_mode_uses_optional_team_default_before_actor))
+    | (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(codex_reviewer_under_yolo_is_read_only_on_start_resume_and_turn))
+    | (package(=studio-runtime-services) & kind(lib) & (test(monitor_settings_match_turn_permission_and_sandbox_fallback) | test(native_review_without_a_role_is_a_reviewer)))
     | (package(=studio-runtime-schema) & kind(lib) & test(workspace_modes::tests::))
     | (package(=studio-runtime-services) & kind(lib) & (test(legacy_image_workspace::tests::) | test(legacy_finished_worker_archives_without_a_native_executor) | test(native_child_requires_a_native_parent) | test(legacy_worker_archives_through_current_tool_without_losing_its_row) | test(review_regression_) | test(platform_defaults_require_the_native_linux_capability) | test(native_capability_)))
     | (package(=studio-runtime-server) & kind(test) & binary(=integration) & test(legacy_image_rows_finish_without_provider_launch_or_row_loss) | test(review_regression_legacy_pending_recovery_does_not_start_provider))
@@ -321,6 +324,7 @@ platform = 'cfg(target_os = "linux")'
 # Transport safety: unsent cancellation, strict replies, and shared per-thread ordering.
 # Supervisor health witnesses: Accept the maintained protocol and preserve exact handles; reject foreign identity and blocked recovery.
 # Desktop projection witness: Keep private native rotation receipts on disk while validating the public status strictly.
+# Reviewer permissions stay read-only under yolo across preparation, turns, and monitors.
 default-filter = '''
     (package(=studio-runtime-server) & kind(lib) & test(/^host_runtime::voice_composition_tests::(stale_unsent_voice_stop_reaches_real_worker_after_lifecycle_stop|voice_speech_http_reserves_and_replays_through_real_worker|migrated_voice_stop_replays_unknown_with_real_worker_without_resending)$/)) |
     (package(=studio-runtime-store) & kind(test) & binary(=integration) & test(/^receipts_cutover::/)) |
@@ -370,6 +374,8 @@ default-filter = '''
     (package(=studio-runtime-schema) & kind(lib) & test(usage::persisted::tests::)) |
     (package(=studio-runtime-services) & kind(lib) & test(/::(managed_reviewer_defaults_reach_public_spawn_tool|reviewer_defaults_are_explained_in_emitted_tools_and_role_guidance|review_fast_mode_defaults_preserve_explicit_false_and_inheritance|child_creation_routes_profile_to_compatible_account)$/)) |
     (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(review_fast_mode_uses_optional_team_default_before_actor))
+    | (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(codex_reviewer_under_yolo_is_read_only_on_start_resume_and_turn))
+    | (package(=studio-runtime-services) & kind(lib) & (test(monitor_settings_match_turn_permission_and_sandbox_fallback) | test(native_review_without_a_role_is_a_reviewer)))
     | (package(=studio-runtime-schema) & kind(lib) & test(workspace_modes::tests::))
     | (package(=studio-runtime-services) & kind(lib) & (test(legacy_image_workspace::tests::) | test(legacy_finished_worker_archives_without_a_native_executor) | test(native_child_requires_a_native_parent) | test(legacy_worker_archives_through_current_tool_without_losing_its_row) | test(review_regression_) | test(platform_defaults_require_the_native_linux_capability) | test(native_capability_)))
     | (package(=studio-runtime-server) & kind(test) & binary(=integration) & test(legacy_image_rows_finish_without_provider_launch_or_row_loss) | test(review_regression_legacy_pending_recovery_does_not_start_provider))

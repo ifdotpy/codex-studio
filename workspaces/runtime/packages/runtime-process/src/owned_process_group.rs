@@ -7,6 +7,11 @@
 //! the ID cannot name another group. Callers therefore wait for the leader's
 //! exit with [`exited_unreaped`], signal the group, and only then reap.
 
+/// Time between two probes of a reaped group.
+const GROUP_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(5);
+/// Longest wait for a reaped group to vanish on a blocking close path.
+pub(crate) const GROUP_VANISH_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// Whether the owned child `pid` has exited, without reaping it (`waitid` with
 /// `WNOWAIT`). `Err` when `pid` is not an unreaped child of this process: then
 /// its group ID may already name another group, and the caller must not signal it.
@@ -43,7 +48,29 @@ pub async fn exited_unreaped(pid: u32) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Test-only Darwin race per leader PID: its kill answers EPERM, and its group
+/// probe keeps answering EPERM until the instant.
+#[cfg(test)]
+pub(crate) static TEST_DARWIN_RACE: std::sync::Mutex<
+    std::collections::BTreeMap<u32, std::time::Instant>,
+> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+#[cfg(test)]
+pub(crate) fn test_darwin_race_until(pid: Option<u32>) -> Option<std::time::Instant> {
+    pid.and_then(|pid| {
+        TEST_DARWIN_RACE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&pid)
+            .copied()
+    })
+}
+
 pub(crate) fn vanished_after_reap(pid: Option<u32>, error: &std::io::Error) -> bool {
+    #[cfg(test)]
+    if test_darwin_race_until(pid).is_some_and(|until| std::time::Instant::now() < until) {
+        return false;
+    }
     #[cfg(target_os = "macos")]
     {
         // Darwin can reject signals to an unreaped, exited group with EPERM.
@@ -72,8 +99,6 @@ pub(crate) async fn vanishes_after_reap(
     error: &std::io::Error,
     deadline: tokio::time::Instant,
 ) -> bool {
-    /// Time between two probes of the reaped group.
-    const GROUP_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(5);
     loop {
         if vanished_after_reap(pid, error) {
             return true;
@@ -85,6 +110,28 @@ pub(crate) async fn vanishes_after_reap(
             return false;
         }
         tokio::time::sleep(GROUP_POLL_INTERVAL).await;
+    }
+}
+
+/// [`vanishes_after_reap`] for blocking callers, polled until `deadline`.
+pub(crate) fn vanishes_after_reap_blocking(
+    pid: Option<u32>,
+    error: &std::io::Error,
+    deadline: std::time::Instant,
+) -> bool {
+    loop {
+        if vanished_after_reap(pid, error) {
+            return true;
+        }
+        if !cfg!(target_os = "macos")
+            || error.raw_os_error() != Some(rustix::io::Errno::PERM.raw_os_error())
+            || std::time::Instant::now() >= deadline
+        {
+            return false;
+        }
+        // Blocking callers (the synchronous PTY host) have no runtime to yield to.
+        #[allow(clippy::disallowed_methods)]
+        std::thread::sleep(GROUP_POLL_INTERVAL);
     }
 }
 

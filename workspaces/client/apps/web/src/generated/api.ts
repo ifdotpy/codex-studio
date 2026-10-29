@@ -399,6 +399,40 @@ export interface paths {
     patch?: never | undefined;
     trace?: never | undefined;
   };
+  "/api/agents/move-to-host": {
+    parameters: {
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
+    };
+    get?: never | undefined;
+    put?: never | undefined;
+    /** Move an idle VM chat to this device */
+    post: operations["move_to_host_api_agents_move_to_host_post"];
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
+  };
+  "/api/agents/workspace-mode": {
+    parameters: {
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
+    };
+    get?: never | undefined;
+    put?: never | undefined;
+    /** Switch an idle WT chat to Layr in place */
+    post: operations["switch_workspace_mode_api_agents_workspace_mode_post"];
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
+  };
   "/api/analytics": {
     parameters: {
       query?: never | undefined;
@@ -4620,6 +4654,35 @@ export interface components {
      * @enum {string}
      */
     AgentMode: "multi" | "single";
+    /**
+     * AgentMoveToHostRequest
+     * @description Move one idle VM chat to this device. A lead moves with its workers. The chat keeps its thread and history.
+     */
+    AgentMoveToHostRequest: {
+      /** Id */
+      id: string;
+      /** Request Id */
+      request_id: string;
+    };
+    /** AgentMoveToHostResponse */
+    AgentMoveToHostResponse: {
+      /** Cwd */
+      cwd: string;
+      /**
+       * Executionmode
+       * @enum {string}
+       */
+      executionMode: "native";
+      /** Id */
+      id: string;
+      /** Movedagents */
+      movedAgents: string[];
+      /**
+       * Workspacemode
+       * @enum {string}
+       */
+      workspaceMode: "shared";
+    };
     /** AgentNativeRelease */
     AgentNativeRelease: {
       /** @default null */
@@ -6612,6 +6675,37 @@ export interface components {
       unreadCount?: number | null | undefined;
       /** Updated */
       updated?: null | number | undefined;
+    };
+    /**
+     * AgentWorkspaceModeRequest
+     * @description Switch one idle WT chat to the Layr workspace mode. The chat keeps its thread and history.
+     */
+    AgentWorkspaceModeRequest: {
+      /** Id */
+      id: string;
+      /**
+       * Workspacemode
+       * @enum {string}
+       */
+      workspaceMode: "layr-native";
+    };
+    /** AgentWorkspaceModeResponse */
+    AgentWorkspaceModeResponse: {
+      /** Cwd */
+      cwd: string;
+      /** Id */
+      id: string;
+      /** Layrline */
+      layrLine: string;
+      /** Layrprojectid */
+      layrProjectId: string;
+      /** Layrstateid */
+      layrStateId: string;
+      /**
+       * Workspacemode
+       * @enum {string}
+       */
+      workspaceMode: "layr-native";
     };
     /** AmbiguousToolRequestResponse */
     AmbiguousToolRequestResponse: {
@@ -16962,61 +17056,53 @@ export interface components {
        */
       team_id?: null | string | undefined;
     };
-    /**
-     * PeerUpdateBuild
-     * @description The build stamp in Contents/Resources/studio-build.json (docs/peer-updates.md).
-     */
+    /** @description The build stamp in Contents/Resources/studio-build.json (docs/peer-updates.md). */
     PeerUpdateBuild: {
-      /** Branch */
       branch: string;
       /**
-       * Builtat
+       * Format: double
        * @description Packaging time on the build Mac, in seconds since the epoch.
        */
       builtAt: number;
-      /** Commit */
       commit: string;
       /**
-       * Committime
+       * Format: uint64
        * @description Commit time, in seconds since the epoch.
        */
       commitTime: number;
       /**
-       * Version
-       * @constant
+       * Format: uint8
+       * @description Format version of the stamp. Always 1.
        */
-      version: 1;
+      version: number;
     };
-    /** PeerUpdateEvent */
+    /** @description The last pull or install attempt of the update puller. */
     PeerUpdateEvent: {
       /**
-       * At
+       * Format: double
        * @description Time of the pull or install attempt, in seconds since the epoch.
        */
-      at: null | number;
+      at: number | null;
       build: components["schemas"]["PeerUpdateBuild"] | null;
-      /** Outcome */
-      outcome: null | string;
-      /** Reason */
-      reason: null | string;
-      /**
-       * Server
-       * @description The paired server that offered the build.
-       */
-      server: null | string;
+      outcome: string | null;
+      reason: string | null;
+      /** @description The paired server that offered the build. */
+      server: string | null;
     };
-    /** PeerUpdatePending */
+    /** @description The staged update that the desktop installer takes next. */
     PeerUpdatePending: {
       build: components["schemas"]["PeerUpdateBuild"];
-      /** Server */
       server: string;
     };
-    /** PeerUpdateStatus */
+    /** @description The update state from a paired server, as `/api/desktop` shows it (`peerUpdate`). */
     PeerUpdateStatus: {
       /** @description The build of the installed app; null for a source checkout. */
       build: components["schemas"]["PeerUpdateBuild"] | null;
-      /** Checkedat */
-      checkedAt: null | number;
+      /**
+       * Format: double
+       * @description Time of the last check, in seconds since the epoch.
+       */
+      checkedAt: number | null;
       lastInstall: components["schemas"]["PeerUpdateEvent"] | null;
       lastPull: components["schemas"]["PeerUpdateEvent"] | null;
       pending: components["schemas"]["PeerUpdatePending"] | null;
@@ -17835,6 +17921,8 @@ export interface components {
         | components["schemas"]["ProjectAliasDto"][]
         | null
         | undefined;
+      /** Serverlabel */
+      serverLabel?: null | string | undefined;
       /** Updated */
       updated?: null | number | undefined;
       vault?: components["schemas"]["ProjectVaultDto"] | null | undefined;
@@ -21375,6 +21463,7 @@ export interface components {
         | "stop"
         | "exec_event"
         | "projects"
+        | "projects.changed"
         | "folders"
         | "git"
         | "export"
@@ -30123,6 +30212,136 @@ export interface operations {
       429: components["responses"]["ApiError429"];
       /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
+    };
+  };
+  move_to_host_api_agents_move_to_host_post: {
+    parameters: {
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["AgentMoveToHostRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AgentMoveToHostResponse"];
+        };
+      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Not Found */
+      404: components["responses"]["ApiError404"];
+      /** @description Request Timeout */
+      408: components["responses"]["ApiError408"];
+      /** @description Conflict */
+      409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
+      /** @description Content Too Large */
+      413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
+      415: components["responses"]["ApiError415"];
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
+    };
+  };
+  switch_workspace_mode_api_agents_workspace_mode_post: {
+    parameters: {
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["AgentWorkspaceModeRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AgentWorkspaceModeResponse"];
+        };
+      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Not Found */
+      404: components["responses"]["ApiError404"];
+      /** @description Request Timeout */
+      408: components["responses"]["ApiError408"];
+      /** @description Conflict */
+      409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
+      /** @description Content Too Large */
+      413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
+      415: components["responses"]["ApiError415"];
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
       /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };

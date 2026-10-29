@@ -6,11 +6,12 @@ export const APP_LOG_MAX_ENTRIES = 200;
 type Level = components["schemas"]["StudioErrorLevel"];
 export type AppLogEntry = {
   id: string;
-  level: Extract<Level, "log">;
+  level: Extract<Level, "log" | "error">;
   at: number; // Epoch milliseconds.
   title: string;
   reason: string;
   detail?: string;
+  dedupeKey?: string;
 };
 let entries: AppLogEntry[] = [];
 let nextId = 0;
@@ -23,10 +24,17 @@ const subscribe = (listener: () => void) => {
 function publish() {
   listeners.forEach((listener) => listener());
 }
-export function appendAppLog(entry: Omit<AppLogEntry, "id" | "level">) {
+export function appendAppLog(
+  entry: Omit<AppLogEntry, "id" | "level"> & { level?: AppLogEntry["level"] },
+) {
+  if (
+    entry.dedupeKey &&
+    entries.some((item) => item.dedupeKey === entry.dedupeKey)
+  )
+    return;
   entries = [
     ...entries,
-    { ...entry, id: `app-log:${++nextId}`, level: "log" as const },
+    { ...entry, id: `app-log:${++nextId}`, level: entry.level ?? "log" },
   ].slice(-APP_LOG_MAX_ENTRIES);
   publish();
 }

@@ -86,7 +86,10 @@ their removed Python commands are not current instructions.
 | Full account-worker crash matrix, manual heavy        | `just test-crash-matrix-full`            |
 | Provider-session scheduling diagnostic, manual heavy  | `just test-rust-session-fairness`        |
 | Guest worker and suite process cleanup, manual        | `just test-guest-runner-processes`       |
+| Provider child reap timing, manual heavy              | `just test-provider-reap-timing`         |
 | Detached host_exec lifecycle and guest broker, manual | `just test-host-exec-processes`          |
+| Live handover with real servers, manual               | `just test-live-handover`                |
+| Real launcher process probe (lsof), manual            | `just test-real-process-probe`           |
 | Many-agent scenario, manual heavy                     | `just test-rust-many-agents`             |
 | Continuation corpus and store faults, manual heavy    | `just test-rust-usage-resume-corpora`    |
 | Hidden Electron profile migration, manual heavy       | `just test-native-profile-migration`     |
@@ -178,7 +181,10 @@ miss its 30-minute limit. On macOS, `just test-fast` takes 12.3 min cold, about
 - Rust reuses results per crate. A crate runs again only when its folder or a
   workspace crate it depends on changed.
 - Results live in `target/studio-test-results/` and travel with the warm build.
-- Code: `workspaces/tooling/apps/repository-checks/test-result-cache.mjs`.
+- Code: `workspaces/tooling/apps/repository-checks/test-result-cache.ts`.
+
+`STUDIO_TEST_RESULTS_DIR` names an absolute folder shared by every checkout. Keys
+hash input content, so a passing result is valid in any checkout.
 
 For the daily full run and before an install:
 

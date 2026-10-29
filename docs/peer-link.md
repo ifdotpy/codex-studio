@@ -21,7 +21,7 @@ process that each request starts, and the Serve hop.
 ## Process
 
 `studio-peer-link` (`workspaces/runtime/apps/peer-link`, Rust, `quinn` and `rustls`) is a child
-of the backend (`codex_peer_link.py`). The backend writes its configuration as the first stdin
+of the backend (`runtime-server/src/peer_link.rs`). The backend writes its configuration as the first stdin
 line, so the private key is never in the arguments or the environment:
 
 ```json
@@ -38,8 +38,9 @@ line, so the private key is never in the arguments or the environment:
 
 The process answers `{"ready": true, "port": N}`. A later line `{"peers": [...]}` replaces the
 paired keys and closes the connections of a removed key. The process exits when stdin closes,
-so it ends with its backend. The backend starts it when Serve is on, checks it every 30 seconds,
-and starts it again after an exit. It listens on the Tailscale IPv4 address of the Mac, on UDP
+so it ends with its backend. The backend starts it on Unix when the Serve origin is known. After
+an exit it starts the process again with a doubling delay of at most 30 seconds; the delay resets
+after 60 seconds of healthy run. It listens on the Tailscale IPv4 address of the Mac, on UDP
 port 4621, or on a free port when 4621 is in use.
 
 ## Identity
@@ -66,7 +67,7 @@ The receiving link sends the request to the backend on `127.0.0.1` with the head
 sets: `Host`, `X-Forwarded-Host` (the Serve host), `X-Forwarded-Proto: https` and
 `X-Forwarded-For` (the QUIC source address). It removes these headers, `Tailscale-*`,
 `Forwarded` and the hop headers from the peer's request. The backend boundary
-(`studio_api/multi_server/boundary.py`) is the same for both transports.
+(`runtime-http/src/routes/incoming_multi_server.rs`) is the same for both transports.
 
 ## Backend socket
 
@@ -94,22 +95,13 @@ server closes with a TLS error ran no request, so it counts as `sent: false`.
 
 ## Files
 
-`GET /api/servers/exports/{name}?offset=N` returns a file of `server-exports/` (an app archive
-or a history `<uuid>.zip`, or a Git bundle `<uuid>.bundle`) as raw bytes from the offset. Only a
-paired server can read it, and only over the link (the route is not in the OpenAPI schema).
-`receive_export` (`codex_server_transport.py`) reads it for three callers. In each, the chunk
-actions continue from the received offset when the server has no link or the stream stops, and
-the whole-file checksum is checked as before:
+The Rust backend serves no export stream route. Files in `server-exports/` travel as chunk
+answers to signed requests, over the link or HTTPS, and the whole-file checksum is checked:
 
-- The update puller (`docs/peer-updates.md`) receives the app archive.
-- The Git fetch of a remote worker branch receives the bundle before its `chunk` actions.
-- A chat move publishes its `native.zip` as a hard link in `server-exports/` for the transfer.
-  The source sends `move_pull` requests; the target streams the rest of the file from the
-  source into a separate part file. It adds the part to the received file only when that file
-  did not change meanwhile, and answers the size it holds, as `move_chunk` does. One pull
-  streams for at most 12 seconds, so it stays inside one request timeout; up to 64 pulls continue
-  a large file. The source then sends `move_chunk` from that size. An older target refuses
-  `move_pull`, and the chunks send the whole file.
+- The update puller (`docs/peer-updates.md`) receives the app archive as `update.chunk` answers
+  (`runtime-services/src/peer_update_pull.rs`).
+- The Git fetch of a remote worker branch receives the bundle as `chunk` answers
+  (`runtime-services/src/server_git.rs`).
 
 ## Events
 
@@ -121,14 +113,15 @@ more after 50 ms. Request identities, receipts and the lost-response rules do no
 
 ## Not yet
 
-- Reachability still comes from the discovery pass (every 5 minutes). Design: the link process
+- Reachability still comes from the discovery pass, which runs only on request. Design: the link process
   reports each paired connection when it opens and when it closes (keepalive 10 seconds, idle
   60 seconds). The backend marks a server reachable while a connection is open and leaves the
   unreachable state to discovery, because a closed connection proves only that no traffic ran.
 - One long-lived event stream per server pair. The outbox already pushes events, so a stream
   would save only the per-request signature. It needs its own receipt per event to keep the
   lost-response rules; do it only when the event rate makes the per-request cost visible.
-- The window still reaches a paired server over HTTPS through the local backend. Design for
+- The window reaches a paired server over HTTPS: the desktop main process signs and sends each
+  request to the server's Serve origin, without the local backend. Design for
   WebTransport: the desktop main process (it holds the native privileges) opens a WebTransport
   session to the paired link with the same raw public key pinning, and the renderer keeps using
   the local HTTP API. The link accepts one more ALPN (`h3`) only for a session token that the

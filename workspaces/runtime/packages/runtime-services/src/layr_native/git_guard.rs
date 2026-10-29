@@ -204,6 +204,45 @@ pub(super) fn ensure(state_dir: &Path) -> Result<(), NativeLayrError> {
     Ok(())
 }
 
+/// Layr keeps the `.git` folder of a line read only (mode 0555) so that Git cannot write it.
+/// Studio writes the hook and the local Git setting itself, so it opens the folder for the
+/// duration of that write and puts the old mode back. Layr unseals the same way around its writes.
+struct WritableGit {
+    path: PathBuf,
+    sealed: Option<fs::Permissions>,
+}
+
+impl WritableGit {
+    fn open(path: &Path) -> Result<Self, NativeLayrError> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let permissions = fs::metadata(path)?.permissions();
+            if permissions.mode() & 0o200 == 0 {
+                fs::set_permissions(path, fs::Permissions::from_mode(permissions.mode() | 0o200))?;
+                return Ok(Self {
+                    path: path.to_path_buf(),
+                    sealed: Some(permissions),
+                });
+            }
+        }
+        Ok(Self {
+            path: path.to_path_buf(),
+            sealed: None,
+        })
+    }
+}
+
+impl Drop for WritableGit {
+    fn drop(&mut self) {
+        if let Some(permissions) = self.sealed.take()
+            && let Err(error) = fs::set_permissions(&self.path, permissions)
+        {
+            eprintln!("Native Layr warning: the line .git folder stays open: {error}");
+        }
+    }
+}
+
 /// The local Git setting also overrides a global core.hooksPath supplied by the host account.
 pub(super) fn install_hook(state_dir: &Path, line: &Path) -> Result<(), NativeLayrError> {
     let git = line.join(".git");
@@ -215,6 +254,7 @@ pub(super) fn install_hook(state_dir: &Path, line: &Path) -> Result<(), NativeLa
             "The native line Git directory must be a real directory".into(),
         ));
     }
+    let _writable = WritableGit::open(&git)?;
     let hooks = git.join("hooks");
     if fs::symlink_metadata(&hooks).is_ok_and(|meta| meta.file_type().is_symlink()) {
         return Err(NativeLayrError::Refused(
@@ -279,6 +319,22 @@ mod tests {
             timeout: Duration::from_secs(60),
         })
         .map(|output| String::from_utf8_lossy(&output.stdout.bytes).into_owned())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_hook_installs_into_a_sealed_git_folder_and_seals_it_again() {
+        use std::os::unix::fs::PermissionsExt;
+        let folder = tempfile::tempdir().expect("fixture");
+        let git = folder.path().join(".git");
+        fs::create_dir(&git).expect("git folder");
+        fs::set_permissions(&git, fs::Permissions::from_mode(0o555)).expect("seal");
+        {
+            let _open = WritableGit::open(&git).expect("open a sealed folder");
+            fs::create_dir(git.join("hooks")).expect("a sealed folder opens for the write");
+        }
+        let mode = fs::metadata(&git).expect("git folder").permissions().mode();
+        assert_eq!(mode & 0o777, 0o555);
     }
 
     #[test]
@@ -535,12 +591,11 @@ mod tests {
         let state = root_path.join("state");
         let source = root_path.join("source");
         fs::create_dir_all(&source).expect("source");
-        assert_eq!(
+        assert!(super::super::install::version_matches(
             invoke(&binary, &source, &["--version"])
                 .expect("Layr version")
-                .trim(),
-            format!("layr version {}", super::super::LAYR_VERSION)
-        );
+                .trim()
+        ));
         fs::create_dir_all(binary_path(&state).parent().expect("binary parent")).expect("bin");
         fs::copy(binary, binary_path(&state)).expect("copy real Layr");
         fs::write(source.join("file"), "first\n").expect("source file");

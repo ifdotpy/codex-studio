@@ -254,7 +254,7 @@ pub async fn dispatch(
                     .to_owned();
                 #[cfg(target_os = "macos")]
                 {
-                    let duration = mac::on_main(move || mac::play(path, directory)).await?;
+                    let duration = mac::on_main(move || mac::play(&path, directory)).await?;
                     Ok(json!({"duration":duration}))
                 }
                 #[cfg(not(target_os = "macos"))]
@@ -469,9 +469,9 @@ pub(crate) mod mac {
         }
     }
 
-    pub fn play(path: String, directory: tempfile::TempDir) -> Result<f64, String> {
+    pub fn play(path: &str, directory: tempfile::TempDir) -> Result<f64, String> {
         stop_playback();
-        let url = NSURL::fileURLWithPath(&NSString::from_str(&path));
+        let url = NSURL::fileURLWithPath(&NSString::from_str(path));
         let player =
             unsafe { AVAudioPlayer::initWithContentsOfURL_error(AVAudioPlayer::alloc(), &url) }
                 .map_err(|e| e.localizedDescription().to_string())?;

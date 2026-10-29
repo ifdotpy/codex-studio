@@ -90,3 +90,21 @@ test("failures are not saved and the switch turns reuse off", () => {
   assert.equal(stepKey(root, step, { STUDIO_TEST_REUSE: "0" }), undefined);
   assert.equal(stepKey(root, { id: "no-inputs" }, {}), undefined);
 });
+
+test("a shared result folder carries a passing result to another checkout", () => {
+  const first = repository();
+  const second = repository();
+  const shared = fs.mkdtempSync(path.join(os.tmpdir(), "test-results-shared-"));
+  const env = { STUDIO_TEST_RESULTS_DIR: shared };
+  const key = stepKey(first.root, step, env)!;
+  assert.equal(stepKey(second.root, step, env), key);
+  process.env.STUDIO_TEST_RESULTS_DIR = shared;
+  try {
+    recordPass(first.root, step, key, passed);
+    assert.equal(reusedResult(second.root, step, key)?.reused, true);
+  } finally {
+    delete process.env.STUDIO_TEST_RESULTS_DIR;
+  }
+  assert.equal(reusedResult(second.root, step, key)?.reused, undefined);
+  assert.equal(fs.existsSync(path.join(first.root, "target")), false);
+});

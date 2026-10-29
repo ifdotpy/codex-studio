@@ -97,7 +97,10 @@ An approval applies to one exact state. Review a changed state again.
 A merge writes conflicts into its result. `layr status` shows `UU` paths.
 Resolve them, then `layr add <paths> && layr save -m "<message>"`.
 Only a line's owner changes it. A protected target requires its policy and
-`--expect`; use the Cloud queue when the project requires queued review.
+`--expect`; the refusal names the ready command, `layr merge <line> --expect <state>`.
+Use the Cloud queue when the project requires queued review.
+A merge, pick or invert stops while the head has open conflicts. `layr save -m` refuses
+a changed file with conflict markers unless `--allow-conflict-markers` is given.
 Batch creation makes `agent-1` through `agent-4`. Read the JSON paths before you assign work.
 Pick, replay, and invert apply the shared files. They do not apply private overlay changes.
 Inspect status before you report success.
@@ -330,8 +333,8 @@ Probe diff and change show read stored results. They do not run probe commands.
 
 Ignore regenerable folders in `.gitignore` or `.layrignore`. Add
 `<folder> regenerable` to `.layrattributes` and save it, or use
-`layr cache add <folder>` with `config` permission. `layr cache list` identifies
-cache folders. `layr cache repair` repairs a plain replacement folder.
+`layr config regenerable` with `config` permission. `layr overlay list` identifies
+cache folders. `layr overlay repair <overlay>` repairs a plain replacement folder.
 `layr save --caches` gives new lines a warm cache copy.
 Caches stay outside source history and diffs. Keep dependency lockfiles in source history.
 Save warm caches before parallel line creation. Repair them after tools replace their folders.
@@ -380,6 +383,12 @@ owner to fix provisioning; do not bypass it with another transport.
 | A merge has conflicts                     | Resolve them in an owned line before acceptance.   |
 | The store cannot represent two path names | Use distinct names or a case-sensitive APFS store. |
 
+A line keeps its `.git` folder read only (mode 0555). Git writes (commit, merge, reset,
+checkout, stash) fail with `Permission denied`; Git reads work. Layr opens the folder
+around its own writes. If Git history moves in a line anyway, layr refuses `save -m`,
+`push`, `sync` and head moves, and names the commit to reset to.
+`layr save` with no change prints the existing state ID. `layr --version` prints the
+build id and date after the version.
 In 0.3.0 the `.git` view follows the named line head for tools that read Git.
 `layr git sync` explicitly refreshes that view without pushing.
 `layr rev-parse '<rev>^{tree}'` names content across Layr and Git.

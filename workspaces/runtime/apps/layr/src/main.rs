@@ -15,6 +15,7 @@ mod stream_fs;
 #[cfg(all(feature = "overlayfs", not(target_os = "linux")))]
 compile_error!("the overlayfs feature requires Linux");
 mod args;
+mod cache_overlay;
 mod changes;
 mod cmd;
 mod db;
@@ -138,7 +139,7 @@ fn main() {
     }
     match argv.first().map(String::as_str) {
         Some("--version" | "version") => {
-            println!("layr version {}", env!("CARGO_PKG_VERSION"));
+            println!("{}", cmd::version_line());
             return;
         }
         None | Some("--help" | "-h" | "help") => {

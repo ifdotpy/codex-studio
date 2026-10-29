@@ -19,8 +19,9 @@ only source of live data; the client does not poll.
 | Close reasons                                                                | Core stream log (`sync-streams.log`)                                                     |
 | Subscribed resources, per-resource cursors, session, schema handshake        | Page, [`resourceEvents.ts`](../../workspaces/client/apps/web/src/sync/resourceEvents.ts) |
 
-The cursors stay in the page until projections move to the core (step 2).
-The core therefore asks the page for the path of each new connection.
+The cursors are stored in the core since [step 2](native-projections.md), but the
+page still reads them and builds the path. The core therefore asks the page for
+the path of each new connection.
 
 ## What the page receives
 

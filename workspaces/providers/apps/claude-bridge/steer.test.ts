@@ -232,8 +232,8 @@ for (const missing of [false, true]) {
     assert.deepEqual(await inputs(bridge), [
       scenario,
       "split-part-0",
-      "split-part-1",
       "split-part-2",
+      "split-part-1",
     ]);
   });
 }
@@ -439,13 +439,6 @@ test.concurrent("input origin survives turn/start: mixed", async ({
         shouldQuery: false,
       },
       {
-        content: [{ type: "text", text: "human typed this" }],
-        origin: undefined,
-        isSynthetic: undefined,
-        text_not_typed: undefined,
-        shouldQuery: false,
-      },
-      {
         content: [
           {
             type: "text",
@@ -455,6 +448,13 @@ test.concurrent("input origin survives turn/start: mixed", async ({
         origin: { kind: "task-notification" },
         isSynthetic: true,
         text_not_typed: true,
+        shouldQuery: false,
+      },
+      {
+        content: [{ type: "text", text: "human typed this" }],
+        origin: undefined,
+        isSynthetic: undefined,
+        text_not_typed: undefined,
         shouldQuery: undefined,
       },
     ],
@@ -506,12 +506,12 @@ test.concurrent("input origin survives turn/steer: studio_event,human,studio_eve
         isSynthetic: true,
         text_not_typed: true,
       },
-      { origin: undefined, isSynthetic: undefined, text_not_typed: undefined },
       {
         origin: { kind: "task-notification" },
         isSynthetic: true,
         text_not_typed: true,
       },
+      { origin: undefined, isSynthetic: undefined, text_not_typed: undefined },
     ],
   );
   await end(bridge);

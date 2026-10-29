@@ -110,7 +110,6 @@ export default function ServerAccountsPanel({
   onDiscover,
   servicesFor,
   initialFocusIdentity,
-  onInitialFocus,
 }: {
   servers: StudioServer[];
   accountsByServer: Record<string, ServerAccount[]>;
@@ -121,7 +120,6 @@ export default function ServerAccountsPanel({
   /** The API of each server; without it the default API serves every server. */
   servicesFor?: (serverId: string) => ServerServices | undefined;
   initialFocusIdentity?: string | undefined;
-  onInitialFocus?: () => void;
 }) {
   const [fullAccounts, setFullAccounts] = useServerFullAccounts(
     servers.map((server) => server.id),
@@ -420,10 +418,6 @@ export default function ServerAccountsPanel({
                           data-autofocus={
                             initialFocusIdentity === row.key ? true : undefined
                           }
-                          onFocus={() => {
-                            if (initialFocusIdentity === row.key)
-                              onInitialFocus?.();
-                          }}
                           ref={(node) => {
                             if (node)
                               accountMenuTriggers.current.set(row.key, node);

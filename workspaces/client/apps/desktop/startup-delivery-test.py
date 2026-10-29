@@ -1059,6 +1059,7 @@ class StartupDeliveryTests(unittest.TestCase):
                 desktop_process.recovery_interpreter_facts(99)
 
     @unittest.skipUnless(sys.platform == 'darwin', 'The production kernel image reader uses the native process API.')
+    @unittest.skipUnless(os.environ.get('STUDIO_REAL_PROCESS_TESTS') == '1', 'Manual tier: just test-real-process-probe (real lsof times out under load).')
     def test_owned_launcher_probe_observes_its_real_kernel_companion_without_runtime_state(self):
         import shlex
         launcher = self.root / 'owned-python-launcher'
@@ -1112,6 +1113,7 @@ with (state / 'runtime.lock').open('r') as lease:
         with recovery.installed_delivery_admission(self.state), \
                 patch.object(recovery, 'identity', return_value=None), \
                 patch.object(recovery, 'lease_available', return_value=True), \
+                patch.object(recovery, 'listener_pids', return_value=[]), \
                 patch.object(recovery.subprocess, 'Popen', side_effect=raced_spawn):
             recovery.tick(self.config, self.state)
         self.assertEqual(attempts, [75], 'a legacy launch attempt can occur, but its authoritative lease must fail')
@@ -1175,7 +1177,7 @@ with (state / 'runtime.lock').open('r') as lease:
         command = main.split('if args.first().map(String::as_str) == Some("state-check")', 1)[1].split('let port = parse_port(', 1)[0]
         self.assertIn('if args.len() != 2', command)
         self.assertIn('studio_runtime_store::check_state_readonly(PathBuf::from(state_dir).as_path())', command)
-        self.assertIn('return Ok(())', command)
+        self.assertIn('return Ok(None)', command)
 
     def test_native_reader_exposes_only_fixed_noncredential_launch_facts(self):
         import struct

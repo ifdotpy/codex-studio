@@ -309,7 +309,7 @@ fn v2_wait_disconnect_preserves_child_and_shared_backend_owner() {
             .unwrap();
         let root = supervisor.root.to_string_lossy().into_owned();
         supervisor.connections.fetch_add(1, Ordering::AcqRel);
-        let worker_supervisor = supervisor.clone();
+        let worker_supervisor = supervisor;
         let (done_tx, done_rx) = mpsc::channel();
         let worker = thread::spawn(move || {
             connection_with_budget(worker_supervisor, server, Duration::from_secs(3));
@@ -625,7 +625,7 @@ fn frame_trimming_cannot_hide_terminal_exit_or_succeed_with_oversized_first_even
     let next = crate::NextBatchResult {
         events: vec![oversized],
         return_code: None,
-        ..result.clone()
+        ..result
     };
     let bytes = batch_response_with_limit(Some(1), 0, Some(2), result, frame_limit).unwrap();
     let response: Value = serde_json::from_slice(&bytes).unwrap();

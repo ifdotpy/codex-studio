@@ -7,6 +7,7 @@ import {
   createResourceEvents,
   type ResourceEventsOptions,
 } from "../resourceEvents";
+import { MemoryTransferStorage } from "../entityTransfer";
 import { createSubscriptions } from "./module";
 import { createDataObserver } from "./data";
 import { createEntityDataObserver } from "./entityData";
@@ -17,11 +18,13 @@ type ServerSubscriptionOptions = {
   tokenRates: ResourceEventsOptions["tokenRates"];
   sync: () => ReturnType<typeof createSyncClient>;
   owner: { id: string; origin: string };
+  /** The native core owns this server's stream and projections: no browser storage, locks or channels. */
+  nativeCore?: () => boolean;
 };
 
 /** The server service supplies ownership and cache access, never stream details. */
 export function createServerSubscriptions(options: ServerSubscriptionOptions) {
-  const { api, tokenRates, sync, owner } = options;
+  const { api, tokenRates, sync, owner, nativeCore } = options;
   const transport = createResourceEvents({
     api,
     tokenRates,
@@ -34,6 +37,9 @@ export function createServerSubscriptions(options: ServerSubscriptionOptions) {
         sync().persistStagedEntityTransfer(...args),
     },
     // The local server's requests use the native client there (serverServices.ts).
+    transferStorage: () =>
+      nativeCore?.() ? new MemoryTransferStorage() : undefined,
+    ...(nativeCore?.() ? { independent: true } : {}),
     openEvents: (url) =>
       owner.id === "local" && hasNativeClient()
         ? new NativeEventSource(url)

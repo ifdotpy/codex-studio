@@ -1622,6 +1622,8 @@ fn the_plan_includes_executable_bit_changes_in_both_directions() {
     let plan = fixture.project(&guest).plan().unwrap();
     assert_eq!(plan["uploads"]["paths"], json!(["mac.txt"]));
     assert_eq!(plan["macWrites"]["paths"], json!(["vm.txt"]));
+    // The size of what a round writes to the Mac folder, for the move to host disk check.
+    assert_eq!(plan["macWrites"]["bytes"], 7);
 }
 
 #[test]

@@ -632,6 +632,16 @@ pub(crate) fn routes() -> RouteGroup {
     // children in codex_runtime.py:4928-4930.
     RouteGroup::new(vec![
         post("/api/agents", OperationStatus::Implemented, create_agent),
+        post(
+            "/api/agents/workspace-mode",
+            OperationStatus::Implemented,
+            switch_workspace_mode,
+        ),
+        post(
+            "/api/agents/move-to-host",
+            OperationStatus::Implemented,
+            move_to_host,
+        ),
         post("/api/configure", OperationStatus::Implemented, configure),
         post(
             "/api/conversation",
@@ -1282,6 +1292,72 @@ async fn configure(
     })
     .await
 }
+/// Operator action: switch one idle WT chat to Layr in place. A repeat after a lost
+/// response returns the saved association; an uncertain effect stays held.
+async fn switch_workspace_mode(
+    State(state): State<HttpState>,
+    ApiJson(body): ApiJson<generated::AgentWorkspaceModeRequest>,
+) -> Result<Json<generated::AgentWorkspaceModeResponse>, ApiError> {
+    use studio_runtime_services::layr_native::{NativeLayrError, switch_chat};
+    let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let result = switch_chat(store, &body.id)
+        .await
+        .map_err(|error| match error {
+            NativeLayrError::Refused(_) => ApiError::new(StatusCode::CONFLICT, error.to_string()),
+            error @ (NativeLayrError::Unknown(_)
+            | NativeLayrError::Io(_)
+            | NativeLayrError::Store(_)
+            | NativeLayrError::Worker) => {
+                ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+            }
+        })?;
+    state.event_wake.notify_one();
+    super::generated_json(result).map(Json)
+}
+
+/// Move an idle VM chat tree to this device (`vm_to_host`).
+async fn move_to_host(
+    State(state): State<HttpState>,
+    ApiJson(body): ApiJson<generated::AgentMoveToHostRequest>,
+) -> Result<Json<generated::AgentMoveToHostResponse>, ApiError> {
+    use studio_runtime_services::linux_vm_guest::UnixGuestRpc;
+    use studio_runtime_services::vm_to_host::{Host, MacFiles, MoveError, move_to_host};
+    let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let driver = state
+        .account_driver
+        .clone()
+        .ok_or_else(ApiError::internal)?;
+    let accounts = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/move-to-host",
+        move || driver.snapshot(),
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(|_| ApiError::internal())?
+    .accounts;
+    let guest = std::sync::Arc::new(UnixGuestRpc::new(state.vm_state_dir.clone()));
+    let host = std::sync::Arc::new(Host {
+        guest: guest.clone(),
+        files: std::sync::Arc::new(MacFiles {
+            guest,
+            vm_state_dir: state.vm_state_dir.clone(),
+        }),
+        state_dir: std::path::PathBuf::from(&state.state_dir),
+        accounts,
+        free_bytes: studio_runtime_services::disk_space::free_bytes,
+    });
+    let result = move_to_host(&store, &host, &body.id, &body.request_id)
+        .await
+        .map_err(|error| match error {
+            MoveError::Refused(_) => ApiError::new(StatusCode::CONFLICT, error.to_string()),
+            MoveError::Failed(_) | MoveError::Store(_) => {
+                ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+            }
+        })?;
+    state.event_wake.notify_one();
+    super::generated_json(result).map(Json)
+}
+
 async fn conversation(
     State(state): State<HttpState>,
     ApiJson(value): ApiJson<Value>,

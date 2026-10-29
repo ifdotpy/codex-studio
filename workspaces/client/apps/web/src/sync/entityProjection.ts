@@ -251,10 +251,20 @@ function projectSnapshotCollections(
     prior && !changed.has("rule")
       ? prior.runtime.rules
       : entityValues(values, "rule");
+  // Projects of paired servers carry their server's name. The server publishes them for
+  // clients that cannot reach those servers; they are not local projects.
+  const remoteProjects =
+    prior && !changed.has("project")
+      ? prior.runtime.remoteProjects
+      : entityValues(values, "project").filter(
+          (project) => project.serverLabel,
+        );
   const projects =
     prior && !changed.has("project")
       ? prior.runtime.projects
-      : entityValues(values, "project");
+      : entityValues(values, "project").filter(
+          (project) => !project.serverLabel,
+        );
   const peerTeams =
     prior && !changed.has("peerTeam")
       ? prior.runtime.peerTeams
@@ -349,6 +359,7 @@ function projectSnapshotCollections(
     requests,
     rules,
     projects,
+    remoteProjects,
     peerTeams,
     events,
     work,

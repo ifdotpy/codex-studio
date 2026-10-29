@@ -156,6 +156,20 @@ pub(crate) fn thread_environment_in_store(
     environment
 }
 
+/// The state of the folder overlay at `folder` in the line at `cwd` (`overlay list --json`).
+#[cfg(test)]
+pub(crate) fn overlay_folder_state(state: &Path, cwd: &Path, folder: &str) -> Option<String> {
+    let overlays: Value = serde_json::from_str(
+        &runtime::run(state, cwd, &["overlay", "list", "--json"]).expect("overlay list"),
+    )
+    .expect("overlay list JSON");
+    overlays
+        .as_array()?
+        .iter()
+        .find(|overlay| overlay["folder"].as_str() == Some(folder))
+        .and_then(|overlay| overlay["state"].as_str().map(str::to_owned))
+}
+
 #[cfg(test)]
 fn transport_environment(state_root: &Path, uses_service: bool) -> serde_json::Map<String, Value> {
     transport_environment_in_store(state_root, &store_path(state_root), uses_service)
@@ -184,6 +198,8 @@ fn transport_environment_in_store(
 mod import;
 mod inventory;
 pub mod migration;
+mod switch;
+pub use switch::switch_chat;
 
 #[cfg(test)]
 mod receipt_tests {
@@ -363,11 +379,9 @@ mod receipt_tests {
             fs::read_to_string(main.join("node_modules/old")).expect("imported cache"),
             "warm import\n"
         );
-        assert!(
-            run(state.path(), &main, &["cache", "list"])
-                .expect("cache list")
-                .lines()
-                .any(|line| line == "node_modules\tcache")
+        assert_eq!(
+            overlay_folder_state(state.path(), &main, "node_modules").as_deref(),
+            Some("cache")
         );
         let real_git: PathBuf = serde_json::from_slice(
             &fs::read(binary_path(state.path()).with_file_name("git-real.json"))
@@ -395,8 +409,10 @@ mod receipt_tests {
                     stderr_limit: 4096,
                     timeout: std::time::Duration::from_secs(30),
                 });
+            // The wrapper refuses with the layr hint. The real Git meets the read only
+            // `.git` folder that layr makes, which refuses first.
             assert!(
-                matches!(result,Err(crate::bounded_child::ChildError::Failed(ref reason)) if reason.contains("layr save -m")),
+                matches!(result,Err(crate::bounded_child::ChildError::Failed(ref reason)) if reason.contains("layr save -m") || reason.contains("Permission denied")),
                 "native Git commit guard: {result:?}"
             );
         }
@@ -718,6 +734,7 @@ case "$3 $4" in
   'rev-parse head@{0}')
     if [ -f "$LAYR_ROOT/automatic" ]; then cat "$LAYR_ROOT/automatic"; else printf "head@{0}: line has only 0 automatic states\n" >&2; exit 128; fi ;;
   'rev-parse head') printf 'full-named-state\n' ;;
+  'overlay list') printf '[]\n' ;;
 esac
 "#).expect("fixture operation succeeds");
         fs::set_permissions(binary_path(state.path()), fs::Permissions::from_mode(0o755))

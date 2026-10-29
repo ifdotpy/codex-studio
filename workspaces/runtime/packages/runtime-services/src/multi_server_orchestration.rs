@@ -660,6 +660,8 @@ pub struct RuntimeOrchestrationEffects {
     lifecycle_ports: Option<Arc<dyn crate::agent_lifecycle_runtime::LifecyclePorts>>,
     /// The installed app that this server offers to paired servers (docs/peer-updates.md).
     update_offer: Arc<crate::peer_updates::Offer>,
+    /// Where a paired server's `projects.changed` notice goes; no hook, no refresh.
+    projects_changed: Option<Arc<crate::peer_projects::PeerProjectsWake>>,
 }
 
 impl RuntimeOrchestrationEffects {
@@ -674,6 +676,7 @@ impl RuntimeOrchestrationEffects {
             known_accounts: Vec::new(),
             lifecycle_ports: None,
             update_offer: Arc::new(crate::peer_updates::Offer::installed()),
+            projects_changed: None,
         }
     }
 
@@ -691,6 +694,7 @@ impl RuntimeOrchestrationEffects {
             browser_callback,
             lifecycle_ports: Some(lifecycle_ports),
             update_offer: Arc::new(crate::peer_updates::Offer::installed()),
+            projects_changed: None,
         }
     }
 
@@ -705,6 +709,7 @@ impl RuntimeOrchestrationEffects {
             known_accounts: Vec::new(),
             lifecycle_ports: None,
             update_offer: Arc::new(crate::peer_updates::Offer::installed()),
+            projects_changed: None,
         }
     }
 
@@ -721,6 +726,7 @@ impl RuntimeOrchestrationEffects {
             known_accounts,
             lifecycle_ports: None,
             update_offer: Arc::new(crate::peer_updates::Offer::installed()),
+            projects_changed: None,
         }
     }
 
@@ -738,7 +744,16 @@ impl RuntimeOrchestrationEffects {
             known_accounts,
             lifecycle_ports: Some(lifecycle_ports),
             update_offer: Arc::new(crate::peer_updates::Offer::installed()),
+            projects_changed: None,
         }
+    }
+
+    pub fn with_projects_changed(
+        mut self,
+        wake: Arc<crate::peer_projects::PeerProjectsWake>,
+    ) -> Self {
+        self.projects_changed = Some(wake);
+        self
     }
 
     #[cfg(test)]
@@ -1741,6 +1756,7 @@ impl OrchestrationEffects for RuntimeOrchestrationEffects {
         ) || GIT_CHANNEL_ACTIONS.contains(&action)
             || (cfg!(unix) && SERVER_COMMAND_ACTIONS.contains(&action))
             || action == "projects"
+            || action == crate::peer_projects::CHANGED_ACTION
             || crate::peer_updates::ACTIONS.contains(&action)
             || (action == "stop" && self.lifecycle_ports.is_some())
     }
@@ -1912,6 +1928,12 @@ impl RuntimeOrchestrationEffects {
         }
         if action == "projects" {
             return self.projects().await;
+        }
+        if action == crate::peer_projects::CHANGED_ACTION {
+            if let Some(wake) = &self.projects_changed {
+                wake.peer_changed(principal);
+            }
+            return Ok(ExchangeOutcome::Applied(json!({})));
         }
         if crate::peer_updates::ACTIONS.contains(&action) {
             return self.peer_update(principal, envelope).await;
@@ -2627,6 +2649,7 @@ const PEER_REPLAY_SAFE_ACTIONS: &[ServerOperationKind] = &[
     ServerOperationKind::ExecEvent,
     // Effect-free reads (Python `receive` runs them again for a running claim).
     ServerOperationKind::Projects,
+    ServerOperationKind::ProjectsChanged,
     ServerOperationKind::Folders,
     ServerOperationKind::Git,
     ServerOperationKind::Chunk,

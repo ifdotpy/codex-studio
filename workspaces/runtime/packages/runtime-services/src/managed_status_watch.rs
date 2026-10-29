@@ -801,7 +801,7 @@ fn digest(value: &Value) -> Result<String, StatusError> {
     Ok(data_encoding::HEXLOWER.encode(&hash[..12]))
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 struct StatusCursor {
     offset: usize,

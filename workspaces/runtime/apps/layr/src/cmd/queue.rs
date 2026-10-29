@@ -242,7 +242,7 @@ fn run_entries(ctx: &Ctx, repo: &Repo, into: Option<&str>, skip_busy: bool) -> R
     while let Some(entry) = repo.p.db.queue_entries(into)?.into_iter().find(|entry| entry.status == "pending") {
         let line = target(repo, &entry)?;
         // A caller who cannot update this line cannot fail other users' entries.
-        repo.authorize_line(ctx, &line, crate::repo::LineOp::Merge { expect: true })?;
+        repo.authorize_line(ctx, &line, crate::repo::LineOp::Merge { expect: true, hint: None })?;
         let mut attempts = 0;
         let outcome = loop {
             attempts += 1;

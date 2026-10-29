@@ -16,6 +16,16 @@ const INSTALL_LOCK_TIMEOUT: Duration = Duration::from_secs(60);
 /// Maximum time for a host executable to report its version, in seconds.
 const VERSION_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Layr prints `layr version <version>`, then its build id and date in parentheses.
+/// Only the version is the contract; the build id changes with every build.
+pub(super) fn version_matches(output: &str) -> bool {
+    let line = format!("layr version {LAYR_VERSION}");
+    output == line
+        || output
+            .strip_prefix(&line)
+            .is_some_and(|build| build.starts_with(" (") && build.ends_with(')'))
+}
+
 pub fn ensure_binary(state_dir: &Path) -> Result<(), NativeLayrError> {
     let executable = CanonicalPath::existing(std::env::current_exe()?)?.into_path_buf();
     let shipped = shipped_binary_near(&executable);
@@ -37,7 +47,7 @@ fn ensure_binary_with(
     let binary = binary_path(state_dir);
     if binary.is_file() {
         let version = super::run(state_dir, state_dir, &["--version"])?;
-        if version != format!("layr version {LAYR_VERSION}") {
+        if !version_matches(&version) {
             return Err(NativeLayrError::Refused(format!(
                 "Expected Layr {LAYR_VERSION}, found {version}"
             )));
@@ -171,7 +181,7 @@ fn verify_version(binary: &Path) -> Result<(), NativeLayrError> {
     })
     .map_err(|error| NativeLayrError::Refused(format!("Layr version check failed: {error:?}")))?;
     let version = String::from_utf8_lossy(&output.stdout.bytes);
-    if version.trim() != format!("layr version {LAYR_VERSION}") {
+    if !version_matches(version.trim()) {
         return Err(NativeLayrError::Refused(format!(
             "Expected Layr {LAYR_VERSION}, found {}",
             version.trim()
@@ -305,6 +315,17 @@ fn source_directory() -> Result<std::path::PathBuf, NativeLayrError> {
 
 #[cfg(all(test, unix))]
 mod tests {
+    #[test]
+    fn version_check_accepts_the_build_suffix_only() {
+        assert!(version_matches("layr version 0.4.0"));
+        assert!(version_matches(
+            "layr version 0.4.0 (73eb679-dirty 2026-10-28)"
+        ));
+        assert!(!version_matches("layr version 0.4.01"));
+        assert!(!version_matches("layr version 0.3.0 (73eb679 2026-10-28)"));
+        assert!(!version_matches("layr version 0.4.0 (unclosed"));
+    }
+
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 

@@ -75,7 +75,7 @@ pub mod git {
         }
     }
 
-    /// Branches to import after a fetch: the requested ones, the ones imported before, and the
+    /// Branches to import after a fetch (the caller holds no project lock): the requested ones, the ones imported before, and the
     /// ones that match a line name or the default branch.
     fn import_after_fetch(
         ctx: &Ctx,
@@ -103,8 +103,10 @@ pub mod git {
                 continue;
             }
             let prev = repo.p.db.remote_ref(name)?;
-            let (st, fresh) = gitbridge::import_commit(ctx, repo, commit, name, ctx.caller.uid, None)?;
+            // The import takes the project lock for one commit at a time.
+            let (st, fresh) = gitbridge::import_commit_unlocked(ctx, repo, commit, name, ctx.caller.uid)?;
             if prev.as_ref().map(|p| p.0 != st).unwrap_or(true) && !fresh {
+                let _lock = repo.p.lock()?;
                 let mut rec = Record::new("remote.ref");
                 rec.data = serde_json::json!({"ref": name, "state": st, "commit": commit});
                 repo.commit_record(ctx, rec)?;
@@ -122,7 +124,6 @@ pub mod git {
         let remote = a.pos.first().cloned().unwrap_or_else(|| "origin".into());
         let only = a.pos.get(1).cloned();
         let refs = gitbridge::fetch(ctx, repo, &remote)?;
-        let _lock = repo.p.lock()?;
         let done = import_after_fetch(ctx, repo, &remote, &refs, only.as_deref())?;
         if !a.has("-q") {
             let url = gitbridge::remote_url(repo, &remote)?;
@@ -171,10 +172,7 @@ pub mod git {
                 }
             }
         };
-        {
-            let _lock = h.repo.p.lock()?;
-            import_after_fetch(ctx, &h.repo, &remote, &refs, Some(&branch))?;
-        }
+        import_after_fetch(ctx, &h.repo, &remote, &refs, Some(&branch))?;
         let rev = format!("{remote}/{branch}");
         if h.repo.p.db.remote_ref(&rev)?.is_none() {
             return Err(exit(1, format!("fatal: couldn't find remote ref {branch}")));
@@ -211,6 +209,7 @@ pub mod git {
         repo.authorize_line(ctx, &line, crate::repo::LineOp::Save)?;
         let _lock = repo.p.lock()?;
         let line = repo.line(&line.id)?;
+        gitbridge::check_git_head(repo, &line)?;
         let state = repo.state(&line.head)?;
         if !state.conflicts.is_empty() {
             return Err(exit(
@@ -259,6 +258,9 @@ pub mod git {
         let h = here(ctx)?;
         let repo = &h.repo;
         let line = h.line.clone();
+        if let Some(l) = &line {
+            gitbridge::check_git_head(repo, l)?;
+        }
         let remote = a.pos.first().cloned().unwrap_or_else(|| "origin".into());
         let (rev, branch) = match a.pos.get(1) {
             Some(spec) => match spec.split_once(':') {
@@ -310,7 +312,12 @@ pub mod git {
         let url = gitbridge::remote_url(repo, &remote)?;
         // A push prepared earlier (for example before a lost response): read the remote ref first.
         let mut prepared: Option<(String, String)> = None;
+        let squash_commits = repo.p.db.squash_commits_of(&state_id)?;
         for (eid, st, r, b, c, status) in repo.p.db.exports()? {
+            // A squash commit answers only a push with --squash; a history commit answers only one without.
+            if squash_commits.contains(&c) != a.has("--squash") {
+                continue;
+            }
             if st == state_id && r == remote && b == branch && status == "prepared" {
                 prepared = Some((eid, c.clone()));
             }
@@ -351,7 +358,7 @@ pub mod git {
                     made.into_iter().map(|(s, c)| (s, serde_json::Value::String(c))).collect();
                 let eid = ids::new_id();
                 let mut rec = Record::new("export");
-                rec.data = serde_json::json!({"export": eid, "state": state_id, "remote": remote, "branch": branch, "commit": c, "parent": parent, "commits": commits, "status": "prepared"});
+                rec.data = serde_json::json!({"export": eid, "state": state_id, "remote": remote, "branch": branch, "commit": c, "parent": parent, "squash": a.has("--squash"), "commits": commits, "status": "prepared"});
                 repo.commit_record(ctx, rec)?;
                 (eid, c)
             }
@@ -734,6 +741,10 @@ pub fn sync(ctx: &Ctx, args: &[String]) -> Result<i32> {
     exchange(ctx, args, "sync")
 }
 pub fn push(ctx: &Ctx, args: &[String]) -> Result<i32> {
+    // Without a remote name: every layer to each of its remotes (docs/cache-overlays.md).
+    if args.iter().all(|s| s.starts_with('-')) {
+        return super::layerpush::push_all(ctx, args);
+    }
     exchange(ctx, args, "push")
 }
 pub fn index(ctx: &Ctx, args: &[String]) -> Result<i32> {

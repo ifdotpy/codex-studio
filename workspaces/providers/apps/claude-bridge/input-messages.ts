@@ -18,6 +18,9 @@ import { HUMAN_INPUT, STUDIO_EVENT_INPUT } from "./input-origin.generated.ts";
 
 // Validate every origin before conversion or submission. An omitted field is
 // the legacy human-input contract; unknown provenance must not become human.
+// Studio events go first and human text last: Claude CLI marks an event
+// message "NOT USER INPUT", and the model applies that mark to the message
+// just before it.
 export async function inputGroups<T extends object, B>(
   input: T[] | null | undefined,
   convert: (input: T[]) => Promise<B>,
@@ -33,6 +36,10 @@ export async function inputGroups<T extends object, B>(
     if (groups.at(-1)?.origin !== origin) groups.push({ origin, input: [] });
     groups.at(-1)!.input.push(item);
   }
+  groups.sort(
+    (a, b) =>
+      Number(a.origin === HUMAN_INPUT) - Number(b.origin === HUMAN_INPUT),
+  );
   if (!groups.length) groups.push({ origin: HUMAN_INPUT, input: input || [] });
   return Promise.all(
     groups.map(async ({ origin, input }) => ({

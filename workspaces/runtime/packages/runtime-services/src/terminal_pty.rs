@@ -595,8 +595,10 @@ mod tests {
                 .and_then(|live| live.reader_done.take())
         };
         if let Some(reader_done) = reader_done {
+            // Unbounded on purpose: the runner's terminate-after bounds a hang, and a
+            // dropped sender fails here. A fixed deadline failed under load.
             reader_done
-                .recv_timeout(Duration::from_secs(2))
+                .recv()
                 .expect("PTY reader completes session cleanup");
         }
         assert!(adapter.sessions.lock().expect("session map").is_empty());

@@ -23,6 +23,8 @@ export default {
       "file-restore.test.ts",
       "move.test.ts",
       "move-external.test.ts",
+      // A resume in a new workspace folder carries Claude's cwd-keyed native history.
+      "cwd-carry.test.ts",
       // Test-side fixture waits must preserve the worker's IPC lifetime.
       "file-signals.test.ts",
       // Preserve unconfirmed outcomes and bounded, read-only repair evidence without a model query.
