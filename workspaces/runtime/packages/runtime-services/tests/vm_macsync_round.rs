@@ -882,7 +882,6 @@ fn a_refused_operation_is_not_repeated() {
 #[test]
 fn every_unknown_outcome_keeps_the_exact_operation_until_a_proven_reply() {
     for detail in [
-        "The request has no proven result; inspect the saved state",
         "The layr operation exceeded its deadline",
         "The admin connection closed before its reply",
     ] {
@@ -1393,6 +1392,50 @@ fn a_name_that_another_mac_file_holds_in_another_case_is_never_written() {
             .iter()
             .any(|notice| notice.as_str().unwrap().starts_with("README.md:"))
     );
+}
+
+// A guest receipt row without a response proves that no copy of the apply runs. The
+// next round drops the pending operation and plans again from the real files.
+#[test]
+fn a_pending_apply_without_a_guest_result_is_replaced_by_a_fresh_plan() {
+    let fixture = Fixture::new();
+    fixture.save(
+        "manifest.json",
+        json!({"a.txt": fixture.agreed("a.txt", b"base", "s1", 0o644)}),
+    );
+    fixture.write("a.txt", b"first");
+    let guest = Guest::new(vec![
+        Err(lost()),
+        Err(GuestError::Rejected {
+            code: Some("outcome_unknown".into()),
+            detail: Some("The request has no proven result; inspect the saved state".into()),
+            uncertain: true,
+        }),
+        Ok(reply(
+            "m2",
+            json!({"applied":["a.txt","b.txt"],"merge":"merged"}),
+        )),
+    ]);
+    let project = fixture.project(&guest);
+    assert!(project.round(None).is_err());
+    assert!(fixture.exists("pending.json"));
+    fixture.write("a.txt", b"second");
+    fixture.write("b.txt", b"new");
+    project.round(None).unwrap();
+    let operations = guest.operations();
+    assert_eq!(operations.len(), 3);
+    assert_eq!(operations[0], operations[1]);
+    assert_ne!(operations[1], operations[2]);
+    let paths = guest.applies()[2]["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["path"].as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(paths, ["a.txt", "b.txt"]);
+    assert!(!fixture.exists("pending.json"));
+    assert_eq!(fixture.saved("manifest.json")["a.txt"]["h"], sha(b"second"));
+    assert_eq!(fixture.saved("manifest.json")["b.txt"]["h"], sha(b"new"));
 }
 
 #[test]

@@ -450,9 +450,9 @@ and forward, the web card and the desktop action. It makes `kubectl oidc-login` 
 
 Rollout:
 
-- The guest files reach the VM through the existing guest upgrade
-  (`upgrade-linux-vm-layr.py`). It restarts the VM only when no provider is active. The Swift
-  helper does not change.
+- The guest files reach the VM through the guest update of the backend
+  ([linux-vm-workspaces.md](linux-vm-workspaces.md), "Guest updates"). It runs when no provider
+  is active and does not restart the VM. The Swift helper does not change.
 - The server and the web need a backend update. The API schema hash changes (`openUrl`), so
   the renderer and the backend update together. `openSignIn` needs a desktop app update.
   Without it, the window falls back to `openExternal` (browser in the background).
