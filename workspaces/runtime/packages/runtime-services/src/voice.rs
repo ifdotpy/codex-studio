@@ -24,6 +24,7 @@ pub use audio::{VoiceAudioError, save_audio};
 pub mod policy;
 
 mod effects;
+pub(crate) use effects::hold_unclean_effects;
 #[path = "voice/provider.rs"]
 pub mod provider;
 

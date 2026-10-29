@@ -3,6 +3,7 @@
 
 pub mod agent_limits;
 pub mod agent_progress;
+pub mod annotation_command;
 pub mod api_schema;
 pub mod claude_controls;
 pub mod claude_failure;

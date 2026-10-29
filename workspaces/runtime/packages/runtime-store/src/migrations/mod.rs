@@ -33,6 +33,7 @@ mod m2026_10_28_receipts_voice;
 mod m2026_10_28_receipts_work;
 mod m2026_10_28_usage_revision;
 mod m2026_10_29_model_choices;
+mod m2026_10_29_request_results_v2;
 
 #[cfg(any(test, feature = "test-support"))]
 pub use m2026_10_20_agents::migrate_2026_10_20;
@@ -498,6 +499,26 @@ static CATALOG: &[&dyn Migration] = &[
         },
         apply: |c| m2026_10_29_model_choices::apply(c.transaction),
     },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-29-request-results-v2",
+            introduced: OCTOBER_29,
+            target: MigrationTarget::Canvas,
+            supported_source: "Request results with exact response bodies",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_29_request_results_v2::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-29-annotation-revision",
+            introduced: OCTOBER_29,
+            target: MigrationTarget::Canvas,
+            supported_source: "Annotation rows without a revision",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_29_request_results_v2::annotation_revision(c.transaction),
+    },
     &RegistryMigration,
 ];
 
@@ -738,6 +759,9 @@ fn run_receipt_migrations(
     for migration in CATALOG.iter().filter_map(|entry| entry.receipt_family()) {
         run_receipt_family_progress(db, migration, &mut |_, _, _| Ok(()), progress)?;
     }
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    m2026_10_29_request_results_v2::convert_annotations(&tx)?;
+    tx.commit()?;
     m2026_10_28_receipts_drop_old_tables::verify_absent(db)
         .map_err(|error| receipt_error(&error))?;
     crate::schema::verify_bootstrap(db)?;

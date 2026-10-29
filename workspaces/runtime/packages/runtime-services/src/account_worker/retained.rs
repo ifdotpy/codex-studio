@@ -1165,6 +1165,12 @@ pub fn discard_unsent_provider_call(
     storage::discard_unsent(tx, admitted)
 }
 
+pub(crate) fn hold_unclean_provider_calls(
+    tx: &studio_runtime_store::Transaction<'_>,
+) -> Result<(), WorkerError> {
+    storage::hold_unclean_pending(tx)
+}
+
 impl From<&SessionRequest> for ProviderCallIntent {
     fn from(request: &SessionRequest) -> Self {
         Self {

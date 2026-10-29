@@ -4,6 +4,8 @@ Studio installs Rust commands for the local server, process supervisor, and
 diagnostics. Managed agent work uses the application's orchestration tools.
 Keep runtime state outside the checkout and preserve its existing identity.
 
+`layr-studio servers list|forget` manages paired servers of the native client; see the [native client guide](../workspaces/client/apps/native/README.md#operator-cli).
+
 ## Deliver an update
 
 Use `just deliver-server COMMIT` from a checkout at the requested commit.

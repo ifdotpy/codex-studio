@@ -162,6 +162,63 @@ async fn provider_callbacks_durable_tool_replay_and_content_conflict() {
     assert_ne!(first.identity, replay.identity);
     assert!(!tool_value(&first)["id"].as_str().unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn provider_callbacks_read_reexecutes_without_a_receipt() {
+    let (_dir, store, context) = fixture().await;
+    let frame = call(
+        &context,
+        "read-again",
+        "orchestration_peers",
+        serde_json::Map::new().into(),
+    );
+    let baseline: i64 = store
+        .test_reader()
+        .unwrap()
+        .query_row("SELECT count(*) FROM request_results", [], |row| row.get(0))
+        .unwrap();
+    let first = reply(
+        dispatch(store.clone(), &context, &frame, 10.0)
+            .await
+            .unwrap(),
+    );
+    let count: i64 = store
+        .test_reader()
+        .unwrap()
+        .query_row("SELECT count(*) FROM request_results", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(count, baseline, "read results must not be recorded");
+    let pending = reply(
+        dispatch(store.clone(), &context, &frame, 10.5)
+            .await
+            .unwrap(),
+    );
+    assert_eq!(first, pending, "an outstanding delivery retains its reply");
+    delivery(&store, &first.identity, DeliveryOutcome::Submitted)
+        .await
+        .unwrap();
+    delivery(&store, &first.identity, DeliveryOutcome::Written)
+        .await
+        .unwrap();
+    let count: i64 = store
+        .test_reader()
+        .unwrap()
+        .query_row("SELECT count(*) FROM request_results", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(
+        count, baseline,
+        "delivered read replies must not be recorded"
+    );
+    let second = reply(
+        dispatch(store.clone(), &context, &frame, 11.0)
+            .await
+            .unwrap(),
+    );
+    assert_ne!(
+        first.body, second.body,
+        "the read runs again at the new time"
+    );
+}
 #[tokio::test]
 async fn provider_callbacks_human_pending_and_write_outcomes() {
     let (_dir, store, context) = fixture().await;
@@ -783,6 +840,7 @@ async fn provider_callbacks_python_reservations_and_restart() {
                 "not_applied"
             }
         );
+        // Read classification now covers more reads than the frozen Python oracle.
         for field in [
             "agent",
             "threadId",
@@ -794,7 +852,6 @@ async fn provider_callbacks_python_reservations_and_restart() {
             "epoch",
             "accountKey",
             "connectionId",
-            "readOnly",
             "request_id",
         ] {
             assert_eq!(

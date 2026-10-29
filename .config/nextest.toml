@@ -83,6 +83,9 @@ inherits = "ci"
 # Retained watcher registrations and analytics connections avoid repeated tree walks and opens.
 # Reviewer permissions stay read-only under yolo across preparation, turns, and monitors.
 default-filter = '''
+    ((package(=studio-runtime-store) | package(=studio-runtime-services)) & kind(lib) & test(unclean_)) |
+    (package(=studio-runtime-server) & kind(bin) & binary(=studio-runtime-server) & test(clean_marker_is_consumed_before_the_next_run)) |
+    (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(unclean_restart_holds_title_after_lost_submission_commit)) |
     (package(=studio-runtime-server) & kind(lib) & test(/^host_runtime::voice_composition_tests::(stale_unsent_voice_stop_reaches_real_worker_after_lifecycle_stop|voice_speech_http_reserves_and_replays_through_real_worker|migrated_voice_stop_replays_unknown_with_real_worker_without_resending)$/)) |
     (package(=studio-runtime-store) & kind(test) & binary(=integration) & test(/^receipts_cutover::/)) |
     (package(=studio-runtime-server) & kind(lib) & test(direct_generation_uses_only_migrated_account_counter)) |
@@ -151,6 +154,10 @@ default-filter = '''
     | ((package(=studio-runtime-http) | package(=studio-client-core)) & (kind(lib)) & (test(brotli_)))
     | ((package(=studio-client-core)) & (kind(lib)) & (test(draft_store::tests::synchronization_decodes_only_the_keyed_draft_per_incoming_document) | test(terminal::tests::resized_grid_keeps_cursor_output_and_truncation_dimensions) | test(server_transport::tests::https_transport_rejects_untrusted_certificate_before_sending_request) | test(server_transport::tests::one_server_cannot_hold_the_slots_of_another_server) | test(server_transport::tests::https_transport_signs_exact_bytes_and_streams_without_forwarding_local_auth) | test(svg_normalization_has_no_script_file_or_network_references)))
     | ((package(=studio-runtime-providers)) & (kind(lib)) & (test(/^connection::request_body_tests::/)))
+    | ((package(=studio-runtime-services)) & ((kind(lib) & test(provider_callbacks::tools::services::read_only_tests::)) | (kind(test) & binary(=integration) & test(provider_callbacks::provider_callbacks_read_reexecutes_without_a_receipt))))
+    | ((package(=studio-runtime-http)) & (kind(test) & binary(=integration)) & test(queue_recovery::annotation_command_replays_reference_and_returns_latest_entity))
+    | ((package(=studio-runtime-schema)) & kind(lib) & test(annotation_command::tests::annotation_command_enums_match_the_rust_owners))
+    | ((package(=studio-runtime-store)) & kind(lib) & (test(reference_replay_preserves_revision_and_reads_current_row) | test(old_shape_retains_exact_body_and_checks_reference_fields) | test(matching_legacy_annotation_becomes_a_reference_and_revision_advances)))
     | ((package(=studio-runtime-services)) & (kind(lib)) & (test(account_worker::tests::journal_publication::)))
     | ((package(=studio-runtime-services)) & (kind(lib)) & (test(account_worker::tests::journal_publication::changed_agents_decode_once_through_final_publication)))
     | ((package(=studio-runtime-services)) & (kind(lib)) & (test(account_worker::tests::agent_isolation::invalid_notification_of_one_agent_holds_it_and_keeps_the_other_agent_working) | test(account_worker::tests::agent_isolation::invalid_record_of_one_agent_in_a_provider_reply_retires_the_request_and_keeps_the_worker) | test(account_worker::tests::agent_isolation::repeated_faults_of_a_held_agent_log_once) | test(account_worker::tests::agent_isolation::a_refused_monitor_output_delta_holds_only_the_monitor_agent) | test(account_worker::tests::agent_isolation::an_exhausted_account_publication_counter_ends_the_worker_and_holds_nobody)))
@@ -326,6 +333,9 @@ platform = 'cfg(target_os = "linux")'
 # Desktop projection witness: Keep private native rotation receipts on disk while validating the public status strictly.
 # Reviewer permissions stay read-only under yolo across preparation, turns, and monitors.
 default-filter = '''
+    ((package(=studio-runtime-store) | package(=studio-runtime-services)) & kind(lib) & test(unclean_)) |
+    (package(=studio-runtime-server) & kind(bin) & binary(=studio-runtime-server) & test(clean_marker_is_consumed_before_the_next_run)) |
+    (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(unclean_restart_holds_title_after_lost_submission_commit)) |
     (package(=studio-runtime-server) & kind(lib) & test(/^host_runtime::voice_composition_tests::(stale_unsent_voice_stop_reaches_real_worker_after_lifecycle_stop|voice_speech_http_reserves_and_replays_through_real_worker|migrated_voice_stop_replays_unknown_with_real_worker_without_resending)$/)) |
     (package(=studio-runtime-store) & kind(test) & binary(=integration) & test(/^receipts_cutover::/)) |
     (package(=studio-runtime-server) & kind(lib) & test(direct_generation_uses_only_migrated_account_counter)) |
@@ -394,6 +404,10 @@ default-filter = '''
     | ((package(=studio-runtime-http) | package(=studio-client-core)) & (kind(lib)) & (test(brotli_)))
     | ((package(=studio-client-core)) & (kind(lib)) & (test(draft_store::tests::synchronization_decodes_only_the_keyed_draft_per_incoming_document) | test(terminal::tests::resized_grid_keeps_cursor_output_and_truncation_dimensions) | test(server_transport::tests::https_transport_rejects_untrusted_certificate_before_sending_request) | test(server_transport::tests::one_server_cannot_hold_the_slots_of_another_server) | test(server_transport::tests::https_transport_signs_exact_bytes_and_streams_without_forwarding_local_auth) | test(svg_normalization_has_no_script_file_or_network_references)))
     | ((package(=studio-runtime-providers)) & (kind(lib)) & (test(/^connection::request_body_tests::/)))
+    | ((package(=studio-runtime-services)) & ((kind(lib) & test(provider_callbacks::tools::services::read_only_tests::)) | (kind(test) & binary(=integration) & test(provider_callbacks::provider_callbacks_read_reexecutes_without_a_receipt))))
+    | ((package(=studio-runtime-http)) & (kind(test) & binary(=integration)) & test(queue_recovery::annotation_command_replays_reference_and_returns_latest_entity))
+    | ((package(=studio-runtime-schema)) & kind(lib) & test(annotation_command::tests::annotation_command_enums_match_the_rust_owners))
+    | ((package(=studio-runtime-store)) & kind(lib) & (test(reference_replay_preserves_revision_and_reads_current_row) | test(old_shape_retains_exact_body_and_checks_reference_fields) | test(matching_legacy_annotation_becomes_a_reference_and_revision_advances)))
     | ((package(=studio-runtime-services)) & (kind(lib)) & (test(account_worker::tests::journal_publication::)))
     | ((package(=studio-runtime-services)) & (kind(lib)) & (test(account_worker::tests::journal_publication::changed_agents_decode_once_through_final_publication)))
     | ((package(=studio-runtime-services)) & (kind(lib)) & (test(account_worker::tests::agent_isolation::invalid_notification_of_one_agent_holds_it_and_keeps_the_other_agent_working) | test(account_worker::tests::agent_isolation::invalid_record_of_one_agent_in_a_provider_reply_retires_the_request_and_keeps_the_worker) | test(account_worker::tests::agent_isolation::repeated_faults_of_a_held_agent_log_once) | test(account_worker::tests::agent_isolation::a_refused_monitor_output_delta_holds_only_the_monitor_agent) | test(account_worker::tests::agent_isolation::an_exhausted_account_publication_counter_ends_the_worker_and_holds_nobody)))

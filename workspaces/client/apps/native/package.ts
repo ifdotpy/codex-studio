@@ -77,6 +77,15 @@ try {
     path.join(resources, "studio-speech"),
     path.join(resources, "helpers/studio-speech"),
   );
+  execFileSync(
+    "cargo",
+    ["build", "--release", "--locked", "-p", "studio-operator-cli"],
+    { cwd: repository, stdio: "inherit", env: cargoEnvironment },
+  );
+  await cp(
+    path.join(target, "release/layr-studio"),
+    path.join(resources, "helpers/layr-studio"),
+  );
   await packageRecoveryHelpers(resources);
   setBundleDisplayName(application, "LAYR Studio");
   signApplication(application, identity);

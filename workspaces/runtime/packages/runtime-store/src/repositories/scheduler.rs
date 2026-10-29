@@ -356,6 +356,26 @@ mod tests {
     }
 
     #[test]
+    fn unclean_startup_holds_a_reserved_start() {
+        let mut connection = database();
+        let transaction = connection.transaction().expect("claim transaction");
+        SchedulerRepository::claim(&transaction, "agent", 4, "attempt", 10.0, 2).expect("claim");
+        transaction.commit().expect("claim commits");
+        let transaction = connection.transaction().expect("recovery transaction");
+        SchedulerRepository::hold_unclean_starts(&transaction).expect("hold uncertain start");
+        SchedulerRepository::recover_unsubmitted(&transaction).expect("normal recovery");
+        transaction.commit().expect("recovery commits");
+        let statuses: Vec<String> = connection
+            .prepare("SELECT status FROM runtime_events WHERE id IN ('first','tie') ORDER BY id")
+            .expect("statuses")
+            .query_map([], |row| row.get(0))
+            .expect("query")
+            .collect::<Result<_, _>>()
+            .expect("decode");
+        assert_eq!(statuses, ["uncertain", "uncertain"]);
+    }
+
+    #[test]
     fn restart_requeues_only_an_exact_unsubmitted_reservation() {
         let mut connection = database();
         let transaction = connection.transaction().expect("claim transaction begins");

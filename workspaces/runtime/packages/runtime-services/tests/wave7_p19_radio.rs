@@ -271,6 +271,7 @@ fn state(store: &RuntimeStore, tables: &Value) -> Value {
                 for (index, column) in columns.iter().enumerate() {
                     if table == "agents"
                         && ["hold_status", "hold_incident"].contains(&column.as_str())
+                        || table == "annotations" && column == "rev"
                     {
                         continue;
                     }

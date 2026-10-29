@@ -20,6 +20,30 @@ const STOP_SIGNATURE: &str = "lifecycle.voice-stop.v1";
 const DELETE_SIGNATURE: &str = "voice-agent-delete-v1";
 const PENDING_BATCH: u32 = 500;
 
+pub(crate) fn hold_unclean_effects(tx: &Transaction<'_>) -> Result<(), VoiceProviderError> {
+    for kind in [OutboxKind::VoiceStop, OutboxKind::VoiceDelete] {
+        let mut query = tx.prepare("SELECT id FROM runtime_outbox WHERE kind=?1 AND status=?2")?;
+        let ids = query
+            .query_map(rusqlite::params![kind, OutboxStatus::Pending], |row| {
+                row.get::<_, String>(0)
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(query);
+        for id in ids {
+            let mut row =
+                Outbox::get::<VoiceEffect>(tx, &id)?.ok_or(VoiceProviderError::ContextChanged)?;
+            let VoiceEffectAuthority::Admitted { outcome, .. } = &mut row.payload.authority else {
+                return Err(VoiceProviderError::ContextChanged);
+            };
+            *outcome = VoiceStopOutcome::Unknown;
+            row.status = OutboxStatus::Unknown;
+            row.next_at = None;
+            Outbox::put(tx, &row)?;
+        }
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VoiceDeleteSession {
     pub session_id: String,

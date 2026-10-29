@@ -512,7 +512,7 @@ mod tests {
             references: Vec::<String>::new(),
         };
         db.execute(
-            "INSERT INTO request_results VALUES('imported-terminal','signature',?1,?2)",
+            "INSERT INTO request_results(id,signature,result,created) VALUES('imported-terminal','signature',?1,?2)",
             rusqlite::params![
                 serde_json::to_string(&envelope).expect("envelope"),
                 std::time::SystemTime::now()
