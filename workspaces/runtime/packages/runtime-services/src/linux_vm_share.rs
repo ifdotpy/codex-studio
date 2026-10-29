@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Map, Value, json};
 
 use crate::linux_vm_guest::{GuestError, GuestRpc};
+use crate::saved_mount::{SavedMount, SavedMountFailure};
 
 /// The project folders of the VM state folder.
 const PROJECTS: &str = "layr-projects";
@@ -320,14 +321,15 @@ fn read_object(path: &Path) -> Option<Map<String, Value>> {
 }
 
 /// Save `value` atomically with mode 0600.
-fn save_private(path: &Path, value: &Value) -> io::Result<()> {
+fn save_private<T: serde::Serialize>(path: &Path, value: &T) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let parent = path.parent().unwrap_or(Path::new("."));
     fs::create_dir_all(parent)?;
     let mut temporary = tempfile::Builder::new()
         .prefix(".studio-share.")
         .tempfile_in(parent)?;
-    temporary.write_all(value.to_string().as_bytes())?;
+    let encoded = serde_json::to_vec(value).map_err(io::Error::other)?;
+    temporary.write_all(&encoded)?;
     temporary.as_file().sync_all()?;
     temporary
         .as_file()
@@ -519,8 +521,8 @@ fn mount_project(
         .join(PROJECTS)
         .join(identity)
         .join(MOUNT_RECORD);
-    let previous = read_object(&record).unwrap_or_default();
-    let previous_name = previous.get("name").and_then(Value::as_str);
+    let previous = SavedMount::from_value(Value::Object(read_object(&record).unwrap_or_default()));
+    let previous_name = previous.name.as_deref();
     let mut names = vec![identity.to_owned(), name.clone()];
     names.extend(previous_name.map(str::to_owned));
     let destination = parts.studio_root.join(&name);
@@ -538,17 +540,19 @@ fn mount_project(
     if is_link(parts.studio_root) || is_link(&destination) {
         return Err("The Studio share path must not contain symlinks.".into());
     }
-    let saved = json!({"projectId": identity, "name": name, "path": destination.to_string_lossy(), "port": port});
+    let saved = SavedMount {
+        project_id: Value::String(identity.to_owned()),
+        name: Some(name.clone()),
+        path: Some(destination.to_string_lossy().into_owned()),
+        port: Some(port),
+    };
     let save = || {
         save_private(&record, &saved)
             .map_err(|error| format!("The share mount record is not saved: {error}"))
     };
     let entries = parts.tool.entries()?;
     // A rename moves the view: release this project's mount at its former path.
-    if let Some(former) = previous
-        .get("path")
-        .and_then(Value::as_str)
-        .map(PathBuf::from)
+    if let Some(former) = previous.path.as_deref().map(PathBuf::from)
         && former != destination
         && former.parent() == destination.parent()
         && !is_link(&former)
@@ -627,8 +631,8 @@ pub(crate) fn remount_registered(parts: &Remount<'_>) -> Result<(), String> {
         let Some(directory) = record.parent() else {
             continue;
         };
-        let saved = read_object(&record).unwrap_or_default();
-        let outcome = project_id(saved.get("projectId")).and_then(|identity| {
+        let saved = SavedMount::from_value(Value::Object(read_object(&record).unwrap_or_default()));
+        let outcome = project_id(Some(&saved.project_id)).and_then(|identity| {
             let mut project = ensure_project(parts.guest, &identity)?;
             let share = parts
                 .guest
@@ -640,7 +644,7 @@ pub(crate) fn remount_registered(parts: &Remount<'_>) -> Result<(), String> {
                 )
                 .map_err(|error| format!("The guest share state is unavailable: {error}"))?;
             project.insert("share".into(), share);
-            let hint = match saved.get("name").and_then(Value::as_str) {
+            let hint = match saved.name.as_deref() {
                 Some(name) if !name.is_empty() => name.to_owned(),
                 _ => share_hint(
                     read_object(&directory.join(PROJECT_RECORD))
@@ -661,13 +665,17 @@ pub(crate) fn remount_registered(parts: &Remount<'_>) -> Result<(), String> {
             },
             Err(error) => {
                 let error: String = error.chars().take(ERROR_CHARS).collect();
-                let identity = saved.get("projectId").cloned().unwrap_or(Value::Null);
+                let identity = saved.project_id;
                 let at = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map_or(0.0, |elapsed| elapsed.as_secs_f64());
                 if let Err(failure) = save_private(
                     &report,
-                    &json!({"projectId": identity, "error": error, "at": at}),
+                    &SavedMountFailure {
+                        project_id: identity,
+                        error: Value::String(error),
+                        at: json!(at),
+                    },
                 ) {
                     eprintln!("linux-vm: the share mount failure is not saved: {failure}");
                 }

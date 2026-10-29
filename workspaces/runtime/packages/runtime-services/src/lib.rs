@@ -45,6 +45,7 @@ pub mod browser_policy;
 pub mod callback_runtime;
 pub mod capacity_retry;
 pub mod catalog_reads;
+mod saved_mount;
 pub mod change_notifications;
 pub mod checkpoints;
 mod child_permissions;
