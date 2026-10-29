@@ -393,99 +393,80 @@ pub enum CodexVmAuthError {
 
 // The VM historically accepts partial and wrong-typed unused fields. The
 // metadata reader above retains its separate strict Deserialize policy.
-#[derive(Default)]
-struct VmAuthFile(CodexAuthFile);
-#[derive(Default)]
+#[derive(Default, Deserialize)]
+struct VmAuthFile {
+    #[serde(rename = "OPENAI_API_KEY", default, deserialize_with = "vm_string")]
+    api_key: Option<String>,
+    #[serde(default, deserialize_with = "vm_object")]
+    tokens: Option<VmTokens>,
+}
+
+#[derive(Default, Deserialize)]
+struct VmTokens {
+    #[serde(default, deserialize_with = "vm_string")]
+    access_token: Option<String>,
+    #[serde(default, deserialize_with = "vm_string")]
+    account_id: Option<String>,
+}
+
+#[derive(Default, Deserialize)]
 struct VmClaims {
-    details: CodexClaimDetails,
+    #[serde(rename = "exp", default, deserialize_with = "vm_number")]
     expires: Option<f64>,
+    // These components preserve the historical JSON pointer interpretation.
+    #[serde(rename = "https:", default, deserialize_with = "vm_object")]
+    https: Option<VmHttps>,
 }
-trait VmFields: Default {
-    fn field(&mut self, name: &str, value: Value);
+
+#[derive(Deserialize)]
+struct VmHttps {
+    #[serde(rename = "", default, deserialize_with = "vm_object")]
+    empty: Option<VmEmpty>,
 }
-struct VmVisitor<T>(std::marker::PhantomData<T>);
-impl<'de, T: VmFields> Visitor<'de> for VmVisitor<T> {
-    type Value = T;
-    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("a credential document")
-    }
-    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<T, A::Error> {
-        let mut result = T::default();
-        while let Some(name) = map.next_key::<String>()? {
-            result.field(&name, map.next_value()?);
-        }
-        Ok(result)
-    }
-    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<T, A::Error> {
-        while seq.next_element::<Value>()?.is_some() {}
-        Ok(T::default())
-    }
-    fn visit_bool<E: serde::de::Error>(self, _: bool) -> Result<T, E> {
-        Ok(T::default())
-    }
-    fn visit_i64<E: serde::de::Error>(self, _: i64) -> Result<T, E> {
-        Ok(T::default())
-    }
-    fn visit_u64<E: serde::de::Error>(self, _: u64) -> Result<T, E> {
-        Ok(T::default())
-    }
-    fn visit_f64<E: serde::de::Error>(self, _: f64) -> Result<T, E> {
-        Ok(T::default())
-    }
-    fn visit_str<E: serde::de::Error>(self, _: &str) -> Result<T, E> {
-        Ok(T::default())
-    }
-    fn visit_unit<E: serde::de::Error>(self) -> Result<T, E> {
-        Ok(T::default())
-    }
+#[derive(Deserialize)]
+struct VmEmpty {
+    #[serde(rename = "api.openai.com", default, deserialize_with = "vm_object")]
+    api: Option<VmApi>,
 }
-macro_rules! vm_deserialize {
-    ($ty:ty) => {
-        impl<'de> Deserialize<'de> for $ty {
-            fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-                d.deserialize_any(VmVisitor::<Self>(std::marker::PhantomData))
-            }
-        }
-    };
+#[derive(Deserialize)]
+struct VmApi {
+    #[serde(default, deserialize_with = "vm_object")]
+    auth: Option<VmClaimDetails>,
 }
-impl VmFields for VmAuthFile {
-    fn field(&mut self, name: &str, value: Value) {
-        match name {
-            "OPENAI_API_KEY" => self.0.api_key = value.as_str().map(str::to_owned),
-            "tokens" => {
-                self.0.tokens = Some(CodexTokens {
-                    access_token: value
-                        .get("access_token")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned),
-                    account_id: value
-                        .get("account_id")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned),
-                    ..Default::default()
-                })
-            }
-            _ => {}
-        }
+#[derive(Deserialize)]
+struct VmClaimDetails {
+    #[serde(default, deserialize_with = "vm_string")]
+    chatgpt_account_id: Option<String>,
+}
+
+fn vm_string<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(Value::deserialize(d)?.as_str().map(str::to_owned))
+}
+fn vm_number<'de, D: Deserializer<'de>>(d: D) -> Result<Option<f64>, D::Error> {
+    Ok(Value::deserialize(d)?.as_f64())
+}
+fn vm_object<'de, D, T>(d: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let value = Value::deserialize(d)?;
+    Ok(if value.is_object() {
+        T::deserialize(value).ok()
+    } else {
+        None
+    })
+}
+
+fn vm_document<T: serde::de::DeserializeOwned + Default>(bytes: &[u8]) -> Option<T> {
+    // Parse the complete document first for legacy duplicate and number admission.
+    let value: Value = serde_json::from_slice(bytes).ok()?;
+    if value.is_object() {
+        T::deserialize(value).ok()
+    } else {
+        Some(T::default())
     }
 }
-vm_deserialize!(VmAuthFile);
-impl VmFields for VmClaims {
-    fn field(&mut self, name: &str, value: Value) {
-        match name {
-            "exp" => self.expires = value.as_f64(),
-            // Preserve the historical JSON pointer's slash interpretation.
-            "https:" => {
-                self.details.chatgpt_account_id = value
-                    .pointer("//api.openai.com/auth/chatgpt_account_id")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned)
-            }
-            _ => {}
-        }
-    }
-}
-vm_deserialize!(VmClaims);
 fn vm_claims(token: &str, padded: bool) -> Option<VmClaims> {
     let part = token.split('.').nth(1)?;
     let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
@@ -498,7 +479,7 @@ fn vm_claims(token: &str, padded: bool) -> Option<VmClaims> {
             }
         })
         .ok()?;
-    serde_json::from_slice(&bytes).ok()
+    vm_document(&bytes)
 }
 /// Refresh verification intentionally accepts only the unpadded form.
 pub fn codex_vm_refresh_exp(token: &str) -> Option<f64> {
@@ -510,7 +491,7 @@ pub fn codex_vm_auth(
     expected_credential: Option<&str>,
     expected_account: Option<&str>,
 ) -> Result<CodexVmCredential, CodexVmAuthError> {
-    let VmAuthFile(auth) = serde_json::from_slice(bytes).map_err(|_| CodexVmAuthError::Invalid)?;
+    let auth: VmAuthFile = vm_document(bytes).ok_or(CodexVmAuthError::Invalid)?;
     if let Some(key) = auth.api_key.filter(|key| !key.is_empty()) {
         let identity = format!("api:{}", hex_sha256(key.as_bytes()));
         if expected_credential.is_some_and(|value| value != identity) {
@@ -524,7 +505,9 @@ pub fn codex_vm_auth(
         .filter(|value| !value.is_empty())
         .ok_or(CodexVmAuthError::Invalid)?;
     let claims = vm_claims(&access_token, true).ok_or(CodexVmAuthError::Invalid)?;
-    let identity = tokens.account_id.or(claims.details.chatgpt_account_id);
+    let identity = tokens
+        .account_id
+        .or_else(|| claims.https?.empty?.api?.auth?.chatgpt_account_id);
     if identity.is_none() || identity.as_deref() != expected_account {
         return Err(CodexVmAuthError::AccountChanged);
     }
