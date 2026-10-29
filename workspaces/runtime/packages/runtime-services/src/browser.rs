@@ -287,8 +287,12 @@ impl BrowserCallbackReceiver {
                 "The sign-in request is invalid",
             )
         })?;
+        let parsed = crate::browser_cards::BrowserParams::read(params);
         if record.get("method").and_then(Value::as_str) != Some("browser/open")
-            || params.get("bridgeId").and_then(Value::as_str) != Some(bridge_id)
+            || parsed
+                .as_ref()
+                .and_then(|params| params.bridge_id.as_deref())
+                != Some(bridge_id)
         {
             return Err(refused(
                 404,
@@ -296,8 +300,9 @@ impl BrowserCallbackReceiver {
                 "The sign-in request is unknown",
             ));
         }
-        let expected = params
-            .pointer("/forward/tokenHash")
+        let expected = parsed
+            .as_ref()
+            .and_then(|params| params.forward.get("tokenHash"))
             .and_then(Value::as_str)
             .ok_or_else(|| {
                 refused(
@@ -1828,6 +1833,46 @@ mod tests {
     use std::net::TcpStream;
     use std::sync::atomic::AtomicBool;
     use tokio::sync::{Notify, Semaphore};
+
+    #[tokio::test]
+    async fn callback_request_refusal_order_handles_partial_stored_records() {
+        let dir = tempfile::tempdir().expect("temporary state");
+        let store = Arc::new(RuntimeStore::open(Some(dir.path())).await.expect("store"));
+        let bridge = "0123456789abcdef0123456789abcdef";
+        let id = uuid::Uuid::new_v5(
+            &uuid::Uuid::NAMESPACE_URL,
+            format!("studio-browser-open:{bridge}").as_bytes(),
+        )
+        .to_string();
+        let receiver = BrowserCallbackReceiver::new(Arc::clone(&store));
+        for (raw, expected) in [
+            ("null", 503),
+            (r#"{"method":"wrong"}"#, 503),
+            (r#"{"method":"wrong","params":null}"#, 404),
+            (r#"{"method":"browser/open","params":{}}"#, 404),
+            (
+                r#"{"method":"browser/open","params":{"bridgeId":"0123456789abcdef0123456789abcdef"}}"#,
+                403,
+            ),
+            (
+                r#"{"method":"wrong","method":"browser/open","params":{"bridgeId":"0123456789abcdef0123456789abcdef","forward":{"tokenHash":"bad"}}}"#,
+                403,
+            ),
+        ] {
+            let key = id.clone();
+            store
+                .transaction_with(move |tx| {
+                    studio_runtime_store::QuestionsWriteRepository::put_request(tx, &key, raw)
+                })
+                .await
+                .expect("request fixture");
+            let error = receiver
+                .receive(&json!({"bridgeId":bridge,"token":"token","target":"/"}))
+                .await
+                .expect_err("refused before callback");
+            assert_eq!(error.status(), expected, "{raw}");
+        }
+    }
 
     #[test]
     fn platform_neutral_port_conflict_keeps_the_port_and_retry_guidance() {

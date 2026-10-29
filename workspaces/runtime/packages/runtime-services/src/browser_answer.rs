@@ -68,7 +68,12 @@ pub async fn is_host_source(store: &RuntimeStore, id: String) -> Result<bool, Br
     };
     let record: Value = serde_json::from_str(&raw)
         .map_err(|_| BrowserAnswerError::Invalid("The sign-in request is invalid"))?;
-    Ok(record.pointer("/params/source").and_then(Value::as_str) == Some("host"))
+    Ok(record
+        .get("params")
+        .and_then(crate::browser_cards::BrowserParams::read)
+        .and_then(|params| params.source)
+        .as_deref()
+        == Some("host"))
 }
 
 /// The guest owns the sign-in request. A stable request ID lets its durable
@@ -129,29 +134,28 @@ pub async fn answer<V: Fn(&Value) -> bool + Send + Sync + 'static>(
     let paste_mode =
         decision == "accept" && data.get("paste").and_then(Value::as_bool) == Some(true);
     let signature = crate::provider_callbacks::answer_signature(&json!({"decision":decision}));
-    let params =
-        record
-            .get("params")
-            .and_then(Value::as_object)
-            .ok_or(BrowserAnswerError::Invalid(
-                "The sign-in request is invalid",
-            ))?;
-    let bridge_id = params
-        .get("bridgeId")
-        .and_then(Value::as_str)
+    let params_value = record.get("params").ok_or(BrowserAnswerError::Invalid(
+        "The sign-in request is invalid",
+    ))?;
+    let params = params_value.as_object().ok_or(BrowserAnswerError::Invalid(
+        "The sign-in request is invalid",
+    ))?;
+    let parsed = crate::browser_cards::BrowserParams::read(params_value).ok_or(
+        BrowserAnswerError::Invalid("The sign-in request is invalid"),
+    )?;
+    let bridge_id = parsed
+        .bridge_id
+        .as_deref()
         .filter(|value| value.len() == 32)
         .ok_or(BrowserAnswerError::Invalid(
             "The sign-in request is invalid",
         ))?;
-    let url = params
-        .get("url")
-        .and_then(Value::as_str)
-        .ok_or(BrowserAnswerError::Invalid(
-            "The sign-in request is invalid",
-        ))?;
+    let url = parsed.url.as_deref().ok_or(BrowserAnswerError::Invalid(
+        "The sign-in request is invalid",
+    ))?;
     let has_redirect = params.get("redirect").is_some_and(Value::is_object);
     if record.get("status").and_then(Value::as_str) == Some("pending")
-        && params.get("phase").and_then(Value::as_str) == Some(crate::browser_cards::WAITING)
+        && parsed.phase.as_deref() == Some(crate::browser_cards::WAITING)
     {
         if decision == "accept" {
             if paste_mode {
@@ -164,11 +168,7 @@ pub async fn answer<V: Fn(&Value) -> bool + Send + Sync + 'static>(
                 "This sign-in already waits for the address of the page that did not load.",
             ));
         }
-        let host = params
-            .get("host")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned();
+        let host = parsed.host.as_deref().unwrap_or_default().to_owned();
         return cancel(store, id, bridge_id, &host, guest, now, validate)
             .await
             .map(Some);
@@ -213,7 +213,7 @@ pub async fn answer<V: Fn(&Value) -> bool + Send + Sync + 'static>(
     let local_forward = if decision == "accept"
         && local_window
         && !paste_mode
-        && params.get("source").and_then(Value::as_str) == Some("vm")
+        && parsed.source.as_deref() == Some("vm")
     {
         if let Some(redirect) = params.get("redirect").filter(|value| value.is_object()) {
             let forwarder = local_forwarder.ok_or(BrowserAnswerError::Unknown)?;
@@ -864,6 +864,34 @@ mod tests {
             .await
             .expect("browser request is seeded");
         (dir, store, id)
+    }
+
+    #[tokio::test]
+    async fn host_source_preserves_partial_and_duplicate_params() {
+        let (_dir, store, id) = store_with_browser_request().await;
+        for (raw, expected) in [
+            ("null", false),
+            (r#"{"params":null}"#, false),
+            (r#"{"params":{"source":false}}"#, false),
+            (
+                r#"{"params":{"source":"vm","source":"host","unknown":{}}}"#,
+                true,
+            ),
+        ] {
+            let key = id.clone();
+            store
+                .transaction_with(move |tx| {
+                    studio_runtime_store::QuestionsWriteRepository::put_request(tx, &key, raw)
+                })
+                .await
+                .expect("request");
+            assert_eq!(
+                super::is_host_source(&store, id.clone())
+                    .await
+                    .expect("source"),
+                expected
+            );
+        }
     }
 
     #[tokio::test]
