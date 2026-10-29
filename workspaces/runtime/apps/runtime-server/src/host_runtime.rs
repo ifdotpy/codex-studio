@@ -1100,7 +1100,6 @@ async fn read_vm_codex_bootstrap(
     source: VmCodexAuthSource<'_>,
     force_refresh: bool,
 ) -> Result<Value, WorkerError> {
-    use base64::Engine as _;
     let VmCodexAuthSource {
         account_key,
         account,
@@ -1138,74 +1137,36 @@ async fn read_vm_codex_bootstrap(
                         "provider-session/codex-auth-invalid".into(),
                     ));
                 }
-                let auth: Value = serde_json::from_slice(&bytes).map_err(|_| {
-                    WorkerError::PreparationRefused("provider-session/codex-auth-invalid".into())
+                use studio_runtime_services::account_driver::{
+                    CodexVmAuthError, CodexVmCredential, codex_vm_auth,
+                };
+                let credential = codex_vm_auth(
+                    &bytes,
+                    account.get("_credentialIdentity").and_then(Value::as_str),
+                    account.get("accountId").and_then(Value::as_str),
+                )
+                .map_err(|error| {
+                    WorkerError::PreparationRefused(
+                        match error {
+                            CodexVmAuthError::Invalid => "provider-session/codex-auth-invalid",
+                            CodexVmAuthError::AccountChanged => {
+                                "provider-session/codex-account-changed"
+                            }
+                        }
+                        .into(),
+                    )
                 })?;
-                if let Some(key) = auth
-                    .get("OPENAI_API_KEY")
-                    .and_then(Value::as_str)
-                    .filter(|key| !key.is_empty())
-                {
-                    let expected = account.get("_credentialIdentity").and_then(Value::as_str);
-                    let observed = format!(
-                        "api:{}",
-                        data_encoding::HEXLOWER.encode(&Sha256::digest(key.as_bytes()))
-                    );
-                    if expected.is_some_and(|value| value != observed) {
-                        return Err(WorkerError::PreparationRefused(
-                            "provider-session/codex-account-changed".into(),
-                        ));
-                    }
-                    return Ok((serde_json::json!({"type":"apiKey","apiKey":key}), None));
-                }
-                let tokens = auth.get("tokens").ok_or_else(|| {
-                    WorkerError::PreparationRefused("provider-session/codex-auth-invalid".into())
-                })?;
-                let access = tokens
-                    .get("access_token")
-                    .and_then(Value::as_str)
-                    .filter(|value| !value.is_empty())
-                    .ok_or_else(|| {
-                        WorkerError::PreparationRefused(
-                            "provider-session/codex-auth-invalid".into(),
-                        )
-                    })?;
-                let mut parts = access.split('.');
-                let _header = parts.next();
-                let claims = parts
-                    .next()
-                    .and_then(|part| {
-                        base64::engine::general_purpose::URL_SAFE_NO_PAD
-                            .decode(part)
-                            .or_else(|_| base64::engine::general_purpose::URL_SAFE.decode(part))
-                            .ok()
-                    })
-                    .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-                    .ok_or_else(|| {
-                        WorkerError::PreparationRefused(
-                            "provider-session/codex-auth-invalid".into(),
-                        )
-                    })?;
-                let identity = tokens
-                    .get("account_id")
-                    .and_then(Value::as_str)
-                    .or_else(|| {
-                        claims
-                            .pointer("/https://api.openai.com/auth/chatgpt_account_id")
-                            .and_then(Value::as_str)
-                    });
-                if identity.is_none()
-                    || identity != account.get("accountId").and_then(Value::as_str)
-                {
-                    return Err(WorkerError::PreparationRefused(
-                        "provider-session/codex-account-changed".into(),
-                    ));
-                }
-                let expires = claims.get("exp").and_then(Value::as_f64).ok_or_else(|| {
-                    WorkerError::PreparationRefused("provider-session/codex-auth-invalid".into())
-                })?;
-                let payload = serde_json::json!({"type":"chatgptAuthTokens","accessToken":access,"chatgptAccountId":identity});
-                Ok((payload, Some(expires)))
+                Ok(match credential {
+                    CodexVmCredential::ApiKey(key) => (json!({"type":"apiKey","apiKey":key}), None),
+                    CodexVmCredential::ChatGpt {
+                        access_token,
+                        account_id,
+                        expires,
+                    } => (
+                        json!({"type":"chatgptAuthTokens","accessToken":access_token,"chatgptAccountId":account_id}),
+                        Some(expires),
+                    ),
+                })
             },
         )
     };
@@ -1312,16 +1273,9 @@ async fn read_vm_codex_bootstrap(
         }
         (payload, _) = read().await.map_err(|_| WorkerError::TaskFailed)??;
         let refreshed = payload
-            .pointer("/accessToken")
+            .get("accessToken")
             .and_then(Value::as_str)
-            .and_then(|token| token.split('.').nth(1))
-            .and_then(|part| {
-                base64::engine::general_purpose::URL_SAFE_NO_PAD
-                    .decode(part)
-                    .ok()
-            })
-            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-            .and_then(|claims| claims.get("exp").and_then(Value::as_f64));
+            .and_then(studio_runtime_services::account_driver::codex_vm_refresh_exp);
         if refreshed.is_none_or(|value| value <= now + CODEX_ACCESS_MIN_REMAINING_SECONDS) {
             return Err(WorkerError::PreparationPending(
                 "provider-session/account-read-refresh".into(),
@@ -3428,6 +3382,280 @@ mod voice_composition_tests {
         assert_eq!(replay, saved);
         assert_eq!(factory.stop_writes.load(Ordering::SeqCst), 0);
         recovered_worker.shutdown().await.unwrap();
+    }
+}
+
+#[cfg(test)]
+mod codex_vm_auth_tests {
+    use super::*;
+    use base64::Engine as _;
+
+    #[tokio::test]
+    async fn vm_refresh_unknown_reuses_its_durable_admission() {
+        use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId, RequestTicket};
+        use studio_runtime_services::account_session_runtime::{
+            AccountSessionFuture, AccountSessionPort, ConnectionScope, ProviderRequest,
+            SessionOutcome, SessionReceipt,
+        };
+        use studio_runtime_services::provider_callbacks::{self, CallbackContext};
+        struct Worker {
+            calls: std::sync::Mutex<Vec<String>>,
+            scope: ConnectionScope,
+        }
+        impl AccountSessionPort for Worker {
+            fn ensure_session<'a>(
+                &'a self,
+                _: &'a str,
+            ) -> AccountSessionFuture<'a, ConnectionScope> {
+                let scope = self.scope.clone();
+                Box::pin(async move { Ok(scope) })
+            }
+            fn provider_request<'a>(
+                &'a self,
+                request: ProviderRequest,
+            ) -> AccountSessionFuture<'a, SessionReceipt> {
+                let id = request.admitted_request.as_ref().unwrap().id().to_owned();
+                let mut calls = self.calls.lock().unwrap();
+                let replayed = calls.contains(&id);
+                calls.push(id);
+                let scope = self.scope.clone();
+                Box::pin(async move {
+                    Ok(SessionReceipt {
+                        scope,
+                        operation: request.operation,
+                        replayed,
+                        outcome: SessionOutcome::Unknown {
+                            ticket: RequestTicket {
+                                generation: 1,
+                                id: RequestId::String("fake".into()),
+                                method: Method::AccountRead,
+                            },
+                        },
+                    })
+                })
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("profile");
+        std::fs::create_dir(&home).unwrap();
+        let token = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(r#"{"exp":1}"#);
+        std::fs::write(
+            home.join("auth.json"),
+            json!({"tokens":{"access_token":format!("x.{token}.x"),"account_id":"account"}})
+                .to_string(),
+        )
+        .unwrap();
+        let registry = root.path().join("accounts.json");
+        std::fs::write(&registry, json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{},"logins":{},"deleteReceipts":{}}).to_string()).unwrap();
+        let accounts = Arc::new(AccountDriver::open(registry).unwrap());
+        let state = tempfile::tempdir().unwrap();
+        let store = RuntimeStore::open(Some(state.path())).await.unwrap();
+        let (root_id, source) = store
+            .transaction_with(|tx| {
+                let context = CallbackContext {
+                    agent: "agent".into(),
+                    account: "fake".into(),
+                    stream_id: "stream".into(),
+                    connection: "connection".into(),
+                    generation: 1,
+                    epoch: 0,
+                    thread: "thread".into(),
+                    turn: "turn".into(),
+                };
+                let frame = Frame::Request(RequestFrame {
+                    id: RequestId::String("rpc".into()),
+                    method: Method::CurrentTimeRead,
+                    params: Some(json!({})),
+                    fields: Default::default(),
+                });
+                let root =
+                    provider_callbacks::admit_callback_request(tx, &context, &frame).unwrap();
+                let source = provider_callbacks::callback_admission(tx, &root)
+                    .unwrap()
+                    .unwrap();
+                Ok::<_, studio_runtime_store::StoreError>((root, source))
+            })
+            .await
+            .unwrap();
+        let worker = Worker {
+            calls: std::sync::Mutex::new(Vec::new()),
+            scope: ConnectionScope {
+                account: "fake".into(),
+                connection: "connection".into(),
+                generation: 1,
+            },
+        };
+        let account = json!({"home":home,"accountId":"account"});
+        for _ in 0..2 {
+            let result = read_vm_codex_bootstrap(
+                accounts.clone(),
+                Some(&worker),
+                &store,
+                VmCodexAuthSource {
+                    account_key: "fake",
+                    account: &account,
+                    root_request_id: &root_id,
+                    owner: VmAuthOwner::Callback { source: &source },
+                },
+                false,
+            )
+            .await;
+            assert!(
+                matches!(result, Err(WorkerError::PreparationPending(reason)) if reason.diagnostic == "provider-session/account-read-unknown")
+            );
+        }
+        let calls = worker.calls.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0], calls[1]);
+    }
+
+    #[tokio::test]
+    async fn vm_credentials_preserve_key_precedence_fences_and_legacy_claims() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("profile");
+        std::fs::create_dir(&home).unwrap();
+        let registry = root.path().join("accounts.json");
+        std::fs::write(&registry, json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{},"logins":{},"deleteReceipts":{}}).to_string()).unwrap();
+        let accounts = Arc::new(AccountDriver::open(registry).unwrap());
+        let state = tempfile::tempdir().unwrap();
+        let store = RuntimeStore::open(Some(state.path())).await.unwrap();
+        let owner = studio_runtime_store::request_results::AdmittedRequest::from_persisted_fields(
+            "fixture".into(),
+            "fixture".into(),
+            1,
+        );
+        let call = |account: Value| {
+            let accounts = accounts.clone();
+            let store = &store;
+            let owner = &owner;
+            async move {
+                read_vm_codex_bootstrap(
+                    accounts,
+                    None,
+                    store,
+                    VmCodexAuthSource {
+                        account_key: "fake",
+                        account: &account,
+                        root_request_id: "fake",
+                        owner: VmAuthOwner::Callback { source: owner },
+                    },
+                    false,
+                )
+                .await
+            }
+        };
+        let account = json!({"home":home,"accountId":"account"});
+        std::fs::write(
+            home.join("auth.json"),
+            r#"{"OPENAI_API_KEY":"fake-key","tokens":{"access_token":false}}"#,
+        )
+        .unwrap();
+        assert_eq!(call(account.clone()).await.unwrap()["type"], "apiKey");
+        let wrong = json!({"home":home,"accountId":"account","_credentialIdentity":"api:other"});
+        assert!(
+            matches!(call(wrong).await, Err(WorkerError::PreparationRefused(reason)) if reason == "provider-session/codex-account-changed")
+        );
+        let claims = json!({"exp":4102444800.5});
+        let part = base64::engine::general_purpose::URL_SAFE.encode(claims.to_string());
+        let token = format!("header.{part}.sig");
+        std::fs::write(
+            home.join("auth.json"),
+            json!({"tokens":{"access_token":token,"account_id":"account","id_token":false}})
+                .to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            call(account.clone()).await.unwrap()["chatgptAccountId"],
+            "account"
+        );
+        let empty = json!({"home":home,"accountId":""});
+        std::fs::write(
+            home.join("auth.json"),
+            json!({"tokens":{"access_token":token,"account_id":""}}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(call(empty).await.unwrap()["chatgptAccountId"], "");
+        std::fs::write(
+            home.join("auth.json"),
+            json!({"tokens":{"access_token":token,"account_id":"wrong"}}).to_string(),
+        )
+        .unwrap();
+        assert!(
+            matches!(call(account.clone()).await, Err(WorkerError::PreparationRefused(reason)) if reason == "provider-session/codex-account-changed")
+        );
+        let standard = json!({"exp":4102444800.0,"https://api.openai.com/auth":{"chatgpt_account_id":"account"}});
+        let standard =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(standard.to_string());
+        std::fs::write(
+            home.join("auth.json"),
+            json!({"tokens":{"access_token":format!("x.{standard}.x")}}).to_string(),
+        )
+        .unwrap();
+        assert!(
+            matches!(call(account.clone()).await, Err(WorkerError::PreparationRefused(reason)) if reason == "provider-session/codex-account-changed")
+        );
+        let nested = json!({"exp":4102444800.0,"https:":{"":{"api.openai.com":{"auth":{"chatgpt_account_id":"account"}}}}});
+        let nested = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(nested.to_string());
+        std::fs::write(
+            home.join("auth.json"),
+            json!({"tokens":{"access_token":format!("x.{nested}.x")}}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            call(account.clone()).await.unwrap()["chatgptAccountId"],
+            "account"
+        );
+        let expired = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(r#"{"exp":1}"#);
+        std::fs::write(
+            home.join("auth.json"),
+            json!({"tokens":{"access_token":format!("x.{expired}.x"),"account_id":"account"}})
+                .to_string(),
+        )
+        .unwrap();
+        assert!(
+            matches!(call(account.clone()).await, Err(WorkerError::PreparationPending(reason)) if reason.diagnostic == "provider-session/account-session")
+        );
+        struct Unavailable(std::sync::atomic::AtomicUsize);
+        impl studio_runtime_services::account_session_runtime::AccountSessionPort for Unavailable {
+            fn ensure_session<'a>(
+                &'a self,
+                _: &'a str,
+            ) -> studio_runtime_services::account_session_runtime::AccountSessionFuture<
+                'a,
+                studio_runtime_services::account_session_runtime::ConnectionScope,
+            > {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Box::pin(async {
+                    Err(studio_runtime_services::account_session_runtime::AccountSessionError::Requires("fixture"))
+                })
+            }
+        }
+        let worker = Unavailable(std::sync::atomic::AtomicUsize::new(0));
+        let result = read_vm_codex_bootstrap(
+            accounts.clone(),
+            Some(&worker),
+            &store,
+            VmCodexAuthSource {
+                account_key: "fake",
+                account: &account,
+                root_request_id: "fake",
+                owner: VmAuthOwner::Callback { source: &owner },
+            },
+            false,
+        )
+        .await;
+        assert!(
+            matches!(result, Err(WorkerError::PreparationPending(reason)) if reason.diagnostic == "provider-session/account-session")
+        );
+        assert_eq!(worker.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+        std::fs::write(
+            home.join("auth.json"),
+            vec![b' '; studio_runtime_services::linux_vm_provider::MAX_GUEST_CREDENTIAL_BYTES + 1],
+        )
+        .unwrap();
+        assert!(
+            matches!(call(account).await, Err(WorkerError::PreparationRefused(reason)) if reason == "provider-session/codex-auth-invalid")
+        );
     }
 }
 

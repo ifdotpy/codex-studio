@@ -83,6 +83,8 @@ inherits = "ci"
 # Retained watcher registrations and analytics connections avoid repeated tree walks and opens.
 # Reviewer permissions stay read-only under yolo across preparation, turns, and monitors.
 default-filter = '''
+    (package(=studio-runtime-services) & kind(lib) & test(/^account_driver::tests::vm_/)) |
+    (package(=studio-runtime-server) & kind(lib) & test(/^host_runtime::codex_vm_auth_tests::/)) |
     (package(studio-client-core) & test(/^draft_replication::tests::/)) |
     (package(studio-runtime-schema) & test(/^(request_record|graph_agent_record)::tests::/)) |
     (package(studio-runtime-store) & kind(lib) & test(/request_typed_tests::|execution_run_table_preserves_evidence_and_checks_physical_identity|graph_agent/)) |
@@ -395,6 +397,8 @@ platform = 'cfg(target_os = "linux")'
 # Desktop projection witness: Keep private native rotation receipts on disk while validating the public status strictly.
 # Reviewer permissions stay read-only under yolo across preparation, turns, and monitors.
 default-filter = '''
+    (package(=studio-runtime-services) & kind(lib) & test(/^account_driver::tests::vm_/)) |
+    (package(=studio-runtime-server) & kind(lib) & test(/^host_runtime::codex_vm_auth_tests::/)) |
     (package(studio-client-core) & test(/^draft_replication::tests::/)) |
     (package(studio-runtime-schema) & test(/^(request_record|graph_agent_record)::tests::/)) |
     (package(studio-runtime-store) & kind(lib) & test(/request_typed_tests::|execution_run_table_preserves_evidence_and_checks_physical_identity|graph_agent/)) |

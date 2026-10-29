@@ -376,6 +376,166 @@ struct CodexClaimProfile {
     _extra: BTreeMap<String, IgnoredAny>,
 }
 
+/// Credential needed by the VM login; values must never be logged.
+pub enum CodexVmCredential {
+    ApiKey(String),
+    ChatGpt {
+        access_token: String,
+        account_id: String,
+        expires: f64,
+    },
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum CodexVmAuthError {
+    Invalid,
+    AccountChanged,
+}
+
+// The VM historically accepts partial and wrong-typed unused fields. The
+// metadata reader above retains its separate strict Deserialize policy.
+#[derive(Default)]
+struct VmAuthFile(CodexAuthFile);
+#[derive(Default)]
+struct VmClaims {
+    details: CodexClaimDetails,
+    expires: Option<f64>,
+}
+trait VmFields: Default {
+    fn field(&mut self, name: &str, value: Value);
+}
+struct VmVisitor<T>(std::marker::PhantomData<T>);
+impl<'de, T: VmFields> Visitor<'de> for VmVisitor<T> {
+    type Value = T;
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("a credential document")
+    }
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<T, A::Error> {
+        let mut result = T::default();
+        while let Some(name) = map.next_key::<String>()? {
+            result.field(&name, map.next_value()?);
+        }
+        Ok(result)
+    }
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<T, A::Error> {
+        while seq.next_element::<Value>()?.is_some() {}
+        Ok(T::default())
+    }
+    fn visit_bool<E: serde::de::Error>(self, _: bool) -> Result<T, E> {
+        Ok(T::default())
+    }
+    fn visit_i64<E: serde::de::Error>(self, _: i64) -> Result<T, E> {
+        Ok(T::default())
+    }
+    fn visit_u64<E: serde::de::Error>(self, _: u64) -> Result<T, E> {
+        Ok(T::default())
+    }
+    fn visit_f64<E: serde::de::Error>(self, _: f64) -> Result<T, E> {
+        Ok(T::default())
+    }
+    fn visit_str<E: serde::de::Error>(self, _: &str) -> Result<T, E> {
+        Ok(T::default())
+    }
+    fn visit_unit<E: serde::de::Error>(self) -> Result<T, E> {
+        Ok(T::default())
+    }
+}
+macro_rules! vm_deserialize {
+    ($ty:ty) => {
+        impl<'de> Deserialize<'de> for $ty {
+            fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+                d.deserialize_any(VmVisitor::<Self>(std::marker::PhantomData))
+            }
+        }
+    };
+}
+impl VmFields for VmAuthFile {
+    fn field(&mut self, name: &str, value: Value) {
+        match name {
+            "OPENAI_API_KEY" => self.0.api_key = value.as_str().map(str::to_owned),
+            "tokens" => {
+                self.0.tokens = Some(CodexTokens {
+                    access_token: value
+                        .get("access_token")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    account_id: value
+                        .get("account_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    ..Default::default()
+                })
+            }
+            _ => {}
+        }
+    }
+}
+vm_deserialize!(VmAuthFile);
+impl VmFields for VmClaims {
+    fn field(&mut self, name: &str, value: Value) {
+        match name {
+            "exp" => self.expires = value.as_f64(),
+            // Preserve the historical JSON pointer's slash interpretation.
+            "https:" => {
+                self.details.chatgpt_account_id = value
+                    .pointer("//api.openai.com/auth/chatgpt_account_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            }
+            _ => {}
+        }
+    }
+}
+vm_deserialize!(VmClaims);
+fn vm_claims(token: &str, padded: bool) -> Option<VmClaims> {
+    let part = token.split('.').nth(1)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(part)
+        .or_else(|error| {
+            if padded {
+                base64::engine::general_purpose::URL_SAFE.decode(part)
+            } else {
+                Err(error)
+            }
+        })
+        .ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+/// Refresh verification intentionally accepts only the unpadded form.
+pub fn codex_vm_refresh_exp(token: &str) -> Option<f64> {
+    vm_claims(token, false)?.expires
+}
+/// Parse a bounded VM auth file using the historical VM admission policy.
+pub fn codex_vm_auth(
+    bytes: &[u8],
+    expected_credential: Option<&str>,
+    expected_account: Option<&str>,
+) -> Result<CodexVmCredential, CodexVmAuthError> {
+    let VmAuthFile(auth) = serde_json::from_slice(bytes).map_err(|_| CodexVmAuthError::Invalid)?;
+    if let Some(key) = auth.api_key.filter(|key| !key.is_empty()) {
+        let identity = format!("api:{}", hex_sha256(key.as_bytes()));
+        if expected_credential.is_some_and(|value| value != identity) {
+            return Err(CodexVmAuthError::AccountChanged);
+        }
+        return Ok(CodexVmCredential::ApiKey(key));
+    }
+    let tokens = auth.tokens.ok_or(CodexVmAuthError::Invalid)?;
+    let access_token = tokens
+        .access_token
+        .filter(|value| !value.is_empty())
+        .ok_or(CodexVmAuthError::Invalid)?;
+    let claims = vm_claims(&access_token, true).ok_or(CodexVmAuthError::Invalid)?;
+    let identity = tokens.account_id.or(claims.details.chatgpt_account_id);
+    if identity.is_none() || identity.as_deref() != expected_account {
+        return Err(CodexVmAuthError::AccountChanged);
+    }
+    let expires = claims.expires.ok_or(CodexVmAuthError::Invalid)?;
+    Ok(CodexVmCredential::ChatGpt {
+        access_token,
+        account_id: identity.ok_or(CodexVmAuthError::AccountChanged)?,
+        expires,
+    })
+}
+
 fn codex_metadata(auth: CodexAuthFile) -> Result<AuthMetadata, ()> {
     let tokens = auth.tokens.unwrap_or_default();
     let token = tokens
@@ -3249,6 +3409,137 @@ fn base64url_decode(value: &str) -> Option<Vec<u8>> {
 mod tests {
     use super::*;
     const PLACEHOLDER_KEY: &str = "placeholder-secret-do-not-persist";
+
+    #[test]
+    fn vm_codex_projection_matches_legacy_ingress() {
+        fn legacy(bytes: &[u8], expected: Option<&str>) -> Result<Value, &'static str> {
+            let auth: Value = serde_json::from_slice(bytes).map_err(|_| "invalid")?;
+            if let Some(key) = auth
+                .get("OPENAI_API_KEY")
+                .and_then(Value::as_str)
+                .filter(|key| !key.is_empty())
+            {
+                return Ok(serde_json::json!({"kind":"api","key":key}));
+            }
+            let tokens = auth.get("tokens").ok_or("invalid")?;
+            let access = tokens
+                .get("access_token")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .ok_or("invalid")?;
+            let part = access.split('.').nth(1).ok_or("invalid")?;
+            let claims = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(part)
+                .or_else(|_| base64::engine::general_purpose::URL_SAFE.decode(part))
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                .ok_or("invalid")?;
+            let id = tokens
+                .get("account_id")
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    claims
+                        .pointer("/https://api.openai.com/auth/chatgpt_account_id")
+                        .and_then(Value::as_str)
+                });
+            if id.is_none() || id != expected {
+                return Err("changed");
+            }
+            let exp = claims.get("exp").and_then(Value::as_f64).ok_or("invalid")?;
+            Ok(serde_json::json!({"kind":"token","account":id,"exp":exp}))
+        }
+        let claims = [
+            serde_json::json!({"exp":12.5}),
+            serde_json::json!({"exp":12,"https://api.openai.com/auth":{"chatgpt_account_id":"a"}}),
+            serde_json::json!({"exp":12,"https:":{"":{"api.openai.com":{"auth":{"chatgpt_account_id":"a"}}}}}),
+            serde_json::json!({}),
+            serde_json::json!([]),
+        ];
+        let mut cases = vec![
+            "null".to_owned(),
+            "[]".into(),
+            "{".into(),
+            r#"{"OPENAI_API_KEY":"fake","tokens":{"access_token":false}}"#.into(),
+            r#"{"OPENAI_API_KEY":"old","OPENAI_API_KEY":null,"tokens":false}"#.into(),
+            r#"{"unknown":1e400}"#.into(),
+        ];
+        for claims in claims {
+            for padded in [true, false] {
+                let bytes = claims.to_string();
+                let token = if padded {
+                    base64::engine::general_purpose::URL_SAFE.encode(bytes)
+                } else {
+                    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+                };
+                for id in [None, Some(""), Some("a"), Some("other")] {
+                    let mut tokens =
+                        serde_json::json!({"access_token":format!("x.{token}.x"),"id_token":false});
+                    if let Some(id) = id {
+                        tokens["account_id"] = Value::String(id.into());
+                    }
+                    cases.push(serde_json::json!({"tokens":tokens}).to_string());
+                }
+            }
+        }
+        let nested = format!("{}0{}", "[".repeat(130), "]".repeat(130));
+        cases.push(format!(r#"{{"OPENAI_API_KEY":"fake","ignored":{nested}}}"#));
+        for raw_claims in [
+            r#"{"exp":1,"exp":12.5}"#,
+            r#"{"exp":1e400}"#,
+            r#"{"exp":null,"exp":12}"#,
+        ] {
+            let token = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw_claims);
+            cases.push(serde_json::json!({"tokens":{"access_token":format!("x.{token}.x"),"account_id":"a"}}).to_string());
+        }
+        for raw in cases {
+            for expected in [None, Some(""), Some("a")] {
+                let old = legacy(raw.as_bytes(), expected);
+                let new = match codex_vm_auth(raw.as_bytes(), None, expected) {
+                    Ok(CodexVmCredential::ApiKey(key)) => {
+                        Ok(serde_json::json!({"kind":"api","key":key}))
+                    }
+                    Ok(CodexVmCredential::ChatGpt {
+                        account_id,
+                        expires,
+                        ..
+                    }) => {
+                        Ok(serde_json::json!({"kind":"token","account":account_id,"exp":expires}))
+                    }
+                    Err(CodexVmAuthError::Invalid) => Err("invalid"),
+                    Err(CodexVmAuthError::AccountChanged) => Err("changed"),
+                };
+                assert_eq!(old, new, "synthetic case mismatch");
+            }
+        }
+    }
+
+    #[test]
+    fn vm_refresh_expiration_preserves_unpadded_only_policy() {
+        let padded = base64::engine::general_purpose::URL_SAFE.encode(br#"{"exp":12}"#);
+        assert!(padded.ends_with('='));
+        assert_eq!(codex_vm_refresh_exp(&format!("x.{padded}.x")), None);
+        let unpadded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(br#"{"exp":12}"#);
+        assert_eq!(codex_vm_refresh_exp(&format!("x.{unpadded}.x")), Some(12.0));
+    }
+
+    #[test]
+    fn vm_api_key_does_not_broaden_strict_metadata_reader() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(
+            root.path().join("auth.json"),
+            r#"{"OPENAI_API_KEY":"fake","tokens":{"access_token":false}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            codex_vm_auth(
+                &fs::read(root.path().join("auth.json")).unwrap(),
+                None,
+                None
+            ),
+            Ok(CodexVmCredential::ApiKey(_))
+        ));
+        assert_eq!(codex_auth_metadata(root.path()).status, AuthStatus::Error);
+    }
 
     #[test]
     fn codex_account_producers_reserve_explicit_login_and_replay_exact_receipt() {
