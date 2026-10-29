@@ -10,7 +10,7 @@ fn layr_studio(profile: &std::path::Path, args: &[&str]) -> Output {
 }
 
 fn profile() -> tempfile::TempDir {
-    let dir = tempfile::tempdir_in("/tmp").unwrap();
+    let dir = tempfile::tempdir().unwrap();
     std::fs::write(
         dir.path().join("server-keys.json"),
         r#"{"drafts":{},"servers":{"alpha":{"origin":"https://alpha.example","label":"Alpha"},"beta":{"origin":"https://beta.example"}}}"#,

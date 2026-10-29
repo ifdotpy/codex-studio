@@ -158,7 +158,7 @@ mod tests {
             "beta":{"origin":"https://beta.example"}}})
     }
     fn dir() -> tempfile::TempDir {
-        tempfile::tempdir_in("/tmp").unwrap()
+        tempfile::tempdir().unwrap()
     }
     fn file_profile(state: &Value) -> tempfile::TempDir {
         let dir = dir();
