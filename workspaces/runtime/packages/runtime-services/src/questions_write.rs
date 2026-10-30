@@ -738,16 +738,7 @@ fn stored_agent(
     transaction: &Transaction<'_>,
     id: &str,
 ) -> Result<Option<AgentRecord>, QuestionsWriteError> {
-    let key = AgentId::from(id);
-    let Some(raw) = AgentRepository::get_raw(transaction, &key)? else {
-        return Ok(None);
-    };
-    let agent: AgentRecord =
-        serde_json::from_str(&raw).map_err(|_| invalid_stored("runtime_agents", id))?;
-    if agent.id.0 != id {
-        return Err(invalid_stored("runtime_agents", id));
-    }
-    Ok(Some(agent))
+    Ok(AgentRepository::get(transaction, &AgentId::from(id))?)
 }
 
 fn parse_complaint(
