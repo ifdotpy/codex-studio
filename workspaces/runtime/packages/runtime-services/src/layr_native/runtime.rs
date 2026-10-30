@@ -193,6 +193,31 @@ pub(super) fn operation_with_preflight_in_store(
                         .into(),
                 ));
             }
+            // A crash can leave a save pending. The line's operation log shows whether it ran.
+            Some("pending") if intent["kind"] == "save" => {
+                match settle_pending_save(state_dir, root, intent, &receipt)? {
+                    Some(result) => {
+                        let done =
+                            json!({"id":id,"intent":intent,"status":"completed","result":result});
+                        crate::atomic_file::replace(
+                            &path,
+                            done.to_string().as_bytes(),
+                            Some(0o600),
+                            true,
+                        )?;
+                        return Ok(result);
+                    }
+                    None => {
+                        let failed = json!({"id":id,"intent":intent,"status":"failed","error":"The save did not apply: the line has no save operation after the receipt started"});
+                        crate::atomic_file::replace(
+                            &path,
+                            failed.to_string().as_bytes(),
+                            Some(0o600),
+                            true,
+                        )?;
+                    }
+                }
+            }
             _ => return Err(NativeLayrError::Unknown(path.display().to_string())),
         }
     }
@@ -204,7 +229,7 @@ pub(super) fn operation_with_preflight_in_store(
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let pending = json!({"id":id,"intent":intent,"status":"pending"});
+    let pending = json!({"id":id,"intent":intent,"status":"pending","startedAt":unix_millis()});
     if path.exists() {
         crate::atomic_file::replace(&path, pending.to_string().as_bytes(), Some(0o600), true)?;
     } else {
@@ -226,6 +251,48 @@ pub(super) fn operation_with_preflight_in_store(
     };
     crate::atomic_file::replace(&path, receipt.to_string().as_bytes(), Some(0o600), true)?;
     outcome
+}
+
+fn unix_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as u64)
+}
+
+const OPERATION_LOG_WINDOW: usize = 200;
+
+/// Some(result) when the line's operation log holds a `save` after the receipt started,
+/// None when it holds none. A receipt without a start time, or a log window that cannot
+/// reach back to that time, proves nothing and stays unknown.
+fn settle_pending_save(
+    state_dir: &Path,
+    root: &Path,
+    intent: &Value,
+    receipt: &Value,
+) -> Result<Option<Value>> {
+    let unknown = || NativeLayrError::Unknown("pending save without evidence".into());
+    let started = receipt["startedAt"].as_u64().ok_or_else(unknown)?;
+    let cwd = Path::new(intent["cwd"].as_str().ok_or_else(unknown)?);
+    let window = OPERATION_LOG_WINDOW.to_string();
+    let log = run_in_store(state_dir, root, cwd, &["op", "log", "--json", "-n", &window])?;
+    let mut records = 0;
+    let mut oldest = u64::MAX;
+    let mut saved = false;
+    for line in log.lines().filter(|line| !line.trim().is_empty()) {
+        let record: Value = serde_json::from_str(line)
+            .map_err(|error| NativeLayrError::Refused(error.to_string()))?;
+        let time = record["time"].as_u64().ok_or_else(unknown)?;
+        records += 1;
+        oldest = oldest.min(time);
+        saved |= record["op"] == "save" && time >= started;
+    }
+    if saved {
+        return Ok(Some(json!({"stateId":working_state(state_dir, cwd)?})));
+    }
+    if records == OPERATION_LOG_WINDOW && oldest >= started {
+        return Err(unknown());
+    }
+    Ok(None)
 }
 
 /// A full working snapshot retains empty directories, modes, and attributes.

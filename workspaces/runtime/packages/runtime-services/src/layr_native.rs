@@ -735,6 +735,7 @@ case "$3 $4" in
     if [ -f "$LAYR_ROOT/automatic" ]; then cat "$LAYR_ROOT/automatic"; else printf "head@{0}: line has only 0 automatic states\n" >&2; exit 128; fi ;;
   'rev-parse head') printf 'full-named-state\n' ;;
   'overlay list') printf '[]\n' ;;
+  'op log') [ ! -f "$LAYR_ROOT/oplog" ] || cat "$LAYR_ROOT/oplog" ;;
 esac
 "#).expect("fixture operation succeeds");
         fs::set_permissions(binary_path(state.path()), fs::Permissions::from_mode(0o755))
@@ -770,14 +771,96 @@ esac
             save(state.path(), &worker, "failed-save").expect("fixture operation succeeds")["stateId"],
             "full-named-state"
         );
-        assert!(
-            operation(state.path(), "unknown-save", &intent, || Err(
-                NativeLayrError::Unknown("lost".into())
-            ))
-            .is_err()
-        );
+    }
+
+    #[cfg(unix)]
+    fn leave_pending(state: &Path, id: &str, intent: &Value) {
         assert!(matches!(
-            save(state.path(), &worker, "unknown-save"),
+            operation(state, id, intent, || Err(NativeLayrError::Unknown(
+                "lost".into()
+            ))),
+            Err(NativeLayrError::Unknown(_))
+        ));
+    }
+
+    #[cfg(unix)]
+    fn save_intent(worker: &Value) -> Value {
+        let cwd =
+            CanonicalPath::existing(worker["cwd"].as_str().expect("fixture operation succeeds"))
+                .map(CanonicalPath::into_path_buf)
+                .expect("fixture operation succeeds");
+        json!({"agent":worker["id"],"cwd":cwd,"kind":"save"})
+    }
+
+    #[cfg(unix)]
+    fn save_commands(state: &Path) -> usize {
+        fs::read_to_string(store_path(state).join("commands"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| line.ends_with(" save"))
+            .count()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pending_save_without_a_save_operation_becomes_failed_and_retries() {
+        let (state, worker) = fast_fixture();
+        leave_pending(state.path(), "pending-save", &save_intent(&worker));
+        assert_eq!(
+            save(state.path(), &worker, "pending-save").expect("retry after proof")["stateId"],
+            "full-named-state"
+        );
+        assert_eq!(save_commands(state.path()), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pending_save_with_a_save_operation_becomes_completed_and_does_not_run_again() {
+        let (state, worker) = fast_fixture();
+        leave_pending(state.path(), "pending-save", &save_intent(&worker));
+        fs::write(
+            store_path(state.path()).join("oplog"),
+            "{\"op\":\"save\",\"time\":99999999999999}\n{\"op\":\"line.create\",\"time\":1}\n",
+        )
+        .expect("operation log");
+        for _ in 0..2 {
+            assert_eq!(
+                save(state.path(), &worker, "pending-save").expect("completed by evidence")["stateId"],
+                "full-named-state"
+            );
+        }
+        assert_eq!(save_commands(state.path()), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pending_save_ignores_a_save_operation_from_before_the_receipt() {
+        let (state, worker) = fast_fixture();
+        leave_pending(state.path(), "pending-save", &save_intent(&worker));
+        fs::write(
+            store_path(state.path()).join("oplog"),
+            "{\"op\":\"save\",\"time\":1}\n",
+        )
+        .expect("operation log");
+        save(state.path(), &worker, "pending-save").expect("retry");
+        assert_eq!(save_commands(state.path()), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pending_import_stays_unknown() {
+        let (state, _worker) = fast_fixture();
+        let intent = json!({"kind":"import","project":"p"});
+        leave_pending(state.path(), "pending-import", &intent);
+        fs::write(
+            store_path(state.path()).join("oplog"),
+            "{\"op\":\"save\",\"time\":99999999999999}\n",
+        )
+        .expect("operation log");
+        assert!(matches!(
+            operation(state.path(), "pending-import", &intent, || panic!(
+                "never run again"
+            )),
             Err(NativeLayrError::Unknown(_))
         ));
     }

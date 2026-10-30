@@ -1195,3 +1195,53 @@ fn analytics_counts(root: &std::path::Path) -> (i64, i64) {
         .expect("turn rows");
     (notifications, turns)
 }
+
+#[tokio::test]
+async fn one_chats_native_layr_save_error_does_not_stop_other_chats_publications() {
+    let (root, store) = test_store().await;
+    seed_analytics_agent(&store).await;
+    // Chat A is native and ready but has no line, so its turn save fails.
+    let mut broken = rate_agent();
+    broken["id"] = json!("chat-a");
+    broken["workspaceMode"] = json!("layr-native");
+    broken["layrReady"] = json!(true);
+    store
+        .transaction_with(move |tx| {
+            tx.execute(
+                "INSERT INTO runtime_agents(id,record) VALUES (?1,?2)",
+                rusqlite::params!["chat-a", broken.to_string()],
+            )?;
+            Ok::<(), WorkerError>(())
+        })
+        .await
+        .expect("seed broken native chat");
+    let completed = |agent: &str, cursor: u64| {
+        let mut agent_value = rate_agent();
+        agent_value["id"] = json!(agent);
+        NotificationPostCommit::TokenRateUsage(NotificationObservation {
+            agent: Some(SharedJson::new(agent_value)),
+            method: "turn/completed".into(),
+            params: SharedJson::new(json!({"threadId":"thread","turn":{"id":"turn"}})),
+            delivery: ProviderDeliveryIdentity {
+                provider_handle: "account:default".into(),
+                generation: 7,
+                cursor,
+            },
+            observed_at: 10.0 + cursor as f64,
+            provider_at: 10.0 + cursor as f64,
+        })
+    };
+    let (first, second) = (completed("chat-a", 1), completed("agent", 2));
+    stage(&store, 1, 0, value(1, 0, first.clone())).await;
+    stage(&store, 2, 0, value(2, 0, second.clone())).await;
+    let sink = Arc::new(RecordingSink::default());
+    assert_eq!(
+        store::drain_publications(Arc::clone(&store), "default".into(), sink.clone())
+            .await
+            .expect("a chat's save error does not fail the drain"),
+        2
+    );
+    assert_eq!(sink.seen.lock().expect("sink").as_slice(), &[first, second]);
+    assert_eq!(pending_count(&store), 0);
+    std::fs::remove_dir_all(root).expect("remove test state");
+}
