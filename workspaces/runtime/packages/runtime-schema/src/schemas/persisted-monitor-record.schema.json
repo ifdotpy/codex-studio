@@ -1,7 +1,248 @@
 {
   "$defs": {
+    "AdmittedRequest": {
+      "additionalProperties": false,
+      "description": "A request admitted for durable asynchronous settlement.",
+      "properties": {
+        "created": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "id": {
+          "type": "string"
+        },
+        "signature": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "signature",
+        "created"
+      ],
+      "type": "object"
+    },
+    "DeliveryFailure": {
+      "properties": {
+        "cursor": {
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "cursor",
+        "error"
+      ],
+      "type": "object"
+    },
+    "LivenessProbe": {
+      "properties": {
+        "generation": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "providerRequest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AdmittedRequest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rootRequestId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "generation",
+        "rootRequestId"
+      ],
+      "type": "object"
+    },
+    "MonitorCancelDispatch": {
+      "properties": {
+        "attempts": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nextAttemptAt": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/MonitorCancelStatus"
+        },
+        "updatedAt": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "type": "object"
+    },
+    "MonitorCancelStatus": {
+      "enum": [
+        "pending",
+        "written",
+        "done",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "MonitorInputAttempt": {
+      "oneOf": [
+        {
+          "properties": {
+            "method": {
+              "const": "command/exec/write",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/$defs/MonitorWriteParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "command/exec/resize",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/$defs/MonitorResizeParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        }
+      ],
+      "properties": {
+        "accountKey": {
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "agent": {
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "connectionId": {
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "created": {
+          "format": "double",
+          "type": "number"
+        },
+        "epoch": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "finished": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "providerGeneration": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "providerRequest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AdmittedRequest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "response": {},
+        "rootRequestId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/MonitorInputStatus"
+        },
+        "threadId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "accountKey",
+        "agent",
+        "connectionId",
+        "epoch",
+        "status",
+        "created"
+      ],
+      "type": "object"
+    },
+    "MonitorInputStatus": {
+      "enum": [
+        "submitted",
+        "acknowledged",
+        "failed",
+        "uncertain"
+      ],
+      "type": "string"
+    },
     "MonitorOperationRecord": {
-      "additionalProperties": true,
       "properties": {
         "accountKey": {
           "maxLength": 200,
@@ -22,6 +263,36 @@
           "maximum": 9007199254740991,
           "minimum": 0,
           "type": "integer"
+        },
+        "providerGeneration": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "providerRequest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AdmittedRequest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rootRequestId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "threadId": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -32,6 +303,234 @@
       ],
       "type": "object"
     },
+    "MonitorProbeResult": {
+      "anyOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "exitCode": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "output": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "exitCode",
+            "output"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "error": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "error"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "MonitorQueueEvent": {
+      "oneOf": [
+        {
+          "properties": {
+            "byteLength": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "cursor": {
+              "type": "string"
+            },
+            "deltaBase64": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "output",
+              "type": "string"
+            },
+            "offset": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "operation": {
+              "$ref": "#/$defs/MonitorOperationRecord"
+            },
+            "stream": {
+              "$ref": "#/$defs/MonitorStream"
+            }
+          },
+          "required": [
+            "kind",
+            "cursor",
+            "offset",
+            "byteLength",
+            "deltaBase64",
+            "stream",
+            "operation"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "byteLength": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "cursor": {
+              "type": "string"
+            },
+            "generation": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "kind": {
+              "const": "probe",
+              "type": "string"
+            },
+            "operation": {
+              "$ref": "#/$defs/MonitorOperationRecord"
+            },
+            "result": {
+              "$ref": "#/$defs/MonitorProbeResult"
+            }
+          },
+          "required": [
+            "kind",
+            "cursor",
+            "generation",
+            "result",
+            "byteLength",
+            "operation"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "byteLength": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "code": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "cursor": {
+              "type": "string"
+            },
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "finished": {
+              "format": "double",
+              "type": "number"
+            },
+            "kind": {
+              "const": "exit",
+              "type": "string"
+            },
+            "operation": {
+              "$ref": "#/$defs/MonitorOperationRecord"
+            }
+          },
+          "required": [
+            "kind",
+            "cursor",
+            "finished",
+            "byteLength",
+            "operation"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "MonitorResizeParams": {
+      "additionalProperties": false,
+      "properties": {
+        "processId": {
+          "type": "string"
+        },
+        "size": {
+          "$ref": "#/$defs/MonitorSize"
+        }
+      },
+      "required": [
+        "processId",
+        "size"
+      ],
+      "type": "object"
+    },
+    "MonitorSize": {
+      "additionalProperties": false,
+      "properties": {
+        "cols": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "rows": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "rows",
+        "cols"
+      ],
+      "type": "object"
+    },
+    "MonitorState": {
+      "enum": [
+        "approval",
+        "starting",
+        "running",
+        "completed",
+        "failed",
+        "cancelled",
+        "lost"
+      ],
+      "type": "string"
+    },
+    "MonitorStream": {
+      "enum": [
+        "stdout",
+        "stderr"
+      ],
+      "type": "string"
+    },
+    "MonitorTaskGate": {
+      "properties": {
+        "resultId": {
+          "type": "string"
+        },
+        "taskId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "taskId",
+        "resultId"
+      ],
+      "type": "object"
+    },
     "MonitorWakeOn": {
       "enum": [
         "exit",
@@ -39,14 +538,243 @@
       ],
       "type": "string"
     },
-    "StoredJsonInteger": {
-      "description": "A JSON Schema integer, preserving integral decimal spellings and large values.",
-      "type": "integer"
+    "MonitorWriteParams": {
+      "additionalProperties": false,
+      "properties": {
+        "closeStdin": {
+          "type": "boolean"
+        },
+        "deltaBase64": {
+          "type": "string"
+        },
+        "processId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "processId",
+        "deltaBase64",
+        "closeStdin"
+      ],
+      "type": "object"
+    },
+    "OutputMatchExcerpt": {
+      "properties": {
+        "excerpt": {
+          "type": "string"
+        },
+        "logOffset": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "excerpt",
+        "logOffset"
+      ],
+      "type": "object"
+    },
+    "OutputWakeBudget": {
+      "properties": {
+        "floodSince": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "lastSuppressedAt": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "noticeSent": {
+          "type": "boolean"
+        },
+        "paused": {
+          "type": "boolean"
+        },
+        "suppressedMatches": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tokens": {
+          "format": "double",
+          "type": "number"
+        },
+        "totalSuppressedMatches": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "updatedAt": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "tokens",
+        "updatedAt",
+        "suppressedMatches",
+        "totalSuppressedMatches",
+        "paused",
+        "noticeSent"
+      ],
+      "type": "object"
+    },
+    "ReattachRecovery": {
+      "oneOf": [
+        {
+          "properties": {
+            "startedAt": {
+              "format": "double",
+              "type": "number"
+            },
+            "status": {
+              "const": "running",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "startedAt"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "startedAt": {
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "status": {
+              "const": "not_reattachable",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status"
+          ],
+          "type": "object"
+        }
+      ],
+      "properties": {
+        "accountKey": {
+          "type": "string"
+        },
+        "epoch": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "finished": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "proof": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "accountKey",
+        "epoch"
+      ],
+      "type": "object"
+    },
+    "ShellPressureCleanup": {
+      "properties": {
+        "at": {
+          "format": "double",
+          "type": "number"
+        },
+        "generation": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "at",
+        "generation"
+      ],
+      "type": "object"
+    },
+    "StreamValues": {
+      "properties": {
+        "stderr": {
+          "items": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "stdout": {
+          "items": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "StreamValues2": {
+      "properties": {
+        "stderr": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stdout": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": true,
   "properties": {
+    "accountKey": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "activityAt": {
       "minimum": 0,
       "type": "number"
@@ -57,18 +785,41 @@
       "type": "integer"
     },
     "agent": {
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": "string"
     },
     "bytes": {
       "maximum": 9007199254740991,
       "minimum": 0,
       "type": "integer"
     },
+    "cancelDispatch": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/MonitorCancelDispatch"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "cancelProviderRequest": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AdmittedRequest"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "cancelRequested": {
       "type": "boolean"
+    },
+    "cancelRootRequestId": {
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "command": {
       "maxLength": 12000,
@@ -84,13 +835,20 @@
     "cwd": {
       "type": "string"
     },
+    "deliveryFailure": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DeliveryFailure"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "epoch": {
       "maximum": 9007199254740991,
       "minimum": 0,
-      "type": [
-        "integer",
-        "null"
-      ]
+      "type": "integer"
     },
     "error": {
       "maxLength": 12000,
@@ -100,13 +858,10 @@
       ]
     },
     "exitCode": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/StoredJsonInteger"
-        },
-        {
-          "type": "null"
-        }
+      "format": "int64",
+      "type": [
+        "integer",
+        "null"
       ]
     },
     "finished": {
@@ -120,28 +875,72 @@
       "type": "string"
     },
     "inputAttempt": {
-      "additionalProperties": true,
-      "type": [
-        "object",
-        "null"
-      ]
-    },
-    "interactive": {
-      "type": "boolean"
-    },
-    "lastExitCode": {
       "anyOf": [
         {
-          "$ref": "#/$defs/StoredJsonInteger"
+          "$ref": "#/$defs/MonitorInputAttempt"
         },
         {
           "type": "null"
         }
       ]
     },
+    "interactive": {
+      "type": "boolean"
+    },
+    "lastExitCode": {
+      "format": "int64",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "lastInputAttempt": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/MonitorInputAttempt"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "lastLivenessResult": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/MonitorProbeResult"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "lastStallAt": {
+      "format": "double",
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "lateAnswerAt": {
+      "format": "double",
+      "type": [
+        "number",
+        "null"
+      ]
+    },
     "livenessCommand": {
       "maxLength": 12000,
       "type": "string"
+    },
+    "livenessProbe": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/LivenessProbe"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "log": {
       "type": "string"
@@ -156,10 +955,185 @@
         }
       ]
     },
+    "outputEventCount": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "outputEventIds": {
+      "items": {
+        "type": "string"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "outputEventSequence": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "outputLineOffsets": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StreamValues"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "outputLineTail": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StreamValues2"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "outputMatchExcerpts": {
+      "additionalProperties": {
+        "$ref": "#/$defs/OutputMatchExcerpt"
+      },
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "outputMatcherTail": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StreamValues2"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "outputMatchesPending": {
+      "additionalProperties": {
+        "format": "uint64",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "outputMatchesTotal": {
+      "additionalProperties": {
+        "format": "uint64",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "outputPatterns": {
+      "items": {
+        "type": "string"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "outputTruncated": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "outputUtf8Pending": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StreamValues2"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "outputWakeAt": {
+      "format": "double",
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "outputWakeBudget": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/OutputWakeBudget"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "reattachRecovery": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ReattachRecovery"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "reattachedConnectionId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "requestId": {
+      "type": "string"
+    },
+    "restartAfter": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "restartSignature": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "rootRequestId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "ruleId": {
       "type": [
         "string",
         "null"
+      ]
+    },
+    "shellPressureCleanup": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ShellPressureCleanup"
+        },
+        {
+          "type": "null"
+        }
       ]
     },
     "stallProbeGeneration": {
@@ -188,23 +1162,7 @@
       "type": "integer"
     },
     "status": {
-      "anyOf": [
-        {
-          "enum": [
-            "approval",
-            "starting",
-            "running",
-            "completed",
-            "failed",
-            "cancelled",
-            "lost"
-          ],
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ]
+      "$ref": "#/$defs/MonitorState"
     },
     "stdinCloseRequested": {
       "type": [
@@ -214,6 +1172,27 @@
     },
     "stdinClosed": {
       "type": "boolean"
+    },
+    "stdinError": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "streamAckCursor": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "streamQueue": {
+      "items": {
+        "$ref": "#/$defs/MonitorQueueEvent"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
     },
     "successExitCodes": {
       "items": {
@@ -229,17 +1208,52 @@
       "maxLength": 12000,
       "type": "string"
     },
+    "taskGate": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/MonitorTaskGate"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "timeout_ms": {
       "maximum": 86400000,
       "minimum": 1000,
       "type": "integer"
+    },
+    "turnId": {
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "wakeOn": {
       "$ref": "#/$defs/MonitorWakeOn"
     }
   },
   "required": [
-    "id"
+    "activityAt",
+    "activityGeneration",
+    "agent",
+    "bytes",
+    "command",
+    "created",
+    "cwd",
+    "epoch",
+    "id",
+    "requestId",
+    "interactive",
+    "livenessCommand",
+    "log",
+    "stallTimeoutSeconds",
+    "stallWakeGeneration",
+    "status",
+    "successExitCodes",
+    "tail",
+    "timeout_ms",
+    "wakeOn"
   ],
   "title": "MonitorRecord",
   "type": "object"

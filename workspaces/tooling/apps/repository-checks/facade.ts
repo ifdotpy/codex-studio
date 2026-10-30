@@ -204,10 +204,6 @@ const UNSAFE_RUST_ALLOWLIST: [string, string][] = [
     "Quick Look panel through AppKit initializers.",
   ],
   [
-    "workspaces/client/packages/client-core/src/rich_document.rs",
-    "WebKit rich document renderer delegate and bindings.",
-  ],
-  [
     "workspaces/client/packages/client-core/src/startup.rs",
     "Process liveness probe, setsid before exec, and fixture process cleanup.",
   ],

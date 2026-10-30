@@ -137,19 +137,21 @@ fn external_state_reset_and_receipt_share_the_publication_boundary() {
     let hub = Arc::new(ChangeNotificationHub::new());
     let publisher = ResourceNotifications::new(hub.clone());
     let body = request("reset", json!([{"kind":"state"}]));
-    assert!(!publisher.entity_reset_after(0).expect("before publication"));
+    let reset = |after| {
+        publisher
+            .changes_since::<Value>(&[], Some(after))
+            .expect("changes")
+            .entity_reset
+    };
+    assert!(!reset(0));
     assert!(
         publisher
             .publish_once(&body)
             .expect("publish committed state")
     );
     let revision = hub.snapshot().revision;
-    assert!(publisher.entity_reset_after(0).expect("reset"));
-    assert!(
-        !publisher
-            .entity_reset_after(revision)
-            .expect("already observed")
-    );
+    assert!(reset(0));
+    assert!(!reset(revision));
     assert!(!publisher.publish_once(&body).expect("lost ACK"));
     assert_eq!(hub.snapshot().revision, revision);
 }

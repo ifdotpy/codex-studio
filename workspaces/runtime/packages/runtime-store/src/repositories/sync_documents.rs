@@ -495,19 +495,22 @@ impl SyncDocumentsRepository {
     }
 
     /// Publish the renderer-owned sync envelope for an entity inside its source write transaction.
-    pub fn put_entity(
+    pub fn put_entity<T: serde::Serialize>(
         transaction: &Transaction<'_>,
         collection: &str,
         id: &str,
-        value: Value,
+        value: T,
         deleted: bool,
     ) -> StoreResult<bool> {
-        let value = if deleted { json!({}) } else { value };
-        let payload = serde_json::to_string(&json!({
-            "collection": collection,
-            "id": id,
-            "value": value,
-        }))?;
+        #[derive(serde::Serialize)]
+        struct Entity<'a, T> { collection: &'a str, id: &'a str, value: T }
+        #[derive(serde::Serialize)]
+        struct Empty {}
+        let payload = if deleted {
+            serde_json::to_string(&Entity { collection, id, value: Empty {} })?
+        } else {
+            serde_json::to_string(&Entity { collection, id, value })?
+        };
         Self::put_entity_payload(transaction, collection, id, &payload, deleted)
     }
 

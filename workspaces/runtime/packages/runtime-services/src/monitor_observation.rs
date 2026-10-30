@@ -1,19 +1,30 @@
 //! Read-only bounded monitor observation. A wait never renews a command lease.
 use crate::monitor_policy::{MonitorError, MonitorStatus};
 use rusqlite::OptionalExtension;
-use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::Value;
+#[cfg(test)]
+use serde_json::json;
 use studio_runtime_store::{RuntimeStore, StoreError};
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Observation {
-    status: MonitorStatus,
-    #[serde(default)]
-    output_event_sequence: u64,
-    #[serde(default)]
-    output_event_ids: Vec<String>,
+#[derive(serde::Serialize)]
+struct ObservedOutputEvent {
+    #[serde(flatten)]
+    payload: crate::monitor_matches::OutputEvent,
+    id: String,
+    status: String,
 }
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Observation {
+    #[serde(flatten)]
+    pub record: studio_runtime_store::MonitorRecord,
+    output_events: Vec<ObservedOutputEvent>,
+    pub wait_expired: bool,
+}
+
+#[cfg(test)]
+impl Observation { pub fn output_events_is_empty(&self) -> bool { self.output_events.is_empty() } }
 
 pub(crate) async fn read(
     store: &RuntimeStore,
@@ -23,7 +34,7 @@ pub(crate) async fn read(
     id: &str,
     after_sequence: Option<u64>,
     deadline: Option<tokio::time::Instant>,
-) -> Result<(Value, u64, bool), MonitorError> {
+) -> Result<(Observation, u64, bool), MonitorError> {
     let (owner, account, id) = (owner.to_owned(), account.to_owned(), id.to_owned());
     // One read transaction keeps monitor, owner, and output events coherent.
     store
@@ -41,7 +52,7 @@ fn read_in(
     id: &str,
     after_sequence: Option<u64>,
     deadline: Option<tokio::time::Instant>,
-) -> Result<(Value, u64, bool), MonitorError> {
+) -> Result<(Observation, u64, bool), MonitorError> {
     let raw: Option<String> = tx
         .query_row(
             "SELECT record FROM runtime_monitors WHERE id=?",
@@ -50,10 +61,10 @@ fn read_in(
         )
         .optional()
         .map_err(StoreError::from)?;
-    let mut record: Value =
+    let record: studio_runtime_store::MonitorRecord =
         serde_json::from_str(&raw.ok_or(MonitorError::Refused("Unknown command watch"))?)
             .map_err(StoreError::from)?;
-    if record["agent"] != owner || record["epoch"].as_i64() != Some(epoch) {
+    if record.agent() != owner || record.epoch.get() != epoch {
         return Err(MonitorError::Refused(
             "This monitor belongs to another agent or epoch",
         ));
@@ -83,13 +94,8 @@ fn read_in(
     }
     // The authenticated actor uses its current model account. Its existing
     // monitor output remains owned by that actor and epoch after a transfer.
-    let observation: Observation =
-        serde_json::from_value(record.clone()).map_err(|_| MonitorError::InvalidStored {
-            id: id.to_owned(),
-            location: "observation".into(),
-        })?;
-    let sequence = observation.output_event_sequence;
-    let terminal = match observation.status {
+    let sequence = record.output_event_sequence.unwrap_or(0);
+    let terminal = match record.status {
         MonitorStatus::Approval | MonitorStatus::Starting | MonitorStatus::Running => false,
         MonitorStatus::Completed
         | MonitorStatus::Failed
@@ -98,13 +104,10 @@ fn read_in(
     };
     if deadline.is_some() && !terminal && !after_sequence.is_some_and(|initial| sequence > initial)
     {
-        record["outputEvents"] = json!([]);
-        record["waitExpired"] =
-            json!(deadline.is_some_and(|end| tokio::time::Instant::now() >= end));
-        return Ok((record, sequence, terminal));
+        return Ok((Observation { record, output_events: vec![], wait_expired: deadline.is_some_and(|end| tokio::time::Instant::now() >= end) }, sequence, terminal));
     }
     let mut events = Vec::new();
-    for id in &observation.output_event_ids {
+    for id in record.output_event_ids.as_deref().unwrap_or_default() {
         let event: Option<(String, String)> = tx
             .query_row(
                 "SELECT status,text FROM runtime_events WHERE id=? AND agent=?",
@@ -114,20 +117,22 @@ fn read_in(
             .optional()
             .map_err(StoreError::from)?;
         if let Some((status, text)) = event {
-            let mut event: Value = serde_json::from_str(&text).map_err(StoreError::from)?;
-            event["id"] = json!(id);
-            event["status"] = json!(status);
-            events.push(event);
+            let payload = serde_json::from_str(&text).map_err(StoreError::from)?;
+            events.push(ObservedOutputEvent { payload, id: id.clone(), status });
         }
     }
-    record["outputEvents"] = json!(events);
-    record["waitExpired"] = json!(false);
-    Ok((record, sequence, terminal))
+    Ok((Observation { record, output_events: events, wait_expired: false }, sequence, terminal))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn complete(fields: Value) -> Value {
+        let mut record = json!({"id":"watch","agent":"owner","epoch":1,"status":"running","requestId":"request","created":0,"activityAt":0,"activityGeneration":0,"bytes":0,"command":"","cwd":std::env::temp_dir(),"interactive":false,"livenessCommand":"","log":std::env::temp_dir().join("watch.log"),"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":3600000,"wakeOn":"exit"});
+        let Value::Object(fields) = fields else { panic!("monitor fixture must be an object") };
+        record.as_object_mut().unwrap().extend(fields);
+        record
+    }
     thread_local! { static EVENT_SELECTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
     #[test]
@@ -144,8 +149,7 @@ mod tests {
             (json!("runnning"), json!(0)),
             (json!("running"), json!("bad")),
         ] {
-            let record =
-                json!({"agent":"owner","epoch":1,"status":status,"outputEventSequence":sequence});
+            let record = complete(json!({"status":status,"outputEventSequence":sequence}));
             db.execute(
                 "INSERT OR REPLACE INTO runtime_monitors VALUES('watch',?1)",
                 [record.to_string()],
@@ -160,7 +164,7 @@ mod tests {
         )
         .unwrap();
         assert!(read_in(&db, "owner", 1, "default", "watch", None, None).is_err());
-        let record = json!({"agent":"owner","epoch":1,"status":"running"});
+        let record = complete(json!({"status":"running"}));
         db.execute(
             "INSERT OR REPLACE INTO runtime_monitors VALUES('watch',?1)",
             [record.to_string()],
@@ -170,7 +174,7 @@ mod tests {
             read_in(&db, "owner", 1, "default", "watch", None, None).unwrap();
         assert_eq!(sequence, 0);
         assert!(!terminal);
-        let record = json!({"agent":"owner","epoch":1,"status":"completed"});
+        let record = complete(json!({"status":"completed"}));
         db.execute(
             "INSERT OR REPLACE INTO runtime_monitors VALUES('watch',?1)",
             [record.to_string()],
@@ -191,9 +195,9 @@ mod tests {
             [json!({"epoch":1,"autoWake":true}).to_string()],
         )
         .unwrap();
-        db.execute("INSERT INTO runtime_monitors VALUES('watch',?1)", [json!({"agent":"owner","epoch":1,"status":"running","outputEventSequence":1,"outputEventIds":["event"]}).to_string()]).unwrap();
+        db.execute("INSERT INTO runtime_monitors VALUES('watch',?1)", [complete(json!({"outputEventSequence":1,"outputEventIds":["event"]})).to_string()]).unwrap();
         db.execute(
-            "INSERT INTO runtime_events VALUES('event','owner','sent','{}')",
+            r#"INSERT INTO runtime_events VALUES('event','owner','sent','{"monitorId":"watch","epoch":1,"sequence":1,"matches":[],"final":false}')"#,
             [],
         )
         .unwrap();
@@ -216,7 +220,7 @@ mod tests {
         let (record, _, _) =
             read_in(&db, "owner", 1, "default", "watch", Some(0), deadline).unwrap();
         assert_eq!(EVENT_SELECTS.with(std::cell::Cell::get), 1);
-        assert_eq!(record["outputEvents"].as_array().unwrap().len(), 1);
+        assert_eq!(record.output_events.len(), 1);
     }
     #[test]
     fn transferred_monitor_output_belongs_to_its_current_actor_not_its_old_model_account() {
@@ -227,10 +231,10 @@ mod tests {
             [json!({"id":"owner","epoch":1,"autoWake":true,"accountKey":"target"}).to_string()],
         )
         .expect("transferred owner");
-        db.execute("INSERT INTO runtime_monitors VALUES('watch',?1)",[json!({"id":"watch","agent":"owner","epoch":1,"status":"running","tail":"kept output","operation":{"agent":"owner","epoch":1,"accountKey":"source","connectionId":"original"}}).to_string()]).expect("original source monitor");
+        db.execute("INSERT INTO runtime_monitors VALUES('watch',?1)",[complete(json!({"tail":"kept output","operation":{"agent":"owner","epoch":1,"accountKey":"source","connectionId":"original"}})).to_string()]).expect("original source monitor");
         let (record, _, terminal) = read_in(&db, "owner", 1, "target", "watch", None, None)
             .expect("read the existing process after transfer");
-        assert_eq!(record["tail"], "kept output");
+        assert_eq!(record.record.tail.as_str(), "kept output");
         assert!(!terminal);
         for (owner, epoch, account) in [
             ("other", 1, "target"),

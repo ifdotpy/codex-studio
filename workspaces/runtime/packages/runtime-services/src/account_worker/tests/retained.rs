@@ -2357,8 +2357,8 @@ async fn automatic_recovery_case(restart: bool, child: bool, stopped: bool) {
                 parent.thread_id = None;
                 AgentRepository::put(tx, &parent)?;
                 agent.root_id = AgentId::from("parent");
-                agent.extra.insert("parentId".into(), json!("parent"));
-                agent.extra.insert("isLead".into(), json!(false));
+                agent.parent_id = Some(("parent").to_string());
+                agent.is_lead = Some(false);
                 agent.extra.insert("role".into(), json!("implementer"));
             }
             agent.status = studio_runtime_store::AgentStatus::Running;
@@ -3266,10 +3266,10 @@ async fn transferred_monitor_cancel_uses_the_original_command_and_settles_its_ex
     let scope = port.scope().clone();
     let root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
     let operation = crate::monitor_policy::Operation {
-        agent: actor.clone(),
-        epoch,
-        account_key: scope.account.clone(),
-        connection_id: scope.connection.clone(),
+        agent: actor.clone().try_into().unwrap(),
+        epoch: epoch.try_into().unwrap(),
+        account_key: scope.account.clone().try_into().unwrap(),
+        connection_id: scope.connection.clone().try_into().unwrap(),
         evidence: crate::monitor_policy::OperationEvidence {
             root_request_id: Some(root.clone()),
             provider_generation: Some(scope.generation),
@@ -3283,8 +3283,8 @@ async fn transferred_monitor_cancel_uses_the_original_command_and_settles_its_ex
         let log=crate::monitor_output::log_root(store.root()).join("transfer-watch.log");
         store.transaction_with(move |tx| {
             tx.execute("INSERT INTO runtime_monitors(id,record) VALUES ('transfer-watch',?1)",
-                [json!({"id":"transfer-watch","agent":actor,"epoch":epoch,"status":"running",
-                    "cwd":seed_cwd,"command":"true","interactive":true,"log":log,"operation":saved_operation}).to_string()])?;
+                [crate::monitor_policy::complete_test_monitor(json!({"id":"transfer-watch","agent":actor,"epoch":epoch,"status":"running",
+                    "cwd":seed_cwd,"command":"true","interactive":true,"log":log,"operation":saved_operation})).to_string()])?;
             Ok(())
         }).await
     }).await.unwrap();
@@ -3329,14 +3329,18 @@ async fn transferred_monitor_cancel_uses_the_original_command_and_settles_its_ex
                     let record =
                         studio_runtime_store::MonitorsRepository::get(tx, "transfer-watch")?
                             .unwrap();
-                    assert_eq!(record.value()["streamQueue"][0]["deltaBase64"], "aGVsbG8=");
+                    assert!(matches!(
+                        record.stream_queue.as_deref(),
+                        Some([studio_runtime_schema::monitor_record::MonitorQueueEvent::Output { delta_base64, .. }])
+                            if delta_base64 == "aGVsbG8="
+                    ));
                     assert!(!crate::monitor_event_queue::enqueue_output_in_transaction(
                         tx,
                         "transfer-watch",
                         &output_scope.account,
                         output_scope.generation + 1,
                         output_cursor + 1,
-                        &json!({"processId":"transfer-watch","deltaBase64":"eA=="})
+                        &crate::monitor_event_queue::OutputDelta { delta_base64: "eA==".into(), stream: None }
                     )?);
                     Ok(())
                 })
@@ -3382,7 +3386,7 @@ async fn transferred_monitor_cancel_uses_the_original_command_and_settles_its_ex
     )
     .await
     .unwrap();
-    assert_eq!(observed["tail"], "hello");
+    assert_eq!(observed.record.tail.as_str(), "hello");
     for (ticket, input) in [
         (
             "write-after-transfer",
@@ -4509,7 +4513,7 @@ async fn manual_recovery_owner_to_callback_keeps_unknown_and_exact_replay() {
         .store
         .transaction(move |tx| {
             let mut lead = AgentRepository::get(tx, &AgentId::from("lead-00000000"))?.unwrap();
-            lead.extra.insert("cwd".into(), json!(cwd));
+            lead.cwd = Some(cwd.to_string_lossy().into_owned());
             AgentRepository::put(tx, &lead)
         })
         .await

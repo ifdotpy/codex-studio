@@ -314,7 +314,10 @@ async fn voice_monitor_approval_uses_monitor_transaction_and_dispatch_wake() {
     studio_runtime_services::monitor_runtime::recover_on_startup(&store, 999.0)
         .await
         .expect("server startup recovery");
-    monitor_fixtures::seed(&store, &case).await;
+    let mut monitor = crate::monitor_fixtures::monitor(root.path());
+    monitor.status = studio_runtime_schema::studio_errors::MonitorStatus::Approval;
+    monitor.operation = None;
+    monitor_fixtures::seed(&store, &case, monitor).await;
     let agent = case["actor"]["id"].as_str().expect("agent id").to_owned();
     let monitor_id = case["before"]["id"]
         .as_str()

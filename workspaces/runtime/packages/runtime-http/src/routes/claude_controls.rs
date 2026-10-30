@@ -58,7 +58,7 @@ async fn repair_report(
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let (agent, _) = load_agent(store, id.to_owned()).await?;
     require_claude_account(&state, &agent).await?;
-    if agent.extra.get("deletedAt").is_some_and(|v| !v.is_null()) {
+    if agent.deleted_at.is_some() {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
             "This conversation was deleted",

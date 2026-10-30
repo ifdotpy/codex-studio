@@ -162,10 +162,10 @@ async fn lead_for_project(
                 else {
                     continue;
                 };
-                if agent.extra.get("isLead").and_then(Value::as_bool) == Some(true)
+                if agent.is_lead == Some(true)
                     && agent.extra.get("layrProjectId").and_then(Value::as_str) == Some(&project_id)
                     && agent.extra.get("layrLine").and_then(Value::as_str) == Some("main")
-                    && agent.extra.get("deletedAt").is_none_or(Value::is_null)
+                    && agent.deleted_at.is_none()
                 {
                     leads.push((
                         agent.status.as_str() != "failed",

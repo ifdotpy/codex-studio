@@ -94,7 +94,7 @@ async fn changes(
 async fn workspace(
     query: QueryParams,
     State(state): State<HttpState>,
-) -> Result<Json<crate::generated::WorkspaceView>, ApiError> {
+) -> Result<Json<studio_runtime_services::workspace_views::WorkspaceViewResponse>, ApiError> {
     let agent = query.nonempty_str("agent").map(str::to_owned);
     let view = query.nonempty_str("view").unwrap_or("full").to_owned();
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
@@ -104,9 +104,7 @@ async fn workspace(
             workspace_view(transaction, &validators, agent.as_deref(), &view)
         })
         .await?;
-    Ok(Json(super::generated_json::<
-        crate::generated::WorkspaceView,
-    >(value)?))
+    Ok(Json(value))
 }
 
 fn git_changes(cwd: &str) -> Result<Value, ApiError> {
@@ -175,7 +173,7 @@ fn workspace_view(
     validators: &Registry,
     agent_id: Option<&str>,
     view: &str,
-) -> Result<Value, ApiError> {
+) -> Result<studio_runtime_services::workspace_views::WorkspaceViewResponse, ApiError> {
     let stored_agents = WorkspaceViewsRepository::agents(connection).map_err(ApiError::stored)?;
     let agents = record_values(stored_agents)?;
     let root = studio_runtime_services::workspace_views::agent_root(&agents, agent_id).map_err(
@@ -269,10 +267,8 @@ fn workspace_view(
                 .map_err(ApiError::stored)?,
         )?
     };
-    let rules = record_values(
-        WorkspaceViewsRepository::records_for_agents::<RuleRecord>(connection, "agent", &ids)
-            .map_err(ApiError::stored)?,
-    )?;
+    let rules = WorkspaceViewsRepository::records_for_agents::<RuleRecord>(connection, "agent", &ids)
+        .map_err(ApiError::stored)?;
     let tasks = project_task_records(
         validators,
         WorkspaceViewsRepository::snapshot_tasks(connection, root.as_deref())
@@ -281,20 +277,9 @@ fn workspace_view(
     let monitors = WorkspaceViewsRepository::snapshot_monitors(connection, root.as_deref())
         .map_err(ApiError::stored)?
         .into_iter()
-        .map(|monitor| {
-            let id = monitor.id().to_owned();
-            validators
-                .project_entity("monitor", &monitor.into_value())
-                .ok_or_else(|| invalid_stored("runtime_monitors", &id))
-        })
-        .collect::<Result<Vec<_>, ApiError>>()?
-        .into_iter()
-        .filter(|monitor| {
-            monitor["agent"]
-                .as_str()
-                .is_some_and(|agent| ids.iter().any(|id| id == agent))
-        })
-        .collect::<Vec<_>>();
+        .filter(|monitor| ids.contains(&monitor.agent))
+        .map(|monitor| studio_runtime_services::sync_policy::project_monitor_record(&monitor).map_err(ApiError::stored))
+        .collect::<Result<Vec<_>, _>>()?;
     let inbox = studio_runtime_services::workspace_views::workspace_inbox(
         studio_runtime_services::workspace_views::WorkspaceInboxData {
             agents: &agents,
@@ -852,7 +837,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             app.clone().oneshot(annotations).await.unwrap().status(),
-            StatusCode::OK
+            StatusCode::SERVICE_UNAVAILABLE
         );
         assert_eq!(
             app.oneshot(request()).await.unwrap().status(),

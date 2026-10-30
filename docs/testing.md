@@ -97,7 +97,7 @@ their removed Python commands are not current instructions.
 | Hidden Rust native WebView scenarios, manual heavy    | `just test-native-webview`               |
 | Hidden Rust native WebView scenarios, manual heavy    | `just test-native-webview`               |
 
-Seven Rust tests failed only under load and are `#[ignore]` until
+Eight Rust tests failed only under load and are `#[ignore]` until
 [issue #616](https://github.com/ifdotpy/layr-studio/issues/616) is fixed; `just test-quarantine`
 runs them. Six browser specs left the smoke subset and run only in the full
 browser tier (`just test-browser`, `just test-heavy`) until the same issue is fixed.

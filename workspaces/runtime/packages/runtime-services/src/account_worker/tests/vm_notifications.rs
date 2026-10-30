@@ -84,11 +84,11 @@ async fn fixture(provider: &'static str) -> (State, String) {
                         .expect("primary actor");
                     record.execution_mode = Some(studio_runtime_store::AgentExecutionMode::Vm);
                     record.thread_id = None;
+                    record.workspace_mode = Some(studio_runtime_schema::records::WorkspaceMode::Layr);
+                    record.cwd = Some("/home/studio/project".into());
                     for (key, value) in [
-                        ("workspaceMode", json!("layr")),
                         ("layrReady", json!(true)),
                         ("provider", json!(provider)),
-                        ("cwd", json!("/home/studio/project")),
                     ] {
                         record.extra.insert(key.into(), value);
                     }

@@ -103,6 +103,8 @@ async fn edit_actor(state: &State, changes: Value) {
                             "accountKey" => record.account_key = value.as_str().unwrap().to_owned(),
                             "threadId" => record.thread_id = value.as_str().map(str::to_owned),
                             "turnId" => record.turn_id = value.as_str().map(str::to_owned),
+                            "cwd" => record.cwd = value.as_str().map(str::to_owned),
+                            "deletedAt" => record.deleted_at = value.as_f64(),
                             _ => {
                                 record.extra.insert(key.clone(), value.clone());
                             }
@@ -113,6 +115,10 @@ async fn edit_actor(state: &State, changes: Value) {
                         .unwrap()
                         .value();
                     for (key, value) in changes.as_object().unwrap() {
+                        if key == "deletedAt" {
+                            assert_eq!(written.get(key).and_then(Value::as_f64), value.as_f64());
+                            continue;
+                        }
                         assert_eq!(
                             written.get(key),
                             Some(value),
@@ -806,10 +812,11 @@ record.execution_mode = Some(studio_runtime_store::AgentExecutionMode::Vm);
 record.account_key = "default".to_string();
 record.thread_id = Some("fake-thread-0".to_string());
 record.turn_id = Some("vm-turn".to_string());
+record.workspace_mode = Some(studio_runtime_schema::records::WorkspaceMode::Layr);
+record.cwd = Some("/home/studio/project".into());
 for (key, value) in [
-                ("workspaceMode",json!("layr")),("layrReady",json!(true)),
+                ("layrReady",json!(true)),
                 ("provider",json!("claude")),("executionSettingsAccountKey",json!("default")),
-                ("cwd",json!("/home/studio/project")),
 
                 ("startAttempt",json!({"id":"existing-vm-attempt","epoch":epoch,"accountKey":"default","submitted":true,"events":["annotation:input"],"threadId":"fake-thread-0","turnId":"vm-turn","connectionGeneration":1,"connectionId":"previous-backend","requestTicket":"original-native-start"})),
             ] { record.extra.insert(key.into(), value); }

@@ -104,13 +104,9 @@ pub fn encode_pcm(samples: &[i16]) -> String {
     )
 }
 
-const RESERVATION: Duration = Duration::from_secs(60);
-
 #[derive(Default)]
 struct Service {
     microphone_until: Option<Instant>,
-    // A gesture reserves one later microphone request, before any system prompt.
-    reservations: HashMap<String, Instant>,
     subscribers: HashMap<String, mpsc::Sender<Value>>,
 }
 fn service() -> &'static Mutex<Service> {
@@ -137,24 +133,14 @@ impl TryFrom<String> for CaptureId {
 struct CaptureParams {
     capture: CaptureId,
 }
-#[derive(Deserialize)]
-struct ReservationParams {
-    reservation: String,
-}
 
 enum Command {
-    RequestMicrophone(String),
     CaptureStart(CaptureId),
     CaptureStop(CaptureId),
 }
 
 fn command(method: &str, params: Value) -> Result<Command, String> {
     match method {
-        "media.requestMicrophone" => {
-            serde_json::from_value::<JsonObject<ReservationParams>>(params)
-                .map(|JsonObject(p)| Command::RequestMicrophone(p.reservation))
-                .map_err(|_| "Use the button again to allow the microphone.".into())
-        }
         "media.captureStart" => serde_json::from_value::<JsonObject<CaptureParams>>(params)
             .map(|JsonObject(p)| Command::CaptureStart(p.capture))
             .map_err(|_| "Invalid capture identity.".into()),
@@ -188,28 +174,6 @@ pub(crate) fn take_microphone(now: Instant) -> Result<(), String> {
     }
 }
 
-/// Called after the native gesture. The UI may check other conditions before asking macOS.
-pub fn reserve_microphone(now: Instant) -> Result<Value, String> {
-    let token = crate::file_save::uuid()?;
-    let mut service = service().lock().map_err(|_| "The audio service stopped.")?;
-    service.reservations.retain(|_, expires| *expires > now);
-    if service.reservations.len() >= 4 {
-        return Err("Too many microphone requests are waiting.".into());
-    }
-    service
-        .reservations
-        .insert(token.clone(), now + RESERVATION);
-    Ok(Value::String(token))
-}
-
-fn take_reservation(token: &str, now: Instant) -> Result<(), String> {
-    let mut service = service().lock().map_err(|_| "The audio service stopped.")?;
-    match service.reservations.remove(token) {
-        Some(expires) if expires > now => Ok(()),
-        _ => Err("Use the button again to allow the microphone.".into()),
-    }
-}
-
 /// Called after the native gesture for Record or Voice.
 pub async fn request_microphone() -> Result<Value, String> {
     if crate::platform::hidden_check() {
@@ -233,10 +197,6 @@ pub async fn dispatch(request: crate::protocol::Request) -> crate::protocol::Res
     use crate::protocol::Response;
     let result = async {
         match command(&request.method, request.params)? {
-            Command::RequestMicrophone(reservation) => {
-                take_reservation(&reservation, Instant::now())?;
-                request_microphone().await
-            }
             Command::CaptureStart(CaptureId(id)) => {
                 take_microphone(Instant::now())?;
                 let sender = service()
@@ -283,7 +243,6 @@ pub async fn dispatch(request: crate::protocol::Request) -> crate::protocol::Res
 pub fn close_all() {
     if let Ok(mut service) = service().lock() {
         service.subscribers.clear();
-        service.reservations.clear();
         service.microphone_until = None;
     }
     #[cfg(target_os = "macos")]
@@ -469,11 +428,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn command_fields_are_checked_without_consuming_reservations_or_subscribers() {
+    fn command_fields_are_checked_without_consuming_subscribers() {
         let _serial = AUDIO_TEST_MUTEX.lock().unwrap();
         close_all();
-        let now = Instant::now();
-        let token = reserve_microphone(now).unwrap();
         let receiver = attach(&json!("capture")).unwrap();
         for value in [
             json!(null),
@@ -483,14 +440,13 @@ mod tests {
         ] {
             assert!(command("media.captureStart", value).is_err());
         }
-        assert!(command("media.requestMicrophone", json!({"reservation": false})).is_err());
-        for method in [
-            "media.requestMicrophone",
-            "media.captureStart",
-            "media.captureStop",
-        ] {
+        for method in ["media.captureStart", "media.captureStop"] {
             assert!(command(method, json!(["capture"])).is_err());
         }
+        assert_eq!(
+            command("media.requestMicrophone", json!({})).err().unwrap(),
+            "Unknown audio command."
+        );
         assert_eq!(
             command("media.unknown", json!([])).err().unwrap(),
             "Unknown audio command."
@@ -509,7 +465,6 @@ mod tests {
                 .subscribers
                 .contains_key("capture")
         );
-        take_reservation(token.as_str().unwrap(), now).unwrap();
         drop(receiver);
         close_all();
     }
@@ -606,18 +561,6 @@ mod tests {
         service().lock().unwrap().microphone_until = Some(now + MICROPHONE_GRANT);
         assert!(take_microphone(now).is_ok());
         assert!(take_microphone(now + MICROPHONE_GRANT).is_err());
-        let reservation = reserve_microphone(now).unwrap();
-        assert!(take_reservation("other", now).is_err());
-        assert!(
-            take_reservation(reservation.as_str().unwrap(), now + RESERVATION).is_err(),
-            "expired"
-        );
-        let reservation = reserve_microphone(now).unwrap();
-        take_reservation(reservation.as_str().unwrap(), now).unwrap();
-        assert!(
-            take_reservation(reservation.as_str().unwrap(), now).is_err(),
-            "single use"
-        );
         let receiver = attach(&json!("capture-test")).unwrap();
         assert!(attach(&json!("capture-test")).is_err());
         drop(receiver);

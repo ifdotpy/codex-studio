@@ -404,7 +404,7 @@ fn a_wait_resumes_once_after_the_provider_reset_when_limits_reads_fail() {
             }],
             "{case}"
         );
-        let agent = decision.agent.clone().expect("agent").into_value();
+        let agent = decision.agent.clone().expect("agent").value().clone();
         assert_eq!(agent["status"], "queued", "{case}");
         assert!(agent.get("nativeFailureHold").is_none(), "{case}");
         // The started wait never sends its follow-up again.

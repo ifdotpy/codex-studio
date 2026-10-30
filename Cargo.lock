@@ -5256,7 +5256,6 @@ dependencies = [
  "studio-runtime-schema",
  "tempfile",
  "tokio",
- "unicode-segmentation",
  "unsafe-libopus",
  "uuid",
  "webpki-roots",

@@ -1,12 +1,11 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 use studio_runtime_services::portable_history::{
     ArchiveDescriptor, ExportInput, NativeHistory, PortableHistoryError, export_history,
-    history_context, read_history, validate_history,
+    history_context, validate_history,
 };
 use studio_runtime_store::RuntimeStore;
 use studio_runtime_store::path_identity::CanonicalPath;
@@ -26,12 +25,8 @@ fn frozen_archive_writer_and_context_are_read_without_loss() {
         let validated = validate_history(state_root, &descriptor)
             .unwrap_or_else(|error| panic!("Rust rejected Python archive {name}: {error}"));
         assert_eq!(validated, descriptor, "descriptor round trip for {name}");
-        let mut archive = read_history(state_root, &descriptor)
-            .unwrap_or_else(|error| panic!("Rust read failed for {name}: {error}"));
-        let mut contents = String::new();
-        archive
-            .read_to_string(&mut contents)
-            .unwrap_or_else(|error| panic!("Rust archive read failed for {name}: {error}"));
+        let contents = std::fs::read_to_string(descriptor.path())
+            .unwrap_or_else(|error| panic!("archive read failed for {name}: {error}"));
         assert!(
             contents.ends_with("\n"),
             "Python JSONL footer read for {name}"
@@ -63,7 +58,7 @@ fn frozen_archive_writer_and_context_are_read_without_loss() {
     tampered[start..start + original_text.len()].copy_from_slice(changed_text);
     std::fs::write(path, tampered).expect("tamper synthetic archive");
     assert!(
-        read_history(archive_case.root.as_path(), &descriptor).is_err(),
+        validate_history(archive_case.root.as_path(), &descriptor).is_err(),
         "modified archive bytes are refused"
     );
     std::fs::write(path, original).expect("restore synthetic archive");
@@ -365,16 +360,7 @@ async fn rust_writer_reads_frozen_state_and_refusal_publishes_nothing() {
     .expect("Rust publishes archive");
     let validated = validate_history(root.path(), &descriptor).expect("Rust reads its archive");
     assert_eq!(validated, descriptor);
-    let mut archive_reader = read_history(root.path(), &descriptor).expect("complete archive read");
-    let mut contents = String::new();
-    archive_reader
-        .read_to_string(&mut contents)
-        .expect("archive UTF-8 text");
     let archive = std::fs::read_to_string(descriptor.path()).expect("archive JSONL");
-    assert_eq!(
-        contents, archive,
-        "public read returns complete archive bytes"
-    );
     assert!(archive.contains("Python-written full transcript 😀"));
     assert!(archive.contains("Python-written original input"));
     assert!(archive.contains("archive-fixture \\\"日本語.png"));

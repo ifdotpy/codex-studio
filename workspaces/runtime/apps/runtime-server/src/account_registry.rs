@@ -2123,6 +2123,7 @@ mod bounded_reconcile_tests {
                         root_id: id,
                         epoch: 1,
                         status: AgentStatus::Queued,
+                        workspace_mode: Some(studio_runtime_schema::records::WorkspaceMode::Image),
                         account_key: "account-a".into(),
                         auto_wake: Some(true),
                         usage_resume_enabled: None,
@@ -2136,8 +2137,8 @@ mod bounded_reconcile_tests {
                                 "provider".to_owned(),
                                 serde_json::json!(studio_runtime_schema::ProviderKind::Codex),
                             ),
-                            ("workspaceMode".to_owned(), serde_json::json!("image")),
                         ]),
+                        ..AgentRecord::test_defaults()
                     },
                 )?;
                 Ok(())
@@ -2309,6 +2310,7 @@ mod bounded_reconcile_tests {
                         root_id: id.clone(),
                         epoch: 1,
                         status: AgentStatus::Queued,
+                        workspace_mode: Some(studio_runtime_schema::records::WorkspaceMode::Image),
                         account_key: "default".into(),
                         auto_wake: Some(true),
                         usage_resume_enabled: None,
@@ -2316,8 +2318,8 @@ mod bounded_reconcile_tests {
                         execution_mode: None, turn_epoch: None, thread_id: None, turn_id: None,
                         extra: BTreeMap::from([
                             ("provider".to_owned(), serde_json::json!(studio_runtime_schema::ProviderKind::Codex)),
-                            ("workspaceMode".to_owned(), serde_json::json!("image")),
                         ]),
+                        ..AgentRecord::test_defaults()
                     },
                 )?;
                 transaction.execute(
@@ -2355,13 +2357,10 @@ mod bounded_reconcile_tests {
                     ("lead", None, AgentStatus::Queued),
                     ("worker", Some("lead"), AgentStatus::Running),
                 ] {
-                    let mut extra = BTreeMap::from([(
+                    let extra = BTreeMap::from([(
                         "provider".to_owned(),
                         serde_json::json!(studio_runtime_schema::ProviderKind::Codex),
                     )]);
-                    if let Some(parent) = parent {
-                        extra.insert("parentId".to_owned(), serde_json::json!(parent));
-                    }
                     AgentRepository::put(
                         transaction,
                         &AgentRecord {
@@ -2377,6 +2376,7 @@ mod bounded_reconcile_tests {
                             root_id: AgentId::from("lead"),
                             epoch: 1,
                             status,
+                            parent_id: parent.map(str::to_owned),
                             account_key: "default".into(),
                             auto_wake: None,
                             usage_resume_enabled: None,
@@ -2386,6 +2386,7 @@ mod bounded_reconcile_tests {
                             thread_id: None,
                             turn_id: None,
                             extra,
+                            ..AgentRecord::test_defaults()
                         },
                     )?;
                 }

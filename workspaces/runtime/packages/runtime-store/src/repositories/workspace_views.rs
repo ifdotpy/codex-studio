@@ -156,10 +156,10 @@ impl WorkspaceViewsRepository {
 
     pub fn agents(
         connection: &Connection,
-    ) -> StoreResult<Vec<studio_runtime_schema::records::agent_projection::AgentProjection>> {
+    ) -> StoreResult<Vec<crate::AgentRecord>> {
         let fields = crate::agent_volatile::columns("v.");
         let mut statement = connection.prepare_cached(&format!(
-            "SELECT {fields},a.id,a.record FROM runtime_agents a \
+            "SELECT {fields},a.id,a.record,v.id IS NOT NULL FROM runtime_agents a \
              LEFT JOIN runtime_agent_volatile v ON v.id=a.id ORDER BY a.rowid"
         ))?;
         let mut rows = statement.query([])?;
@@ -167,11 +167,11 @@ impl WorkspaceViewsRepository {
         while let Some(row) = rows.next()? {
             let id: String = row.get(crate::agent_volatile::AGENT_VOLATILE_FIELDS.len())?;
             let raw: String = row.get(crate::agent_volatile::AGENT_VOLATILE_FIELDS.len() + 1)?;
-            let mut value = crate::records::parse_agent_value(&id, &raw)?;
-            if let Some(fields) = value.as_object_mut() {
-                crate::agent_volatile::merge_row(row, &id, fields)?;
+            let mut agent = crate::records::parse_agent_record(&id, &raw)?;
+            if row.get::<_, bool>(crate::agent_volatile::AGENT_VOLATILE_FIELDS.len() + 2)? {
+                crate::agent_volatile::merge_agent_row(row, &id, &mut agent)?;
             }
-            records.push(crate::records::checked_agent_projection(&id, &value)?);
+            records.push(agent);
         }
         Ok(records)
     }
@@ -558,9 +558,9 @@ mod bulk_read_tests {
         connection.trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, Some(count_statement));
         STATEMENTS.set(0);
         let agents = WorkspaceViewsRepository::agents(&connection).expect("agents");
-        assert_eq!(agents[0].extensions["tail"], Value::Null);
-        assert_eq!(agents[1].extensions["tail"], "legacy");
-        assert_eq!(agents[2].extensions["tail"], "current");
+        assert_eq!(agents[0].tail, None);
+        assert_eq!(agents[1].tail.as_deref(), Some("legacy"));
+        assert_eq!(agents[2].tail.as_deref(), Some("current"));
         assert_eq!(STATEMENTS.get(), 1, "one joined SELECT for all agents");
     }
 }

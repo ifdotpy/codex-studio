@@ -251,7 +251,7 @@ async fn usage_resume(
             studio_runtime_store::ContinuationTable::Usage,
             Some(&record),
             now,
-            move |snapshot| studio_runtime_services::usage_resume::set_enabled(snapshot, true, now),
+            move |snapshot| studio_runtime_services::usage_resume::enable(snapshot, now),
         )
         .await
         .map_err(continuation_error)?;

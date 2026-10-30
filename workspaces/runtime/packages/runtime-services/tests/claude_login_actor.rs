@@ -61,11 +61,10 @@ async fn auth_repair_regression_post_login_allows_only_fresh_safe_continuation()
             chats::StoredChats,
             service::{LoginConfig, LoginService},
         },
-        monitor_policy::Operation,
         monitor_runtime,
     };
     use studio_runtime_store::{
-        AgentRecord, AgentRepository, MonitorRecord, RuntimeStore, SchedulerRepository, Table,
+        AgentRecord, AgentRepository, RuntimeStore, SchedulerRepository, Table,
     };
 
     let f = Fixture::new();
@@ -162,8 +161,11 @@ async fn auth_repair_regression_post_login_allows_only_fresh_safe_continuation()
         .await;
     service.shutdown().await.expect("login actor joined");
 
-    let monitor_template = crate::monitor_fixtures::corpus(&f.directory)[0]["before"].clone();
-    let key = ready["accountKey"].clone();
+    let monitor_template = crate::monitor_fixtures::monitor(&f.directory);
+    let key = ready["accountKey"]
+        .as_str()
+        .expect("account key")
+        .to_owned();
     store
         .transaction_with(move |tx| {
             for id in [
@@ -176,18 +178,16 @@ async fn auth_repair_regression_post_login_allows_only_fresh_safe_continuation()
                 "workspace",
             ] {
                 let mut monitor = monitor_template.clone();
-                monitor["id"] = json!(format!("fresh-{id}"));
-                monitor["agent"] = json!(id);
-                monitor["epoch"] = json!(1);
-                monitor["created"] = json!(1.0);
-                monitor["activityAt"] = json!(1.0);
-                monitor["operation"]["agent"] = json!(id);
-                monitor["operation"]["epoch"] = json!(1);
-                monitor["operation"]["accountKey"] = key.clone();
-                let operation: Operation = serde_json::from_value(monitor["operation"].clone())
-                    .map_err(studio_runtime_store::StoreError::from)?;
-                let monitor = MonitorRecord::from_value(monitor)
-                    .map_err(studio_runtime_store::StoreError::from)?;
+                monitor.id = format!("fresh-{id}");
+                monitor.agent = id.into();
+                monitor.epoch = 1.try_into().expect("epoch");
+                monitor.created = 1.0.try_into().expect("created");
+                monitor.activity_at = 1.0.try_into().expect("activity");
+                let operation = monitor.operation.as_mut().expect("operation");
+                operation.agent = id.to_owned().try_into().expect("agent");
+                operation.epoch = 1.try_into().expect("epoch");
+                operation.account_key = key.clone().try_into().expect("account key");
+                let operation = operation.clone();
                 Table::new(tx).put(&monitor)?;
                 monitor_runtime::finish_in_transaction(
                     tx,

@@ -6,58 +6,9 @@ use crate::StoreResult;
 use crate::records::{MonitorRecord, Table};
 use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
 
-#[derive(Clone, Debug, serde::Deserialize, Eq, PartialEq, serde::Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct MonitorOperation {
-    pub agent: String,
-    pub epoch: i64,
-    pub account_key: String,
-    pub connection_id: String,
-    #[serde(flatten)]
-    pub evidence: MonitorOperationEvidence,
-}
-
-#[derive(Clone, Debug, Default, serde::Deserialize, Eq, serde::Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct MonitorOperationEvidence {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thread_id: Option<String>,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "present"
-    )]
-    pub root_request_id: Option<String>,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "present"
-    )]
-    pub provider_generation: Option<u64>,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "present"
-    )]
-    pub provider_request: Option<crate::request_results::AdmittedRequest>,
-}
-
-impl PartialEq for MonitorOperationEvidence {
-    fn eq(&self, other: &Self) -> bool {
-        // The historical thread is retained for reading, not operation identity.
-        self.root_request_id == other.root_request_id
-            && self.provider_generation == other.provider_generation
-            && self.provider_request == other.provider_request
-    }
-}
-
-fn present<'de, D, T>(deserializer: D) -> std::result::Result<Option<T>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: serde::Deserialize<'de>,
-{
-    T::deserialize(deserializer).map(Some)
-}
+pub use studio_runtime_schema::monitor_record::{
+    MonitorOperationEvidence, MonitorOperationRecord as MonitorOperation,
+};
 
 /// Compatibility name for callers that used the pre-typed monitor wrapper.
 pub type StoredMonitor = MonitorRecord;
@@ -221,37 +172,17 @@ mod tests {
     use rusqlite::Connection;
 
     #[test]
-    fn monitor_rows_check_identity_and_preserve_open_operation_evidence() {
+    fn monitor_rows_check_identity_and_discard_unknown_fields() {
         let db = Connection::open_in_memory().unwrap();
-        db.execute_batch(
-            "CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY, record TEXT NOT NULL)",
-        )
-        .unwrap();
-        let raw = r#"{"id":"m","status":null,"operation":{"agent":"a","epoch":1.0,"accountKey":"default","connectionId":"c","providerRequest":{"future":true}},"streamQueue":[{"opaque":true}]}"#;
-        db.execute("INSERT INTO runtime_monitors VALUES ('m',?1)", [raw])
-            .unwrap();
-        assert_eq!(
-            MonitorsRepository::get(&db, "m").unwrap().unwrap().value(),
-            serde_json::from_str::<serde_json::Value>(raw).unwrap()
-        );
-        for raw in [
-            r#"{"id":"wrong"}"#,
-            r#"{"id":"m","status":"unknown"}"#,
-            r#"{"id":"m","id":"wrong"}"#,
-        ] {
-            db.execute("UPDATE runtime_monitors SET record=?1", [raw])
-                .unwrap();
+        db.execute_batch("CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY, record TEXT NOT NULL)").unwrap();
+        let raw = r#"{"id":"m","agent":"a","epoch":1,"requestId":"r","turnId":null,"status":"running","activityAt":1,"activityGeneration":0,"bytes":0,"command":"","created":1,"cwd":"/","interactive":false,"livenessCommand":"","log":"/log","stallTimeoutSeconds":0,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":1000,"wakeOn":"exit","future":true}"#;
+        db.execute("INSERT INTO runtime_monitors VALUES ('m',?1)", [raw]).unwrap();
+        let saved = MonitorsRepository::get(&db, "m").unwrap().unwrap();
+        assert!(!serde_json::to_string(&saved).unwrap().contains("\"future\""));
+        for invalid in [raw.replace("\"id\":\"m\"", "\"id\":\"wrong\""), raw.replace("\"status\":\"running\"", "\"status\":\"unknown\""), raw.replace("\"id\":\"m\"", "\"id\":\"m\",\"id\":\"wrong\"")] {
+            db.execute("UPDATE runtime_monitors SET record=?1", [&invalid]).unwrap();
             assert!(MonitorsRepository::get(&db, "m").is_err());
         }
-        db.execute(
-            "UPDATE runtime_monitors SET record=?1",
-            [r#"{"id":"wrong","id":"m","future":[1]}"#],
-        )
-        .unwrap();
-        assert_eq!(
-            MonitorsRepository::get(&db, "m").unwrap().unwrap().value(),
-            serde_json::json!({"id":"m","future":[1]})
-        );
     }
 
     #[test]
@@ -260,7 +191,7 @@ mod tests {
         let historical = r#"{"agent":"a","epoch":1,"accountKey":"default","connectionId":"c","threadId":"thread"}"#;
         let original: super::MonitorOperation = serde_json::from_str(base).unwrap();
         let saved: super::MonitorOperation = serde_json::from_str(historical).unwrap();
-        assert_eq!(original, saved);
+        assert!(original.same_identity(&saved));
         assert_eq!(
             crate::projection_value(&saved),
             serde_json::from_str::<serde_json::Value>(historical).unwrap()
@@ -269,7 +200,7 @@ mod tests {
             serde_json::from_str::<super::MonitorOperation>(r#"{"agent":"a","epoch":1,"accountKey":"default","connectionId":"c","threadId":null}"#).unwrap(),
             original
         );
-        assert!(serde_json::from_str::<super::MonitorOperation>(r#"{"agent":"a","epoch":1,"accountKey":"default","connectionId":"c","unexpected":true}"#).is_err());
+        assert!(serde_json::from_str::<super::MonitorOperation>(r#"{"agent":"a","epoch":1,"accountKey":"default","connectionId":"c","unexpected":true}"#).is_ok());
     }
 
     #[test]
@@ -282,7 +213,7 @@ mod tests {
         assert!(super::MonitorOperationEvidence::deserialize(evidence.clone()).is_ok());
         let mut invalid = evidence.clone();
         invalid["unexpected"] = json!(true);
-        assert!(super::MonitorOperationEvidence::deserialize(invalid.clone()).is_err());
+        assert!(super::MonitorOperationEvidence::deserialize(invalid.clone()).is_ok());
         let mut operation =
             json!({"agent":"a", "epoch":1, "accountKey":"default", "connectionId":"c"});
         operation
@@ -291,7 +222,7 @@ mod tests {
             .extend(evidence.as_object().unwrap().clone());
         assert!(super::MonitorOperation::deserialize(operation.clone()).is_ok());
         operation["unexpected"] = json!(true);
-        assert!(super::MonitorOperation::deserialize(operation).is_err());
+        assert!(super::MonitorOperation::deserialize(operation).is_ok());
     }
 
     /// The index build runs at every store open, also on older states that
