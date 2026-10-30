@@ -222,6 +222,75 @@ pub fn enum_check<T: VariantNames>(column: &str) -> String {
     format!("CHECK(\"{}\" IN ({values}))", column.replace('"', "\"\""))
 }
 
+fn quoted(identifier: &str) -> String {
+    format!("\"{}\"", identifier.replace('"', "\"\""))
+}
+
+/// The two `(name, CREATE TRIGGER)` pairs that keep `table.column` inside the
+/// enum, generated solely from its variants. Like a `CHECK`, a NULL passes.
+/// Triggers replace a `CHECK` on a large table: SQLite changes a `CHECK` only
+/// by rebuilding the table, while a trigger is replaced in milliseconds.
+pub fn enum_check_trigger_statements<T: VariantNames>(
+    table: &str,
+    column: &str,
+) -> [(String, String); 2] {
+    let values = T::VARIANTS
+        .iter()
+        .map(|value| format!("'{}'", value.replace('\'', "''")))
+        .collect::<Vec<_>>()
+        .join(",");
+    let message = format!("{table}.{column} is outside its enum").replace('\'', "''");
+    let (table_q, column_q) = (quoted(table), quoted(column));
+    [("ins", "INSERT"), ("upd", "UPDATE OF")].map(|(kind, event)| {
+        let name = quoted(&format!("enum_check_{table}_{column}_{kind}"));
+        let on = if kind == "ins" {
+            event.to_owned()
+        } else {
+            format!("{event} {column_q}")
+        };
+        let sql = format!(
+            "CREATE TRIGGER {name} BEFORE {on} ON {table_q} WHEN NEW.{column_q} NOT IN ({values}) \
+             BEGIN SELECT RAISE(ABORT,'{message}'); END"
+        );
+        (name, sql)
+    })
+}
+
+/// SQL that replaces the enum check triggers of `table.column`, for a migration.
+pub fn enum_check_triggers<T: VariantNames>(table: &str, column: &str) -> String {
+    enum_check_trigger_statements::<T>(table, column)
+        .into_iter()
+        .map(|(name, sql)| format!("DROP TRIGGER IF EXISTS {name}; {sql};"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Parity check: the stored triggers of `table.column` equal the ones generated
+/// from the enum. It fails when a variant was added or removed in only one place.
+#[cfg(feature = "sqlite")]
+pub fn check_enum_triggers<T: VariantNames>(
+    db: &rusqlite::Connection,
+    table: &str,
+    column: &str,
+) -> Result<(), String> {
+    for (name, expected) in enum_check_trigger_statements::<T>(table, column) {
+        let stored: String = db
+            .query_row(
+                "SELECT sql FROM sqlite_schema WHERE type='trigger' AND name=?1",
+                [name.trim_matches('"')],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("trigger {name} is missing: {error}"))?;
+        if stored != expected {
+            return Err(format!(
+                "trigger {name} differs from the enum {}",
+                std::any::type_name::<T>()
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Exact reply retained for a completed move from a virtual machine.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -404,6 +473,36 @@ mod tests {
                 .is_err()
         );
         assert!(serde_json::from_str::<T>("\"bogus\"").is_err());
+    }
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn enum_check_triggers_match_the_enum_and_reject_other_values() {
+        let db = rusqlite::Connection::open_in_memory().expect("fresh database");
+        db.execute_batch("CREATE TABLE witness(id INTEGER PRIMARY KEY, state TEXT)")
+            .expect("table");
+        assert!(check_enum_triggers::<MigrationStatus>(&db, "witness", "state").is_err());
+        db.execute_batch(&enum_check_triggers::<MigrationStatus>("witness", "state"))
+            .expect("triggers");
+        check_enum_triggers::<MigrationStatus>(&db, "witness", "state").expect("parity");
+        for wire in MigrationStatus::VARIANTS {
+            db.execute("INSERT INTO witness(state) VALUES(?1)", [wire])
+                .expect("variant accepted");
+        }
+        db.execute("INSERT INTO witness(state) VALUES(NULL)", [])
+            .expect("NULL passes");
+        assert!(
+            db.execute("INSERT INTO witness(state) VALUES('bogus')", [])
+                .is_err()
+        );
+        assert!(
+            db.execute("UPDATE witness SET state='bogus' WHERE id=1", [])
+                .is_err()
+        );
+        // Installing the triggers again replaces them.
+        db.execute_batch(&enum_check_triggers::<MigrationStatus>("witness", "state"))
+            .expect("replace");
+        // A column checked against another enum differs.
+        assert!(check_enum_triggers::<TitleStatus>(&db, "witness", "state").is_err());
     }
     fn at(ms: i64) -> RequestIdentity {
         let uuid = Uuid::from_u128(((ms as u128) << 80) | (7 << 76) | (2 << 62));

@@ -14440,6 +14440,17 @@ export interface components {
         | null
         | undefined;
       /**
+       * Online
+       * @description Progress of each online migration by name (docs/online-migrations.md).
+       * @default null
+       */
+      online?:
+        | {
+            [key: string]: components["schemas"]["OnlineMigration"];
+          }
+        | null
+        | undefined;
+      /**
        * Payloads
        * @default null
        */
@@ -16194,6 +16205,29 @@ export interface components {
       turnId?: string | undefined;
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
+    };
+    /**
+     * OnlineMigration
+     * @description Progress of one online migration: batch copy with a high-water mark.
+     */
+    OnlineMigration: {
+      /** Complete */
+      complete: boolean;
+      /**
+       * Cursor
+       * @description High-water mark: the highest source key copied.
+       */
+      cursor: number;
+      /**
+       * Dirty
+       * @description Changed source keys waiting for a re-copy.
+       */
+      dirty: number;
+      /** Error */
+      error: null | string;
+      status: components["schemas"]["PayloadMigrationState"];
+      /** Updated */
+      updated: null | number;
     };
     /** OrchestrationSettings */
     OrchestrationSettings: {
