@@ -118,21 +118,6 @@ impl EventWriteRepository {
         Ok(())
     }
 
-    pub fn validate_annotation(
-        connection: &Connection,
-        id: &str,
-        value: &Value,
-    ) -> StoreResult<()> {
-        let record = AnnotationRecord::from_value(value.clone())?;
-        if record.id() != id {
-            return Err(crate::StoreError::InvalidStoredObject {
-                table: AnnotationRecord::TABLE,
-                id: id.to_owned(),
-            });
-        }
-        Table::<AnnotationRecord>::new(connection).validate(&record)
-    }
-
     pub fn event_exists(connection: &Connection, id: &str) -> StoreResult<bool> {
         Ok(connection.query_row_cached(
             "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE id=?1)",
@@ -247,6 +232,7 @@ impl EventWriteRepository {
             }
             if let Some(agent) = &agent {
                 value.insert("epoch".to_owned(), Value::from(agent.epoch));
+                let fields = agent.value();
                 for key in [
                     "error",
                     "nativeFailureHold",
@@ -268,7 +254,7 @@ impl EventWriteRepository {
                     "tail",
                     "contextUsage",
                 ] {
-                    if let Some(field) = agent.extra.get(key) {
+                    if let Some(field) = fields.get(key) {
                         value.insert(key.to_owned(), field.clone());
                     } else {
                         value.remove(key);

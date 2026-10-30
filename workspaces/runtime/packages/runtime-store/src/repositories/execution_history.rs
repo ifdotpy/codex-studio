@@ -883,7 +883,7 @@ mod tests {
             let schema_valid =
                 studio_runtime_schema::validate("PersistedExecutionRunRecord", &record).unwrap();
             let typed = JsonObject::<
-                ExecutionRun<Value, studio_runtime_schema::records::agent_projection::AgentCounter>,
+                ExecutionRun<Value, studio_runtime_schema::AgentCounter>,
             >::deserialize(&record)
             .is_ok();
             assert_eq!(typed, schema_valid, "{record}");

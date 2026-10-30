@@ -78,10 +78,7 @@ pub fn vm_actor_matches(
                 .is_ok_and(|kind| kind.key() == provider)
         })
         && record.account_key.as_str() == account_key
-        && !record
-            .extra
-            .get("deletedAt")
-            .is_some_and(|value| !value.is_null())
+        && !record.deleted_at.is_some()
         && record.extra.get("deleted") != Some(&json!(true)))
 }
 
@@ -2561,7 +2558,7 @@ mod tests {
             store
                 .transaction(|tx| {
                     let mut agent = AgentRepository::get(tx, &AgentId::from("agent-1"))?.unwrap();
-                    agent.extra.insert("deletedAt".into(), json!(1));
+                    agent.deleted_at = Some((1) as f64);
                     AgentRepository::put(tx, &agent)
                 })
                 .await

@@ -49,7 +49,7 @@ fn changed() -> ApiError {
     )
 }
 fn matches_agent(agent: &studio_runtime_store::AgentRecord, expected: &crate::generated::McpSessionBinding) -> bool {
-    !studio_runtime_store::truthy(agent.extra.get("deletedAt"))
+    !agent.is_deleted()
         && agent.extra.get("deleted") != Some(&json!(true))
         && agent.thread_id.as_deref() == Some(expected.thread.as_str())
         && agent.epoch == expected.epoch

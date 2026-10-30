@@ -249,21 +249,14 @@ impl SchedulerRepository {
         // Do not use observedTurnId to constrain a later correlated acceptance.
         attempt.insert("observedTurnId".into(), json!(turn_id));
         record_notification(transaction, &mut agent)?;
-        agent.extra.insert(
-            "activity".into(),
-            json!({"phase":"thinking","at":timestamp()}),
-        );
-        agent.extra.insert("activeTools".into(), json!([]));
-        agent.extra.insert("lastAnswer".into(), json!(""));
+        agent.activity = Some(crate::records::AgentActivity { phase: Some("thinking".into()), at: Some(timestamp()), ..Default::default() });
+        agent.active_tools = Some(Vec::new());
+        agent.last_answer = Some(String::new());
         agent.turn_id = Some(turn_id.to_string());
-        for key in [
-            "nativeStatus",
-            "nativeTurnError",
-            "nativeSafetyBuffering",
-            "nativeResponseTurn",
-        ] {
-            agent.extra.remove(key);
-        }
+        agent.native_response_turn = None;
+        agent.native_safety_buffering = None;
+        agent.native_status = None;
+        agent.extra.remove("nativeTurnError");
         if current_attempt(&agent, identity.epoch) {
             agent.status = AgentStatus::Running;
             agent.in_flight = Some(true);
@@ -588,10 +581,10 @@ impl SchedulerRepository {
                 .turn_id
                 .as_deref()
                 .is_some_and(|turn| !turn.is_empty())
+            || agent.active_tools.as_ref().is_some_and(|tools| !tools.is_empty())
+            || agent.native_safety_buffering.is_some()
             || [
-                "activeTools",
                 "manualRecoveryDeliveryHold",
-                "nativeSafetyBuffering",
                 "authWait",
                 "capacityRetry",
                 "usageResume",
@@ -624,7 +617,7 @@ impl SchedulerRepository {
             return Ok(false);
         }
         agent.extra.insert("error".into(), Value::Null);
-        agent.extra.remove("nativeStatus");
+        agent.native_status = None;
         agent.status = if Self::has_claimable_input(transaction, agent_id, epoch)? {
             AgentStatus::Queued
         } else {
@@ -746,9 +739,8 @@ impl SchedulerRepository {
             park["cancelledAtEpoch"] = json!(agent.epoch);
             agent.extra.insert("cancelledPark".into(), park);
         }
-        for field in ["parkedEvent", "parkAfterTurn"] {
-            agent.extra.remove(field);
-        }
+        agent.parked_event = None;
+        agent.extra.remove("parkAfterTurn");
         tx.execute_cached(
             "UPDATE runtime_events SET status='cancelled' WHERE agent=?1 AND status='pending'",
             [id],
@@ -938,7 +930,7 @@ impl SchedulerRepository {
                 | AgentStatus::Queued
         );
         if !idle
-            || flag("deletedAt")
+            || agent.is_deleted()
             || agent.in_flight == Some(true)
             || flag("nativeFailureHold")
             || flag("remoteWorker")
@@ -1810,22 +1802,16 @@ impl SchedulerRepository {
             error.clone().unwrap_or(Value::Null),
         );
         agent.turn_id = None;
-        agent.extra.insert("activity".into(), Value::Null);
-        agent
-            .extra
-            .insert("activeTools".into(), serde_json::json!([]));
+        agent.activity = None;
+        agent.active_tools = Some(Vec::new());
         agent.in_flight = Some(false);
         if status == AgentStatus::Failed {
             agent.extra.insert("nativeFailureHold".into(), json!(true));
         }
-        for field in [
-            "nativeStatus",
-            "nativeTurnError",
-            "nativeSafetyBuffering",
-            "nativeResponseTurn",
-        ] {
-            agent.extra.remove(field);
-        }
+        agent.native_response_turn = None;
+        agent.native_safety_buffering = None;
+        agent.native_status = None;
+        agent.extra.remove("nativeTurnError");
         if let Some(error) = error.as_ref()
             && known_error_kind(error) == Some(KnownCodexErrorKind::MisalignmentPolicyViolation)
         {
@@ -2285,22 +2271,12 @@ pub(super) fn record_notification(
     transaction: &Transaction<'_>,
     agent: &mut AgentRecord,
 ) -> StoreResult<()> {
-    agent.extra.insert(
-        "events".into(),
-        json!(
-            agent
-                .extra
-                .get("events")
-                .and_then(Value::as_u64)
-                .unwrap_or(0)
-                + 1
-        ),
-    );
+    agent.events = Some(agent.events.unwrap_or(0) + 1);
     let at: String =
         transaction.query_row_cached("SELECT strftime('%Y-%m-%dT%H:%M:%SZ','now')", [], |r| {
             r.get(0)
         })?;
-    agent.extra.insert("lastEvent".into(), json!(at));
+    agent.last_event = Some(at);
     Ok(())
 }
 
@@ -2733,8 +2709,7 @@ pub(super) fn transport_continuation_allowed(agent: &AgentRecord) -> bool {
 }
 
 pub(super) fn continuation_allowed(agent: &AgentRecord) -> bool {
-    ![
-        "deletedAt",
+    !agent.is_deleted() && ![
         "nativeFailureHold",
         "accountTransferId",
         "workspaceOperation",
@@ -2771,9 +2746,7 @@ pub(super) fn decode_agent(
     id: &str,
     raw: &str,
 ) -> StoreResult<AgentRecord> {
-    let value = crate::records::decode_agent_value(connection, id, raw)?;
-    serde_json::from_value(value)
-        .map_err(|_| crate::records::invalid_agent_field(id, "", "record_decode", None))
+    crate::records::decode_agent_record(connection, id, raw)
 }
 pub(super) fn current_attempt(agent: &AgentRecord, epoch: i64) -> bool {
     agent.epoch == epoch && agent.turn_epoch == Some(epoch) && agent.auto_wake == Some(true)
@@ -2852,7 +2825,7 @@ pub(super) enum AttemptAuthority {
     Inactive,
 }
 pub(super) fn attempt_authority(agent: &AgentRecord, epoch: i64) -> AttemptAuthority {
-    if agent.extra.get("deletedAt").is_some_and(truthy) {
+    if agent.is_deleted() {
         AttemptAuthority::Deleted
     } else if current_attempt(agent, epoch) {
         AttemptAuthority::Current
@@ -3197,7 +3170,7 @@ pub(super) fn completed_turn(
 /// Python `codex_agent_management.parked_after_turn`: a park requested during
 /// a turn takes effect when that turn ends; a stopped event waiter is parked.
 fn parked_after_turn(agent: &mut AgentRecord) {
-    if !agent.extra.get("parkedEvent").is_some_and(truthy) {
+    if agent.parked_event.as_deref().is_none_or(str::is_empty) {
         return;
     }
     if agent.extra.get("parkAfterTurn").is_some_and(truthy) {

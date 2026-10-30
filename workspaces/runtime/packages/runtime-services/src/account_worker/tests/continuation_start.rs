@@ -32,8 +32,8 @@ async fn child_of_lead(state: &State) {
                 lead.extra.remove("startAttempt");
                 AgentRepository::put(tx, &lead)?;
                 row.root_id = AgentId::from(LEAD);
-                row.extra.insert("parentId".into(), json!(LEAD));
-                row.extra.insert("isLead".into(), json!(false));
+                row.parent_id = Some((LEAD).to_string());
+                row.is_lead = Some(false);
                 AgentRepository::put(tx, &row)?;
                 Ok(())
             })
@@ -728,8 +728,8 @@ async fn a_claude_limit_named_only_by_its_notice_waits_and_delivers_held_events(
                 let mut child = AgentRepository::get(tx, &AgentId::from(agent.as_str()))?.unwrap();
                 child.id = AgentId::from("held-child");
                 child.status = studio_runtime_store::AgentStatus::Completed;
-                child.extra.insert("parentId".into(), json!(agent));
-                child.extra.insert("isLead".into(), json!(false));
+                child.parent_id = Some((agent).to_string());
+                child.is_lead = Some(false);
                 child.thread_id = Some("held-child-thread".to_string());
                 child.extra.remove("usageResume");
                 AgentRepository::put(tx, &child)?;

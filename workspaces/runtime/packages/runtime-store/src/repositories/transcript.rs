@@ -1,7 +1,7 @@
 //! Persisted transcript rows, full text, and the current search projection.
 
 use crate::CachedSql;
-use crate::records::{RecordOrder, RecordPredicate, Table, TranscriptItemId, TranscriptItemRecord};
+use crate::records::{AgentRecord, RecordOrder, RecordPredicate, Table, TranscriptItemId, TranscriptItemRecord};
 use crate::repositories::sync_documents::SyncDocumentsRepository;
 use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
 use crate::stored_text::{StoredText, StoredTextValue};
@@ -230,13 +230,13 @@ impl TranscriptRepository {
         Ok(Vec::new())
     }
 
-    /// The checked agent row as JSON, without a typed round trip.
+    /// The checked agent row for transcript projection.
     pub fn agent(connection: &Connection, agent: &str) -> TranscriptStoreResult<Option<Value>> {
         connection
             .prepare_cached("SELECT record FROM runtime_agents WHERE id=?1")?
             .query_row([agent], |row| row.get::<_, String>(0))
             .optional()?
-            .map(|encoded| crate::records::decode_agent_value(connection, agent, &encoded))
+            .map(|encoded| crate::records::decode_agent_record(connection, agent, &encoded).map(AgentRecord::into_value))
             .transpose()
             .map_err(map_store_error)
     }

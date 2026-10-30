@@ -699,7 +699,7 @@ fn rename(
             id: id.to_owned(),
         });
     }
-    if crate::event_write::truthy(agent.extra.get("deletedAt")) {
+    if agent.is_deleted() {
         return Err(RenameError::Deleted);
     }
     let Some(name) = name else {

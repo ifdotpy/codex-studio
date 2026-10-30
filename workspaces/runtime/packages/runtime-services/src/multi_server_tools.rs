@@ -409,7 +409,7 @@ impl ServerTools {
     }
 
     async fn run(&self, actor: &Actor, args: &Value, key: &str) -> Result<Value, Step> {
-        if actor.record().extra.get("isLead") != Some(&Value::Bool(true)) {
+        if actor.record().is_lead != Some(true) {
             return refuse("Only the lead can use remote server tools");
         }
         let action = args.get("action").and_then(Value::as_str).unwrap_or("list");
@@ -571,7 +571,7 @@ impl ServerTools {
             .store
             .transaction_with(move |tx| -> Result<Result<Value, Value>, Step> {
                 let current = checked_actor(tx, &actor_id)?;
-                if current.extra.get("isLead") != Some(&Value::Bool(true)) || current.epoch != epoch {
+                if current.is_lead != Some(true) || current.epoch != epoch {
                     return refuse("Only the active lead can change project locations");
                 }
                 let parent=task_admission(tx,&key_for_write,&actor_id)?;
@@ -736,7 +736,7 @@ impl ServerTools {
         self.store
             .transaction_with(move |tx| -> Result<(), Step> {
                 let current = checked_actor(tx, &actor_id)?;
-                if current.extra.get("isLead") != Some(&Value::Bool(true)) || current.epoch != epoch
+                if current.is_lead != Some(true) || current.epoch != epoch
                 {
                     return refuse("Only the active lead can use server commands");
                 }
@@ -804,7 +804,7 @@ impl ServerTools {
         let destination = args
             .get("destination")
             .and_then(Value::as_str)
-            .or_else(|| actor.record().extra.get("cwd").and_then(Value::as_str))
+            .or_else(|| actor.record().cwd.as_deref())
             .unwrap_or_default()
             .to_owned();
         let branch_for_checks = branch.clone();
@@ -849,10 +849,7 @@ impl ServerTools {
         let key_owned = key.to_owned();
         let server_owned = server.to_owned();
         let signature_for_claim = signature.clone();
-        let worker_cwd = worker
-            .extra
-            .get("cwd")
-            .and_then(Value::as_str)
+        let worker_cwd = worker.cwd.as_deref()
             .map(str::to_owned);
         let mut known_sorted = known;
         known_sorted.sort();
@@ -1310,7 +1307,7 @@ fn checked_actor(
     let Some(agent) = AgentRepository::get(tx, &AgentId::from(id))? else {
         return refuse("Unknown agent");
     };
-    if studio_runtime_store::truthy(agent.extra.get("deletedAt")) {
+    if agent.is_deleted() {
         return refuse("This agent was deleted");
     }
     if agent.auto_wake != Some(true) {

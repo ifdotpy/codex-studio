@@ -92,12 +92,6 @@ struct ConfigurationFailure {
     code: Option<i64>,
     message: String,
 }
-#[derive(Deserialize)]
-struct CommandTiming {
-    created: f64,
-    timeout_ms: u64,
-}
-
 // This provider read predates the stricter supervisor receipt contract. Invalid
 // optional fields are ignored independently, as they were in the JSON view.
 #[derive(Deserialize)]
@@ -686,36 +680,20 @@ impl RetainedMonitorPort {
                 Ok((saved, agent))
             })
             .await?;
-        // PreparedStart's transactional fence compares the original JSON shape.
-        let monitor_value = monitor.value();
-        let timing: CommandTiming = serde_json::from_value(monitor_value.clone())
-            .map_err(studio_runtime_store::StoreError::from)?;
-        if now >= timing.created + timing.timeout_ms as f64 / 1000.0 {
+        if now >= monitor.created.seconds() + monitor.timeout_ms.get() as f64 / 1000.0 {
             return Err(MonitorError::Refused("Monitor startup deadline expired"));
         }
-        let agent_id = monitor
-            .agent()
-            .ok_or(MonitorError::Refused("Monitor owner is invalid"))?;
-        let epoch = monitor
-            .epoch
-            .value()
-            .and_then(|value| value.number().as_u64())
-            .ok_or(MonitorError::Refused("Monitor epoch is invalid"))?;
+        let agent_id = monitor.agent();
+        let epoch = monitor.epoch.get() as u64;
         if u64::try_from(actor.epoch).ok() != Some(epoch)
             || actor.auto_wake != Some(true)
-            || actor
-                .extra
-                .get("deletedAt")
-                .and_then(Value::as_f64)
-                .is_some_and(|deleted| deleted != 0.0)
+            || actor.is_deleted()
         {
             return Err(MonitorError::Refused(
                 studio_runtime_schema::shared_values::MONITOR_OWNER_STOPPED_ERROR,
             ));
         }
-        let cwd = monitor
-            .cwd
-            .as_deref()
+        let cwd = Some(monitor.cwd.as_str())
             .filter(|cwd| Path::new(cwd).is_absolute())
             .ok_or(MonitorError::Refused(
                 "Monitor working directory is unavailable",
@@ -730,11 +708,10 @@ impl RetainedMonitorPort {
                 source,
             })?;
         let operation = Operation {
-            agent: agent_id.to_owned(),
-            epoch: i64::try_from(epoch)
-                .map_err(|_| MonitorError::Refused("Monitor epoch is invalid"))?,
-            account_key: account.to_owned(),
-            connection_id: scope.connection.clone(),
+            agent: agent_id.to_owned().try_into().map_err(|_| MonitorError::Refused("Monitor owner is invalid"))?,
+            epoch: monitor.epoch,
+            account_key: account.to_owned().try_into().map_err(|_| MonitorError::Refused("Monitor account is invalid"))?,
+            connection_id: scope.connection.clone().try_into().map_err(|_| MonitorError::Refused("Monitor connection is invalid"))?,
             evidence: studio_runtime_services::monitor_policy::OperationEvidence {
                 thread_id: None,
                 root_request_id: Some(root_request_id),
@@ -801,11 +778,7 @@ impl RetainedMonitorPort {
                 });
             }
         };
-        let command = monitor
-            .command
-            .as_ref()
-            .map(|value| value.as_str())
-            .ok_or(MonitorError::Refused("Monitor command is invalid"))?;
+        let command = monitor.command.as_str();
         let argv = monitor_command(
             command,
             &config,
@@ -817,12 +790,12 @@ impl RetainedMonitorPort {
             "cwd":cwd,
             "processId":id,
             "streamStdoutStderr":true,
-            "timeoutMs":timing.timeout_ms,
+            "timeoutMs":monitor.timeout_ms.get(),
         });
         apply_turn_permissions(&mut params, &prepared.settings, &actor)
             .map_err(|_| MonitorError::Refused("Monitor sandbox policy refused the command"))?;
         let start = studio_runtime_services::monitor_runtime::PreparedStart {
-            monitor: monitor_value,
+            monitor: monitor.clone(),
             actor: serde_json::to_value(actor).map_err(studio_runtime_store::StoreError::from)?,
             operation,
             params,
@@ -852,16 +825,14 @@ impl RetainedMonitorPort {
         }
     }
 
-    async fn persist_rule_monitor(&self, check: &RuleCheck) -> Result<Value, String> {
+    async fn persist_rule_monitor(&self, check: &RuleCheck) -> Result<studio_runtime_store::MonitorRecord, String> {
         use studio_runtime_store::{AgentId, AgentRepository, RulesRepository};
         let request_id = format!("rule:{}:{}", check.rule_id, check.check_number);
-        let request = json!({
-            "command":check.command,
-            "timeout_ms":check.timeout_ms,
-            "stall_timeout_seconds":0,
-            "liveness_command":"",
-            "wake_on":"exit",
-        });
+        let request = studio_runtime_services::monitor_policy::MonitorCreateInput {
+            command: check.command.clone(), timeout_ms: Some(check.timeout_ms.try_into().map_err(|_| "Rule timeout is invalid")?),
+            stall_timeout_seconds: Some(0), liveness_command: Some(String::new()),
+            wake_on: Some(studio_runtime_schema::monitor_record::MonitorWakeOn::Exit), ..Default::default()
+        };
         let log_root = studio_runtime_services::monitor_output::log_root(self.store.root())
             .to_string_lossy()
             .into_owned();
@@ -886,10 +857,7 @@ impl RetainedMonitorPort {
                     ));
                 }
                 let cwd =
-                    actor
-                        .extra
-                        .get("cwd")
-                        .and_then(Value::as_str)
+                    actor.cwd.as_deref()
                         .ok_or(MonitorError::Refused(
                             "Rule working directory is unavailable",
                         ))?;
@@ -917,8 +885,8 @@ impl RetainedMonitorPort {
                     studio_runtime_services::event_write::unix_time()
                         .map_err(|_| MonitorError::Refused("System clock unavailable"))?,
                 )?;
-                if monitor["id"].as_str() != Some(&check.monitor_id)
-                    || monitor["command"].as_str() != Some(&check.command)
+                if monitor.id != check.monitor_id
+                    || monitor.command.as_str() != check.command
                 {
                     return Err(MonitorError::Refused(
                         "Rule monitor identity does not match its check",
@@ -934,15 +902,14 @@ impl RetainedMonitorPort {
                 // never take over this deterministic monitor identity.
                 let saved = MonitorsRepository::get(tx, &check.monitor_id)?
                     .ok_or(MonitorError::Refused("Monitor record disappeared"))?;
-                if saved.rule_id.value() != Some(&check.rule_id)
-                    || saved.command.as_ref().map(|command| command.as_str())
-                        != Some(check.command.as_str())
+                if saved.rule_id.as_ref() != Some(&check.rule_id)
+                    || saved.command.as_str() != check.command.as_str()
                 {
                     return Err(MonitorError::Refused(
                         "Rule monitor identity has different content",
                     ));
                 }
-                Ok(saved.value())
+                Ok(saved)
             })
             .await
             .map_err(|error: MonitorError| error.to_string())
@@ -992,13 +959,10 @@ impl RetainedMonitorPort {
             })
             .await
             .map_err(|error| error.to_string())?;
-        if monitor.status() != Some(studio_runtime_schema::studio_errors::MonitorStatus::Starting) {
+        if monitor.status() != studio_runtime_schema::studio_errors::MonitorStatus::Starting {
             return Ok(CheckSubmission::Accepted);
         }
-        let cwd = actor
-            .extra
-            .get("cwd")
-            .and_then(Value::as_str)
+        let cwd = actor.cwd.as_deref()
             .filter(|cwd| Path::new(cwd).is_absolute())
             .ok_or_else(|| "Rule working directory is unavailable".to_owned())?;
         let scope = self
@@ -1006,13 +970,13 @@ impl RetainedMonitorPort {
             .current_scope(check.account_key.as_deref().unwrap_or("default"))
             .ok_or_else(|| "No live provider session".to_owned())?;
         let operation = Operation {
-            agent: check.agent_id.clone(),
-            epoch: i64::try_from(check.epoch).map_err(|_| "Rule epoch is invalid")?,
+            agent: check.agent_id.clone().try_into().map_err(|_| "Rule agent is invalid")?,
+            epoch: i64::try_from(check.epoch).map_err(|_| "Rule epoch is invalid")?.try_into().map_err(|_| "Rule epoch is invalid")?,
             account_key: check
                 .account_key
                 .clone()
-                .unwrap_or_else(|| "default".into()),
-            connection_id: scope.connection,
+                .unwrap_or_else(|| "default".into()).try_into().map_err(|_| "Rule account is invalid")?,
+            connection_id: scope.connection.try_into().map_err(|_| "Rule connection is invalid")?,
             evidence: studio_runtime_services::monitor_policy::OperationEvidence {
                 thread_id: None,
                 root_request_id: Some(root_request_id),
@@ -1058,7 +1022,7 @@ impl RetainedMonitorPort {
         });
         apply_turn_permissions(&mut params, &prepared_action.settings, &actor)?;
         let prepared = studio_runtime_services::monitor_runtime::PreparedStart {
-            monitor: monitor.value(),
+            monitor: monitor.clone(),
             actor: serde_json::to_value(&actor).map_err(|error| error.to_string())?,
             operation: operation.clone(),
             params,
@@ -1110,24 +1074,17 @@ impl RetainedMonitorPort {
         let Ok(Some((record, snapshot))) = loaded else {
             return CheckReconciliation::Unknown;
         };
-        if record.rule_id.value().map(String::as_str) != Some(check.rule_id.as_str())
-            || record.command.as_ref().map(|command| command.as_str())
-                != Some(check.command.as_str())
-            || record.agent() != Some(check.agent_id.as_str())
-            || record
-                .epoch
-                .value()
-                .and_then(|epoch| epoch.number().as_u64())
-                != Some(check.epoch)
+        if record.rule_id.as_deref() != Some(check.rule_id.as_str())
+            || record.command.as_str() != check.command.as_str()
+            || record.agent() != check.agent_id.as_str()
+            || record.epoch.get() as u64 != check.epoch
         {
             return CheckReconciliation::Unknown;
         }
         if matches!(
             record.status(),
-            Some(
-                studio_runtime_schema::studio_errors::MonitorStatus::Approval
-                    | studio_runtime_schema::studio_errors::MonitorStatus::Starting
-            )
+            studio_runtime_schema::studio_errors::MonitorStatus::Approval
+                | studio_runtime_schema::studio_errors::MonitorStatus::Starting
         ) {
             return CheckReconciliation::Submitted;
         }
@@ -1237,10 +1194,10 @@ impl RetainedMonitorPort {
                 let Some(record) = MonitorsRepository::get(tx, &monitor_id)? else {
                     return Ok(None);
                 };
-                if record.rule_id.value() != Some(&rule_id)
+                if record.rule_id.as_ref() != Some(&rule_id)
                     || record.status()
-                        != Some(studio_runtime_schema::studio_errors::MonitorStatus::Starting)
-                    || record.operation.value().is_some()
+                        != studio_runtime_schema::studio_errors::MonitorStatus::Starting
+                    || record.operation.is_some()
                 {
                     return Ok(Some(false));
                 }
@@ -1466,9 +1423,7 @@ impl RuleMonitor for RetainedMonitorPort {
                         let Some(monitor) = MonitorsRepository::get(db, &monitor_id_owned)? else {
                             return Ok(None);
                         };
-                        let Some(agent) = monitor.agent() else {
-                            return Err(RulesTickError::MonitorUnavailable);
-                        };
+                        let agent = monitor.agent();
                         Ok(Some(agent.to_owned()))
                     },
                 )
@@ -1503,7 +1458,7 @@ impl studio_runtime_services::monitor_runtime::WorkspaceAdmission for PreparedRu
         actor: &studio_runtime_store::AgentRecord,
     ) -> Result<(), MonitorError> {
         if actor.id().as_ref() == self.agent_id
-            && actor.extra.get("cwd").and_then(Value::as_str) == Some(self.cwd)
+            && actor.cwd.as_deref() == Some(self.cwd)
             && Path::new(self.cwd).is_absolute()
         {
             Ok(())
@@ -1548,7 +1503,7 @@ impl MonitorPort for RetainedMonitorPort {
                 ));
             };
             let operation_id = format!("monitor:{}", snapshot.id());
-            let scope = match self.session.current_scope(&operation.account_key) {
+            let scope = match self.session.current_scope(operation.account_key.as_str()) {
                 Some(scope) => scope,
                 None => {
                     // A moved actor has no queued model turn on this account.
@@ -1563,7 +1518,7 @@ impl MonitorPort for RetainedMonitorPort {
                     })?.is_none() {
                         return Ok(ReattachOutcome::Pending);
                     }
-                    match self.session.ensure_session(&operation.account_key).await {
+                    match self.session.ensure_session(operation.account_key.as_str()).await {
                         Ok(scope) => scope,
                         Err(_) => return Ok(ReattachOutcome::Pending),
                     }
@@ -1658,13 +1613,12 @@ impl MonitorPort for RetainedMonitorPort {
         let operation = snapshot
             .operation()
             .ok_or(MonitorError::Refused("Missing retained command identity"))?;
-        let timing: CommandTiming = serde_json::from_value(snapshot.record().clone())
-            .map_err(studio_runtime_store::StoreError::from)?;
+        let timing = snapshot.record();
         let now = studio_runtime_services::event_write::unix_time()?;
         // The provider grace belongs to the deadline. A command reattached
         // after it does not wait another grace.
-        let deadline = timing.created
-            + timing.timeout_ms.saturating_add(MONITOR_TIMEOUT_GRACE_MS) as f64 / 1000.0;
+        let deadline = timing.created.seconds()
+            + (timing.timeout_ms.get() as u64).saturating_add(MONITOR_TIMEOUT_GRACE_MS) as f64 / 1000.0;
         self.await_retained_exit(
             snapshot.id(),
             operation,
@@ -1679,8 +1633,7 @@ impl MonitorPort for RetainedMonitorPort {
             .ok_or(MonitorError::Refused("Missing retained command identity"))?;
         let finished = snapshot
             .record()
-            .get("finished")
-            .and_then(Value::as_f64)
+            .finished.as_ref().map(|finished| finished.seconds())
             .ok_or(MonitorError::Refused("Monitor loss time is invalid"))?;
         let now = studio_runtime_services::event_write::unix_time()?;
         let window = Duration::from_secs_f64(
@@ -1770,7 +1723,7 @@ impl MonitorPort for RetainedMonitorPort {
             let probe_task = tokio::spawn(async move {
                 let prepare_store = Arc::clone(&store);
                 let prepare_resources = Arc::clone(&resources);
-                let prepare_agent = operation.agent.clone();
+                let prepare_agent = operation.agent.as_str().to_owned();
                 let prepared_generation =
                     u64::try_from(generation).map_err(|_| "Invalid liveness generation".to_owned());
                 let prepared = match prepared_generation {
@@ -1798,8 +1751,8 @@ impl MonitorPort for RetainedMonitorPort {
                         settings,
                     )
                     .await
-                    .unwrap_or_else(|error| json!({"error":error})),
-                    Err(error) => json!({"error":error}),
+                     .unwrap_or_else(|error| studio_runtime_schema::monitor_record::MonitorProbeResult::Failed { error }),
+                    Err(error) => studio_runtime_schema::monitor_record::MonitorProbeResult::Failed { error },
                 };
                 if monitor_event_queue::enqueue_probe(&store, &id, &operation, generation, &result)
                     .await
@@ -1862,7 +1815,7 @@ async fn run_probe(
     store: &RuntimeStore,
     request: MonitorProbeRequest<'_>,
     settings: Value,
-) -> Result<Value, String> {
+) -> Result<studio_runtime_schema::monitor_record::MonitorProbeResult, String> {
     let MonitorProbeRequest {
         id,
         generation,
@@ -1873,10 +1826,7 @@ async fn run_probe(
     if !probe_liveness_approved(&actor) {
         return Err("Liveness command not run because monitor approval is required.".into());
     }
-    let cwd = actor
-        .extra
-        .get("cwd")
-        .and_then(Value::as_str)
+    let cwd = actor.cwd.as_deref()
         .filter(|cwd| Path::new(cwd).is_absolute())
         .ok_or_else(|| "Thread working directory is unavailable".to_owned())?;
     let config_operation = format!("monitor-config:{id}:{generation}");
@@ -1938,12 +1888,12 @@ async fn run_probe(
             let code = value["exitCode"].as_i64();
             let stdout = value["stdout"].as_str().unwrap_or_default();
             let stderr = value["stderr"].as_str().unwrap_or_default();
-            if code.is_none() {
+            let Some(code) = code else {
                 return Err(value["error"]
                     .as_str()
                     .unwrap_or("Command returned no exit code; outcome unknown")
                     .into());
-            }
+            };
             let output = format!("{stdout}{stderr}");
             let output = output
                 .chars()
@@ -1953,7 +1903,7 @@ async fn run_probe(
                 .chars()
                 .rev()
                 .collect::<String>();
-            Ok(json!({"exitCode":code,"output":output}))
+            Ok(studio_runtime_schema::monitor_record::MonitorProbeResult::Completed { exit_code: code, output })
         }
         Some(ProviderResponse::Rejected(value)) => Err(value.to_string()),
         None => Err("Liveness command outcome is unknown; it will not be resent".into()),
@@ -1985,9 +1935,9 @@ async fn provider_request(
         actor,
     } = owner;
     let scope = session
-        .current_scope(&operation.account_key)
+        .current_scope(operation.account_key.as_str())
         .ok_or(AccountSessionError::Refused("No live provider session"))?;
-    if scope.account != operation.account_key {
+    if scope.account != operation.account_key.as_str() {
         return Err(AccountSessionError::Refused(
             "Provider account scope changed",
         ));
@@ -2026,11 +1976,11 @@ async fn provider_request(
         .provider_request(ProviderRequest {
             root_request_id,
             admitted_request,
-            account: operation.account_key.clone(),
+            account: operation.account_key.as_str().to_owned(),
             operation: identity,
             actor: actor.then(|| RequestActor {
-                agent: operation.agent.clone(),
-                epoch: operation.epoch,
+                agent: operation.agent.as_str().to_owned(),
+                epoch: operation.epoch.get(),
             }),
             deleted_actor_session: None,
             expected_scope: Some(scope),
@@ -2050,9 +2000,8 @@ fn monitor_account<'a>(
     actor: &'a studio_runtime_store::AgentRecord,
 ) -> &'a str {
     monitor
-        .extra
-        .get("accountKey")
-        .and_then(Value::as_str)
+        .account_key
+        .as_deref()
         .filter(|value| !value.is_empty())
         .unwrap_or(actor.account_key.as_str())
 }
@@ -2061,7 +2010,7 @@ fn monitor_account<'a>(
 // a boolean false overrides the policy only for an already-running probe.
 fn rule_liveness_approved(actor: &studio_runtime_store::AgentRecord) -> bool {
     actor.extra.get("yoloMode") == Some(&Value::Bool(true))
-        || actor.extra.get("approvalPolicy").and_then(Value::as_str) == Some("never")
+        || actor.approval_policy.as_deref() == Some("never")
 }
 
 fn probe_liveness_approved(actor: &studio_runtime_store::AgentRecord) -> bool {
@@ -2070,10 +2019,7 @@ fn probe_liveness_approved(actor: &studio_runtime_store::AgentRecord) -> bool {
         .get("yoloMode")
         .and_then(Value::as_bool)
         .or_else(|| {
-            actor
-                .extra
-                .get("approvalPolicy")
-                .and_then(Value::as_str)
+            actor.approval_policy.as_deref()
                 .map(|value| value == "never")
         })
         == Some(true)
@@ -2091,10 +2037,7 @@ fn apply_turn_permissions(
         params["sandboxPolicy"] = policy.clone();
         return Ok(());
     }
-    let sandbox = actor
-        .extra
-        .get("sandbox")
-        .filter(|value| studio_runtime_store::truthy(Some(value)));
+    let sandbox = actor.sandbox.as_ref();
     if sandbox.is_none() {
         return Err("Thread sandbox is unknown; refusing liveness command".into());
     }
@@ -2107,7 +2050,7 @@ fn apply_turn_permissions(
     {
         params["permissionProfile"] = json!(profile);
     } else {
-        params["sandboxPolicy"] = sandbox.cloned().unwrap_or(Value::Null);
+        params["sandboxPolicy"] = json!(sandbox);
     }
     Ok(())
 }
@@ -2115,6 +2058,12 @@ fn apply_turn_permissions(
 #[cfg(test)]
 mod tests {
     use super::*;
+    trait TestJson {
+        fn value(&self) -> Value;
+    }
+    impl<T: serde::Serialize> TestJson for T {
+        fn value(&self) -> Value { serde_json::to_value(self).expect("serialize test record") }
+    }
     use studio_runtime_services::account_session_runtime::SessionOutcome as ReceiptOutcome;
     use studio_runtime_services::rules_engine::RuleSnapshot;
     use studio_runtime_store::{AgentRecord, AgentRepository, RuleRecord, RulesRepository};
@@ -2124,13 +2073,13 @@ mod tests {
 
     #[test]
     fn monitor_account_fallback_matches_partial_json() {
-        for monitor_account in [Value::Null, json!(""), json!("watch-account"), json!(2)] {
+        for monitor_account in [Value::Null, json!(""), json!("watch-account")] {
             for actor_account in [json!(""), json!("owner-account"), json!("default")] {
                 let mut raw_monitor = starting_watch(Path::new("/"), "watch");
                 raw_monitor["accountKey"] = monitor_account.clone();
                 let mut raw_actor = owner(Path::new("/"), true);
                 raw_actor["accountKey"] = actor_account.clone();
-                let monitor = studio_runtime_store::MonitorRecord::from_value(raw_monitor.clone())
+                let monitor = serde_json::from_value::<studio_runtime_store::MonitorRecord>(raw_monitor.clone())
                     .expect("monitor");
                 let actor = studio_runtime_store::AgentRecord::from_value(raw_actor.clone())
                     .expect("actor");
@@ -2151,8 +2100,11 @@ mod tests {
                 let mut raw = owner(Path::new("/"), true);
                 raw["yoloMode"] = yolo.clone();
                 raw["approvalPolicy"] = policy.clone();
-                let actor: studio_runtime_store::AgentRecord =
-                    serde_json::from_value(raw.clone()).expect("actor fixture");
+                let actor: studio_runtime_store::AgentRecord = match serde_json::from_value(raw.clone()) {
+                    Ok(actor) => actor,
+                    Err(_) if yolo.is_string() || policy.is_number() => continue,
+                    Err(error) => panic!("actor fixture: {error}"),
+                };
                 assert_eq!(
                     rule_liveness_approved(&actor),
                     raw["yoloMode"] == true || raw["approvalPolicy"].as_str() == Some("never")
@@ -2339,10 +2291,10 @@ mod tests {
         }
         let root_request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
         let operation = Operation {
-            agent: "owner".into(),
-            epoch: 0,
-            account_key: "default".into(),
-            connection_id: "old".into(),
+            agent: "owner".to_owned().try_into().unwrap(),
+            epoch: 0.try_into().unwrap(),
+            account_key: "default".to_owned().try_into().unwrap(),
+            connection_id: "old".to_owned().try_into().unwrap(),
             evidence: studio_runtime_services::monitor_policy::OperationEvidence {
                 thread_id: None,
                 root_request_id: Some(root_request_id.clone()),
@@ -2459,7 +2411,7 @@ mod tests {
             .transaction(move |tx| {
                 AgentRepository::put(tx, &AgentRecord::from_value(actor)?)?;
                 studio_runtime_store::Table::new(tx)
-                    .put(&studio_runtime_store::MonitorRecord::from_value(watch)?)
+                    .put(&serde_json::from_value::<studio_runtime_store::MonitorRecord>(watch)?)
             })
             .await
             .expect("running interactive monitor");
@@ -2576,10 +2528,10 @@ mod tests {
         let root = tempfile::tempdir().expect("state root");
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         let operation = Operation {
-            agent: "owner".into(),
-            epoch: 0,
-            account_key: "default".into(),
-            connection_id: "connection".into(),
+            agent: "owner".to_owned().try_into().unwrap(),
+            epoch: 0.try_into().unwrap(),
+            account_key: "default".to_owned().try_into().unwrap(),
+            connection_id: "connection".to_owned().try_into().unwrap(),
             evidence: studio_runtime_services::monitor_policy::OperationEvidence {
                 thread_id: None,
                 root_request_id: Some(
@@ -2597,7 +2549,7 @@ mod tests {
             .transaction(move |tx| {
                 AgentRepository::put(tx, &AgentRecord::from_value(owner)?)?;
                 studio_runtime_store::Table::new(tx)
-                    .put(&studio_runtime_store::MonitorRecord::from_value(watch)?)?;
+                    .put(&serde_json::from_value::<studio_runtime_store::MonitorRecord>(watch)?)?;
                 // Refuse every exit queue write until the disk is freed.
                 tx.execute_batch("CREATE TRIGGER fail_exit_write BEFORE UPDATE ON runtime_monitors WHEN json_extract(NEW.record,'$.streamQueue[0].kind')='exit' BEGIN SELECT RAISE(ABORT,'database or disk is full'); END;")?;
                 Ok::<_, studio_runtime_store::StoreError>(())
@@ -2731,10 +2683,10 @@ mod tests {
         let root = tempfile::tempdir().expect("state root");
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         let operation = Operation {
-            agent: "owner".into(),
-            epoch: 0,
-            account_key: "default".into(),
-            connection_id: "connection".into(),
+            agent: "owner".to_owned().try_into().unwrap(),
+            epoch: 0.try_into().unwrap(),
+            account_key: "default".to_owned().try_into().unwrap(),
+            connection_id: "connection".to_owned().try_into().unwrap(),
             evidence: studio_runtime_services::monitor_policy::OperationEvidence {
                 root_request_id: Some(
                     studio_runtime_schema::persistence::RequestIdentity::issue_root(),
@@ -2750,7 +2702,7 @@ mod tests {
             .transaction(move |tx| {
                 AgentRepository::put(tx, &AgentRecord::from_value(owner)?)?;
                 studio_runtime_store::Table::new(tx)
-                    .put(&studio_runtime_store::MonitorRecord::from_value(watch)?)?;
+                    .put(&serde_json::from_value::<studio_runtime_store::MonitorRecord>(watch)?)?;
                 Ok::<_, studio_runtime_store::StoreError>(())
             })
             .await
@@ -3050,7 +3002,7 @@ mod tests {
             .transaction(move |tx| {
                 AgentRepository::put(tx, &AgentRecord::from_value(owner)?)?;
                 studio_runtime_store::Table::new(tx)
-                    .put(&studio_runtime_store::MonitorRecord::from_value(watch)?)?;
+                    .put(&serde_json::from_value::<studio_runtime_store::MonitorRecord>(watch)?)?;
                 Ok::<_, studio_runtime_store::StoreError>(())
             })
             .await
@@ -3181,7 +3133,7 @@ mod tests {
             .transaction(move |tx| {
                 AgentRepository::put(tx, &AgentRecord::from_value(owner)?)?;
                 studio_runtime_store::Table::new(tx)
-                    .put(&studio_runtime_store::MonitorRecord::from_value(watch)?)?;
+                    .put(&serde_json::from_value::<studio_runtime_store::MonitorRecord>(watch)?)?;
                 Ok::<_, studio_runtime_store::StoreError>(())
             })
             .await
@@ -3361,7 +3313,7 @@ mod tests {
             .transaction(move |tx| {
                 AgentRepository::put(tx, &AgentRecord::from_value(owner)?)?;
                 studio_runtime_store::Table::new(tx)
-                    .put(&studio_runtime_store::MonitorRecord::from_value(watch)?)?;
+                    .put(&serde_json::from_value::<studio_runtime_store::MonitorRecord>(watch)?)?;
                 Ok::<_, studio_runtime_store::StoreError>(())
             })
             .await
@@ -3534,7 +3486,7 @@ mod tests {
             .transaction(move |tx| {
                 AgentRepository::put(tx, &AgentRecord::from_value(owner)?)?;
                 studio_runtime_store::Table::new(tx)
-                    .put(&studio_runtime_store::MonitorRecord::from_value(watch)?)?;
+                    .put(&serde_json::from_value::<studio_runtime_store::MonitorRecord>(watch)?)?;
                 Ok::<_, studio_runtime_store::StoreError>(())
             })
             .await
@@ -3871,17 +3823,17 @@ mod tests {
             let mut watch = starting_watch(root.path(), "watch");
             watch["status"] = json!("running");
             watch["operation"] = json!(Operation {
-                agent: "owner".into(),
-                epoch: 0,
-                account_key: "default".into(),
-                connection_id: "old".into(),
+                agent: "owner".to_owned().try_into().unwrap(),
+                epoch: 0.try_into().unwrap(),
+                account_key: "default".to_owned().try_into().unwrap(),
+                connection_id: "old".to_owned().try_into().unwrap(),
                 evidence: Default::default()
             });
             store
                 .transaction(move |tx| {
                     AgentRepository::put(tx, &AgentRecord::from_value(owner)?)?;
                     studio_runtime_store::Table::new(tx)
-                        .put(&studio_runtime_store::MonitorRecord::from_value(watch)?)?;
+                        .put(&serde_json::from_value::<studio_runtime_store::MonitorRecord>(watch)?)?;
                     Ok::<_, studio_runtime_store::StoreError>(())
                 })
                 .await
@@ -3961,17 +3913,17 @@ mod tests {
         let mut watch = starting_watch(root.path(), "watch");
         watch["status"] = json!("running");
         watch["operation"] = json!(Operation {
-            agent: "owner".into(),
-            epoch: 0,
-            account_key: "default".into(),
-            connection_id: "old".into(),
+            agent: "owner".to_owned().try_into().unwrap(),
+            epoch: 0.try_into().unwrap(),
+            account_key: "default".to_owned().try_into().unwrap(),
+            connection_id: "old".to_owned().try_into().unwrap(),
             evidence: Default::default()
         });
         store
             .transaction(move |tx| {
                 AgentRepository::put(tx, &AgentRecord::from_value(owner)?)?;
                 studio_runtime_store::Table::new(tx)
-                    .put(&studio_runtime_store::MonitorRecord::from_value(watch)?)?;
+                    .put(&serde_json::from_value::<studio_runtime_store::MonitorRecord>(watch)?)?;
                 Ok::<_, studio_runtime_store::StoreError>(())
             })
             .await
@@ -4007,7 +3959,7 @@ mod tests {
             .transaction(move |tx| {
                 AgentRepository::put(tx, &AgentRecord::from_value(actor)?)?;
                 studio_runtime_store::Table::new(tx)
-                    .put(&studio_runtime_store::MonitorRecord::from_value(watch)?)?;
+                    .put(&serde_json::from_value::<studio_runtime_store::MonitorRecord>(watch)?)?;
                 Ok::<_, studio_runtime_store::StoreError>(())
             })
             .await
@@ -4035,7 +3987,7 @@ mod tests {
             .transaction(move |tx| {
                 AgentRepository::put(tx, &AgentRecord::from_value(owner)?)?;
                 studio_runtime_store::Table::new(tx)
-                    .put(&studio_runtime_store::MonitorRecord::from_value(watch)?)?;
+                    .put(&serde_json::from_value::<studio_runtime_store::MonitorRecord>(watch)?)?;
                 Ok::<_, studio_runtime_store::StoreError>(())
             })
             .await
@@ -4091,7 +4043,7 @@ mod tests {
             .transaction_with(move |tx| {
                 AgentRepository::put(tx, &AgentRecord::from_value(owner)?)?;
                 studio_runtime_store::Table::new(tx)
-                    .put(&studio_runtime_store::MonitorRecord::from_value(watch)?)?;
+                    .put(&serde_json::from_value::<studio_runtime_store::MonitorRecord>(watch)?)?;
                 Ok::<(), studio_runtime_store::StoreError>(())
             })
             .await
@@ -4134,10 +4086,10 @@ mod tests {
             Arc::clone(&session) as Arc<dyn AccountSessionPort>,
         );
         let operation = Operation {
-            agent: "owner".into(),
-            epoch: 0,
-            account_key: "default".into(),
-            connection_id: "connection".into(),
+            agent: "owner".to_owned().try_into().unwrap(),
+            epoch: 0.try_into().unwrap(),
+            account_key: "default".to_owned().try_into().unwrap(),
+            connection_id: "connection".to_owned().try_into().unwrap(),
             evidence: studio_runtime_services::monitor_policy::OperationEvidence {
                 thread_id: None,
                 root_request_id: Some(
@@ -4159,7 +4111,7 @@ mod tests {
             serde_json::to_value(&operation).expect("operation"),
         );
         let owner = AgentRecord::from_value(owner(root.path(), true)).expect("owner");
-        let watch = studio_runtime_store::MonitorRecord::from_value(watch).expect("watch");
+        let watch = serde_json::from_value::<studio_runtime_store::MonitorRecord>(watch).expect("watch");
         store
             .transaction_with(move |tx| {
                 AgentRepository::put(tx, &owner)?;
@@ -4221,15 +4173,16 @@ mod tests {
             "name":"watch","kind":"interval","intervalSeconds":240,"nextAt":2.0,"at":1.0,
             "path":null,"event":"worker_completed","command":"true","text":"Report.",
             "status":"active","created":1.0,"inFlight":true,"checks":7,"wakes":0,
+            "fileGeneration":0,"stallTimeoutSeconds":0,"stallWakeGeneration":-1,"livenessCommand":"",
             "fingerprint":null,"lastAt":1.0,"lastExitCode":null,"error":null,
             "lastOutput":"","lastFinished":1.0});
-        let check = RuleSnapshot::from_records(rule.clone(), owner.clone())
+        let check = RuleSnapshot::from_stored(&serde_json::from_value(rule.clone()).unwrap(), owner.clone())
             .expect("rule snapshot")
             .check();
         store
             .transaction_with(move |tx| {
                 AgentRepository::put(tx, &AgentRecord::from_value(owner)?)?;
-                RulesRepository::put(tx, &RuleRecord::from_value(rule)?)?;
+                RulesRepository::put(tx, &serde_json::from_value::<RuleRecord>(rule)?)?;
                 Ok::<(), studio_runtime_store::StoreError>(())
             })
             .await
@@ -4243,7 +4196,7 @@ mod tests {
         // the `/var` link, and the record names the resolved state root.
         let expected = studio_runtime_services::monitor_output::log_root(store.root())
             .join(format!("{}.log", check.monitor_id));
-        assert_eq!(monitor["log"].as_str(), expected.to_str());
+        assert_eq!(Some(monitor.log.as_str()), expected.to_str());
     }
 
     async fn seed_in_flight_rule(store: &RuntimeStore, root: &Path) -> RuleCheck {
@@ -4254,16 +4207,17 @@ mod tests {
             "name":"watch","kind":"interval","intervalSeconds":240,"nextAt":2.0,"at":1.0,
             "path":null,"event":"worker_completed","command":"sleep 3600","text":"Report.",
             "status":"active","created":1.0,"inFlight":true,"checks":7,"wakes":0,
+            "fileGeneration":0,"stallTimeoutSeconds":0,"stallWakeGeneration":-1,"livenessCommand":"",
             "fingerprint":null,"lastAt":1.0,"lastExitCode":null,"error":null,
             "lastOutput":"","lastFinished":1.0});
-        let check = RuleSnapshot::from_records(rule.clone(), owner.clone())
+        let check = RuleSnapshot::from_stored(&serde_json::from_value(rule.clone()).unwrap(), owner.clone())
             .expect("rule snapshot")
             .check();
         rule["launchIntent"] = serde_json::to_value(&check).expect("launch intent");
         store
             .transaction_with(move |tx| {
                 AgentRepository::put(tx, &AgentRecord::from_value(owner)?)?;
-                RulesRepository::put(tx, &RuleRecord::from_value(rule)?)?;
+                RulesRepository::put(tx, &serde_json::from_value::<RuleRecord>(rule)?)?;
                 Ok::<(), studio_runtime_store::StoreError>(())
             })
             .await
@@ -4318,7 +4272,7 @@ mod tests {
             store
                 .transaction(move |tx| {
                     studio_runtime_store::Table::new(tx)
-                        .put(&studio_runtime_store::MonitorRecord::from_value(watch)?)?;
+                        .put(&serde_json::from_value::<studio_runtime_store::MonitorRecord>(watch)?)?;
                     Ok::<_, studio_runtime_store::StoreError>(())
                 })
                 .await

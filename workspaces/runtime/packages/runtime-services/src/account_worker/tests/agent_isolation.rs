@@ -811,7 +811,7 @@ async fn a_full_monitor_output_queue_holds_the_journal_until_it_drains() {
                     let queue = (0..126)
                         .map(|index| {
                             json!({
-                                "cursor": format!("seed:{index}"), "offset": index,
+                                "kind":"output", "cursor": format!("seed:{index}"), "offset": index,
                                 "byteLength": 1, "deltaBase64": "eA==", "stream": "stdout",
                                 "operation": operation
                             })
@@ -819,11 +819,11 @@ async fn a_full_monitor_output_queue_holds_the_journal_until_it_drains() {
                         .collect::<Vec<_>>();
                     tx.execute(
                         "INSERT INTO runtime_monitors(id,record) VALUES('monitor-full',?1)",
-                        [json!({
+                        [crate::monitor_policy::complete_test_monitor(json!({
                             "id": "monitor-full", "agent": agent, "epoch": epoch,
                             "status": "running", "bytes": 0, "created": 1.0,
                             "operation": operation, "streamQueue": queue
-                        })
+                        }))
                         .to_string()],
                     )?;
                     Ok::<_, StoreError>(())
@@ -913,11 +913,11 @@ async fn a_refused_monitor_output_delta_holds_only_the_monitor_agent() {
                     });
                     tx.execute(
                         "INSERT INTO runtime_monitors(id,record) VALUES('monitor-a',?1)",
-                        [json!({
+                        [crate::monitor_policy::complete_test_monitor(json!({
                             "id": "monitor-a", "agent": owner, "epoch": epoch,
                             "status": "running", "bytes": 0, "created": 1.0,
                             "operation": operation
-                        })
+                        }))
                         .to_string()],
                     )?;
                     Ok::<_, StoreError>(())

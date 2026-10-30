@@ -2,7 +2,7 @@
 use crate::queue_command::Field;
 use crate::{
     json_object::JsonObject, provider_kind::ProviderKind, recovery_record::SafeInteger,
-    shared_values::MAX_SAFE_INTEGER, stored_record::StoredJsonInteger,
+    shared_values::MAX_SAFE_INTEGER,
 };
 use serde::{Deserialize, Deserializer, Serialize, de::Error};
 use serde_json::{Number, Value};
@@ -46,23 +46,6 @@ impl<'de, T: Deserialize<'de>, const MAX: usize> Deserialize<'de> for BoundedVec
         }
     }
 }
-/// A finite JSON number without schema bounds.
-pub struct FiniteNumber(f64);
-impl FiniteNumber {
-    pub fn get(&self) -> f64 {
-        self.0
-    }
-}
-impl<'de> Deserialize<'de> for FiniteNumber {
-    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let value = f64::deserialize(d)?;
-        if value.is_finite() {
-            Ok(Self(value))
-        } else {
-            Err(D::Error::custom("expected finite number"))
-        }
-    }
-}
 /// Nonnegative time, bounded to the shared safe integer maximum.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(transparent)]
@@ -85,25 +68,6 @@ impl<'de> Deserialize<'de> for BoundedNumber {
         }
     }
 }
-/// Creation timestamp must be positive.
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[serde(transparent)]
-pub struct PositiveNumber(Number);
-impl PositiveNumber {
-    pub fn get(&self) -> f64 {
-        self.0.as_f64().expect("positive JSON number")
-    }
-}
-impl<'de> Deserialize<'de> for PositiveNumber {
-    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let n = BoundedNumber::deserialize(d)?;
-        if n.get() > 0.0 {
-            Ok(Self(n.0))
-        } else {
-            Err(D::Error::custom("number must be positive"))
-        }
-    }
-}
 fn optional_nonnull<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
     d: D,
 ) -> Result<Option<T>, D::Error> {
@@ -114,33 +78,24 @@ fn optional_string_enum<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
 ) -> Result<Option<T>, D::Error> {
     crate::string_enum::deserialize(d).map(Some)
 }
-fn required_nullable<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
-    d: D,
-) -> Result<Option<T>, D::Error> {
-    Option::<T>::deserialize(d)
-}
-
 pub type ContinuationSnapshotRecord = JsonObject<ContinuationSnapshot>;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ContinuationRecord {
     Usage(UsageContinuation),
     Capacity(CapacityContinuation),
-    Auth(AuthWaitReceipt),
 }
 impl ContinuationRecord {
     pub fn extra_mut(&mut self) -> &mut BTreeMap<String, Value> {
         match self {
             Self::Usage(record) => &mut record.extra,
             Self::Capacity(record) => &mut record.extra,
-            Self::Auth(record) => &mut record.extra,
         }
     }
     pub fn id(&self) -> &str {
         match self {
             Self::Usage(record) => record.id.as_str(),
             Self::Capacity(record) => record.id.as_str(),
-            Self::Auth(record) => record.id.as_str(),
         }
     }
 }
@@ -153,32 +108,7 @@ pub struct ContinuationSnapshot {
     pub ancestors: Option<BoundedVec<ContinuationAgent, 64>>,
     #[serde(default, deserialize_with = "optional_nonnull")]
     pub claims: Option<BoundedVec<BoundedString<1, 4096>, 4096>>,
-    pub limits: Option<JsonObject<ContinuationLimitsObservation>>,
     pub record: Option<ContinuationRecord>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AuthWaitReceipt {
-    pub account_key: BoundedString<1, 4096>,
-    pub account_pin: BTreeMap<String, Value>,
-    pub agent: BoundedString<1, 4096>,
-    pub attempt: ContinuationAttempt,
-    #[serde(deserialize_with = "crate::string_enum::deserialize")]
-    pub cause: AuthWaitReceiptCause,
-    pub created_at: PositiveNumber,
-    #[serde(deserialize_with = "required_nullable")]
-    pub due_at: Option<BoundedNumber>,
-    #[serde(deserialize_with = "crate::string_enum::deserialize")]
-    pub error: AuthWaitReceiptError,
-    pub id: BoundedString<1, 4096>,
-    pub inputs: BoundedVec<BTreeMap<String, Value>, 64>,
-    pub source: BTreeMap<String, Value>,
-    #[serde(deserialize_with = "crate::string_enum::deserialize")]
-    pub status: AuthWaitReceiptStatus,
-    pub task_claims: BoundedVec<BoundedString<1, 4096>, 4096>,
-    #[serde(flatten)]
-    pub extra: BTreeMap<String, Value>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -242,8 +172,6 @@ pub struct ContinuationAgent {
     pub id: BoundedString<1, 4096>,
     #[serde(default, deserialize_with = "optional_nonnull")]
     pub in_flight: Option<bool>,
-    #[serde(default, deserialize_with = "optional_nonnull")]
-    pub is_lead: Option<bool>,
     pub last_completed_turn: Option<BoundedString<1, 4096>>,
     pub last_completed_turn_status: Option<String>,
     #[serde(default, deserialize_with = "optional_nonnull")]
@@ -252,7 +180,6 @@ pub struct ContinuationAgent {
     #[serde(deserialize_with = "crate::string_enum::deserialize")]
     pub provider: ProviderKind,
     pub root_id: BoundedString<1, 4096>,
-    pub start_attempt: Option<ContinuationAttempt>,
     pub status: BoundedString<1, 4096>,
     pub thread_id: Option<BoundedString<1, 4096>>,
     pub turn_epoch: Option<SafeInteger>,
@@ -260,114 +187,6 @@ pub struct ContinuationAgent {
     pub usage_resume: Option<UsageContinuation>,
     #[serde(default, deserialize_with = "optional_nonnull")]
     pub usage_resume_enabled: Option<bool>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ContinuationAttempt {
-    #[serde(default, skip_serializing_if = "Field::is_missing")]
-    pub action: Field<String>,
-    #[serde(
-        default,
-        deserialize_with = "optional_nonnull",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub active_at_reservation: Option<bool>,
-    #[serde(default, skip_serializing_if = "Field::is_missing")]
-    pub capacity_retry_id: Field<BoundedString<1, 4096>>,
-    pub epoch: SafeInteger,
-    #[serde(
-        default,
-        deserialize_with = "optional_nonnull",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub events: Option<BoundedVec<BoundedString<1, 4096>, 4096>>,
-    pub id: BoundedString<1, 4096>,
-    #[serde(default, skip_serializing_if = "Field::is_missing")]
-    pub observed_turn_id: Field<BoundedString<1, 4096>>,
-    pub submitted: bool,
-    #[serde(default, skip_serializing_if = "Field::is_missing")]
-    pub turn_id: Field<BoundedString<1, 4096>>,
-    #[serde(flatten)]
-    pub extra: BTreeMap<String, Value>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ContinuationLimitsObservation {
-    #[serde(rename = "_syncEntities")]
-    pub sync_entities: Option<Vec<JsonObject<SyncEntity>>>,
-    #[serde(rename = "_syncEntitiesAfter")]
-    sync_entities_after: Option<StoredJsonInteger>,
-    pub account_key: String,
-    pub at: Option<FiniteNumber>,
-    pub checked_at: Option<FiniteNumber>,
-    pub data: Option<UsageLimitsData>,
-    pub error: Option<String>,
-    pub processed_at: Option<FiniteNumber>,
-    pub read_at: Option<FiniteNumber>,
-    #[serde(default, deserialize_with = "optional_nonnull")]
-    pub stale: Option<bool>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RateLimitBucket {
-    pub individual_limit: Option<JsonObject<RateLimitIndividualLimit>>,
-    pub limit_id: Option<String>,
-    pub limit_name: Option<String>,
-    pub primary: Option<JsonObject<RateLimitWindow>>,
-    pub rate_limit_reached_type: Option<String>,
-    pub secondary: Option<JsonObject<RateLimitWindow>>,
-    pub spend_control_reached: Option<bool>,
-    #[serde(flatten)]
-    pub extra: BTreeMap<String, Value>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RateLimitIndividualLimit {
-    pub remaining_percent: Option<FiniteNumber>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RateLimitResetCredit {
-    pub expires_at: Option<FiniteNumber>,
-    pub granted_at: Option<FiniteNumber>,
-    pub id: String,
-    pub reset_type: String,
-    pub status: String,
-    #[serde(flatten)]
-    pub extra: BTreeMap<String, Value>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RateLimitResetCredits {
-    available_count: Option<StoredJsonInteger>,
-    #[serde(default, deserialize_with = "optional_nonnull")]
-    pub credits: Option<Vec<RateLimitResetCredit>>,
-    #[serde(flatten)]
-    pub extra: BTreeMap<String, Value>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RateLimitWindow {
-    pub resets_at: Option<FiniteNumber>,
-    pub used_percent: Option<FiniteNumber>,
-    pub window_duration_mins: Option<FiniteNumber>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SyncEntity {
-    #[serde(rename = "_deleted")]
-    pub deleted: bool,
-    pub id: String,
-    pub payload: String,
-    seq: StoredJsonInteger,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -413,43 +232,6 @@ pub struct UsageContinuation {
     pub turn_id: BoundedString<1, 4096>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UsageLimitsData {
-    pub account_id: Option<String>,
-    pub ordinary_usage_allowed: Option<bool>,
-    pub rate_limit_reset_credits: Option<RateLimitResetCredits>,
-    pub rate_limits: Option<RateLimitBucket>,
-    pub rate_limits_by_limit_id: Option<BTreeMap<String, RateLimitBucket>>,
-    pub signed_in: Option<bool>,
-    pub source: Option<String>,
-    pub status: Option<String>,
-    #[serde(flatten)]
-    pub extra: BTreeMap<String, Value>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum AuthWaitReceiptCause {
-    #[serde(rename = "claude_auth_probe")]
-    ClaudeAuthProbe,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum AuthWaitReceiptError {
-    #[serde(rename = "Cannot read Claude Code sign-in status")]
-    CannotReadClaudeCodeSignInStatus,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum AuthWaitReceiptStatus {
-    #[serde(rename = "auth_probe_wait")]
-    AuthProbeWait,
-    #[serde(rename = "completed")]
-    Completed,
-    #[serde(rename = "cancelled")]
-    Cancelled,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -510,24 +292,6 @@ pub enum UsageContinuationStatus {
     Unknown,
 }
 
-impl ContinuationLimitsObservation {
-    pub fn sync_entities_after(&self) -> Option<&serde_json::Number> {
-        self.sync_entities_after
-            .as_ref()
-            .map(StoredJsonInteger::number)
-    }
-}
-impl RateLimitResetCredits {
-    pub fn available_count(&self) -> Option<&serde_json::Number> {
-        self.available_count.as_ref().map(StoredJsonInteger::number)
-    }
-}
-impl SyncEntity {
-    pub fn seq(&self) -> &serde_json::Number {
-        self.seq.number()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -542,9 +306,6 @@ mod tests {
         let c = CapacityContinuation::deserialize(capacity.clone()).unwrap();
         assert_eq!(json!(u), usage);
         assert_eq!(json!(c), capacity);
-        let auth = json!({"id":"a","agent":"a","accountKey":"x","status":"auth_probe_wait","cause":"claude_auth_probe","error":"Cannot read Claude Code sign-in status","createdAt":1,"dueAt":null,"source":{},"attempt":{"id":"x","epoch":1.0,"submitted":false,"action":null},"inputs":[],"accountPin":{},"taskClaims":[],"future":true});
-        let a = AuthWaitReceipt::deserialize(auth.clone()).unwrap();
-        assert_eq!(json!(a), auth);
     }
 
     #[test]
@@ -552,7 +313,7 @@ mod tests {
         let text = include_str!("schemas/persisted-continuation-snapshot.schema.json");
         assert_eq!(
             data_encoding::HEXLOWER.encode(&Sha256::digest(text.as_bytes())),
-            "a7017d756fa23351e3bc19f9a411158bee12d199f538e0a717860ab4d5e93923",
+            "02286c794c76f2018c329f6dcc0a49c3509493d7e2f6582d624187efceb723f6",
             "schema changed: review continuation_snapshot typed owner"
         );
         let schema: Value = serde_json::from_str(text).expect("schema");
@@ -583,11 +344,6 @@ mod tests {
                 |v| serde_json::from_value::<ContinuationSnapshotRecord>(v).is_ok(),
             ),
             (
-                "AuthWaitReceipt",
-                json!({"id":"x","agent":"x","accountKey":"x","status":"auth_probe_wait","cause":"claude_auth_probe","error":"Cannot read Claude Code sign-in status","createdAt":1,"dueAt":0,"source":{},"attempt":{"id":"x","epoch":0,"submitted":false},"inputs":[],"accountPin":{},"taskClaims":[]}),
-                |v| serde_json::from_value::<AuthWaitReceipt>(v).is_ok(),
-            ),
-            (
                 "CapacityContinuation",
                 json!({"id":"x","accountKey":"x","threadId":"x","epoch":0,"turnId":"x","status":"scheduled","cause":"serverOverloaded","cwd":"","settings":{},"attempt":0,"maxAttempts":0}),
                 |v| serde_json::from_value::<CapacityContinuation>(v).is_ok(),
@@ -598,45 +354,10 @@ mod tests {
                 |v| serde_json::from_value::<ContinuationAgent>(v).is_ok(),
             ),
             (
-                "ContinuationAttempt",
-                json!({"id":"x","epoch":0,"submitted":false}),
-                |v| serde_json::from_value::<ContinuationAttempt>(v).is_ok(),
-            ),
-            (
-                "ContinuationLimitsObservation",
-                json!({"accountKey":""}),
-                |v| serde_json::from_value::<JsonObject<ContinuationLimitsObservation>>(v).is_ok(),
-            ),
-            ("RateLimitBucket", json!({}), |v| {
-                serde_json::from_value::<RateLimitBucket>(v).is_ok()
-            }),
-            ("RateLimitIndividualLimit", json!({}), |v| {
-                serde_json::from_value::<JsonObject<RateLimitIndividualLimit>>(v).is_ok()
-            }),
-            (
-                "RateLimitResetCredit",
-                json!({"id":"","status":"","resetType":""}),
-                |v| serde_json::from_value::<RateLimitResetCredit>(v).is_ok(),
-            ),
-            ("RateLimitResetCredits", json!({}), |v| {
-                serde_json::from_value::<RateLimitResetCredits>(v).is_ok()
-            }),
-            ("RateLimitWindow", json!({}), |v| {
-                serde_json::from_value::<JsonObject<RateLimitWindow>>(v).is_ok()
-            }),
-            (
-                "SyncEntity",
-                json!({"id":"","seq":0,"payload":"","_deleted":false}),
-                |v| serde_json::from_value::<JsonObject<SyncEntity>>(v).is_ok(),
-            ),
-            (
                 "UsageContinuation",
                 json!({"id":"x","accountKey":"x","threadId":"x","epoch":0,"turnId":"x","status":"scheduled","failedAt":0}),
                 |v| serde_json::from_value::<UsageContinuation>(v).is_ok(),
             ),
-            ("UsageLimitsData", json!({}), |v| {
-                serde_json::from_value::<UsageLimitsData>(v).is_ok()
-            }),
         ];
         let mut enum_objects_accepted = Vec::new();
         for (name, base, parse) in cases {

@@ -21,7 +21,6 @@ pub mod projections;
 pub use studio_client_domain::protocol;
 #[cfg(target_os = "macos")]
 mod quick_look;
-pub mod rich_document;
 mod server_key_state;
 pub mod server_keys;
 pub mod server_transport;

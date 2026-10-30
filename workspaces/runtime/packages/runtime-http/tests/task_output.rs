@@ -98,7 +98,9 @@ async fn monitor_restart_http_preserves_identity_and_waits_for_old_exit() {
     case["actor"]["yoloMode"] = json!(true);
     case["before"]["outputPatterns"] = json!(["marker"]);
     let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
-    crate::monitor_fixtures::seed(&store, &case).await;
+    let mut monitor = crate::monitor_fixtures::monitor(root.path());
+    monitor.output_patterns = Some(vec!["marker".into()]);
+    crate::monitor_fixtures::seed(&store, &case, monitor).await;
     let port = Arc::new(crate::monitor_runtime_support::Port::default());
     let state = HttpState::new(
         "fixture-token".into(),
@@ -161,7 +163,7 @@ async fn monitor_restart_http_preserves_identity_and_waits_for_old_exit() {
         studio_runtime_store::MonitorsRepository::get(&db, case["before"]["id"].as_str().unwrap())
             .unwrap()
             .unwrap();
-    assert_eq!(old.value()["cancelRequested"], true);
+    assert_eq!(old.cancel_requested, Some(true));
     runtime.tick(2001.0).await.unwrap();
     assert!(port.starts.lock().unwrap().is_empty());
     port.deliveries.lock().unwrap().push_back(Delivery {

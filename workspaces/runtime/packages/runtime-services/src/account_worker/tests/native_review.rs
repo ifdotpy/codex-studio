@@ -25,7 +25,7 @@ async fn queue_review_child(state: &State) {
                     tx,
                     &AgentRecord::from_value(lead).map_err(StoreError::from)?,
                 )?;
-                row.extra.insert("parentId".into(), json!("review-lead"));
+                row.parent_id = Some(("review-lead").to_string());
                 row.in_flight = Some(false);
 row.auto_wake = Some(true);
 row.thread_id = None;

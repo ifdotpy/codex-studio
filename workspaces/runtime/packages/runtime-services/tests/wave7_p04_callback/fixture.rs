@@ -131,19 +131,31 @@ pub async fn pending(store: &Arc<RuntimeStore>, context: &CallbackContext) -> (S
     (id, frame)
 }
 pub fn actor(store: &RuntimeStore, context: &CallbackContext) -> Value {
-    studio_runtime_store::agent_volatile::merged_record(
-        &store.test_reader().unwrap(),
-        &context.agent,
-    )
-    .unwrap()
-    .unwrap()
+    let mut record = studio_runtime_store::agent_volatile::merged_record(
+        &store.test_reader().unwrap(), &context.agent,
+    ).unwrap().unwrap();
+    normalize_agent_nulls(&mut record);
+    record
+}
+pub fn normalized_actor(value: &Value) -> Value {
+    let mut record = value.clone();
+    for field in studio_runtime_store::agent_volatile::AGENT_VOLATILE_FIELDS {
+        let default = template()["agents"][0].get(field).cloned().unwrap_or(Value::Null);
+        if !default.is_null() { record.as_object_mut().unwrap().entry(field).or_insert(default); }
+    }
+    normalize_agent_nulls(&mut record);
+    record
 }
 pub async fn put_actor(store: &RuntimeStore, value: &Value) {
     let id = value["id"].as_str().unwrap().to_owned();
     let record = value.to_string();
     store
         .transaction_with::<_, studio_runtime_store::StoreError>(move |tx| {
-            let record: Value = serde_json::from_str(&record).expect("actor JSON");
+            let mut record: Value = serde_json::from_str(&record).expect("actor JSON");
+            let previous = studio_runtime_store::agent_volatile::merged_record(tx, &id)?.expect("actor exists");
+            for field in studio_runtime_store::agent_volatile::AGENT_VOLATILE_FIELDS {
+                record.as_object_mut().unwrap().entry(field).or_insert_with(|| previous.get(field).cloned().unwrap_or(Value::Null));
+            }
             studio_runtime_store::agent_volatile::update(tx, &id, &record)?;
             Ok(())
         })
@@ -254,6 +266,15 @@ pub fn logical_changes(before: &Value, after: &Value) -> Value {
 pub fn assert_writes(before: &Value, store: &RuntimeStore, expected: &Value) {
     let mut actual = logical_changes(before, &logical_snapshot(store));
     let mut expected = expected.clone();
+    if let Some(change) = expected.get_mut("runtime_agents") {
+        for kind in ["removed", "added"] {
+            for row in change[kind].as_array_mut().unwrap() {
+                row[1] = normalized_actor(&row[1]);
+            }
+        }
+    }
+    normalize_agent_nulls(&mut expected);
+    normalize_agent_nulls(&mut actual);
     crate::removed_budget_fields::strip(&mut actual);
     crate::removed_budget_fields::strip(&mut expected);
     for root in [&mut actual, &mut expected] {
@@ -425,4 +446,19 @@ fn insert_row(
         rusqlite::params_from_iter(values),
     )?;
     Ok(())
+}
+
+pub(crate) fn normalize_agent_nulls(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(fields) => {
+            if fields.contains_key("rootId") && fields.contains_key("epoch") {
+                for field in studio_runtime_store::agent_volatile::AGENT_VOLATILE_FIELDS.into_iter().chain(["parentId", "threadId", "turnId", "deletedAt"]) {
+                    if fields.get(field).is_some_and(serde_json::Value::is_null) { fields.remove(field); }
+                }
+            }
+            fields.values_mut().for_each(normalize_agent_nulls);
+        }
+        serde_json::Value::Array(values) => values.iter_mut().for_each(normalize_agent_nulls),
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) | serde_json::Value::String(_) => {}
+    }
 }

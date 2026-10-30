@@ -142,19 +142,8 @@ fn apply(db: &Connection, request: &Request) -> Result<Value, String> {
                 }
                 return serde_json::to_value(existing).map_err(|e| e.to_string());
             }
-            let uuid = crate::platform::dispatch(&Request {
-                id: "action-identity".into(),
-                method: "system.uuid".into(),
-                params: Value::Null,
-            });
-            let id = uuid
-                .result
-                .ok_or("The request identity could not be created.")?;
-            let id = id
-                .as_str()
-                .filter(|s| !s.is_empty() && s.len() <= 128)
-                .ok_or("The request identity could not be created.")?
-                .to_owned();
+            let id = crate::platform::uuid()
+                .map_err(|_| "The request identity could not be created.")?;
             let mut extensions = Map::new();
             if let Some(thread) = p["threadId"].as_str().filter(|s| !s.is_empty()) {
                 extensions.insert("threadId".into(), json!(thread));
