@@ -1756,15 +1756,13 @@ fn work_receipt_in(
     let Some(saved) = saved else {
         return Ok(None);
     };
-    let value = saved.reply.into_value();
-    let Some(id) = value.get("id").and_then(Value::as_str) else {
-        return Err(invalid("runtime_work", request_id).into());
-    };
-    if value.get("rootId").and_then(Value::as_str) != Some(agent.root_id.0.as_str()) {
+    let reply = saved.reply;
+    if reply.get("rootId").and_then(Value::as_str) != Some(agent.root_id.0.as_str()) {
         return Err(Error::InvalidRequest("Invalid request").into());
     }
-    WorkItemsRepository::validate_work(connection, id, &value).map_err(WorkWriteError::Store)?;
-    Ok(Some(value))
+    WorkItemsRepository::validate_work(connection, reply.id().as_ref(), reply.value())
+        .map_err(WorkWriteError::Store)?;
+    Ok(Some(reply.into_value()))
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
