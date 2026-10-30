@@ -4,17 +4,24 @@ use crate::CachedSql;
 use crate::records::{RecordOrder, RecordPredicate, Table, TranscriptItemId, TranscriptItemRecord};
 use crate::repositories::sync_documents::SyncDocumentsRepository;
 use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
-use crate::stored_text::{StoredText, StoredTextValue};
+use crate::stored_text::StoredText;
+use crate::text_blobs;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 use studio_runtime_schema::delivery::DeliveryMoment;
 use studio_runtime_schema::shared_values::TRANSCRIPT_MAX_TOMBSTONES;
 use thiserror::Error;
 
-const BOOTSTRAP_TABLES: &[TableRequirement] = &[TableRequirement {
-    name: "runtime_item_fulltext",
-    columns: &["id", "body"],
-}];
+const BOOTSTRAP_TABLES: &[TableRequirement] = &[
+    TableRequirement {
+        name: "runtime_item_fulltext",
+        columns: &["id", "body"],
+    },
+    TableRequirement {
+        name: "runtime_item_blobs",
+        columns: &["id", "hash", "size"],
+    },
+];
 const TRANSCRIPT_PAGE_SIZE: usize = 120;
 // Keep each IN query below SQLite's legacy 999-variable default, reserving one slot for the agent.
 const TRANSCRIPT_IN_QUERY_ID_CHUNK_SIZE: usize = 900;
@@ -398,6 +405,9 @@ impl TranscriptRepository {
         connection: &Connection,
         id: &str,
     ) -> TranscriptStoreResult<Option<String>> {
+        if let Some(blob) = text_blobs::reference(connection, id)? {
+            return Ok(Some(text_blobs::read(connection, &blob.hash)?));
+        }
         let full = connection
             .query_row_cached(
                 "SELECT body FROM runtime_item_fulltext WHERE id=?1",
@@ -511,9 +521,12 @@ impl TranscriptRepository {
             return Err(invalid_record("runtime_items", id));
         }
         let has_fulltext = table_exists(transaction, "runtime_item_fulltext")?;
-        if text.chars().count() > 20_000 && !has_fulltext {
-            return Err(invalid_record("runtime_item_fulltext", id));
-        }
+        // The blob is durable before the rows that point at it are written.
+        let blob = if text.chars().count() > text_blobs::TEXT_BLOB_MIN_CHARS {
+            Some(text_blobs::put(transaction, text)?)
+        } else {
+            None
+        };
         let owner = transaction
             .query_row_cached("SELECT agent FROM runtime_items WHERE id=?1", [id], |row| {
                 row.get::<_, String>(0)
@@ -532,14 +545,15 @@ impl TranscriptRepository {
                 created
             ],
         )?;
-        if text.chars().count() > 20_000 {
-            transaction.execute_cached(
-                "INSERT INTO runtime_item_fulltext(id,body) VALUES(?1,?2) \
-                 ON CONFLICT(id) DO UPDATE SET body=excluded.body",
-                params![id, StoredTextValue::compressed(text)],
-            )?;
-        } else if has_fulltext {
-            transaction.execute_cached("DELETE FROM runtime_item_fulltext WHERE id=?1", [id])?;
+        if let Some(blob) = &blob {
+            text_blobs::set_reference(transaction, id, blob)?;
+        } else {
+            text_blobs::clear_reference(transaction, id)?;
+            // A legacy copy must not outlive a text that became short.
+            if has_fulltext {
+                transaction
+                    .execute_cached("DELETE FROM runtime_item_fulltext WHERE id=?1", [id])?;
+            }
         }
         if search.indexed {
             index_search_item(
@@ -1236,8 +1250,10 @@ fn search_phase(connection: &Connection) -> TranscriptStoreResult<String> {
 mod tests {
     use std::cell::RefCell;
 
-    use rusqlite::Connection;
+    use crate::text_blobs;
     use rusqlite::trace::{TraceEvent, TraceEventCodes};
+    use rusqlite::{Connection, Transaction, params};
+    use serde_json::Value;
     use serde_json::json;
 
     use super::{TranscriptRepository, TranscriptStoreError, enrich_persisted_items};
@@ -1672,45 +1688,61 @@ mod tests {
         }
     }
 
-    #[test]
-    fn full_text_long_item_is_stored_compressed() {
-        let mut connection = Connection::open_in_memory().expect("in-memory database opens");
+    /// A file database with the transcript tables and the blob table.
+    fn blob_fixture(directory: &std::path::Path) -> Connection {
+        let connection = Connection::open(directory.join("canvas.sqlite3")).expect("database");
         connection
             .execute_batch(
                 "CREATE TABLE runtime_items(id TEXT PRIMARY KEY, agent TEXT NOT NULL, \
                  record TEXT NOT NULL, created REAL NOT NULL);
-                 CREATE TABLE runtime_item_fulltext(id TEXT PRIMARY KEY, body TEXT NOT NULL);",
+                 CREATE TABLE runtime_item_fulltext(id TEXT PRIMARY KEY, body TEXT NOT NULL);
+                 CREATE TABLE runtime_item_blobs(id TEXT PRIMARY KEY, hash TEXT NOT NULL, size INTEGER NOT NULL);",
             )
             .expect("transcript tables create");
-        let transaction = connection.transaction().expect("transaction");
-        let text = "long \u{2713} ".repeat(4_000);
+        connection
+    }
+
+    fn long_text() -> String {
+        "long \u{2713} ".repeat(4_000)
+    }
+
+    fn put_long(transaction: &Transaction<'_>, text: &str) -> Value {
         let record =
             json!({"id":"agent:long","role":"assistant","text":"preview","truncated":true});
         TranscriptRepository::put_item(
-            &transaction,
+            transaction,
             "agent:long",
             "agent",
             &record,
             1.0,
-            &text,
+            text,
             false,
         )
         .expect("item writes");
+        record
+    }
 
-        let (kind, body): (String, rusqlite::types::Value) = transaction
-            .query_row(
-                "SELECT typeof(body),body FROM runtime_item_fulltext WHERE id='agent:long'",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .expect("body reads");
-        assert_eq!(kind, "blob", "a long item stores stored format 1");
-        let rusqlite::types::Value::Blob(body) = body else {
-            panic!("blob body");
-        };
+    #[test]
+    fn full_text_long_item_is_stored_in_a_blob() {
+        let state = tempfile::tempdir().expect("state");
+        let mut connection = blob_fixture(state.path());
+        let transaction = connection.transaction().expect("transaction");
+        let text = long_text();
+        let record = put_long(&transaction, &text);
+
+        let legacy: i64 = transaction
+            .query_row("SELECT count(*) FROM runtime_item_fulltext", [], |row| {
+                row.get(0)
+            })
+            .expect("count");
+        assert_eq!(legacy, 0, "the legacy table gets no new rows");
+        let blob = text_blobs::reference(&transaction, "agent:long")
+            .expect("reference reads")
+            .expect("item points at a blob");
+        assert_eq!(blob.size, text.len() as u64);
         assert_eq!(
-            crate::stored_text::decode_blob(&body).as_deref(),
-            Ok(text.as_str())
+            text_blobs::read(&transaction, &blob.hash).as_deref().ok(),
+            Some(text.as_str())
         );
         let item = super::TranscriptItem {
             id: "agent:long".to_owned(),
@@ -1723,6 +1755,132 @@ mod tests {
                 .as_deref(),
             Some(text.as_str())
         );
+    }
+
+    #[test]
+    fn blob_is_written_before_the_row_and_a_failed_write_leaves_no_row() {
+        let state = tempfile::tempdir().expect("state");
+        let mut connection = blob_fixture(state.path());
+        // A file named `blobs` stops the blob write, as a failed disk would.
+        std::fs::write(state.path().join("blobs"), b"not a directory").expect("blocker");
+        let transaction = connection.transaction().expect("transaction");
+        let record =
+            json!({"id":"agent:long","role":"assistant","text":"preview","truncated":true});
+        let result = TranscriptRepository::put_item(
+            &transaction,
+            "agent:long",
+            "agent",
+            &record,
+            1.0,
+            &long_text(),
+            false,
+        );
+        assert!(result.is_err(), "the blob write fails first");
+        for table in ["runtime_items", "runtime_item_blobs"] {
+            let rows: i64 = transaction
+                .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .expect("count");
+            assert_eq!(rows, 0, "{table} has no row without its blob");
+        }
+    }
+
+    #[test]
+    fn rolled_back_row_leaves_only_an_unreferenced_blob_that_the_sweep_collects() {
+        let state = tempfile::tempdir().expect("state");
+        let mut connection = blob_fixture(state.path());
+        let text = long_text();
+        {
+            let transaction = connection.transaction().expect("transaction");
+            put_long(&transaction, &text);
+            // Dropped without commit: a crash after the blob write.
+        }
+        let hash = text_blobs::put(&connection, &text).expect("blob").hash;
+        let file = state.path().join("blobs").join("text").join(&hash);
+        assert!(file.is_file());
+        let rows: i64 = connection
+            .query_row("SELECT count(*) FROM runtime_item_blobs", [], |row| {
+                row.get(0)
+            })
+            .expect("count");
+        assert_eq!(rows, 0);
+        let soon = std::time::SystemTime::now();
+        assert_eq!(
+            text_blobs::sweep(&connection, soon).expect("sweep"),
+            0,
+            "too young"
+        );
+        let later = soon + text_blobs::TEXT_BLOB_SWEEP_DELAY * 2;
+        assert_eq!(text_blobs::sweep(&connection, later).expect("sweep"), 1);
+        assert!(!file.exists());
+    }
+
+    #[test]
+    fn sweep_never_deletes_a_referenced_blob() {
+        let state = tempfile::tempdir().expect("state");
+        let mut connection = blob_fixture(state.path());
+        let text = long_text();
+        let transaction = connection.transaction().expect("transaction");
+        put_long(&transaction, &text);
+        transaction.commit().expect("commit");
+        let far_future = std::time::SystemTime::now() + text_blobs::TEXT_BLOB_SWEEP_DELAY * 1000;
+        assert_eq!(
+            text_blobs::sweep(&connection, far_future).expect("sweep"),
+            0
+        );
+        let blob = text_blobs::reference(&connection, "agent:long")
+            .unwrap()
+            .unwrap();
+        assert_eq!(text_blobs::read(&connection, &blob.hash).unwrap(), text);
+    }
+
+    #[test]
+    fn fulltext_move_keeps_every_body_and_the_check_finds_none_missing() {
+        let state = tempfile::tempdir().expect("state");
+        let connection = blob_fixture(state.path());
+        for (id, body) in [
+            ("a:1", "first".repeat(5_000)),
+            ("a:2", "second \u{2713}".repeat(5_000)),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO runtime_item_fulltext(id,body) VALUES(?1,?2)",
+                    params![id, crate::stored_text::StoredTextValue::compressed(&body)],
+                )
+                .expect("legacy row");
+        }
+        // A plain legacy body is moved too.
+        connection
+            .execute(
+                "INSERT INTO runtime_item_fulltext(id,body) VALUES('a:3','plain body')",
+                [],
+            )
+            .expect("plain row");
+        assert_eq!(
+            text_blobs::fulltext_without_blob(&connection)
+                .unwrap()
+                .len(),
+            3
+        );
+        assert_eq!(text_blobs::move_fulltext(&connection).expect("move"), 3);
+        assert!(
+            text_blobs::fulltext_without_blob(&connection)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(text_blobs::move_fulltext(&connection).expect("again"), 0);
+        let blob = text_blobs::reference(&connection, "a:3").unwrap().unwrap();
+        assert_eq!(
+            text_blobs::read(&connection, &blob.hash).unwrap(),
+            "plain body"
+        );
+        let kept: i64 = connection
+            .query_row("SELECT count(*) FROM runtime_item_fulltext", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(kept, 3, "the legacy table keeps its rows");
     }
 
     #[test]

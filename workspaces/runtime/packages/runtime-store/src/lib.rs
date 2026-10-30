@@ -43,6 +43,7 @@ pub mod state_owner;
 pub mod stored_text;
 pub mod stored_text_compaction;
 pub mod stored_text_dictionary;
+pub mod text_blobs;
 pub mod supervisor_journal;
 pub mod vm_work_intent;
 pub use schema::{

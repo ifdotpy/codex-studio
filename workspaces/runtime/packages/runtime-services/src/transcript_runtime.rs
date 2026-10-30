@@ -267,6 +267,12 @@ pub(crate) fn project(
         }
     }
     for item in &mut items {
+        // The record holds a preview; the client fetches the full text by hash.
+        if let Some(id) = item["id"].as_str()
+            && let Some(blob) = studio_runtime_store::text_blobs::reference(connection, id)?
+        {
+            item["fullTextBlob"] = json!({"hash": blob.hash, "size": blob.size});
+        }
         if let Some(turn) = item["turnId"].as_str()
             && !turn.is_empty()
         {

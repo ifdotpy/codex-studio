@@ -186,6 +186,7 @@ pub mod storage_retention;
 pub mod stored_text_compaction;
 pub mod studio_errors;
 pub mod submit_gates;
+pub mod text_blob_sweep;
 pub mod sync_documents;
 pub mod sync_entity_context;
 pub mod sync_policy;

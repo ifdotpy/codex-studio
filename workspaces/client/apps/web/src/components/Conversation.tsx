@@ -63,6 +63,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import { errorText } from "../api";
+import FullOutput from "./conversation/transcript/FullOutput";
 import SafetyBuffering from "./conversation/transcript/SafetyBuffering";
 import { currentCapacityRetry } from "../capacityRetry";
 import { isCyberPolicyRefusal, nativeThreadError } from "../nativeErrors";
@@ -1396,6 +1397,7 @@ export default function Conversation(p: {
           </div>
         )}
       {m.truncated && <p className="notice">This message is clipped.</p>}
+      {m.fullTextBlob && <FullOutput blob={m.fullTextBlob} />}
       {(p.room || m.role === "user") && (
         <MessageDate at={m.at ?? m.created ?? m.timestamp} />
       )}

@@ -55124,6 +55124,49 @@
         "title": "ToolRequestTimingRecordResponse",
         "type": "object"
       },
+      "TextBlobRef": {
+        "additionalProperties": false,
+        "properties": {
+          "hash": {
+            "title": "Hash",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "hash",
+          "size"
+        ],
+        "title": "TextBlobRef",
+        "type": "object"
+      },
+      "TextBlobResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "hash": {
+            "title": "Hash",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "hash",
+          "size",
+          "text"
+        ],
+        "title": "TextBlobResponse",
+        "type": "object"
+      },
       "TranscriptAgent": {
         "additionalProperties": false,
         "properties": {
@@ -56082,6 +56125,18 @@
               }
             ],
             "default": null
+          },
+          "fullTextBlob": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TextBlobRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Fulltextblob"
           },
           "id": {
             "title": "Id",
@@ -80513,6 +80568,47 @@
           }
         },
         "summary": "Transcript"
+      }
+    },
+    "/api/transcript/blob": {
+      "get": {
+        "operationId": "transcript_blob_api_transcript_blob_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "hash",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextBlobResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError403"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          }
+        },
+        "summary": "Transcript Blob"
       }
     },
     "/api/transcript/item": {

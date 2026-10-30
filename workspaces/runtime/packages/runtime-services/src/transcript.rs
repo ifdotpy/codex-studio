@@ -756,11 +756,13 @@ fn searchable_text(
     let mut full = TranscriptRepository::full_text(connection, row)?;
     if full.as_deref() == Some("") && row.record.inputs().value().is_some_and(|v| !v.is_empty()) {
         // The repository's fallback may be the empty legacy parent, not a body.
-        let persisted = connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM runtime_item_fulltext WHERE id=?1 AND body IS NOT NULL)",
-            [&row.id],
-            |r| r.get::<_, bool>(0),
-        )?;
+        let persisted = studio_runtime_store::text_blobs::reference(connection, &row.id)?
+            .is_some()
+            || connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM runtime_item_fulltext WHERE id=?1 AND body IS NOT NULL)",
+                [&row.id],
+                |r| r.get::<_, bool>(0),
+            )?;
         if !persisted {
             full = None;
         }

@@ -2217,6 +2217,23 @@ export interface paths {
     patch?: never | undefined;
     trace?: never | undefined;
   };
+  "/api/transcript/blob": {
+    parameters: {
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
+    };
+    /** Transcript Blob */
+    get: operations["transcript_blob_api_transcript_blob_get"];
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
+  };
   "/api/transcript/item": {
     parameters: {
       query?: never | undefined;
@@ -24521,6 +24538,22 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
+    /** TextBlobRef */
+    TextBlobRef: {
+      /** Hash */
+      hash: string;
+      /** Size */
+      size: number;
+    };
+    /** TextBlobResponse */
+    TextBlobResponse: {
+      /** Hash */
+      hash: string;
+      /** Size */
+      size: number;
+      /** Text */
+      text: string;
+    };
     /** TranscriptAgent */
     TranscriptAgent: {
       /** @default null */
@@ -24960,6 +24993,11 @@ export interface components {
         | undefined;
       /** @default null */
       details?: components["schemas"]["JsonValue"] | null | undefined;
+      /**
+       * Fulltextblob
+       * @default null
+       */
+      fullTextBlob?: components["schemas"]["TextBlobRef"] | null | undefined;
       /** Id */
       id: string;
       /** @description The notice confirms a completed idle compaction of a Claude session. */
@@ -37045,6 +37083,40 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      403: components["responses"]["ApiError403"];
+      /** @description Not Found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  transcript_blob_api_transcript_blob_get: {
+    parameters: {
+      query?:
+        | {
+            hash?: string | undefined;
+          }
+        | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
+    };
+    requestBody?: never | undefined;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["TextBlobResponse"];
         };
       };
       403: components["responses"]["ApiError403"];

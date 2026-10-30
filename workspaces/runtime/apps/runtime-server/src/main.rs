@@ -1041,6 +1041,10 @@ async fn run(
         Arc::clone(&store),
         monitor_shutdown.subscribe(),
     ));
+    let text_blob_sweep_task = tokio::spawn(studio_runtime_services::text_blob_sweep::run(
+        Arc::clone(&store),
+        monitor_shutdown.subscribe(),
+    ));
     let analytics_projection_task =
         tokio::spawn(studio_runtime_services::analytics_projection::run(
             Arc::clone(&store),
@@ -1414,6 +1418,7 @@ async fn run(
         shutdown_join("Studio error publication task", studio_errors_task).await??;
         shutdown_join("storage retention task", retention_task).await??;
         shutdown_join("stored text compaction task", stored_text_task).await??;
+        shutdown_join("text blob sweep task", text_blob_sweep_task).await??;
         shutdown_join("analytics projection task", analytics_projection_task).await??;
         if let Some(task) = orchestration_task {
             shutdown_join("orchestration driver task", task).await??;

@@ -15,6 +15,7 @@ mod m2026_10_27_scheduler_indexes;
 mod m2026_10_28_agent_account;
 mod m2026_10_28_agent_fields;
 mod m2026_10_28_group_revision;
+mod m2026_10_30_text_blobs;
 mod m2026_10_28_receipts_account_worker;
 mod m2026_10_28_receipts_actions;
 mod m2026_10_28_receipts_checks;
@@ -95,6 +96,11 @@ const OCTOBER_29: MigrationDate = MigrationDate {
     year: 2026,
     month: 10,
     day: 29,
+};
+const OCTOBER_30: MigrationDate = MigrationDate {
+    year: 2026,
+    month: 10,
+    day: 30,
 };
 const OCTOBER_22: MigrationDate = MigrationDate {
     year: 2026,
@@ -572,6 +578,16 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| m2026_10_29_request_results_v2::message_revision(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-text-blobs",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Full text of cut items in runtime_item_fulltext",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_text_blobs::apply(c.transaction),
     },
     &RegistryMigration,
 ];
