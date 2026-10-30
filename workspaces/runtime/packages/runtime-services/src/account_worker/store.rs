@@ -3801,9 +3801,14 @@ async fn publish_pending(
                     .pointer("/turn/id")
                     .and_then(Value::as_str)
             {
-                crate::layr_native::save_turn(store, agent, turn)
-                    .await
-                    .map_err(|error| WorkerError::PreparationPending(error.to_string().into()))?;
+                // A save error belongs to this chat. Its save stays `pending` in
+                // `layrTurnSaves`, and the next turn preparation of this chat retries
+                // the save and reports the error. Other chats on the account go on.
+                if let Err(error) = crate::layr_native::save_turn(store, agent, turn).await {
+                    crate::diagnostics::log_stderr(format_args!(
+                        "native Layr turn save of agent {agent} stays pending: {error}"
+                    ));
+                }
             }
             sink.publish(&effect).await?;
         }
