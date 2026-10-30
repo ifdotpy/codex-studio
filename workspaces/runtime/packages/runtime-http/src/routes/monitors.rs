@@ -50,11 +50,7 @@ async fn log(
                 .map_err(store_read_error)?
                 .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown monitor"))?;
             let monitor_id = monitor.id().as_ref();
-            let value = monitor.value();
-            let owner = value
-                .get("agent")
-                .and_then(Value::as_str)
-                .ok_or_else(|| invalid_monitor(monitor_id))?;
+            let owner = monitor.agent().ok_or_else(|| invalid_monitor(monitor_id))?;
             let agent = AgentRepository::get(connection, &AgentId::from(owner))
                 .map_err(store_read_error)?
                 .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown agent"))?;
@@ -68,19 +64,21 @@ async fn log(
                     "This agent was deleted",
                 ));
             }
-            let path = value
-                .get("log")
-                .and_then(Value::as_str)
+            let path = monitor
+                .log
+                .as_deref()
                 .ok_or_else(|| invalid_monitor(monitor_id))?;
-            let tail = value
-                .get("tail")
-                .and_then(Value::as_str)
+            let tail = monitor
+                .tail
+                .as_ref()
+                .map(|tail| tail.as_str())
                 .ok_or_else(|| invalid_monitor(monitor_id))?
                 .as_bytes()
                 .to_vec();
-            let bytes = value
-                .get("bytes")
-                .and_then(Value::as_u64)
+            let bytes = monitor
+                .bytes
+                .as_ref()
+                .and_then(|bytes| bytes.number().as_u64())
                 .ok_or_else(|| invalid_monitor(monitor_id))?;
             Ok::<_, ApiError>((path.to_owned(), tail, bytes))
         })

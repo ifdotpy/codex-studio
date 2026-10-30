@@ -93,7 +93,6 @@ async fn a_reattach_proof_observed_before_deadline_loss_is_superseded() {
             .expect("read")
             .expect("monitor")
             .value()
-            .clone()
     };
     let before = read();
     let result = monitor_runtime::reattach(&store, id, &proof, 3001.0).await;

@@ -514,9 +514,8 @@ pub fn submit_complaint(
     // Python's enqueue() fast-dispatches only for autoWake agents, while its
     // send eligibility excludes moveImportPending agents. Keep the event
     // durable, but do not wake the worker while either owner gate is closed.
-    let wake_event_worker = event_inserted
-        && lead.auto_wake == Some(true)
-        && !event_write::recovery_pending(&lead);
+    let wake_event_worker =
+        event_inserted && lead.auto_wake == Some(true) && !event_write::recovery_pending(&lead);
     Ok(ComplaintWriteResult {
         record,
         event_inserted,
@@ -585,8 +584,8 @@ pub fn respond_to_complaint(
                     .iter()
                     .any(|response| response.get("author").and_then(Value::as_str) == Some(lead_id))
             });
-        let stopped = event_write::truthy(lead.extra.get("deletedAt"))
-            || lead.auto_wake != Some(true);
+        let stopped =
+            event_write::truthy(lead.extra.get("deletedAt")) || lead.auto_wake != Some(true);
         let closing = match status {
             ComplaintResponseStatus::InProgress => false,
             ComplaintResponseStatus::Resolved | ComplaintResponseStatus::Declined => true,
@@ -761,9 +760,13 @@ fn parse_complaint(
     id: &str,
     validate: &impl Fn(&Value) -> bool,
 ) -> Result<Value, QuestionsWriteError> {
-    let complaint: Value =
+    let complaint: studio_runtime_store::ComplaintRecord =
         serde_json::from_str(raw).map_err(|_| invalid_stored("runtime_complaints", id))?;
-    if complaint.get("id").and_then(Value::as_str) != Some(id) || !validate(&complaint) {
+    if complaint.id() != id {
+        return Err(invalid_stored("runtime_complaints", id));
+    }
+    let complaint = complaint.into_value();
+    if !validate(&complaint) {
         return Err(invalid_stored("runtime_complaints", id));
     }
     Ok(complaint)

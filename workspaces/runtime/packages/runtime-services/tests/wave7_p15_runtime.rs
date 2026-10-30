@@ -137,14 +137,12 @@ fn record(store: &RuntimeStore, id: &str) -> Value {
         .expect("get")
         .expect("monitor")
         .value()
-        .clone()
 }
 fn rule_record(store: &RuntimeStore, id: &str) -> Value {
     RulesRepository::get(&store.test_reader().expect("read"), id)
         .expect("get rule")
         .expect("rule")
         .value()
-        .clone()
 }
 fn running(cases: &[Value]) -> Value {
     cases
@@ -811,7 +809,7 @@ async fn monitor_completion_commits_the_python_rule_result_and_wake_atomically()
         );
         let original_rule = RulesRepository::get(&store.test_reader().expect("read"), "rule")
             .expect("get")
-            .map(|row| row.value().clone())
+            .map(|row| row.value())
             .unwrap_or(Value::Null);
         assert_eq!(original_rule, case["rule"]);
         assert_eq!(fixtures::events(&store), json!([]));
@@ -836,7 +834,7 @@ async fn monitor_completion_commits_the_python_rule_result_and_wake_atomically()
         );
         let saved_rule = RulesRepository::get(&store.test_reader().expect("read"), "rule")
             .expect("get")
-            .map(|row| row.value().clone());
+            .map(|row| row.value());
         assert_eq!(
             saved_rule.unwrap_or(Value::Null),
             case["afterRule"],
@@ -1769,8 +1767,7 @@ async fn bounded_probes_preserve_room_for_the_largest_exit_receipt() {
         .transaction_with(move |tx| {
             let mut value = MonitorsRepository::get(tx, &id_for_queue_reset)?
                 .expect("monitor")
-                .value()
-                .clone();
+                .value();
             value["streamQueue"] = json!([]);
             Table::<MonitorRecord>::new(tx).put(
                 &MonitorRecord::from_value(value)

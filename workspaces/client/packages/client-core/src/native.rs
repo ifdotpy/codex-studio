@@ -64,39 +64,17 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
         .name("studio-state".into())
         .spawn(move || {
             let mut state = open_store(&config.state_directory);
-            while let Some((request, reply)) = store_receiver.blocking_recv() {
-                let mutation = matches!(
-                    request.method.as_str(),
-                    "drafts.import"
-                        | "drafts.edit"
-                        | "drafts.dismiss"
-                        | "drafts.receive"
-                        | "drafts.acknowledge"
-                        | "drafts.sync_status"
-                        | "draft.set"
-                        | "preferences.set"
-                        | "preferences.import"
-                        | "preferences.raw_set"
-                        | "preferences.raw_remove"
-                        | "identity.set"
-                        | "projection.put"
-                        | "outbox.enqueue"
-                        | "outbox.change"
-                        | "outbox.display"
-                        | "outbox.acknowledge"
-                        | "outbox.acknowledge_many"
-                        | "outbox.claim"
-                        | "outbox.receipt"
-                        | "outbox.failure"
-                );
-                let response = match &mut state {
-                    Ok((store, _lock)) => store.dispatch(request),
-                    Err(error) => Response::failure(request.id, "client_state_unavailable", error),
-                };
-                if mutation && response.error.is_none() {
-                    changes.send_modify(|version| *version = version.wrapping_add(1));
+            while let Some(command) = store_receiver.blocking_recv() {
+                match &mut state {
+                    Ok((store, _lock)) => {
+                        command.execute_with(store, || {
+                            changes.send_modify(|version| *version = version.wrapping_add(1));
+                        });
+                    }
+                    Err(error) => {
+                        command.unavailable(error);
+                    }
                 }
-                drop(reply.send(response));
             }
         })
         .map_err(|error| error.to_string())?;
@@ -118,8 +96,6 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
         let mut requests = tokio::task::JoinSet::new();
         let startup = Arc::new(tokio::sync::Mutex::new(None::<serde_json::Value>));
         let active = Arc::new(AtomicBool::new(false));
-        let previews = crate::file_preview::Previews::default();
-        let terminals = crate::terminal::Terminals::default();
         let mut background = tokio::task::JoinSet::new();
         let (events, mut event_receiver) = tokio::sync::mpsc::channel::<serde_json::Value>(64);
         let mut views = crate::views::Views::new(
@@ -127,7 +103,6 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
             store_sender.clone(),
             changed,
             events,
-            terminals.clone(),
         );
         let event_writer = writer.clone();
         background.spawn(async move {
@@ -192,9 +167,7 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
             enum Work {
                 Network(Request),
                 Action(Request),
-                Upload(Request),
                 Desktop(Request),
-                Preview(Request),
                 RichDocument(Request),
                 Startup(Request),
                 Delivery(Request),
@@ -218,10 +191,6 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                 // Pure computations never wait behind database writes: the UI
                 // calls several of them synchronously.
                 Ok(request) if pure(&request.method) => Work::Immediate(compute(&request)),
-                // Only Rust services export recordings to private files.
-                Ok(request) if request.method == "dictation.wav" => Work::Immediate(
-                    Response::failure(request.id, "invalid_request", "Unknown command."),
-                ),
                 Ok(request)
                     if matches!(
                         request.method.as_str(),
@@ -230,11 +199,6 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                 {
                     Work::RichDocument(request)
                 }
-                Ok(request) if request.method.starts_with("terminal.") => {
-                    let id = request.id.clone();
-                    Work::Stored(id, terminals.queue(backend.as_ref(), request))
-                }
-                Ok(request) if request.method.starts_with("preview.") => Work::Preview(request),
                 Ok(request) if request.method.starts_with("speech.") => Work::Speech(request),
                 Ok(request) if request.method.starts_with("media.") => Work::Media(request),
                 Ok(request) if request.method == "notifications.show" => Work::Notify(request),
@@ -246,14 +210,6 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                 }
                 Ok(request) if request.method == "drafts.refresh" => Work::DraftSync(request),
                 Ok(request) if request.method.starts_with("sync.") => Work::Sync(request),
-                Ok(request)
-                    if matches!(
-                        request.method.as_str(),
-                        "uploads.pending" | "uploads.enqueue" | "uploads.deliver"
-                    ) =>
-                {
-                    Work::Upload(request)
-                }
                 Ok(request) if request.method == "actions.submit" => Work::Action(request),
                 Ok(request) if request.method == "api.request" => Work::Network(request),
                 Ok(request) if request.method == "outbox.deliver" => Work::Delivery(request),
@@ -268,7 +224,7 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                     let id = request.id.clone();
                     let (reply, receive) = tokio::sync::oneshot::channel();
                     store_sender
-                        .send((request, reply))
+                        .send(crate::delivery::StoreCommand::Request(request, reply))
                         .await
                         .map_err(|_| "The state worker stopped.")?;
                     Work::Stored(id, receive)
@@ -281,7 +237,6 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
             // Completed tasks must leave the set; the permit bounds active work.
             while requests.try_join_next().is_some() {}
             let startup = startup.clone();
-            let previews = previews.clone();
             requests.spawn(async move {
                 let _permit = permit;
                 let response = match work {
@@ -305,22 +260,15 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                         }
                     }
                     Work::RichDocument(request) => crate::rich_document::dispatch(request).await,
-                    Work::Preview(request) => {
-                        previews
-                            .dispatch(backend.as_ref().as_ref().ok(), request)
-                            .await
-                    }
                     Work::Desktop(request) => {
                         crate::desktop::dispatch(
                             request,
-                            Some(&sender),
                             backend.as_ref().as_ref().ok(),
-                            Some(&previews),
                         )
                         .await
                     }
-                    Work::Speech(request) => crate::speech::dispatch(&sender, request).await,
-                    Work::Media(request) => crate::media::dispatch(request, &sender).await,
+                    Work::Speech(request) => crate::speech::dispatch(request).await,
+                    Work::Media(request) => crate::media::dispatch(request).await,
                     Work::Voice(request) => crate::voice::dispatch(request).await,
                     Work::Notify(request) => {
                         match crate::notifications::notify(&request.params["value"]).await {
@@ -328,10 +276,6 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                             Err(error) => Response::failure(request.id, "notification", error),
                         }
                     }
-                    Work::Upload(request) => match backend.as_ref() {
-                        Ok(backend) => crate::uploads::dispatch(backend, &sender, request).await,
-                        Err(error) => Response::failure(request.id, "backend_config", error),
-                    },
                     Work::Action(request) => match backend.as_ref() {
                         Ok(backend) => crate::actions::submit(backend, &sender, request).await,
                         Err(error) => Response::failure(request.id, "backend_config", error),
@@ -430,7 +374,6 @@ fn pure(method: &str) -> bool {
         method,
         "markdown.parse" | "system.uuid" | "text.sentences" | "locale.language_name"
     ) || method.starts_with("url.")
-        || method.starts_with("file_link.")
 }
 fn compute(request: &Request) -> Response {
     if request.id.is_empty() || request.id.len() > 128 {
@@ -442,7 +385,6 @@ fn compute(request: &Request) -> Response {
     }
     match request.method.as_str() {
         "markdown.parse" => crate::markdown::dispatch(request),
-        method if method.starts_with("file_link.") => crate::file_links::dispatch(request),
         _ => crate::platform::dispatch(request),
     }
 }
@@ -632,8 +574,6 @@ mod audio_ownership_tests {
             "media.captureStart",
             "media.captureStop",
             "media.requestMicrophone",
-            "media.playRecording",
-            "media.stopPlayback",
             "voice.create",
             "voice.answer",
             "voice.close",

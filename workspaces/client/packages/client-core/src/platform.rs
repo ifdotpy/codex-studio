@@ -3,13 +3,116 @@ use crate::protocol::{Request, Response};
 use serde_json::{Value, json};
 use unicode_segmentation::UnicodeSegmentation;
 
+enum Command {
+    Sentences { text: String },
+    LanguageName { code: String, locale: String },
+    Uuid,
+    ParseUrl { value: String, base: Option<String> },
+    ParseQuery { value: String },
+    EncodeQuery { pairs: Vec<(String, String)> },
+}
+
+#[derive(Default, serde::Deserialize)]
+#[serde(untagged)]
+enum StringInput {
+    Text(String),
+    #[default]
+    Missing,
+    Other(serde::de::IgnoredAny),
+}
+impl StringInput {
+    fn text(self) -> Option<String> {
+        match self {
+            Self::Text(value) => Some(value),
+            Self::Missing | Self::Other(_) => None,
+        }
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct TextParams {
+    #[serde(default)]
+    text: StringInput,
+}
+#[derive(serde::Deserialize)]
+struct LocaleParams {
+    #[serde(default)]
+    code: StringInput,
+    #[serde(default)]
+    locale: StringInput,
+}
+#[derive(serde::Deserialize)]
+struct UrlParams {
+    #[serde(default)]
+    value: StringInput,
+    #[serde(default)]
+    base: StringInput,
+}
+#[derive(serde::Deserialize)]
+struct QueryParams {
+    #[serde(default)]
+    value: StringInput,
+}
+#[derive(serde::Deserialize)]
+struct PairsParams {
+    pairs: Vec<(String, String)>,
+}
+
+fn params<T: serde::de::DeserializeOwned>(value: &Value) -> Result<T, serde_json::Error> {
+    serde_json::from_value::<studio_client_domain::json_object::JsonObject<T>>(value.clone())
+        .map(|object| object.0)
+}
+
+fn command(request: &Request) -> Result<Command, String> {
+    let value = &request.params;
+    match request.method.as_str() {
+        "text.sentences" => {
+            let input = params::<TextParams>(value).map_err(|_| "Text is required.")?;
+            Ok(Command::Sentences {
+                text: input.text.text().ok_or("Text is required.")?,
+            })
+        }
+        "locale.language_name" => {
+            let input =
+                params::<LocaleParams>(value).map_err(|_| "A language code is required.")?;
+            let bounded = |field: StringInput, message: &str| -> Result<String, String> {
+                field
+                    .text()
+                    .filter(|value| !value.is_empty() && value.len() <= 128)
+                    .ok_or_else(|| message.into())
+            };
+            Ok(Command::LanguageName {
+                code: bounded(input.code, "A language code is required.")?,
+                locale: bounded(input.locale, "A display locale is required.")?,
+            })
+        }
+        "system.uuid" => Ok(Command::Uuid),
+        "url.parse" => {
+            let input = params::<UrlParams>(value).map_err(|_| "A URL is required.")?;
+            Ok(Command::ParseUrl {
+                value: input.value.text().ok_or("A URL is required.")?,
+                base: input.base.text(),
+            })
+        }
+        "url.query_parse" => {
+            let input = params::<QueryParams>(value).map_err(|_| "A query string is required.")?;
+            Ok(Command::ParseQuery {
+                value: input.value.text().ok_or("A query string is required.")?,
+            })
+        }
+        "url.query_encode" => {
+            let input = params::<PairsParams>(value).map_err(|error| error.to_string())?;
+            Ok(Command::EncodeQuery { pairs: input.pairs })
+        }
+        _ => Err("Unknown platform command.".into()),
+    }
+}
+
 // SAFETY: The random-byte FFI call writes only into its owned byte array.
 #[allow(unsafe_code)]
 fn execute(request: &Request) -> Result<Value, String> {
-    let p = &request.params;
-    match request.method.as_str() {
-        "text.sentences" => {
-            let text = p["text"].as_str().ok_or("Text is required.")?;
+    match command(request)? {
+        Command::Sentences { text } => {
             let mut index = 0;
             Ok(Value::Array(
                 text.split_sentence_bounds()
@@ -21,23 +124,15 @@ fn execute(request: &Request) -> Result<Value, String> {
                     .collect(),
             ))
         }
-        "locale.language_name" => {
-            let code = p["code"]
-                .as_str()
-                .filter(|s| !s.is_empty() && s.len() <= 128)
-                .ok_or("A language code is required.")?;
-            let locale = p["locale"]
-                .as_str()
-                .filter(|s| !s.is_empty() && s.len() <= 128)
-                .ok_or("A display locale is required.")?;
+        Command::LanguageName { code, locale } => {
             #[cfg(any(target_os = "macos", target_os = "ios"))]
             {
                 use objc2_foundation::{NSLocale, NSString};
                 Ok(objc2::rc::autoreleasepool(|_| {
-                    let locale = NSLocale::localeWithLocaleIdentifier(&NSString::from_str(locale));
+                    let locale = NSLocale::localeWithLocaleIdentifier(&NSString::from_str(&locale));
                     json!(
                         locale
-                            .localizedStringForLocaleIdentifier(&NSString::from_str(code))
+                            .localizedStringForLocaleIdentifier(&NSString::from_str(&code))
                             .to_string()
                     )
                 }))
@@ -48,7 +143,7 @@ fn execute(request: &Request) -> Result<Value, String> {
                 Err("Native locale names require macOS.".into())
             }
         }
-        "system.uuid" => {
+        Command::Uuid => {
             let mut bytes = [0u8; 16];
             if unsafe { libc::getentropy(bytes.as_mut_ptr().cast(), bytes.len()) } != 0 {
                 return Err(std::io::Error::last_os_error().to_string());
@@ -65,16 +160,15 @@ fn execute(request: &Request) -> Result<Value, String> {
                 &hex[20..]
             )))
         }
-        "url.parse" => {
-            let value = p["value"].as_str().ok_or("A URL is required.")?;
-            let base = p["base"]
-                .as_str()
+        Command::ParseUrl { value, base } => {
+            let base = base
+                .as_deref()
                 .map(reqwest::Url::parse)
                 .transpose()
                 .map_err(|e| e.to_string())?;
             let url = base
-                .map(|base| base.join(value))
-                .unwrap_or_else(|| reqwest::Url::parse(value))
+                .map(|base| base.join(&value))
+                .unwrap_or_else(|| reqwest::Url::parse(&value))
                 .map_err(|e| e.to_string())?;
             Ok(
                 json!({"href":url.as_str(),"protocol":format!("{}:",url.scheme()),"origin":url.origin().ascii_serialization(),
@@ -83,25 +177,19 @@ fn execute(request: &Request) -> Result<Value, String> {
                 "pathname":url.path(),"search":url.query().map(|v|format!("?{v}")).unwrap_or_default(),"hash":url.fragment().map(|v|format!("#{v}")).unwrap_or_default()}),
             )
         }
-        "url.query_parse" => {
-            let query = p["value"]
-                .as_str()
-                .ok_or("A query string is required.")?
-                .trim_start_matches('?');
+        Command::ParseQuery { value } => {
+            let query = value.trim_start_matches('?');
             // This fixed HTTP URL is valid and independent of request input.
             let mut url = reqwest::Url::parse("http://localhost/").expect("valid query base URL");
             url.set_query(Some(query));
             Ok(json!(url.query_pairs().collect::<Vec<_>>()))
         }
-        "url.query_encode" => {
-            let pairs: Vec<(String, String)> =
-                serde_json::from_value(p["pairs"].clone()).map_err(|e| e.to_string())?;
+        Command::EncodeQuery { pairs } => {
             // This fixed HTTP URL is valid and independent of request input.
             let mut url = reqwest::Url::parse("http://localhost/").expect("valid query base URL");
             url.query_pairs_mut().extend_pairs(pairs);
             Ok(json!(url.query().unwrap_or("")))
         }
-        _ => Err("Unknown platform command.".into()),
     }
 }
 
@@ -161,6 +249,60 @@ mod tests {
         })
         .unwrap();
         assert_eq!(encoded, "q=%D0%B0+%F0%9F%A6%80&q=two&empty=");
+    }
+
+    #[test]
+    fn command_errors_and_url_fallback_preserve_wire_behavior() {
+        let call = |method: &str, params| Request {
+            id: "same".into(),
+            method: method.into(),
+            params,
+        };
+        let locale = call("locale.language_name", json!({"code": "", "locale": 7}));
+        assert_eq!(
+            execute(&locale).unwrap_err(),
+            "A language code is required."
+        );
+        let locale = call(
+            "locale.language_name",
+            json!({"code": "en", "locale": "é".repeat(65)}),
+        );
+        assert_eq!(
+            execute(&locale).unwrap_err(),
+            "A display locale is required."
+        );
+        let absolute = "https://user:secret@example.test:8443/path?q=1#part";
+        let parsed = execute(&call("url.parse", json!({"value":absolute,"base":false}))).unwrap();
+        assert_eq!(parsed["href"], absolute);
+        assert_eq!(
+            execute(&call("url.parse", json!({"value":absolute,"base":null}))).unwrap()["href"],
+            absolute
+        );
+        assert_eq!(parsed["username"], "user");
+        assert_eq!(parsed["password"], "secret");
+        assert_eq!(parsed["host"], "example.test:8443");
+        assert_eq!(
+            execute(&call(
+                "url.parse",
+                json!({"value":"next","base":"https://example.test/root/"})
+            ))
+            .unwrap()["href"],
+            "https://example.test/root/next"
+        );
+        assert!(execute(&call("url.parse", json!({"value":"next","base":false}))).is_err());
+        let response = dispatch(&call("text.sentences", json!({"text":false})));
+        assert_eq!(response.id, "same");
+        assert!(response.error.is_some());
+        for method in [
+            "text.sentences",
+            "locale.language_name",
+            "url.parse",
+            "url.query_parse",
+            "url.query_encode",
+        ] {
+            assert!(dispatch(&call(method, json!(["value"]))).error.is_some());
+        }
+        assert!(execute(&call("system.uuid", json!([1]))).is_ok());
     }
 }
 

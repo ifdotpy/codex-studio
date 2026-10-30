@@ -32,6 +32,7 @@ impl crate::provider_callbacks::tools::StatusWatchPort for ImmediateStatus {
         _store: &'a RuntimeStore,
         _actor: &'a crate::managed_host_tools::Actor,
         _args: &'a Value,
+        _action: crate::managed_status_watch::WatchAction,
         _request_id: &'a str,
         _now: f64,
     ) -> futures_util::future::BoxFuture<

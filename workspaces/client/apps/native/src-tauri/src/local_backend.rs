@@ -86,23 +86,16 @@ pub async fn verify(
         startup::ensure(&backend, &state, resources).await?;
         return Ok(());
     }
-    #[derive(Default, serde::Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct RecoveryPreferences {
-        #[serde(default)]
-        supervisor_enabled: bool,
-    }
-    let saved: RecoveryPreferences = match std::fs::read(state.join("background-recovery.json")) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .map_err(|e| format!("Cannot read backend recovery settings: {e}"))?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            RecoveryPreferences::default()
-        }
-        Err(error) => return Err(error.to_string()),
-    };
+    let saved: startup::SupervisorRecovery =
+        match std::fs::read(state.join("background-recovery.json")) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|e| format!("Cannot read backend recovery settings: {e}"))?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Default::default(),
+            Err(error) => return Err(error.to_string()),
+        };
     let supervisor = std::env::var("CODEX_AGENTS_SUPERVISOR_MODE")
         .map(|value| value == "1")
-        .unwrap_or(saved.supervisor_enabled);
+        .unwrap_or(saved.supervisor_enabled.get());
     let backend = Backend::desktop_client(origin)?;
     let identity = startup::identity(
         &backend,

@@ -67,7 +67,7 @@ async fn finder_view(
                 .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Unknown managed agent"))
         })
         .await?;
-    let record = agent.value().clone();
+    let record = agent.value();
     let state_dir = state.vm_state_dir.clone();
     let view = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/routes/catalog_agent",
@@ -120,13 +120,14 @@ async fn skills(
     params: QueryParams,
 ) -> Result<Json<crate::generated::SkillsResponse>, ApiError> {
     let agent_id = required_agent(&params)?;
-    let agent = read_agent(&state, agent_id).await?;
+    let record = read_agent(&state, agent_id).await?;
+    let agent = record.value();
     ensure_live_agent(&agent)?;
     let cwd = agent
         .get("cwd")
         .and_then(Value::as_str)
         .ok_or_else(invalid_stored_agent)?;
-    let account = account_context(&state, &agent)?;
+    let account = account_context(&state, &record.account_key)?;
     let responses = account_provider_exchange(
         state.account_session.clone(),
         account,
@@ -157,7 +158,8 @@ async fn capabilities(
     params: QueryParams,
 ) -> Result<Json<crate::generated::CapabilitiesResponse>, ApiError> {
     let agent_id = required_agent(&params)?;
-    let agent = read_agent(&state, agent_id).await?;
+    let record = read_agent(&state, agent_id).await?;
+    let agent = record.value();
     ensure_live_agent(&agent)?;
     let catalog = match state.tool_catalog.as_ref() {
         Some(catalog) => catalog,
@@ -179,7 +181,7 @@ async fn capabilities(
         CapabilityAgentSnapshot::from_record(&agent).map_err(|_| invalid_stored_agent())?;
     let managed = studio_runtime_services::catalog_reads::managed_tool_catalog(catalog)
         .map_err(|_| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "Invalid tool catalog"))?;
-    let account = account_context(&state, &agent)?;
+    let account = account_context(&state, &record.account_key)?;
     let store = state.store.as_ref().ok_or_else(ApiError::internal)?;
     let store = std::sync::Arc::clone(store);
     let observed_agent_id = agent_id.to_owned();
@@ -200,7 +202,7 @@ async fn capabilities(
     let cache = std::sync::Arc::clone(&state.capabilities_cache);
     let session = state.account_session.clone();
     let cwd = cwd.to_owned();
-    let thread_id = agent.get("threadId").cloned();
+    let thread_id = record.thread_id.clone();
     let fetch = || async move {
         let scope = match &session {
             Some(port) => port.ensure_session(&account.key).await.ok(),
@@ -208,7 +210,7 @@ async fn capabilities(
         };
         result["mcpSession"] = scope
             .as_ref()
-            .and_then(|scope| super::mcp_reconnect::binding(&agent, scope))
+            .and_then(|scope| super::mcp_reconnect::binding(&record, scope))
             .unwrap_or(Value::Null);
         let mut server_params =
             json!({"threadId":thread_id,"limit":NATIVE_TERMINAL_ITEMS_PER_PAGE});
@@ -417,19 +419,15 @@ async fn native_command_cancel(
             let agent = WorkspaceViewsRepository::agent(connection, agent_id)
                 .map_err(ApiError::stored)?
                 .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown managed agent"))?;
-            Ok::<_, ApiError>((task, agent.value()))
+            Ok::<_, ApiError>((task, agent))
         })
         .await?;
     let snapshot = studio_runtime_services::native_actions::CommandSnapshot::from_records(
         task.clone(),
-        agent.clone(),
+        agent.value(),
     )
     .map_err(native_command_error)?;
-    let account = agent
-        .get("accountKey")
-        .and_then(Value::as_str)
-        .unwrap_or("default")
-        .to_owned();
+    let account = agent.account_key.clone();
     let port = state
         .account_session
         .clone()
@@ -450,20 +448,10 @@ async fn native_command_cancel(
             .and_then(Value::as_str)
             .ok_or_else(invalid_stored_task)?
             .to_owned(),
-        agent: agent
-            .get("id")
-            .and_then(Value::as_str)
-            .ok_or_else(invalid_stored_agent)?
-            .to_owned(),
-        epoch: agent
-            .get("epoch")
-            .and_then(Value::as_u64)
-            .ok_or_else(invalid_stored_agent)?,
+        agent: agent.id.0.clone(),
+        epoch: u64::try_from(agent.epoch).map_err(|_| invalid_stored_agent())?,
         account: account.clone(),
-        thread: agent
-            .get("threadId")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
+        thread: agent.thread_id.clone(),
         connection: scope.connection.clone(),
         generation: scope.generation,
         request: request_id.clone(),
@@ -483,27 +471,27 @@ async fn native_command_cancel(
             ("", None),
         )
         .await?;
-        let Some(entries) = page.get("data").and_then(Value::as_array) else {
-            return Err(ApiError::new(
-                StatusCode::BAD_REQUEST,
-                "Invalid native terminal list",
-            ));
-        };
-        if entries.len() > NATIVE_TERMINAL_ITEMS_PER_PAGE {
+        let studio_runtime_schema::json_object::JsonObject(page):
+            studio_runtime_schema::json_object::JsonObject<
+                studio_runtime_services::provider_pagination::Page<Value>,
+            > = serde::Deserialize::deserialize(page).map_err(|_| {
+            ApiError::new(StatusCode::BAD_REQUEST, "Invalid native terminal list")
+        })?;
+        if page.data.len() > NATIVE_TERMINAL_ITEMS_PER_PAGE {
             return Err(ApiError::new(
                 StatusCode::BAD_REQUEST,
                 "Invalid native terminal list",
             ));
         }
-        pages.extend(entries.iter().cloned());
-        let Some(cursor) = page
-            .get("nextCursor")
-            .and_then(Value::as_str)
-            .filter(|v| !v.is_empty())
+        pages.extend(page.data);
+        let studio_runtime_services::provider_pagination::Cursor::String(cursor) = page.next_cursor
         else {
             break;
         };
-        if page_number + 1 == NATIVE_TERMINAL_MAX_PAGES || !cursor_seen.insert(cursor.to_owned()) {
+        if cursor.is_empty() {
+            break;
+        }
+        if page_number + 1 == NATIVE_TERMINAL_MAX_PAGES || !cursor_seen.insert(cursor.clone()) {
             return Err(ApiError::new(
                 StatusCode::CONFLICT,
                 "Native terminal listing did not advance",
@@ -768,14 +756,13 @@ fn required_agent(params: &QueryParams) -> Result<&str, ApiError> {
         .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Select an agent"))
 }
 
-async fn read_agent(state: &HttpState, agent_id: &str) -> Result<Value, ApiError> {
+async fn read_agent(state: &HttpState, agent_id: &str) -> Result<studio_runtime_store::AgentRecord, ApiError> {
     let store = state.store.as_ref().ok_or_else(ApiError::internal)?;
     let agent_id = agent_id.to_owned();
     store
         .read_async("runtime-http/routes/catalog_agent", move |connection| {
             WorkspaceViewsRepository::agent(connection, &agent_id)
                 .map_err(|_| ApiError::internal())?
-                .map(|agent| agent.value())
                 .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Unknown managed agent"))
         })
         .await
@@ -802,11 +789,7 @@ struct AccountContext {
     available: bool,
 }
 
-fn account_context(state: &HttpState, agent: &Value) -> Result<AccountContext, ApiError> {
-    let key = agent
-        .get("accountKey")
-        .and_then(Value::as_str)
-        .unwrap_or("default");
+fn account_context(state: &HttpState, key: &str) -> Result<AccountContext, ApiError> {
     let policy = state
         .account_policy
         .as_ref()
@@ -818,14 +801,12 @@ fn account_context(state: &HttpState, agent: &Value) -> Result<AccountContext, A
     let account = snapshot
         .accounts
         .iter()
-        .find(|row| row.get("id").and_then(Value::as_str) == Some(key));
+        .find(|row| row.id.as_str() == Some(key));
     Ok(AccountContext {
         key: key.to_owned(),
-        known: account
-            .is_some_and(|row| studio_runtime_providers::ProviderKind::of_record(row).is_ok()),
+        known: account.is_some_and(|row| row.provider_kind().is_some()),
         available: account.is_some_and(|row| {
-            row.get("disconnected") != Some(&Value::Bool(true))
-                && row.get("deleted") != Some(&Value::Bool(true))
+            row.disconnected.as_bool() != Some(true) && row.deleted.as_bool() != Some(true)
         }),
     })
 }
@@ -843,6 +824,180 @@ inventory::submit! {
 #[cfg(test)]
 mod native_command_tests {
     use super::*;
+
+    struct PagePort {
+        scope: studio_runtime_services::account_session_runtime::ConnectionScope,
+        pages: std::sync::Mutex<std::collections::VecDeque<Value>>,
+        calls: std::sync::Mutex<
+            Vec<studio_runtime_services::account_session_runtime::ProviderRequest>,
+        >,
+    }
+
+    impl studio_runtime_services::account_session_runtime::AccountSessionPort for PagePort {
+        fn ensure_session<'a>(
+            &'a self,
+            _: &'a str,
+        ) -> studio_runtime_services::account_session_runtime::AccountSessionFuture<
+            'a,
+            studio_runtime_services::account_session_runtime::ConnectionScope,
+        > {
+            Box::pin(async move { Ok(self.scope.clone()) })
+        }
+        fn provider_request<'a>(
+            &'a self,
+            request: studio_runtime_services::account_session_runtime::ProviderRequest,
+        ) -> studio_runtime_services::account_session_runtime::AccountSessionFuture<
+            'a,
+            studio_runtime_services::account_session_runtime::SessionReceipt,
+        > {
+            Box::pin(async move {
+                use studio_runtime_services::account_session_runtime::{
+                    ProviderResponse, SessionOutcome, SessionReceipt,
+                };
+                let value = if request.method.as_str() == "thread/backgroundTerminals/list" {
+                    self.pages.lock().unwrap().pop_front().expect("page")
+                } else {
+                    assert_eq!(
+                        request.method.as_str(),
+                        "thread/backgroundTerminals/terminate"
+                    );
+                    json!({"terminated":true})
+                };
+                let ticket = studio_runtime_providers::RequestTicket {
+                    generation: self.scope.generation,
+                    id: studio_runtime_providers::RequestId::String(request.operation.clone()),
+                    method: request.method,
+                };
+                let operation = request.operation.clone();
+                self.calls.lock().unwrap().push(request);
+                Ok(SessionReceipt {
+                    scope: self.scope.clone(),
+                    operation,
+                    replayed: false,
+                    outcome: SessionOutcome::Written {
+                        ticket,
+                        response: ProviderResponse::Reply(value),
+                    },
+                })
+            })
+        }
+    }
+
+    async fn page_fixture(
+        pages: Vec<Value>,
+    ) -> (tempfile::TempDir, HttpState, std::sync::Arc<PagePort>) {
+        let directory = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(
+            studio_runtime_store::RuntimeStore::open(Some(directory.path()))
+                .await
+                .unwrap(),
+        );
+        store.transaction_with(|tx| {
+            let owner = json!({"id":"owner","rootId":"owner","epoch":1,"status":"running","accountKey":"default","provider":"codex","threadId":"thread","turnId":"turn","inFlight":true,"autoWake":true});
+            let task = json!({"id":"owner:command","agent":"owner","kind":"command","itemId":"command","processId":"42","status":"running","ownerEpoch":1,"sourceAccountKey":"default","sourceConnectionId":"actual-uuid","sourceThreadId":"thread","turnId":"turn","created":1});
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('owner',?)", [owner.to_string()])?;
+            tx.execute("INSERT INTO runtime_tasks(id,record) VALUES('owner:command',?)", [task.to_string()])?;
+            Ok::<_, studio_runtime_store::StoreError>(())
+        }).await.unwrap();
+        let port = std::sync::Arc::new(PagePort {
+            scope: studio_runtime_services::account_session_runtime::ConnectionScope {
+                account: "default".into(),
+                connection: "actual-uuid".into(),
+                generation: 7,
+            },
+            pages: std::sync::Mutex::new(pages.into()),
+            calls: std::sync::Mutex::new(Vec::new()),
+        });
+        let mut state = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            directory.path().display().to_string(),
+            4621,
+            None,
+            Some(store),
+            None,
+        );
+        state.account_session = Some(port.clone());
+        (directory, state, port)
+    }
+
+    #[tokio::test]
+    async fn native_terminal_pagination_preserves_provider_calls_and_permissive_cursor() {
+        for cursor in [
+            json!(null),
+            json!(""),
+            json!(false),
+            json!(3),
+            json!({}),
+            json!([]),
+        ] {
+            let (_dir, state, port) = page_fixture(vec![
+                json!({"data":[null,{"other":true}],"nextCursor":"next"}),
+                json!({"data":[{"itemId":"command","processId":"42"}],"nextCursor":cursor}),
+            ])
+            .await;
+            let root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+            native_command_cancel(state, "owner:command".into(), root.clone())
+                .await
+                .expect("cancel");
+            let calls = port.calls.lock().unwrap();
+            assert_eq!(calls.len(), 3);
+            assert_eq!(calls[0].operation, format!("{root}:list"));
+            assert_eq!(
+                calls[1].operation,
+                format!("{root}:list:{}", studio_runtime_store::sha256_hex(b"next"))
+            );
+            assert_eq!(
+                calls[0].params,
+                json!({"threadId":"thread","limit":NATIVE_TERMINAL_ITEMS_PER_PAGE})
+            );
+            assert_eq!(
+                calls[1].params,
+                json!({"threadId":"thread","limit":NATIVE_TERMINAL_ITEMS_PER_PAGE,"cursor":"next"})
+            );
+            for call in calls.iter() {
+                assert_eq!(call.expected_scope.as_ref(), Some(&port.scope));
+                assert_eq!(call.actor.as_ref().unwrap().agent, "owner");
+                assert_eq!(call.actor.as_ref().unwrap().epoch, 1);
+            }
+            assert_eq!(
+                calls[2].params,
+                json!({"threadId":"thread","processId":"42"})
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn native_terminal_pagination_refuses_invalid_and_repeated_pages_before_effect() {
+        use axum::response::IntoResponse;
+        for (pages, status, count) in [
+            (vec![json!({})], 400, 1),
+            (vec![json!({"data":null})], 400, 1),
+            (vec![json!([[]])], 400, 1),
+            (
+                vec![json!({"data":vec![Value::Null; NATIVE_TERMINAL_ITEMS_PER_PAGE + 1]})],
+                400,
+                1,
+            ),
+            (
+                vec![
+                    json!({"data":[],"nextCursor":"again"}),
+                    json!({"data":[],"nextCursor":"again"}),
+                ],
+                409,
+                2,
+            ),
+        ] {
+            let (_dir, state, port) = page_fixture(pages).await;
+            let root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+            let error = match native_command_cancel(state, "owner:command".into(), root).await {
+                Ok(_) => panic!("expected refusal"),
+                Err(error) => error,
+            };
+            assert_eq!(error.into_response().status().as_u16(), status);
+            assert_eq!(port.calls.lock().unwrap().len(), count);
+        }
+    }
 
     #[test]
     fn native_command_requires_the_origin_request_identity_for_both_actions() {
@@ -878,7 +1033,7 @@ mod native_command_tests {
         let stored_cancel_root = cancel_root.clone();
         store.transaction(move |tx| {
             studio_runtime_store::receipt_schema::create(tx)?;
-            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('agent',?1)", [json!({"id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"idle"}).to_string()])?;
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('agent',?1)", [json!({"accountKey":"default","id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"idle"}).to_string()])?;
             tx.execute("INSERT INTO runtime_tasks(id,record) VALUES('task',?1)", [json!({"id":"task","agent":"agent","kind":"command","status":"completed","processId":"17","itemId":"item","created":1.0}).to_string()])?;
             let signature = json!({"task":"task","action":"input","text":"one"}).to_string();
             let envelope = json!({"actor":"agent","reply":{"id":"original-input","status":"pending"},"references":[]});

@@ -271,7 +271,7 @@ fn state(store: &RuntimeStore, tables: &Value) -> Value {
                 for (index, column) in columns.iter().enumerate() {
                     if table == "agents"
                         && ["hold_status", "hold_incident"].contains(&column.as_str())
-                        || table == "annotations" && column == "rev"
+                        || matches!(table.as_str(), "annotations" | "chat_messages") && column == "rev"
                     {
                         continue;
                     }
@@ -299,7 +299,8 @@ fn state(store: &RuntimeStore, tables: &Value) -> Value {
 fn normalize(value: &mut Value) {
     match value {
         Value::Object(map) => {
-            if map.contains_key("rootId") && map.contains_key("epoch") && map.contains_key("status") {
+            if map.contains_key("rootId") && map.contains_key("epoch") && map.contains_key("status")
+            {
                 for key in ["threadId", "turnId"] {
                     if map.get(key).is_some_and(Value::is_null) {
                         map.remove(key);
@@ -384,13 +385,13 @@ async fn run(store: std::sync::Arc<RuntimeStore>, case: &Value) -> Result<Value,
             std::sync::Arc::clone(&store),
             case["body"].clone(),
             "default".to_owned(),
-            vec![json!({"id":"default","status":"ready","canAttemptNativeProof":true})],
+            vec![serde::Deserialize::deserialize(json!({"id":"default","status":"ready","canAttemptNativeProof":true})).expect("account fixture")],
         ).await,
         "peer" => studio_runtime_services::projects::peer_team_write(
             std::sync::Arc::clone(&store),
             case["body"].clone(),
             "default".to_owned(),
-            vec![json!({"id":"default","status":"ready","canAttemptNativeProof":true})],
+            vec![serde::Deserialize::deserialize(json!({"id":"default","status":"ready","canAttemptNativeProof":true})).expect("account fixture")],
         ).await,
         "create" => {
             // Recreate the oracle project below the corpus's temporary root.

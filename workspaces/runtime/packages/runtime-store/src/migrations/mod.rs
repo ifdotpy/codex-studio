@@ -13,7 +13,6 @@ pub(crate) mod m2026_10_27_cost_index;
 mod m2026_10_27_retired_sqlite;
 mod m2026_10_27_scheduler_indexes;
 mod m2026_10_28_agent_account;
-mod m2026_10_29_agent_authorizations;
 mod m2026_10_28_agent_fields;
 mod m2026_10_28_group_revision;
 mod m2026_10_28_receipts_account_worker;
@@ -35,6 +34,7 @@ mod m2026_10_28_receipts_vm_provider;
 mod m2026_10_28_receipts_voice;
 mod m2026_10_28_receipts_work;
 mod m2026_10_28_usage_revision;
+mod m2026_10_29_agent_authorizations;
 mod m2026_10_29_model_choices;
 mod m2026_10_29_request_results_v2;
 
@@ -122,6 +122,7 @@ const WORKSPACE_LIMITS_ID: &str = "2026-10-26-workspace-limits";
 const RETIRED_WAITS_ID: &str = "2026-10-26-retired-waits";
 /// Stable migration identifier; includes the introduction date.
 const SUPERVISOR_ID: &str = "2026-10-26-supervisor-journal";
+const SUPERVISOR_WRITTEN_ID: &str = "2026-10-29-supervisor-written";
 /// Stable migration identifier; includes the introduction date.
 const TERMINAL_ERRORS_ID: &str = "2026-10-26-terminal-errors";
 const RETIRED_CANVAS_ID: &str = "2026-10-27-retired-canvas";
@@ -375,6 +376,16 @@ static CATALOG: &[&dyn Migration] = &[
     },
     &SqlMigration {
         definition: MigrationDefinition {
+            id: SUPERVISOR_WRITTEN_ID,
+            introduced: OCTOBER_29,
+            target: MigrationTarget::Supervisor,
+            supported_source: "Supervisor receipts before written evidence",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| crate::supervisor_journal::prepare_written_schema(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
             id: TERMINAL_ERRORS_ID,
             introduced: OCTOBER_26,
             target: MigrationTarget::Analytics,
@@ -551,6 +562,16 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| m2026_10_29_request_results_v2::annotation_revision(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-29-chat-message-revision",
+            introduced: OCTOBER_29,
+            target: MigrationTarget::Canvas,
+            supported_source: "Chat message rows without a revision",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_29_request_results_v2::message_revision(c.transaction),
     },
     &RegistryMigration,
 ];

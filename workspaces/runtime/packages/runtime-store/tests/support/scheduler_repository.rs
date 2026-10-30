@@ -341,6 +341,80 @@ fn resolved_complaint_and_decided_work_review_retire_before_claiming_the_remaini
 }
 
 #[test]
+fn malformed_complaint_stays_pending_while_progress_group_selects_latest() {
+    let mut connection = database();
+    connection.execute_batch("UPDATE runtime_events SET kind='complaint',text='{\"complaints\":[{\"complaint_id\":\"\"}]}' WHERE id='first';").unwrap();
+    for (id, version) in [("tie", 1), ("later", 2)] {
+        let payload = json!({"importance":"progress","sender":"child","room":"room","progress_key":"task","progress_version":version});
+        connection
+            .execute(
+                "UPDATE runtime_events SET kind='agent_message',text=?1 WHERE id=?2",
+                (payload.to_string(), id),
+            )
+            .unwrap();
+    }
+    let tx = connection.transaction().unwrap();
+    let claim = SchedulerRepository::claim_for_preparation(&tx, "agent", 4, "policy", 10.0, 3)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        claim
+            .events
+            .iter()
+            .map(|event| event.id.0.as_str())
+            .collect::<Vec<_>>(),
+        ["first", "later"]
+    );
+    tx.commit().unwrap();
+    let status: String = connection
+        .query_row(
+            "SELECT status FROM runtime_events WHERE id='tie'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(status, "stored_only");
+}
+
+#[test]
+fn malformed_progress_importance_never_supersedes_valid_message() {
+    let mut connection = database();
+    for (id, importance, version) in [
+        ("tie", json!("progress"), 1),
+        ("later", json!({"progress":null}), 2),
+    ] {
+        let payload = json!({"importance":importance,"sender":"child","room":"room","progress_key":"task","progress_version":version});
+        connection
+            .execute(
+                "UPDATE runtime_events SET kind='agent_message',text=?1 WHERE id=?2",
+                (payload.to_string(), id),
+            )
+            .unwrap();
+    }
+    let tx = connection.transaction().unwrap();
+    let claim = SchedulerRepository::claim_for_preparation(&tx, "agent", 4, "policy", 10.0, 3)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        claim
+            .events
+            .iter()
+            .map(|event| event.id.0.as_str())
+            .collect::<Vec<_>>(),
+        ["first", "tie", "later"]
+    );
+    tx.commit().unwrap();
+    let status: String = connection
+        .query_row(
+            "SELECT status FROM runtime_events WHERE id='tie'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(status, "reserved");
+}
+
+#[test]
 fn deleted_agent_is_skipped_at_claim_and_refused_at_submission_recheck() {
     let mut connection = database();
     connection

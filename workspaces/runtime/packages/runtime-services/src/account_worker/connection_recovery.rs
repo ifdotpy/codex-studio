@@ -196,8 +196,9 @@ pub(super) async fn run_inner(command: Command) -> Result<Completed, RecoveryErr
             .map_err(|_| RecoveryError::CommitFailed)?;
     let completion = if command.authorization.is_some()
         && eligibility.unconfirmed_start
-        && snapshot.record()["restartRecovery"]["stage"] == "held"
-        && snapshot.record()["startAttempt"].is_null()
+        && (snapshot.is_unclean_start()
+            || (snapshot.record()["restartRecovery"]["stage"] == "held"
+                && snapshot.record()["startAttempt"].is_null()))
     {
         Arc::new(std::sync::Mutex::new(Box::new(
             super::restart_recovery::RestartInputCompletion::default(),

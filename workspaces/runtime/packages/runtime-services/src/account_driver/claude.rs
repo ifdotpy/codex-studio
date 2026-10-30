@@ -73,15 +73,75 @@ fn native_signed_out_status(stdout: &[u8]) -> bool {
 impl<R: ProviderAuthReader> AccountDriver<R> {
     /// Saved identity only; the sign-in path must not block on a native probe.
     pub fn claude_profile(&self, key: &str) -> Result<Value, ClaudeAccountError> {
+        self.with_claude_profile(key, |_, row| row.clone())
+    }
+
+    /// Project the checked private row for launch, without copying the whole registry record.
+    pub fn claude_launch_profile(
+        &self,
+        key: &str,
+    ) -> Result<crate::claude_bridge::ClaudeLaunchProfile, ClaudeAccountError> {
+        use crate::account_policy::PublicString;
+        use studio_runtime_schema::account_registry::AccountStatus;
+        self.with_claude_profile(key, |account, row| {
+            let optional = |value: &Option<String>| {
+                value.as_ref().map_or(PublicString::Missing, |value| {
+                    PublicString::String(value.clone())
+                })
+            };
+            let status = match account.status {
+                AccountStatus::Ready => "ready",
+                AccountStatus::SignedOut => "signedOut",
+                AccountStatus::Pending => "pending",
+                AccountStatus::Error => "error",
+                AccountStatus::Changed => "changed",
+                AccountStatus::Duplicate => "duplicate",
+            };
+            crate::claude_bridge::ClaudeLaunchProfile {
+                provider: PublicString::String(account.provider.key().to_owned()),
+                status: PublicString::String(status.to_owned()),
+                account_id: optional(&account.account_id),
+                email: optional(&account.email),
+                plan: optional(&account.plan),
+                credential_identity: optional(&account.credential_identity),
+                home: PublicString::String(account.home.clone()),
+                binary_path: account
+                    .claude_options
+                    .as_ref()
+                    .and_then(|options| options.0.binary_path.as_ref())
+                    .map_or(PublicString::Missing, |value| {
+                        PublicString::String(value.clone())
+                    }),
+                native_auth_pending: false,
+                raw_options: row.get("claudeOptions").cloned(),
+                checked_options: account
+                    .claude_options
+                    .as_ref()
+                    .map(|options| options.0.clone()),
+            }
+        })
+    }
+
+    fn with_claude_profile<T>(
+        &self,
+        key: &str,
+        project: impl FnOnce(&studio_runtime_schema::account_registry::AccountRecord, &Value) -> T,
+    ) -> Result<T, ClaudeAccountError> {
         let state = self
             .state
             .lock()
             .map_err(|_| AccountDriverError::Poisoned)?;
         let row = registry_account(&state.value, key)?;
-        if row.get("provider") != Some(&json!(ProviderKind::Claude.key())) {
+        let account = &state
+            .typed
+            .accounts
+            .get(key)
+            .ok_or(AccountDriverError::UnknownAccount)?
+            .0;
+        if account.provider != ProviderKind::Claude {
             return Err(ClaudeAccountError::NotClaude);
         }
-        Ok(row.clone())
+        Ok(project(account, row))
     }
 
     /// The Claude account whose configuration folder is `config`, compared by
@@ -95,24 +155,27 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             .order
             .accounts
             .iter()
-            .filter_map(|key| state.value.get("accounts")?.get(key))
-            .find(|row| {
-                row.get("provider") == Some(&json!(ProviderKind::Claude.key()))
-                    && row
-                        .pointer("/claudeOptions/configDir")
-                        .and_then(Value::as_str)
-                        .is_some_and(|stored| {
-                            studio_runtime_store::path_identity::same_text(stored, config)
-                        })
+            .find(|key| {
+                state.typed.accounts.get(*key).is_some_and(|account| {
+                    account.0.provider == ProviderKind::Claude
+                        && account
+                            .0
+                            .claude_options
+                            .as_ref()
+                            .and_then(|options| options.0.config_dir.as_deref())
+                            .is_some_and(|stored| {
+                                studio_runtime_store::path_identity::same_text(stored, config)
+                            })
+                })
             })
-            .cloned())
+            .and_then(|key| state.value.get("accounts")?.get(key).cloned()))
     }
 
     /// The caller owns executable/path resolution and a per-config login lease.
     /// A durable registration is also the restart receipt for Add's config path.
     pub fn register_claude_verified(
         &self,
-        mut options: Map<String, Value>,
+        options: Map<String, Value>,
         label: &str,
         default_home: &Path,
         metadata: &AuthMetadata,
@@ -127,16 +190,17 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         {
             return Err(AccountDriverError::SignInRequired.into());
         }
+        let value = Value::Object(options);
         if label.trim().is_empty()
             || label.chars().count() > 200
-            || !studio_runtime_schema::validate(
-                "account-registry/ClaudeOptionsRecord",
-                &Value::Object(options.clone()),
-            )
-            .map_err(|_| ClaudeAccountError::InvalidProfile)?
+            || <studio_runtime_schema::claude_options::ClaudeOptionsRecord as serde::Deserialize>::deserialize(&value)
+            .is_err()
         {
             return Err(ClaudeAccountError::InvalidProfile);
         }
+        let Value::Object(mut options) = value else {
+            return Err(ClaudeAccountError::InvalidProfile);
+        };
         options.entry("customModels").or_insert_with(|| json!([]));
         let identity = json!({"binaryPath":options.get("binaryPath").cloned().unwrap_or(json!("")),
             "configDir":options.get("configDir").cloned().unwrap_or(json!(""))});
@@ -322,6 +386,18 @@ pub fn resolve_claude_binary(profile: &Value) -> Option<String> {
     resolve_claude_binary_with_environment(profile, &environment)
 }
 
+pub fn resolve_public_claude_binary(
+    profile: &crate::account_policy::PublicAccount,
+) -> Option<String> {
+    let configured = profile
+        .claude_options
+        .as_ref()
+        .and_then(|options| options.binary_path.as_str())
+        .filter(|value| !value.is_empty());
+    resolve_login_binary(configured, &env::vars_os().collect())
+        .map(|binary| binary.to_string_lossy().into_owned())
+}
+
 pub(crate) fn resolve_claude_binary_with_environment(
     profile: &Value,
     environment: &std::collections::BTreeMap<std::ffi::OsString, std::ffi::OsString>,
@@ -356,16 +432,10 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
     /// Restart-only proof for a ready login whose chat repair has not committed.
     /// Read outside the registry lock, then compare the pinned profile before publication.
     pub(crate) fn revalidate_claude(&self, key: &str) -> Result<Value, ClaudeAccountError> {
-        let expected = self.claude_profile(key)?;
-        let metadata = self.reader.read(&AuthProfile {
-            provider: studio_runtime_providers::ProviderKind::Claude,
-            home: expected
-                .get("home")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .into(),
-            claude_options: expected.get("claudeOptions").cloned(),
-        });
+        let (expected, profile) = self.with_claude_profile(key, |account, row| {
+            (row.clone(), auth_profile_typed(account, row))
+        })?;
+        let metadata = self.reader.read(&profile);
         self.refresh_claude_verified(key, &expected, &metadata, false)
     }
 }

@@ -13,6 +13,7 @@ crate-type = ["rlib", "cdylib"]
 
 [dependencies]
 studio-client-domain = { path = "../client-domain" }
+studio-runtime-schema = { path = "../../../runtime/packages/runtime-schema" }
 libc.workspace = true
 ring.workspace = true
 rustls.workspace = true
@@ -24,7 +25,6 @@ rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 unicode-segmentation = "=1.13.3"
-vt100 = "=0.18.1"
 reqwest = { version = "=0.13.5", default-features = false, features = ["brotli", "json", "rustls-no-provider"] }
 tokio = { workspace = true, features = ["fs"] }
 base64.workspace = true
@@ -33,9 +33,7 @@ rtc = { version = "=0.21.1", default-features = false }
 unsafe-libopus = "=0.2.0"
 async-trait = "=0.1.92"
 bytes.workspace = true
-usvg = "=0.48.1"
 image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico"] }
-regex = "=1.13.1"
 tempfile.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]

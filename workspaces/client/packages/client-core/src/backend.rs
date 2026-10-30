@@ -476,38 +476,6 @@ impl Backend {
         }))
     }
 
-    pub(crate) async fn read_bounded(&self, path: &str, limit: usize) -> Result<Value, String> {
-        if !self.authorized.load(std::sync::atomic::Ordering::Acquire) {
-            return Err("The local backend identity has not been verified.".into());
-        }
-        let mut response = self
-            .client
-            .get(self.url(path).map_err(|e| e.message)?)
-            .timeout(Duration::from_secs(15))
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
-        let status = response.status();
-        if response.content_length().is_some_and(|n| n > limit as u64) {
-            return Err("The file response exceeds the preview limit.".into());
-        }
-        let mut bytes = Vec::new();
-        while let Some(chunk) = response.chunk().await.map_err(|e| e.to_string())? {
-            if bytes.len() + chunk.len() > limit {
-                return Err("The file response exceeds the preview limit.".into());
-            }
-            bytes.extend_from_slice(&chunk);
-        }
-        let value: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-        if !status.is_success() {
-            return Err(value["error"]
-                .as_str()
-                .unwrap_or("Cannot read the selected file.")
-                .into());
-        }
-        Ok(value)
-    }
-
     pub async fn dispatch(&self, request: Request) -> Response {
         let result = match serde_json::from_value::<ApiRequest>(request.params) {
             Ok(params) => self.request(params).await,

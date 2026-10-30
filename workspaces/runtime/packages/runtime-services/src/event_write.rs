@@ -350,9 +350,13 @@ fn enqueue(
     created: f64,
     recovery: bool,
 ) -> Result<bool, EventWriteError> {
-    let mut metadata =
-        QueueWriteRepository::metadata(transaction, &id)?.unwrap_or_else(|| json!({}));
-    let delivery = DeliveryMoment::for_event(kind, &text, Some(&metadata))
+    let mut metadata = QueueWriteRepository::typed_metadata(transaction, &id)?.unwrap_or_default();
+    let delivery = metadata
+        .delivery
+        .value()
+        .map(|v| v.moment())
+        .map(Ok)
+        .unwrap_or_else(|| DeliveryMoment::for_event(kind, &text, None))
         .map_err(|_| EventWriteError::InvalidRequest("Invalid delivery moment"))?;
     let existing = studio_runtime_store::QueueEventRepository::get(
         transaction,
@@ -360,8 +364,10 @@ fn enqueue(
     )?
     .is_some();
     if !existing {
-        metadata["delivery"] = json!(delivery);
-        QueueWriteRepository::put_metadata(transaction, &id, &metadata)?;
+        metadata.delivery = studio_runtime_schema::queue_command::Field::Value(
+            studio_runtime_schema::event_metadata::StoredDelivery::canonical(delivery),
+        );
+        QueueWriteRepository::put_typed_metadata(transaction, &id, &metadata)?;
     }
     let auto_wake = agent_auto_wake(agent)?;
     let recovery_pending = recovery && recovery_pending(agent);
@@ -382,7 +388,7 @@ fn enqueue(
         error: None,
     };
     if let Some((server, link, is_anchor)) = remote_owner(agent)? {
-        let request_id = match metadata.get("remoteRequestId") {
+        let request_id = match metadata.extensions.get("remoteRequestId") {
             Some(Value::String(root)) if !root.is_empty() => root.clone(),
             Some(_) => return Err(EventWriteError::Conflict("Remote event outcome is unknown")),
             None if existing => {
@@ -394,8 +400,10 @@ fn enqueue(
                     .filter(|id| id.get_version_num() == 7)
                     .map(|_| id.clone())
                     .unwrap_or_else(RequestIdentity::issue_root);
-                metadata["remoteRequestId"] = json!(root);
-                QueueWriteRepository::put_metadata(transaction, &id, &metadata)?;
+                metadata
+                    .extensions
+                    .insert("remoteRequestId".into(), json!(root));
+                QueueWriteRepository::put_typed_metadata(transaction, &id, &metadata)?;
                 root
             }
         };
@@ -432,8 +440,8 @@ fn enqueue(
                 return Err(EventWriteError::Conflict("Remote event link is invalid"));
             }
             if metadata
-                .get("assets")
-                .and_then(Value::as_array)
+                .assets
+                .as_ref()
                 .is_some_and(|assets| !assets.is_empty())
             {
                 return Err(EventWriteError::InvalidRequest(
@@ -496,8 +504,8 @@ fn enqueue(
                 return Err(EventWriteError::RemoteEventsUnavailable);
             }
             if metadata
-                .get("assets")
-                .and_then(Value::as_array)
+                .assets
+                .as_ref()
                 .is_some_and(|assets| !assets.is_empty())
             {
                 return Err(EventWriteError::InvalidRequest(
@@ -638,7 +646,8 @@ fn queue_agent(connection: &Transaction<'_>, agent: &AgentRecord) -> Result<(), 
 }
 
 fn agent_auto_wake(agent: &AgentRecord) -> Result<bool, EventWriteError> {
-    agent.auto_wake
+    agent
+        .auto_wake
         .ok_or_else(|| invalid_stored("runtime_agents", &agent.id.0))
 }
 
@@ -782,12 +791,13 @@ mod tests {
         connection.execute_batch("DROP TABLE request_results; CREATE TABLE request_results(id TEXT PRIMARY KEY,signature TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'applied',ref_kind TEXT,ref_id TEXT,ref_rev INTEGER,result TEXT,created INTEGER NOT NULL); CREATE INDEX request_results_created ON request_results(created,id);").expect("reference receipt fixture");
         let agent = AgentRecord {
             in_flight: None,
-        account_key: "default".into(),
-        thread_id: None,
-        turn_id: None,
-        auto_wake: None,
-        execution_mode: None,
-        turn_epoch: None,
+            account_key: "default".into(),
+            thread_id: None,
+            turn_id: None,
+            auto_wake: None,
+            usage_resume_enabled: None,
+            execution_mode: None,
+            turn_epoch: None,
             title_job: None,
             start_outcome_hold: None,
             fired_events: Default::default(),
@@ -1066,13 +1076,21 @@ mod tests {
 
     #[test]
     fn annotation_rejects_line_outside_safe_integer_range() {
-        for line in [-1, studio_runtime_schema::shared_values::MAX_SAFE_INTEGER + 1] {
+        for line in [
+            -1,
+            studio_runtime_schema::shared_values::MAX_SAFE_INTEGER + 1,
+        ] {
             let mut connection = database();
             let before = counts(&connection);
-            let result = with_transaction(&mut connection, |tx| annotate(tx, AnnotationWrite {
-                line,
-                ..annotation("bad-line")
-            }));
+            let result = with_transaction(&mut connection, |tx| {
+                annotate(
+                    tx,
+                    AnnotationWrite {
+                        line,
+                        ..annotation("bad-line")
+                    },
+                )
+            });
             assert!(result.is_err());
             assert_eq!(counts(&connection), before);
         }

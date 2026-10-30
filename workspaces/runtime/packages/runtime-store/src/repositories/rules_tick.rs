@@ -1,6 +1,7 @@
 //! Bounded rule tick reads; rule writes reuse the canonical rules repository.
 
 use rusqlite::{Connection, params};
+use serde::Deserialize;
 use serde_json::Value;
 
 use crate::{CachedSql, RuleRecord, StoreError, StoreResult};
@@ -30,8 +31,16 @@ impl RulesTickRepository {
         let mut result = Vec::new();
         while let Some(row) = rows.next()? {
             let id: String = row.get(1)?;
-            let value = decode(row.get(2)?, "rules", &id)?;
-            let rule = RuleRecord::from_value(value)?;
+            let raw: String = row.get(2)?;
+            let invalid = || StoreError::InvalidStoredRecord {
+                object: "rules",
+                id: id.clone(),
+            };
+            if raw.len() > MAX_RECORD_BYTES {
+                return Err(invalid());
+            }
+            let value: Value = serde_json::from_str(&raw).map_err(|_| invalid())?;
+            let rule = RuleRecord::deserialize(value).map_err(|_| invalid())?;
             if rule.id() != &id {
                 return Err(StoreError::InvalidStoredRecord {
                     object: "rules",
@@ -112,4 +121,85 @@ fn decode(raw: String, object: &'static str, id: &str) -> StoreResult<Value> {
         return Err(invalid());
     }
     serde_json::from_str(&raw).map_err(|_| invalid())
+}
+
+#[cfg(test)]
+mod typed_tests {
+    use super::*;
+
+    #[test]
+    fn table_rule_read_preserves_duplicate_last_and_physical_identity() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE runtime_rules(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+            .unwrap();
+        let duplicate =
+            r#"{"id":"bad","id":"r","name":"before","name":"after","agent":"x","agent":"y"}"#;
+        db.execute("INSERT INTO runtime_rules VALUES('r',?1)", [duplicate])
+            .unwrap();
+        let historical = RuleRecord::from_value(serde_json::from_str(duplicate).unwrap()).unwrap();
+        let rule = crate::records::Table::<RuleRecord>::new(&db)
+            .get(&"r".to_owned())
+            .unwrap()
+            .unwrap();
+        assert_eq!(rule.value(), historical.value());
+        db.execute(
+            "UPDATE runtime_rules SET record=?1",
+            [r#"{"id":"r","id":"wrong"}"#],
+        )
+        .unwrap();
+        assert!(
+            crate::records::Table::<RuleRecord>::new(&db)
+                .get(&"r".to_owned())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn page_checks_shape_identity_and_preserves_extensions() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE runtime_rules(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+            .unwrap();
+        let raw = r#"{"id":"r","checks":1.0,"ownerHold":null,"future":{"nested":true}}"#;
+        db.execute(
+            "INSERT INTO runtime_rules VALUES (?1,?2)",
+            params!["r", raw],
+        )
+        .unwrap();
+        let rows = RulesTickRepository::page(&db, 0).unwrap();
+        assert_eq!(
+            rows[0].rule.value(),
+            serde_json::from_str::<Value>(raw).unwrap()
+        );
+        db.execute("UPDATE runtime_rules SET record=?1", [r#"{"id":"other"}"#])
+            .unwrap();
+        assert!(RulesTickRepository::page(&db, 0).is_err());
+        db.execute(
+            "UPDATE runtime_rules SET record=?1",
+            [r#"{"id":"r","checks":-1}"#],
+        )
+        .unwrap();
+        assert!(RulesTickRepository::page(&db, 0).is_err());
+        let duplicate = r#"{"id":"old","id":"r","name":"old","name":"new","agent":"old","agent":"new","future":{"kept":true}}"#;
+        db.execute("UPDATE runtime_rules SET record=?1", [duplicate])
+            .unwrap();
+        let historical = RuleRecord::from_value(serde_json::from_str(duplicate).unwrap()).unwrap();
+        let rows = RulesTickRepository::page(&db, 0).unwrap();
+        assert_eq!(rows[0].rule.value(), historical.value());
+        for invalid in [
+            r#"{"id":"r","id":"wrong"}"#.to_owned(),
+            r#"{"id":"r","future":1e400}"#.to_owned(),
+            format!(
+                "{{\"id\":\"r\",\"future\":{}}}",
+                "[".repeat(140) + &"]".repeat(140)
+            ),
+            format!(
+                "{{\"id\":\"r\",\"future\":\"{}\"}}",
+                "x".repeat(MAX_RECORD_BYTES)
+            ),
+        ] {
+            db.execute("UPDATE runtime_rules SET record=?1", [invalid])
+                .unwrap();
+            assert!(RulesTickRepository::page(&db, 0).is_err());
+        }
+    }
 }

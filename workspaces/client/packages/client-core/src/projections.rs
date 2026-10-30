@@ -4,7 +4,10 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap};
-use studio_client_domain::MAX_SAFE_INTEGER;
+use studio_client_domain::{
+    MAX_SAFE_INTEGER,
+    sync_entity::{EntityChange, MAX_ENTITY_SCOPE_BYTES},
+};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Document {
@@ -18,7 +21,7 @@ pub struct Document {
 // Local entity cache format, independent of the server's sync protocol version.
 const ENTITY_CACHE_VERSION: i64 = 4;
 // Largest local projection key, measured in UTF-8 bytes.
-const MAX_PROJECTION_SCOPE_BYTES: usize = 512;
+const MAX_PROJECTION_SCOPE_BYTES: usize = MAX_ENTITY_SCOPE_BYTES;
 
 pub fn initialize(connection: &Connection) -> rusqlite::Result<()> {
     let transaction = Transaction::new_unchecked(connection, TransactionBehavior::Immediate)?;
@@ -44,31 +47,6 @@ pub fn initialize(connection: &Connection) -> rusqlite::Result<()> {
     transaction.commit()
 }
 
-fn entity_scope(change: &Value) -> Result<String, String> {
-    let collection = change["collection"]
-        .as_str()
-        .ok_or("Missing entity collection.")?;
-    let id = change["id"].as_str().ok_or("Missing entity identity.")?;
-    let seq = change["seq"].as_u64().ok_or("Missing entity sequence.")?;
-    if collection.is_empty()
-        || collection.contains(':')
-        || id.is_empty()
-        || seq > MAX_SAFE_INTEGER as u64
-    {
-        return Err("Invalid entity identity or sequence.".into());
-    }
-    match change["op"].as_str() {
-        Some("upsert") if change["value"].is_object() => {}
-        Some("delete") if change.get("value").is_none() => {}
-        _ => return Err("Invalid entity change operation or value.".into()),
-    }
-    let scope = format!("entity:{collection}:{id}");
-    if scope.len() > MAX_PROJECTION_SCOPE_BYTES {
-        return Err("Invalid projection identity.".into());
-    }
-    Ok(scope)
-}
-
 fn get(connection: &Connection, workspace: &str, scope: &str) -> Result<Option<Value>, String> {
     let encoded: Option<String> = connection
         .query_row(
@@ -83,7 +61,7 @@ fn get(connection: &Connection, workspace: &str, scope: &str) -> Result<Option<V
         .transpose()
 }
 
-fn entities(connection: &Connection, workspace: &str) -> Result<Vec<Value>, String> {
+fn entities(connection: &Connection, workspace: &str) -> Result<Vec<EntityChange>, String> {
     let mut statement = connection
         .prepare("SELECT document FROM client_projections WHERE workspace=?1 AND scope LIKE 'entity:%' ORDER BY scope")
         .map_err(|e| e.to_string())?;
@@ -109,8 +87,36 @@ const MAX_ROW_BATCH: usize = 500;
 // Largest `rangeRows` reply in bytes of row JSON. One native message holds it.
 const MAX_ROWS_REPLY_BYTES: usize = crate::protocol::MAX_MESSAGE / 4;
 
-fn row_prefix(params: &Value) -> Result<&str, String> {
-    let prefix = params["prefix"].as_str().ok_or("Missing row prefix.")?;
+// Invalid field types retain the historical missing-field behavior at each access.
+fn optional_text<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(Value::deserialize(d)?.as_str().map(str::to_owned))
+}
+fn optional_number<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
+    Ok(Value::deserialize(d)?.as_u64())
+}
+
+#[derive(Default, Deserialize)]
+struct RowCommand {
+    #[serde(default, deserialize_with = "optional_text")]
+    prefix: Option<String>,
+    #[serde(default, deserialize_with = "optional_text")]
+    gte: Option<String>,
+    #[serde(default, deserialize_with = "optional_text")]
+    gt: Option<String>,
+    #[serde(default, deserialize_with = "optional_text")]
+    lt: Option<String>,
+    #[serde(default, deserialize_with = "optional_number")]
+    limit: Option<u64>,
+}
+#[derive(Default, Deserialize)]
+struct RowIdentity {
+    #[serde(default, deserialize_with = "optional_text")]
+    id: Option<String>,
+    #[serde(default, deserialize_with = "optional_number")]
+    seq: Option<u64>,
+}
+fn row_prefix(params: &RowCommand) -> Result<&str, String> {
+    let prefix = params.prefix.as_deref().ok_or("Missing row prefix.")?;
     if prefix.is_empty()
         || prefix.len() > MAX_ROW_PREFIX_BYTES
         || !prefix
@@ -122,6 +128,34 @@ fn row_prefix(params: &Value) -> Result<&str, String> {
     Ok(prefix)
 }
 
+#[derive(Default, Deserialize)]
+struct IdentityInput {
+    #[serde(default, rename = "workspaceId", deserialize_with = "optional_text")]
+    workspace_id: Option<String>,
+    #[serde(default, rename = "chatState", deserialize_with = "optional_bool")]
+    chat_state: bool,
+}
+#[derive(Default, Deserialize)]
+struct ProjectionWorkspace {
+    #[serde(default, deserialize_with = "optional_text")]
+    workspace: Option<String>,
+}
+#[derive(Default, Deserialize)]
+struct ProjectionScope {
+    #[serde(default, deserialize_with = "optional_text")]
+    scope: Option<String>,
+}
+fn optional_bool<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    Ok(Value::deserialize(d)?.as_bool().unwrap_or(false))
+}
+fn projection<'de, T: Deserialize<'de> + Default>(value: &'de Value) -> T {
+    if value.is_object() {
+        T::deserialize(value).unwrap_or_default()
+    } else {
+        T::default()
+    }
+}
+
 fn row_scope(prefix: &str, id: &str) -> Result<String, String> {
     if id.is_empty() || id.len() > MAX_ROW_ID_BYTES {
         return Err("Invalid row identity.".into());
@@ -129,9 +163,14 @@ fn row_scope(prefix: &str, id: &str) -> Result<String, String> {
     Ok(format!("{ROW_NAMESPACE}{prefix}/{id}"))
 }
 
-fn get_rows(connection: &Connection, workspace: &str, params: &Value) -> Result<Value, String> {
+fn get_rows(
+    connection: &Connection,
+    workspace: &str,
+    params: &RowCommand,
+    raw: &Value,
+) -> Result<Value, String> {
     let prefix = row_prefix(params)?;
-    let ids = params["ids"].as_array().ok_or("Missing row identities.")?;
+    let ids = raw["ids"].as_array().ok_or("Missing row identities.")?;
     if ids.len() > MAX_ROW_BATCH {
         return Err("Too many row identities.".into());
     }
@@ -147,18 +186,20 @@ fn get_rows(connection: &Connection, workspace: &str, params: &Value) -> Result<
 
 /// Rows with `gte` (or `gt`) <= id < `lt`, in id order. A reply that reaches
 /// `limit` or the byte bound sets `more`; the caller continues after its last id.
-fn range_rows(connection: &Connection, workspace: &str, params: &Value) -> Result<Value, String> {
+fn range_rows(
+    connection: &Connection,
+    workspace: &str,
+    params: &RowCommand,
+) -> Result<Value, String> {
     let prefix = row_prefix(params)?;
     let base = format!("{ROW_NAMESPACE}{prefix}/");
-    let (lower, inclusive) = match (params["gte"].as_str(), params["gt"].as_str()) {
+    let (lower, inclusive) = match (params.gte.as_deref(), params.gt.as_deref()) {
         (Some(id), None) => (id, true),
         (None, Some(id)) => (id, false),
         _ => return Err("A range needs exactly one of gte and gt.".into()),
     };
-    let upper = params["lt"].as_str().ok_or("A range needs lt.")?;
-    let limit = params["limit"]
-        .as_u64()
-        .map_or(usize::MAX, |limit| limit as usize);
+    let upper = params.lt.as_deref().ok_or("A range needs lt.")?;
+    let limit = params.limit.map_or(usize::MAX, |limit| limit as usize);
     let mut statement = connection
         .prepare_cached(&format!(
             "SELECT document FROM client_projections WHERE workspace=?1 AND scope{}?2 AND scope<?3 ORDER BY scope",
@@ -166,7 +207,11 @@ fn range_rows(connection: &Connection, workspace: &str, params: &Value) -> Resul
         ))
         .map_err(|e| e.to_string())?;
     let mut cursor = statement
-        .query(params![workspace, format!("{base}{lower}"), format!("{base}{upper}")])
+        .query(params![
+            workspace,
+            format!("{base}{lower}"),
+            format!("{base}{upper}")
+        ])
         .map_err(|e| e.to_string())?;
     let (mut rows, mut bytes, mut more) = (Vec::new(), 0, false);
     while let Some(row) = cursor.next().map_err(|e| e.to_string())? {
@@ -184,30 +229,51 @@ fn range_rows(connection: &Connection, workspace: &str, params: &Value) -> Resul
 
 /// Store rows unconditionally in one transaction. Ordering by server sequence
 /// stays the caller's rule: a reset must be able to lower a row's sequence.
-fn put_rows(connection: &Connection, workspace: &str, params: &Value) -> Result<Value, String> {
+fn put_rows(
+    connection: &Connection,
+    workspace: &str,
+    params: &RowCommand,
+    raw: &Value,
+) -> Result<Value, String> {
     let prefix = row_prefix(params)?;
-    let rows = params["rows"].as_array().ok_or("Missing rows.")?;
+    let rows = raw["rows"].as_array().ok_or("Missing rows.")?;
     if rows.len() > MAX_ROW_BATCH {
         return Err("Too many rows.".into());
     }
     let transaction = Transaction::new_unchecked(connection, TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
     for row in rows {
-        let scope = row_scope(prefix, row["id"].as_str().ok_or("Invalid row identity.")?)?;
-        let seq = row["seq"]
-            .as_u64()
+        let identity: RowIdentity = if row.is_object() {
+            RowIdentity::deserialize(row).unwrap_or_default()
+        } else {
+            RowIdentity::default()
+        };
+        let scope = row_scope(
+            prefix,
+            identity.id.as_deref().ok_or("Invalid row identity.")?,
+        )?;
+        let seq = identity
+            .seq
             .filter(|seq| *seq <= MAX_SAFE_INTEGER as u64)
             .ok_or("Invalid row sequence.")?;
-        transaction.execute("INSERT INTO client_projections(workspace,scope,document,seq) VALUES(?1,?2,?3,?4)
+        transaction
+            .execute(
+                "INSERT INTO client_projections(workspace,scope,document,seq) VALUES(?1,?2,?3,?4)
             ON CONFLICT(workspace,scope) DO UPDATE SET document=excluded.document,seq=excluded.seq",
-            params![workspace, scope, row.to_string(), seq as i64]).map_err(|e| e.to_string())?;
+                params![workspace, scope, row.to_string(), seq as i64],
+            )
+            .map_err(|e| e.to_string())?;
     }
     transaction.commit().map_err(|e| e.to_string())?;
     Ok(json!({"written":rows.len()}))
 }
 
 /// Drop every row cache whose prefix is not `prefix` (older formats).
-fn prune_rows(connection: &Connection, workspace: &str, params: &Value) -> Result<Value, String> {
+fn prune_rows(
+    connection: &Connection,
+    workspace: &str,
+    params: &RowCommand,
+) -> Result<Value, String> {
     let prefix = row_prefix(params)?;
     // ';' follows ':' and '0' follows '/': the bounds enclose the namespace and the kept prefix.
     let removed = connection
@@ -231,21 +297,14 @@ pub fn valid_workspace(workspace: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-fn entity_snapshot(rows: &[Value]) -> Value {
+fn entity_snapshot(rows: &[EntityChange]) -> Value {
     let mut collections: HashMap<String, BTreeMap<String, Value>> = HashMap::new();
     for doc in rows {
-        if doc["op"] == "delete" {
-            continue;
-        }
-        if let (Some(collection), Some(id), Some(value)) = (
-            doc["collection"].as_str(),
-            doc["id"].as_str(),
-            doc.get("value"),
-        ) {
+        if let Some(value) = doc.value() {
             collections
-                .entry(collection.into())
+                .entry(doc.collection().into())
                 .or_default()
-                .insert(id.into(), value.clone());
+                .insert(doc.id().into(), Value::Object(value.clone()));
         }
     }
     let list = |name: &str| {
@@ -257,7 +316,7 @@ fn entity_snapshot(rows: &[Value]) -> Value {
                 .collect(),
         )
     };
-    let agents = if rows.iter().any(|row| row["collection"] == "agentSummary") {
+    let agents = if rows.iter().any(|row| row.collection() == "agentSummary") {
         let summaries = collections.get("agentSummary").cloned().unwrap_or_default();
         Value::Array(
             summaries
@@ -351,26 +410,97 @@ pub(crate) fn serialize_state(snapshot: &Value) -> Result<String, crate::protoco
 // One store command owns validation, entity writes, cursors and derived state.
 // The store worker serializes commands; the transaction also prevents readers
 // from observing a partially applied batch or a state built from older rows.
+#[derive(Clone, Copy, Default)]
+enum CursorArgument {
+    #[default]
+    Missing,
+    Invalid,
+    Value(u64),
+}
+impl CursorArgument {
+    fn from_checked(value: Option<u64>) -> Self {
+        value.map_or(Self::Missing, Self::Value)
+    }
+}
+
+impl<'de> Deserialize<'de> for CursorArgument {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(Value::deserialize(d)?
+            .as_u64()
+            .map_or(Self::Invalid, Self::Value))
+    }
+}
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EntityOptions {
+    #[serde(default, deserialize_with = "optional_bool")]
+    replace: bool,
+    #[serde(default)]
+    checkpoint: CursorArgument,
+    #[serde(default)]
+    expected_revision: CursorArgument,
+}
+
 fn apply_entities(
     connection: &Connection,
     workspace: &str,
     params: &Value,
 ) -> Result<Value, String> {
-    let changes = params["changes"]
-        .as_array()
-        .ok_or("Missing entity changes.")?;
+    let changes =
+        Vec::<EntityChange>::deserialize(&params["changes"]).map_err(|e| e.to_string())?;
+    let options: EntityOptions = projection(params);
+    apply_entities_inner(
+        connection,
+        workspace,
+        &changes,
+        options.replace,
+        options.checkpoint,
+        options.expected_revision,
+    )
+}
+
+pub(crate) fn apply_entity_batch(
+    connection: &Connection,
+    workspace: &str,
+    changes: &[EntityChange],
+    replace: bool,
+    checkpoint: Option<u64>,
+    expected_revision: Option<u64>,
+) -> Result<Value, String> {
+    if !valid_workspace(workspace) {
+        return Err("Invalid projection identity.".into());
+    }
+    apply_entities_inner(
+        connection,
+        workspace,
+        changes,
+        replace,
+        CursorArgument::from_checked(checkpoint),
+        CursorArgument::from_checked(expected_revision),
+    )
+}
+
+fn apply_entities_inner(
+    connection: &Connection,
+    workspace: &str,
+    changes: &[EntityChange],
+    replace: bool,
+    checkpoint: CursorArgument,
+    expected_revision: CursorArgument,
+) -> Result<Value, String> {
     let transaction = Transaction::new_unchecked(connection, TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
     let previous = get(&transaction, workspace, "state")?.unwrap_or(Value::Null);
     // This is a local materialization revision, never a server cursor. It also
     // fences HTTP reads started before a newer application or reset committed.
     let revision = previous["seq"].as_u64().unwrap_or(0);
-    if let Some(expected) = params.get("expectedRevision")
-        && expected.as_u64() != Some(revision)
-    {
-        return Err("Entity state changed during synchronization. Retry the pull.".into());
+    match expected_revision {
+        CursorArgument::Missing => {}
+        CursorArgument::Value(expected) if expected == revision => {}
+        CursorArgument::Invalid | CursorArgument::Value(_) => {
+            return Err("Entity state changed during synchronization. Retry the pull.".into());
+        }
     }
-    let replace = params["replace"].as_bool().unwrap_or(false);
     if replace {
         transaction.execute("DELETE FROM client_projections WHERE workspace=?1 AND (scope LIKE 'entity:%' OR scope LIKE 'state:entities:%')", [workspace]).map_err(|e| e.to_string())?;
     }
@@ -384,23 +514,25 @@ fn apply_entities(
             )
             .map_err(|e| e.to_string())?;
         for change in changes {
-            let scope = entity_scope(change)?;
+            let scope = change.scope();
             changed |= insert
                 .execute(params![
                     workspace,
                     scope,
-                    change.to_string(),
-                    change["seq"].as_u64().ok_or("Missing entity sequence.")? as i64
+                    serde_json::to_string(change).map_err(|e| e.to_string())?,
+                    change.seq() as i64
                 ])
                 .map_err(|e| e.to_string())?
                 != 0;
         }
     }
-    if let Some(checkpoint) = params.get("checkpoint") {
-        let seq = checkpoint
-            .as_u64()
-            .filter(|seq| *seq <= MAX_SAFE_INTEGER as u64)
-            .ok_or("Invalid entity checkpoint.")?;
+    if !matches!(checkpoint, CursorArgument::Missing) {
+        let seq = match checkpoint {
+            CursorArgument::Value(seq) if seq <= MAX_SAFE_INTEGER as u64 => seq,
+            CursorArgument::Missing | CursorArgument::Invalid | CursorArgument::Value(_) => {
+                return Err("Invalid entity checkpoint.".into());
+            }
+        };
         for (scope, payload) in [
             ("state:entities:checkpoint", "{}"),
             ("state:entities:ready", "\"ready\""),
@@ -441,6 +573,63 @@ fn apply_entities(
     Ok(result)
 }
 
+/// A document checked against its local scope and payload constraints.
+pub struct CheckedDocument(Document);
+
+pub(crate) fn check_document(scope: &str, document: Document) -> Result<CheckedDocument, String> {
+    if document.id != scope || document.seq > MAX_SAFE_INTEGER as u64 {
+        return Err("Invalid projection document.".into());
+    }
+    if !document.deleted {
+        serde_json::from_str::<Value>(&document.payload).map_err(|e| e.to_string())?;
+    }
+    Ok(CheckedDocument(document))
+}
+
+fn write_document(
+    connection: &Connection,
+    workspace: &str,
+    document: &CheckedDocument,
+) -> Result<(), String> {
+    let document = &document.0;
+    connection
+        .execute(
+            "INSERT INTO client_projections(workspace,scope,document,seq) VALUES(?1,?2,?3,?4)
+        ON CONFLICT(workspace,scope) DO UPDATE SET document=excluded.document,seq=excluded.seq
+        WHERE excluded.seq>client_projections.seq",
+            params![
+                workspace,
+                document.id,
+                serde_json::to_string(document).map_err(|e| e.to_string())?,
+                document.seq as i64
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub(crate) fn put_documents(
+    connection: &Connection,
+    workspace: &str,
+    scope: &str,
+    documents: &[CheckedDocument],
+) -> Result<Value, String> {
+    if !valid_workspace(workspace) || scope.is_empty() || scope.len() > MAX_PROJECTION_SCOPE_BYTES {
+        return Err("Invalid projection identity.".into());
+    }
+    let transaction = Transaction::new_unchecked(connection, TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    for document in documents {
+        if document.0.id != scope {
+            return Err("Invalid projection document.".into());
+        }
+        write_document(&transaction, workspace, document)?;
+    }
+    let value = get(&transaction, workspace, scope)?.unwrap_or(Value::Null);
+    transaction.commit().map_err(|e| e.to_string())?;
+    Ok(value)
+}
+
 fn execute(connection: &Connection, request: &Request) -> Result<Value, String> {
     if request.method == "identity.get" {
         let value: Option<String> = connection
@@ -457,13 +646,15 @@ fn execute(connection: &Connection, request: &Request) -> Result<Value, String> 
             .map(|value| value.unwrap_or(Value::Null));
     }
     if request.method == "identity.set" {
-        let workspace = request.params["workspaceId"]
-            .as_str()
+        let input: IdentityInput = projection(&request.params);
+        let workspace = input
+            .workspace_id
+            .as_deref()
             .ok_or("Missing workspace identity.")?;
         if !valid_workspace(workspace) {
             return Err("Invalid workspace identity.".into());
         }
-        let identity = json!({"workspaceId":workspace,"chatState":request.params["chatState"].as_bool().unwrap_or(false)});
+        let identity = json!({"workspaceId":workspace,"chatState":input.chat_state});
         // Bind the store atomically, including concurrent opens. A changed
         // backend must not silently replace the identity used for offline data.
         let changed = connection
@@ -482,58 +673,72 @@ fn execute(connection: &Connection, request: &Request) -> Result<Value, String> 
         }
         return Ok(identity);
     }
-    let workspace = request.params["workspace"]
-        .as_str()
+    let input: ProjectionWorkspace = projection(&request.params);
+    let workspace = input
+        .workspace
+        .as_deref()
         .ok_or("Missing workspace identity.")?;
     if !valid_workspace(workspace) {
         return Err("Invalid projection identity.".into());
     }
-    match request.method.as_str() {
-        "projection.getRows" => return get_rows(connection, workspace, &request.params),
-        "projection.rangeRows" => return range_rows(connection, workspace, &request.params),
-        "projection.putRows" => return put_rows(connection, workspace, &request.params),
-        "projection.pruneRows" => return prune_rows(connection, workspace, &request.params),
-        _ => {}
+    if matches!(
+        request.method.as_str(),
+        "projection.getRows"
+            | "projection.rangeRows"
+            | "projection.putRows"
+            | "projection.pruneRows"
+    ) {
+        let command: RowCommand = if request.params.is_object() {
+            RowCommand::deserialize(&request.params).unwrap_or_default()
+        } else {
+            RowCommand::default()
+        };
+        return match request.method.as_str() {
+            "projection.getRows" => get_rows(connection, workspace, &command, &request.params),
+            "projection.rangeRows" => range_rows(connection, workspace, &command),
+            "projection.putRows" => put_rows(connection, workspace, &command, &request.params),
+            "projection.pruneRows" => prune_rows(connection, workspace, &command),
+            _ => unreachable!(),
+        };
     }
     if request.method == "projection.applyEntities" {
         return apply_entities(connection, workspace, &request.params);
     }
     if request.method == "projection.putEntity" {
-        let change = &request.params["change"];
-        let scope = entity_scope(change)?;
-        let seq = change["seq"].as_u64().ok_or("Missing entity sequence.")?;
+        let change =
+            EntityChange::deserialize(&request.params["change"]).map_err(|e| e.to_string())?;
+        let scope = change.scope();
+        let seq = change.seq();
         let changed = connection
             .execute(
                 "INSERT INTO client_projections(workspace,scope,document,seq) VALUES(?1,?2,?3,?4)
             ON CONFLICT(workspace,scope) DO UPDATE SET document=excluded.document,seq=excluded.seq
             WHERE excluded.seq>client_projections.seq",
-                params![workspace, scope, change.to_string(), seq as i64],
+                params![
+                    workspace,
+                    scope,
+                    serde_json::to_string(&change).map_err(|e| e.to_string())?,
+                    seq as i64
+                ],
             )
             .map_err(|error| error.to_string())?;
         return Ok(Value::Bool(changed != 0));
     }
-    let scope = request.params["scope"]
-        .as_str()
-        .ok_or("Missing projection scope.")?;
+    let input: ProjectionScope = projection(&request.params);
+    let scope = input.scope.as_deref().ok_or("Missing projection scope.")?;
     if scope.is_empty() || scope.len() > MAX_PROJECTION_SCOPE_BYTES {
         return Err("Invalid projection identity.".into());
     }
     match request.method.as_str() {
-        "projection.entities" => Ok(Value::Array(entities(connection, workspace)?)),
+        "projection.entities" => {
+            serde_json::to_value(entities(connection, workspace)?).map_err(|e| e.to_string())
+        }
         "projection.get" => Ok(get(connection, workspace, scope)?.unwrap_or(Value::Null)),
         "projection.put" => {
-            let document: Document = serde_json::from_value(request.params["document"].clone())
-                .map_err(|e| e.to_string())?;
-            if document.id != scope || document.seq > MAX_SAFE_INTEGER as u64 {
-                return Err("Invalid projection document.".into());
-            }
-            if !document.deleted {
-                serde_json::from_str::<Value>(&document.payload).map_err(|e| e.to_string())?;
-            }
-            connection.execute("INSERT INTO client_projections(workspace,scope,document,seq) VALUES(?1,?2,?3,?4)
-                ON CONFLICT(workspace,scope) DO UPDATE SET document=excluded.document,seq=excluded.seq
-                WHERE excluded.seq>client_projections.seq", params![workspace,scope,serde_json::to_string(&document).map_err(|e|e.to_string())?,document.seq as i64])
-                .map_err(|e|e.to_string())?;
+            let document: Document =
+                Document::deserialize(&request.params["document"]).map_err(|e| e.to_string())?;
+            let document = check_document(scope, document)?;
+            write_document(connection, workspace, &document)?;
             Ok(serde_json::to_value(get(connection, workspace, scope)?)
                 .map_err(|e| e.to_string())?)
         }
@@ -551,13 +756,104 @@ pub fn dispatch(connection: &Connection, request: &Request) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn projection_sender_preserves_validation_order_and_rollback_after_restart() {
+        use crate::delivery::StoreCommand;
+        use tokio::sync::{mpsc, oneshot};
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("client.sqlite3");
+        let worker_path = path.clone();
+        let (sender, mut receiver) = mpsc::channel::<StoreCommand>(8);
+        let worker = std::thread::spawn(move || {
+            let mut store = crate::store::Store::open(&worker_path).unwrap();
+            while let Some(command) = receiver.blocking_recv() {
+                command.execute(&mut store);
+            }
+        });
+        async fn send(
+            sender: &mpsc::Sender<StoreCommand>,
+            method: &str,
+            params: Value,
+        ) -> Response {
+            let (reply, receive) = oneshot::channel();
+            sender
+                .send(StoreCommand::Request(
+                    Request {
+                        id: "fixture".into(),
+                        method: method.into(),
+                        params,
+                    },
+                    reply,
+                ))
+                .await
+                .unwrap();
+            receive.await.unwrap()
+        }
+        let workspace = "a".repeat(32);
+        let bad = send(
+            &sender,
+            "projection.applyEntities",
+            json!({"workspace":"bad","changes":null,"checkpoint":null}),
+        )
+        .await;
+        assert_eq!(bad.error.unwrap().message, "Invalid projection identity.");
+        let bad = send(
+            &sender,
+            "projection.unknown",
+            json!({"workspace":workspace}),
+        )
+        .await;
+        assert_eq!(bad.error.unwrap().message, "Missing projection scope.");
+        let bad = send(
+            &sender,
+            "projection.applyEntities",
+            json!({"workspace":workspace,"changes":null,"expectedRevision":null}),
+        )
+        .await;
+        assert_ne!(
+            bad.error.unwrap().message,
+            "Entity state changed during synchronization. Retry the pull."
+        );
+        let change = json!({"op":"upsert","collection":"task","id":"a","seq":1,"value":{"id":"a"}});
+        let bad = send(
+            &sender,
+            "projection.applyEntities",
+            json!({"workspace":workspace,"changes":[change],"replace":true,"checkpoint":1.0}),
+        )
+        .await;
+        assert_eq!(bad.error.unwrap().message, "Invalid entity checkpoint.");
+        drop(sender);
+        worker.join().unwrap();
+        let mut store = crate::store::Store::open(&path).unwrap();
+        let result = store.dispatch(Request {
+            id: "get".into(),
+            method: "projection.entities".into(),
+            params: json!({"workspace":workspace,"scope":"entity:*"}),
+        });
+        assert_eq!(result.result, Some(json!([])));
+    }
+
+    #[test]
+    fn borrowed_document_decoding_keeps_old_errors() {
+        for value in [
+            json!(null),
+            json!([]),
+            json!({}),
+            json!({"id":3}),
+            json!({"id":"x","payload":"{}","seq":1.0}),
+        ] {
+            let old = serde_json::from_value::<Document>(value.clone()).map_err(|e| e.to_string());
+            let new = Document::deserialize(&value).map_err(|e| e.to_string());
+            assert_eq!(old.err(), new.err(), "{value}");
+        }
+    }
     #[test]
     fn agent_summary_renders_without_detail_and_owns_list_fields() {
-        let summary = json!({"op":"upsert","collection":"agentSummary","id":"a","value":{"id":"a","name":"Current","status":"completed","lastCompletedTurn":"turn","readState":{"threadId":"thread","turnId":"turn","read":false,"revision":1}}});
+        let summary: EntityChange = serde_json::from_str(r#"{"op":"upsert","collection":"agentSummary","id":"a","seq":0,"value":{"id":"a","name":"Current","status":"completed","lastCompletedTurn":"turn","readState":{"threadId":"thread","turnId":"turn","read":false,"revision":1}}}"#).expect("summary");
         let snapshot = entity_snapshot(std::slice::from_ref(&summary));
         assert_eq!(snapshot["threads"][0]["name"], "Current");
         assert!(snapshot["threads"][0].get("lastAnswer").is_none());
-        let detail = json!({"op":"upsert","collection":"agentDetail","id":"a","value":{"id":"a","lastAnswer":"Answer"}});
+        let detail: EntityChange = serde_json::from_str(r#"{"op":"upsert","collection":"agentDetail","id":"a","seq":0,"value":{"id":"a","lastAnswer":"Answer"}}"#).expect("detail");
         let snapshot = entity_snapshot(&[summary, detail]);
         assert_eq!(snapshot["threads"][0]["lastAnswer"], "Answer");
         assert_eq!(snapshot["threads"][0]["name"], "Current");
@@ -592,6 +888,38 @@ mod tests {
     }
 
     #[test]
+    fn document_batch_rolls_back_earlier_writes_on_later_sql_failure() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = crate::store::Store::open(&directory.path().join("client.sqlite3")).unwrap();
+        let workspace = "a".repeat(32);
+        store.connection.execute_batch("CREATE TEMP TRIGGER reject_second_document BEFORE UPDATE ON client_projections WHEN NEW.seq=2 BEGIN SELECT RAISE(ABORT, 'injected failure'); END;").unwrap();
+        let documents = [
+            Document {
+                id: "transcript:a".into(),
+                payload: "{}".into(),
+                seq: 1,
+                deleted: false,
+            },
+            Document {
+                id: "transcript:a".into(),
+                payload: "{}".into(),
+                seq: 2,
+                deleted: false,
+            },
+        ];
+        let documents = documents
+            .into_iter()
+            .map(|document| check_document("transcript:a", document).unwrap())
+            .collect::<Vec<_>>();
+        assert!(put_documents(&store.connection, &workspace, "transcript:a", &documents).is_err());
+        assert!(
+            get(&store.connection, &workspace, "transcript:a")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
     fn entity_batch_rolls_back_rows_cursors_and_state_on_failure() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("client.sqlite3");
@@ -617,7 +945,10 @@ mod tests {
         assert!(failed.error.is_some());
         drop(store);
         let store = crate::store::Store::open(&path).unwrap();
-        assert_eq!(entities(&store.connection, &workspace).unwrap(), vec![a]);
+        assert_eq!(
+            serde_json::to_value(entities(&store.connection, &workspace).unwrap()).unwrap(),
+            json!([a])
+        );
         assert_eq!(
             get(&store.connection, &workspace, "state").unwrap(),
             Some(original)
@@ -634,6 +965,32 @@ mod tests {
                 .unwrap()["seq"],
             5
         );
+    }
+
+    #[test]
+    fn entity_batch_preserves_missing_invalid_and_revision_error_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = crate::store::Store::open(&dir.path().join("client.sqlite3")).unwrap();
+        let workspace = "a".repeat(32);
+        let call = |params: Value| Request {
+            id: "batch".into(),
+            method: "projection.applyEntities".into(),
+            params,
+        };
+        let base = json!({"workspace":workspace,"changes":[]});
+        assert!(store.dispatch(call(base.clone())).error.is_none());
+        let mut both = base.clone();
+        both["expectedRevision"] = Value::Null;
+        both["checkpoint"] = Value::Null;
+        let failure = store.dispatch(call(both)).error.unwrap();
+        assert_eq!(
+            failure.message,
+            "Entity state changed during synchronization. Retry the pull."
+        );
+        let mut checkpoint = base;
+        checkpoint["checkpoint"] = Value::Null;
+        let failure = store.dispatch(call(checkpoint)).error.unwrap();
+        assert_eq!(failure.message, "Invalid entity checkpoint.");
     }
 
     #[test]
@@ -688,6 +1045,30 @@ mod tests {
         assert!(entities(&store.connection, &workspace).unwrap().is_empty());
         let snapshot: Value = serde_json::from_str(reset["payload"].as_str().unwrap()).unwrap();
         assert_eq!(snapshot["runtime"]["tasks"], json!([]));
+    }
+
+    #[test]
+    fn unknown_collection_and_opaque_values_roundtrip_through_cache() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("client.sqlite3");
+        let workspace = "a".repeat(32);
+        let change = json!({"op":"upsert","collection":"future","id":"x:y","seq":3,"value":{"nested":[null,{"draft":{"text":"same","number":1.5}}]},"vendor":{"flag":true}});
+        {
+            let mut store = crate::store::Store::open(&path).unwrap();
+            let result = store.dispatch(Request {
+                id: "put".into(),
+                method: "projection.putEntity".into(),
+                params: json!({"workspace":workspace,"change":change}),
+            });
+            assert!(result.error.is_none(), "{:?}", result.error);
+        }
+        let mut store = crate::store::Store::open(&path).unwrap();
+        let result = store.dispatch(Request {
+            id: "get".into(),
+            method: "projection.get".into(),
+            params: json!({"workspace":workspace,"scope":"entity:future:x:y"}),
+        });
+        assert_eq!(result.result, Some(change));
     }
 
     #[test]
@@ -927,27 +1308,62 @@ mod tests {
         let path = directory.path().join("client.sqlite3");
         {
             let mut store = crate::store::Store::open(&path).unwrap();
-            let written = rows(&mut store, "projection.putRows", json!({"prefix":"v1","rows":[
-                {"id":"entity:agent:a","seq":9,"payload":"","entity":{"id":"a"}},
-                {"id":"entity:agent:b","seq":7,"payload":"","_deleted":true},
-                {"id":"state:entities:checkpoint","seq":9,"payload":"{}"},
-            ]}));
+            let written = rows(
+                &mut store,
+                "projection.putRows",
+                json!({"prefix":"v1","rows":[
+                    {"id":"entity:agent:a","seq":9,"payload":"","entity":{"id":"a"}},
+                    {"id":"entity:agent:b","seq":7,"payload":"","_deleted":true},
+                    {"id":"state:entities:checkpoint","seq":9,"payload":"{}"},
+                ]}),
+            );
             assert_eq!(written.result, Some(json!({"written":3})));
             // A reset lowers the sequence; the store keeps no ordering rule of its own.
-            assert!(rows(&mut store, "projection.putRows", json!({"prefix":"v1","rows":[
-                {"id":"state:entities:checkpoint","seq":0,"payload":"{}"}]})).error.is_none());
+            assert!(
+                rows(
+                    &mut store,
+                    "projection.putRows",
+                    json!({"prefix":"v1","rows":[
+                {"id":"state:entities:checkpoint","seq":0,"payload":"{}"}]})
+                )
+                .error
+                .is_none()
+            );
         }
         let mut store = crate::store::Store::open(&path).unwrap();
-        let found = rows(&mut store, "projection.getRows", json!({"prefix":"v1","ids":["state:entities:checkpoint","missing"]}));
+        let found = rows(
+            &mut store,
+            "projection.getRows",
+            json!({"prefix":"v1","ids":["state:entities:checkpoint","missing"]}),
+        );
         assert_eq!(found.result.unwrap()[0]["seq"], 0);
-        let range = rows(&mut store, "projection.rangeRows", json!({"prefix":"v1","gte":"entity:","lt":"entity;"}));
+        let range = rows(
+            &mut store,
+            "projection.rangeRows",
+            json!({"prefix":"v1","gte":"entity:","lt":"entity;"}),
+        );
         let range = range.result.unwrap();
         assert_eq!(range["more"], false);
         assert_eq!(range["rows"][0]["id"], "entity:agent:a");
         assert_eq!(range["rows"][1]["_deleted"], true);
-        let page = rows(&mut store, "projection.rangeRows", json!({"prefix":"v1","gte":"entity:","lt":"entity;","limit":1})).result.unwrap();
-        assert_eq!((page["rows"].as_array().unwrap().len(), page["more"].clone()), (1, json!(true)));
-        let next = rows(&mut store, "projection.rangeRows", json!({"prefix":"v1","gt":"entity:agent:a","lt":"entity;"})).result.unwrap();
+        let page = rows(
+            &mut store,
+            "projection.rangeRows",
+            json!({"prefix":"v1","gte":"entity:","lt":"entity;","limit":1}),
+        )
+        .result
+        .unwrap();
+        assert_eq!(
+            (page["rows"].as_array().unwrap().len(), page["more"].clone()),
+            (1, json!(true))
+        );
+        let next = rows(
+            &mut store,
+            "projection.rangeRows",
+            json!({"prefix":"v1","gt":"entity:agent:a","lt":"entity;"}),
+        )
+        .result
+        .unwrap();
         assert_eq!(next["rows"][0]["id"], "entity:agent:b");
         assert_eq!(next["more"], false);
     }
@@ -955,24 +1371,54 @@ mod tests {
     #[test]
     fn page_rows_are_separate_per_prefix_and_old_prefixes_are_pruned() {
         let directory = tempfile::tempdir().unwrap();
-        let mut store = crate::store::Store::open(&directory.path().join("client.sqlite3")).unwrap();
+        let mut store =
+            crate::store::Store::open(&directory.path().join("client.sqlite3")).unwrap();
         for prefix in ["old", "new"] {
-            assert!(rows(&mut store, "projection.putRows", json!({"prefix":prefix,"rows":[
-                {"id":"entity:agent:a","seq":1,"payload":""}]})).error.is_none());
+            assert!(
+                rows(
+                    &mut store,
+                    "projection.putRows",
+                    json!({"prefix":prefix,"rows":[
+                {"id":"entity:agent:a","seq":1,"payload":""}]})
+                )
+                .error
+                .is_none()
+            );
         }
         // A projection of the server's own documents is not a page row.
         assert!(rows(&mut store, "projection.put", json!({"scope":"transcript:one","document":{"id":"transcript:one","seq":1,"payload":"{}"}})).error.is_none());
         let pruned = rows(&mut store, "projection.pruneRows", json!({"prefix":"new"}));
         assert_eq!(pruned.result, Some(json!({"removed":1})));
-        let count = |store: &mut crate::store::Store, prefix: &str| rows(store, "projection.getRows", json!({"prefix":prefix,"ids":["entity:agent:a"]})).result.unwrap().as_array().unwrap().len();
+        let count = |store: &mut crate::store::Store, prefix: &str| {
+            rows(
+                store,
+                "projection.getRows",
+                json!({"prefix":prefix,"ids":["entity:agent:a"]}),
+            )
+            .result
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .len()
+        };
         assert_eq!((count(&mut store, "old"), count(&mut store, "new")), (0, 1));
-        assert!(rows(&mut store, "projection.get", json!({"scope":"transcript:one"})).result.unwrap().is_object());
+        assert!(
+            rows(
+                &mut store,
+                "projection.get",
+                json!({"scope":"transcript:one"})
+            )
+            .result
+            .unwrap()
+            .is_object()
+        );
     }
 
     #[test]
     fn page_rows_refuse_bad_prefixes_identities_and_sequences() {
         let directory = tempfile::tempdir().unwrap();
-        let mut store = crate::store::Store::open(&directory.path().join("client.sqlite3")).unwrap();
+        let mut store =
+            crate::store::Store::open(&directory.path().join("client.sqlite3")).unwrap();
         for params in [
             json!({"prefix":"","rows":[]}),
             json!({"prefix":"a/b","rows":[]}),
@@ -980,10 +1426,114 @@ mod tests {
             json!({"prefix":"v1","rows":[{"id":"x","seq":-1}]}),
             json!({"prefix":"v1","rows":[{"id":"ok","seq":1},{"id":"x","seq":MAX_SAFE_INTEGER as u64 + 1}]}),
         ] {
-            assert!(rows(&mut store, "projection.putRows", params.clone()).error.is_some(), "{params}");
+            assert!(
+                rows(&mut store, "projection.putRows", params.clone())
+                    .error
+                    .is_some(),
+                "{params}"
+            );
         }
         // The failed batch above wrote nothing, including its valid first row.
-        assert_eq!(rows(&mut store, "projection.getRows", json!({"prefix":"v1","ids":["ok"]})).result, Some(json!([])));
-        assert!(rows(&mut store, "projection.rangeRows", json!({"prefix":"v1","lt":"z"})).error.is_some());
+        assert_eq!(
+            rows(
+                &mut store,
+                "projection.getRows",
+                json!({"prefix":"v1","ids":["ok"]})
+            )
+            .result,
+            Some(json!([]))
+        );
+        assert!(
+            rows(
+                &mut store,
+                "projection.rangeRows",
+                json!({"prefix":"v1","lt":"z"})
+            )
+            .error
+            .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn page_rows_sender_preserves_error_order_rollback_and_range_fallback() {
+        use crate::delivery::StoreCommand;
+        use tokio::sync::{mpsc, oneshot};
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("client.sqlite3");
+        let (sender, mut receiver) = mpsc::channel::<StoreCommand>(8);
+        let worker = std::thread::spawn(move || {
+            let mut store = crate::store::Store::open(&path).unwrap();
+            while let Some(command) = receiver.blocking_recv() {
+                command.execute(&mut store);
+            }
+        });
+        async fn send(
+            sender: &mpsc::Sender<StoreCommand>,
+            method: &str,
+            params: Value,
+        ) -> Response {
+            let (reply, receive) = oneshot::channel();
+            sender
+                .send(StoreCommand::Request(
+                    Request {
+                        id: "test".into(),
+                        method: method.into(),
+                        params,
+                    },
+                    reply,
+                ))
+                .await
+                .unwrap();
+            receive.await.unwrap()
+        }
+        let workspace = "a".repeat(32);
+        let foreign = send(
+            &sender,
+            "projection.putRows",
+            json!({"workspace":"bad","prefix":42,"rows":null}),
+        )
+        .await;
+        assert_eq!(
+            foreign.error.as_ref().map(|error| error.message.as_str()),
+            Some("Invalid projection identity.")
+        );
+        for invalid in [
+            json!({"id":"bad","seq":null}),
+            json!({"id":"bad","seq":1.0}),
+            json!({"seq":1}),
+            json!(["bad", 1]),
+        ] {
+            let result = send(
+                &sender,
+                "projection.putRows",
+                json!({"workspace":workspace,"prefix":"v1","rows":[{"id":"good","seq":1},invalid]}),
+            )
+            .await;
+            assert!(result.error.is_some());
+        }
+        let found = send(
+            &sender,
+            "projection.getRows",
+            json!({"workspace":workspace,"prefix":"v1","ids":["good"]}),
+        )
+        .await;
+        assert_eq!(found.result, Some(json!([])));
+        assert!(send(&sender, "projection.putRows", json!({"workspace":workspace,"prefix":"v1","rows":[{"id":"good","seq":1,"opaque":{"value":null}}]})).await.error.is_none());
+        for limit in [json!(null), json!("bad"), json!(-1), json!(1.0)] {
+            let found = send(&sender, "projection.rangeRows", json!({"workspace":workspace,"prefix":"v1","gte":"a","gt":7,"lt":"z","limit":limit})).await;
+            assert_eq!(
+                found.result.unwrap()["rows"][0]["opaque"],
+                json!({"value":null})
+            );
+        }
+        let other = send(
+            &sender,
+            "projection.getRows",
+            json!({"workspace":"b".repeat(32),"prefix":"v1","ids":["good"]}),
+        )
+        .await;
+        assert_eq!(other.result, Some(json!([])));
+        drop(sender);
+        worker.join().unwrap();
     }
 }

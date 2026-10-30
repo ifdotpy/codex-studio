@@ -51,13 +51,7 @@ Missing, preparing, duplicate or contradictory native history stays uncertain.
 The duplicate/contradiction hold is intentionally stricter than Python's
 last-match acceptance. No absence-based replay is introduced.
 
-## Explicit repair HTTP operation
-
-`POST /api/context-repair` returns the genuine saved no-op result for a worker
-without a native thread, a Claude worker, or a worker without candidate legacy
-history. Active repair receipts and waits remain blocked. A native history
-rewrite is partial and returns a named 501,
-`context-repair/native-history-rewrite`, without writing.
+## Recovery boundaries
 
 The optional oversized-event/role-suffix rewrite, offline-steer correction and
 obsolete failure-marker restoration repair Python-produced states. They can be

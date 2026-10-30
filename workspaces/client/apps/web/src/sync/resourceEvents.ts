@@ -116,8 +116,6 @@ const vaultProgressStates = {
 
 export type ResourceTokenRatesEvent =
   components["schemas"]["ResourceTokenRatesEvent"];
-export type ResourceLiveDeltaEvent =
-  components["schemas"]["ResourceLiveDeltaEvent"];
 
 import type {
   ResourceVersion,
@@ -151,13 +149,6 @@ type TabEvent = {
 
 type TabTokenRates = {
   kind: "token-rates";
-  workspaceId: string;
-  tabId: string;
-  event: unknown;
-};
-
-type TabLiveDelta = {
-  kind: "live-delta";
   workspaceId: string;
   tabId: string;
   event: unknown;
@@ -198,7 +189,6 @@ export type TabMessage = (
   | TabSubscriptions
   | TabEvent
   | TabTokenRates
-  | TabLiveDelta
   | {
       kind: "resource-progress";
       workspaceId: string;
@@ -221,7 +211,6 @@ export type OutgoingMessage =
     }
   | { kind: "resource-event"; event: ResourceChangeEvent }
   | { kind: "token-rates"; event: ResourceTokenRatesEvent }
-  | { kind: "live-delta"; event: ResourceLiveDeltaEvent }
   | { kind: "resource-progress"; event: ResourceProgressEvent }
   | { kind: "tab-heartbeat" }
   | { kind: "leader-heartbeat" }
@@ -327,7 +316,6 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     ) => void
   >();
 
-  const liveDeltaListeners = new Set<(event: ResourceLiveDeltaEvent) => void>();
   const tokenRateListeners = new Set<
     (event: ResourceTokenRatesEvent) => void
   >();
@@ -993,22 +981,6 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     if (owner || independent) broadcast({ kind: "token-rates", event });
   }
 
-  /** Live text is not replayed or ordered by revision: a lost frame is harmless. */
-  function receiveLiveDelta(value: unknown, fromPeer = false) {
-    const event = value as ResourceLiveDeltaEvent;
-    if (
-      !event ||
-      typeof event.agentId !== "string" ||
-      typeof event.itemId !== "string" ||
-      typeof event.text !== "string" ||
-      !Number.isSafeInteger(event.offset)
-    )
-      throw new TypeError("Invalid live-delta frame");
-    if (fromPeer && (owner || independent)) return;
-    for (const listener of liveDeltaListeners) listener(event);
-    if (owner || independent) broadcast({ kind: "live-delta", event });
-  }
-
   function flushResourceChanges() {
     // Detach this event before invoking listeners: a listener may synchronously
     // deliver another frame, which must retain its own publication and order.
@@ -1420,7 +1392,6 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       (record.kind === "resource-event" ||
         record.kind === "resource-progress" ||
         record.kind === "token-rates" ||
-        record.kind === "live-delta" ||
         record.kind === "leader-heartbeat" ||
         record.kind === "status")
     )
@@ -1500,12 +1471,6 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       receiveResourceProgress(record.event, true);
     } else if (record.kind === "token-rates") {
       receiveTokenRateEvent(record.event, true);
-    } else if (record.kind === "live-delta") {
-      try {
-        receiveLiveDelta(record.event, true);
-      } catch {
-        // A malformed peer frame is dropped; the durable item carries the text.
-      }
     } else if (
       record.kind === "status" &&
       isResourceConnectionState(record.status)
@@ -2115,9 +2080,6 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       connected.addEventListener("heartbeat", (message: Event) => {
         applyFrame(message, acceptHeartbeat);
       });
-      connected.addEventListener("live-delta", (message: Event) => {
-        applyFrame(message, receiveLiveDelta);
-      });
       connected.addEventListener("token-rates", (message: Event) => {
         applyFrame(message, receiveTokenRateEvent);
       });
@@ -2642,14 +2604,6 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     };
   }
 
-  /** Text of the chats this tab subscribes to; the chat's transcript subscription selects it. */
-  function watchLiveDeltas(
-    listener: (event: ResourceLiveDeltaEvent) => void,
-  ): () => void {
-    liveDeltaListeners.add(listener);
-    return () => liveDeltaListeners.delete(listener);
-  }
-
   configureTokenRateStream(watchTokenRateEvents);
 
   const stopMismatch = onApiSchemaMismatch(stopCoordinator);
@@ -2658,7 +2612,6 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     watchResourceChanges,
     watchResourceConnection,
     watchTokenRateEvents,
-    watchLiveDeltas,
     dispose() {
       stopMismatch();
       stopCoordinator();
@@ -2698,5 +2651,4 @@ export const {
   watchResourceChanges,
   watchResourceConnection,
   watchTokenRateEvents,
-  watchLiveDeltas,
 } = defaultResourceEvents;

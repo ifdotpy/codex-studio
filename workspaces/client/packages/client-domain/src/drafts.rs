@@ -80,8 +80,9 @@ pub fn schema() -> Schema {
 impl DraftVersion {
     /// Decode historical stored payloads without changing the original document.
     pub fn from_stored_value(id: &str, value: Value) -> Result<Self, String> {
-        let mut fields: serde_json::Map<String, Value> =
-            serde_json::from_value(value).map_err(|error| error.to_string())?;
+        let Value::Object(mut fields) = value else {
+            return Err("Invalid draft document.".into());
+        };
         fields
             .entry("id")
             .or_insert_with(|| Value::String(id.into()));

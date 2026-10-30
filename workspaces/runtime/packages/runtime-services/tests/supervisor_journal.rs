@@ -430,7 +430,7 @@ fn supervisor_journal_lifecycle_failpoints_preserve_all_rows() {
                 .close_unknown(
                     &journal.handle(handle).unwrap().unwrap(),
                     100.0,
-                    &json!({"blocked":null}),
+                    &serde_json::from_str(r#"{"blocked":null}"#).unwrap(),
                 )
                 .is_err(),
             "recover" => journal
@@ -442,7 +442,9 @@ fn supervisor_journal_lifecycle_failpoints_preserve_all_rows() {
                 )
                 .is_err(),
             "retire" => journal.retire(handle, 1, true, true).is_err(),
-            _ => journal.save_recovery(&json!({"blocked":null})).is_err(),
+            _ => journal
+                .save_recovery(&serde_json::from_str(r#"{"blocked":null}"#).unwrap())
+                .is_err(),
         };
         assert!(failed, "{action}/{table}");
         drop(journal);

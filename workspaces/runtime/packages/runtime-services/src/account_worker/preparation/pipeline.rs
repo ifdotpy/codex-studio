@@ -10,6 +10,7 @@ use studio_runtime_store::Transaction;
 use studio_runtime_store::path_identity::CanonicalPath;
 
 pub(crate) struct CommitGuard {
+    idle_compaction_mode: Option<studio_runtime_schema::idle_compaction::Mode>,
     native_params: Option<Value>,
     selection: gates::ExecutionSelection,
     token: crate::workspace_ready::ReadyToken,
@@ -128,8 +129,8 @@ async fn vm_attachment_paths(
     if snapshot.assets.is_empty() {
         return Ok(());
     }
-    let record = stored_agent_value(store, &intent.agent_id).await?;
-    if record["executionMode"] != "vm" {
+    let record = workspace_agent(store, &intent.agent_id).await?;
+    if record.execution_mode != Some(studio_runtime_store::AgentExecutionMode::Vm) {
         return Ok(());
     }
     #[cfg(unix)]
@@ -235,16 +236,13 @@ fn steer_preconditions(
     intent: &TurnIntent,
     filesystem: &FilesystemSnapshot,
 ) -> Result<Value, WorkerError> {
-    let record = agent(tx, &intent.agent_id)?.value();
-    if record["epoch"] != intent.epoch
-        || record["status"] != "running"
-        || record["autoWake"] != true
-        || record["threadId"].as_str() != intent.thread_id.as_deref()
-        || record
-            .get("accountKey")
-            .and_then(Value::as_str)
-            .unwrap_or("default")
-            != intent.account_key
+    let agent = agent(tx, &intent.agent_id)?;
+    let record = agent.value();
+    if agent.epoch != intent.epoch
+        || agent.status != studio_runtime_store::AgentStatus::Running
+        || agent.auto_wake != Some(true)
+        || agent.thread_id.as_deref() != intent.thread_id.as_deref()
+        || agent.account_key != intent.account_key
         || record["nativeFailureHold"] == true
         || native_thread_blocked(&record)
         || context_repair_blocked(&record)
@@ -306,21 +304,15 @@ fn rejected_notifications(
             | error @ WorkerError::CallbackUnknown => Err(error),
         };
     }
-    let record = agent(tx, &intent.agent_id)?.value();
+    let agent = agent(tx, &intent.agent_id)?;
+    let record = agent.value();
     // Global ownership/budget/recipient failures must never be diagnosed as a
     // bad notification merely because that notification shared the batch.
-    if record["epoch"] != intent.epoch
-        || record["autoWake"] != true
-        || record
-            .get("accountKey")
-            .and_then(Value::as_str)
-            .unwrap_or("default")
-            != intent.account_key
+    if agent.epoch != intent.epoch
+        || agent.auto_wake != Some(true)
+        || agent.account_key != intent.account_key
         || intent.radio_authorized
-        || record
-            .get("rootId")
-            .and_then(Value::as_str)
-            .is_none_or(str::is_empty)
+        || agent.root_id.0.is_empty()
         || record.get("deletedAt").is_some_and(|v| !v.is_null())
     {
         return Ok(rejected);
@@ -523,12 +515,13 @@ fn preconditions_for_purpose(
     allow_paused_start: bool,
     prepared_host: Option<&crate::host_project_runtime::PreparedHost>,
 ) -> Result<Value, WorkerError> {
-    let record = agent(tx, &intent.agent_id)?.value();
-    if record["epoch"] != intent.epoch
+    let agent = agent(tx, &intent.agent_id)?;
+    let record = agent.value();
+    if agent.epoch != intent.epoch
         || (!allow_paused_start
             && (record["startAttempt"]["id"] != intent.attempt_id
                 || record["startAttempt"]["submitted"] != false
-                || record["autoWake"] != true))
+                || agent.auto_wake != Some(true)))
         || record["nativeFailureHold"] == true
         || native_thread_blocked(&record)
         || context_repair_blocked(&record)
@@ -1339,14 +1332,16 @@ pub(crate) async fn prepare_monitor_command(
     if agent_id.is_empty() || agent_id.len() > 200 {
         return Err(refusal("monitor-preparation/agent-id-invalid".into()));
     }
-    let observed = workspace_agent(&store, agent_id).await?.value();
+    let observed = workspace_agent(&store, agent_id).await?;
     validate_monitor_actor(&observed, epoch)?;
+    let observed = observed.value();
     let agent_id = agent_id.to_owned();
     let state_root = store.root().to_path_buf();
     let resources_for_snapshot = resources.for_sql(&state_root, &observed, None).await?;
     scheduler::lifecycle_transaction_with(&store, move |tx| {
-        let current = agent(tx, &agent_id)?.value();
+        let current = agent(tx, &agent_id)?;
         validate_monitor_actor(&current, epoch)?;
+        let current = current.value();
         let connection = current["startAttempt"]["connectionId"]
             .as_str()
             .filter(|id| !id.is_empty())
@@ -1380,15 +1375,13 @@ pub(crate) async fn prepare_monitor_command(
     .await
 }
 
-fn validate_monitor_actor(record: &Value, epoch: u64) -> Result<(), WorkerError> {
-    if crate::legacy_image_workspace::is_legacy(record) {
+fn validate_monitor_actor(record: &studio_runtime_store::AgentRecord, epoch: u64) -> Result<(), WorkerError> {
+    if crate::legacy_image_workspace::is_legacy(&record.value()) {
         return Err(refusal("This legacy workspace is finished".into()));
     }
-    if record["epoch"] != json!(epoch)
-        || record
-            .get("deletedAt")
-            .is_some_and(|value| !value.is_null())
-        || record["autoWake"] != true
+    if u64::try_from(record.epoch).ok() != Some(epoch)
+        || record.extra.get("deletedAt").is_some_and(|value| !value.is_null())
+        || record.auto_wake != Some(true)
     {
         return Err(refusal("monitor-preparation/actor-changed".into()));
     }
@@ -1505,22 +1498,16 @@ async fn prepare_native_snapshot(
     if account_transfer_owner.is_none() {
         before_start(&store, resources, agent_id).await?;
     }
-    let record = stored_agent_value(&store, agent_id).await?;
+    let agent_record = workspace_agent(&store, agent_id).await?;
+    let record = agent_record.value();
     let intent = TurnIntent {
         agent_id: agent_id.into(),
-        epoch: decode(record["epoch"].clone(), "agent/epoch")?,
+        epoch: agent_record.epoch,
         attempt_id: attempt_id.into(),
-        account_key: record
-            .get("accountKey")
-            .and_then(Value::as_str)
-            .unwrap_or("default")
-            .into(),
+        account_key: agent_record.account_key.clone(),
         provider: studio_runtime_providers::ProviderKind::of_record(&record)
             .map_err(|_| invalid("agent/provider"))?,
-        thread_id: record
-            .get("threadId")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
+        thread_id: agent_record.thread_id.clone(),
         cwd: record.get("cwd").and_then(Value::as_str).map(str::to_owned),
         model: record
             .get("model")
@@ -1634,8 +1621,9 @@ pub(crate) async fn prepare_safety_retry(
     {
         return Err(refusal("safety-retry/identity-invalid".into()));
     }
-    let record = stored_agent_value(&store, &request.agent_id).await?;
-    if record.get("threadId").and_then(Value::as_str) != Some(&request.source_thread_id)
+    let agent_record = workspace_agent(&store, &request.agent_id).await?;
+    let record = agent_record.value();
+    if agent_record.thread_id.as_deref() != Some(request.source_thread_id.as_str())
         || record
             .get("deletedAt")
             .is_some_and(|value| !value.is_null())
@@ -1652,13 +1640,13 @@ pub(crate) async fn prepare_safety_retry(
     let state_root = store.root().to_path_buf();
     let resources_for_snapshot = resources.for_sql(&state_root, &record, None).await?;
     let mut snapshot = scheduler::lifecycle_transaction_with(&store, move |tx| {
-        let current = agent(tx, &snapshot_request.agent_id)?.value();
-        if current.get("threadId").and_then(Value::as_str)
-            != Some(&snapshot_request.source_thread_id)
-            || current.get("epoch") != record.get("epoch")
+        let current = agent(tx, &snapshot_request.agent_id)?;
+        if current.thread_id.as_deref() != Some(snapshot_request.source_thread_id.as_str())
+            || current.epoch != agent_record.epoch
         {
             return Err(refusal("safety-retry/agent-changed".into()));
         }
+        let current = current.value();
         thread_snapshot(
             tx,
             &resources_for_snapshot,
@@ -1857,6 +1845,7 @@ pub(crate) async fn prepare_ready(
         })
         .await?;
     let mut guard = CommitGuard {
+        idle_compaction_mode: None,
         native_params: None,
         selection,
         token,
@@ -1927,6 +1916,30 @@ pub(crate) async fn prepare_ready(
     )
     .map_err(|e| refusal(format!("thread-preparation/{e:?}")))?;
     apply_vm_reviewer_permissions(&mut params, vm_reviewer.as_ref());
+    if snapshot.account.provider == studio_runtime_providers::ProviderKind::Claude {
+        let agent_id = intent.agent_id.clone();
+        let mode = store
+            .read_async(
+                "runtime-services/idle_compaction_input_mode",
+                move |connection| {
+                    let agent =
+                        AgentRepository::get(connection, &AgentId::from(agent_id.as_str()))?
+                            .map(|agent| agent.value())
+                            .unwrap_or_default();
+                    studio_runtime_store::OrchestrationSettingsRepository::idle_compaction_for(
+                        connection, &agent,
+                    )
+                    .map(|settings| settings.mode)
+                },
+            )
+            .await?;
+        params.insert("idleCompactionMode".into(), json!(mode));
+        params.insert(
+            "idleSummaryRosterIncluded".into(),
+            json!(turn_snapshot.idle_summary_return),
+        );
+        guard.idle_compaction_mode = Some(mode);
+    }
     params.insert("input".into(), json!(compiled.provider_inputs));
     params.insert(
         "clientUserMessageId".into(),
@@ -1999,6 +2012,13 @@ pub(crate) fn commit(
             guard.prepared_host.as_ref(),
         )
     })?;
+    if let Some(expected) = guard.idle_compaction_mode
+        && studio_runtime_store::OrchestrationSettingsRepository::idle_compaction_for(tx, &record)?
+            .mode
+            != expected
+    {
+        return Err(refusal("idle-compaction/mode-changed".into()));
+    }
     let (identity, _) = catalog(&guard.resources, &context.intent)?;
     let mut frozen = guard
         .selection
@@ -2409,14 +2429,15 @@ mod daybreak_tests {
 
     #[test]
     fn monitor_preparation_accepts_submitted_running_actor_without_start_admission() {
-        let record = json!({
-            "id":"agent", "epoch":7, "autoWake":true, "deletedAt":null,
+        let record = studio_runtime_store::AgentRecord::from_value(json!({
+            "id":"agent", "rootId":"agent", "accountKey":"default", "epoch":7, "autoWake":true, "deletedAt":null,
             "provider":studio_runtime_schema::ProviderKind::Codex,
             "status":"running", "startAttempt":{"id":"submitted","submitted":true}
-        });
+        })).expect("agent");
         assert!(validate_monitor_actor(&record, 7).is_ok());
         assert!(validate_monitor_actor(&record, 8).is_err());
-        let deleted = json!({"epoch":7,"autoWake":true,"deletedAt":1});
+        let mut deleted = record;
+        deleted.extra.insert("deletedAt".into(), json!(1));
         assert!(validate_monitor_actor(&deleted, 7).is_err());
     }
 

@@ -2153,42 +2153,6 @@ describe("shared resource event transport", () => {
     stop();
   });
 
-  it("delivers live text to local listeners and follower tabs without a revision", async () => {
-    syncDatabase.mockResolvedValue({ workspaceId });
-    vi.stubGlobal("document", {
-      hidden: false,
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-    });
-    vi.stubGlobal("navigator", {
-      onLine: true,
-      locks: {
-        request: (
-          _name: string,
-          _options: unknown,
-          callback: (lock: {}) => Promise<void>,
-        ) => Promise.resolve().then(() => callback({})),
-      },
-    });
-    vi.stubGlobal("crypto", { randomUUID: () => "tab-owner" });
-    vi.stubGlobal("BroadcastChannel", Channel);
-    const transport = await loadTransport();
-    const stop = transport.watchResourceChanges({ kind: "drafts" }, vi.fn());
-    await vi.advanceTimersByTimeAsync(20);
-    const onLive = vi.fn();
-    const stopLive = transport.watchLiveDeltas(onLive);
-    const event = { agentId: "a", itemId: "a:i", offset: 0, text: "Hi" };
-    Source.instances[0]!.emit("live-delta", event);
-    expect(onLive).toHaveBeenCalledWith(event);
-    expect(Channel.instances[0]!.messages).toContainEqual(
-      expect.objectContaining({ kind: "live-delta", event }),
-    );
-    stopLive();
-    Source.instances[0]!.emit("live-delta", { ...event, offset: 2 });
-    expect(onLive).toHaveBeenCalledTimes(1);
-    stop();
-  });
-
   it("delivers resource and token-rate events that share a hub revision", async () => {
     syncDatabase.mockResolvedValue({ workspaceId });
     vi.stubGlobal("navigator", {

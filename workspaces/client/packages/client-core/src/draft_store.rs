@@ -5,7 +5,10 @@ use crate::{
     protocol::{Request, Response},
 };
 use rusqlite::{Connection, OptionalExtension, params};
-use serde_json::{Value, json};
+use serde::Deserialize;
+use serde_json::Value;
+#[cfg(test)]
+use serde_json::json;
 use std::{
     collections::{BTreeMap, BTreeSet},
     time::{SystemTime, UNIX_EPOCH},
@@ -151,35 +154,88 @@ pub fn view(db: &Connection, workspace: &str) -> Result<DraftSnapshot, String> {
     })
 }
 
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DraftRow {
+    pub new_document_state: Document,
+    pub assumed_master_state: Option<Document>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+pub(crate) struct PendingDrafts {
+    pub rows: Vec<DraftRow>,
+    pub checkpoint: u64,
+}
+
 #[derive(serde::Serialize)]
 #[serde(untagged)]
 enum DraftResult {
     Snapshot(DraftSnapshot),
-    Pending(Value),
+    Pending(PendingDrafts),
+}
+
+// Invalid scalar types retain their original access-time defaults and errors.
+fn text_field<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(Value::deserialize(d)?.as_str().map(str::to_owned))
+}
+fn unsigned_field<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
+    Ok(Value::deserialize(d)?.as_u64())
+}
+fn project<T: for<'de> Deserialize<'de> + Default>(value: &Value) -> T {
+    if value.is_object() {
+        T::deserialize(value).unwrap_or_default()
+    } else {
+        T::default()
+    }
+}
+#[derive(Default, Deserialize)]
+struct DraftWorkspace {
+    #[serde(default, deserialize_with = "text_field")]
+    workspace: Option<String>,
+}
+#[derive(Default, Deserialize)]
+struct DraftStatus {
+    #[serde(default, deserialize_with = "text_field")]
+    error: Option<String>,
+}
+#[derive(Default, Deserialize)]
+struct DraftDismissal {
+    #[serde(default, deserialize_with = "text_field")]
+    id: Option<String>,
+    #[serde(default, deserialize_with = "text_field")]
+    text: Option<String>,
+}
+#[derive(Default, Deserialize)]
+struct DraftCheckpoint {
+    #[serde(default, deserialize_with = "unsigned_field")]
+    checkpoint: Option<u64>,
 }
 
 fn execute(db: &Connection, request: &Request) -> Result<DraftResult, String> {
     let p = &request.params;
-    let workspace = p["workspace"]
-        .as_str()
+    let identity: DraftWorkspace = project(p);
+    let workspace = identity
+        .workspace
+        .as_deref()
         .filter(|v| crate::projections::valid_workspace(v))
         .ok_or("Invalid draft workspace.")?;
     match request.method.as_str() {
         "drafts.view" => view(db, workspace).map(DraftResult::Snapshot),
         "drafts.sync_status" => {
-            let message = p["error"].as_str().unwrap_or("");
+            let status: DraftStatus = project(p);
+            let message = status.error.as_deref().unwrap_or("");
             sql(db.execute("INSERT INTO client_draft_sync VALUES(?1,?2) ON CONFLICT(workspace) DO UPDATE SET error=excluded.error",params![workspace,message]))?;
             view(db, workspace).map(DraftResult::Snapshot)
         }
         "drafts.import" => {
             let versions: Vec<DraftVersion> =
-                serde_json::from_value(p["versions"].clone()).map_err(|e| e.to_string())?;
+                Vec::<DraftVersion>::deserialize(&p["versions"]).map_err(|e| e.to_string())?;
             if versions.len() > 10000 {
                 return Err("Too many saved draft branches.".into());
             }
             for version in versions {
+                version.validate()?;
                 let incoming = document(&version);
-                decode(&incoming)?;
                 let existing = keyed_row(db, workspace, &version.id)?;
                 match existing {
                     Some((local, master, _)) => {
@@ -206,8 +262,8 @@ fn execute(db: &Connection, request: &Request) -> Result<DraftResult, String> {
                 .map_err(|e| e.to_string())?
                 .as_millis() as u64;
             for (session, text) in changes {
-                let text = text
-                    .as_str()
+                let text = text_field(text)
+                    .map_err(|e| e.to_string())?
                     .filter(|text| text.chars().count() <= 2_000_000)
                     .ok_or("Invalid draft text.")?;
                 let records = rows(db, workspace)?;
@@ -216,7 +272,7 @@ fn execute(db: &Connection, request: &Request) -> Result<DraftResult, String> {
                     .filter(|(d, _, _)| !d.deleted)
                     .map(|(d, _, _)| decode(d))
                     .collect::<Result<Vec<_>, _>>()?;
-                let version = drafts::edit(&device, session, text.into(), &versions, now)?;
+                let version = drafts::edit(&device, session, text, &versions, now)?;
                 let master = records
                     .iter()
                     .find(|(d, _, _)| d.id == version.id)
@@ -227,10 +283,10 @@ fn execute(db: &Connection, request: &Request) -> Result<DraftResult, String> {
             view(db, workspace).map(DraftResult::Snapshot)
         }
         "drafts.dismiss" => {
-            let version = &p["version"];
+            let version: DraftDismissal = project(&p["version"]);
             let (id, text) = (
-                version["id"].as_str().ok_or("Missing draft identity.")?,
-                version["text"].as_str().ok_or("Missing draft text.")?,
+                version.id.as_deref().ok_or("Missing draft identity.")?,
+                version.text.as_deref().ok_or("Missing draft text.")?,
             );
             sql(db.execute(
                 "INSERT OR IGNORE INTO client_draft_dismissed VALUES(?1,?2,?3)",
@@ -240,7 +296,15 @@ fn execute(db: &Connection, request: &Request) -> Result<DraftResult, String> {
             view(db, workspace).map(DraftResult::Snapshot)
         }
         "drafts.pending" => {
-            let rows=rows(db,workspace)?.into_iter().filter(|(_,_,dirty)|*dirty).take(100).map(|(local,master,_)|json!({"newDocumentState":local,"assumedMasterState":master})).collect::<Vec<_>>();
+            let rows = rows(db, workspace)?
+                .into_iter()
+                .filter(|(_, _, dirty)| *dirty)
+                .take(100)
+                .map(|(local, master, _)| DraftRow {
+                    new_document_state: local,
+                    assumed_master_state: master,
+                })
+                .collect::<Vec<_>>();
             let checkpoint = sql(db
                 .query_row(
                     "SELECT checkpoint FROM client_draft_scopes WHERE workspace=?1",
@@ -249,13 +313,11 @@ fn execute(db: &Connection, request: &Request) -> Result<DraftResult, String> {
                 )
                 .optional())?
             .unwrap_or(0);
-            Ok(DraftResult::Pending(
-                json!({"rows":rows,"checkpoint":checkpoint}),
-            ))
+            Ok(DraftResult::Pending(PendingDrafts { rows, checkpoint }))
         }
         "drafts.receive" => {
             let incoming: Vec<Document> =
-                serde_json::from_value(p["documents"].clone()).map_err(|e| e.to_string())?;
+                Vec::<Document>::deserialize(&p["documents"]).map_err(|e| e.to_string())?;
             for master in incoming {
                 let master_version = decode(&master)?;
                 let old = keyed_row(db, workspace, &master.id)?;
@@ -282,8 +344,9 @@ fn execute(db: &Connection, request: &Request) -> Result<DraftResult, String> {
                 }
             }
             revision(db, workspace)?;
-            if let Some(checkpoint) = p["checkpoint"]
-                .as_u64()
+            let checkpoint: DraftCheckpoint = project(p);
+            if let Some(checkpoint) = checkpoint
+                .checkpoint
                 .filter(|v| *v <= 9_007_199_254_740_991)
             {
                 sql(db.execute("UPDATE client_draft_scopes SET checkpoint=max(checkpoint,?2) WHERE workspace=?1",params![workspace,checkpoint as i64]))?;
@@ -292,7 +355,7 @@ fn execute(db: &Connection, request: &Request) -> Result<DraftResult, String> {
         }
         "drafts.acknowledge" => {
             let sent: Vec<Document> =
-                serde_json::from_value(p["documents"].clone()).map_err(|e| e.to_string())?;
+                Vec::<Document>::deserialize(&p["documents"]).map_err(|e| e.to_string())?;
             for master in sent {
                 decode(&master)?;
                 if let Some((local, _, _)) = keyed_row(db, workspace, &master.id)? {
@@ -336,6 +399,97 @@ pub fn dispatch(db: &mut Connection, request: &Request) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn draft_commands_sender_preserve_order_rollback_and_checkpoint_after_restart() {
+        use crate::delivery::StoreCommand;
+        use tokio::sync::{mpsc, oneshot};
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("client.sqlite3");
+        let (sender, mut receiver) = mpsc::channel::<StoreCommand>(8);
+        let store_path = path.clone();
+        let worker = std::thread::spawn(move || {
+            let mut store = crate::store::Store::open(&store_path).unwrap();
+            while let Some(command) = receiver.blocking_recv() {
+                command.execute(&mut store);
+            }
+        });
+        async fn send(
+            sender: &mpsc::Sender<StoreCommand>,
+            id: &str,
+            method: &str,
+            params: Value,
+        ) -> Response {
+            let (reply, receive) = oneshot::channel();
+            sender
+                .send(StoreCommand::Request(
+                    Request {
+                        id: id.into(),
+                        method: method.into(),
+                        params,
+                    },
+                    reply,
+                ))
+                .await
+                .unwrap();
+            receive.await.unwrap()
+        }
+        let workspace = "a".repeat(32);
+        let invalid = send(
+            &sender,
+            "bad-workspace",
+            "drafts.import",
+            json!({"workspace":"bad","versions":null}),
+        )
+        .await;
+        assert_eq!(invalid.error.unwrap().message, "Invalid draft workspace.");
+        let invalid = send(
+            &sender,
+            "bad-edit",
+            "drafts.edit",
+            json!({"workspace":workspace,"changes":{"a":"first","b":null}}),
+        )
+        .await;
+        assert_eq!(invalid.error.unwrap().message, "Invalid draft text.");
+        let invalid = send(
+            &sender,
+            "bad-dismiss",
+            "drafts.dismiss",
+            json!({"workspace":workspace,"version":{"id":null,"text":null}}),
+        )
+        .await;
+        assert_eq!(invalid.error.unwrap().message, "Missing draft identity.");
+        let invalid = send(&sender, "bad-receive", "drafts.receive", json!({"workspace":workspace,"documents":[{"id":"d:r","payload":"not-json","seq":1}],"checkpoint":99})).await;
+        assert!(invalid.error.is_some());
+        drop(sender);
+        worker.join().unwrap();
+        let mut store = crate::store::Store::open(&path).unwrap();
+        let pending = store.dispatch(Request {
+            id: "pending".into(),
+            method: "drafts.pending".into(),
+            params: json!({"workspace":workspace}),
+        });
+        assert_eq!(pending.result, Some(json!({"rows":[],"checkpoint":0})));
+    }
+
+    #[test]
+    fn borrowed_document_and_version_decode_preserves_legacy_errors() {
+        for value in [
+            json!(null),
+            json!({}),
+            json!([null]),
+            json!([{"id":1}]),
+            json!([["a"]]),
+        ] {
+            let old =
+                serde_json::from_value::<Vec<Document>>(value.clone()).map_err(|e| e.to_string());
+            let new = Vec::<Document>::deserialize(&value).map_err(|e| e.to_string());
+            assert_eq!(old.err(), new.err(), "{value}");
+            let old = serde_json::from_value::<Vec<DraftVersion>>(value.clone())
+                .map_err(|e| e.to_string());
+            let new = Vec::<DraftVersion>::deserialize(&value).map_err(|e| e.to_string());
+            assert_eq!(old.err(), new.err(), "{value}");
+        }
+    }
     fn command(store: &mut crate::store::Store, id: &str, method: &str, mut p: Value) -> Value {
         p["workspace"] = json!("a".repeat(32));
         let response = store.dispatch(Request {
@@ -457,12 +611,13 @@ mod tests {
         let path = directory.path().join("client.sqlite3");
         let mut store = crate::store::Store::open(&path).unwrap();
         let input = json!({"versions":[
-            {"id":"a:room","device":"a","session":"room","text":"first","updated":1},
+            {"id":"a:room","device":"a","session":"room","text":"first","updated":1,"extension":{"kept":true}},
             {"id":"b:room","device":"b","session":"room","text":"second","updated":2}
         ]});
         let imported = command(&mut store, "import", "drafts.import", input.clone());
         assert_eq!(imported["drafts"]["room"], "second");
         assert_eq!(imported["conflicts"][0]["text"], "first");
+        assert_eq!(imported["conflicts"][0]["extension"]["kept"], true);
         assert_eq!(
             command(&mut store, "pending", "drafts.pending", json!({}))["rows"]
                 .as_array()
@@ -491,12 +646,45 @@ mod tests {
             ]}),
         });
         assert!(invalid.error.is_some());
+        let positional = store.dispatch(Request {
+            id: "positional-import".into(),
+            method: "drafts.import".into(),
+            params: json!({"workspace":"a".repeat(32),"versions":[
+                ["a:room", "room", "a", "text", 1]
+            ]}),
+        });
+        assert!(positional.error.is_some());
         assert!(
             command(&mut store, "after-bad", "drafts.view", json!({}))["drafts"]
                 .get("other")
                 .is_none()
         );
     }
+    #[test]
+    fn pending_producer_reads_old_documents_before_emitting_typed_rows() {
+        let mut store = crate::store::Store::open(std::path::Path::new(":memory:")).unwrap();
+        let workspace = "a".repeat(32);
+        let local = json!({"id":"device:room","payload":"{}","seq":7,"legacy":true});
+        let master = json!({"id":"device:room","payload":"{}","seq":3,"_deleted":true,"extra":[1]});
+        store
+            .connection
+            .execute(
+                "INSERT INTO client_draft_branches VALUES(?1,?2,?3,?4,1)",
+                params![
+                    workspace,
+                    "device:room",
+                    local.to_string(),
+                    master.to_string()
+                ],
+            )
+            .unwrap();
+        let pending = command(&mut store, "pending", "drafts.pending", json!({}));
+        assert_eq!(
+            pending["rows"],
+            json!([{"newDocumentState":{"id":"device:room","payload":"{}","seq":7,"_deleted":false},"assumedMasterState":{"id":"device:room","payload":"{}","seq":3,"_deleted":true}}])
+        );
+    }
+
     #[test]
     fn late_push_ack_and_replayed_edit_cannot_erase_newer_text_after_restart() {
         let directory = tempfile::tempdir().unwrap();

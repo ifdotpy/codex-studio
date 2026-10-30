@@ -57,7 +57,7 @@ fn signed_out_sign_in_account_with_identity_stays_listed() {
         .expect("listing")
         .accounts
         .iter()
-        .map(|row| row["id"].as_str().expect("id").to_owned())
+        .map(|row| row.id.as_str().expect("id").to_owned())
         .collect();
     assert_eq!(listed, ["default", "login-identity"]);
 }

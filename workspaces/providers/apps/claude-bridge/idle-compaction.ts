@@ -95,7 +95,9 @@ export function idleRefusal(
     | {
         turn?: Partial<NonNullable<ActiveQuery["turn"]>> | null;
         tasks?: Pick<ActiveQuery["tasks"], "size">;
-        input?: Pick<ActiveQuery["input"], "values">;
+        input?: Pick<ActiveQuery["input"], "values" | "pending">;
+        reservingInput?: boolean;
+        pendingSteers?: Pick<ActiveQuery["pendingSteers"], "size">;
       }
     | null
     | undefined,
@@ -104,7 +106,14 @@ export function idleRefusal(
 ) {
   if (expected.prefix !== promptPrefix(s, effective)) return "prefix_changed";
   if (expected.requestId !== s.idleCache?.requestId) return "newer_request";
-  if (active?.turn || active?.tasks?.size || active?.input?.values?.length)
+  if (
+    active?.turn ||
+    active?.tasks?.size ||
+    active?.input?.values?.length ||
+    active?.input?.pending?.length ||
+    active?.reservingInput ||
+    active?.pendingSteers?.size
+  )
     return "active";
   return null;
 }

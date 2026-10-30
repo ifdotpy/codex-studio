@@ -62,8 +62,8 @@ fn python_era_handle(supervisor: &Supervisor, handle: &str, pid: u32, start: &st
 fn open(supervisor: &Supervisor, handle: &str) -> Result<Value> {
     supervisor.handle(
         Command::Open {
-            handle: handle.to_owned(),
             generation: None,
+            handle: handle.to_owned(),
             command: vec!["/bin/sh".into(), "-c".into(), "exit 0".into()],
             env: BTreeMap::new(),
             cwd: Some(supervisor.root.to_string_lossy().into_owned()),

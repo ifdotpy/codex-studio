@@ -2,9 +2,8 @@
 
 use axum::Json;
 use axum::extract::State;
-use serde_json::{Value, json};
 use studio_runtime_schema::queue_command::QueueCommand;
-use studio_runtime_services::queue_write::{self, QueueWriteError};
+use studio_runtime_services::queue_write;
 
 use super::extractors::ApiJson;
 use crate::error::ApiError;
@@ -14,13 +13,11 @@ pub(crate) async fn queue_action(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<QueueCommand>,
 ) -> Result<Json<queue_write::QueueReply>, ApiError> {
-    validate_queue_action(&body)?;
     let agent_id = body
         .agent()
         .map(str::to_owned)
         .unwrap_or_else(|| state.workspace_id.clone());
-    let signature =
-        super::work_items::python_operation_signature(&json!({"agent": agent_id, "body": body}))?;
+    let signature = signature(&agent_id, &body)?;
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let result = store
         .transaction_with_error(move |transaction| {
@@ -33,30 +30,23 @@ pub(crate) async fn queue_action(
             )
         })
         .await
-        .map_err(write_error)?;
+        .map_err(super::queue_read::api_error)?;
     state.event_wake.notify_one();
     Ok(Json(result))
 }
 
-fn validate_queue_action(body: &QueueCommand) -> Result<(), ApiError> {
-    let has_id = body.target_id().is_some_and(|id| !id.is_empty());
-    if matches!(
+fn signature(agent_id: &str, body: &QueueCommand) -> Result<String, ApiError> {
+    #[derive(serde::Serialize)]
+    struct Signature<'a> {
+        agent: &'a str,
+        body: &'a QueueCommand,
+    }
+    let signature = serde_json::to_vec(&Signature {
+        agent: agent_id,
         body,
-        QueueCommand::Edit(_) | QueueCommand::First(_) | QueueCommand::SendNow(_)
-    ) && !has_id
-    {
-        return Err(ApiError::validation(vec![Value::String("body".into())]));
-    }
-    if matches!(body, QueueCommand::SendNow(_))
-        && !body.request_id().is_some_and(|value| !value.is_empty())
-    {
-        return Err(ApiError::validation(vec![Value::String("body".into())]));
-    }
-    Ok(())
-}
-
-fn write_error(error: QueueWriteError) -> ApiError {
-    super::queue_read::api_error(error)
+    })
+    .map_err(|_| ApiError::internal())?;
+    Ok(studio_runtime_store::sha256_hex(&signature))
 }
 
 #[cfg(test)]
@@ -65,11 +55,16 @@ mod tests {
     use axum::body::{Body, to_bytes};
     use axum::extract::ConnectInfo;
     use axum::http::Request;
+    use serde_json::{Value, json};
     use std::sync::Arc;
     use studio_runtime_store::{AgentRecord, AgentRepository, RuntimeStore};
     use tower::ServiceExt;
 
     async fn call(app: &axum::Router, body: Value) -> (u16, Value) {
+        call_raw(app, body.to_string()).await
+    }
+
+    async fn call_raw(app: &axum::Router, body: String) -> (u16, Value) {
         let response = app
             .clone()
             .oneshot(
@@ -85,7 +80,7 @@ mod tests {
                             .parse::<std::net::SocketAddr>()
                             .expect("peer"),
                     ))
-                    .body(Body::from(body.to_string()))
+                    .body(Body::from(body))
                     .expect("request"),
             )
             .await
@@ -101,48 +96,30 @@ mod tests {
     }
 
     #[test]
-    fn queue_typed_signatures_preserve_wire_presence_and_aliases() {
-        for action in ["cancel", "edit", "first", "send_now", "reorder"] {
-            let mut original = json!({"action":action,"id":"a","request_id":" request "});
-            if action == "edit" {
-                original["text"] = json!(" \u{2003}text ");
-            }
-            if action == "reorder" {
-                original["expected_revision"] = json!("revision");
-                original["ordered_ids"] = json!(["b", "a"]);
-            }
-            let fields: &[&str] = if action == "reorder" {
-                &["agent", "id", "request_id"]
-            } else {
-                &[
-                    "agent",
-                    "message_id",
-                    "expected_revision",
-                    "expectedText",
-                    "request_id",
-                ]
-            };
-            for field in fields {
-                for value in [Value::Null, json!(""), json!(" \u{2003}value ")] {
-                    let mut wire = original.clone();
-                    wire[*field] = value;
-                    let typed: QueueCommand =
-                        serde_json::from_value(wire.clone()).expect("command");
-                    // The generated request must be the shared command itself.
-                    let typed: crate::generated::QueueActionApiQueuePostRequest = typed;
-                    assert_eq!(
-                        super::super::work_items::python_operation_signature(
-                            &json!({"agent":"workspace","body":wire})
-                        )
-                        .expect("old signature"),
-                        super::super::work_items::python_operation_signature(
-                            &json!({"agent":"workspace","body":typed})
-                        )
-                        .expect("typed signature")
-                    );
-                }
-            }
-        }
+    fn queue_signature_is_stable_and_normalizes_null() {
+        let id: QueueCommand =
+            serde_json::from_str(r#"{"action":"cancel","id":"a","request_id":"request"}"#)
+                .expect("command");
+        let normalized: QueueCommand = serde_json::from_str(
+            r#"{"action":"cancel","id":"a","request_id":"request","agent":null}"#,
+        )
+        .expect("normalized command");
+        let signature = super::signature("workspace", &id).expect("signature");
+        assert_eq!(
+            signature,
+            "533edc62ba77d5740ec5e0c47107912e60cdd2b12e0f0d64621b79e00b53b0a6"
+        );
+        assert_eq!(
+            signature,
+            super::signature("workspace", &normalized).expect("normalized signature")
+        );
+        let legacy = super::super::work_items::python_operation_signature(
+            &json!({"agent":"workspace","body":{"action":"cancel","id":"a","request_id":"request"}}),
+        ).expect("legacy signature");
+        assert_ne!(
+            signature, legacy,
+            "pre-upgrade receipts refuse replay safely"
+        );
     }
 
     async fn failure(app: &axum::Router, body: Value, message: &str) {
@@ -158,7 +135,7 @@ mod tests {
                 .expect("store"),
         );
         store.transaction(|tx| {
-            AgentRepository::put(tx, &AgentRecord::from_value(json!({"id":"workspace","rootId":"workspace","epoch":0,"status":"idle","provider":studio_runtime_schema::ProviderKind::Codex}))?)?;
+            AgentRepository::put(tx, &AgentRecord::from_value(json!({"accountKey":"default","id":"workspace","rootId":"workspace","epoch":0,"status":"idle","provider":studio_runtime_schema::ProviderKind::Codex}))?)?;
             tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES('a','workspace','user','A','pending',1,0),('b','workspace','user','B','pending',2,0),('c','workspace','followup','C','pending',3,0)", [])?;
             Ok(())
         }).await.expect("seed queue");
@@ -172,6 +149,20 @@ mod tests {
             None,
         );
         let app = crate::router(state).expect("router");
+        for body in [
+            json!({"action":"cancel"}),
+            json!({"action":"edit","id":"a","text":"x".repeat(32001)}),
+            json!({"action":"first","id":"a","request_id":"x".repeat(201)}),
+            json!({"action":"cancel","id":"a","unknown":true}),
+        ] {
+            assert_eq!(call(&app, body).await.0, 400);
+        }
+        assert_eq!(
+            call_raw(&app, r#"{"action":"cancel","id":"a","id":"b"}"#.into())
+                .await
+                .0,
+            400
+        );
         let reader = store.test_reader().expect("reader");
         let agent = AgentRepository::get(&reader, &"workspace".into())
             .expect("agent read")
@@ -198,9 +189,34 @@ mod tests {
             (200, receipt.clone()),
             "stale revision replay returns original receipt"
         );
+        let legacy = super::super::work_items::python_operation_signature(
+            &json!({"agent":"workspace", "body":reorder}),
+        )
+        .expect("legacy signature");
+        let typed: QueueCommand = serde_json::from_value(reorder.clone()).expect("queue command");
+        let current = super::signature("workspace", &typed).expect("current signature");
+        store
+            .transaction(move |tx| {
+                tx.execute("UPDATE request_results SET signature=?1", [legacy])?;
+                Ok(())
+            })
+            .await
+            .expect("seed pre-upgrade receipt");
+        assert_eq!(
+            call(&app, reorder.clone()).await.0,
+            409,
+            "old receipt refuses replay"
+        );
+        store
+            .transaction(move |tx| {
+                tx.execute("UPDATE request_results SET signature=?1", [current])?;
+                Ok(())
+            })
+            .await
+            .expect("restore receipt");
         let mut changed_identity = reorder.clone();
         changed_identity["agent"] = Value::Null;
-        assert_eq!(call(&app, changed_identity).await.0, 409);
+        assert_eq!(call(&app, changed_identity).await, (200, receipt.clone()));
         let snapshot = queue_write::queue_snapshot(&reader, &agent).expect("reordered queue");
         assert_eq!(
             snapshot
@@ -224,7 +240,8 @@ mod tests {
             "This queued message changed",
         )
         .await;
-        let edit = json!({"action":"edit","id":"a","message_id":"b","text":" Edited ","request_id":studio_runtime_schema::persistence::RequestIdentity::issue_root()});
+        assert_eq!(call(&app, json!({"action":"edit","id":"a","message_id":"b","text":" Edited ","request_id":studio_runtime_schema::persistence::RequestIdentity::issue_root()})).await.0, 400);
+        let edit = json!({"action":"edit","id":"b","text":" Edited ","request_id":studio_runtime_schema::persistence::RequestIdentity::issue_root()});
         let edit_receipt = call(&app, edit.clone()).await;
         assert_eq!(edit_receipt.0, 200, "{}", edit_receipt.1);
         let text: String = reader
@@ -232,7 +249,7 @@ mod tests {
                 row.get(0)
             })
             .expect("edited message");
-        assert_eq!(text, "Edited", "message_id takes precedence");
+        assert_eq!(text, "Edited", "id selects the target");
         assert_eq!(
             call(&app, reorder).await,
             (200, receipt.clone()),
@@ -264,8 +281,8 @@ mod tests {
             call(&app, json!({"action":"first","message_id":"","id":"a","request_id":studio_runtime_schema::persistence::RequestIdentity::issue_root()}))
                 .await
                 .0,
-            200,
-            "empty message_id falls back to id"
+            400,
+            "simultaneous aliases are rejected"
         );
         failure(
             &app,

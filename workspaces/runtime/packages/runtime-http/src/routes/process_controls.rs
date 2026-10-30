@@ -1,6 +1,6 @@
 //! Shared process panel with exact-owner checks and retained stop receipts.
 use super::{
-    extractors::{ApiRawJson, QueryParams},
+    extractors::{ApiJson, QueryParams},
     manifest::{OperationStatus, RouteGroup, get, post},
 };
 use crate::{error::ApiError, router::HttpState};
@@ -175,7 +175,7 @@ async fn receipt(
 async fn action(
     State(state): State<HttpState>,
     runtime: Option<Extension<Arc<MonitorRuntime>>>,
-    ApiRawJson(request): ApiRawJson<Request>,
+    ApiJson(request): ApiJson<Request>,
 ) -> Result<Json<ProcessActionResult>, ApiError> {
     execute(state, runtime.map(|Extension(r)| r), request)
         .await
@@ -517,24 +517,31 @@ async fn stop_process(
             ("", None),
         )
         .await?;
-        let items = result[if claude { "tasks" } else { "data" }]
-            .as_array()
-            .ok_or_else(|| invalid("Invalid native process list"))?;
-        if items.len() > NATIVE_TERMINAL_ITEMS_PER_PAGE && !claude {
-            return Err(invalid("Invalid native terminal list"));
-        }
-        found = items.iter().any(|entry| {
-            if claude {
-                entry["task_id"] == task
-            } else {
-                entry["itemId"] == item && entry["processId"] == *pid
-            }
-        });
-        if found || claude {
+        if claude {
+            let items = result["tasks"]
+                .as_array()
+                .ok_or_else(|| invalid("Invalid native process list"))?;
+            found = items.iter().any(|entry| entry["task_id"] == task);
             break;
         }
-        let Some(cursor) = studio_runtime_services::provider_pagination::next_cursor(&result)
-            .map_err(|_| invalid("Invalid native terminal list cursor"))?
+        if !result.is_object() {
+            return Err(invalid("Invalid native process list"));
+        }
+        let page: studio_runtime_services::provider_pagination::Page<Value> =
+            serde_json::from_value(result).map_err(|_| invalid("Invalid native process list"))?;
+        if page.data.len() > NATIVE_TERMINAL_ITEMS_PER_PAGE {
+            return Err(invalid("Invalid native terminal list"));
+        }
+        found = page
+            .data
+            .iter()
+            .any(|entry| entry["itemId"] == item && entry["processId"] == *pid);
+        if found {
+            break;
+        }
+        let Some(cursor) =
+            studio_runtime_services::provider_pagination::next_cursor(&page.next_cursor)
+                .map_err(|_| invalid("Invalid native terminal list cursor"))?
         else {
             break;
         };

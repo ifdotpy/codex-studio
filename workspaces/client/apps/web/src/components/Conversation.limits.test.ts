@@ -31,10 +31,6 @@ vi.mock("../servers/ServerServicesContext", async (original) => ({
   useServerOutbox: () => ({}),
   useServerUploads: () => ({}),
 }));
-vi.mock("../conversation/liveText", async (original) => ({
-  ...(await original<typeof import("../conversation/liveText")>()),
-  useLiveText: () => new Map(),
-}));
 vi.mock("../servers/activity", async (original) => ({
   ...(await original<typeof import("../servers/activity")>()),
   useServerActivity: () => {},

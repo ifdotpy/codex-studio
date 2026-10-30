@@ -440,7 +440,10 @@ async fn stored_control_replay_and_unknown_never_repeat_native_write() {
 
         let request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
         let request = || {
-            serde_json::from_value::<ControlRequest>(json!({"id":"agent","action":"rollback","request_id":request_id,"turn_id":"two"})).expect("valid fixture")
+            serde_json::from_value::<ControlRequest>(
+                json!({"id":"agent","action":"rollback","request_id":request_id,"turn_id":"two"}),
+            )
+            .expect("valid fixture")
         };
         let first = service.execute(request()).await;
         assert_eq!(

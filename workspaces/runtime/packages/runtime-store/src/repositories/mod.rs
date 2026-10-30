@@ -193,7 +193,7 @@ mod tests {
     #[test]
     fn repository_sql_uses_only_declared_tables() {
         let db = database_with(&agents::REQUIREMENTS);
-        let agent = AgentRecord::from_value(json!({
+        let agent = AgentRecord::from_value(json!({"accountKey":"default",
             "id":"a", "provider":"codex", "rootId":"a", "epoch":0, "status":"idle"
         }))
         .expect("agent JSON has a string id");

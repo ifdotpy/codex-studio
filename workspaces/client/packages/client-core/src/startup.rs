@@ -56,6 +56,37 @@ pub struct DesktopIdentity {
     pub supervisor_fallback: bool,
 }
 
+// Both readers share the same default and validation for the supervisor setting.
+#[derive(Default, Deserialize)]
+#[serde(transparent)]
+pub struct SupervisorEnabled(bool);
+impl SupervisorEnabled {
+    pub fn get(&self) -> bool {
+        self.0
+    }
+}
+
+// Attach-only reads deliberately ignore unrelated launch fields.
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SupervisorRecovery {
+    #[serde(default)]
+    pub supervisor_enabled: SupervisorEnabled,
+}
+
+// Preference and configure receipts share the enabled field, while ignoring
+// unrelated platform helper fields. Invalid or missing values remain visible.
+#[derive(Deserialize)]
+pub struct EnabledRecovery {
+    #[serde(default, deserialize_with = "enabled_value")]
+    pub enabled: Option<bool>,
+}
+fn enabled_value<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<bool>, D::Error> {
+    serde_json::Value::deserialize(deserializer).map(|value| value.as_bool())
+}
+
 // Recovery also contains settings owned by the platform recovery helper.
 #[derive(Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -67,7 +98,7 @@ struct SavedRecovery {
     #[serde(default, deserialize_with = "present")]
     unset_environment: Option<Vec<String>>,
     #[serde(default)]
-    supervisor_enabled: bool,
+    supervisor_enabled: SupervisorEnabled,
 }
 
 // Missing launch fields describe preference-only records; explicit null is invalid.
@@ -218,7 +249,7 @@ fn supervisor_mode(environment: &Environment, saved: &SavedRecovery) -> bool {
     environment
         .get(std::ffi::OsStr::new("CODEX_AGENTS_SUPERVISOR_MODE"))
         .map(|value| value == "1")
-        .unwrap_or(saved.supervisor_enabled)
+        .unwrap_or(saved.supervisor_enabled.get())
 }
 
 fn executable(name: &str, key: &str, environment: &Environment) -> Result<PathBuf, String> {
@@ -428,6 +459,42 @@ async fn ensure_with_environment(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn recovery_projections_preserve_partial_reads_and_missing_launch_fields() {
+        let source = serde_json::json!({"enabled":true,"supervisorEnabled":true,"environment":null,"unsetEnvironment":5,"platformSpecific":{"future":true}});
+        let enabled: EnabledRecovery = serde_json::from_value(source.clone()).unwrap();
+        let supervisor: SupervisorRecovery = serde_json::from_value(source.clone()).unwrap();
+        assert_eq!(enabled.enabled, Some(true));
+        assert!(supervisor.supervisor_enabled.get());
+        assert!(serde_json::from_value::<SavedRecovery>(source).is_err());
+        assert!(!SupervisorRecovery::default().supervisor_enabled.get());
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct PriorSupervisor {
+            #[serde(default)]
+            supervisor_enabled: bool,
+        }
+        let previous = serde_json::from_slice::<PriorSupervisor>(b"[true]");
+        let current = serde_json::from_slice::<SupervisorRecovery>(b"[true]");
+        assert!(serde_json::from_slice::<SavedRecovery>(b"[true]").is_err());
+        let launch: SavedRecovery = serde_json::from_slice(br#"[1,"/state",{},[],true]"#).unwrap();
+        assert!(launch.supervisor_enabled.get());
+        assert_eq!(previous.is_ok(), current.is_ok());
+        if let (Ok(previous), Ok(current)) = (previous, current) {
+            assert_eq!(
+                previous.supervisor_enabled,
+                current.supervisor_enabled.get()
+            );
+        }
+        let saved: SavedRecovery = serde_json::from_str(r#"{"unknown":true}"#).unwrap();
+        assert!(saved.environment.is_none());
+        assert!(saved.unset_environment.is_none());
+        for field in ["environment", "unsetEnvironment"] {
+            assert!(
+                serde_json::from_str::<SavedRecovery>(&format!(r#"{{"{field}":null}}"#)).is_err()
+            );
+        }
+    }
     #[test]
     fn a_python_era_saved_launch_environment_is_accepted_without_its_retired_keys() {
         // The shapes of two live background-recovery.json files that the

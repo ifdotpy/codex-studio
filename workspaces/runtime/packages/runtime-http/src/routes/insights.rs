@@ -123,7 +123,7 @@ pub(super) async fn session_cost_for_agent(
                 .accounts
                 .into_iter()
                 .chain(snapshot.archived_accounts)
-                .filter_map(|account| Some((account.get("id")?.as_str()?.to_owned(), account)))
+                .filter_map(|account| Some((account.id.as_str()?.to_owned(), account)))
                 .collect::<BTreeMap<_, _>>()
         })
         .unwrap_or_default();

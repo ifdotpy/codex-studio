@@ -154,25 +154,25 @@ pub struct Host {
     /// The Studio state directory: the Claude bridge keeps its sessions below it.
     pub state_dir: PathBuf,
     /// Rows of the account listing; each gives the host profile of an account key.
-    pub accounts: Vec<Value>,
+    pub accounts: Vec<crate::account_policy::PublicAccount>,
     pub free_bytes: fn(&Path) -> Option<u64>,
 }
 
 /// The directory of the provider history of an account row on this device.
 #[must_use]
-pub fn profile_dir(account: &Value) -> Option<PathBuf> {
-    let text = |value: &Value| {
-        value
-            .as_str()
-            .filter(|text| !text.is_empty())
-            .map(PathBuf::from)
-    };
-    if account["provider"] == "claude" {
-        text(&account["claudeOptions"]["configDir"])
-            .or_else(|| std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from))
-            .or_else(|| std::env::var_os("HOME").map(|home| Path::new(&home).join(".claude")))
+pub fn profile_dir(account: &crate::account_policy::PublicAccount) -> Option<PathBuf> {
+    let text = |value: Option<&str>| value.filter(|text| !text.is_empty()).map(PathBuf::from);
+    if account.provider.as_str() == Some("claude") {
+        text(
+            account
+                .claude_options
+                .as_ref()
+                .and_then(|options| options.config_dir.as_str()),
+        )
+        .or_else(|| std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from))
+        .or_else(|| std::env::var_os("HOME").map(|home| Path::new(&home).join(".claude")))
     } else {
-        text(&account["home"])
+        text(account.home.as_str())
     }
 }
 
@@ -453,7 +453,7 @@ fn transfers(host: &Host, member: &Value, tag: &str) -> Result<Vec<Transfer>> {
     let account = host
         .accounts
         .iter()
-        .find(|row| row["id"] == account_key)
+        .find(|row| row.id.as_str() == Some(account_key))
         .and_then(profile_dir)
         .ok_or_else(|| refused("The account of this chat has no profile on this device"))?;
     let directory = if claude { ".claude" } else { ".codex" };

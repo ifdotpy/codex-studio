@@ -2,8 +2,8 @@
 //! queued start path (start gate, auth gate, admission) starts it like any other
 //! input. A claim is never permission to resend an unknown turn.
 use crate::continuation::{
-    ContinuationError, Decision, Effect, Result, Snapshot, WaitStatus, account, flag, now_checked,
-    patch, present, remove, text,
+    CapacityDraft, ContinuationError, ContinuationUpdate as U, Decision, Effect, ProposedAgent,
+    ProposedRecord, Result, Snapshot, WaitStatus, account, flag, now_checked, present, text,
 };
 use crate::usage_resume::TASK_CHANGED;
 use serde_json::{Value, json};
@@ -100,9 +100,9 @@ pub fn failed_with_reason(
 ) -> Result<Decision> {
     now_checked(now)?;
     if crate::continuation::native_thread_blocked(&s.agent)
-        || !flag(&s.agent, "autoWake")
+        || !s.agent_record().auto_wake.unwrap_or(false)
         || present(&s.agent, "deletedAt")
-        || !present(&s.agent, "threadId")
+        || s.agent_record().thread_id.is_none()
         || s.agent
             .get("turnEpoch")
             .is_some_and(|e| Some(e) != s.agent.get("epoch"))
@@ -114,23 +114,41 @@ pub fn failed_with_reason(
     }
     let identity = json!([
         s.agent_id(),
-        account(&s.agent),
-        s.agent["threadId"],
-        s.agent["epoch"],
+        s.agent_account(),
+        s.agent_record().thread_id,
+        s.agent_record().epoch,
         turn_id
     ]);
     let id = crate::event_write::request_signature(&identity);
     let count = s
-        .agent
-        .get("capacityRetryCount")
-        .and_then(Value::as_u64)
+        .agent_view()
+        .capacity_retry_count
+        .as_ref()
+        .and_then(|n| n.as_u64())
         .unwrap_or(0);
     let delays = kind.delays();
     let delay = usize::try_from(count).ok().and_then(|i| delays.get(i));
-    let mut r = json!({"id":id,"threadId":s.agent["threadId"],"turnId":turn_id,"accountKey":account(&s.agent),"epoch":s.agent["epoch"],"cause":kind.kind(),"status":if delay.is_some(){"scheduled"}else{"exhausted"},"dueAt":delay.map(|d|now+d),"attempt":count.saturating_add(1),"maxAttempts":delays.len(),"cwd":s.agent["cwd"],"settings":settings,"taskClaims":s.claims});
-    if let Some(reason) = reason {
-        r["reason"] = json!(reason);
-    }
+    let r = ProposedRecord::capacity(CapacityDraft {
+        id,
+        thread_id: s.agent_record().thread_id.clone(),
+        turn_id: turn_id.into(),
+        account_key: s.agent_account().into(),
+        epoch: s.agent_record().epoch,
+        cause: kind.kind(),
+        status: if delay.is_some() {
+            "scheduled"
+        } else {
+            "exhausted"
+        },
+        due_at: delay.map(|d| now + d),
+        attempt: count.saturating_add(1),
+        max_attempts: delays.len(),
+        cwd: s.agent["cwd"].clone(),
+        settings: settings.clone(),
+        task_claims: s.claims.clone(),
+        reason: reason.map(str::to_owned),
+        updated_at: now,
+    });
     Ok(Decision::save(s, r, "capacityRetry", now))
 }
 pub fn transition(s: &Snapshot, action: Action<'_>, now: f64) -> Result<Decision> {
@@ -141,86 +159,100 @@ pub fn transition(s: &Snapshot, action: Action<'_>, now: f64) -> Result<Decision
     if !s.current("capacityRetry") {
         return Ok(Decision::default());
     }
-    let mut r = stored.clone();
-    let mut agent = s.agent.clone();
+    let mut r = ProposedRecord::existing(s).expect("validated record");
+    let mut agent = ProposedAgent::new(s);
     let mut hold = None;
+    let accepted_turn = s.capacity_record().map_or_else(
+        || text(stored, "acceptedTurnId"),
+        |record| {
+            record
+                .accepted_turn_id
+                .as_ref()
+                .map_or("", |id| id.as_str())
+        },
+    );
+    let accepted = s.capacity_record().map_or_else(
+        || present(stored, "acceptedTurnId"),
+        |record| record.accepted_turn_id.is_some(),
+    );
+    let claimed = s.capacity_record().map_or_else(
+        || present(stored, "claimedAt"),
+        |record| record.claimed_at.as_ref().is_some_and(|at| at.get() != 0.0),
+    );
     // A start outcome belongs to the claimed follow-up of this retry, once.
     let start_pending = matches!(s.status(), Some(WaitStatus::Starting | WaitStatus::Unknown))
-        && present(&r, "claimedAt")
-        && !present(&r, "acceptedTurnId")
-        && r.get("epoch") == agent.get("epoch")
-        && account(&r) == account(&agent);
+        && claimed
+        && !accepted
+        && stored.get("epoch") == agent.value().get("epoch")
+        && s.record_account() == Some(account(agent.value()));
     match action {
         Action::Completed { turn_id, completed } => {
-            if text(&r, "acceptedTurnId") != turn_id {
+            if accepted_turn != turn_id {
                 return Ok(Decision::default());
             }
-            if text(&r, "status") == "finished" {
+            if s.status() == Some(WaitStatus::Finished) {
                 return Ok(Decision::default());
             }
-            patch(&mut r, json!({"status":"finished","dueAt":null}));
+            r.update(U::Status("finished"));
+            r.update(U::DueAt(None));
             if completed {
-                remove(&mut agent, "nativeFailureHold");
+                agent.clear_hold();
             }
         }
 
         Action::Cancel => {
-            if text(&r, "status") != "scheduled" || present(&r, "claimedAt") {
+            if s.status() != Some(WaitStatus::Scheduled) || claimed {
                 return Ok(Decision::default());
             }
-            patch(
-                &mut r,
-                json!({"status":"cancelled","dueAt":null,"reason":null}),
-            );
+            r.update(U::Status("cancelled"));
+            r.update(U::DueAt(None));
+            r.update(U::Reason(None));
             hold = Some("cancelled");
         }
         Action::Wait(reason) => {
-            if text(&r, "status") == "unknown" || present(&r, "acceptedTurnId") {
+            if s.status() == Some(WaitStatus::Unknown) || accepted {
                 return Ok(Decision::default());
             }
-            let waits = r
-                .get("waits")
-                .and_then(Value::as_u64)
+            let waits = s
+                .capacity_record()
+                .map(|record| record.waits.as_ref().and_then(|n| n.as_u64()))
+                .unwrap_or_else(|| stored.get("waits").and_then(Value::as_u64))
                 .unwrap_or(0)
                 .saturating_add(1);
-            remove(&mut r, "claimedAt");
-            patch(
-                &mut r,
-                json!({"status":"scheduled","dueAt":now+(WAIT_STEP*waits as f64).min(WAIT_MAX),"waits":waits,"reason":reason}),
-            );
+            r.update(U::RemoveClaimedAt);
+            r.update(U::Status("scheduled"));
+            r.update(U::DueAt(Some(
+                now + (WAIT_STEP * waits as f64).min(WAIT_MAX),
+            )));
+            r.update(U::Waits(waits));
+            r.update(U::Reason(Some(reason.into())));
         }
         Action::DiskWait(reason) => {
-            if text(&r, "status") == "unknown" || present(&r, "acceptedTurnId") {
+            if s.status() == Some(WaitStatus::Unknown) || accepted {
                 return Ok(Decision::default());
             }
-            remove(&mut r, "claimedAt");
-            patch(
-                &mut r,
-                json!({"status":"scheduled","dueAt":now+DISK_FULL_RECHECK_SECONDS as f64,"reason":reason}),
-            );
+            r.update(U::RemoveClaimedAt);
+            r.update(U::Status("scheduled"));
+            r.update(U::DueAt(Some(now + DISK_FULL_RECHECK_SECONDS as f64)));
+            r.update(U::Reason(Some(reason.into())));
         }
         Action::Excluded(reason) => {
-            if text(&r, "status") != "scheduled" || present(&r, "acceptedTurnId") {
+            if s.status() != Some(WaitStatus::Scheduled) || accepted {
                 return Ok(Decision::default());
             }
-            patch(
-                &mut r,
-                json!({"status":"cancelled","dueAt":null,"reason":reason}),
-            );
-            patch(
-                &mut agent,
-                json!({"status":"failed","inFlight":false,"error":reason}),
-            );
+            r.update(U::Status("cancelled"));
+            r.update(U::DueAt(None));
+            r.update(U::Reason(Some(reason.into())));
+            agent.failed(reason);
             hold = Some("account-excluded");
         }
         Action::Error { reason, unknown } => {
             if !start_pending || unknown && s.status() == Some(WaitStatus::Unknown) {
                 return Ok(Decision::default());
             }
-            patch(
-                &mut r,
-                json!({"status":if unknown{"unknown"}else{"failed"},"dueAt":null,"reason":reason}),
-            );
+            r.update(U::Status(if unknown { "unknown" } else { "failed" }));
+            r.update(U::DueAt(None));
+            r.update(U::Reason(Some(reason.into())));
             if s.status() == Some(WaitStatus::Starting) {
                 hold = Some(if unknown { "unknown" } else { "failed" });
             }
@@ -229,46 +261,48 @@ pub fn transition(s: &Snapshot, action: Action<'_>, now: f64) -> Result<Decision
             if !start_pending {
                 return Ok(Decision::default());
             }
-            r["acceptedTurnId"] = json!(turn_id);
-            patch(
-                &mut r,
-                json!({"status":"starting","reason":null,"dueAt":null}),
-            );
-            agent["capacityRetryCount"] = json!(
+            r.update(U::AcceptedTurnId(turn_id.into()));
+            r.update(U::Status("starting"));
+            r.update(U::Reason(None));
+            r.update(U::DueAt(None));
+            agent.capacity_count(
                 agent
+                    .value()
                     .get("capacityRetryCount")
                     .and_then(Value::as_u64)
                     .unwrap_or(0)
-                    .saturating_add(1)
+                    .saturating_add(1),
             );
         }
         Action::Claim {
             settings,
             automatic,
         } => {
-            if automatic && text(&r, "status") != "scheduled" {
+            if automatic && s.status() != Some(WaitStatus::Scheduled) {
                 return Ok(Decision::default());
             }
-            if present(&r, "claimedAt")
-                || !matches!(text(&r, "status"), "scheduled" | "cancelled" | "exhausted")
+            if claimed
+                || !matches!(
+                    s.status(),
+                    Some(WaitStatus::Scheduled | WaitStatus::Cancelled | WaitStatus::Exhausted)
+                )
             {
                 return Ok(Decision::default());
             }
-            if !s.claims_valid(&r) {
-                patch(
-                    &mut r,
-                    json!({"status":"cancelled","dueAt":null,"reason":TASK_CHANGED}),
-                );
+            if !s.claims_valid() {
+                r.update(U::Status("cancelled"));
+                r.update(U::DueAt(None));
+                r.update(U::Reason(Some(TASK_CHANGED.into())));
                 hold = Some("task-changed");
             } else {
-                if present(&agent, "deletedAt")
-                    || !flag(&agent, "autoWake")
+                if present(agent.value(), "deletedAt")
+                    || !flag(agent.value(), "autoWake")
                     || ["epoch", "threadId", "cwd"]
                         .iter()
-                        .any(|k| r.get(*k) != agent.get(*k))
-                    || account(&r) != account(&agent)
-                    || r.get("settings") != Some(settings)
-                    || r.get("turnId") != agent.get("lastCompletedTurn")
+                        .any(|k| stored.get(*k) != agent.value().get(*k))
+                    || s.record_account() != Some(account(agent.value()))
+                    || stored.get("settings") != Some(settings)
+                    || stored.get("turnId") != agent.value().get("lastCompletedTurn")
                 {
                     return Err(ContinuationError::Invalid(
                         "/capacity/earlier-agent-state".into(),
@@ -278,15 +312,15 @@ pub fn transition(s: &Snapshot, action: Action<'_>, now: f64) -> Result<Decision
                 // the start gate, auth gate and admission of the ordinary
                 // start path decide when it starts, and the input is never
                 // claimed twice. The failure hold ends with the claim.
-                patch(
-                    &mut r,
-                    json!({"status":"starting","dueAt":null,"claimedAt":now,"reason":null}),
-                );
-                remove(&mut agent, "nativeFailureHold");
-                patch(&mut agent, json!({"status":"queued","error":null}));
-                r["updatedAt"] = json!(now);
-                agent["capacityRetry"] = r.clone();
-                let id = format!("{CAPACITY_FOLLOWUP_PREFIX}{}", text(&r, "id"));
+                r.update(U::Status("starting"));
+                r.update(U::DueAt(None));
+                r.update(U::ClaimedAt(now));
+                r.update(U::Reason(None));
+                agent.clear_hold();
+                agent.queued();
+                r.update(U::UpdatedAt(now));
+                agent.continuation("capacityRetry", r.value());
+                let id = format!("{CAPACITY_FOLLOWUP_PREFIX}{}", s.record_id().unwrap_or(""));
                 return Ok(Decision {
                     agent: Some(agent),
                     record: Some(r),
@@ -294,13 +328,12 @@ pub fn transition(s: &Snapshot, action: Action<'_>, now: f64) -> Result<Decision
                         id,
                         text: CONTINUATION.into(),
                     }],
-                    ..Decision::default()
                 });
             }
         }
     }
-    r["updatedAt"] = json!(now);
-    agent["capacityRetry"] = r.clone();
+    r.update(U::UpdatedAt(now));
+    agent.continuation("capacityRetry", r.value());
     let mut d = Decision {
         agent: Some(agent),
         record: Some(r),
@@ -308,12 +341,18 @@ pub fn transition(s: &Snapshot, action: Action<'_>, now: f64) -> Result<Decision
     };
     if let Some(transition) = hold {
         let reason = if transition == "cancelled" {
-            "The automatic capacity retry was cancelled."
+            "The automatic capacity retry was cancelled.".to_owned()
         } else {
-            text(d.record.as_ref().unwrap_or(&Value::Null), "reason")
-        }
-        .to_owned();
-        d.hold(text(stored, "id"), transition, &reason);
+            text(
+                &d.record
+                    .as_ref()
+                    .map(ProposedRecord::value)
+                    .unwrap_or(Value::Null),
+                "reason",
+            )
+            .to_owned()
+        };
+        d.hold(s.record_id().unwrap_or(""), transition, &reason);
     }
     Ok(d)
 }

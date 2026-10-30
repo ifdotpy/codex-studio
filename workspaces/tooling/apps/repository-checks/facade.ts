@@ -19,6 +19,7 @@ import {
 import { createHash } from "node:crypto";
 import { runLogged } from "./owned-process.ts";
 import { CARGO_BUILD_JOBS, scrubAgentEnvironment } from "./gate-config.ts";
+import { withGateLock } from "./gate-lock.ts";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -193,10 +194,6 @@ const UNSAFE_RUST_ALLOWLIST: [string, string][] = [
   [
     "workspaces/client/packages/client-core/src/notifications.rs",
     "UserNotifications delegate class and center bindings.",
-  ],
-  [
-    "workspaces/client/packages/client-core/src/pdf.rs",
-    "CoreGraphics PDF page render context.",
   ],
   [
     "workspaces/client/packages/client-core/src/platform.rs",
@@ -1128,6 +1125,9 @@ export function gateSteps(root: string, name: string): GateStep[] {
       nodeTest("mac-sync", "Mac sync chunk read witness", [
         "workspaces/runtime/apps/vm-guest/mac-sync-witness.test.mts",
         "workspaces/runtime/apps/vm-guest/install-layr-store.test.mts",
+      ]),
+      nodeTest("profile-contract", "native profile contract parity", [
+        "workspaces/client/apps/native/src-tauri/src/profile-contract.test.ts",
       ]),
       nodeTest("native-fixture", "native WebView fixture", [
         "workspaces/client/apps/native/check-native.test.ts",
@@ -2642,20 +2642,24 @@ export async function main(argv = process.argv.slice(2)) {
   }
   const root = rootFrom();
   if (action === "test-fast") {
-    const result = await executeRecipe(
-      root,
-      "test-fast",
-      gateSteps(root, "test-fast"),
-    );
-    return result.exitCode;
+    return withGateLock(async () => {
+      const result = await executeRecipe(
+        root,
+        "test-fast",
+        gateSteps(root, "test-fast"),
+      );
+      return result.exitCode;
+    });
   }
   if (action === "test-comprehensive") {
-    const result = await executeRecipe(
-      root,
-      "test-comprehensive",
-      gateSteps(root, "test-comprehensive"),
-    );
-    return result.exitCode;
+    return withGateLock(async () => {
+      const result = await executeRecipe(
+        root,
+        "test-comprehensive",
+        gateSteps(root, "test-comprehensive"),
+      );
+      return result.exitCode;
+    });
   }
   if (action === "test-fast-rest") {
     const result = await executeRecipe(

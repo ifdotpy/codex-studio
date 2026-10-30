@@ -304,6 +304,43 @@ fn retire(tx: &Transaction<'_>, operation: &str) -> Result<(), WorkerError> {
     task.payload.submitted = None;
     put(tx, &task)
 }
+pub(super) fn retire_written_response(
+    tx: &Transaction<'_>,
+    account: &str,
+    generation: u64,
+    owner_id: &str,
+    response_key: &str,
+    fingerprint: &str,
+) -> Result<(), WorkerError> {
+    let mut query = tx.prepare("SELECT record FROM runtime_tool_requests WHERE kind=?1 AND status IN (?2,?3,?4) AND json_extract(record,'$.payload.root_request_id')=?5")?;
+    let rows = query
+        .query_map(
+            params![
+                ToolRequestKind::ProviderCallback,
+                ToolRequestStatus::Queued,
+                ToolRequestStatus::Running,
+                ToolRequestStatus::Unknown,
+                owner_id
+            ],
+            |row| row.get::<_, String>(0),
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(query);
+    for raw in rows {
+        let task: Task = serde_json::from_str(&raw).map_err(|_| invalid(owner_id))?;
+        let accepted = &task.payload.accepted;
+        if accepted.account == account
+            && accepted.journal_scope == account
+            && accepted.generation == generation
+            && task.payload.submitted.as_ref().is_some_and(|saved| {
+                saved.response_key == response_key && saved.sha256 == fingerprint
+            })
+        {
+            retire(tx, &task.origin_key)?;
+        }
+    }
+    Ok(())
+}
 pub(super) async fn retire_async(store: &RuntimeStore, operation: &str) -> Result<(), WorkerError> {
     let operation = operation.to_owned();
     store
@@ -442,7 +479,9 @@ pub(super) async fn refuse_recovery(
     let operation = operation.to_owned();
     store
         .transaction_with(move |tx| {
-            if let Some(mut task) = task(tx, &operation)? {
+            if let Some(mut task) = task(tx, &operation)?
+                && task.status != ToolRequestStatus::Completed
+            {
                 task.status = ToolRequestStatus::Unknown;
                 task.payload.recovery_authorized = false;
                 put(tx, &task)?;

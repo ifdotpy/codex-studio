@@ -234,7 +234,8 @@ class RustSelectionTest(unittest.TestCase):
 
     def test_rust_selection_starts_the_configured_server_with_the_runtime_contract(self):
         for supervisor_enabled in (False, True):
-            with self.subTest(supervisor_enabled=supervisor_enabled):
+            with self.subTest(supervisor_enabled=supervisor_enabled), \
+                    patch.object(recovery, "listener_pids", return_value=[]):
                 config = {**self.config, "supervisorEnabled": supervisor_enabled}
                 child, status = recovery.tick(config, self.state)
                 self.assertEqual(status, "started")

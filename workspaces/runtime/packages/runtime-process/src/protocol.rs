@@ -291,6 +291,16 @@ pub struct SupervisorEventV2 {
     pub kind: EventKind,
     pub payload: Box<RawValue>,
 }
+impl From<studio_runtime_store::supervisor_journal::StoredEvent> for SupervisorEventV2 {
+    fn from(event: studio_runtime_store::supervisor_journal::StoredEvent) -> Self {
+        Self {
+            sequence: EventCursor(event.sequence),
+            generation: Generation(event.generation),
+            kind: event.kind.into(),
+            payload: event.payload,
+        }
+    }
+}
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SupervisorEvent {
@@ -321,33 +331,7 @@ fn encode_event_payload<S: serde::Serializer>(
     serializer.serialize_str(&payload.to_string())
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum EventKind {
-    Stdout,
-    Stderr,
-    Exit,
-    Unknown(String),
-}
-impl<'de> Deserialize<'de> for EventKind {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Ok(match String::deserialize(deserializer)?.as_str() {
-            "stdout" => Self::Stdout,
-            "stderr" => Self::Stderr,
-            "exit" => Self::Exit,
-            other => Self::Unknown(other.to_owned()),
-        })
-    }
-}
-impl Serialize for EventKind {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(match self {
-            Self::Stdout => "stdout",
-            Self::Stderr => "stderr",
-            Self::Exit => "exit",
-            Self::Unknown(other) => other,
-        })
-    }
-}
+pub use studio_runtime_providers::supervisor_protocol::EventKind;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct FinishedFallback {

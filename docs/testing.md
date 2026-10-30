@@ -89,12 +89,18 @@ their removed Python commands are not current instructions.
 | Provider child reap timing, manual heavy              | `just test-provider-reap-timing`         |
 | Detached host_exec lifecycle and guest broker, manual | `just test-host-exec-processes`          |
 | Live handover with real servers, manual               | `just test-live-handover`                |
+| Load-sensitive Rust tests, manual heavy               | `just test-quarantine`                   |
 | Real launcher process probe (lsof), manual            | `just test-real-process-probe`           |
 | Many-agent scenario, manual heavy                     | `just test-rust-many-agents`             |
 | Continuation corpus and store faults, manual heavy    | `just test-rust-usage-resume-corpora`    |
 | Hidden Electron profile migration, manual heavy       | `just test-native-profile-migration`     |
 | Hidden Rust native WebView scenarios, manual heavy    | `just test-native-webview`               |
 | Hidden Rust native WebView scenarios, manual heavy    | `just test-native-webview`               |
+
+Seven Rust tests failed only under load and are `#[ignore]` until
+[issue #616](https://github.com/ifdotpy/layr-studio/issues/616) is fixed; `just test-quarantine`
+runs them. Six browser specs left the smoke subset and run only in the full
+browser tier (`just test-browser`, `just test-heavy`) until the same issue is fixed.
 
 The fast guest wrapper tests use an injected executor for ordered results,
 failure counts, and broken-pool cleanup. The actual guest suite remains in the
@@ -171,6 +177,17 @@ nice -n 10 just test-comprehensive
 Use `nice -n 10`, not `taskpolicy -b`. Background priority made the WASM build
 miss its 30-minute limit. On macOS, `just test-fast` takes 12.3 min cold, about
 4 min in a warm line after a code change, and 17 s after a docs-only change.
+
+### Machine gate lock
+
+`just test-fast` and `just test-comprehensive` take one machine-wide lock
+(`/tmp/studio-gate.lock`, a folder with a `pid` file) before the first step and
+release it at exit, also on error and signals. A second gate waits and prints the
+holder's pid and command every minute. A lock whose pid is dead is taken over. A
+gate started under the lock holder (for example the studio-ops wrapper scripts,
+which use the same lock) does not wait. Set `STUDIO_GATE_LOCK_MAX_WAIT_S` to stop
+waiting after that many seconds; the default is no limit. Focused commands do not
+take the lock. Owner: `gate-config.ts`; code: `gate-lock.ts`.
 
 ### Test result cache
 

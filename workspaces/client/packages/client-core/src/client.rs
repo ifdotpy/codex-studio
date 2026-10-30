@@ -2,7 +2,7 @@
 //! desktop and mobile; native descriptors never cross the webview boundary.
 use crate::{
     native::{self, ConnectionConfig},
-    protocol::{self, Request, Response},
+    protocol::{self, NativeFrame, NativeResponse, Request},
 };
 use serde_json::Value;
 use std::{
@@ -18,7 +18,7 @@ use tokio::{
     task::AbortHandle,
 };
 
-type Pending = Arc<Mutex<HashMap<String, oneshot::Sender<Result<Response, String>>>>>;
+type Pending = Arc<Mutex<HashMap<String, oneshot::Sender<Result<NativeResponse, String>>>>>;
 const CLOSED: &str = "The native client disconnected. Pending command outcomes may be unknown.";
 
 pub struct Client {
@@ -36,6 +36,13 @@ impl Client {
     ) -> Result<Self, String> {
         let socket = native::connect(config).map_err(|error| error.to_string())?;
         let socket = tokio::net::UnixStream::from_std(socket).map_err(|error| error.to_string())?;
+        Ok(Self::from_socket(socket, event))
+    }
+
+    fn from_socket(
+        socket: tokio::net::UnixStream,
+        event: impl Fn(Value) + Send + Sync + 'static,
+    ) -> Self {
         let (mut reader, mut writer) = socket.into_split();
         let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
         let responses = pending.clone();
@@ -59,17 +66,15 @@ impl Client {
                     else {
                         continue;
                     };
-                    let value: Value =
-                        serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
-                    if value.get("event").and_then(Value::as_str).is_some() {
-                        event(value);
-                        continue;
-                    }
-                    let response: Response =
-                        serde_json::from_value(value).map_err(|error| error.to_string())?;
-                    if response.result.is_some() == response.error.is_some() {
-                        return Err("Invalid native response envelope.".into());
-                    }
+                    let response = match serde_json::from_slice::<NativeFrame>(&bytes)
+                        .map_err(|error| error.to_string())?
+                    {
+                        NativeFrame::Event(value) => {
+                            event(value);
+                            continue;
+                        }
+                        NativeFrame::Response(response) => response,
+                    };
                     let sender = responses
                         .lock()
                         .map_err(|_| CLOSED)?
@@ -117,16 +122,16 @@ impl Client {
                 }
             }
         });
-        Ok(Self {
+        Self {
             queue,
             writer: writer_task.abort_handle(),
             closed,
             pending,
             bytes: Arc::new(Semaphore::new(protocol::MAX_MESSAGE * 2)),
             reader: task.abort_handle(),
-        })
+        }
     }
-    pub async fn request(&self, request: Request) -> Result<Response, String> {
+    pub async fn request(&self, request: Request) -> Result<NativeResponse, String> {
         if request.id.is_empty()
             || request.id.len() > 128
             || request.method.is_empty()
@@ -182,6 +187,7 @@ impl Drop for Client {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::NativeOutcome;
     use serde_json::json;
     fn request(id: &str, method: &str, params: Value) -> Request {
         Request {
@@ -201,6 +207,91 @@ mod tests {
         .unwrap()
     }
     #[tokio::test]
+    async fn retired_file_link_commands_do_not_affect_native_computations() {
+        let directory = tempfile::tempdir().unwrap();
+        let client = open(directory.path());
+        let retired = client
+            .request(request("old", "file_link.local", json!({"value":"a.md"})))
+            .await
+            .unwrap();
+        assert!(
+            matches!(retired.outcome, NativeOutcome::Failure(error) if error.code == "unknown_method")
+        );
+        let uuid = client
+            .request(request("uuid", "system.uuid", Value::Null))
+            .await
+            .unwrap();
+        assert!(
+            matches!(uuid.outcome, NativeOutcome::Success(Value::String(value)) if value.len() == 36)
+        );
+    }
+    #[tokio::test]
+    async fn retired_terminal_commands_and_views_are_rejected() {
+        let directory = tempfile::tempdir().unwrap();
+        let client = open(directory.path());
+        let command = client
+            .request(request("terminal", "terminal.open", json!({"id":"shell"})))
+            .await
+            .unwrap();
+        assert!(
+            matches!(command.outcome, NativeOutcome::Failure(error) if error.code == "unknown_method")
+        );
+        let view = client
+            .request(request(
+                "view",
+                "view.subscribe",
+                json!({"subscription":"shell", "topic":"terminal"}),
+            ))
+            .await
+            .unwrap();
+        assert!(
+            matches!(view.outcome, NativeOutcome::Failure(error) if error.code == "invalid_subscription")
+        );
+    }
+    #[tokio::test]
+    async fn retired_preview_commands_are_rejected() {
+        let directory = tempfile::tempdir().unwrap();
+        let client = open(directory.path());
+        let response = client
+            .request(request("preview", "preview.open", json!({"target":null})))
+            .await
+            .unwrap();
+        assert!(
+            matches!(response.outcome, NativeOutcome::Failure(error) if error.code == "unknown_method")
+        );
+    }
+    #[tokio::test]
+    async fn reader_prioritizes_event_and_rejects_unknown_response_identity() {
+        let (socket, mut peer) = tokio::net::UnixStream::pair().unwrap();
+        let (events, mut seen) = tokio::sync::mpsc::unbounded_channel();
+        let client = Arc::new(Client::from_socket(socket, move |event| {
+            events.send(event).unwrap();
+        }));
+        let request_client = client.clone();
+        let waiter = tokio::spawn(async move {
+            request_client
+                .request(request("expected", "test", Value::Null))
+                .await
+        });
+        let length = peer.read_u32_le().await.unwrap() as usize;
+        let mut request_frame = vec![0; length];
+        peer.read_exact(&mut request_frame).await.unwrap();
+        let event =
+            json!({"event":"changed", "id":"unexpected", "result":null, "payload":[1,null]});
+        for value in [event.clone(), json!({"id":"unexpected", "result":null})] {
+            let encoded = serde_json::to_vec(&value).unwrap();
+            peer.write_u32_le((encoded.len() + 1) as u32).await.unwrap();
+            peer.write_u8(0).await.unwrap();
+            peer.write_all(&encoded).await.unwrap();
+        }
+        assert_eq!(seen.recv().await.unwrap(), event);
+        assert_eq!(
+            waiter.await.unwrap().unwrap_err(),
+            "Unexpected native response identity."
+        );
+    }
+
+    #[tokio::test]
     async fn native_connection_isolates_stores_and_preserves_write_identity() {
         let directory = tempfile::tempdir().unwrap();
         let first = open(&directory.path().join("first"));
@@ -212,9 +303,15 @@ mod tests {
                 json!({"key":"draft","raw":"Ж🦀"}),
             )
         };
-        assert!(first.request(command()).await.unwrap().error.is_none());
-        assert!(first.request(command()).await.unwrap().error.is_none());
-        assert!(
+        assert!(matches!(
+            first.request(command()).await.unwrap().outcome,
+            NativeOutcome::Success(_)
+        ));
+        assert!(matches!(
+            first.request(command()).await.unwrap().outcome,
+            NativeOutcome::Success(_)
+        ));
+        assert!(matches!(
             first
                 .request(request(
                     "exact",
@@ -223,26 +320,14 @@ mod tests {
                 ))
                 .await
                 .unwrap()
-                .error
-                .is_some()
+                .outcome,
+            NativeOutcome::Failure(_)
+        ));
+        assert!(
+            matches!(first.request(request("read", "preferences.raw_all", Value::Null)).await.unwrap().outcome, NativeOutcome::Success(value) if value == json!({"draft":"Ж🦀"}))
         );
-        assert_eq!(
-            first
-                .request(request("read", "preferences.raw_all", Value::Null))
-                .await
-                .unwrap()
-                .result
-                .unwrap(),
-            json!({"draft":"Ж🦀"})
-        );
-        assert_eq!(
-            second
-                .request(request("read", "preferences.raw_all", Value::Null))
-                .await
-                .unwrap()
-                .result
-                .unwrap(),
-            json!({})
+        assert!(
+            matches!(second.request(request("read", "preferences.raw_all", Value::Null)).await.unwrap().outcome, NativeOutcome::Success(value) if value == json!({}))
         );
         let denied = first
             .request(request(
@@ -252,7 +337,10 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert!(denied.error.is_some());
+        assert!(matches!(
+            denied.outcome,
+            crate::protocol::NativeOutcome::Failure(_)
+        ));
     }
     #[tokio::test]
     async fn cancelled_wait_does_not_interrupt_framing_or_erase_the_commit() {
@@ -285,6 +373,6 @@ mod tests {
             .request(request("after", "preferences.raw_all", Value::Null))
             .await
             .unwrap();
-        assert_eq!(result.result.unwrap()["large"], text);
+        assert!(matches!(result.outcome, NativeOutcome::Success(value) if value["large"] == text));
     }
 }

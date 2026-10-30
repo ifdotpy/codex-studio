@@ -4,8 +4,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
 
 use crate::records::{
-    AgentId, AgentRecord, EventMetadataRecord, ExecutionRunRecord, JsonRecord, PlanRecord,
-    QueueEventId, Table, TaskId, TranscriptAssetId, TranscriptAssetRecord, WorkItemRecord,
+    AgentId, AgentRecord, EventMetadataRecord, JsonRecord, PlanRecord, QueueEventId, Table, TaskId,
+    TranscriptAssetId, TranscriptAssetRecord, WorkItemRecord,
 };
 use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
 use crate::{StoreError, StoreResult};
@@ -65,7 +65,7 @@ pub struct StoredQueueEvent {
     pub status: String,
     pub created: f64,
     pub error: Option<String>,
-    pub metadata: Option<Value>,
+    pub metadata: Option<EventMetadataRecord>,
     pub valid: bool,
 }
 
@@ -96,12 +96,10 @@ impl WorkItemsRepository {
             table: "runtime_agents",
             id: agent.id.0.clone(),
         };
-        let id = pointer["runId"].as_str().ok_or_else(invalid)?;
-        let attempt = match pointer.get("attemptId") {
-            None | Some(Value::Null) => None,
-            Some(Value::String(attempt)) => Some(attempt.clone()),
-            Some(_) => return Err(invalid()),
-        };
+        let studio_runtime_schema::json_object::JsonObject(pointer) =
+            <studio_runtime_schema::json_object::JsonObject<crate::records::ActiveExecutionView> as serde::Deserialize>::deserialize(pointer).map_err(|_| invalid())?;
+        let id = pointer.run_id.as_deref().ok_or_else(invalid)?;
+        let attempt = pointer.attempt_id;
         let raw: Option<String> = connection
             .query_row(
                 "SELECT record FROM runtime_execution_runs WHERE id=?1",
@@ -110,13 +108,20 @@ impl WorkItemsRepository {
             )
             .optional()?;
         let raw = raw.ok_or_else(invalid)?;
-        let run = serde_json::from_str::<ExecutionRunRecord>(&raw).map_err(|_| invalid())?;
-        Table::<ExecutionRunRecord>::new(connection).validate(&run)?;
-        if run.id().as_str() != id
-            || run.value()["agent"] != agent.id.0
-            || run.value()["accountKey"]
-                != Value::String(agent.account_key.clone())
-            || run.value()["epoch"] != agent.epoch
+        let value: Value = serde_json::from_str(&raw).map_err(|_| invalid())?;
+        let studio_runtime_schema::json_object::JsonObject(run): studio_runtime_schema::json_object::JsonObject<super::execution_history::ExecutionRun<Value, studio_runtime_schema::records::agent_projection::AgentCounter>> =
+            serde::Deserialize::deserialize(&value).map_err(|_| {
+                // The older record owner reports malformed JSON or a missing ID at
+                // the agent pointer; schema errors are located at the run row.
+                match value.get("id").and_then(Value::as_str) {
+                        Some(record_id) => StoreError::InvalidStoredObject { table: "runtime_execution_runs", id: record_id.into() },
+                        None => invalid(),
+                }
+            })?;
+        if run.id != id
+            || run.agent != agent.id.0
+            || run.account_key != agent.account_key
+            || run.epoch.as_number().as_i64() != Some(agent.epoch)
         {
             return Err(invalid());
         }
@@ -150,7 +155,7 @@ impl WorkItemsRepository {
     }
 
     pub fn put_work(connection: &Connection, id: &str, value: &Value) -> StoreResult<bool> {
-        let record = WorkItemRecord::checked(value.clone())?;
+        let record = WorkItemRecord::checked(value)?;
         if record.id().as_ref() != id {
             return Err(StoreError::InvalidStoredObject {
                 table: WorkItemRecord::TABLE,
@@ -161,14 +166,22 @@ impl WorkItemsRepository {
     }
 
     pub fn update_work(connection: &Connection, id: &str, value: &Value) -> StoreResult<()> {
-        let record = WorkItemRecord::checked(value.clone())?;
+        let record = WorkItemRecord::checked(value)?;
+        Self::update_checked_work(connection, id, &record)
+    }
+
+    pub fn update_checked_work(
+        connection: &Connection,
+        id: &str,
+        record: &WorkItemRecord,
+    ) -> StoreResult<()> {
         if record.id().as_ref() != id {
             return Err(StoreError::InvalidStoredObject {
                 table: WorkItemRecord::TABLE,
                 id: id.to_owned(),
             });
         }
-        Table::<WorkItemRecord>::new(connection).update(&record)?;
+        Table::<WorkItemRecord>::new(connection).update(record)?;
         Ok(())
     }
 
@@ -194,6 +207,8 @@ impl WorkItemsRepository {
         let reason: String = reason.chars().take(500).collect();
         let mut released = Vec::with_capacity(rows.len());
         for (id, raw) in rows {
+            // Release historically repairs fields such as a negative version before
+            // the checked write, so this mutation boundary must retain raw input.
             let mut record: Value =
                 serde_json::from_str(&raw).map_err(|_| crate::StoreError::InvalidStoredObject {
                     table: "runtime_work",
@@ -265,7 +280,7 @@ impl WorkItemsRepository {
     }
 
     pub fn validate_work(_connection: &Connection, id: &str, value: &Value) -> StoreResult<()> {
-        let record = WorkItemRecord::checked(value.clone())?;
+        let record = WorkItemRecord::checked(value)?;
         if record.id().as_ref() != id {
             return Err(StoreError::InvalidStoredObject {
                 table: WorkItemRecord::TABLE,
@@ -369,7 +384,7 @@ impl WorkItemsRepository {
         let metadata = Table::<EventMetadataRecord>::new(connection);
         for event in &mut events {
             if let Some(record) = metadata.get(&QueueEventId::from(event.id.as_str()))? {
-                event.metadata = Some(record.value().clone());
+                event.metadata = Some(record);
             }
         }
         Ok(events)
@@ -381,7 +396,7 @@ impl WorkItemsRepository {
         let mut seen = std::collections::BTreeSet::new();
         for id in ids.iter().filter(|id| seen.insert(id.as_str())) {
             if let Some(record) = table.get(&TranscriptAssetId::from(id.as_str()))? {
-                result.push(record.value().clone());
+                result.push(record.into_value());
             }
         }
         Ok(result)
@@ -480,25 +495,87 @@ mod tests {
         WorkItemsRepository::put_work(&connection, "task", &raw).expect("insert");
         assert_eq!(
             WorkItemsRepository::work(&connection).expect("list")[0].value(),
-            &raw
+            raw
         );
         assert_eq!(
             WorkItemsRepository::work_record(&connection, "task")
                 .expect("get")
                 .expect("task")
                 .value(),
-            &raw
+            raw
         );
         assert_eq!(
             WorkItemsRepository::dependent_work(&connection, "lead", "parent").expect("dependents")
                 [0]
             .value(),
-            &raw
+            raw
         );
         connection.execute("UPDATE runtime_work SET record=json_set(record,'$.status','future') WHERE id='task'",[]).expect("corrupt status");
         assert!(WorkItemsRepository::work(&connection).is_err());
         assert!(WorkItemsRepository::work_record(&connection, "task").is_err());
         assert!(WorkItemsRepository::dependent_work(&connection, "lead", "parent").is_err());
+    }
+
+    #[test]
+    fn work_record_preserves_last_duplicate_and_checks_physical_identity() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch("CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL)")
+            .unwrap();
+        connection.execute("INSERT INTO runtime_work VALUES('task',?1)", [r#"{"id":"wrong","id":"task","status":"ready","owner":null,"version":1.0,"future":{"x":[9007199254740993]}}"#]).unwrap();
+        let record = WorkItemsRepository::work_record(&connection, "task")
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.owner(), None);
+        assert_eq!(record.version().unwrap().as_f64(), Some(1.0));
+        assert_eq!(
+            record.value()["future"]["x"][0],
+            json!(9007199254740993_u64)
+        );
+        let pointer = record.extension("future").unwrap()["x"]
+            .as_array()
+            .unwrap()
+            .as_ptr();
+        let projected = record.into_value();
+        assert_eq!(
+            pointer,
+            projected["future"]["x"].as_array().unwrap().as_ptr()
+        );
+        connection
+            .execute(
+                "UPDATE runtime_work SET record=?1",
+                [r#"{"id":"other","status":"ready"}"#],
+            )
+            .unwrap();
+        assert!(WorkItemsRepository::work_record(&connection, "task").is_err());
+    }
+
+    #[test]
+    fn release_preserves_historical_negative_version_repair() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch("CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL)")
+            .unwrap();
+        let value = json!({"id":"task", "owner":"worker", "status":"running", "version":-1, "future":{"proof":true}});
+        connection
+            .execute(
+                "INSERT INTO runtime_work VALUES('task',?1)",
+                [value.to_string()],
+            )
+            .unwrap();
+        let released =
+            WorkItemsRepository::release_failed_work(&connection, "worker", "lost", 4.0).unwrap();
+        assert_eq!(released.len(), 1);
+        assert_eq!(released[0]["version"], 0);
+        assert_eq!(released[0]["owner"], serde_json::Value::Null);
+        assert_eq!(released[0]["future"], value["future"]);
+        assert_eq!(
+            WorkItemsRepository::work_record(&connection, "task")
+                .unwrap()
+                .unwrap()
+                .into_value(),
+            released[0]
+        );
     }
 
     #[test]
@@ -554,11 +631,35 @@ mod tests {
         connection.execute_batch(
             "CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,agent TEXT,account TEXT,epoch INTEGER,thread TEXT,turn TEXT,created REAL,record TEXT);",
         ).expect("execution table creates");
-        let agent = AgentRecord::from_value(json!({
+        let agent = AgentRecord::from_value(json!({"accountKey":"default",
             "id":"worker","provider":"codex","rootId":"lead","epoch":4,"status":"paused",
             "activeExecution":{"runId":"run-1","attemptId":null}
         }))
         .expect("agent record parses");
+        for raw in ["{", r#"{"agent":"worker"}"#, r#"{"id":false}"#] {
+            connection.execute("INSERT INTO runtime_execution_runs VALUES ('run-1','worker','default',4,NULL,NULL,1.0,?1)", [raw]).unwrap();
+            assert!(
+                matches!(WorkItemsRepository::submission_identity(&connection, &agent), Err(StoreError::InvalidStoredObject { table: "runtime_agents", ref id }) if id == "worker")
+            );
+            connection
+                .execute("DELETE FROM runtime_execution_runs", [])
+                .unwrap();
+        }
+        connection.execute("INSERT INTO runtime_execution_runs VALUES ('run-1','worker','default',4,NULL,NULL,1.0,?1)", [r#"{"id":"foreign"}"#]).unwrap();
+        assert!(
+            matches!(WorkItemsRepository::submission_identity(&connection, &agent), Err(StoreError::InvalidStoredObject { table: "runtime_execution_runs", ref id }) if id == "foreign")
+        );
+        connection
+            .execute("DELETE FROM runtime_execution_runs", [])
+            .unwrap();
+        let decimal = r#"{"id":"run-1","agent":"worker","accountKey":"default","epoch":4.0,"status":"running","created":1}"#;
+        connection.execute("INSERT INTO runtime_execution_runs VALUES ('run-1','worker','default',4,NULL,NULL,1.0,?1)", [decimal]).unwrap();
+        assert!(
+            matches!(WorkItemsRepository::submission_identity(&connection, &agent), Err(StoreError::InvalidStoredObject { table: "runtime_agents", ref id }) if id == "worker")
+        );
+        connection
+            .execute("DELETE FROM runtime_execution_runs", [])
+            .unwrap();
         for record in [
             json!({"id":"run-1","agent":"worker","accountKey":"default","epoch":4,"created":1.0}),
             json!({"id":"run-1","agent":"worker","accountKey":"default","epoch":4,"status":"running","created":1.0,"latestAttemptId":5}),
@@ -575,6 +676,31 @@ mod tests {
                 .execute("DELETE FROM runtime_execution_runs", [])
                 .expect("invalid row deletes");
         }
+    }
+
+    #[test]
+    fn submission_identity_uses_last_duplicate_record_values() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,record TEXT);")
+            .unwrap();
+        let agent = AgentRecord::from_value(json!({"accountKey":"default","id":"worker","provider":"codex","rootId":"lead","epoch":4,"status":"paused","activeExecution":{"runId":"run","attemptId":null}})).unwrap();
+        let raw = r#"{"id":"wrong","id":"run","agent":"wrong","agent":"worker","accountKey":"default","epoch":4.0,"epoch":4,"status":"bad","status":"running","created":1}"#;
+        db.execute("INSERT INTO runtime_execution_runs VALUES('run',?1)", [raw])
+            .unwrap();
+        assert_eq!(
+            WorkItemsRepository::submission_identity(&db, &agent).unwrap(),
+            Some(("run".into(), None))
+        );
+        let reversed = raw.replace(r#""epoch":4.0,"epoch":4"#, r#""epoch":4,"epoch":4.0"#);
+        db.execute("UPDATE runtime_execution_runs SET record=?1", [reversed])
+            .unwrap();
+        assert!(matches!(
+            WorkItemsRepository::submission_identity(&db, &agent),
+            Err(StoreError::InvalidStoredObject {
+                table: "runtime_agents",
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -674,7 +800,7 @@ mod receipt_domain_tests {
         )
         .expect("historical execution");
         let mut agent = AgentRecord::from_value(
-            json!({"id":"agent","rootId":"agent","provider":"codex","status":"idle","epoch":1}),
+            json!({"accountKey":"default","id":"agent","rootId":"agent","provider":"codex","status":"idle","epoch":1}),
         )
         .expect("agent");
         assert_eq!(

@@ -217,9 +217,9 @@ impl LoginService {
         for snapshot in loaded {
             let account = if snapshot.adding() {
                 let config = snapshot
-                    .record()
-                    .pointer("/metadata/configDir")
-                    .and_then(Value::as_str)
+                    .metadata()
+                    .config_dir
+                    .as_deref()
                     .ok_or_else(|| LoginError::InvalidRecord("configDir".into()))?
                     .to_owned();
                 let accounts = service.accounts.clone();
@@ -612,15 +612,10 @@ impl LoginService {
             .into_iter()
             .map(Into::into)
             .collect();
-        if let Some(email) = snapshot
-            .record()
-            .pointer(if snapshot.adding() {
-                "/metadata/emailHint"
-            } else {
-                "/receipt/email"
-            })
-            .and_then(Value::as_str)
-        {
+        if let Some(email) = match snapshot.flow() {
+            super::LoginFlow::Add { email_hint, .. } => email_hint,
+            super::LoginFlow::Reauthenticate { email, .. } => email,
+        } {
             args.extend(["--email".into(), email.into()]);
         }
         let mut child = self
@@ -708,9 +703,9 @@ impl LoginService {
                 accounts.refresh(record.account_key(), &profile, &metadata)
             } else {
                 let label = record
-                    .record()
-                    .pointer("/metadata/label")
-                    .and_then(Value::as_str)
+                    .metadata()
+                    .label
+                    .as_deref()
                     .ok_or(LoginError::Unavailable)?;
                 let options = json!({"binaryPath":binary,"configDir":home,"customModels":[]})
                     .as_object()
@@ -741,8 +736,8 @@ impl LoginService {
     async fn refresh_chats(&self, id: &str) -> Result<(), LoginError> {
         let entry = self.jobs.entry(id)?;
         let mut job = entry.lock().await;
-        if job.snapshot.record().pointer("/receipt/status") != Some(&json!("ready"))
-            || job.snapshot.record().pointer("/receipt/chatsRefreshed") == Some(&json!(true))
+        if job.snapshot.receipt_record().status != super::LoginStatus::Ready
+            || job.snapshot.receipt_record().chats_refreshed == Some(true)
         {
             return Ok(());
         }
@@ -759,9 +754,9 @@ impl LoginService {
         .await?;
         let email = job
             .snapshot
-            .record()
-            .pointer("/receipt/email")
-            .and_then(Value::as_str)
+            .receipt_record()
+            .email
+            .as_deref()
             .ok_or(LoginError::Unavailable)?;
         if account.get("status") != Some(&json!("ready"))
             || account.get("accountId") != Some(&json!(format!("claude:{email}")))
@@ -844,15 +839,21 @@ impl LoginService {
             if !unknown(&job.snapshot) {
                 continue;
             }
-            let metadata = job.snapshot.record()["metadata"].clone();
-            if let Some(value) = metadata.get("child").filter(|v| !v.is_null()) {
-                let identity: ChildIdentity =
-                    serde_json::from_value(value.clone()).map_err(|_| LoginError::Unavailable)?;
+            let metadata = job.snapshot.metadata();
+            if let Some(child) = &metadata.child {
+                let identity = ChildIdentity {
+                    pid: child
+                        .pid()
+                        .as_u64()
+                        .and_then(|pid| u32::try_from(pid).ok())
+                        .ok_or(LoginError::Unavailable)?,
+                    start: child.start().to_owned(),
+                };
                 if !self.launcher.gone(identity).await.unwrap_or(false) {
                     continue;
                 }
             }
-            let config = if let Some(config) = metadata.get("configDir").and_then(Value::as_str) {
+            let config = if let Some(config) = metadata.config_dir.as_deref() {
                 PathBuf::from(config)
             } else if !job.snapshot.adding() {
                 // Python reauthentication receipts omit configDir, but Python children
@@ -864,12 +865,7 @@ impl LoginService {
                 let Ok(profile) = blocking(move || accounts.profile(&key)).await else {
                     continue;
                 };
-                let Some(email) = job
-                    .snapshot
-                    .record()
-                    .pointer("/receipt/email")
-                    .and_then(Value::as_str)
-                else {
+                let Some(email) = job.snapshot.receipt_record().email.as_deref() else {
                     continue;
                 };
                 if profile.get("accountId") != Some(&json!(format!("claude:{email}"))) {
@@ -967,9 +963,9 @@ impl LoginService {
         if !snapshot.adding()
             || snapshot.active()
             || unknown(snapshot)
-            || snapshot.record().pointer("/metadata/operatorCleared") == Some(&json!(true))
-            || snapshot.record().pointer("/receipt/status") == Some(&json!("ready"))
-            || snapshot.record().pointer("/metadata/cleanupDone") == Some(&json!(true))
+            || snapshot.metadata().operator_cleared == Some(true)
+            || snapshot.receipt_record().status == super::LoginStatus::Ready
+            || snapshot.metadata().cleanup_done == Some(true)
         {
             return Ok(snapshot.clone());
         }
@@ -980,9 +976,9 @@ impl LoginService {
         // The stored configuration folder is canonical; the state folder may be
         // under a link, such as the macOS `/var`.
         if !snapshot
-            .record()
-            .pointer("/metadata/configDir")
-            .and_then(Value::as_str)
+            .metadata()
+            .config_dir
+            .as_deref()
             .is_some_and(|stored| {
                 studio_runtime_store::path_identity::same(std::path::Path::new(stored), &expected)
             })
@@ -1074,7 +1070,7 @@ fn find_url(output: &[u8]) -> Option<String> {
 }
 
 fn unknown(snapshot: &LoginSnapshot) -> bool {
-    snapshot.record().pointer("/metadata/outcomeUnknown") == Some(&json!(true))
+    snapshot.metadata().outcome_unknown == Some(true)
 }
 
 #[cfg(test)]

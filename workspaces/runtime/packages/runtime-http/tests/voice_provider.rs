@@ -1,4 +1,3 @@
-use axum::Extension;
 use axum::body::{Body, to_bytes};
 use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode};
@@ -199,7 +198,7 @@ async fn post(app: &axum::Router, path: &str, body: Value) -> (StatusCode, Value
 }
 
 #[tokio::test]
-async fn installed_provider_lifts_start_speech_approve_and_end_over_http() {
+async fn installed_provider_supports_start_end_and_service_receipts() {
     let (_root, store, port) = fixture().await;
     let state = HttpState::new(
         "token".into(),
@@ -230,52 +229,44 @@ async fn installed_provider_lifts_start_speech_approve_and_end_over_http() {
     )
     .await;
 
-    let (status, spoken) = post(
-        &app,
-        "/api/voice/speech",
-        json!({
-            "agent":"voice-http-agent", "session_id":"speech-http", "record_id":"speech-record"
-        }),
+    let spoken = studio_runtime_services::voice::provider::speech(
+        store.clone(),
+        port.clone(),
+        "voice-http-agent".into(),
+        "speech-http".into(),
+        "speech-record".into(),
+        None,
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{spoken}");
-    assert_eq!(
-        spoken["error"],
-        Value::Null,
-        "first response hides internal digest"
-    );
+    .await
+    .expect("speech");
     let calls_after_first_speech = port.calls.lock().expect("provider calls").len();
-    let (status, spoken_replay) = post(
-        &app,
-        "/api/voice/speech",
-        json!({
-            "agent":"voice-http-agent", "session_id":"speech-http", "record_id":"speech-record"
-        }),
+    let spoken_replay = studio_runtime_services::voice::provider::speech(
+        store.clone(),
+        port.clone(),
+        "voice-http-agent".into(),
+        "speech-http".into(),
+        "speech-record".into(),
+        None,
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{spoken_replay}");
-    assert_eq!(
-        spoken_replay["error"],
-        Value::Null,
-        "replay hides internal digest"
-    );
+    .await
+    .expect("speech replay");
     assert_eq!(spoken_replay["id"], spoken["id"]);
     assert_eq!(spoken_replay["state"], spoken["state"]);
     assert_eq!(
         port.calls.lock().expect("provider calls").len(),
         calls_after_first_speech
     );
-
-    let (status, approved) = post(
-        &app,
-        "/api/voice/approve",
-        json!({
-            "agent":"voice-http-agent", "session_id":"approve-http",
-            "speech_id":"approval-speech", "transcript_id":"approval-transcript"
-        }),
+    studio_runtime_services::voice::provider::approve(
+        store.clone(),
+        port.clone(),
+        "voice-http-agent".into(),
+        "approve-http".into(),
+        "approval-speech".into(),
+        "approval-transcript".into(),
+        1000.0,
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{approved}");
+    .await
+    .expect("approval");
 
     let (status, ended) = post(
         &app,
@@ -372,30 +363,23 @@ async fn voice_monitor_approval_uses_monitor_transaction_and_dispatch_wake() {
         .await
         .expect("seed voice monitor approval");
 
-    let approval_body = json!({
-        "agent":agent,"session_id":"voice-monitor-session",
-        "speech_id":"voice-monitor-speech","transcript_id":"voice-monitor-transcript"
-    });
-    let app_without_runtime = router(HttpState::new(
-        "token".into(),
-        "workspace".into(),
-        root.path().to_string_lossy().into_owned(),
-        4620,
-        None,
-        Some(store.clone()),
-        None,
-    ))
-    .expect("router without monitor runtime");
+    let approve = |available| {
+        studio_runtime_services::voice::provider::approve_monitor(
+            store.clone(),
+            agent.clone(),
+            "voice-monitor-session".into(),
+            "voice-monitor-speech".into(),
+            "voice-monitor-transcript".into(),
+            1001.0,
+            available,
+        )
+    };
     let before_refusal = database_snapshot(&store);
-    let (status, refused) = post(
-        &app_without_runtime,
-        "/api/voice/approve",
-        approval_body.clone(),
-    )
-    .await;
-    assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{refused}");
+    assert!(matches!(
+        approve(false).await,
+        Err(studio_runtime_services::voice::provider::VoiceProviderError::RequiresDependency(_))
+    ));
     assert_eq!(database_snapshot(&store), before_refusal);
-
     let state = HttpState::new(
         "token".into(),
         "workspace".into(),
@@ -413,19 +397,7 @@ async fn voice_monitor_approval_uses_monitor_transaction_and_dispatch_wake() {
             state.event_wake_handle(),
         ),
     );
-    let app = router(state)
-        .expect("router")
-        .layer(Extension(runtime.clone()));
-    let (status, response) = post(
-        &app,
-        "/api/voice/approve",
-        json!({
-            "agent":agent,"session_id":"voice-monitor-session",
-            "speech_id":"voice-monitor-speech","transcript_id":"voice-monitor-transcript"
-        }),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{response}");
+    let response = approve(true).await.expect("monitor approval");
     assert_eq!(response["status"], "answered");
     let request = Table::<RequestRecord>::new(&store.test_reader().expect("read request"))
         .get(&request_id)
@@ -434,13 +406,7 @@ async fn voice_monitor_approval_uses_monitor_transaction_and_dispatch_wake() {
     assert_eq!(request.value()["answerDecision"], "accept");
 
     // A saved accepted voice receipt must replay without the optional runtime.
-    let (status, replayed) = post(
-        &app_without_runtime,
-        "/api/voice/approve",
-        approval_body.clone(),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{replayed}");
+    let replayed = approve(false).await.expect("approval replay");
     assert_eq!(replayed["status"], response["status"]);
     assert_ne!(replayed["replayed"], true);
 
@@ -457,8 +423,7 @@ async fn voice_monitor_approval_uses_monitor_transaction_and_dispatch_wake() {
         })
         .await
         .expect("simulate crash window");
-    let (status, recovered) = post(&app_without_runtime, "/api/voice/approve", approval_body).await;
-    assert_eq!(status, StatusCode::OK, "{recovered}");
+    let recovered = approve(false).await.expect("recover approval");
     assert_eq!(recovered["status"], "answered");
     assert_eq!(recovered["replayed"], true);
     let receipt: (String, Option<String>) = store
@@ -497,20 +462,10 @@ async fn providerless_routes_admit_start_and_refuse_other_actions_without_writes
     let app = router(state).expect("router");
     let before = voice_row_counts(&store);
     let snapshot = database_snapshot(&store);
-    for (path, body) in [
-        (
-            "/api/voice/speech",
-            json!({"agent":"voice-http-agent","session_id":"speech-http","record_id":"speech-record"}),
-        ),
-        (
-            "/api/voice/approve",
-            json!({"agent":"voice-http-agent","session_id":"approve-http","speech_id":"approval-speech","transcript_id":"approval-transcript"}),
-        ),
-        (
-            "/api/voice/end",
-            json!({"agent":"voice-http-agent","session_id":"end-http"}),
-        ),
-    ] {
+    for (path, body) in [(
+        "/api/voice/end",
+        json!({"agent":"voice-http-agent","session_id":"end-http"}),
+    )] {
         let (status, value) = post(&app, path, body).await;
         assert_eq!(database_snapshot(&store), snapshot, "{path} must not write");
         assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{path}: {value}");

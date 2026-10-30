@@ -187,43 +187,6 @@ impl MultiServerBoundary {
         .await
     }
 
-    /// Authenticate an already paired server operation and consume its nonce
-    /// before the orchestration receiver claims the stable request identity.
-    pub async fn authorize_operation_incoming(
-        &self,
-        store: Arc<RuntimeStore>,
-        request: &SignedRequest,
-        address: &str,
-        logins: &[String],
-        now: f64,
-    ) -> Result<String, AccessError> {
-        if !request.is_orchestration() {
-            return Err(refused(
-                400,
-                "invalid_request",
-                "Invalid cross-server request",
-            ));
-        }
-        self.authorize_server_request_incoming(store, request, address, logins, now)
-            .await
-    }
-
-    /// Authenticate a signed operation from an already paired server and
-    /// consume its nonce before applying the operation's durable effect.
-    pub async fn authorize_server_request_incoming(
-        &self,
-        store: Arc<RuntimeStore>,
-        request: &SignedRequest,
-        address: &str,
-        logins: &[String],
-        now: f64,
-    ) -> Result<String, AccessError> {
-        let prepared = self
-            .prepare_server_request_incoming(Arc::clone(&store), request, address, logins, now)
-            .await?;
-        self.commit_prepared_server_request(&store, &prepared).await
-    }
-
     /// Verify a signed server request and observe its owner without consuming its nonce.
     pub async fn prepare_server_request_incoming(
         &self,
@@ -724,10 +687,17 @@ fn apply_pair(
             .invite()
             .cloned()
             .ok_or_else(|| refused(403, "invite_unavailable", "The invitation is unavailable"))?;
-        invite["status"] = json!("used");
+        invite.mark_used();
+        let invite = serde_json::to_string(&invite).map_err(|_| {
+            refused(
+                503,
+                "invalid_record",
+                "Stored access identity differs from its row",
+            )
+        })?;
         tx.execute(
             "UPDATE runtime_access_invites SET record=?1 WHERE id=?2",
-            params![invite.to_string(), text(body, "inviteId")],
+            params![invite, text(body, "inviteId")],
         )?;
         new_client(request, principal, now)
     } else {

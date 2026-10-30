@@ -157,7 +157,7 @@ pub(super) fn read(
             .and_then(|rest| rest.strip_prefix(':'))
         && let Some(item) = TranscriptRepository::item(tx, agent, key).map_err(transcript_error)?
     {
-        match item.record["title"].as_str() {
+        match item.record.extra("title").and_then(Value::as_str) {
             Some("commandExecution") => return command_output(tx, key, &item, args),
             Some("dynamicToolCall") => {
                 let request = native_request_alias(tx, agent, call)?;
@@ -256,7 +256,7 @@ pub(super) fn receipt_keys(
             .strip_prefix(agent)
             .and_then(|rest| rest.strip_prefix(':'))
         && let Some(item) = TranscriptRepository::item(tx, agent, key).map_err(transcript_error)?
-        && item.record["title"] == "dynamicToolCall"
+        && item.record.extra("title").and_then(Value::as_str) == Some("dynamicToolCall")
         && let Some(request) = native_request_alias(tx, agent, call)?
     {
         keys.push(request);
@@ -448,7 +448,7 @@ fn command_output(
             "Saved command output is truncated or unreadable. Do not repeat the command.",
         )
     };
-    let item_truncated = studio_runtime_store::truthy(item.record.get("truncated"));
+    let item_truncated = studio_runtime_store::truthy(item.record.extra("truncated"));
     let full = if item_truncated {
         TranscriptRepository::full_text(tx, item)
             .map_err(transcript_error)?
@@ -458,7 +458,12 @@ fn command_output(
     };
     let raw = match &full {
         Some(full) => full.as_str(),
-        None => item.record["text"].as_str().ok_or_else(unreadable)?,
+        None => item
+            .record
+            .text()
+            .value()
+            .map(String::as_str)
+            .ok_or_else(unreadable)?,
     };
     let payload: Value = serde_json::from_str(raw).map_err(|_| unreadable())?;
     let output = payload["aggregatedOutput"]

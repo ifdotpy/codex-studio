@@ -200,7 +200,7 @@ impl NotificationDispatchRepository {
             if !created.is_finite() || created < 0.0 {
                 return Err(invalid_record("runtime_items", id));
             }
-            Ok((item.record, created))
+            Ok((item.record.into_value(), created))
         })
         .transpose()
     }
@@ -210,19 +210,13 @@ impl NotificationDispatchRepository {
         id: &str,
         record: &Value,
     ) -> StoreResult<Option<String>> {
-        TranscriptRepository::full_text(
-            transaction,
-            &TranscriptItem {
-                id: id.to_owned(),
-                agent: transaction.query_row_cached(
-                    "SELECT agent FROM runtime_items WHERE id=?1",
-                    [id],
-                    |row| row.get(0),
-                )?,
-                record: record.clone(),
-            },
-        )
-        .map_err(|error| map_transcript_error(error, "runtime_items", id))
+        let _: String = transaction.query_row_cached(
+            "SELECT agent FROM runtime_items WHERE id=?1",
+            [id],
+            |row| row.get(0),
+        )?;
+        TranscriptRepository::full_text_raw(transaction, id, record)
+            .map_err(|error| map_transcript_error(error, "runtime_items", id))
     }
 
     pub fn put_transcript_item(
@@ -369,38 +363,35 @@ impl NotificationDispatchRepository {
 }
 
 fn validate_item(item: &TranscriptItem, agent: &str, include_notices: bool) -> StoreResult<()> {
-    let role = item.record.get("role").and_then(Value::as_str);
-    if ["truncated", "streaming"].iter().any(|key| {
-        item.record
-            .get(key)
-            .is_some_and(|value| !value.is_boolean())
-    }) || item.record.get("id").and_then(Value::as_str) != Some(item.id.as_str())
+    use studio_runtime_schema::queue_command::Field;
+    let record = &item.record;
+    let role = record.role();
+    let valid_inputs = match record.inputs() {
+        Field::Missing => true,
+        Field::Null => false,
+        Field::Value(inputs) => inputs.iter().all(|input| {
+            input.id().is_some()
+                && input
+                    .extra("at")
+                    .and_then(Value::as_f64)
+                    .is_some_and(f64::is_finite)
+                && input.kind().is_some()
+                && input.text().is_some()
+                && input.truncated().is_some()
+                && input.extra("assets").is_some_and(Value::is_array)
+        }),
+    };
+    if ["truncated", "streaming"]
+        .iter()
+        .any(|key| record.extra(key).is_some_and(|value| !value.is_boolean()))
+        || record.id().as_ref() != item.id
         || !(matches!(role, Some("assistant" | "user"))
             || include_notices && matches!(role, Some("system" | "output")))
-        || item
-            .record
-            .get("text")
-            .is_some_and(|text| !text.is_string())
-        || item
-            .record
-            .get("assets")
+        || matches!(record.text(), Field::Null)
+        || record
+            .extra("assets")
             .is_some_and(|assets| !assets.is_array())
-        || item.record.get("inputs").is_some_and(|inputs| {
-            !inputs.as_array().is_some_and(|inputs| {
-                inputs.iter().all(|input| {
-                    input.is_object()
-                        && input.get("id").and_then(Value::as_str).is_some()
-                        && input
-                            .get("at")
-                            .and_then(Value::as_f64)
-                            .is_some_and(f64::is_finite)
-                        && input.get("kind").and_then(Value::as_str).is_some()
-                        && input.get("text").and_then(Value::as_str).is_some()
-                        && input.get("truncated").and_then(Value::as_bool).is_some()
-                        && input.get("assets").is_some_and(Value::is_array)
-                })
-            })
-        })
+        || !valid_inputs
     {
         return Err(invalid_record("runtime_items", &item.id));
     }

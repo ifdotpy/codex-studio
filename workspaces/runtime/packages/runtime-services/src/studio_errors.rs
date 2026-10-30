@@ -622,7 +622,9 @@ fn build(tx: &Transaction<'_>, now: f64) -> Result<(Vec<StudioError>, Baseline),
         let Some(kind) = agent_kind(record.status.as_str(), &error) else {
             continue;
         };
-        let turn = record.turn_id.as_deref()
+        let turn = record
+            .turn_id
+            .as_deref()
             .or_else(|| {
                 record
                     .extra
@@ -1184,7 +1186,7 @@ mod tests {
             .expect("valid group publication fixture");
         let now = crate::event_write::unix_time().expect("valid group publication fixture");
         store.transaction(move |tx| {
-            AgentRepository::put(tx, &AgentRecord::from_value(json!({"id":"owner","rootId":"owner","epoch":0,"status":"idle","provider":"codex"}))?)?;
+            AgentRepository::put(tx, &AgentRecord::from_value(json!({"accountKey":"default","id":"owner","rootId":"owner","epoch":0,"status":"idle","provider":"codex"}))?)?;
             Table::new(tx).put(&MonitorRecord::from_value(json!({"id":"failed","agent":"owner","ruleId":"rule","command":"check","created":now - 10.,"finished":now - 9.,"status":"failed","error":"No live provider session","exitCode":null}))?)?;
             Ok::<_, StoreError>(())
         }).await.expect("valid group publication fixture");

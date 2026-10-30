@@ -63,6 +63,23 @@ impl TaskRepository {
         ]
     }
 
+    /// Schema-checked running tasks for one agent, in stable row order.
+    pub fn running_for_agent(connection: &Connection, agent: &str) -> StoreResult<Vec<TaskRecord>> {
+        let mut statement = connection.prepare_cached(
+            "SELECT id,record FROM runtime_tasks WHERE json_extract(record,'$.agent')=?1 \
+             AND json_extract(record,'$.status')='running' ORDER BY id",
+        )?;
+        statement
+            .query_map([agent], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .map(|row| {
+                let (id, raw) = row?;
+                Table::<TaskRecord>::new(connection).decode_stored(&id, &raw)
+            })
+            .collect()
+    }
+
     pub fn get(connection: &Connection, id: &TaskId) -> StoreResult<Option<TaskRecord>> {
         Table::<TaskRecord>::new(connection).get(id)
     }
@@ -75,5 +92,48 @@ inventory::submit! {
     crate::repositories::SchemaRegistration {
         repository: "tasks",
         requirements: &REQUIREMENTS,
+    }
+}
+
+#[cfg(test)]
+mod typed_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn task_rows_preserve_presence_extensions_and_check_identity() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE runtime_tasks(id TEXT PRIMARY KEY,record TEXT NOT NULL)")
+            .unwrap();
+        let value = json!({"id":"a","agent":"agent","created":1.0,"status":null,"kind":"future","tail":null,"output":{"data":[1]},"extension":true});
+        let record = TaskRecord::from_value(value.clone()).unwrap();
+        TaskRepository::put(&db, &record).unwrap();
+        assert_eq!(
+            crate::WorkspaceViewsRepository::task(&db, "a").unwrap(),
+            Some(value.clone())
+        );
+        let page =
+            crate::WorkspaceViewsRepository::task_page(&db, &["agent".into()], None, None, 10)
+                .unwrap();
+        assert_eq!(page.into_iter().next().unwrap().decode(&db).unwrap(), value);
+        assert_eq!(
+            TaskRepository::get(&db, &TaskId::from("a"))
+                .unwrap()
+                .unwrap()
+                .into_value(),
+            value
+        );
+        db.execute(
+            "UPDATE runtime_tasks SET record=?1",
+            [r#"{"id":"b","status":"running"}"#],
+        )
+        .unwrap();
+        assert!(TaskRepository::get(&db, &TaskId::from("a")).is_err());
+        db.execute(
+            "UPDATE runtime_tasks SET record=?1",
+            [r#"{"id":"a","created":-1}"#],
+        )
+        .unwrap();
+        assert!(TaskRepository::get(&db, &TaskId::from("a")).is_err());
     }
 }

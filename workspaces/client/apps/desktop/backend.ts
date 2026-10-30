@@ -174,6 +174,18 @@ async function identity(
         signal,
         redirect: "error",
       });
+      if (response.status === 503) {
+        // The backend answers 503 while it starts or migrates; it is ours, but not ready yet.
+        await response.body?.cancel();
+        uncertain = true;
+        const remaining = deadline - performance.now();
+        if (remaining <= 0)
+          throw new Error(
+            "The local backend did not finish starting in time. Try opening Studio again. No replacement backend was started.",
+          );
+        await sleep(Math.min(retryDelayMs, remaining));
+        continue;
+      }
       try {
         data = await response.json();
       } catch (error) {

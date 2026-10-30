@@ -36,24 +36,24 @@ pub(super) fn snapshot(tx: &Transaction<'_>, actor: &Value) -> Result<Option<Val
     let mut children = Vec::new();
     let mut has_children = false;
     for (_, raw) in team {
-        let worker: Value =
+        let record: studio_runtime_store::AgentRecord =
             serde_json::from_str(&raw).map_err(|_| refusal("invalid child record".into()))?;
-        if worker["id"] == id
-            || (!lead && worker["parentId"] != id)
-            || studio_runtime_store::truthy(worker.get("deletedAt"))
+        if record.id.0 == id
+            || (!lead && record.extra.get("parentId").and_then(Value::as_str) != Some(id))
+            || studio_runtime_store::truthy(record.extra.get("deletedAt"))
         {
             continue;
         }
         has_children = true;
         if matches!(
-            worker["status"].as_str(),
-            Some("completed" | "failed" | "interrupted")
-        ) || (worker["status"] == "paused"
-            && !studio_runtime_store::truthy(worker.get("autoWake")))
+            record.status,
+            studio_runtime_store::AgentStatus::Completed | studio_runtime_store::AgentStatus::Failed | studio_runtime_store::AgentStatus::Interrupted
+        ) || (record.status == studio_runtime_store::AgentStatus::Paused
+            && record.auto_wake != Some(true))
         {
             continue;
         }
-        children.push(json!({"id":worker["id"],"name":worker["name"],"status":worker["status"]}));
+        children.push(json!({"id":record.id,"name":record.extra.get("name"),"status":record.status}));
     }
     children.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
     let tasks = rows(tx,
@@ -104,4 +104,69 @@ pub(super) fn snapshot(tx: &Transaction<'_>, actor: &Value) -> Result<Option<Val
     Ok(Some(
         json!({"children":children,"monitors":monitors,"tasks":tasks,"pendingResults":results}),
     ))
+}
+
+#[cfg(test)]
+mod idle_return_tests {
+    use super::*;
+    use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, RuntimeStore, StoreError};
+
+    #[tokio::test]
+    async fn workers_that_finish_during_idle_reach_the_return_input_as_current_state() {
+        let root = tempfile::tempdir().expect("root");
+        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        store.transaction(|tx| {
+            let lead = json!({"id":"lead","rootId":"lead","epoch":1,"events":0,"accountKey":"default","isLead":true,"provider":"claude","status":"idle","autoWake":true});
+            let mut worker = json!({"id":"worker","rootId":"lead","epoch":1,"events":0,"accountKey":"default","parentId":"lead","name":"Worker","provider":"claude","status":"running","autoWake":true});
+            AgentRepository::put(tx,&AgentRecord::from_value(lead.clone()).expect("lead"))?;
+            AgentRepository::put(tx,&AgentRecord::from_value(worker.clone()).expect("worker"))?;
+            let previous = snapshot(tx,&lead).expect("snapshot").expect("team");
+            assert_eq!(previous["children"][0]["status"],"running");
+            worker["status"] = json!("completed");
+            AgentRepository::put(tx,&AgentRecord::from_value(worker).expect("worker"))?;
+            tx.execute("INSERT INTO runtime_work(id,record) VALUES('assignment',?1)", [json!({"id":"assignment","rootId":"lead","owner":"worker","status":"review","title":"Finished work","results":[{"summary":"complete"}]}).to_string()])?;
+            let current = snapshot(tx,&lead).expect("snapshot").expect("team");
+            assert_eq!(current["children"],json!([]));
+            assert_eq!(current["tasks"][0]["status"],"review");
+            let input = crate::turn_prepare::PreparationSnapshot {
+                idle_summary_return: true,
+                provider: Some(studio_runtime_providers::ProviderKind::Claude),
+                actor: crate::turn_prepare::Actor {
+                    id: "lead".into(),
+                    root_id: "lead".into(),
+                    epoch: crate::turn_prepare::Epoch(Some("thread".into()), 0),
+                    is_lead: true,
+                    forked_from: None,
+                    prepared_context: None,
+                    delivered_mode: None,
+                },
+                root: crate::turn_prepare::RootSettings { concurrency: 32, mode_revision: 0 },
+                delivered_manifests: vec![],
+                plan: None,
+                complaints: vec![],
+                workers: vec![],
+                team_state: Some(current),
+                delivered_reminders: Default::default(),
+                assets: vec![],
+                asset_paths: Default::default(),
+                guidance: crate::turn_prepare::GuidanceBundle { role: "Role".into() },
+                artifact_paths: Default::default(),
+                prepared_at: 1.0,
+                operation_id: "return".into(),
+            };
+            let event = crate::turn_prepare::Event {
+                id:"return".into(),kind:"user".into(),text:"continue".into(),created:1.0,
+                metadata:crate::turn_prepare::EventMetadata {assets:vec![],accepted_at:None,extra:serde_json::Map::new()},
+                preserve_progress:false,preserve_complaint:false,
+            };
+            let compiled=crate::turn_prepare::compile(&input,&[event]).expect("compile");
+            let wire=serde_json::to_string(&compiled.provider_inputs).expect("wire");
+            assert!(wire.contains("Studio team state after compaction"));
+            assert!(wire.contains("Finished work"));
+            assert!(wire.contains("review"));
+            assert!(!wire.contains("running"));
+            assert_eq!(AgentRepository::get(tx,&AgentId::from("lead"))?.expect("lead").value()["compactions"].as_u64().unwrap_or(0),0);
+            Ok::<_,StoreError>(())
+        }).await.expect("transaction");
+    }
 }

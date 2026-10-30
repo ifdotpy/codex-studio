@@ -261,15 +261,17 @@ pub(crate) async fn state() -> (tempfile::TempDir, RuntimeStore, Value) {
         for metadata in seed.event_metadata { Table::new(tx).put_at(&metadata.id.into(), &metadata.record)?; }
         for event in seed.events { QueueEventRepository::put(tx, &QueueEvent {id:event.id.into(),agent:event.agent.into(),kind:event.kind.as_str().into(),text:event.text,status:event.status.as_str().into(),created:event.created,epoch:event.epoch,turn_id:event.turn_id,error:event.error})?; }
         for record in seed.execution_runs {
+            let record = ExecutionRunRecord::from_value(record)?;
+            let run = record.run();
             let fields = [
-                ("agent",SqlValue::Text(record["agent"].as_str().expect("run agent").into())),
-                ("account",SqlValue::Text(record["accountKey"].as_str().expect("run account").into())),
-                ("epoch",SqlValue::Integer(record["epoch"].as_i64().expect("run epoch"))),
-                ("thread",record["threadId"].as_str().map_or(SqlValue::Null,|s|SqlValue::Text(s.into()))),
-                ("turn",record["turnId"].as_str().map_or(SqlValue::Null,|s|SqlValue::Text(s.into()))),
-                ("created",SqlValue::Real(record["created"].as_f64().expect("run time"))),
+                ("agent",SqlValue::Text(run.agent.clone())),
+                ("account",SqlValue::Text(run.account_key.clone())),
+                ("epoch",SqlValue::Integer(run.epoch.as_number().as_i64().expect("run epoch"))),
+                ("thread",run.thread_id.value().map_or(SqlValue::Null,|s|SqlValue::Text(s.clone()))),
+                ("turn",run.turn_id.value().map_or(SqlValue::Null,|s|SqlValue::Text(s.clone()))),
+                ("created",SqlValue::Real(run.created.as_f64().expect("run time"))),
             ];
-            Table::new(tx).put_with_columns(&ExecutionRunRecord::from_value(record)?, &fields)?;
+            Table::new(tx).put_with_columns(&record, &fields)?;
         }
         for record in seed.execution_effects {
             let id = record["id"].as_str().expect("effect id");

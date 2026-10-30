@@ -5,6 +5,21 @@ use serde_json::Value;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use studio_runtime_store::analytics_capture::CaptureTable;
+/// A history roster input. Stored agents and fixture JSON share the same
+/// AnalyticsAgent validation at scheduler admission.
+pub trait HistoryActor {
+    fn history_value(&self) -> std::borrow::Cow<'_, Value>;
+}
+impl HistoryActor for Value {
+    fn history_value(&self) -> std::borrow::Cow<'_, Value> {
+        std::borrow::Cow::Borrowed(self)
+    }
+}
+impl HistoryActor for studio_runtime_store::AgentRecord {
+    fn history_value(&self) -> std::borrow::Cow<'_, Value> {
+        std::borrow::Cow::Owned(self.value())
+    }
+}
 /// Maximum retained actors and pending notifications, in actors.
 const MAX_ACTORS: usize = 8192;
 /// Consecutive active imports before an inactive actor gets a turn, in imports.
@@ -184,10 +199,10 @@ impl HistorySchedule {
     }
 
     /// Replace a full store roster, retaining durable rowid tie ordering.
-    pub fn refresh_ordered(
+    pub fn refresh_ordered<T: HistoryActor>(
         &mut self,
         row_ids: &[i64],
-        actors: &[Value],
+        actors: &[T],
     ) -> Result<(), CaptureError> {
         if actors.len() > MAX_ACTORS || row_ids.len() != actors.len() {
             return Err(CaptureError::Invalid("/history/roster"));
@@ -196,7 +211,7 @@ impl HistorySchedule {
         let checked = row_ids
             .iter()
             .zip(actors)
-            .map(|(&row, value)| CheckedActor::new(value, row))
+            .map(|(&row, value)| CheckedActor::new(&value.history_value(), row))
             .collect::<Result<Vec<_>, _>>()?;
         let ids = checked
             .iter()
@@ -220,13 +235,16 @@ impl HistorySchedule {
     }
 
     /// Apply only notified store rows; unchanged retained actors are never parsed.
-    pub fn update_rows(&mut self, changes: &[(i64, Option<Value>)]) -> Result<(), CaptureError> {
+    pub fn update_rows<T: HistoryActor>(
+        &mut self,
+        changes: &[(i64, Option<T>)],
+    ) -> Result<(), CaptureError> {
         let checked = changes
             .iter()
             .map(|(row, value)| {
                 value
                     .as_ref()
-                    .map(|value| CheckedActor::new(value, *row))
+                    .map(|value| CheckedActor::new(&value.history_value(), *row))
                     .transpose()
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -403,15 +421,16 @@ impl HistorySchedule {
             }
         }
     }
-    pub fn settled(&self, agent: &Value) -> bool {
-        let Ok(id) = actor_id(agent) else {
+    pub fn settled<T: HistoryActor>(&self, agent: &T) -> bool {
+        let agent = agent.history_value();
+        let Ok(id) = actor_id(&agent) else {
             return false;
         };
         self.polls.get(id).is_some_and(|poll| {
             !poll.catching_up
                 && poll.blocked_input.is_none()
                 && !self.dirty.contains(id)
-                && supplied_scope_matches(&poll.scope, agent)
+                && supplied_scope_matches(&poll.scope, &agent)
         })
     }
 
@@ -1366,5 +1385,23 @@ mod tests {
             schedule.settled(&second),
             "invalid changed row does not mutate checked state"
         );
+    }
+
+    #[test]
+    fn typed_row_validation_precedes_schedule_mutation() {
+        let mut valid = agent("paused");
+        valid["rootId"] = json!("history-agent");
+        valid["epoch"] = json!(0);
+        let actor =
+            studio_runtime_store::AgentRecord::from_value(valid.clone()).expect("store record");
+        let mut schedule = HistorySchedule::default();
+        schedule
+            .refresh_ordered(&[10], &[actor])
+            .expect("valid roster");
+        valid["model"] = json!({"invalid":true});
+        let invalid = studio_runtime_store::AgentRecord::from_value(valid)
+            .expect("store accepts extra field");
+        assert!(schedule.update_rows(&[(10, Some(invalid))]).is_err());
+        assert_eq!(schedule.next(0.).expect("selection"), Some(10));
     }
 }

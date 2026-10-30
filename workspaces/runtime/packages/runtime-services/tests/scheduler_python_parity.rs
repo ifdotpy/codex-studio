@@ -118,15 +118,10 @@ async fn send_now_recovers_unsent_batch_after_result_gc() {
                 .expect("clock")
                 .as_millis() as i64;
             assert!(studio_runtime_store::request_results::RequestResults::gc(tx, now)? > 0);
-            use studio_runtime_schema::queue_command::{Field, QueueCommand, QueueTarget};
-            let body = QueueCommand::SendNow(QueueTarget {
-                agent: Field::Missing,
-                expected_text: Field::Missing,
-                expected_revision: Field::Missing,
-                id: Field::Missing,
-                message_id: Field::Value(target.clone()),
-                request_id: Field::Value(request.clone()),
-            });
+            let body: studio_runtime_schema::queue_command::QueueCommand = serde_json::from_str(
+                &format!(r#"{{"action":"send_now","id":"{target}","request_id":"{request}"}}"#),
+            )
+            .expect("valid queue command");
             studio_runtime_services::queue_write::action(
                 tx,
                 &agent,
@@ -391,7 +386,7 @@ async fn startup_recovers_valid_submitted_agent_while_skipping_malformed_neighbo
             .expect("persist submitted attempt")
     );
 
-    let malformed = json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+    let malformed = json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
         "id": "malformed-submitted",
         "rootId": "malformed-submitted",
         "epoch": "invalid",

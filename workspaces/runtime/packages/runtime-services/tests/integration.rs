@@ -62,6 +62,7 @@ mod title_generation_corpus;
 mod title_generation_effects;
 mod turn_fixtures;
 mod turn_prepare_corpus;
+mod unclean_history_recovery;
 mod vm_macsync_corpus;
 mod vm_macsync_round;
 mod voice_provider_corpus;

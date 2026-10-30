@@ -68,14 +68,13 @@ pub(crate) fn submit_agent_complaint(
     )
     .to_string();
     if let Some(previous) = Table::<ComplaintRecord>::new(tx).get(&complaint_id)? {
-        let previous = previous.value();
-        if previous["text"] != text
-            || previous["author"] != agent_id
-            || previous["leadId"] != lead_id
+        if previous.text() != Some(text)
+            || previous.author() != Some(agent_id)
+            || previous.lead_id() != Some(lead_id)
         {
             return Err(NotificationDispatchError::ConflictingInput);
         }
-        return Ok(previous.clone());
+        return Ok(previous.into_value());
     }
     let recipient = if agent_id == lead_id { "user" } else { "lead" };
     let record = json!({"id":complaint_id,"leadId":lead_id,"author":agent_id,"text":text,"recipient":recipient,"version":1,"status":"open","created":at,"updated":at,"readAt":null,"responses":[]});
@@ -226,9 +225,14 @@ pub(crate) fn agent_complaint_action(
                 .ok_or(NotificationDispatchError::invalid())?;
             let raw = studio_runtime_store::QuestionsWriteRepository::complaint(tx, id)?
                 .ok_or(NotificationDispatchError::invalid())?;
-            let mut complaint: Value =
+            let complaint: ComplaintRecord =
                 serde_json::from_str(&raw).map_err(|_| stored("runtime_complaints", id))?;
-            if complaint["leadId"] != actor_id || complaint["recipient"] == "user" {
+            if complaint.id() != id {
+                return Err(stored("runtime_complaints", id));
+            }
+            let authorized = complaint.lead_id() == Some(actor_id);
+            let mut complaint = complaint.into_value();
+            if !authorized || complaint["recipient"] == "user" {
                 return Err(NotificationDispatchError::invalid());
             }
             let text = args["text"]
@@ -341,11 +345,14 @@ fn reconcile_complaint_notifications(
                 all_answered = false;
                 break;
             };
-            let Ok(complaint) = serde_json::from_str::<Value>(&raw) else {
+            let Ok(complaint) = serde_json::from_str::<ComplaintRecord>(&raw) else {
                 all_answered = false;
                 break;
             };
-            if complaint["leadId"] != lead_id || needs_agent_response(&complaint) {
+            if complaint.id() != id
+                || complaint.lead_id() != Some(lead_id)
+                || needs_agent_response(&complaint.into_value())
+            {
                 all_answered = false;
                 break;
             }
@@ -433,28 +440,31 @@ pub(super) fn resolved(
     )?;
     let mut pending = false;
     for record in records {
-        let mut record = record.value().clone();
+        let connection_id = record.connection_id().map(str::to_owned);
+        let mut status = record.status().map(str::to_owned);
+        let mut record = record.into_value();
         // A card names its provider generation: the Rust account worker stores
         // it under `supervisor`; Python named the connection after it.
         let same_generation = record
             .pointer("/supervisor/generation")
             .and_then(Value::as_u64)
             == Some(generation)
-            || record["connectionId"] == format!("connection-{generation}");
+            || connection_id.as_deref() == Some(format!("connection-{generation}").as_str());
         if record["rpcId"] == params["requestId"]
             && record.get("accountKey").unwrap_or(&json!("default")) == account
             && same_generation
             && record["params"]["threadId"] == params["threadId"]
             && matches!(
-                record["status"].as_str(),
+                status.as_deref(),
                 Some("pending" | "answering" | "uncertain" | "blocked")
             )
         {
             record["status"] = json!("resolved");
+            status = Some("resolved".into());
             record["resolvedAt"] = json!(at);
             put_request(tx, &record)?;
         }
-        pending |= record["status"] == "pending";
+        pending |= status.as_deref() == Some("pending");
     }
     if agent["status"] == "approval"
         && !pending
@@ -466,8 +476,12 @@ pub(super) fn resolved(
     Ok(())
 }
 fn put_request(tx: &Transaction<'_>, record: &Value) -> Result<(), NotificationDispatchError> {
-    checked("runtime_requests", record)?;
-    let typed = RequestRecord::from_value(record.clone())?;
+    let typed = RequestRecord::from_value(record.clone()).map_err(|_| {
+        stored(
+            "runtime_requests",
+            record["id"].as_str().unwrap_or("<missing>"),
+        )
+    })?;
     Table::new(tx).put(&typed)?;
     let id = record["id"]
         .as_str()

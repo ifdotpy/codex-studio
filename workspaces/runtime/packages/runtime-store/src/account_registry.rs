@@ -20,32 +20,44 @@ pub struct RegistryOrder {
 }
 
 pub fn decode_registry(bytes: &[u8]) -> Result<(Value, RegistryOrder), (String, String)> {
+    decode_registry_typed(bytes).map(|(value, order, _)| (value, order))
+}
+
+pub fn decode_registry_typed(
+    bytes: &[u8],
+) -> Result<
+    (
+        Value,
+        RegistryOrder,
+        studio_runtime_schema::account_registry::AccountRegistry,
+    ),
+    (String, String),
+> {
     if bytes.len() > crate::account_state::MAX_PERSISTED_DOCUMENT_BYTES
         || !crate::account_state::persisted_document_within_bounds(bytes)
     {
         return Err(("/".to_owned(), "resourceLimit".to_owned()));
     }
+    let parsed = serde_json::from_slice::<
+        studio_runtime_schema::json_object::JsonObject<
+            studio_runtime_schema::account_registry::AccountRegistry,
+        >,
+    >(bytes);
     let value: Value =
         serde_json::from_slice(bytes).map_err(|_| ("/".to_owned(), "invalid JSON".to_owned()))?;
-    match registry_violation(&value) {
-        Ok(Some((pointer, _keyword))) => {
-            return Err((pointer, "schema validation failed".to_owned()));
+    let parsed = match parsed {
+        Ok(parsed) => parsed.0,
+        Err(_) => {
+            return Err(match registry_violation(&value) {
+                Ok(Some((pointer, _keyword))) => (pointer, "schema validation failed".to_owned()),
+                _ => ("/".to_owned(), "invalid registry shape".to_owned()),
+            });
         }
-        Err(()) => return Err(("/".to_owned(), "schema validation failed".to_owned())),
-        Ok(None) => {}
-    }
-    for (key, account) in value["accounts"].as_object().into_iter().flatten() {
-        studio_runtime_schema::ProviderKind::of_record(account).map_err(|_| {
-            (
-                format!("/accounts/{key}/provider"),
-                "unknown provider".to_owned(),
-            )
-        })?;
-    }
+    };
     let mut deserializer = serde_json::Deserializer::from_slice(bytes);
     let order = RegistryOrder::deserialize(&mut deserializer)
         .map_err(|_| ("/".to_owned(), "invalid registry order".to_owned()))?;
-    Ok((value, order))
+    Ok((value, order, parsed))
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -241,4 +253,50 @@ pub fn atomic_replace_with(
         sync_parent(parent).map_err(|_| ReplaceError::ReplacedNotDurable)?;
         Ok(())
     })()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{decode_registry, decode_registry_typed};
+    use serde_json::json;
+
+    #[test]
+    fn typed_registry_decode_preserves_order_and_error_location() {
+        let row = |id: &str| json!({"id":id,"home":"/fixture","label":id,"source":"fixture","status":"ready","provider":"codex"});
+        let source = format!(
+            r#"{{"version":2.0,"defaultAccountKey":"b","accounts":{{"b":{},"a":{}}},"logins":{{}}}}"#,
+            row("b"),
+            row("a")
+        );
+        let (value, order, typed) =
+            decode_registry_typed(source.as_bytes()).expect("registry decodes");
+        assert_eq!(order.accounts, ["b", "a"]);
+        assert_eq!(value["version"], json!(2.0));
+        assert_eq!(typed.default_account_key, "b");
+        assert_eq!(typed.accounts["a"].0.id, "a");
+        let mut invalid: serde_json::Value = serde_json::from_str(&source).unwrap();
+        invalid["accounts"]["b"]["provider"] = json!("unknown");
+        let error = match decode_registry(invalid.to_string().as_bytes()) {
+            Ok(_) => panic!("unknown provider must be rejected"),
+            Err(error) => error,
+        };
+        assert_eq!(error.0, "/accounts/b/provider");
+        for (section, key, field, variant) in [
+            ("accounts", "b", "provider", "claude"),
+            ("accounts", "b", "status", "ready"),
+            ("logins", "r", "status", "ready"),
+        ] {
+            let mut invalid: serde_json::Value = serde_json::from_str(&source).unwrap();
+            if section == "logins" {
+                invalid["logins"]["r"] = json!({"requestId":"r","accountKey":"b","status":"ready"});
+            }
+            invalid[section][key][field] = json!({(variant):null});
+            assert!(
+                decode_registry(invalid.to_string().as_bytes()).is_err(),
+                "{invalid}"
+            );
+        }
+        let duplicate = source.replacen("\"version\":2.0", "\"version\":2,\"version\":2", 1);
+        assert!(decode_registry(duplicate.as_bytes()).is_err());
+    }
 }
