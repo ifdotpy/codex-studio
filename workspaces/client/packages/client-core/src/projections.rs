@@ -718,7 +718,7 @@ fn execute(connection: &Connection, request: &Request) -> Result<Value, String> 
                 Document::deserialize(&request.params["document"]).map_err(|e| e.to_string())?;
             let document = check_document(scope, document)?;
             write_document(connection, workspace, &document)?;
-            serde_json::to_value(get(connection, workspace, scope)?).map_err(|e| e.to_string())
+            Ok(get(connection, workspace, scope)?.unwrap_or(Value::Null))
         }
         _ => Err("Unknown projection command.".into()),
     }
@@ -1283,7 +1283,10 @@ mod tests {
         }
         let mut store = crate::store::Store::open(&path).unwrap();
         let late = store.dispatch(put(11, false, "{\"items\":[1]}"));
-        assert_eq!(late.result.unwrap()["_deleted"], true);
+        assert_eq!(
+            late.result,
+            Some(json!({"id":"transcript:one","seq":12,"payload":"","_deleted":true}))
+        );
         let other = store.dispatch(Request {
             id: "get".into(),
             method: "projection.get".into(),
