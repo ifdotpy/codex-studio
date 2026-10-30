@@ -726,7 +726,10 @@ impl CompletionWriter for RestartInputCompletion {
                         agent: agent_value.clone(),
                         method: "item/completed".into(),
                         params,
-                        observed_at: unix_seconds(),
+                        observed_at: crate::notification_dispatch::ObservationTime::new(
+                            unix_seconds(),
+                        )
+                        .ok_or(RecoveryError::CommitFailed)?,
                     },
                 );
             }
@@ -779,7 +782,8 @@ impl CompletionWriter for RestartInputCompletion {
                         "turnId":turn_id,
                         "turn":turn
                     }),
-                    observed_at: unix_seconds(),
+                    observed_at: crate::notification_dispatch::ObservationTime::new(unix_seconds())
+                        .ok_or(RecoveryError::CommitFailed)?,
                 },
             );
             let batch = streams

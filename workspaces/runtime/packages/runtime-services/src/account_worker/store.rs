@@ -2652,7 +2652,8 @@ fn journal_one(
                                         Some(&agent),
                                         &frame,
                                         &delivery,
-                                        now(),
+                                        crate::notification_dispatch::ObservationTime::new(now())
+                                            .ok_or_else(|| invalid(&identity.agent_id))?,
                                         &crate::notification_dispatch::DispatchOutcome::Written,
                                     ),
                             );
@@ -2735,7 +2736,8 @@ fn journal_one(
                                         Some(&agent_after),
                                         &frame,
                                         &delivery,
-                                        now(),
+                                        crate::notification_dispatch::ObservationTime::new(now())
+                                            .ok_or_else(|| invalid(&identity.agent_id))?,
                                         &crate::notification_dispatch::DispatchOutcome::Written,
                                     ),
                             );
@@ -3887,7 +3889,7 @@ fn persist_stream_lane(
     revision: &str,
     lane: &NotificationStreamBuffer,
 ) -> Result<AccountStreams, WorkerError> {
-    let (metadata, pending) = lane.persisted_parts().map_err(|_| invalid(scope))?;
+    let (metadata, pending) = lane.persisted_parts();
     let id = format!("streams:{scope}");
     let old = Outbox::get::<crate::notification_dispatch::NotificationPendingStreams>(tx, &id)
         .map_err(outbox_error)?;
@@ -3931,7 +3933,7 @@ fn persist_stream_lane(
     }
     Ok(AccountStreams {
         revision: revision.to_owned(),
-        metadata: serde_json::from_str(&metadata).map_err(|_| invalid(scope))?,
+        metadata,
     })
 }
 

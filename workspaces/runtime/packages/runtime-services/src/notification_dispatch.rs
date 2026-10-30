@@ -26,7 +26,7 @@ mod snapshot;
 pub use effects::{
     NotificationDependency, NotificationEffects, NotificationHourMetrics, NotificationObservation,
     NotificationPostCommit, NotificationPublicationBatch, NotificationStreamMetrics,
-    RecoveredNotificationObservation, SharedJson, UnavailableNotificationEffects,
+    ObservationTime, RecoveredNotificationObservation, SharedJson, UnavailableNotificationEffects,
 };
 
 #[path = "notification_dispatch/stream.rs"]
@@ -571,7 +571,8 @@ pub fn dispatch_notification_with_effects(
                     Some(&agent),
                     &notification_payload(notification),
                     delivery,
-                    observed_at,
+                    ObservationTime::new(observed_at)
+                        .ok_or_else(NotificationDispatchError::invalid)?,
                     &DispatchOutcome::Written,
                 ) {
                     if let NotificationPostCommit::Analytics { observation, .. } = effect {
@@ -892,7 +893,7 @@ pub fn dispatch_notification_with_effects(
                 after,
                 &notification_payload(notification),
                 delivery,
-                observed_at,
+                ObservationTime::new(observed_at).ok_or_else(NotificationDispatchError::invalid)?,
                 &outcome,
             );
             if command_output_monitor_present == Some(false) {
@@ -2290,8 +2291,8 @@ mod tests {
                             provider_handle: format!("account:{provider}"),
                             ..identity(1)
                         },
-                        observed_at: 99.,
-                        provider_at: 99.,
+                        observed_at: super::ObservationTime::new(99.).unwrap(),
+                        provider_at: super::ObservationTime::new(99.).unwrap(),
                     },
                 ))
                 .expect("active rate turn");

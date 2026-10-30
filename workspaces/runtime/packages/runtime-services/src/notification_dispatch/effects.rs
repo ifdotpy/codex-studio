@@ -131,6 +131,28 @@ impl NotificationDependency {
     }
 }
 
+/// A finite timestamp in seconds, shared by live and recovered observations.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct ObservationTime(f64);
+
+impl ObservationTime {
+    pub fn new(value: f64) -> Option<Self> {
+        value.is_finite().then_some(Self(value))
+    }
+
+    pub fn get(self) -> f64 {
+        self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for ObservationTime {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = f64::deserialize(deserializer)?;
+        Self::new(value).ok_or_else(|| serde::de::Error::custom("non-finite observation time"))
+    }
+}
+
 /// Immutable observation handed to analytics/token-rate owners after commit.
 /// The effect kind plus `delivery` is the idempotency key; retain account and generation.
 /// The caller stages these serializable values in its existing effect journal
@@ -141,8 +163,8 @@ pub struct NotificationObservation {
     pub method: String,
     pub params: SharedJson,
     pub delivery: ProviderDeliveryIdentity,
-    pub observed_at: f64,
-    pub provider_at: f64,
+    pub observed_at: ObservationTime,
+    pub provider_at: ObservationTime,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -189,7 +211,7 @@ pub struct RecoveredNotificationObservation {
     pub agent: Value,
     pub method: String,
     pub params: Value,
-    pub observed_at: f64,
+    pub observed_at: ObservationTime,
 }
 
 /// One committed publication unit. `sequence` is monotone per retained account
@@ -237,7 +259,7 @@ pub trait NotificationEffects {
         _after: Option<&Value>,
         _frame: &Value,
         _identity: &ProviderDeliveryIdentity,
-        _at: f64,
+        _at: ObservationTime,
         _outcome: &DispatchOutcome,
     ) -> Vec<NotificationPostCommit> {
         Vec::new()
@@ -278,3 +300,22 @@ pub trait NotificationEffects {
 #[derive(Default)]
 pub struct UnavailableNotificationEffects;
 impl NotificationEffects for UnavailableNotificationEffects {}
+
+#[cfg(test)]
+mod finite_observation_tests {
+    use super::*;
+
+    #[test]
+    fn observation_cannot_hold_nonfinite_times() {
+        for time in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(ObservationTime::new(time).is_none());
+        }
+        assert!(serde_json::from_str::<ObservationTime>("null").is_err());
+        assert_eq!(
+            serde_json::from_str::<ObservationTime>("1.5")
+                .unwrap()
+                .get(),
+            1.5
+        );
+    }
+}

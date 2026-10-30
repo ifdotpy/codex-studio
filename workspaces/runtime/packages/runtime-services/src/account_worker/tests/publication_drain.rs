@@ -24,8 +24,10 @@ fn publication_effect(cursor: u64) -> NotificationPostCommit {
             generation: 7,
             cursor,
         },
-        observed_at: 10.0 + cursor as f64,
-        provider_at: 10.0 + cursor as f64,
+        observed_at: crate::notification_dispatch::ObservationTime::new(10.0 + cursor as f64)
+            .unwrap(),
+        provider_at: crate::notification_dispatch::ObservationTime::new(10.0 + cursor as f64)
+            .unwrap(),
     })
 }
 
@@ -62,8 +64,10 @@ fn analytics_effect_for(
                 generation: 7,
                 cursor,
             },
-            observed_at: 10.0 + cursor as f64,
-            provider_at: 10.0 + cursor as f64,
+            observed_at: crate::notification_dispatch::ObservationTime::new(10.0 + cursor as f64)
+                .unwrap(),
+            provider_at: crate::notification_dispatch::ObservationTime::new(10.0 + cursor as f64)
+                .unwrap(),
         },
         budget_capture_value: None,
         usage_conflict: None,
@@ -85,8 +89,10 @@ fn token_rate_usage_effect(cursor: u64) -> NotificationPostCommit {
             generation: 7,
             cursor,
         },
-        observed_at: 10.0 + cursor as f64,
-        provider_at: 10.0 + cursor as f64,
+        observed_at: crate::notification_dispatch::ObservationTime::new(10.0 + cursor as f64)
+            .unwrap(),
+        provider_at: crate::notification_dispatch::ObservationTime::new(10.0 + cursor as f64)
+            .unwrap(),
     })
 }
 
@@ -102,8 +108,10 @@ fn token_rate_association_effect(cursor: u64) -> NotificationPostCommit {
             generation: 7,
             cursor,
         },
-        observed_at: 10.0 + cursor as f64,
-        provider_at: 10.0 + cursor as f64,
+        observed_at: crate::notification_dispatch::ObservationTime::new(10.0 + cursor as f64)
+            .unwrap(),
+        provider_at: crate::notification_dispatch::ObservationTime::new(10.0 + cursor as f64)
+            .unwrap(),
     })
 }
 
@@ -117,8 +125,10 @@ fn token_rate_started_effect(cursor: u64) -> NotificationPostCommit {
             generation: 7,
             cursor,
         },
-        observed_at: 10.0 + cursor as f64,
-        provider_at: 10.0 + cursor as f64,
+        observed_at: crate::notification_dispatch::ObservationTime::new(10.0 + cursor as f64)
+            .unwrap(),
+        provider_at: crate::notification_dispatch::ObservationTime::new(10.0 + cursor as f64)
+            .unwrap(),
     })
 }
 
@@ -971,7 +981,7 @@ async fn analytics_receipts_preserve_entity_delivery_but_recovery_still_resets()
             agent: rate_agent(),
             method: "turn/completed".into(),
             params: json!({"turnId":"turn"}),
-            observed_at: 20.0,
+            observed_at: crate::notification_dispatch::ObservationTime::new(20.0).unwrap(),
         },
     };
     stage(&store, 2, 0, value(2, 0, recovered.clone())).await;
