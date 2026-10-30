@@ -152,14 +152,17 @@ epoch, revision, and ordering checks.
 ### Durable change source
 
 The [durable source](../workspaces/runtime/packages/runtime-store/src/durable_seq.rs)
-numbers every insert, update and delete of the main tables from one global counter.
+numbers every insert, update and delete of the main tables from the counter that also numbers
+`sync_entities`, `sync_documents` and `sync_versions` (next number: the highest of the three, plus one).
+The latest durable number sits in the reserved `sync_versions` row `$durable`, so the existing
+allocators see it. A cursor from any of these sources is valid for all of them.
 `DURABLE_TABLES` lists the opted-in tables (`runtime_agents`, `runtime_requests`,
 `runtime_work`); a new table opts in with one line there. The installer adds a `seq`
 column and three triggers. A delete writes a tombstone `(table, id, seq)`.
 
 `changes_since(table, cursor)` returns the rows with `seq` above the cursor and the
 tombstones above it, or a snapshot when the cursor is absent, in the future, or below
-`durable_counter.floor`. The floor is the highest `seq` of a pruned tombstone.
+`durable_floor.floor`. The floor is the highest `seq` of a pruned tombstone.
 Tombstones live `TOMBSTONE_RETENTION_SECONDS` (90 days); a delete prunes older ones.
 
 Status: the source and its checks exist. The stream still reads `sync_entities`, and

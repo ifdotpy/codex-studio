@@ -1,7 +1,10 @@
 //! Durable change source: a `seq` column on each main table, tombstones for deletes.
 //!
-//! One global counter (`durable_counter.value`) numbers every insert, update and delete
-//! of every opted-in table. A trigger sets the row's `seq` to the next number; a delete
+//! One counter numbers every insert, update and delete of every opted-in table, and it is
+//! the same counter that numbers `sync_entities`, `sync_documents` and `sync_versions`
+//! rows: a new number is `MAX(seq of those three tables)+1`. The latest durable number is
+//! kept in the reserved `sync_versions` row [`COUNTER_SCOPE`], so the existing allocators
+//! of the three tables already see it and need no change. One cursor space follows. A trigger sets the row's `seq` to the next number; a delete
 //! writes a tombstone `(table, id, seq)` instead. A reader keeps the highest `seq` it
 //! applied (its cursor) and asks [`changes_since`] for what is newer. This replaces the
 //! copy of the main rows in `sync_entities`; see docs/sync-protocol.md "Durable stream".
@@ -11,13 +14,16 @@
 //! three triggers. Installation is idempotent.
 //!
 //! Tombstones are service data and are kept long. A delete trigger prunes tombstones
-//! older than [`TOMBSTONE_RETENTION_SECONDS`] and raises `durable_counter.floor` to the
+//! older than [`TOMBSTONE_RETENTION_SECONDS`] and raises `durable_floor.floor` to the
 //! highest pruned `seq`. A cursor below the floor cannot learn every delete, so it gets
 //! a snapshot.
 
 use rusqlite::{Connection, Transaction};
 
 use crate::{StoreError, StoreResult};
+
+/// The change-number column added to every durable table.
+pub const SEQ_COLUMN: &str = "seq";
 
 /// How long a tombstone stays, in seconds (90 days). A reconnect inside this window gets a
 /// delta; a longer absence gets a snapshot.
@@ -44,10 +50,21 @@ pub const DURABLE_TABLES: &[DurableTable] = &[
     DurableTable::new("runtime_work", "record"),
 ];
 
+/// The `sync_versions` row that holds the latest durable number. `sync_versions` exists
+/// only to carry such a high-water mark; no reader lists its scopes.
+pub const COUNTER_SCOPE: &str = "$durable";
+
+/// The next number of the shared counter. Owner of the allocation rule; the sync
+/// allocators in `sync_documents::next_sequence` and the event triggers use the same rule.
+const NEXT: &str = "(SELECT MAX(entity_seq,document_seq,version_seq)+1 FROM (
+    SELECT COALESCE(MAX(seq),0) AS entity_seq FROM sync_entities),
+    (SELECT COALESCE(MAX(seq),0) AS document_seq FROM sync_documents),
+    (SELECT COALESCE(MAX(seq),0) AS version_seq FROM sync_versions))";
+
 const SHARED_SCHEMA: &str = "
-CREATE TABLE IF NOT EXISTS durable_counter(
-    id INTEGER PRIMARY KEY CHECK(id=1), value INTEGER NOT NULL, floor INTEGER NOT NULL);
-INSERT OR IGNORE INTO durable_counter(id,value,floor) VALUES(1,0,0);
+CREATE TABLE IF NOT EXISTS durable_floor(
+    id INTEGER PRIMARY KEY CHECK(id=1), floor INTEGER NOT NULL);
+INSERT OR IGNORE INTO durable_floor(id,floor) VALUES(1,0);
 CREATE TABLE IF NOT EXISTS durable_tombstones(
     tbl TEXT NOT NULL, id TEXT NOT NULL, seq INTEGER NOT NULL, at INTEGER NOT NULL,
     PRIMARY KEY(tbl,id)) WITHOUT ROWID;
@@ -57,8 +74,12 @@ CREATE INDEX IF NOT EXISTS durable_tombstones_at ON durable_tombstones(at);
 
 /// The generator: SQL for the three triggers of one table.
 fn trigger_sql(table: &str) -> String {
-    let next = "UPDATE durable_counter SET value=value+1 WHERE id=1;";
-    let current = "(SELECT value FROM durable_counter WHERE id=1)";
+    let next = format!(
+        "INSERT INTO sync_versions(seq,scope,hash,deleted,updated)
+         SELECT {NEXT},'{COUNTER_SCOPE}','',0,0.0
+         ON CONFLICT(scope) DO UPDATE SET seq=excluded.seq;"
+    );
+    let current = format!("(SELECT seq FROM sync_versions WHERE scope='{COUNTER_SCOPE}')");
     let now = "CAST(strftime('%s','now') AS INTEGER)";
     let cutoff = format!("{now}-{TOMBSTONE_RETENTION_SECONDS}");
     format!(
@@ -72,17 +93,19 @@ CREATE TRIGGER IF NOT EXISTS durable_{table}_update AFTER UPDATE ON {table}
 WHEN NEW.seq IS OLD.seq BEGIN
   {next}
   UPDATE {table} SET seq={current} WHERE rowid=NEW.rowid;
-  INSERT OR REPLACE INTO durable_tombstones(tbl,id,seq,at)
-    SELECT '{table}',OLD.id,{current},{now} WHERE OLD.id IS NOT NEW.id;
+  INSERT INTO durable_tombstones(tbl,id,seq,at)
+    SELECT '{table}',OLD.id,{current},{now} WHERE OLD.id IS NOT NEW.id
+    ON CONFLICT(tbl,id) DO UPDATE SET seq=excluded.seq,at=excluded.at;
 END;
 CREATE TRIGGER IF NOT EXISTS durable_{table}_delete AFTER DELETE ON {table} BEGIN
-  UPDATE durable_counter SET floor=MAX(floor,
+  UPDATE durable_floor SET floor=MAX(floor,
     (SELECT MAX(seq) FROM durable_tombstones WHERE at<{cutoff}))
   WHERE id=1 AND EXISTS(SELECT 1 FROM durable_tombstones WHERE at<{cutoff});
   DELETE FROM durable_tombstones WHERE at<{cutoff};
   {next}
-  INSERT OR REPLACE INTO durable_tombstones(tbl,id,seq,at)
-    VALUES('{table}',OLD.id,{current},{now});
+  INSERT INTO durable_tombstones(tbl,id,seq,at)
+    VALUES('{table}',OLD.id,{current},{now})
+    ON CONFLICT(tbl,id) DO UPDATE SET seq=excluded.seq,at=excluded.at;
 END;
 "
     )
@@ -114,9 +137,20 @@ pub(crate) fn install(tx: &Transaction<'_>) -> StoreResult<()> {
 }
 
 /// Give rows that predate the column increasing numbers, before the triggers exist.
+/// Numbering is not a content change: the journals that agent writes feed are restored,
+/// as the 2026-10-20 agent migration does.
 fn number_existing_rows(tx: &Transaction<'_>, table: &str) -> StoreResult<()> {
-    let mut value: i64 =
-        tx.query_row("SELECT value FROM durable_counter WHERE id=1", [], |r| r.get(0))?;
+    use crate::migrations::m2026_10_20_agents::MIGRATION_PRESERVED_TABLES;
+    let mut preserved = Vec::new();
+    for journal in MIGRATION_PRESERVED_TABLES {
+        if crate::schema::table_exists(tx, journal)? {
+            tx.execute_batch(&format!(
+                "CREATE TEMP TABLE durable_keep_{journal} AS SELECT * FROM main.{journal};"
+            ))?;
+            preserved.push(journal);
+        }
+    }
+    let mut value: i64 = tx.query_row(&format!("SELECT {NEXT}-1"), [], |r| r.get(0))?;
     let rowids = tx
         .prepare(&format!("SELECT rowid FROM {table} ORDER BY rowid"))?
         .query_map([], |row| row.get::<_, i64>(0))?
@@ -128,7 +162,20 @@ fn number_existing_rows(tx: &Transaction<'_>, table: &str) -> StoreResult<()> {
             [value, rowid],
         )?;
     }
-    tx.execute("UPDATE durable_counter SET value=?1 WHERE id=1", [value])?;
+    for journal in preserved {
+        tx.execute_batch(&format!(
+            "DELETE FROM main.{journal};
+             INSERT INTO main.{journal} SELECT * FROM temp.durable_keep_{journal};
+             DROP TABLE temp.durable_keep_{journal};"
+        ))?;
+    }
+    if value > 0 {
+        tx.execute(
+            "INSERT INTO sync_versions(seq,scope,hash,deleted,updated)
+             VALUES(?1,?2,'',0,0.0) ON CONFLICT(scope) DO UPDATE SET seq=excluded.seq",
+            rusqlite::params![value, COUNTER_SCOPE],
+        )?;
+    }
     Ok(())
 }
 
@@ -163,9 +210,10 @@ pub enum DurableChanges {
 /// Rows of `table` with `seq` above `cursor`, or a snapshot when the cursor is absent,
 /// in the future, or below the tombstone floor.
 ///
-/// The counter is read first and later writes are cut off at it, so one call needs no
-/// read transaction: a change committed meanwhile has a higher `seq` and arrives with
-/// the next call.
+/// The cursor space is shared with `sync_entities`, so `seq` is the highest number of any
+/// sync table, and a cursor taken from one of them is valid here. The high mark is read
+/// first and later writes are cut off at it, so one call needs no read transaction: a
+/// change committed meanwhile has a higher `seq` and arrives with the next call.
 pub fn changes_since(
     connection: &Connection,
     table: &str,
@@ -175,11 +223,11 @@ pub fn changes_since(
         .iter()
         .find(|candidate| candidate.name == table)
         .ok_or_else(|| StoreError::SchemaMismatch(format!("{table} is not a durable table")))?;
-    let (high, floor): (i64, i64) = connection.query_row(
-        "SELECT value,floor FROM durable_counter WHERE id=1",
-        [],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    )?;
+    let high: i64 = connection.query_row(&format!("SELECT {NEXT}-1"), [], |row| row.get(0))?;
+    let floor: i64 =
+        connection.query_row("SELECT floor FROM durable_floor WHERE id=1", [], |row| {
+            row.get(0)
+        })?;
     let after = cursor.filter(|cursor| (floor..=high).contains(cursor));
     let rows = |after: i64| -> StoreResult<Vec<DurableRow>> {
         let sql = format!(
@@ -199,7 +247,10 @@ pub fn changes_since(
         Ok(rows)
     };
     let Some(after) = after else {
-        return Ok(DurableChanges::Snapshot { rows: rows(0)?, seq: high });
+        return Ok(DurableChanges::Snapshot {
+            rows: rows(0)?,
+            seq: high,
+        });
     };
     let tombstones = connection
         .prepare(
@@ -209,7 +260,11 @@ pub fn changes_since(
             Ok(DurableTombstone { id: row.get(0)?, seq: row.get(1)? })
         })?
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(DurableChanges::Delta { rows: rows(after)?, tombstones, seq: high })
+    Ok(DurableChanges::Delta {
+        rows: rows(after)?,
+        tombstones,
+        seq: high,
+    })
 }
 
 /// Data-loss check for removing the transcript copy in `sync_entities`: ids of live
@@ -251,13 +306,19 @@ mod tests {
     }
 
     fn seq_of(db: &Connection, id: &str) -> i64 {
-        db.query_row("SELECT seq FROM runtime_work WHERE id=?1", [id], |r| r.get(0))
-            .expect("seq")
+        db.query_row("SELECT seq FROM runtime_work WHERE id=?1", [id], |r| {
+            r.get(0)
+        })
+        .expect("seq")
     }
 
     fn delta(db: &Connection, cursor: i64) -> (Vec<String>, Vec<String>, i64) {
         match changes_since(db, "runtime_work", Some(cursor)).expect("changes") {
-            DurableChanges::Delta { rows, tombstones, seq } => (
+            DurableChanges::Delta {
+                rows,
+                tombstones,
+                seq,
+            } => (
                 rows.into_iter().map(|row| row.id).collect(),
                 tombstones.into_iter().map(|t| t.id).collect(),
                 seq,
@@ -276,7 +337,8 @@ mod tests {
         put(&db, "a", r#"{"x":1}"#);
         let updated = seq_of(&db, "a");
         assert!(first > 0 && second > first && updated > second);
-        db.execute("DELETE FROM runtime_work WHERE id='b'", []).expect("delete");
+        db.execute("DELETE FROM runtime_work WHERE id='b'", [])
+            .expect("delete");
         let tombstone: i64 = db
             .query_row(
                 "SELECT seq FROM durable_tombstones WHERE tbl='runtime_work' AND id='b'",
@@ -296,14 +358,22 @@ mod tests {
         assert_eq!(delta(&db, cursor), (vec![], vec![], cursor), "nothing new");
         put(&db, "c", "{}");
         put(&db, "a", r#"{"x":1}"#);
-        db.execute("DELETE FROM runtime_work WHERE id='b'", []).expect("delete");
+        db.execute("DELETE FROM runtime_work WHERE id='b'", [])
+            .expect("delete");
         let (mut rows, tombstones, next) = delta(&db, cursor);
         rows.sort();
-        assert_eq!((rows, tombstones), (vec!["a".into(), "c".into()], vec!["b".into()]));
+        assert_eq!(
+            (rows, tombstones),
+            (vec!["a".into(), "c".into()], vec!["b".into()])
+        );
         assert!(next > cursor);
         put(&db, "b", "{}");
         let (rows, tombstones, _) = delta(&db, next);
-        assert_eq!((rows, tombstones), (vec!["b".into()], vec![]), "reinsert clears the tombstone");
+        assert_eq!(
+            (rows, tombstones),
+            (vec!["b".into()], vec![]),
+            "reinsert clears the tombstone"
+        );
     }
 
     #[test]
@@ -312,10 +382,13 @@ mod tests {
         put(&db, "a", "{}");
         put(&db, "b", "{}");
         let (_, _, cursor) = delta(&db, 0);
-        db.execute("DELETE FROM runtime_work WHERE id='a'", []).expect("delete");
+        db.execute("DELETE FROM runtime_work WHERE id='a'", [])
+            .expect("delete");
         // Age the tombstone past the retention, then the next delete prunes it.
-        db.execute("UPDATE durable_tombstones SET at=0", []).expect("age");
-        db.execute("DELETE FROM runtime_work WHERE id='b'", []).expect("delete");
+        db.execute("UPDATE durable_tombstones SET at=0", [])
+            .expect("age");
+        db.execute("DELETE FROM runtime_work WHERE id='b'", [])
+            .expect("delete");
         match changes_since(&db, "runtime_work", Some(cursor)).expect("changes") {
             DurableChanges::Snapshot { rows, .. } => assert!(rows.is_empty()),
             other => panic!("expected a snapshot, got {other:?}"),
@@ -325,16 +398,48 @@ mod tests {
             DurableChanges::Snapshot { .. }
         ));
         let high: i64 = db
-            .query_row("SELECT value FROM durable_counter", [], |r| r.get(0))
+            .query_row(&format!("SELECT {NEXT}-1"), [], |r| r.get(0))
             .expect("counter");
-        assert!(matches!(
-            changes_since(&db, "runtime_work", Some(high + 1)).expect("changes"),
-            DurableChanges::Snapshot { .. }
-        ), "a future cursor is foreign");
+        assert!(
+            matches!(
+                changes_since(&db, "runtime_work", Some(high + 1)).expect("changes"),
+                DurableChanges::Snapshot { .. }
+            ),
+            "a future cursor is foreign"
+        );
         assert!(matches!(
             changes_since(&db, "runtime_work", Some(high)).expect("changes"),
             DurableChanges::Delta { .. }
         ));
+    }
+
+    #[test]
+    fn durable_and_sync_writes_share_one_increasing_counter() {
+        let db = canvas();
+        let next = || crate::repositories::sync_documents::next_sequence(&db).expect("next");
+        put(&db, "a", "{}");
+        let first = seq_of(&db, "a");
+        assert_eq!(
+            next(),
+            first + 1,
+            "a sync allocation sees the durable number"
+        );
+        let entity = next();
+        db.execute(
+            "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)
+             VALUES('x','1',?1,'h','{}',0)",
+            [entity],
+        )
+        .expect("entity");
+        put(&db, "b", "{}");
+        assert_eq!(
+            seq_of(&db, "b"),
+            entity + 1,
+            "a durable number follows the entity"
+        );
+        // A cursor taken from the entity stream is valid here and returns only what followed.
+        let (rows, _, _) = delta(&db, entity);
+        assert_eq!(rows, vec!["b".to_owned()]);
     }
 
     #[test]
@@ -365,7 +470,7 @@ mod tests {
         install(&tx).expect("install over old format");
         tx.commit().expect("commit");
         let high: i64 = db
-            .query_row("SELECT value FROM durable_counter", [], |r| r.get(0))
+            .query_row(&format!("SELECT {NEXT}-1"), [], |r| r.get(0))
             .expect("counter");
         assert!(seq_of(&db, "a") > 0 && seq_of(&db, "old") > 0);
         assert!(seq_of(&db, "a") <= high && seq_of(&db, "old") <= high);

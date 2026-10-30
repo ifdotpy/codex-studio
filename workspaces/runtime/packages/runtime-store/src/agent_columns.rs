@@ -366,7 +366,7 @@ pub(crate) fn has_columns(transaction: &Transaction<'_>) -> StoreResult<bool> {
     Ok(names
         .iter()
         .map(String::as_str)
-        .filter(|name| !receipt_names.contains(name))
+        .filter(|name| !receipt_names.contains(name) && *name != crate::durable_seq::SEQ_COLUMN)
         .eq(expected))
 }
 
@@ -430,7 +430,7 @@ mod tests {
         connection
             .prepare(
                 "SELECT name FROM sqlite_master WHERE tbl_name='runtime_agents' AND type=?1 \
-                 AND sql IS NOT NULL ORDER BY name",
+                 AND sql IS NOT NULL AND name NOT LIKE 'durable_%' ORDER BY name",
             )
             .expect("catalog prepares")
             .query_map([kind], |row| row.get(0))
@@ -483,7 +483,7 @@ mod tests {
                 let trigger_sql = tx
                     .prepare(
                         "SELECT sql FROM sqlite_master WHERE type='trigger' \
-                         AND tbl_name='runtime_agents'",
+                         AND tbl_name='runtime_agents' AND name NOT LIKE 'durable_%'",
                     )?
                     .query_map([], |row| row.get::<_, String>(0))?
                     .collect::<Result<Vec<_>, _>>()?;
@@ -631,7 +631,7 @@ mod tests {
                 let triggers = tx
                     .prepare(
                         "SELECT sql FROM sqlite_master \
-                         WHERE type='trigger' AND tbl_name='runtime_agents'",
+                         WHERE type='trigger' AND tbl_name='runtime_agents' AND name NOT LIKE 'durable_%'",
                     )?
                     .query_map([], |row| row.get::<_, String>(0))?
                     .collect::<Result<Vec<_>, _>>()?;

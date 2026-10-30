@@ -1158,7 +1158,8 @@ async fn sync_bootstrap_repairs_missing_objects_in_the_committed_live_fixture() 
             |row| row.get::<_, i64>(0),
         )
         .expect("transcript revision trigger records agent change"),
-        1
+        // The insert, then the durable trigger's `seq` update; the revision only grows.
+        2
     );
     assert!(
         db.query_row(
