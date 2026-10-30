@@ -64,7 +64,6 @@ const TABLES: &[TableRequirement] = &[
         name: "runtime_agents",
         columns: &["id", "record"],
     },
-    crate::domain::TABLE_REQUIREMENTS[1],
     TableRequirement {
         name: "runtime_events",
         columns: &[
@@ -86,7 +85,7 @@ const WORK: &[TableRequirement] = &[TableRequirement {
 }];
 
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
-    tables: &[TABLES[0], TABLES[1]],
+    tables: &[TABLES[0]],
     conditional_tables: &[
         ConditionalTableRequirement {
             table_exists: "runtime_complaints",
@@ -104,7 +103,7 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     triggers: &[],
     conditional_triggers: &[],
     connection_functions: &[],
-    bootstrap_tables: &[TABLES[2]],
+    bootstrap_tables: &[TABLES[1]],
     bootstrap_triggers: &[],
     bootstrap_connection_functions: &[],
 };
