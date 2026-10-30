@@ -13,7 +13,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use studio_runtime_store::cost_aggregate::{
     CostGroup, CostMember, CostReceipt, CostTokens, DEFAULT_ACCOUNT, JournalReceiptCache,
-    cost_group_adjustments,
+    journal_partition_and_adjustments_cached,
 };
 use studio_runtime_store::{AnalyticsStoreError, RuntimeStore, StoreError, analytics};
 use thiserror::Error;
@@ -389,12 +389,13 @@ fn session_cost_on_reader(
             )
         })
         .collect::<BTreeSet<CostReceipt>>();
-    let partition = RECEIPT_CACHES.with_borrow_mut(|caches| {
+    let (partition, adjustments) = RECEIPT_CACHES.with_borrow_mut(|caches| {
         if caches.len() >= RECEIPT_CACHE_ROOTS && !caches.contains_key(&root) {
             caches.clear();
         }
-        studio_runtime_store::cost_aggregate::partition_journal_receipts_cached(
+        journal_partition_and_adjustments_cached(
             &tx,
+            &root,
             &receipts,
             &members,
             caches.entry(root.clone()).or_default(),
@@ -412,7 +413,7 @@ fn session_cost_on_reader(
     let catalog = loaded.catalog.as_ref().ok_or(CostsError::InvalidPricing)?;
 
     let mut totals = group_prices_incremental(&tx, &root, &loaded, &providers_by_account)?;
-    for (before, after) in cost_group_adjustments(&tx, &root, &partition)? {
+    for (before, after) in adjustments {
         if let Some(price) = before
             .as_ref()
             .and_then(|group| price_group(group, catalog, &providers_by_account, None))
@@ -3190,7 +3191,7 @@ mod tests {
 
     #[tokio::test]
     async fn usage_reconciliation_session_cost_preserves_final_rows_and_fills_legacy_history() {
-        thread_local! { static FULL_GROUP_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+        thread_local! { static FULL_GROUP_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; static JOURNAL_DELTA_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
         let temp = tempdir().expect("temporary fixture directory");
         let store = RuntimeStore::open(Some(temp.path()))
             .await
@@ -3304,6 +3305,7 @@ mod tests {
             .with_cost_reader(
                 |db| -> Result<(), studio_runtime_store::analytics::AnalyticsStoreError> {
                     FULL_GROUP_READS.set(0);
+                    JOURNAL_DELTA_READS.set(0);
                     db.trace_v2(
                         rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
                         Some(|event| {
@@ -3311,6 +3313,10 @@ mod tests {
                         && sql.contains("SELECT model,account,input,cached,cache_write,output,uncached,count,cache_write_1h")
                             {
                                 FULL_GROUP_READS.set(FULL_GROUP_READS.get() + 1);
+                            }
+                            if let rusqlite::trace::TraceEvent::Stmt(_, sql) = event
+                                && sql.contains("FROM analytics_cost_rows") {
+                                JOURNAL_DELTA_READS.set(JOURNAL_DELTA_READS.get() + 1);
                             }
                         }),
                     );
@@ -3320,11 +3326,19 @@ mod tests {
             .expect("trace cost reads");
         let repeated =
             session_cost_with_account_profiles(&store, "agent", &accounts).expect("repeated cost");
-        assert_eq!(repeated, result);
+        assert_eq!(
+            serde_json::to_vec(&repeated).expect("cached JSON"),
+            serde_json::to_vec(&result).expect("initial JSON")
+        );
         let full_reads = store
             .with_cost_reader(
                 |db| -> Result<usize, studio_runtime_store::analytics::AnalyticsStoreError> {
                     db.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+                    assert_eq!(
+                        JOURNAL_DELTA_READS.get(),
+                        0,
+                        "unchanged receipts must not recompute journal group deltas"
+                    );
                     Ok(FULL_GROUP_READS.get())
                 },
             )
@@ -3332,6 +3346,20 @@ mod tests {
         assert_eq!(
             full_reads, 0,
             "unchanged journal receipts must not scan all cost groups"
+        );
+        store
+            .with_cost_reader(
+                |_| -> Result<(), studio_runtime_store::analytics::AnalyticsStoreError> {
+                    super::RECEIPT_CACHES.with_borrow_mut(|caches| caches.clear());
+                    Ok(())
+                },
+            )
+            .expect("clear receipt cache");
+        let uncached =
+            session_cost_with_account_profiles(&store, "agent", &accounts).expect("uncached cost");
+        assert_eq!(
+            serde_json::to_vec(&uncached).expect("uncached JSON"),
+            serde_json::to_vec(&repeated).expect("cached JSON")
         );
 
         // Cached log parses and the cached catalog follow the files: a second answer

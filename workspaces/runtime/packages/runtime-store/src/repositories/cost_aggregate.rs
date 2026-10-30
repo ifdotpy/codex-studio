@@ -90,6 +90,7 @@ AND json_type(u.record,'$.studioUsage') IS NOT NULL";
 #[cfg(test)]
 thread_local! {
     static RECEIPT_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static JOURNAL_DELTA_RUNS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Token counts of one usage row as priced; `None` is an unreported count.
@@ -260,12 +261,20 @@ type ReceiptScopes = BTreeSet<(String, String, String)>;
 /// Validated journal matches retained by the reader for one session root.
 #[derive(Default)]
 pub struct JournalReceiptCache {
+    entry: ReceiptEntry,
+    facts: HashMap<String, Vec<(CostReceipt, bool)>>,
+    final_counts: HashMap<CostReceipt, usize>,
+}
+
+// The delta and its validity marker are replaced together.
+#[derive(Default)]
+struct ReceiptEntry {
+    root: Option<String>,
     scopes: ReceiptScopes,
     receipts: BTreeSet<CostReceipt>,
     revision: Option<i64>,
-    facts: HashMap<String, Vec<(CostReceipt, bool)>>,
-    final_counts: HashMap<CostReceipt, usize>,
     partition: JournalPartition,
+    deltas: Option<BTreeMap<GroupKey, i64>>,
 }
 
 fn receipt_scopes(members: &[(String, CostMember)]) -> ReceiptScopes {
@@ -309,7 +318,7 @@ fn final_receipt(raw: &str) -> StoreResult<bool> {
 
 /// Reuse validated receipt evidence while applying committed usage mutations by revision.
 /// The cache belongs to the retained read-only connection and its transaction snapshot.
-pub fn partition_journal_receipts_cached(
+fn partition_journal_receipts_cached(
     db: &Connection,
     receipts: &BTreeSet<CostReceipt>,
     members: &[(String, CostMember)],
@@ -321,21 +330,25 @@ pub fn partition_journal_receipts_cached(
         [],
         |row| row.get(0),
     )?;
-    let rebuild = cache.revision.is_none_or(|old| old > revision)
-        || cache.scopes != scopes
-        || !cache.receipts.is_subset(receipts);
+    let rebuild = cache.entry.revision.is_none_or(|old| old > revision)
+        || cache.entry.scopes != scopes
+        || !cache.entry.receipts.is_subset(receipts);
     let added = if rebuild {
         receipts.clone()
     } else {
-        receipts.difference(&cache.receipts).cloned().collect()
+        receipts
+            .difference(&cache.entry.receipts)
+            .cloned()
+            .collect()
     };
     if !rebuild
-        && cache.revision == Some(revision)
+        && cache.entry.revision == Some(revision)
         && added.is_empty()
-        && cache.receipts == *receipts
+        && cache.entry.receipts == *receipts
     {
-        return Ok(cache.partition.clone());
+        return Ok(cache.entry.partition.clone());
     }
+    cache.entry.deltas = None;
     let mut updates: HashMap<String, Vec<(CostReceipt, bool)>> = HashMap::new();
     if !added.is_empty() {
         let mut statement = db.prepare_cached(JOURNAL_RECEIPT_SQL)?;
@@ -360,10 +373,10 @@ pub fn partition_journal_receipts_cached(
                 .push((receipt, final_evidence));
         }
     }
-    if !rebuild && cache.revision != Some(revision) {
+    if !rebuild && cache.entry.revision != Some(revision) {
         let mut statement = db.prepare_cached("SELECT v.id,u.agent,u.thread,json_extract(u.record,'$.responseId'),json_type(u.record,'$.studioUsage'),u.record
             FROM analytics_usage_revisions v LEFT JOIN analytics_usage u ON u.id=v.id WHERE v.revision>?1 AND v.revision<=?2")?;
-        let mut rows = statement.query(params![cache.revision, revision])?;
+        let mut rows = statement.query(params![cache.entry.revision, revision])?;
         while let Some(row) = rows.next()? {
             let id: String = row.get(0)?;
             let agent: Option<String> = row.get(1)?;
@@ -393,12 +406,12 @@ pub fn partition_journal_receipts_cached(
     if rebuild {
         cache.facts.clear();
         cache.final_counts.clear();
-        cache.partition = JournalPartition {
+        cache.entry.partition = JournalPartition {
             accepted: receipts.clone(),
             superseded: BTreeSet::new(),
         };
     } else {
-        cache.partition.accepted.extend(added);
+        cache.entry.partition.accepted.extend(added);
     }
     for (id, facts) in updates {
         if let Some(previous) = cache.facts.remove(&id) {
@@ -407,8 +420,8 @@ pub fn partition_journal_receipts_cached(
                     *count -= 1;
                     if *count == 0 {
                         cache.final_counts.remove(&receipt);
-                        cache.partition.superseded.remove(&receipt);
-                        cache.partition.accepted.insert(receipt);
+                        cache.entry.partition.superseded.remove(&receipt);
+                        cache.entry.partition.accepted.insert(receipt);
                     }
                 }
             }
@@ -417,17 +430,17 @@ pub fn partition_journal_receipts_cached(
             for (receipt, final_evidence) in &facts {
                 if *final_evidence {
                     *cache.final_counts.entry(receipt.clone()).or_default() += 1;
-                    cache.partition.accepted.remove(receipt);
-                    cache.partition.superseded.insert(receipt.clone());
+                    cache.entry.partition.accepted.remove(receipt);
+                    cache.entry.partition.superseded.insert(receipt.clone());
                 }
             }
             cache.facts.insert(id, facts);
         }
     }
-    cache.scopes = scopes;
-    cache.receipts = receipts.clone();
-    cache.revision = Some(revision);
-    Ok(cache.partition.clone())
+    cache.entry.scopes = scopes;
+    cache.entry.receipts = receipts.clone();
+    cache.entry.revision = Some(revision);
+    Ok(cache.entry.partition.clone())
 }
 
 /// Read response evidence for exactly these agents in stable observation order.
@@ -1198,15 +1211,46 @@ pub fn cost_groups(
         .collect())
 }
 
-/// Original and journal-adjusted groups for only the identities affected by receipts.
+/// Original and journal-adjusted groups for identities affected by receipts.
+pub type CostGroupAdjustments = Vec<(Option<CostGroup>, Option<CostGroup>)>;
+
 pub fn cost_group_adjustments(
     db: &Connection,
     root: &str,
     partition: &JournalPartition,
-) -> StoreResult<Vec<(Option<CostGroup>, Option<CostGroup>)>> {
+) -> StoreResult<CostGroupAdjustments> {
+    let deltas = journal_group_deltas(db, root, partition)?;
+    adjustments_for_deltas(db, root, &deltas)
+}
+
+/// Partition receipts and use the delta tied to that exact cache marker.
+pub fn journal_partition_and_adjustments_cached(
+    db: &Connection,
+    root: &str,
+    receipts: &BTreeSet<CostReceipt>,
+    members: &[(String, CostMember)],
+    cache: &mut JournalReceiptCache,
+) -> StoreResult<(JournalPartition, CostGroupAdjustments)> {
+    let partition = partition_journal_receipts_cached(db, receipts, members, cache)?;
+    if cache.entry.root.as_deref() != Some(root) {
+        cache.entry.root = Some(root.to_owned());
+        cache.entry.deltas = None;
+    }
+    if cache.entry.deltas.is_none() {
+        cache.entry.deltas = Some(journal_group_deltas(db, root, &partition)?);
+    }
+    let deltas = cache.entry.deltas.as_ref().expect("calculated deltas");
+    Ok((partition, adjustments_for_deltas(db, root, deltas)?))
+}
+
+fn adjustments_for_deltas(
+    db: &Connection,
+    root: &str,
+    deltas: &BTreeMap<GroupKey, i64>,
+) -> StoreResult<CostGroupAdjustments> {
     let mut result = Vec::new();
     let mut query = db.prepare_cached("SELECT count FROM analytics_cost_groups WHERE root=?1 AND model IS ?2 AND account=?3 AND input IS ?4 AND cached IS ?5 AND cache_write IS ?6 AND output IS ?7 AND uncached=?8 AND cache_write_1h IS ?9")?;
-    for (key, delta) in journal_group_deltas(db, root, partition)? {
+    for (key, &delta) in deltas {
         if delta == 0 {
             continue;
         }
@@ -1252,6 +1296,8 @@ fn journal_group_deltas(
     root: &str,
     partition: &JournalPartition,
 ) -> StoreResult<BTreeMap<GroupKey, i64>> {
+    #[cfg(test)]
+    JOURNAL_DELTA_RUNS.update(|count| count + 1);
     let mut changes = BTreeMap::<GroupKey, i64>::new();
     let mut replaced = HashSet::new();
     let mut scopes = BTreeMap::<String, TurnScopes>::new();
@@ -1851,6 +1897,74 @@ mod tests {
             assert_eq!(partition_journal_receipts(tx, &receipts, &receipt_members())?.accepted, receipts);
             Ok(())
         }).await.expect("typed receipt identity");
+    }
+
+    #[tokio::test]
+    async fn journal_deltas_recompute_only_for_changed_marker() {
+        let temp = tempfile::tempdir().expect("state");
+        let store = RuntimeStore::open(Some(temp.path())).await.expect("store");
+        store.analytics_transaction::<_, StoreError>(|tx, _| {
+            AnalyticsCaptureRepository::write(tx, CaptureTable::Agents, &json!({"id":"agent","rootId":"root","provider":"codex"}))?;
+            AnalyticsCaptureRepository::write(tx, CaptureTable::Usage, &json!({"id":"receipt","agentId":"agent","rootId":"root","threadId":"thread","at":1,"responseId":"response","accountKey":"acct","model":"m","last":{"inputTokens":10,"outputTokens":2},"total":{}}))?;
+            Ok(())
+        }).await.expect("usage");
+        let db = crate::AnalyticsRepository::new(store.root())
+            .open_read_only()
+            .expect("reader");
+        let mut cache = super::JournalReceiptCache::default();
+        let mut receipts = [("acct".into(), "thread".into(), "response".into())].into();
+        let mut members = receipt_members();
+        super::JOURNAL_DELTA_RUNS.take();
+        let (partition, first) = super::journal_partition_and_adjustments_cached(
+            &db, "root", &receipts, &members, &mut cache,
+        )
+        .expect("first");
+        assert_eq!(super::JOURNAL_DELTA_RUNS.take(), 1);
+        let (_, second) = super::journal_partition_and_adjustments_cached(
+            &db, "root", &receipts, &members, &mut cache,
+        )
+        .expect("repeat");
+        assert_eq!(
+            super::JOURNAL_DELTA_RUNS.take(),
+            0,
+            "repeat must skip delta computation"
+        );
+        assert_eq!(format!("{first:?}"), format!("{second:?}"));
+        assert_eq!(
+            format!("{first:?}"),
+            format!(
+                "{:?}",
+                super::cost_group_adjustments(&db, "root", &partition).expect("uncached")
+            )
+        );
+        super::JOURNAL_DELTA_RUNS.take();
+        receipts.insert(("acct".into(), "thread".into(), "another".into()));
+        super::journal_partition_and_adjustments_cached(
+            &db, "root", &receipts, &members, &mut cache,
+        )
+        .expect("receipt change");
+        assert_eq!(super::JOURNAL_DELTA_RUNS.take(), 1);
+        members[0].1.thread_id = Some("other-thread".into());
+        super::journal_partition_and_adjustments_cached(
+            &db, "root", &receipts, &members, &mut cache,
+        )
+        .expect("scope change");
+        assert_eq!(super::JOURNAL_DELTA_RUNS.take(), 1);
+        store
+            .analytics_transaction::<_, StoreError>(|tx, _| {
+                tx.execute(
+                    "UPDATE analytics_usage SET record=record WHERE id='receipt'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("advance revision");
+        super::journal_partition_and_adjustments_cached(
+            &db, "root", &receipts, &members, &mut cache,
+        )
+        .expect("revision change");
+        assert_eq!(super::JOURNAL_DELTA_RUNS.take(), 1);
     }
 
     #[tokio::test]
