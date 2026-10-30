@@ -3878,7 +3878,7 @@ pub(super) struct AccountStreams {
     metadata: NotificationStreamBuffer,
 }
 
-const VM_STREAM_OWNERS_SQL: &str = "SELECT id FROM runtime_agents WHERE account_key=?1 AND execution_mode='vm' AND hold_status='clear'";
+const VM_STREAM_OWNERS_SQL: &str = "SELECT id FROM runtime_agents INDEXED BY runtime_agent_vm_stream_owner WHERE account_key=?1 AND execution_mode='vm' AND hold_status='clear'";
 const VM_STREAM_LANES_SQL: &str = "SELECT id,json_extract(record,'$.providerStream.streams') FROM runtime_agents WHERE account_key=?1 AND execution_mode='vm' AND json_type(record,'$.providerStream.streams')='object' AND hold_status='clear'";
 
 fn persist_stream_lane(
@@ -4119,6 +4119,7 @@ mod stream_owner_query_tests {
         let db = rusqlite::Connection::open_in_memory().unwrap();
         db.execute_batch(studio_runtime_store::agent_columns::agent_table_sql())
             .unwrap();
+        db.execute_batch("CREATE INDEX runtime_agent_vm_stream_owner ON runtime_agents(account_key,id) WHERE execution_mode='vm' AND hold_status='clear'").unwrap();
         for n in 0..20 {
             let id = format!("host-{n}");
             let raw = serde_json::json!({"id":id,"rootId":id,"provider":"codex","epoch":1,"status":"idle","accountKey":"default","executionMode":"host"});

@@ -47,6 +47,7 @@ mod m2026_10_30_rule_monitor_records;
 mod m2026_10_30_start_wait;
 mod m2026_10_30_unused_agent_columns;
 mod m2026_10_30_unused_start_action;
+mod m2026_10_30_vm_stream_owners;
 
 #[cfg(any(test, feature = "test-support"))]
 pub use m2026_10_20_agents::migrate_2026_10_20;
@@ -357,6 +358,16 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| m2026_10_30_monitor_queue::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-vm-stream-owner-index",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Agents before the VM stream owner index",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_vm_stream_owners::apply(c.transaction),
     },
     &SqlMigration {
         definition: MigrationDefinition {
@@ -1232,6 +1243,44 @@ pub(crate) fn prepare_canvas_fixture(transaction: &Transaction<'_>) -> StoreResu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vm_stream_owner_scan_uses_partial_index() {
+        let db = crate::fresh_state::test_canvas();
+        let detail: String = db.query_row(
+            "EXPLAIN QUERY PLAN SELECT id FROM runtime_agents INDEXED BY runtime_agent_vm_stream_owner WHERE account_key=?1 AND execution_mode='vm' AND hold_status='clear'",
+            ["default"], |row| row.get(3),
+        ).unwrap();
+        assert!(detail.contains("runtime_agent_vm_stream_owner"), "{detail}");
+        for (id, mode, account) in [
+            ("vm", "vm", "default"),
+            ("host", "host", "default"),
+            ("other", "vm", "other"),
+        ] {
+            let record = serde_json::json!({"id":id,"rootId":id,"provider":"codex","epoch":1,"status":"idle","accountKey":account,"executionMode":mode});
+            db.execute(
+                "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
+                rusqlite::params![id, record.to_string()],
+            )
+            .unwrap();
+        }
+        let owners = || {
+            db.prepare("SELECT id FROM runtime_agents WHERE account_key=?1 AND execution_mode='vm' AND hold_status='clear' ORDER BY id").unwrap().query_map(["default"], |row| row.get::<_,String>(0)).unwrap().collect::<Result<Vec<_>,_>>().unwrap()
+        };
+        assert_eq!(owners(), ["vm"]);
+        db.execute(
+            "UPDATE runtime_agents SET hold_status='invalid' WHERE id='vm'",
+            [],
+        )
+        .unwrap();
+        assert!(owners().is_empty());
+        db.execute(
+            "UPDATE runtime_agents SET hold_status='clear' WHERE id='vm'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(owners(), ["vm"]);
+    }
     use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 
     #[test]
