@@ -3312,10 +3312,6 @@
       "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:1"
     },
     {
-      "file": "workspaces/runtime/packages/runtime-store/src/repositories/analytics.rs",
-      "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:2"
-    },
-    {
       "file": "workspaces/runtime/packages/runtime-store/src/repositories/voice.rs",
       "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:0"
     },
