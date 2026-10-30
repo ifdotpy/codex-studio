@@ -39,6 +39,7 @@ mod m2026_10_29_model_choices;
 mod m2026_10_29_request_results_v2;
 mod m2026_10_30_agent_volatile;
 mod m2026_10_30_branch_phase;
+mod m2026_10_30_capture_errors;
 pub(crate) mod m2026_10_30_monitor_errors;
 mod m2026_10_30_monitor_generated;
 pub(crate) mod m2026_10_30_monitor_queue;
@@ -754,6 +755,16 @@ static CATALOG: &[&dyn Migration] = &[
                 .execute_batch("DROP INDEX IF EXISTS runtime_monitor_stall_due")?;
             Ok(())
         },
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-capture-errors",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Analytics,
+            supported_source: "Capture error timestamps stored as decimal strings",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_capture_errors::apply(c.transaction),
     },
     &RegistryMigration,
     &SqlMigration {
