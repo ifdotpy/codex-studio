@@ -49,12 +49,27 @@ pub struct AgentAuthorityRow {
     pub execution_mode: Option<String>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct ProjectAuthorityRow {
-    pub id: Option<String>,
-    pub path: Option<String>,
-    #[serde(default)]
-    pub peer_teams: Vec<PeerTeamRow>,
+#[serde(untagged)]
+pub enum ProjectAuthorityRow {
+    Active {
+        id: Option<String>,
+        path: String,
+        #[serde(default, rename = "peerTeams")]
+        peer_teams: Vec<PeerTeamRow>,
+    },
+    Removed {
+        id: Option<String>,
+        removal: ProjectRemoval,
+    },
+}
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct ProjectRemoval {}
+impl ProjectAuthorityRow {
+    pub fn id(&self) -> Option<&str> {
+        match self {
+            Self::Active { id, .. } | Self::Removed { id, .. } => id.as_deref(),
+        }
+    }
 }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct PeerTeamRow {
@@ -592,18 +607,24 @@ impl AuthorizationSnapshot {
             for (key, row) in &rows.projects {
                 let location = format!("projects/{key}");
                 let row = row.as_ref().map_err(|_| invalid(&location))?;
-                let original = row
-                    .path
-                    .as_ref()
-                    .filter(|path| !path.trim().is_empty())
-                    .ok_or_else(|| invalid(&location))?;
+                let ProjectAuthorityRow::Active {
+                    path: original,
+                    peer_teams,
+                    ..
+                } = row
+                else {
+                    continue;
+                };
+                if original.trim().is_empty() {
+                    return Err(invalid(&location));
+                }
                 let path = rows
                     .resolved_paths
                     .get(original)
                     .and_then(|path| LexicalPath::exact(std::path::Path::new(path)))
                     .ok_or_else(|| invalid(format!("{location}/path")))?;
                 let mut teams = Vec::new();
-                for (index, team) in row.peer_teams.iter().enumerate() {
+                for (index, team) in peer_teams.iter().enumerate() {
                     let at = format!("{location}/peerTeams/{index}");
                     for (field, value) in [("id", &team.id), ("name", &team.name)] {
                         if value.is_empty() {

@@ -1205,6 +1205,28 @@ mod request_typed_tests {
     use serde_json::{Value, json};
 
     #[test]
+    fn shared_decoder_requires_object_for_direct_records() {
+        #[derive(serde::Serialize, serde::Deserialize)]
+        struct Record {
+            id: String,
+        }
+        impl super::JsonRecord for Record {
+            type Id = String;
+            const TABLE: &'static str = "fixture";
+            const SCHEMA: &'static str = "fixture";
+            const KEY_MODE: super::RecordKeyMode = super::RecordKeyMode::PayloadId;
+            const QUERY_SHAPE: super::RecordQueryShape = super::RecordQueryShape::None;
+            const DIRECT_TYPED_DECODE: bool = true;
+            fn record_key(&self) -> Option<&String> {
+                Some(&self.id)
+            }
+        }
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        assert!(super::decode_record::<Record>(&connection, "row", r#"{"id":"row"}"#).is_ok());
+        assert!(super::decode_record::<Record>(&connection, "row", r#"["row"]"#).is_err());
+    }
+
+    #[test]
     fn request_table_keeps_last_duplicate_and_checks_row_identity() {
         let db = rusqlite::Connection::open_in_memory().unwrap();
         db.execute_batch("CREATE TABLE runtime_requests(id TEXT PRIMARY KEY,record TEXT NOT NULL)")
@@ -1609,6 +1631,7 @@ impl JsonRecord for TranscriptItemRecord {
     const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
     const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::PhysicalAgent;
     const TYPED_SHAPE: bool = true;
+    const DIRECT_TYPED_DECODE: bool = true;
     fn record_key(&self) -> Option<&Self::Id> {
         Some(self.id())
     }
@@ -2299,15 +2322,21 @@ pub(crate) fn decode_record<R: JsonRecord>(
         id: row_id.to_owned(),
     };
     let record = if R::DIRECT_TYPED_DECODE {
-        serde_json::from_str::<R>(encoded).map_err(|_| invalid())?
+        serde_json::from_str::<studio_runtime_schema::json_object::JsonObject<R>>(encoded)
+            .map_err(|_| invalid())?
+            .0
     } else if R::TYPED_SHAPE {
         // Stored JSON was historically parsed to a map first, so duplicate
         // property names retain serde_json's last-value behavior.
         let value = serde_json::from_str::<Value>(encoded).map_err(|_| invalid())?;
-        R::deserialize(value).map_err(|_| invalid())?
+        studio_runtime_schema::json_object::JsonObject::<R>::deserialize(value)
+            .map_err(|_| invalid())?
+            .0
     } else {
         let value = decode_value(R::SCHEMA, encoded, invalid)?;
-        R::deserialize(value).map_err(|_| invalid())?
+        studio_runtime_schema::json_object::JsonObject::<R>::deserialize(value)
+            .map_err(|_| invalid())?
+            .0
     };
     if R::KEY_MODE == RecordKeyMode::PayloadId
         && record.record_key().map(AsRef::as_ref) != Some(row_id)
@@ -3146,6 +3175,16 @@ mod tests {
             )
             .expect("transcript table creates");
         let table = Table::<TranscriptItemRecord>::new(&connection);
+        connection
+            .execute(
+                "INSERT INTO runtime_items VALUES('duplicate','a',0,?1)",
+                [r#"{"id":"old","id":"duplicate"}"#],
+            )
+            .expect("duplicate-key fixture");
+        assert!(table.get(&TranscriptItemId::from("duplicate")).is_err());
+        connection
+            .execute("DELETE FROM runtime_items WHERE id='duplicate'", [])
+            .expect("remove duplicate fixture");
         let records = table
             .list_matching(
                 Some(RecordPredicate::PhysicalAgentEquals("a")),

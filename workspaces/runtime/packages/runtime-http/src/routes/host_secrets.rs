@@ -10,6 +10,7 @@ use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
+use studio_runtime_schema::json_object::JsonObject;
 use studio_runtime_services::change_notifications::ChangeNotificationHub;
 use studio_runtime_services::project_secrets::{self, GuestRpc, ProjectSecretsError};
 use tokio::sync::{mpsc, oneshot};
@@ -34,7 +35,6 @@ struct DeskLogin {
 }
 #[derive(Deserialize)]
 struct DeskDeployment {
-    #[serde(default, deserialize_with = "desk_text")]
     site: Option<String>,
 }
 #[derive(Default, Deserialize)]
@@ -50,12 +50,18 @@ struct DeskServiceStatus {
 }
 #[derive(Deserialize)]
 struct DeskProjects {
-    projects: Vec<Value>,
+    projects: Vec<DeskProjectOrOther>,
 }
 #[derive(Deserialize)]
 struct DeskProject {
     name: String,
     unlocked: bool,
+}
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum DeskProjectOrOther {
+    Project(JsonObject<DeskProject>),
+    Other(serde::de::IgnoredAny),
 }
 fn desk_text<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
     Ok(Value::deserialize(d)?.as_str().map(str::to_owned))
@@ -69,12 +75,10 @@ fn desk_present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Value>,
 
 fn desk_service_status(raw: &str) -> Result<DeskServiceStatus, serde_json::Error> {
     let value: Value = serde_json::from_str(raw)?;
-    Ok(
-        studio_runtime_schema::json_object::JsonObject::<DeskServiceStatus>::deserialize(&value)
-            .ok()
-            .map(|view| view.0)
-            .unwrap_or_default(),
-    )
+    Ok(JsonObject::<DeskServiceStatus>::deserialize(&value)
+        .ok()
+        .map(|view| view.0)
+        .unwrap_or_default())
 }
 
 // The OpenAPI resource owns the shared job-kind contract.
@@ -897,11 +901,10 @@ async fn run_setup_job(job: SetupJob) {
                 .stdout
                 .lines()
                 .rfind(|line| !line.trim().is_empty())
-                .and_then(|line| serde_json::from_str::<Value>(line.trim()).ok())
-                .and_then(|value| {
-                    studio_runtime_schema::json_object::JsonObject::<DeskDeployment>::deserialize(
-                        &value,
-                    )
+                .and_then(|line| {
+                    serde_json::from_str::<
+                        studio_runtime_schema::json_object::JsonObject<DeskDeployment>,
+                    >(line.trim())
                     .ok()
                 })
                 .and_then(|view| view.0.site);
@@ -1259,24 +1262,16 @@ async fn refresh_mac_views(
         if result.code != Some(0) {
             return Err(studio_runtime_services::vault::VaultError::DeskFailed);
         }
-        let status = serde_json::from_str::<Value>(&result.stdout)
-            .map_err(|_| studio_runtime_services::vault::VaultError::DeskFailed)?;
-        let unlocked =
-            studio_runtime_schema::json_object::JsonObject::<DeskProjects>::deserialize(&status)
-                .ok()
-                .map(|view| view.0.projects)
-                .ok_or(studio_runtime_services::vault::VaultError::DeskFailed)?
-                .iter()
-                .filter_map(|project| {
-                    let project =
-                        studio_runtime_schema::json_object::JsonObject::<DeskProject>::deserialize(
-                            project,
-                        )
-                        .ok()?
-                        .0;
-                    Some((project.name, project.unlocked))
-                })
-                .collect::<BTreeMap<_, _>>();
+        let JsonObject(DeskProjects { projects }): JsonObject<DeskProjects> =
+            serde_json::from_str(&result.stdout)
+                .map_err(|_| studio_runtime_services::vault::VaultError::DeskFailed)?;
+        let unlocked = projects
+            .into_iter()
+            .filter_map(|project| match project {
+                DeskProjectOrOther::Project(project) => Some((project.0.name, project.0.unlocked)),
+                DeskProjectOrOther::Other(_) => None,
+            })
+            .collect::<BTreeMap<_, _>>();
         unlocked_by_site.insert(site.clone(), unlocked);
     }
     studio_runtime_process::blocking_pool::spawn_blocking(
@@ -1904,7 +1899,7 @@ mod tests {
         vault_project(state.path());
         let host_command = fake_host_command(
             state.path(),
-            "if [ \"$1\" = unlock ]; then\n  [ \"$2\" = --site ] && [ \"$3\" = https://desk.example/ ] || exit 91\n  [ \"$4\" = --project ] && [ \"$5\" = project-one ] && [ \"$6\" = --paper-file ] && [ \"$7\" = - ] || exit 92\n  [ \"$(cat)\" = 'fixture paper words' ] || exit 93\nelif [ \"$1\" = service ] && [ \"$2\" = status ]; then\n  printf '%s\\n' '{\"installed\":true,\"site\":\"https://desk.example\",\"at\":\"/tmp\"}'\nelif [ \"$1\" = status ] && [ \"$2\" = --site ] && [ \"$3\" = https://desk.example/ ] && [ \"$4\" = --json ]; then\n  printf '%s\\n' '{\"projects\":[{\"name\":\"project-one\",\"unlocked\":true}]}'\nelse\n  exit 94\nfi",
+            "if [ \"$1\" = unlock ]; then\n  [ \"$2\" = --site ] && [ \"$3\" = https://desk.example/ ] || exit 91\n  [ \"$4\" = --project ] && [ \"$5\" = project-one ] && [ \"$6\" = --paper-file ] && [ \"$7\" = - ] || exit 92\n  [ \"$(cat)\" = 'fixture paper words' ] || exit 93\nelif [ \"$1\" = service ] && [ \"$2\" = status ]; then\n  printf '%s\\n' '{\"installed\":true,\"site\":\"https://desk.example\",\"at\":\"/tmp\"}'\nelif [ \"$1\" = status ] && [ \"$2\" = --site ] && [ \"$3\" = https://desk.example/ ] && [ \"$4\" = --json ]; then\n  printf '%s\\n' '{\"projects\":[null,[],{\"name\":1,\"unlocked\":true},{\"name\":\"project-one\",\"unlocked\":true}]}'\nelse\n  exit 94\nfi",
         );
         let app = app(state.path(), None, Some(host_command));
         let response = app
@@ -2003,7 +1998,7 @@ mod tests {
         vault_project(state.path());
         let script = r#"printf '%s\n' "$1" >> "$0.calls"
 if [ "$1" = deploy ]; then
- printf '%s\n' 'progress' '{"site":"ignored","site":"https://desk.example/"}'
+ printf '%s\n' 'progress' '{"site":"https://desk.example/"}'
 elif [ "$1" = service ]; then
  printf '{"installed":true,"site":"https://desk.example","at":"%s.disk","program":"%s"}\n' "$0" "$0"
  exit 7

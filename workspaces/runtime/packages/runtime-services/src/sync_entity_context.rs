@@ -395,9 +395,15 @@ impl RoomDirectory {
     ) -> StoreResult<Self> {
         let mut peers = Vec::new();
         for project in &projects {
-            let Some(path) = project.path.as_deref().filter(|s| !s.is_empty()) else {
+            let ProjectAuthorityRow::Active {
+                path, peer_teams, ..
+            } = project
+            else {
                 continue;
             };
+            if path.is_empty() {
+                continue;
+            }
             // Project/agent writers persist resolved host paths. Room membership
             // compares those stored identities; it must not inspect today's filesystem.
             let Some(path) =
@@ -407,7 +413,7 @@ impl RoomDirectory {
                 // directory and cannot bind local peer membership.
                 continue;
             };
-            for team in &project.peer_teams {
+            for team in peer_teams {
                 let mut members = Vec::new();
                 for id in &team.members {
                     if agents.iter().any(|a| {
@@ -580,9 +586,9 @@ mod room_preparation_tests {
                 ..agent(id)
             })
             .collect();
-        let projects = vec![ProjectAuthorityRow {
+        let projects = vec![ProjectAuthorityRow::Active {
             id: Some("project".to_owned()),
-            path: Some(first.to_str().expect("UTF-8 path").to_owned()),
+            path: first.to_str().expect("UTF-8 path").to_owned(),
             peer_teams: vec![PeerTeamRow {
                 id: "peers".to_owned(),
                 name: "Peers".to_owned(),

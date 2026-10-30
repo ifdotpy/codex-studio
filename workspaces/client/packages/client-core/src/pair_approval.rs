@@ -45,12 +45,6 @@ impl Approval {
 }
 #[derive(Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct PeerIdentity {
-    #[serde(default, deserialize_with = "optional_text")]
-    server_id: Option<String>,
-}
-#[derive(Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct Peer {
     #[serde(default, deserialize_with = "optional_text")]
     server_id: Option<String>,
@@ -118,12 +112,11 @@ pub fn approved_peer(
     let peer = snapshot["servers"]
         .as_array()
         .and_then(|rows| {
-            rows.iter().find(|v| {
-                object::<PeerIdentity>(v).server_id.as_deref() == Some(approval.server_id.as_str())
-            })
+            rows.iter()
+                .map(object::<Peer>)
+                .find(|peer| peer.server_id.as_deref() == Some(approval.server_id.as_str()))
         })
         .ok_or("The approved server is no longer available.")?;
-    let peer: Peer = object(peer);
     let generation = json!([peer.created, peer.public_key]).to_string();
     if snapshot_fields.protocol != 1
         || identity.server_id.as_deref() != Some(approval.local_server_id.as_str())

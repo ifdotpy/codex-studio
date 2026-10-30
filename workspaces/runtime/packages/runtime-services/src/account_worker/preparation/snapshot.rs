@@ -672,7 +672,9 @@ pub(in crate::account_worker) fn authorization_paths(
     }
     for row in rows.projects.values() {
         let row = row.as_ref().map_err(|_| invalid("path"))?;
-        if let Some(path) = row.path.as_deref().filter(|path| !path.is_empty()) {
+        if let crate::submit_gates::ProjectAuthorityRow::Active { path, .. } = row
+            && !path.is_empty()
+        {
             let resolved =
                 CanonicalPath::ancestor_nonstrict(Path::new(path)).map_err(|_| invalid("path"))?;
             resolved_paths.insert(path.to_owned(), resolved.to_string_lossy().into_owned());

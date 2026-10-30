@@ -147,7 +147,7 @@ fn message_projects(
         }
         let project: ProjectAuthorityRow =
             serde_json::from_str(&raw).map_err(|_| records::invalid("runtime_projects", &id))?;
-        if project.id.as_deref() != Some(id.as_str()) {
+        if project.id() != Some(id.as_str()) {
             return Err(records::invalid("runtime_projects", &id).into());
         }
         projects.push(project);
@@ -163,11 +163,10 @@ pub(super) fn message_authority(
     for path in agents
         .iter()
         .filter_map(|agent| agent.cwd.as_deref())
-        .chain(
-            projects
-                .iter()
-                .filter_map(|project| project.path.as_deref()),
-        )
+        .chain(projects.iter().filter_map(|project| match project {
+            ProjectAuthorityRow::Active { path, .. } => Some(path.as_str()),
+            ProjectAuthorityRow::Removed { .. } => None,
+        }))
     {
         if let Some(resolved) = studio_runtime_store::path_identity::lexical_text(path) {
             rows.resolved_paths
@@ -186,14 +185,11 @@ pub(super) fn message_authority(
         .collect::<Result<_, CallbackError>>()?;
     let projects = projects
         .iter()
-        .map(|project| {
-            let path = project
-                .path
-                .clone()
-                .ok_or_else(|| CallbackError::Stored("runtime_projects/path".into()))?;
-            Ok((path, Ok(project.clone())))
+        .filter_map(|project| match project {
+            ProjectAuthorityRow::Active { path, .. } => Some((path.clone(), Ok(project.clone()))),
+            ProjectAuthorityRow::Removed { .. } => None,
         })
-        .collect::<Result<Vec<_>, CallbackError>>()?;
+        .collect::<Vec<_>>();
     rows.projects = projects_by_resolved_path(projects, &rows.resolved_paths);
     AuthorizationSnapshot::from_typed(&rows).map_err(|error| CallbackError::Stored(error.location))
 }
@@ -1041,6 +1037,27 @@ pub(super) fn resolve_prefix(
 #[cfg(test)]
 mod prefix_tests {
     use super::{CallbackError, resolve_prefix};
+
+    #[test]
+    fn project_removal_rows_do_not_block_message_authority() {
+        let mut db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE runtime_projects(id TEXT PRIMARY KEY,record TEXT NOT NULL)")
+            .unwrap();
+        for id in ["/fixture", "/removed-b", "/removed-c", "/removed-d"] {
+            let row = serde_json::json!({"id":id,"removal":{"deletedAt":1,"reason":"removed","requestId":"request","sequence":1}});
+            db.execute(
+                "INSERT INTO runtime_projects VALUES(?1,?2)",
+                rusqlite::params![id, row.to_string()],
+            )
+            .unwrap();
+        }
+        let agent =
+            serde_json::from_str(r#"{"id":"sender","rootId":"sender","cwd":"/fixture"}"#).unwrap();
+        let tx = db.transaction().unwrap();
+        let projects = super::message_projects(&tx, &[agent], "sender").unwrap();
+        assert_eq!(projects.len(), 1);
+        assert!(super::message_authority(&[], &projects, Default::default()).is_ok());
+    }
 
     #[test]
     fn message_receipts_round_trip_existing_wire_shapes() {
