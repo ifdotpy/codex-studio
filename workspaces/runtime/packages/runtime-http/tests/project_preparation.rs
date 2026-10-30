@@ -9,7 +9,7 @@ use std::sync::Arc;
 use studio_runtime_http::{HttpState, router};
 use studio_runtime_schema::approvals::{
     AgentId, Answer, ApprovalId, ApprovalState, Detail, ProviderObject, Question, QuestionAnswer,
-    Request, Timestamp, TurnId,
+    Request as ApprovalRequest, Timestamp, TurnId,
 };
 use studio_runtime_store::approvals::{self, NewApproval};
 use studio_runtime_store::{AgentRecord, AgentRepository, RuntimeStore, StoreError};
@@ -58,7 +58,7 @@ async fn async_question_answer_wakes_idle_lead_once() {
         agent: AgentId(agent_id.to_owned()),
         turn: Some(TurnId("completed-question-turn".to_owned())),
         epoch: Some(0),
-        request: Request::AgentQuestion {
+        request: ApprovalRequest::AgentQuestion {
             questions: vec![Question {
                 id: "scope".to_owned(),
                 question: "Which scope?".to_owned(),
