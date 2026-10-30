@@ -687,6 +687,11 @@ fn apply_pair(
             .invite()
             .cloned()
             .ok_or_else(|| refused(403, "invite_unavailable", "The invitation is unavailable"))?;
+        let grant = invite
+            .extra_str("grant")
+            .filter(|grant| *grant == crate::device_trust::GRANT_OBSERVE)
+            .unwrap_or(crate::device_trust::GRANT_FULL)
+            .to_owned();
         invite.mark_used();
         let invite = serde_json::to_string(&invite).map_err(|_| {
             refused(
@@ -699,7 +704,12 @@ fn apply_pair(
             "UPDATE runtime_access_invites SET record=?1 WHERE id=?2",
             params![invite, text(body, "inviteId")],
         )?;
-        new_client(request, principal, now)
+        let mut client = new_client(request, principal, now);
+        // The owner chose the grant when making the invitation; the device cannot.
+        if principal.kind() == "ui" {
+            client["grant"] = json!(grant);
+        }
+        client
     } else {
         snapshot
             .client()

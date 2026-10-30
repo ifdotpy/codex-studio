@@ -1757,6 +1757,7 @@ impl OrchestrationEffects for RuntimeOrchestrationEffects {
             || (cfg!(unix) && SERVER_COMMAND_ACTIONS.contains(&action))
             || action == "projects"
             || action == crate::peer_projects::CHANGED_ACTION
+            || action == crate::device_trust::ACTION
             || crate::peer_updates::ACTIONS.contains(&action)
             || (action == "stop" && self.lifecycle_ports.is_some())
     }
@@ -1863,6 +1864,27 @@ impl RuntimeOrchestrationEffects {
         }
     }
 
+    /// Merge a paired server's list of servers and device keys; answer with this server's
+    /// list (docs/decisions/2026-10-28-target-client-server-architecture.md, "Device identity").
+    async fn device_trust(
+        &self,
+        principal: &str,
+        envelope: &Value,
+    ) -> Result<ExchangeOutcome, AccessError> {
+        let local = self.store.local_server_id()?.unwrap_or_default();
+        let payload = envelope["payload"].clone();
+        let sender = principal.to_owned();
+        let now = crate::event_write::unix_time()
+            .map_err(|_| refused(503, "clock_unavailable", "The system clock is unavailable"))?;
+        let list = self
+            .store
+            .transaction_with(move |tx| {
+                crate::device_trust::receive(tx, &local, &sender, &payload, now)
+            })
+            .await?;
+        applied(&list)
+    }
+
     /// Python `runtime.projects()`: every project ordered by creation time and ID.
     async fn projects(&self) -> Result<ExchangeOutcome, AccessError> {
         let mut listed = crate::projects::list(&self.store).await.map_err(|_| {
@@ -1928,6 +1950,9 @@ impl RuntimeOrchestrationEffects {
         }
         if action == "projects" {
             return self.projects().await;
+        }
+        if action == crate::device_trust::ACTION {
+            return self.device_trust(principal, envelope).await;
         }
         if action == crate::peer_projects::CHANGED_ACTION {
             if let Some(wake) = &self.projects_changed {
@@ -2652,6 +2677,8 @@ const PEER_REPLAY_SAFE_ACTIONS: &[ServerOperationKind] = &[
     // Effect-free reads (Python `receive` runs them again for a running claim).
     ServerOperationKind::Projects,
     ServerOperationKind::ProjectsChanged,
+    // A merge of two lists: running it again changes nothing.
+    ServerOperationKind::DeviceTrust,
     ServerOperationKind::Folders,
     ServerOperationKind::Git,
     ServerOperationKind::Chunk,
