@@ -1592,15 +1592,9 @@ fn read_vm_claude_oauth(
             bytes
         }
     };
-    let value: Value = serde_json::from_slice(&bytes)
-        .map_err(|_| WorkerError::PreparationRefused("vm-credentials/invalid".into()))?;
-    if !value.is_object() {
-        return Err(WorkerError::PreparationRefused(
-            "vm-credentials/invalid".into(),
-        ));
-    }
-    let file: VmClaudeCredentialFile = serde::Deserialize::deserialize(&value)
-        .map_err(|_| WorkerError::PreparationRefused("vm-credentials/invalid".into()))?;
+    let studio_runtime_schema::json_object::JsonObject(file): studio_runtime_schema::json_object::JsonObject<VmClaudeCredentialFile> =
+        serde_json::from_slice(&bytes)
+            .map_err(|_| WorkerError::PreparationRefused("vm-credentials/invalid".into()))?;
     Ok(file.claude_ai_oauth.0)
 }
 
@@ -3847,7 +3841,7 @@ mod vm_claude_refresh_tests {
                 json!({"accessToken":" ","expiresAt":1,"scopes":[null,7,"user:inference"],"subscriptionType":null,"rateLimitTier":{"n":1.0}}),
             ),
             (
-                r#"{"claudeAiOauth":{"accessToken":"old","accessToken":"new","expiresAt":1.0,"scopes":["user:inference"]}}"#,
+                r#"{"claudeAiOauth":{"accessToken":"new","expiresAt":1.0,"scopes":["user:inference"]}}"#,
                 json!({"accessToken":"new","expiresAt":1.0,"scopes":["user:inference"]}),
             ),
         ] {
@@ -3862,6 +3856,8 @@ mod vm_claude_refresh_tests {
             assert_eq!(encoded["claudeAiOauth"], expected);
         }
         for raw in [
+            r#"{"claudeAiOauth":{"accessToken":"old","accessToken":"new","expiresAt":1,"scopes":["user:inference"]}}"#,
+            "[]",
             r#"{"claudeAiOauth":{"accessToken":"","expiresAt":1,"scopes":["user:inference"]}}"#,
             r#"{"claudeAiOauth":{"accessToken":"x","expiresAt":1e400,"scopes":["user:inference"]}}"#,
             r#"{"claudeAiOauth":{"accessToken":"x","expiresAt":1,"scopes":[7]}}"#,
