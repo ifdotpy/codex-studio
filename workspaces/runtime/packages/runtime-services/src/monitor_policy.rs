@@ -11,14 +11,27 @@ pub const CHUNK_BYTES: usize = 65_536;
 pub const PROBE_LEASE_SECONDS: f64 = 90.0;
 pub const DEFAULT_MONITOR_STALL_SECONDS: u64 = 1800;
 
-fn monitor_time(value: f64) -> Result<studio_runtime_schema::monitor_record::MonitorTime, MonitorError> {
-    value.try_into().map_err(|_| MonitorError::Refused("Invalid monitor time"))
+fn monitor_time(
+    value: f64,
+) -> Result<studio_runtime_schema::monitor_record::MonitorTime, MonitorError> {
+    value
+        .try_into()
+        .map_err(|_| MonitorError::Refused("Invalid monitor time"))
 }
-fn monitor_integer<const MIN: i64, const MAX: u64>(value: i64) -> Result<studio_runtime_schema::monitor_record::MonitorInteger<MIN, MAX>, MonitorError> {
-    value.try_into().map_err(|_| MonitorError::Refused("Monitor counter exhausted"))
+fn monitor_integer<const MIN: i64, const MAX: u64>(
+    value: i64,
+) -> Result<studio_runtime_schema::monitor_record::MonitorInteger<MIN, MAX>, MonitorError> {
+    value
+        .try_into()
+        .map_err(|_| MonitorError::Refused("Monitor counter exhausted"))
 }
-fn monitor_text(value: &str) -> Result<studio_runtime_schema::monitor_record::MonitorText<0, 12000>, MonitorError> {
-    value.to_owned().try_into().map_err(|_| MonitorError::Refused("Monitor text exceeds bound"))
+fn monitor_text(
+    value: &str,
+) -> Result<studio_runtime_schema::monitor_record::MonitorText<0, 12000>, MonitorError> {
+    value
+        .to_owned()
+        .try_into()
+        .map_err(|_| MonitorError::Refused("Monitor text exceeds bound"))
 }
 
 use studio_runtime_schema::monitor_record::{ReattachRecovery, ReattachState};
@@ -332,7 +345,11 @@ impl MonitorSnapshot {
     /// A deadline loss whose late answer is still awaited at `now`.
     pub(crate) fn awaits_late_answer(&self, now: f64) -> bool {
         self.deadline_lost()
-            && self.record.finished.as_ref().is_some_and(|finished| now < finished.seconds() + MONITOR_LATE_ANSWER_SECONDS)
+            && self
+                .record
+                .finished
+                .as_ref()
+                .is_some_and(|finished| now < finished.seconds() + MONITOR_LATE_ANSWER_SECONDS)
     }
     pub(crate) fn reconciliation_deadline(&self) -> Option<f64> {
         self.record
@@ -483,10 +500,20 @@ pub fn output_stream(
         .ok_or(MonitorError::Refused("Monitor output counter exhausted"))?;
     crate::monitor_matches::append(&mut decision.record, stream, chunk, snapshot.active_owner())?;
     output_effect(snapshot, &mut decision, now, false);
-    decision.record.bytes = monitor_integer(i64::try_from(bytes).map_err(|_| MonitorError::Refused("Monitor output counter exhausted"))?)?;
+    decision.record.bytes = monitor_integer(
+        i64::try_from(bytes)
+            .map_err(|_| MonitorError::Refused("Monitor output counter exhausted"))?,
+    )?;
     if !chunk.is_empty() {
         decision.record.activity_at = monitor_time(now)?;
-        decision.record.activity_generation = monitor_integer(snapshot.record.activity_generation.get().checked_add(1).ok_or(MonitorError::Refused("Monitor activity counter exhausted"))?)?;
+        decision.record.activity_generation = monitor_integer(
+            snapshot
+                .record
+                .activity_generation
+                .get()
+                .checked_add(1)
+                .ok_or(MonitorError::Refused("Monitor activity counter exhausted"))?,
+        )?;
     }
     Ok(decision)
 }
@@ -527,7 +554,14 @@ pub fn finish(
         decision.record.status = if snapshot.record.cancel_requested == Some(true) {
             MonitorStatus::Cancelled
         } else if error.is_some_and(|e| !e.is_empty())
-            || !code.is_some_and(|c| snapshot.record.success_exit_codes.values().iter().any(|value| value.get() == c))
+            || !code.is_some_and(|c| {
+                snapshot
+                    .record
+                    .success_exit_codes
+                    .values()
+                    .iter()
+                    .any(|value| value.get() == c)
+            })
         {
             MonitorStatus::Failed
         } else {
@@ -537,8 +571,18 @@ pub fn finish(
         decision.record.error = error.map(monitor_text).transpose()?;
         decision.record.finished = Some(monitor_time(now)?);
         decision.record.configuration_pending = Some(false);
-        if snapshot.record.cancel_requested == Some(true) && snapshot.record().cancel_dispatch.is_some() {
-            decision.record.cancel_dispatch = Some(studio_runtime_schema::monitor_record::MonitorCancelDispatch { status: studio_runtime_schema::monitor_record::MonitorCancelStatus::Done, attempts: None, updated_at: Some(now), next_attempt_at: None, error: None });
+        if snapshot.record.cancel_requested == Some(true)
+            && snapshot.record().cancel_dispatch.is_some()
+        {
+            decision.record.cancel_dispatch = Some(
+                studio_runtime_schema::monitor_record::MonitorCancelDispatch {
+                    status: studio_runtime_schema::monitor_record::MonitorCancelStatus::Done,
+                    attempts: None,
+                    updated_at: Some(now),
+                    next_attempt_at: None,
+                    error: None,
+                },
+            );
         }
         if late {
             decision.record.late_answer_at = Some(now);
@@ -591,7 +635,8 @@ pub fn tick(snapshot: &MonitorSnapshot, now: f64) -> Result<Decision, MonitorErr
         return Ok(decision);
     }
     if f.stall_probe.0.as_ref().is_some_and(|lease| {
-        lease.stall_probe_generation.get() == f.activity_generation.get() && now - lease.stall_probe_started.seconds() < PROBE_LEASE_SECONDS
+        lease.stall_probe_generation.get() == f.activity_generation.get()
+            && now - lease.stall_probe_started.seconds() < PROBE_LEASE_SECONDS
     }) {
         return Ok(decision);
     }
@@ -604,7 +649,11 @@ pub fn tick(snapshot: &MonitorSnapshot, now: f64) -> Result<Decision, MonitorErr
             payload: stall_payload(snapshot.id(), quiet),
         });
     } else {
-        decision.record.stall_probe.0 = Some(studio_runtime_schema::monitor_record::MonitorProbeLease { stall_probe_generation: monitor_integer(f.activity_generation.get())?, stall_probe_started: monitor_time(now)? });
+        decision.record.stall_probe.0 =
+            Some(studio_runtime_schema::monitor_record::MonitorProbeLease {
+                stall_probe_generation: monitor_integer(f.activity_generation.get())?,
+                stall_probe_started: monitor_time(now)?,
+            });
         decision.effects.push(Effect::Probe {
             generation: f.activity_generation.get(),
             command: f.liveness_command.as_str().to_owned(),
@@ -624,7 +673,11 @@ pub fn probe_result(
     if f.status != MonitorStatus::Running
         || snapshot.actor.deleted_at.is_some_and(|at| at != 0.0)
         || snapshot.actor.epoch != f.epoch.get()
-        || f.stall_probe.0.as_ref().map(|lease| lease.stall_probe_generation.get()) != Some(generation)
+        || f.stall_probe
+            .0
+            .as_ref()
+            .map(|lease| lease.stall_probe_generation.get())
+            != Some(generation)
         || f.activity_generation.get() != generation
     {
         return Ok(decision);
@@ -710,7 +763,11 @@ pub fn begin_input(
             "The previous monitor input outcome is unknown; do not repeat it",
         ));
     }
-    if snapshot.record.last_input_attempt.as_ref().is_some_and(|attempt| attempt.id == attempt_id)
+    if snapshot
+        .record
+        .last_input_attempt
+        .as_ref()
+        .is_some_and(|attempt| attempt.id == attempt_id)
     {
         return Err(MonitorError::Refused(
             "Monitor input ticket already settled",
@@ -721,7 +778,15 @@ pub fn begin_input(
         (
             "command/exec/resize",
             json!({"processId": f.id, "size": {"rows": input.rows.unwrap_or(24), "cols": input.cols.unwrap_or(80)}}),
-            studio_runtime_schema::monitor_record::MonitorInputMethod::Resize(studio_runtime_schema::monitor_record::MonitorResizeParams { process_id: f.id.clone(), size: studio_runtime_schema::monitor_record::MonitorSize { rows: input.rows.unwrap_or(24), cols: input.cols.unwrap_or(80) } }),
+            studio_runtime_schema::monitor_record::MonitorInputMethod::Resize(
+                studio_runtime_schema::monitor_record::MonitorResizeParams {
+                    process_id: f.id.clone(),
+                    size: studio_runtime_schema::monitor_record::MonitorSize {
+                        rows: input.rows.unwrap_or(24),
+                        cols: input.cols.unwrap_or(80),
+                    },
+                },
+            ),
         )
     } else {
         if f.stdin_closed == Some(true) || f.stdin_close_requested.is_some() {
@@ -732,15 +797,28 @@ pub fn begin_input(
         (
             "command/exec/write",
             json!({"processId": f.id, "deltaBase64": base64::engine::general_purpose::STANDARD.encode(input.text.as_bytes()), "closeStdin": input.close_stdin}),
-            studio_runtime_schema::monitor_record::MonitorInputMethod::Write(studio_runtime_schema::monitor_record::MonitorWriteParams { process_id: f.id.clone(), delta_base64: base64::engine::general_purpose::STANDARD.encode(input.text.as_bytes()), close_stdin: input.close_stdin }),
+            studio_runtime_schema::monitor_record::MonitorInputMethod::Write(
+                studio_runtime_schema::monitor_record::MonitorWriteParams {
+                    process_id: f.id.clone(),
+                    delta_base64: base64::engine::general_purpose::STANDARD
+                        .encode(input.text.as_bytes()),
+                    close_stdin: input.close_stdin,
+                },
+            ),
         )
     };
     let mut decision = snapshot.decision();
-    decision.record.input_attempt = Some(studio_runtime_schema::monitor_record::MonitorInputAttempt {
-        id: attempt_id.to_owned(), operation: operation.clone(), method: input_method,
-        status: studio_runtime_schema::monitor_record::MonitorInputStatus::Submitted,
-        created: now, finished: None, error: None, response: None,
-    });
+    decision.record.input_attempt =
+        Some(studio_runtime_schema::monitor_record::MonitorInputAttempt {
+            id: attempt_id.to_owned(),
+            operation: operation.clone(),
+            method: input_method,
+            status: studio_runtime_schema::monitor_record::MonitorInputStatus::Submitted,
+            created: now,
+            finished: None,
+            error: None,
+            response: None,
+        });
     if !resize && input.close_stdin {
         decision.record.stdin_close_requested = Some(attempt_id.to_owned());
         decision.record.stdin_error = None;
@@ -792,9 +870,15 @@ pub fn settle_input(
     let mut receipt = attempt.clone();
     receipt.finished = Some(now);
     receipt.status = match outcome {
-        InputOutcome::Acknowledged => studio_runtime_schema::monitor_record::MonitorInputStatus::Acknowledged,
-        InputOutcome::Rejected(_) | InputOutcome::Expired => studio_runtime_schema::monitor_record::MonitorInputStatus::Failed,
-        InputOutcome::Unknown(_) => studio_runtime_schema::monitor_record::MonitorInputStatus::Uncertain,
+        InputOutcome::Acknowledged => {
+            studio_runtime_schema::monitor_record::MonitorInputStatus::Acknowledged
+        }
+        InputOutcome::Rejected(_) | InputOutcome::Expired => {
+            studio_runtime_schema::monitor_record::MonitorInputStatus::Failed
+        }
+        InputOutcome::Unknown(_) => {
+            studio_runtime_schema::monitor_record::MonitorInputStatus::Uncertain
+        }
     };
     let error = match &outcome {
         InputOutcome::Acknowledged => None,
@@ -802,7 +886,9 @@ pub fn settle_input(
         InputOutcome::Rejected(error) | InputOutcome::Unknown(error) => Some(error.as_str()),
     };
     if let Some(error) = error {
-        if error.chars().count() > 12000 { return Err(MonitorError::Refused("Monitor input error exceeds bound")); }
+        if error.chars().count() > 12000 {
+            return Err(MonitorError::Refused("Monitor input error exceeds bound"));
+        }
         receipt.error = Some(error.to_owned());
     }
     if matches!(outcome, InputOutcome::Unknown(_)) {
@@ -812,8 +898,12 @@ pub fn settle_input(
         decision.record.last_input_attempt = Some(receipt);
     }
     if snapshot.record.stdin_close_requested.as_deref() == Some(attempt_id) {
-        if !matches!(outcome, InputOutcome::Unknown(_)) { decision.record.stdin_close_requested = None; }
-        if let Some(error) = error { decision.record.stdin_error = Some(error.to_owned()); }
+        if !matches!(outcome, InputOutcome::Unknown(_)) {
+            decision.record.stdin_close_requested = None;
+        }
+        if let Some(error) = error {
+            decision.record.stdin_error = Some(error.to_owned());
+        }
         if matches!(outcome, InputOutcome::Acknowledged) {
             decision.record.stdin_closed = Some(true);
             decision.record.stdin_error = None;
@@ -1030,64 +1120,144 @@ pub struct MonitorCreateInput {
     pub interactive: Option<bool>,
     pub output_patterns: Option<Vec<String>>,
 }
-fn present_input<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Option<T>, D::Error> {
+fn present_input<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
+    d: D,
+) -> Result<Option<T>, D::Error> {
     T::deserialize(d).map(Some)
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct MonitorCreateOwner {
-    id: String, epoch: i64, cwd: String, turn_id: Option<String>,
-    yolo_mode: Option<bool>, approval_policy: Option<String>,
+    id: String,
+    epoch: i64,
+    cwd: String,
+    turn_id: Option<String>,
+    yolo_mode: Option<bool>,
+    approval_policy: Option<String>,
 }
 /// Build the initial persisted row from checked owner and command input.
 pub fn create_record(
-    actor: &Value, input: &MonitorCreateInput, request_id: &str, log_root: &str, now: f64,
+    actor: &Value,
+    input: &MonitorCreateInput,
+    request_id: &str,
+    log_root: &str,
+    now: f64,
 ) -> Result<studio_runtime_store::MonitorRecord, MonitorError> {
-    use studio_runtime_schema::monitor_record::{MonitorExitCodes, MonitorProbeState, MonitorWakeOn};
-    let owner = MonitorCreateOwner::deserialize(actor).map_err(|_| MonitorError::Refused("Unknown agent"))?;
-    if input.command.trim().is_empty() { return Err(MonitorError::Refused("Supply a command")); }
+    use studio_runtime_schema::monitor_record::{
+        MonitorExitCodes, MonitorProbeState, MonitorWakeOn,
+    };
+    let owner = MonitorCreateOwner::deserialize(actor)
+        .map_err(|_| MonitorError::Refused("Unknown agent"))?;
+    if input.command.trim().is_empty() {
+        return Err(MonitorError::Refused("Supply a command"));
+    }
     let output_patterns = crate::monitor_matches::patterns(input.output_patterns.as_deref())?;
-    let approved = owner.yolo_mode.unwrap_or(owner.approval_policy.as_deref() == Some("never"));
+    let approved = owner
+        .yolo_mode
+        .unwrap_or(owner.approval_policy.as_deref() == Some("never"));
     let id = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, request_id.as_bytes()).to_string();
     let record = studio_runtime_store::MonitorRecord {
-        id: id.clone(), agent: owner.id, epoch: monitor_integer(owner.epoch)?, turn_id: owner.turn_id,
-        request_id: request_id.to_owned(), command: monitor_text(&input.command)?, cwd: owner.cwd,
+        id: id.clone(),
+        agent: owner.id,
+        epoch: monitor_integer(owner.epoch)?,
+        turn_id: owner.turn_id,
+        request_id: request_id.to_owned(),
+        command: monitor_text(&input.command)?,
+        cwd: owner.cwd,
         timeout_ms: monitor_integer(input.timeout_ms.unwrap_or(3_600_000))?,
         stall_timeout_seconds: monitor_integer(input.stall_timeout_seconds.unwrap_or(1800))?,
         liveness_command: monitor_text(input.liveness_command.as_deref().unwrap_or("").trim())?,
-        activity_at: monitor_time(now)?, activity_generation: monitor_integer(0)?, stall_wake_generation: monitor_integer(-1)?,
+        activity_at: monitor_time(now)?,
+        activity_generation: monitor_integer(0)?,
+        stall_wake_generation: monitor_integer(-1)?,
         wake_on: input.wake_on.unwrap_or(MonitorWakeOn::Exit),
-        success_exit_codes: MonitorExitCodes::try_from(input.success_exit_codes.clone().unwrap_or_else(|| vec![0])).map_err(|_| MonitorError::Refused("Invalid monitor exit codes"))?,
-        status: if approved { MonitorStatus::Starting } else { MonitorStatus::Approval }, created: monitor_time(now)?,
-        exit_code: None, tail: monitor_text("")?, bytes: monitor_integer(0)?, interactive: input.interactive.unwrap_or(false),
-        rule_id: None, log: format!("{log_root}/{id}.log"), output_patterns: Some(output_patterns), output_truncated: None,
-        output_event_sequence: Some(0), output_event_count: Some(0), output_event_ids: Some(vec![]),
-        cancel_requested: None, configuration_pending: None, error: None, finished: None, input_attempt: None,
-        last_input_attempt: None, reattach_recovery: None, stream_queue: None, stream_ack_cursor: None,
-        account_key: None, cancel_dispatch: None, cancel_provider_request: None, cancel_root_request_id: None,
-        root_request_id: None, reattached_connection_id: None, last_stall_at: None, late_answer_at: None,
-        liveness_probe: None, last_liveness_result: None, stdin_error: None, restart_after: None, restart_signature: None,
-        shell_pressure_cleanup: None, delivery_failure: None, task_gate: None, output_line_offsets: None,
-        output_line_tail: None, output_match_excerpts: None, output_matcher_tail: None, output_matches_pending: None,
-        output_matches_total: None, output_utf8_pending: None, output_wake_at: None, output_wake_budget: None,
-        last_exit_code: None, operation: None, stall_probe: MonitorProbeState(None), stdin_close_requested: None, stdin_closed: None,
+        success_exit_codes: MonitorExitCodes::try_from(
+            input.success_exit_codes.clone().unwrap_or_else(|| vec![0]),
+        )
+        .map_err(|_| MonitorError::Refused("Invalid monitor exit codes"))?,
+        status: if approved {
+            MonitorStatus::Starting
+        } else {
+            MonitorStatus::Approval
+        },
+        created: monitor_time(now)?,
+        exit_code: None,
+        tail: monitor_text("")?,
+        bytes: monitor_integer(0)?,
+        interactive: input.interactive.unwrap_or(false),
+        rule_id: None,
+        log: format!("{log_root}/{id}.log"),
+        output_patterns: Some(output_patterns),
+        output_truncated: None,
+        output_event_sequence: Some(0),
+        output_event_count: Some(0),
+        output_event_ids: Some(vec![]),
+        cancel_requested: None,
+        configuration_pending: None,
+        error: None,
+        finished: None,
+        input_attempt: None,
+        last_input_attempt: None,
+        reattach_recovery: None,
+        stream_queue: None,
+        stream_ack_cursor: None,
+        account_key: None,
+        cancel_dispatch: None,
+        cancel_provider_request: None,
+        cancel_root_request_id: None,
+        root_request_id: None,
+        reattached_connection_id: None,
+        last_stall_at: None,
+        late_answer_at: None,
+        liveness_probe: None,
+        last_liveness_result: None,
+        stdin_error: None,
+        restart_after: None,
+        restart_signature: None,
+        shell_pressure_cleanup: None,
+        delivery_failure: None,
+        task_gate: None,
+        output_line_offsets: None,
+        output_line_tail: None,
+        output_match_excerpts: None,
+        output_matcher_tail: None,
+        output_matches_pending: None,
+        output_matches_total: None,
+        output_utf8_pending: None,
+        output_wake_at: None,
+        output_wake_budget: None,
+        last_exit_code: None,
+        operation: None,
+        stall_probe: MonitorProbeState(None),
+        stdin_close_requested: None,
+        stdin_closed: None,
     };
     MonitorSnapshot::checked_stored(&record, actor.clone())?;
     Ok(record)
 }
 
-pub fn same_request(previous: &studio_runtime_store::MonitorRecord, proposed: &studio_runtime_store::MonitorRecord) -> bool {
-    previous.agent == proposed.agent && previous.command == proposed.command && previous.timeout_ms == proposed.timeout_ms
-        && previous.interactive == proposed.interactive && previous.wake_on == proposed.wake_on
-        && previous.success_exit_codes == proposed.success_exit_codes && previous.stall_timeout_seconds == proposed.stall_timeout_seconds
+pub fn same_request(
+    previous: &studio_runtime_store::MonitorRecord,
+    proposed: &studio_runtime_store::MonitorRecord,
+) -> bool {
+    previous.agent == proposed.agent
+        && previous.command == proposed.command
+        && previous.timeout_ms == proposed.timeout_ms
+        && previous.interactive == proposed.interactive
+        && previous.wake_on == proposed.wake_on
+        && previous.success_exit_codes == proposed.success_exit_codes
+        && previous.stall_timeout_seconds == proposed.stall_timeout_seconds
         && previous.liveness_command == proposed.liveness_command
-        && previous.output_patterns.as_deref().unwrap_or_default() == proposed.output_patterns.as_deref().unwrap_or_default()
+        && previous.output_patterns.as_deref().unwrap_or_default()
+            == proposed.output_patterns.as_deref().unwrap_or_default()
 }
 
 #[cfg(test)]
 pub(crate) fn complete_test_monitor(record: Value) -> Value {
     let mut complete = json!({"id":"watch","agent":"agent","epoch":0,"status":"running","requestId":"fixture","created":0,"activityAt":0,"activityGeneration":0,"bytes":0,"command":"","cwd":std::env::temp_dir(),"interactive":false,"livenessCommand":"","log":std::env::temp_dir().join("watch.log"),"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":3600000,"wakeOn":"exit"});
-    let Value::Object(fields) = record else { panic!("monitor fixture must be an object") };
+    let Value::Object(fields) = record else {
+        panic!("monitor fixture must be an object")
+    };
     complete.as_object_mut().unwrap().extend(fields);
     complete
 }

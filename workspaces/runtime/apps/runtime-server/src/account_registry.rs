@@ -2132,12 +2132,10 @@ mod bounded_reconcile_tests {
                         turn_epoch: None,
                         thread_id: None,
                         turn_id: None,
-                        extra: BTreeMap::from([
-                            (
-                                "provider".to_owned(),
-                                serde_json::json!(studio_runtime_schema::ProviderKind::Codex),
-                            ),
-                        ]),
+                        extra: BTreeMap::from([(
+                            "provider".to_owned(),
+                            serde_json::json!(studio_runtime_schema::ProviderKind::Codex),
+                        )]),
                         ..AgentRecord::test_defaults()
                     },
                 )?;

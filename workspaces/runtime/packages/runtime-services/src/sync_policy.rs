@@ -358,7 +358,10 @@ pub fn maintain_entity_projections_with_server_id(
             .map(|table| projection_records(transaction, table).map(|records| (table, records)))
             .collect::<StoreResult<HashMap<_, _>>>()
         })?;
-    source_records.insert("runtime_rules", stored_record_rows(transaction, "runtime_rules")?);
+    source_records.insert(
+        "runtime_rules",
+        stored_record_rows(transaction, "runtime_rules")?,
+    );
     let mut work_records = Vec::new();
     let mut work_source = Vec::new();
     for (id, raw) in stored_record_rows(transaction, "runtime_work")? {
@@ -1064,9 +1067,15 @@ fn publish_direct(
     validate: &impl Fn(&str, &str, &Value, bool) -> bool,
 ) -> StoreResult<()> {
     if collection == "rule" {
-        let invalid = || StoreError::InvalidStoredRecord { object: "rules", id: id.to_owned() };
-        let record: studio_runtime_store::RuleRecord = serde_json::from_str(raw).map_err(|_| invalid())?;
-        if record.id != id { return Err(invalid()); }
+        let invalid = || StoreError::InvalidStoredRecord {
+            object: "rules",
+            id: id.to_owned(),
+        };
+        let record: studio_runtime_store::RuleRecord =
+            serde_json::from_str(raw).map_err(|_| invalid())?;
+        if record.id != id {
+            return Err(invalid());
+        }
         return studio_runtime_store::RulesRepository::publish_entity(transaction, &record);
     }
     let record = serde_json::from_str::<Value>(raw)?;
@@ -1747,26 +1756,71 @@ pub struct MonitorProjection {
 }
 #[derive(Clone, Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct MonitorWakeBudgetProjection { paused: bool, tokens: f64, total_suppressed_matches: u64 }
+struct MonitorWakeBudgetProjection {
+    paused: bool,
+    tokens: f64,
+    total_suppressed_matches: u64,
+}
 
-pub fn project_monitor_record(record: &studio_runtime_store::MonitorRecord) -> StoreResult<MonitorProjection> {
+pub fn project_monitor_record(
+    record: &studio_runtime_store::MonitorRecord,
+) -> StoreResult<MonitorProjection> {
     if record.id.is_empty() || crate::monitor_matches::validate(record).is_err() {
-        return Err(StoreError::InvalidSyncObject { scope: "monitor".into(), id: record.id.clone() });
+        return Err(StoreError::InvalidSyncObject {
+            scope: "monitor".into(),
+            id: record.id.clone(),
+        });
     }
     let bound = |text: &str, field: &str| crate::sync_views::bound_sync_text(text, field, false);
     Ok(MonitorProjection {
-        agent: bound(&record.agent, "agent"), bytes: record.bytes.get(), cancel_requested: record.cancel_requested,
-        command: bound(record.command.as_str(), "command"), created: record.created.seconds(), cwd: bound(&record.cwd, "cwd"),
-        error: record.error.as_ref().map(|v| bound(v.as_str(), "error")), exit_code: record.exit_code,
-        finished: record.finished.as_ref().map(|v| v.seconds()), id: bound(&record.id, "id"),
-        interactive: record.interactive, log: bound(&record.log, "log"), output_patterns: record.output_patterns.as_ref().filter(|patterns| !patterns.is_empty()).cloned(), output_truncated: record.output_truncated,
-        output_wake_budget: record.output_wake_budget.as_ref().map(|v| MonitorWakeBudgetProjection { paused: v.paused, tokens: v.tokens, total_suppressed_matches: v.total_suppressed_matches }),
-        rule_id: record.rule_id.as_ref().map(|v| bound(v, "ruleId")), status: record.status, stdin_close_requested: record.stdin_close_requested.as_ref().map(|v| bound(v, "stdinCloseRequested")),
-        stdin_closed: record.stdin_closed, stdin_error: record.stdin_error.as_ref().map(|v| bound(v, "stdinError")), tail: bound(record.tail.as_str(), "tail"), timeout_ms: record.timeout_ms.get(),
+        agent: bound(&record.agent, "agent"),
+        bytes: record.bytes.get(),
+        cancel_requested: record.cancel_requested,
+        command: bound(record.command.as_str(), "command"),
+        created: record.created.seconds(),
+        cwd: bound(&record.cwd, "cwd"),
+        error: record.error.as_ref().map(|v| bound(v.as_str(), "error")),
+        exit_code: record.exit_code,
+        finished: record.finished.as_ref().map(|v| v.seconds()),
+        id: bound(&record.id, "id"),
+        interactive: record.interactive,
+        log: bound(&record.log, "log"),
+        output_patterns: record
+            .output_patterns
+            .as_ref()
+            .filter(|patterns| !patterns.is_empty())
+            .cloned(),
+        output_truncated: record.output_truncated,
+        output_wake_budget: record.output_wake_budget.as_ref().map(|v| {
+            MonitorWakeBudgetProjection {
+                paused: v.paused,
+                tokens: v.tokens,
+                total_suppressed_matches: v.total_suppressed_matches,
+            }
+        }),
+        rule_id: record.rule_id.as_ref().map(|v| bound(v, "ruleId")),
+        status: record.status,
+        stdin_close_requested: record
+            .stdin_close_requested
+            .as_ref()
+            .map(|v| bound(v, "stdinCloseRequested")),
+        stdin_closed: record.stdin_closed,
+        stdin_error: record.stdin_error.as_ref().map(|v| bound(v, "stdinError")),
+        tail: bound(record.tail.as_str(), "tail"),
+        timeout_ms: record.timeout_ms.get(),
     })
 }
-fn publish_typed_monitor(tx: &Transaction<'_>, record: &studio_runtime_store::MonitorRecord) -> StoreResult<()> {
-    SyncDocumentsRepository::put_entity(tx, "monitor", &record.id, project_monitor_record(record)?, false)?;
+fn publish_typed_monitor(
+    tx: &Transaction<'_>,
+    record: &studio_runtime_store::MonitorRecord,
+) -> StoreResult<()> {
+    SyncDocumentsRepository::put_entity(
+        tx,
+        "monitor",
+        &record.id,
+        project_monitor_record(record)?,
+        false,
+    )?;
     Ok(())
 }
 
@@ -1821,36 +1875,74 @@ fn maintain_monitor_window(
         [], |row| row.get::<_, bool>(0),
     )?;
     if has_status_index {
-        let placeholders = (1..=MONITOR_ACTIVE_STATUSES.len()).map(|index| format!("?{index}")).collect::<Vec<_>>().join(",");
+        let placeholders = (1..=MONITOR_ACTIVE_STATUSES.len())
+            .map(|index| format!("?{index}"))
+            .collect::<Vec<_>>()
+            .join(",");
         let mut statement = transaction.prepare(&format!("SELECT id,record FROM runtime_monitors WHERE json_extract(record,'$.status') IN ({placeholders})"))?;
-        let rows = statement.query_map(rusqlite::params_from_iter(MONITOR_ACTIVE_STATUSES), |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?.collect::<Result<Vec<_>, _>>()?;
+        let rows = statement
+            .query_map(rusqlite::params_from_iter(MONITOR_ACTIVE_STATUSES), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
         drop(statement);
-        for (id, raw) in rows { let record = decode_monitor(&id, &raw)?; kept.insert(id, record); }
+        for (id, raw) in rows {
+            let record = decode_monitor(&id, &raw)?;
+            kept.insert(id, record);
+        }
         let mut terminals = Vec::new();
         for status in MONITOR_TERMINAL_STATUSES {
             let mut statement = transaction.prepare("SELECT id,record FROM runtime_monitors WHERE json_extract(record,'$.status')=?1 ORDER BY json_extract(record,'$.created') DESC LIMIT ?2")?;
-            let rows = statement.query_map(rusqlite::params![status, MONITOR_TERMINAL_WINDOW as i64], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?.collect::<Result<Vec<_>, _>>()?;
+            let rows = statement
+                .query_map(
+                    rusqlite::params![status, MONITOR_TERMINAL_WINDOW as i64],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )?
+                .collect::<Result<Vec<_>, _>>()?;
             drop(statement);
-            for (id, raw) in rows { terminals.push(decode_monitor(&id, &raw)?); }
+            for (id, raw) in rows {
+                terminals.push(decode_monitor(&id, &raw)?);
+            }
         }
         terminals.sort_by(compare_created_desc);
-        for record in terminals.into_iter().take(MONITOR_FINAL_WINDOW) { kept.insert(record.id.clone(), record); }
+        for record in terminals.into_iter().take(MONITOR_FINAL_WINDOW) {
+            kept.insert(record.id.clone(), record);
+        }
     } else {
-        let mut statement = transaction.prepare("SELECT id,record FROM runtime_monitors ORDER BY rowid")?;
-        let rows = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?.collect::<Result<Vec<_>, _>>()?;
+        let mut statement =
+            transaction.prepare("SELECT id,record FROM runtime_monitors ORDER BY rowid")?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
         drop(statement);
-        let records = rows.into_iter().map(|(id, raw)| decode_monitor(&id, &raw)).collect::<StoreResult<Vec<_>>>()?;
+        let records = rows
+            .into_iter()
+            .map(|(id, raw)| decode_monitor(&id, &raw))
+            .collect::<StoreResult<Vec<_>>>()?;
         for status in MONITOR_ACTIVE_STATUSES {
-            for record in records.iter().filter(|record| record.status.as_str() == status) { kept.insert(record.id.clone(), record.clone()); }
+            for record in records
+                .iter()
+                .filter(|record| record.status.as_str() == status)
+            {
+                kept.insert(record.id.clone(), record.clone());
+            }
         }
         let mut terminals = Vec::new();
         for status in MONITOR_TERMINAL_STATUSES {
-            let mut status_rows = records.iter().filter(|record| record.status.as_str() == status).cloned().collect::<Vec<_>>();
+            let mut status_rows = records
+                .iter()
+                .filter(|record| record.status.as_str() == status)
+                .cloned()
+                .collect::<Vec<_>>();
             status_rows.sort_by(compare_created_desc);
             terminals.extend(status_rows.into_iter().take(MONITOR_TERMINAL_WINDOW));
         }
         terminals.sort_by(compare_created_desc);
-        for record in terminals.into_iter().take(MONITOR_FINAL_WINDOW) { kept.insert(record.id.clone(), record); }
+        for record in terminals.into_iter().take(MONITOR_FINAL_WINDOW) {
+            kept.insert(record.id.clone(), record);
+        }
     }
 
     let owner_ids = kept
@@ -1971,12 +2063,21 @@ fn maintain_event_window(
 }
 
 fn decode_monitor(id: &str, raw: &str) -> StoreResult<studio_runtime_store::MonitorRecord> {
-    let invalid = || StoreError::InvalidStoredRecord { object: "monitors", id: id.to_owned() };
-    let record: studio_runtime_store::MonitorRecord = serde_json::from_str(raw).map_err(|_| invalid())?;
-    if record.id != id { return Err(invalid()); }
+    let invalid = || StoreError::InvalidStoredRecord {
+        object: "monitors",
+        id: id.to_owned(),
+    };
+    let record: studio_runtime_store::MonitorRecord =
+        serde_json::from_str(raw).map_err(|_| invalid())?;
+    if record.id != id {
+        return Err(invalid());
+    }
     Ok(record)
 }
-fn compare_created_desc(left: &studio_runtime_store::MonitorRecord, right: &studio_runtime_store::MonitorRecord) -> std::cmp::Ordering {
+fn compare_created_desc(
+    left: &studio_runtime_store::MonitorRecord,
+    right: &studio_runtime_store::MonitorRecord,
+) -> std::cmp::Ordering {
     right.created.seconds().total_cmp(&left.created.seconds())
 }
 
@@ -2617,8 +2718,17 @@ pub async fn push_preferences(
 mod tests {
     #[test]
     fn typed_monitor_projection_keeps_existing_public_bounds() {
-        let record = crate::monitor_policy::complete_test_monitor(serde_json::json!({"id":"monitor","agent":"owner","created":0.0,"activityAt":0.0,"command":"雪".repeat(2100),"tail":"é".repeat(2100),"error":"x".repeat(2100),"outputPatterns":["ready"]}));
-        let raw = format!(r#"{{"id":"monitor","agent":"owner","epoch":0,"status":"running","requestId":"fixture","created":0.0,"activityAt":0.0,"activityGeneration":0,"bytes":0,"command":{},"cwd":{},"interactive":false,"livenessCommand":"","log":{},"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":{},"error":{},"timeout_ms":3600000,"wakeOn":"exit","outputPatterns":["ready"]}}"#, serde_json::to_string(&"雪".repeat(2100)).unwrap(), serde_json::to_string(&std::env::temp_dir()).unwrap(), serde_json::to_string(&std::env::temp_dir().join("watch.log")).unwrap(), serde_json::to_string(&"é".repeat(2100)).unwrap(), serde_json::to_string(&"x".repeat(2100)).unwrap());
+        let record = crate::monitor_policy::complete_test_monitor(
+            serde_json::json!({"id":"monitor","agent":"owner","created":0.0,"activityAt":0.0,"command":"雪".repeat(2100),"tail":"é".repeat(2100),"error":"x".repeat(2100),"outputPatterns":["ready"]}),
+        );
+        let raw = format!(
+            r#"{{"id":"monitor","agent":"owner","epoch":0,"status":"running","requestId":"fixture","created":0.0,"activityAt":0.0,"activityGeneration":0,"bytes":0,"command":{},"cwd":{},"interactive":false,"livenessCommand":"","log":{},"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":{},"error":{},"timeout_ms":3600000,"wakeOn":"exit","outputPatterns":["ready"]}}"#,
+            serde_json::to_string(&"雪".repeat(2100)).unwrap(),
+            serde_json::to_string(&std::env::temp_dir()).unwrap(),
+            serde_json::to_string(&std::env::temp_dir().join("watch.log")).unwrap(),
+            serde_json::to_string(&"é".repeat(2100)).unwrap(),
+            serde_json::to_string(&"x".repeat(2100)).unwrap()
+        );
         let typed: studio_runtime_store::MonitorRecord = serde_json::from_str(&raw).unwrap();
         let old = crate::sync_views::project_persisted_record("monitor", &record).unwrap();
         let new = super::project_monitor_record(&typed).unwrap();
@@ -2788,15 +2898,18 @@ mod tests {
                 assert_eq!(publications.len(), 1, "{publications:?}");
                 assert!(publications[0].contains(&output_id));
                 assert!(
-                    !statements
-                        .iter()
-                        .any(|sql| sql.starts_with("SELECT id,record FROM runtime_monitors") && !sql.contains("json_extract(record,'$.agent')")),
+                    !statements.iter().any(|sql| sql
+                        .starts_with("SELECT id,record FROM runtime_monitors")
+                        && !sql.contains("json_extract(record,'$.agent')")),
                     "output must not run the window selector: {statements:?}"
                 );
                 let projected = monitor_entity(tx, &output_id)?.expect("updated projection");
                 assert_eq!(projected["tail"], "fragment");
                 assert_eq!(projected["bytes"], b"fragment".len());
-                assert_eq!(monitor_entity(tx, "invalid-monitor")?, Some(json!({"preserve":"prior"})));
+                assert_eq!(
+                    monitor_entity(tx, "invalid-monitor")?,
+                    Some(json!({"preserve":"prior"}))
+                );
                 Ok::<_, monitor_policy::MonitorError>(())
             })
             .await
@@ -2886,8 +2999,7 @@ mod tests {
     }
 
     #[test]
-    fn monitor_window_keeps_active_rows_without_projecting_inactive_owners()
-    {
+    fn monitor_window_keeps_active_rows_without_projecting_inactive_owners() {
         let mut connection = Connection::open_in_memory().expect("database");
         // Keep a record-only legacy source table so non-object corruption reaches the reader.
         // The current provider column rejects that corruption at write time.
@@ -2911,9 +3023,12 @@ mod tests {
         connection
             .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
             .expect("volatile agent table creates");
-        let insert_monitor =
-            |connection: &Connection, id: &str, agent: &str, status: &str, created: i64| {
-                connection
+        let insert_monitor = |connection: &Connection,
+                              id: &str,
+                              agent: &str,
+                              status: &str,
+                              created: i64| {
+            connection
                     .execute(
                         "INSERT INTO runtime_monitors(id,record) VALUES(?1,?2)",
                         rusqlite::params![
@@ -2923,7 +3038,7 @@ mod tests {
                         ],
                     )
                     .expect("monitor row");
-            };
+        };
         for index in 0..105 {
             let id = format!("active-{index}");
             insert_monitor(&connection, &id, "active", "running", index);
@@ -3031,8 +3146,15 @@ mod tests {
             serde_json::from_str::<Value>(&invalid_owner_payload).expect("prior payload")["value"],
             json!({"preserve":"owner-prior"})
         );
-        transaction.execute("INSERT INTO runtime_monitors(id,record) VALUES('invalid-monitor','{')", []).expect("invalid monitor");
-        assert!(matches!(maintain_monitor_window(&transaction, &|_, _, _, _| true), Err(StoreError::InvalidStoredRecord { object: "monitors", id }) if id == "invalid-monitor"));
+        transaction
+            .execute(
+                "INSERT INTO runtime_monitors(id,record) VALUES('invalid-monitor','{')",
+                [],
+            )
+            .expect("invalid monitor");
+        assert!(
+            matches!(maintain_monitor_window(&transaction, &|_, _, _, _| true), Err(StoreError::InvalidStoredRecord { object: "monitors", id }) if id == "invalid-monitor")
+        );
     }
 
     #[test]

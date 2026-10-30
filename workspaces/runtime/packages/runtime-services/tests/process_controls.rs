@@ -55,7 +55,9 @@ async fn owners_follow_live_descendants_once_even_in_a_cycle() {
 #[test]
 fn python_process_identities_and_capabilities_match() {
     for case in corpus()["processes"].as_array().unwrap() {
-        if case["source"] == "monitor" { continue; }
+        if case["source"] == "monitor" {
+            continue;
+        }
         let mut actual = process_controls::project(
             case["source"].as_str().unwrap(),
             &case["raw"],
@@ -77,7 +79,14 @@ fn python_output_state_survives_chunk_boundaries_and_restarts() {
     let initial = &fixture["initial"];
     record.id = initial["id"].as_str().unwrap().to_owned();
     record.epoch = initial["epoch"].as_i64().unwrap().try_into().unwrap();
-    record.output_patterns = Some(initial["outputPatterns"].as_array().unwrap().iter().map(|item| item.as_str().unwrap().to_owned()).collect());
+    record.output_patterns = Some(
+        initial["outputPatterns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item.as_str().unwrap().to_owned())
+            .collect(),
+    );
     for step in fixture["steps"].as_array().unwrap() {
         let bytes: Vec<u8> = step["bytes"]
             .as_array()
@@ -136,8 +145,16 @@ fn legacy_match_fields(mut value: Value) -> Value {
 
 #[test]
 fn invalid_matchers_are_rejected_before_admission() {
-    for value in [vec![], vec![String::new()], vec!["x".into(), "x".into()], vec!["x".repeat(257)]] {
-        assert!(monitor_matches::patterns(Some(&value)).is_err(), "{value:?}");
+    for value in [
+        vec![],
+        vec![String::new()],
+        vec!["x".into(), "x".into()],
+        vec!["x".repeat(257)],
+    ] {
+        assert!(
+            monitor_matches::patterns(Some(&value)).is_err(),
+            "{value:?}"
+        );
     }
     assert!(serde_json::from_str::<Vec<String>>("[true]").is_err());
 }
@@ -149,7 +166,9 @@ async fn action_receipt_replays_without_dispatch_and_rejects_identity_reuse() {
     let mut owner = fixture["owner"].clone();
     owner["status"] = json!("idle");
     let mut raw = json!({"id":"watch","agent":"owner","epoch":3,"status":"running","requestId":"request","created":1,"activityAt":0,"activityGeneration":0,"bytes":0,"command":"","cwd":"","interactive":false,"livenessCommand":"","log":"","stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":3600000,"wakeOn":"exit"});
-    raw.as_object_mut().unwrap().extend(fixture["raw"].as_object().unwrap().clone());
+    raw.as_object_mut()
+        .unwrap()
+        .extend(fixture["raw"].as_object().unwrap().clone());
     raw["operation"]["agent"] = json!("owner");
     raw["operation"]["epoch"] = json!(3);
     store
@@ -168,42 +187,54 @@ async fn action_receipt_replays_without_dispatch_and_rejects_identity_reuse() {
         .unwrap();
     let process = fixture["expected"].clone();
     let mut request: studio_runtime_schema::process_controls::ProcessControlRequest = serde_json::from_str(r#"{"action":"stop_selected","requestId":"request","agent":"owner","accountKey":"acct","epoch":3,"process":{"key":"key","generation":"generation","agent":"owner","accountKey":"acct","epoch":3}}"#).unwrap();
-    let studio_runtime_schema::process_controls::ProcessControlRequest::StopSelected { process: target, .. } = &mut request else { unreachable!() };
-    target.key = process["key"].as_str().unwrap().to_owned().try_into().unwrap();
-    target.generation = process["generation"].as_str().unwrap().to_owned().try_into().unwrap();
+    let studio_runtime_schema::process_controls::ProcessControlRequest::StopSelected {
+        process: target,
+        ..
+    } = &mut request
+    else {
+        unreachable!()
+    };
+    target.key = process["key"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+        .try_into()
+        .unwrap();
+    target.generation = process["generation"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+        .try_into()
+        .unwrap();
     let connections =
         process_controls::Connections::from([("owner".into(), "connection-7".into())]);
     let r = request.clone();
     let c = connections.clone();
     let result = store
-        .transaction_with(move |tx| {
-            process_controls::claim(tx, &r, &c, 1.0)
-        })
+        .transaction_with(move |tx| process_controls::claim(tx, &r, &c, 1.0))
         .await
         .unwrap();
     assert!(matches!(result,process_controls::Claim::New{ref targets,..} if targets.len()==1));
     let r = request.clone();
     let c = connections.clone();
     let replay = store
-        .transaction_with(move |tx| {
-            process_controls::claim(tx, &r, &c, 2.0)
-        })
+        .transaction_with(move |tx| process_controls::claim(tx, &r, &c, 2.0))
         .await
         .unwrap();
     assert!(
         matches!(replay,process_controls::Claim::Replay(ref result) if result.status == studio_runtime_schema::process_controls::ProcessActionStatus::Uncertain)
     );
     let mut r = request.clone();
-    let studio_runtime_schema::process_controls::ProcessControlRequest::StopSelected { scope, .. } = &mut r else { unreachable!() };
+    let studio_runtime_schema::process_controls::ProcessControlRequest::StopSelected {
+        scope, ..
+    } = &mut r
+    else {
+        unreachable!()
+    };
     scope.epoch = 4;
     assert!(
         store
-            .transaction_with(move |tx| process_controls::claim(
-                tx,
-                &r,
-                &connections,
-                3.0
-            ))
+            .transaction_with(move |tx| process_controls::claim(tx, &r, &connections, 3.0))
             .await
             .is_err()
     );

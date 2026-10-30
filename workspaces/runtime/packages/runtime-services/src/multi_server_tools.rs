@@ -736,8 +736,7 @@ impl ServerTools {
         self.store
             .transaction_with(move |tx| -> Result<(), Step> {
                 let current = checked_actor(tx, &actor_id)?;
-                if current.is_lead != Some(true) || current.epoch != epoch
-                {
+                if current.is_lead != Some(true) || current.epoch != epoch {
                     return refuse("Only the active lead can use server commands");
                 }
                 if action_for_check != "exec" {
@@ -849,8 +848,7 @@ impl ServerTools {
         let key_owned = key.to_owned();
         let server_owned = server.to_owned();
         let signature_for_claim = signature.clone();
-        let worker_cwd = worker.cwd.as_deref()
-            .map(str::to_owned);
+        let worker_cwd = worker.cwd.as_deref().map(str::to_owned);
         let mut known_sorted = known;
         known_sorted.sort();
         known_sorted.dedup();

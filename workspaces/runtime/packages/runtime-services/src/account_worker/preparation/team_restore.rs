@@ -47,7 +47,9 @@ pub(super) fn snapshot(tx: &Transaction<'_>, actor: &Value) -> Result<Option<Val
         has_children = true;
         if matches!(
             record.status,
-            studio_runtime_store::AgentStatus::Completed | studio_runtime_store::AgentStatus::Failed | studio_runtime_store::AgentStatus::Interrupted
+            studio_runtime_store::AgentStatus::Completed
+                | studio_runtime_store::AgentStatus::Failed
+                | studio_runtime_store::AgentStatus::Interrupted
         ) || (record.status == studio_runtime_store::AgentStatus::Paused
             && record.auto_wake != Some(true))
         {

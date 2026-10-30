@@ -267,8 +267,9 @@ fn workspace_view(
                 .map_err(ApiError::stored)?,
         )?
     };
-    let rules = WorkspaceViewsRepository::records_for_agents::<RuleRecord>(connection, "agent", &ids)
-        .map_err(ApiError::stored)?;
+    let rules =
+        WorkspaceViewsRepository::records_for_agents::<RuleRecord>(connection, "agent", &ids)
+            .map_err(ApiError::stored)?;
     let tasks = project_task_records(
         validators,
         WorkspaceViewsRepository::snapshot_tasks(connection, root.as_deref())
@@ -278,7 +279,10 @@ fn workspace_view(
         .map_err(ApiError::stored)?
         .into_iter()
         .filter(|monitor| ids.contains(&monitor.agent))
-        .map(|monitor| studio_runtime_services::sync_policy::project_monitor_record(&monitor).map_err(ApiError::stored))
+        .map(|monitor| {
+            studio_runtime_services::sync_policy::project_monitor_record(&monitor)
+                .map_err(ApiError::stored)
+        })
         .collect::<Result<Vec<_>, _>>()?;
     let inbox = studio_runtime_services::workspace_views::workspace_inbox(
         studio_runtime_services::workspace_views::WorkspaceInboxData {

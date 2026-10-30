@@ -24,7 +24,11 @@ pub(crate) struct Observation {
 }
 
 #[cfg(test)]
-impl Observation { pub fn output_events_is_empty(&self) -> bool { self.output_events.is_empty() } }
+impl Observation {
+    pub fn output_events_is_empty(&self) -> bool {
+        self.output_events.is_empty()
+    }
+}
 
 pub(crate) async fn read(
     store: &RuntimeStore,
@@ -104,7 +108,15 @@ fn read_in(
     };
     if deadline.is_some() && !terminal && !after_sequence.is_some_and(|initial| sequence > initial)
     {
-        return Ok((Observation { record, output_events: vec![], wait_expired: deadline.is_some_and(|end| tokio::time::Instant::now() >= end) }, sequence, terminal));
+        return Ok((
+            Observation {
+                record,
+                output_events: vec![],
+                wait_expired: deadline.is_some_and(|end| tokio::time::Instant::now() >= end),
+            },
+            sequence,
+            terminal,
+        ));
     }
     let mut events = Vec::new();
     for id in record.output_event_ids.as_deref().unwrap_or_default() {
@@ -118,10 +130,22 @@ fn read_in(
             .map_err(StoreError::from)?;
         if let Some((status, text)) = event {
             let payload = serde_json::from_str(&text).map_err(StoreError::from)?;
-            events.push(ObservedOutputEvent { payload, id: id.clone(), status });
+            events.push(ObservedOutputEvent {
+                payload,
+                id: id.clone(),
+                status,
+            });
         }
     }
-    Ok((Observation { record, output_events: events, wait_expired: false }, sequence, terminal))
+    Ok((
+        Observation {
+            record,
+            output_events: events,
+            wait_expired: false,
+        },
+        sequence,
+        terminal,
+    ))
 }
 
 #[cfg(test)]
@@ -129,7 +153,9 @@ mod tests {
     use super::*;
     fn complete(fields: Value) -> Value {
         let mut record = json!({"id":"watch","agent":"owner","epoch":1,"status":"running","requestId":"request","created":0,"activityAt":0,"activityGeneration":0,"bytes":0,"command":"","cwd":std::env::temp_dir(),"interactive":false,"livenessCommand":"","log":std::env::temp_dir().join("watch.log"),"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":3600000,"wakeOn":"exit"});
-        let Value::Object(fields) = fields else { panic!("monitor fixture must be an object") };
+        let Value::Object(fields) = fields else {
+            panic!("monitor fixture must be an object")
+        };
         record.as_object_mut().unwrap().extend(fields);
         record
     }
@@ -195,7 +221,11 @@ mod tests {
             [json!({"epoch":1,"autoWake":true}).to_string()],
         )
         .unwrap();
-        db.execute("INSERT INTO runtime_monitors VALUES('watch',?1)", [complete(json!({"outputEventSequence":1,"outputEventIds":["event"]})).to_string()]).unwrap();
+        db.execute(
+            "INSERT INTO runtime_monitors VALUES('watch',?1)",
+            [complete(json!({"outputEventSequence":1,"outputEventIds":["event"]})).to_string()],
+        )
+        .unwrap();
         db.execute(
             r#"INSERT INTO runtime_events VALUES('event','owner','sent','{"monitorId":"watch","epoch":1,"sequence":1,"matches":[],"final":false}')"#,
             [],

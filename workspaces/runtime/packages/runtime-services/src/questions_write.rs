@@ -370,11 +370,7 @@ pub fn delete_question(
         .ok_or_else(|| invalid_stored("runtime_requests", id))?;
     let agent = stored_agent(transaction, agent_id)?
         .ok_or(QuestionsWriteError::InvalidRequest("Unknown agent"))?;
-    if !state_only_delete_allowed(
-        &record,
-        agent.is_deleted(),
-        true,
-    )? {
+    if !state_only_delete_allowed(&record, agent.is_deleted(), true)? {
         return Ok(json!({"id":id,"status":"deleted"}));
     }
     mark_state_only_deleted(&mut record, unix_time()?);
@@ -584,8 +580,7 @@ pub fn respond_to_complaint(
                     .iter()
                     .any(|response| response.get("author").and_then(Value::as_str) == Some(lead_id))
             });
-        let stopped =
-            lead.is_deleted() || lead.auto_wake != Some(true);
+        let stopped = lead.is_deleted() || lead.auto_wake != Some(true);
         let closing = match status {
             ComplaintResponseStatus::InProgress => false,
             ComplaintResponseStatus::Resolved | ComplaintResponseStatus::Declined => true,

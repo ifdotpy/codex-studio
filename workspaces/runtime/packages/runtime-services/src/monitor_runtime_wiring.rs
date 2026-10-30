@@ -765,13 +765,28 @@ impl MonitorRuntime {
                     effects: vec![],
                     response: Value::Null,
                 };
-                decision.record.status = studio_runtime_schema::studio_errors::MonitorStatus::Failed;
-                decision.record.error = Some(located_error.try_into().map_err(|_| MonitorError::Refused("Invalid monitor error"))?);
-                decision.record.finished = Some(now.try_into().map_err(|_| MonitorError::Refused("Invalid monitor clock"))?);
+                decision.record.status =
+                    studio_runtime_schema::studio_errors::MonitorStatus::Failed;
+                decision.record.error = Some(
+                    located_error
+                        .try_into()
+                        .map_err(|_| MonitorError::Refused("Invalid monitor error"))?,
+                );
+                decision.record.finished = Some(
+                    now.try_into()
+                        .map_err(|_| MonitorError::Refused("Invalid monitor clock"))?,
+                );
                 decision.record.configuration_pending = Some(false);
-                decision.record.delivery_failure = Some(studio_runtime_schema::monitor_record::DeliveryFailure { cursor: delivery.cursor, error: error_text });
+                decision.record.delivery_failure =
+                    Some(studio_runtime_schema::monitor_record::DeliveryFailure {
+                        cursor: delivery.cursor,
+                        error: error_text,
+                    });
                 decision.effects.push(
-                    if snapshot.record().rule_id.as_deref()
+                    if snapshot
+                        .record()
+                        .rule_id
+                        .as_deref()
                         .is_some_and(|id| !id.is_empty())
                     {
                         crate::monitor_policy::Effect::RuleFinished
@@ -924,7 +939,10 @@ impl MonitorRuntime {
                     .store
                     .transaction_with(move |tx| monitor_runtime::snapshot(tx, &id))
                     .await?;
-                if snapshot.operation().is_none_or(|current| !current.same_identity(&delivery.operation)) {
+                if snapshot
+                    .operation()
+                    .is_none_or(|current| !current.same_identity(&delivery.operation))
+                {
                     return Err(MonitorError::InvalidDeliveryIdentity(
                         "result operation changed",
                     ));
@@ -983,7 +1001,10 @@ impl MonitorRuntime {
                 self.store
                     .transaction_with(move |tx| {
                         let (snapshot, actor) = monitor_runtime::snapshot(tx, &id)?;
-                        if snapshot.operation().is_none_or(|current| !current.same_identity(&operation)) {
+                        if snapshot
+                            .operation()
+                            .is_none_or(|current| !current.same_identity(&operation))
+                        {
                             return Err(MonitorError::InvalidDeliveryIdentity(
                                 "probe operation changed",
                             ));
@@ -2348,7 +2369,9 @@ mod tests {
             Some(MonitorError::InvalidResultReceipt("json"))
         ));
 
-        let malformed_rule = serde_json::from_str::<studio_runtime_store::RuleRecord>(r#"{ "agent": "agent-without-id" }"#)
+        let malformed_rule = serde_json::from_str::<studio_runtime_store::RuleRecord>(
+            r#"{ "agent": "agent-without-id" }"#,
+        )
         .expect_err("persisted rule without string id");
         let rule_error = MonitorError::Rules(crate::rules_tick::RulesTickError::Store(
             malformed_rule.into(),

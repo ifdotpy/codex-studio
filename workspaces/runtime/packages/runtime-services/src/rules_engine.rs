@@ -21,9 +21,15 @@ const RESTARTED: &str = "Server restarted during a check. Outcome unknown; check
 use studio_runtime_schema::rule_record::OwnerHold;
 fn owner_hold_reason(hold: OwnerHold) -> &'static str {
     match hold {
-        OwnerHold::FailedInputHeld => "Paused: the agent failed and its input waits, so it cannot act on a wake. The rule resumes when the agent can run again.",
-        OwnerHold::NativeFailureHold => "Paused: the agent is held after a failure, so it cannot act on a wake. The rule resumes when the agent can run again.",
-        OwnerHold::Archived => "Paused: the conversation of the agent is archived. The rule resumes when the conversation is restored.",
+        OwnerHold::FailedInputHeld => {
+            "Paused: the agent failed and its input waits, so it cannot act on a wake. The rule resumes when the agent can run again."
+        }
+        OwnerHold::NativeFailureHold => {
+            "Paused: the agent is held after a failure, so it cannot act on a wake. The rule resumes when the agent can run again."
+        }
+        OwnerHold::Archived => {
+            "Paused: the conversation of the agent is archived. The rule resumes when the conversation is restored."
+        }
     }
 }
 const OWNER_FIELDS: &[&str] = &[
@@ -209,12 +215,22 @@ impl RuleSnapshot {
             .map_err(|error| invalid("rules", rule, &format!("/{}", error.path())))?;
         Self::from_stored(&record, owner)
     }
-    pub fn from_stored(record: &studio_runtime_store::RuleRecord, owner: Value) -> Result<Self, RuleError> {
+    pub fn from_stored(
+        record: &studio_runtime_store::RuleRecord,
+        owner: Value,
+    ) -> Result<Self, RuleError> {
         let agent: Owner = checked("agents", "PersistedAgentRecord", &owner)?;
         if record.agent != agent.id {
-            return Err(RuleError::Invalid { object: format!("rules/{}", record.id), location: "/agent".into() });
+            return Err(RuleError::Invalid {
+                object: format!("rules/{}", record.id),
+                location: "/agent".into(),
+            });
         }
-        Ok(Self { raw: record.clone(), owner_raw: owner, owner: agent })
+        Ok(Self {
+            raw: record.clone(),
+            owner_raw: owner,
+            owner: agent,
+        })
     }
 
     pub fn id(&self) -> &str {
@@ -262,7 +278,12 @@ impl RuleSnapshot {
         let r = &self.raw;
         matches!(r.kind, Kind::File { .. })
             && r.stall_timeout_seconds.get() != 0
-            && now - r.file_activity_at.as_ref().map(seconds).unwrap_or_else(|| seconds(&r.created)) >= r.stall_timeout_seconds.get() as f64
+            && now
+                - r.file_activity_at
+                    .as_ref()
+                    .map(seconds)
+                    .unwrap_or_else(|| seconds(&r.created))
+                >= r.stall_timeout_seconds.get() as f64
             && r.file_generation.get() > r.stall_wake_generation.get()
     }
     pub fn fingerprint_path(&self, now: f64) -> Option<&str> {
@@ -274,7 +295,10 @@ impl RuleSnapshot {
             && self.owner.epoch == self.raw.epoch.get() as u64
             && !self.owner.recovery_pending(self.raw.epoch.get() as u64)
             && (self.stalled(now) || seconds(&self.raw.next_at) <= now))
-            .then_some(match &self.raw.kind { Kind::File { path } => Some(path.as_str()), Kind::Interval | Kind::Once | Kind::Event | Kind::LowWorkers { .. } => None })
+            .then_some(match &self.raw.kind {
+                Kind::File { path } => Some(path.as_str()),
+                Kind::Interval | Kind::Once | Kind::Event | Kind::LowWorkers { .. } => None,
+            })
             .flatten()
     }
     fn with_record(&self, record: &studio_runtime_store::RuleRecord) -> Result<Self, RuleError> {
@@ -317,7 +341,8 @@ impl RuleSnapshot {
             } else {
                 &r.command
             }
-            .as_str().to_owned(),
+            .as_str()
+            .to_owned(),
             timeout_ms: (r.interval_seconds.get() as u64)
                 .saturating_mul(1000)
                 .clamp(MIN_COMMAND_MILLISECONDS, MAX_COMMAND_MILLISECONDS),
@@ -341,7 +366,8 @@ impl RuleSnapshot {
             return Ok(RuleDecision::default());
         }
         let mut next = self.raw.clone();
-        if self.owner.deleted() || !self.owner.auto_wake || self.owner.epoch != r.epoch.get() as u64 {
+        if self.owner.deleted() || !self.owner.auto_wake || self.owner.epoch != r.epoch.get() as u64
+        {
             next.status = Status::Paused;
             next.error = Some(STOPPED.into());
             return Ok(self.change(next));
@@ -414,7 +440,12 @@ impl RuleSnapshot {
             return Ok(RuleDecision {
                 record: Some(next),
                 wake: Some(RuleWake {
-                    id: format!("rule-missed:{}:{}:{}", r.id, r.epoch.get() as u64, seconds(&r.next_at)),
+                    id: format!(
+                        "rule-missed:{}:{}:{}",
+                        r.id,
+                        r.epoch.get() as u64,
+                        seconds(&r.next_at)
+                    ),
                     kind: "rule_missed",
                     text: python_json(
                         &json!({"rule":r.id,"name":r.name,"dueAt":seconds(&r.next_at),"delaySeconds":now-seconds(&r.next_at),"message":message}),
@@ -446,7 +477,9 @@ impl RuleSnapshot {
     fn resume_after_owner_hold(&self, held_input: bool) -> RuleDecision {
         let r = &self.raw;
         let mut next = self.raw.clone();
-        let stopped = self.owner.deleted() || !self.owner.auto_wake || self.owner.epoch != r.epoch.get() as u64;
+        let stopped = self.owner.deleted()
+            || !self.owner.auto_wake
+            || self.owner.epoch != r.epoch.get() as u64;
         if !stopped && let Some(hold) = self.owner.hold(held_input) {
             if r.owner_hold == Some(hold) {
                 return RuleDecision::default();
@@ -470,7 +503,11 @@ impl RuleSnapshot {
     }
 
     // No-command checks finish in the same durable decision; a crash cannot strand their wake.
-    fn launch(&self, next: &studio_runtime_store::RuleRecord, now: f64) -> Result<RuleDecision, RuleError> {
+    fn launch(
+        &self,
+        next: &studio_runtime_store::RuleRecord,
+        now: f64,
+    ) -> Result<RuleDecision, RuleError> {
         let snapshot = self.with_record(next)?;
         if snapshot.raw.status != Status::Active
             || !snapshot.owner.auto_wake
@@ -487,7 +524,12 @@ impl RuleSnapshot {
                     code: Some(0),
                     error: None,
                     cancelled: false,
-                    output: snapshot.raw.event_text.as_ref().map(|text| text.as_str()).unwrap_or_default(),
+                    output: snapshot
+                        .raw
+                        .event_text
+                        .as_ref()
+                        .map(|text| text.as_str())
+                        .unwrap_or_default(),
                 },
             )
         } else {
@@ -513,7 +555,12 @@ impl RuleSnapshot {
             next.low_since = None;
             next.alerted = Some(false);
         } else {
-            let since = r.low_since.as_ref().map(seconds).filter(|since| now >= *since).unwrap_or(now);
+            let since = r
+                .low_since
+                .as_ref()
+                .map(seconds)
+                .filter(|since| now >= *since)
+                .unwrap_or(now);
             next.low_since = Some(time_number(since)?);
             let elapsed = now - since;
             if r.alerted != Some(true) && elapsed > (duration * 60) as f64 {
@@ -571,7 +618,13 @@ impl RuleSnapshot {
         next.last_event = Some(key.to_owned());
         next.last_at = Some(time_number(now)?);
         next.checks = rule_integer(r.checks.get() as u64 + 1)?;
-        next.event_text = Some(text.chars().take(OUTPUT_CHARACTERS).collect::<String>().try_into().map_err(|_| RuleError::Schema)?);
+        next.event_text = Some(
+            text.chars()
+                .take(OUTPUT_CHARACTERS)
+                .collect::<String>()
+                .try_into()
+                .map_err(|_| RuleError::Schema)?,
+        );
         self.launch(&next, now)
     }
 
@@ -589,7 +642,10 @@ impl RuleSnapshot {
                 let id = r
                     .stall_event_key
                     .clone()
-                    .ok_or_else(|| RuleError::Invalid { object: format!("rules/{}", self.raw.id), location: "/stallEventKey".into() })?;
+                    .ok_or_else(|| RuleError::Invalid {
+                        object: format!("rules/{}", self.raw.id),
+                        location: "/stallEventKey".into(),
+                    })?;
                 wake = Some(RuleWake {
                     id,
                     kind: "rule_stall",
@@ -648,8 +704,7 @@ impl RuleSnapshot {
         finite_time(now)?;
         let r = &self.raw;
         let mut next = self.raw.clone();
-        if matches!(r.kind, Kind::File { .. }) && self.raw.file_activity_at.is_none()
-        {
+        if matches!(r.kind, Kind::File { .. }) && self.raw.file_activity_at.is_none() {
             next.file_activity_at = Some(time_number(now)?);
             next.file_generation = rule_integer(0)?;
             next.stall_wake_generation = (-1).try_into().map_err(|_| RuleError::Schema)?;
@@ -662,7 +717,11 @@ impl RuleSnapshot {
         }
         if r.in_flight {
             if r.status == Status::Active {
-                next.restart_check = Some(studio_runtime_schema::rule_record::RestartCheck { epoch: r.epoch.get() as u64, checks: r.checks.get() as u64, monitor_id: self.check().monitor_id });
+                next.restart_check = Some(studio_runtime_schema::rule_record::RestartCheck {
+                    epoch: r.epoch.get() as u64,
+                    checks: r.checks.get() as u64,
+                    monitor_id: self.check().monitor_id,
+                });
             } else {
                 next.restart_check = None;
             }
@@ -710,7 +769,11 @@ impl RuleSnapshot {
         if self.raw.status == Status::Paused && result.cancelled {
             return self.finish(now, result);
         }
-        let marker = studio_runtime_schema::rule_record::RestartCheck { epoch: check.epoch, checks: check.check_number, monitor_id: check.monitor_id.clone() };
+        let marker = studio_runtime_schema::rule_record::RestartCheck {
+            epoch: check.epoch,
+            checks: check.check_number,
+            monitor_id: check.monitor_id.clone(),
+        };
         if self.raw.restart_check.as_ref() != Some(&marker)
             || self.raw.status != Status::Paused
             || self.owner.epoch != check.epoch
@@ -750,15 +813,22 @@ fn invalid(object: &str, value: &Value, location: &str) -> RuleError {
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct WakeDirective { wake_agent: Option<bool> }
+struct WakeDirective {
+    wake_agent: Option<bool>,
+}
 fn seconds(value: &serde_json::Number) -> f64 {
     value.as_f64().expect("JSON number is finite")
 }
 fn time_number(value: f64) -> Result<serde_json::Number, RuleError> {
     serde_json::Number::from_f64(value).ok_or(RuleError::Observation("non-finite time"))
 }
-fn rule_integer<const MIN: i64, const MAX: u64>(value: u64) -> Result<studio_runtime_schema::bounded_integer::BoundedInteger<MIN, MAX>, RuleError> {
-    i64::try_from(value).map_err(|_| RuleError::Observation("rule counter exceeded"))?.try_into().map_err(|_| RuleError::Observation("rule counter exceeded"))
+fn rule_integer<const MIN: i64, const MAX: u64>(
+    value: u64,
+) -> Result<studio_runtime_schema::bounded_integer::BoundedInteger<MIN, MAX>, RuleError> {
+    i64::try_from(value)
+        .map_err(|_| RuleError::Observation("rule counter exceeded"))?
+        .try_into()
+        .map_err(|_| RuleError::Observation("rule counter exceeded"))
 }
 fn finite_time(now: f64) -> Result<(), RuleError> {
     if now.is_finite() {
@@ -774,7 +844,10 @@ fn tail(text: &str) -> String {
 }
 
 /// Activity is checked from persisted rows, not from caller-supplied counts.
-pub fn active_workers(agents: &[Value], monitors: &[studio_runtime_store::MonitorRecord]) -> Result<u64, RuleError> {
+pub fn active_workers(
+    agents: &[Value],
+    monitors: &[studio_runtime_store::MonitorRecord],
+) -> Result<u64, RuleError> {
     use std::collections::BTreeSet;
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
@@ -789,7 +862,8 @@ pub fn active_workers(agents: &[Value], monitors: &[studio_runtime_store::Monito
     let mut commands = BTreeSet::new();
     for monitor in monitors {
         if monitor.status == studio_runtime_schema::studio_errors::MonitorStatus::Running
-            && monitor.cancel_requested != Some(true) {
+            && monitor.cancel_requested != Some(true)
+        {
             commands.insert(monitor.agent.clone());
         }
     }
@@ -810,7 +884,9 @@ pub fn active_workers(agents: &[Value], monitors: &[studio_runtime_store::Monito
 #[cfg(test)]
 pub(crate) fn complete_test_rule(record: Value) -> Value {
     let mut complete = json!({"id":"rule","agent":"owner","epoch":0,"name":"rule","kind":"interval","status":"active","intervalSeconds":60,"nextAt":1,"created":1,"command":"","text":"","checks":0,"wakes":0,"inFlight":false,"fileGeneration":0,"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"livenessCommand":"","event":""});
-    let Value::Object(fields) = record else { panic!("rule fixture must be an object") };
+    let Value::Object(fields) = record else {
+        panic!("rule fixture must be an object")
+    };
     complete.as_object_mut().unwrap().extend(fields);
     complete
 }
@@ -821,7 +897,8 @@ mod tests {
 
     #[test]
     fn launch_intent_requires_integer_on_decode() {
-        let seed: Value = serde_json::from_str(include_str!("../tests/rules_engine/seed.json")).expect("rule seed");
+        let seed: Value = serde_json::from_str(include_str!("../tests/rules_engine/seed.json"))
+            .expect("rule seed");
         let mut rule = seed["rule"].clone();
         rule["inFlight"] = json!(true);
         rule["launchIntent"] = json!({"ruleId":"rule", "checkNumber":1, "agentId":"owner",
@@ -854,15 +931,23 @@ mod tests {
             .expect("frozen rule seed");
         let mut rule = seed["rule"].clone();
         rule["status"] = json!("paused");
-        for hold in [OwnerHold::FailedInputHeld, OwnerHold::NativeFailureHold, OwnerHold::Archived] {
+        for hold in [
+            OwnerHold::FailedInputHeld,
+            OwnerHold::NativeFailureHold,
+            OwnerHold::Archived,
+        ] {
             rule["ownerHold"] = json!(hold);
-            let parsed: studio_runtime_store::RuleRecord = checked("rules", "PersistedRuleRecord", &rule)
-                .unwrap_or_else(|error| panic!("{hold:?}: {error}"));
+            let parsed: studio_runtime_store::RuleRecord =
+                checked("rules", "PersistedRuleRecord", &rule)
+                    .unwrap_or_else(|error| panic!("{hold:?}: {error}"));
             assert!(owner_paused(&parsed), "{hold:?}");
             assert_eq!(parsed.owner_hold, Some(hold));
         }
         rule["ownerHold"] = json!("unknown");
-        assert!(checked::<studio_runtime_store::RuleRecord>("rules", "PersistedRuleRecord", &rule).is_err());
+        assert!(
+            checked::<studio_runtime_store::RuleRecord>("rules", "PersistedRuleRecord", &rule)
+                .is_err()
+        );
     }
 
     /// An event rule of an owner that cannot run starts no check before the
@@ -891,4 +976,3 @@ mod tests {
         }
     }
 }
-

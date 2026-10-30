@@ -978,10 +978,22 @@ async fn input_attempt(
     request_id: &str,
 ) -> Result<Option<studio_runtime_schema::monitor_record::MonitorInputAttempt>, Error> {
     let (monitor_id, request_id) = (monitor_id.to_owned(), request_id.to_owned());
-    store.read_async("runtime-services/provider_callbacks/runtime_dispatch", move |connection| {
-        let record = studio_runtime_store::MonitorsRepository::get(connection, &monitor_id)?;
-        Ok(record.and_then(|record| [record.last_input_attempt, record.input_attempt].into_iter().flatten().find(|attempt| attempt.id == request_id)))
-    }).await.map_err(Error::Store)
+    store
+        .read_async(
+            "runtime-services/provider_callbacks/runtime_dispatch",
+            move |connection| {
+                let record =
+                    studio_runtime_store::MonitorsRepository::get(connection, &monitor_id)?;
+                Ok(record.and_then(|record| {
+                    [record.last_input_attempt, record.input_attempt]
+                        .into_iter()
+                        .flatten()
+                        .find(|attempt| attempt.id == request_id)
+                }))
+            },
+        )
+        .await
+        .map_err(Error::Store)
 }
 
 pub(crate) async fn authorize_monitor_input(
@@ -1031,13 +1043,25 @@ pub(crate) fn authorize_monitor_input_in_transaction(
     Ok(())
 }
 
-pub(crate) fn managed_input_receipt(attempt: &studio_runtime_schema::monitor_record::MonitorInputAttempt) -> DispatchedOperation {
+pub(crate) fn managed_input_receipt(
+    attempt: &studio_runtime_schema::monitor_record::MonitorInputAttempt,
+) -> DispatchedOperation {
     use studio_runtime_schema::monitor_record::MonitorInputStatus;
     match attempt.status {
-        MonitorInputStatus::Acknowledged => DispatchedOperation::Applied(
-            attempt.response.as_ref().map_or_else(|| OperationResult::reply(&()), |response| OperationResult::raw(response.0.clone()))),
-        MonitorInputStatus::Failed => DispatchedOperation::NotSent(OperationResult::reply(&"Monitor input was rejected")),
-        MonitorInputStatus::Submitted | MonitorInputStatus::Uncertain => DispatchedOperation::Unknown(OperationResult::reply(&"Monitor input outcome unknown; do not repeat it")),
+        MonitorInputStatus::Acknowledged => {
+            DispatchedOperation::Applied(attempt.response.as_ref().map_or_else(
+                || OperationResult::reply(&()),
+                |response| OperationResult::raw(response.0.clone()),
+            ))
+        }
+        MonitorInputStatus::Failed => {
+            DispatchedOperation::NotSent(OperationResult::reply(&"Monitor input was rejected"))
+        }
+        MonitorInputStatus::Submitted | MonitorInputStatus::Uncertain => {
+            DispatchedOperation::Unknown(OperationResult::reply(
+                &"Monitor input outcome unknown; do not repeat it",
+            ))
+        }
     }
 }
 
@@ -1285,7 +1309,9 @@ mod tests {
     #[test]
     fn managed_input_receipts_preserve_written_not_sent_and_unknown() {
         for status in ["acknowledged", "failed", "submitted"] {
-            let wire = format!(r#"{{"id":"stable-input","agent":"owner","epoch":1,"accountKey":"default","connectionId":"connection","created":0,"method":"command/exec/write","params":{{"processId":"watch","deltaBase64":"eA==","closeStdin":false}},"status":"{status}","response":{{"ok":true}}}}"#);
+            let wire = format!(
+                r#"{{"id":"stable-input","agent":"owner","epoch":1,"accountKey":"default","connectionId":"connection","created":0,"method":"command/exec/write","params":{{"processId":"watch","deltaBase64":"eA==","closeStdin":false}},"status":"{status}","response":{{"ok":true}}}}"#
+            );
             let attempt = serde_json::from_str(&wire).unwrap();
             let result = managed_input_receipt(&attempt);
             assert!(matches!(

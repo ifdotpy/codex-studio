@@ -249,7 +249,11 @@ impl SchedulerRepository {
         // Do not use observedTurnId to constrain a later correlated acceptance.
         attempt.insert("observedTurnId".into(), json!(turn_id));
         record_notification(transaction, &mut agent)?;
-        agent.activity = Some(crate::records::AgentActivity { phase: Some("thinking".into()), at: Some(timestamp()), ..Default::default() });
+        agent.activity = Some(crate::records::AgentActivity {
+            phase: Some("thinking".into()),
+            at: Some(timestamp()),
+            ..Default::default()
+        });
         agent.active_tools = Some(Vec::new());
         agent.last_answer = Some(String::new());
         agent.turn_id = Some(turn_id.to_string());
@@ -581,7 +585,10 @@ impl SchedulerRepository {
                 .turn_id
                 .as_deref()
                 .is_some_and(|turn| !turn.is_empty())
-            || agent.active_tools.as_ref().is_some_and(|tools| !tools.is_empty())
+            || agent
+                .active_tools
+                .as_ref()
+                .is_some_and(|tools| !tools.is_empty())
             || agent.native_safety_buffering.is_some()
             || [
                 "manualRecoveryDeliveryHold",
@@ -2709,14 +2716,15 @@ pub(super) fn transport_continuation_allowed(agent: &AgentRecord) -> bool {
 }
 
 pub(super) fn continuation_allowed(agent: &AgentRecord) -> bool {
-    !agent.is_deleted() && ![
-        "nativeFailureHold",
-        "accountTransferId",
-        "workspaceOperation",
-        "contextRepairWait",
-    ]
-    .iter()
-    .any(|key| agent.extra.get(*key).is_some_and(truthy))
+    !agent.is_deleted()
+        && ![
+            "nativeFailureHold",
+            "accountTransferId",
+            "workspaceOperation",
+            "contextRepairWait",
+        ]
+        .iter()
+        .any(|key| agent.extra.get(*key).is_some_and(truthy))
         && !matches!(
             agent
                 .extra
