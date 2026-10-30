@@ -146,7 +146,6 @@ impl ContinuationRepository {
         let event_metadata = objects_by_ids(db, "runtime_event_meta", &event_ids)?;
         let mut asset_ids = BTreeSet::new();
         let mut complaint_ids = BTreeSet::new();
-        let mut work_ids = BTreeSet::new();
         for event in &events {
             let id = event["id"]
                 .as_str()
@@ -166,14 +165,10 @@ impl ContinuationRepository {
                 )
             {
                 complaint_ids.extend(references.complaints);
-                if let Some(id) = references.task {
-                    work_ids.insert(id);
-                }
             }
         }
         let assets = objects_by_ids(db, "runtime_assets", &asset_ids)?;
         let complaints = objects_by_ids(db, "runtime_complaints", &complaint_ids)?;
-        let work = objects_by_ids(db, "runtime_work", &work_ids)?;
         let mut statement=db.prepare_cached("SELECT id FROM runtime_work WHERE json_extract(record,'$.owner')=?1 AND json_extract(record,'$.rootId')=?2 AND json_extract(record,'$.status') NOT IN ('accepted','cancelled') ORDER BY id LIMIT 4097")?;
         let claims = statement
             .query_map(
@@ -182,7 +177,7 @@ impl ContinuationRepository {
             )?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(
-            json!({"agent":agent,"ancestors":ancestors,"claims":claims,"record":record,"events":events,"metadata":metadata,"assets":assets,"complaints":complaints,"work":work}),
+            json!({"agent":agent,"ancestors":ancestors,"claims":claims,"record":record,"events":events,"metadata":metadata,"assets":assets,"complaints":complaints}),
         )
     }
     pub fn put_record(
@@ -337,11 +332,11 @@ mod reference_tests {
         }
         let result =
             ContinuationRepository::snapshot(&db, "a", ContinuationTable::Usage, None).unwrap();
+        assert!(result.get("work").is_none());
         assert_eq!(
             result["complaints"],
             json!({"":{"id":""},"c":{"id":"c"},"d":{"id":"d"}})
         );
-        assert_eq!(result["work"], json!({"t":{"id":"t"}}));
         assert_eq!(
             result["events"][0]["text"],
             r#"{"task":"old","task":"t","complaints":[{"complaint_id":"c"},null,{}, {"complaint_id":""},{"complaint_id":4}]}"#
@@ -361,7 +356,6 @@ mod reference_tests {
         for (table, id, expected) in [
             ("runtime_assets", "asset", "runtime_assets"),
             ("runtime_complaints", "c", "runtime_complaints"),
-            ("runtime_work", "t", "runtime_work"),
         ] {
             assert!(
                 matches!(ContinuationRepository::snapshot(&db, "a", ContinuationTable::Usage, None), Err(StoreError::InvalidStoredObject { table, .. }) if table == expected)

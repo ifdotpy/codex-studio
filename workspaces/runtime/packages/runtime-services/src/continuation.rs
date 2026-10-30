@@ -58,7 +58,6 @@ pub struct Snapshot {
     pub(crate) events: Vec<Value>,
     pub(crate) metadata: BTreeMap<String, Option<Value>>,
     pub(crate) complaints: BTreeMap<String, Value>,
-    pub(crate) work: BTreeMap<String, Value>,
 }
 impl Snapshot {
     #[cfg(test)]
@@ -187,19 +186,14 @@ impl Snapshot {
                 .map(|(k, v)| (k.clone(), (!v.is_null()).then(|| v.clone())))
                 .collect(),
             complaints: get_map("complaints"),
-            work: get_map("work"),
         };
         let mut ids = BTreeSet::new();
         if snapshot.typed.0.events.as_ref().is_some_and(|events| {
-            events
-                .as_slice()
-                .iter()
-                .zip(&snapshot.events)
-                .any(|(event, raw)| {
-                    !ids.insert(event.id.as_str())
-                        || event.agent.as_str() != snapshot.typed.0.agent.id.as_str()
-                        || raw.get("epoch") != snapshot.agent.get("epoch")
-                })
+            events.as_slice().iter().any(|event| {
+                !ids.insert(event.id.as_str())
+                    || event.agent.as_str() != snapshot.typed.0.agent.id.as_str()
+                    || event.epoch.number() != snapshot.typed.0.agent.epoch.number()
+            })
         }) {
             return Err(ContinuationError::Invalid("/events/identity".into()));
         }
@@ -224,10 +218,7 @@ impl Snapshot {
         &self.typed.0.agent
     }
     pub(crate) fn agent_account(&self) -> &str {
-        self.agent_view()
-            .account_key
-            .as_ref()
-            .map_or("default", |key| key.as_str())
+        &self.identity.account_key
     }
     pub(crate) fn ancestors_view(&self) -> &[ContinuationAgent] {
         self.typed
@@ -474,8 +465,8 @@ pub(crate) struct UsageDraft {
     pub id: String,
     pub status: &'static str,
     pub account_key: String,
-    pub thread_id: Value,
-    pub epoch: Value,
+    pub thread_id: Option<String>,
+    pub epoch: i64,
     pub turn_id: String,
     pub cause: crate::usage_resume::Cause,
     pub failed_at: f64,
@@ -493,10 +484,10 @@ pub(crate) struct UsageDraft {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CapacityDraft {
     pub id: String,
-    pub thread_id: Value,
+    pub thread_id: Option<String>,
     pub turn_id: String,
     pub account_key: String,
-    pub epoch: Value,
+    pub epoch: i64,
     pub cause: &'static str,
     pub status: &'static str,
     pub due_at: Option<f64>,
@@ -745,7 +736,10 @@ impl ProposedAgent {
         self.set_extra("authResumeAttempt", json!(value));
     }
     pub(crate) fn usage_enabled(&mut self, value: bool) {
-        self.set_extra("usageResumeEnabled", json!(value));
+        self.evidence["usageResumeEnabled"] = json!(value);
+        if let Some(agent) = &mut self.identity {
+            agent.usage_resume_enabled = Some(value);
+        }
     }
     pub(crate) fn capacity_count(&mut self, value: u64) {
         self.set_extra("capacityRetryCount", json!(value));

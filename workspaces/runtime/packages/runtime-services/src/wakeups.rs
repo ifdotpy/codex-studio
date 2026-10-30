@@ -3,7 +3,6 @@ use crate::continuation::{Decision, Snapshot, flag, patch, text};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 const COMPLAINT_DONE: &str = "Every referenced complaint already has a response";
-const REVIEW_DONE: &str = "The exact result already has a decision";
 fn complaints<'a>(s: &'a Snapshot, event: &Value) -> Option<Vec<&'a Value>> {
     let payload: Value = serde_json::from_str(text(event, "text")).ok()?;
     let entries = payload.get("complaints")?.as_array()?;
@@ -41,26 +40,6 @@ fn obsolete(s: &Snapshot, event: &Value) -> Option<&'static str> {
         && complaints(s, event).is_some_and(|cs| cs.iter().all(|c| !needs_response(c)))
     {
         return Some(COMPLAINT_DONE);
-    }
-    if text(event, "kind") == "work_review" {
-        let payload: Value = serde_json::from_str(text(event, "text")).ok()?;
-        let task = payload.get("task")?.as_str()?;
-        let result = payload.get("result")?.get("id")?.as_str()?;
-        let work = s.work.get(task)?;
-        if text(work, "rootId") == s.agent_id()
-            && work
-                .get("results")?
-                .as_array()?
-                .iter()
-                .any(|r| text(r, "id") == result)
-            && work
-                .get("decisions")?
-                .as_array()?
-                .iter()
-                .any(|r| text(r, "resultId") == result)
-        {
-            return Some(REVIEW_DONE);
-        }
     }
     None
 }

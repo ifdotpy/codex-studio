@@ -278,8 +278,6 @@ pub struct ContinuationAgent {
     pub usage_resume: Option<UsageContinuation>,
     #[serde(default, deserialize_with = "optional_nonnull")]
     pub usage_resume_enabled: Option<bool>,
-    #[serde(flatten)]
-    pub extra: BTreeMap<String, Value>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -504,24 +502,18 @@ pub struct WakeWork {
     #[serde(default, deserialize_with = "optional_nonnull")]
     pub results: Option<BoundedVec<WorkResult, 4096>>,
     pub root_id: BoundedString<1, 4096>,
-    #[serde(flatten)]
-    pub extra: BTreeMap<String, Value>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkDecision {
     pub result_id: BoundedString<1, 4096>,
-    #[serde(flatten)]
-    pub extra: BTreeMap<String, Value>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkResult {
     pub id: BoundedString<1, 4096>,
-    #[serde(flatten)]
-    pub extra: BTreeMap<String, Value>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

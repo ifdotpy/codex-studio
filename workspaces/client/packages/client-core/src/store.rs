@@ -103,7 +103,6 @@ impl Store {
     fn execute(&mut self, request: &Request) -> rusqlite::Result<Response> {
         let id = request.id.clone();
         match request.method.as_str() {
-            method if method.starts_with("file_link.") => Ok(crate::file_links::dispatch(request)),
             "markdown.parse" => Ok(crate::markdown::dispatch(request)),
             method
                 if method == "system.uuid"

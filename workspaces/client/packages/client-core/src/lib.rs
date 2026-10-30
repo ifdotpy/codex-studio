@@ -8,7 +8,6 @@ pub mod draft_store;
 pub use studio_client_domain::drafts;
 pub mod events;
 pub mod file_actions;
-pub mod file_links;
 pub mod file_preview;
 pub mod file_save;
 pub use studio_client_domain::markdown;

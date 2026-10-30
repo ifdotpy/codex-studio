@@ -157,6 +157,8 @@ pub struct AgentRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_wake: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_resume_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_mode: Option<AgentExecutionMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_epoch: Option<i64>,
@@ -460,6 +462,7 @@ impl AgentRecord {
             status: AgentStatus::Unknown,
             in_flight: None,
             auto_wake: None,
+            usage_resume_enabled: None,
             execution_mode: None,
             turn_epoch: None,
             account_key: crate::cost_aggregate::DEFAULT_ACCOUNT.to_owned(),
@@ -569,6 +572,9 @@ impl AgentRecord {
         }
         if let Some(auto_wake) = self.auto_wake {
             value["autoWake"] = Value::Bool(auto_wake);
+        }
+        if let Some(enabled) = self.usage_resume_enabled {
+            value["usageResumeEnabled"] = Value::Bool(enabled);
         }
         if let Some(mode) = self.execution_mode {
             value["executionMode"] = crate::projection_value(&mode);
@@ -684,6 +690,7 @@ impl JsonRecord for AgentRecord {
             status,
             in_flight,
             auto_wake,
+            usage_resume_enabled: field(&mut fields, "usageResumeEnabled").map_err(decode)?,
             execution_mode,
             turn_epoch,
             account_key,

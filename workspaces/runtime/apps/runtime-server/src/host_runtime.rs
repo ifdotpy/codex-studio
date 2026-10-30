@@ -2568,6 +2568,7 @@ mod voice_composition_tests {
                         account_key: "voice-account".into(),
                         thread_id: Some("voice-thread".into()),
                         auto_wake: None,
+                        usage_resume_enabled: None,
                         in_flight: None,
                         execution_mode: None,
                         turn_epoch: None,
@@ -2916,7 +2917,7 @@ mod voice_composition_tests {
     }
 
     #[tokio::test]
-    async fn voice_speech_http_reserves_and_replays_through_real_worker() {
+    async fn voice_speech_reserves_and_replays_through_real_worker() {
         let directory = tempfile::tempdir().unwrap();
         let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
         seed_voice_agent(&store, "speech-agent").await;
@@ -2947,35 +2948,21 @@ mod voice_composition_tests {
             None,
         );
         state.account_session = Some(session);
-        let app = router(install_host_voice_port(state, store.clone(), callbacks)).unwrap();
+        let provider = install_host_voice_port(state, store.clone(), callbacks)
+            .voice_request_port_handle()
+            .expect("voice provider");
         let before = factory.request_writes.load(Ordering::SeqCst);
         for _ in 0..2 {
-            let body = studio_runtime_http::generated::VoiceSpeechRequest {
-                agent: "speech-agent".into(),
-                session_id: voice_session.clone(),
-                record_id: "speech-record".into(),
-            };
-            let mut request = Request::builder()
-                .method("POST")
-                .uri("/api/voice/speech")
-                .header("host", "127.0.0.1:4620")
-                .header("x-canvas-token", "token")
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&body).unwrap()))
-                .unwrap();
-            request.extensions_mut().insert(ConnectInfo(
-                "127.0.0.1:32100".parse::<std::net::SocketAddr>().unwrap(),
-            ));
-            let response = app.clone().oneshot(request).await.unwrap();
-            let status = response.status();
-            let body = to_bytes(response.into_body(), 100_000).await.unwrap();
-            assert_eq!(
-                status,
-                StatusCode::OK,
-                "{}, writes={}",
-                String::from_utf8_lossy(&body),
-                factory.request_writes.load(Ordering::SeqCst)
-            );
+            studio_runtime_services::voice::provider::speech(
+                store.clone(),
+                provider.clone(),
+                "speech-agent".into(),
+                voice_session.clone(),
+                "speech-record".into(),
+                None,
+            )
+            .await
+            .expect("speech receipt");
         }
         assert_eq!(factory.request_writes.load(Ordering::SeqCst), before + 1);
         worker.shutdown().await.unwrap();

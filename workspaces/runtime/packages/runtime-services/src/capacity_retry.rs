@@ -100,9 +100,9 @@ pub fn failed_with_reason(
 ) -> Result<Decision> {
     now_checked(now)?;
     if crate::continuation::native_thread_blocked(&s.agent)
-        || !flag(&s.agent, "autoWake")
+        || !s.agent_record().auto_wake.unwrap_or(false)
         || present(&s.agent, "deletedAt")
-        || !present(&s.agent, "threadId")
+        || s.agent_record().thread_id.is_none()
         || s.agent
             .get("turnEpoch")
             .is_some_and(|e| Some(e) != s.agent.get("epoch"))
@@ -114,9 +114,9 @@ pub fn failed_with_reason(
     }
     let identity = json!([
         s.agent_id(),
-        account(&s.agent),
-        s.agent["threadId"],
-        s.agent["epoch"],
+        s.agent_account(),
+        s.agent_record().thread_id,
+        s.agent_record().epoch,
         turn_id
     ]);
     let id = crate::event_write::request_signature(&identity);
@@ -130,10 +130,10 @@ pub fn failed_with_reason(
     let delay = usize::try_from(count).ok().and_then(|i| delays.get(i));
     let r = ProposedRecord::capacity(CapacityDraft {
         id,
-        thread_id: s.agent["threadId"].clone(),
+        thread_id: s.agent_record().thread_id.clone(),
         turn_id: turn_id.into(),
-        account_key: account(&s.agent).into(),
-        epoch: s.agent["epoch"].clone(),
+        account_key: s.agent_account().into(),
+        epoch: s.agent_record().epoch,
         cause: kind.kind(),
         status: if delay.is_some() {
             "scheduled"
