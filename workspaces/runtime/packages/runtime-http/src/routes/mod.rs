@@ -13,7 +13,6 @@ mod checkpoints;
 mod claude_controls;
 mod claude_login;
 pub(crate) mod compose;
-mod context_repair;
 pub(crate) mod desktop;
 pub use desktop::{backend_build_identity, initialize_backend_identity};
 mod entity_transfer;

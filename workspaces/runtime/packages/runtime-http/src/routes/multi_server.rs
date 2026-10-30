@@ -1,4 +1,4 @@
-//! Multi-server local audit reads and explicit transport-dependent operations.
+//! Multi-server access and explicit transport-dependent operations.
 
 use super::extractors::ApiJson;
 use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavailable, get, post};
@@ -41,11 +41,6 @@ pub(crate) fn routes() -> RouteGroup {
                 OperationStatus::partial(&PLATFORM_DEPENDENCIES)
             },
             snapshot,
-        ),
-        get(
-            "/api/multi-server/audit",
-            OperationStatus::Implemented,
-            audit,
         ),
         post(
             "/api/multi-server",
@@ -174,18 +169,6 @@ fn semantic_snapshot(snapshot: &Value) -> Value {
         }
     }
     semantic
-}
-
-async fn audit(
-    State(state): State<HttpState>,
-) -> Result<Json<crate::generated::AccessAuditResponse>, ApiError> {
-    let store = state.store.ok_or_else(ApiError::internal)?;
-    let result = multi_server::audit(&store)
-        .await
-        .map_err(map_service_error)?;
-    Ok(Json(super::generated_json::<
-        crate::generated::AccessAuditResponse,
-    >(result)?))
 }
 
 async fn manage(
