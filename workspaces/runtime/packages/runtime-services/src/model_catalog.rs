@@ -14,7 +14,8 @@ use studio_runtime_schema::ProviderKind;
 use studio_runtime_schema::model_catalog::{ModelCatalog, ProviderModel};
 use studio_runtime_schema::shared_values::{
     MODEL_CATALOG_ADMISSION_WAIT_SECONDS, MODEL_CATALOG_CACHE_TTL_SECONDS,
-    MODEL_CATALOG_ITEMS_PER_PAGE, MODEL_CATALOG_MAX_FRAME_BYTES, MODEL_CATALOG_MAX_PAGES,
+    MODEL_CATALOG_ITEMS_PER_PAGE, MODEL_CATALOG_LAST_GOOD_MAX_AGE_SECONDS,
+    MODEL_CATALOG_MAX_FRAME_BYTES, MODEL_CATALOG_MAX_PAGES,
     MODEL_CATALOG_MAX_RESPONSE_BYTES, MODEL_CATALOG_OPERATION_TIMEOUT_SECONDS,
 };
 use tokio::time::Instant;
@@ -25,6 +26,7 @@ const CATALOG_TTL: Duration = Duration::from_secs(MODEL_CATALOG_CACHE_TTL_SECOND
 /// so a transient failure (a cold provider start under load, an idle-closed
 /// session) does not hide the catalog for the full success TTL.
 const CATALOG_FAILURE_RETRY: Duration = Duration::from_secs(5);
+const LAST_GOOD_MAX_AGE: Duration = Duration::from_secs(MODEL_CATALOG_LAST_GOOD_MAX_AGE_SECONDS);
 const CATALOG_TIMEOUT: Duration = Duration::from_secs(MODEL_CATALOG_OPERATION_TIMEOUT_SECONDS);
 const CATALOG_ADMISSION_WAIT: Duration = Duration::from_secs(MODEL_CATALOG_ADMISSION_WAIT_SECONDS);
 const MAX_CATALOG_PAGE_BYTES: usize = MODEL_CATALOG_MAX_FRAME_BYTES;
@@ -242,6 +244,9 @@ pub enum AdmissionCatalogRead {
 }
 
 struct CacheEntry {
+    /// When `value` was last read successfully from the provider. Unlike
+    /// `expires_at`, a failed refresh keeps it.
+    read_at: Option<Instant>,
     generation: u64,
     value: Option<ModelCatalog>,
     expires_at: Option<Instant>,
@@ -529,6 +534,7 @@ impl ModelCatalogService {
                 .entries
                 .get(&cache_key)
                 .and_then(|entry| entry.value.clone());
+            let last_read = cache.entries.get(&cache_key).and_then(|entry| entry.read_at);
             // A changed home/provider replaces the same account's former entry.
             cache
                 .entries
@@ -538,6 +544,7 @@ impl ModelCatalogService {
             cache.entries.insert(
                 cache_key.clone(),
                 CacheEntry {
+                    read_at: last_read,
                     generation,
                     value: stale.clone(),
                     expires_at: None,
@@ -590,6 +597,26 @@ impl ModelCatalogService {
                 .map_or(CatalogRead::Unavailable, CatalogRead::Ready),
             read @ CatalogRead::Ready(_) | read @ CatalogRead::Pending => read,
         }
+    }
+
+    /// The last successfully read catalog of this account, when it is younger
+    /// than `MODEL_CATALOG_LAST_GOOD_MAX_AGE_SECONDS`. Worker creation validates a
+    /// model against it when a fresh read fails or times out. Never starts a read.
+    #[must_use]
+    pub fn last_good(
+        &self,
+        account_key: &str,
+        home: &str,
+        provider: ProviderKind,
+    ) -> Option<ModelCatalog> {
+        if !self.account_identity_is_current(account_key, home, provider) {
+            return None;
+        }
+        let key = (account_key.to_owned(), home.to_owned(), provider);
+        let cache = self.0.state.lock().ok()?;
+        let entry = cache.entries.get(&key)?;
+        let age = Instant::now().checked_duration_since(entry.read_at?)?;
+        (age <= LAST_GOOD_MAX_AGE).then(|| entry.value.clone())?
     }
 
     fn last_known(
@@ -788,6 +815,7 @@ impl ModelCatalogService {
         self.0.state.lock().expect("catalog cache").entries.insert(
             (account_key.to_owned(), home.to_owned(), provider),
             CacheEntry {
+                read_at: Some(Instant::now()),
                 generation: 1,
                 value: Some(ModelCatalog::parse(value).expect("valid fixture catalog")),
                 expires_at: Some(Instant::now() + Duration::from_secs(30)),
@@ -880,6 +908,7 @@ fn store_result(
             Ok(value) => {
                 entry.expires_at = Some(Instant::now() + CATALOG_TTL);
                 entry.value = Some(value);
+                entry.read_at = Some(Instant::now());
                 entry.error = false;
             }
             Err(()) => {
@@ -949,6 +978,7 @@ pub(crate) mod tests {
             let _: ModelCatalog = value;
         }
         let entry = CacheEntry {
+        read_at: None,
             generation: 1,
             value: None,
             expires_at: None,
@@ -1301,6 +1331,7 @@ pub(crate) mod tests {
         service.0.state.lock().expect("cache").entries.insert(
             key.clone(),
             CacheEntry {
+                read_at: None,
                 generation: 7,
                 value: None,
                 expires_at: None,
@@ -1320,6 +1351,7 @@ pub(crate) mod tests {
             service.0.state.lock().expect("cache").entries.insert(
                 key.clone(),
                 CacheEntry {
+                    read_at: None,
                     generation: 7,
                     value: Some(typed(json!({"data":[{"model":"stale"}]}))),
                     expires_at: None,
@@ -1375,6 +1407,7 @@ pub(crate) mod tests {
         service.0.state.lock().expect("cache").entries.insert(
             key.clone(),
             CacheEntry {
+                read_at: None,
                 generation: 7,
                 value: None,
                 expires_at: None,
@@ -1408,6 +1441,7 @@ pub(crate) mod tests {
         service.0.state.lock().expect("cache").entries.insert(
             key.clone(),
             CacheEntry {
+                read_at: None,
                 generation: 7,
                 value: Some(typed(known.clone())),
                 expires_at: None,
@@ -1447,6 +1481,7 @@ pub(crate) mod tests {
         service.0.state.lock().expect("cache").entries.insert(
             key.clone(),
             CacheEntry {
+                read_at: None,
                 generation: 7,
                 value: None,
                 expires_at: None,
@@ -1492,6 +1527,7 @@ pub(crate) mod tests {
                 ProviderKind::Codex,
             ),
             CacheEntry {
+                read_at: None,
                 generation: 7,
                 value: None,
                 expires_at: None,
@@ -1520,6 +1556,7 @@ pub(crate) mod tests {
                 ProviderKind::Codex,
             ),
             CacheEntry {
+                read_at: None,
                 generation: 7,
                 value: Some(typed(json!({"data":[{"model":"stale"}]}))),
                 expires_at: None,
@@ -1552,6 +1589,7 @@ pub(crate) mod tests {
         service.0.state.lock().expect("cache").entries.insert(
             key.clone(),
             CacheEntry {
+                read_at: None,
                 generation: 7,
                 value: None,
                 expires_at: None,
@@ -1650,6 +1688,7 @@ pub(crate) mod tests {
         service.0.state.lock().expect("cache").entries.insert(
             key.clone(),
             CacheEntry {
+                read_at: None,
                 generation: 7,
                 value: Some(typed(json!({"data":[{"model":"stale"}]}))),
                 expires_at: Some(Instant::now()),
@@ -1689,6 +1728,7 @@ pub(crate) mod tests {
         service.0.state.lock().expect("cache").entries.insert(
             key.clone(),
             CacheEntry {
+                read_at: None,
                 generation: 7,
                 value: Some(typed(json!({"data":[{"model":"stale"}]}))),
                 expires_at: Some(Instant::now() + Duration::from_secs(1)),
@@ -1740,6 +1780,7 @@ pub(crate) mod tests {
         service.0.state.lock().expect("cache").entries.insert(
             key.clone(),
             CacheEntry {
+                read_at: None,
                 generation: 7,
                 value: Some(typed(value.clone())),
                 expires_at: Some(expiry),

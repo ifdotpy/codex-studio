@@ -84,6 +84,18 @@ impl studio_runtime_services::provider_callbacks::ManagedCreationEnvironment
                 studio_runtime_services::model_catalog::AdmissionCatalogRead::Fresh { .. } => {
                     Ok(())
                 }
+                // A slow or failed refresh does not stop creation while a recent
+                // last good catalog can validate the model.
+                studio_runtime_services::model_catalog::AdmissionCatalogRead::Pending
+                | studio_runtime_services::model_catalog::AdmissionCatalogRead::Unavailable
+                    if self
+                        .catalog
+                        .service
+                        .last_good(account_key, home, provider)
+                        .is_some() =>
+                {
+                    Ok(())
+                }
                 studio_runtime_services::model_catalog::AdmissionCatalogRead::Pending
                 | studio_runtime_services::model_catalog::AdmissionCatalogRead::Unavailable => {
                     Err(E::Unavailable("provider-session/model-list"))
@@ -558,32 +570,30 @@ impl RouteCreationCatalog {
                 "provider-session/model-list",
             ))?;
         let provider = account.provider;
-        let (value, fresh_key, fresh_home, fresh_provider, expires_at) =
-            match self.service.read_for_admission(account_key, home, provider) {
-                studio_runtime_services::model_catalog::AdmissionCatalogRead::Fresh {
-                    value,
-                    account_key,
-                    home,
-                    provider,
-                    expires_at,
-                    ..
-                } => (value, account_key, home, provider, expires_at),
-                studio_runtime_services::model_catalog::AdmissionCatalogRead::Pending
-                | studio_runtime_services::model_catalog::AdmissionCatalogRead::Unavailable => {
-                    return Err(CreateError::CapabilityUnavailable(
-                        "provider-session/model-list",
-                    ));
-                }
-            };
-        if fresh_key != account_key
-            || fresh_home != home
-            || fresh_provider != provider
-            || expires_at <= std::time::Instant::now()
-        {
-            return Err(CreateError::CapabilityUnavailable(
+        // A fresh catalog decides. When no fresh read exists (a slow or failed
+        // read on a loaded machine), the last good catalog of this account decides
+        // while it is younger than MODEL_CATALOG_LAST_GOOD_MAX_AGE_SECONDS.
+        let fresh = match self.service.read_for_admission(account_key, home, provider) {
+            studio_runtime_services::model_catalog::AdmissionCatalogRead::Fresh {
+                value,
+                account_key: fresh_key,
+                home: fresh_home,
+                provider: fresh_provider,
+                expires_at,
+                ..
+            } => (fresh_key == account_key
+                && fresh_home == home
+                && fresh_provider == provider
+                && expires_at > std::time::Instant::now())
+            .then_some(value),
+            studio_runtime_services::model_catalog::AdmissionCatalogRead::Pending
+            | studio_runtime_services::model_catalog::AdmissionCatalogRead::Unavailable => None,
+        };
+        let value = fresh
+            .or_else(|| self.service.last_good(account_key, home, provider))
+            .ok_or(CreateError::CapabilityUnavailable(
                 "provider-session/model-list",
-            ));
-        }
+            ))?;
         value
             .data
             .iter()

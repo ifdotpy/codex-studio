@@ -127,8 +127,8 @@ pub struct ExecutionSettings {
     pub cyber_access_program: String,
 }
 
-/// The P18 adapter resolves only a fresh, account-bound catalog snapshot.
-/// Implementations must not fall back to stale data for admission.
+/// The P18 adapter resolves a fresh, account-bound catalog snapshot, or the
+/// last good one while it is younger than `MODEL_CATALOG_LAST_GOOD_MAX_AGE_SECONDS`.
 pub trait CreationCatalog: Send + Sync {
     fn resolve(
         &self,
