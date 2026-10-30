@@ -998,7 +998,7 @@ export function gateSteps(root: string, name: string): GateStep[] {
         commands: [["pnpm", ["--dir", root, "run", "test:rust-lint-policy"]]],
       },
       cargo("rust-fmt", "Rust formatting", ["fmt", "--all", "--", "--check"], {
-        allowZeroTests: true,
+        buildOnly: true,
       }),
       {
         ...cargo("rust-tests", "Rust nextest", [
