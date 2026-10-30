@@ -2,24 +2,14 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(untagged)]
 pub enum TextField {
     #[default]
+    #[serde(skip)]
     Missing,
     Text(String),
     Other(Value),
-}
-impl<'de> Deserialize<'de> for TextField {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Ok(match Value::deserialize(deserializer)? {
-            Value::String(text) => Self::Text(text),
-            value @ (Value::Null
-            | Value::Bool(_)
-            | Value::Number(_)
-            | Value::Array(_)
-            | Value::Object(_)) => Self::Other(value),
-        })
-    }
 }
 impl Serialize for TextField {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -307,6 +297,7 @@ mod tests {
             json!([1,{"future":true}]),
             json!({}),
             json!({"drafts":[],"servers":{"a":[],"b":[1],"c":{},"d":false}}),
+            json!({"servers":{"a":{"origin":[1],"serverId":false,"clientId":{"nested":1},"inviteId":"invite"}}}),
             json!({"drafts":null,"servers":{"a":null,"b":42,"c":{"origin":null,"serverId":17,"clientId":"","receipt":null,"rejected":false,"future":[1,{"n":1.0}] }},"imports":null,"future":{"v":true}}),
             json!({"drafts":{"x":{"body":"exact body","privateKey":null}},"servers":false,"imports":[]}),
         ] {
