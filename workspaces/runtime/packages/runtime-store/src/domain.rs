@@ -641,82 +641,37 @@ pub fn mark_sessions_lost(connection: &Connection, chat: &str) -> StoreResult<us
         .execute([chat])?)
 }
 
-pub(crate) const REQUIREMENTS: crate::schema::SchemaRequirements =
-    crate::schema::SchemaRequirements {
-        tables: &[],
-        conditional_tables: &[],
-        triggers: &[],
-        conditional_triggers: &[],
-        connection_functions: &[],
-        bootstrap_tables: &[
-            crate::schema::TableRequirement {
-                name: CHAT_TABLE,
-                columns: &[
-                    "id",
-                    "state",
-                    "status",
-                    "auto_wake",
-                    "usage_resume_enabled",
-                    "execution_mode",
-                    "turn_epoch",
-                ],
-            },
-            crate::schema::TableRequirement {
-                name: TURN_TABLE,
-                columns: &[
-                    "id",
-                    "chat",
-                    "state",
-                    "session",
-                    "provider_turn",
-                    "attempt",
-                    "interrupt_ticket",
-                ],
-            },
-            crate::schema::TableRequirement {
-                name: SESSION_TABLE,
-                columns: &["id", "chat", "thread_id", "account_key", "state"],
-            },
+/// Tables of this format as the agents repository's schema check lists them.
+pub(crate) const TABLE_REQUIREMENTS: [crate::schema::TableRequirement; 3] = [
+    crate::schema::TableRequirement {
+        name: CHAT_TABLE,
+        columns: &[
+            "id",
+            "state",
+            "status",
+            "auto_wake",
+            "usage_resume_enabled",
+            "execution_mode",
+            "turn_epoch",
         ],
-        bootstrap_triggers: &[
-            crate::schema::TriggerRequirement {
-                name: "chats_check_insert",
-                table: CHAT_TABLE,
-            },
-            crate::schema::TriggerRequirement {
-                name: "chats_check_update",
-                table: CHAT_TABLE,
-            },
-            crate::schema::TriggerRequirement {
-                name: "turns_check_insert",
-                table: TURN_TABLE,
-            },
-            crate::schema::TriggerRequirement {
-                name: "turns_check_update",
-                table: TURN_TABLE,
-            },
-            crate::schema::TriggerRequirement {
-                name: "sessions_check_insert",
-                table: SESSION_TABLE,
-            },
-            crate::schema::TriggerRequirement {
-                name: "sessions_check_update",
-                table: SESSION_TABLE,
-            },
-            crate::schema::TriggerRequirement {
-                name: OWNER_DELETE_TRIGGER,
-                table: "runtime_agents",
-            },
+    },
+    crate::schema::TableRequirement {
+        name: TURN_TABLE,
+        columns: &[
+            "id",
+            "chat",
+            "state",
+            "session",
+            "provider_turn",
+            "attempt",
+            "interrupt_ticket",
         ],
-        bootstrap_connection_functions: &[],
-    };
-
-inventory::submit! {
-    crate::repositories::SchemaRegistration {
-        repository: "domain",
-        requirements: &REQUIREMENTS,
-    }
-}
+    },
+    crate::schema::TableRequirement {
+        name: SESSION_TABLE,
+        columns: &["id", "chat", "thread_id", "account_key", "state"],
+    },
+];
 
 #[cfg(test)]
 mod tests {

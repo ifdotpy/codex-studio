@@ -205,13 +205,16 @@ pub fn schema_objects() -> impl Iterator<Item = (&'static str, &'static str, &'s
     )
 }
 
-/// The table and its owner-delete trigger, for schema-only test fixtures
+/// The table and its owner-delete trigger, with the chat, turn and session
+/// tables that every agent write projects into, for schema-only test fixtures
 /// that already declare `runtime_agents`.
 pub fn agent_volatile_table_sql() -> &'static str {
     static FIXTURE_SQL: LazyLock<String> = LazyLock::new(|| {
         format!(
-            "{} CREATE TRIGGER IF NOT EXISTS {} {} ON {} BEGIN {} END;",
+            "{} {}{} CREATE TRIGGER IF NOT EXISTS {} {} ON {} BEGIN {} END;",
             *TABLE_SQL,
+            crate::domain::tables_sql(),
+            crate::domain::check_triggers_sql(),
             OWNER_DELETE.name,
             OWNER_DELETE.event,
             OWNER_DELETE.table,
