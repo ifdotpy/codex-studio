@@ -337,6 +337,18 @@ async fn claude_control_session_reads_and_stop_keep_dispatch() {
 }
 
 #[tokio::test]
+async fn claude_command_preserves_message_request_identity() {
+    let (_root, _store, app, mut worker, _native) = fixture().await;
+    let request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    let body = json!({"id":"agent","action":"command","command":"/help","request_id":request_id});
+    let first = post(&app, "/api/claude/session", body.clone()).await;
+    assert_eq!(first.0, 200, "{first:?}");
+    let replay = post(&app, "/api/claude/session", body).await;
+    assert_eq!(replay, first);
+    worker.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn claude_control_settings_ingress_and_exact_receipt_replay() {
     use studio_runtime_http::generated::ClaudeSessionApiClaudeSessionPostRequest as SessionRequest;
     use studio_runtime_schema::claude_controls::ClaudeControlCommand;

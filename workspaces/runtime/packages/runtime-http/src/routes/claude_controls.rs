@@ -179,8 +179,7 @@ async fn session(
     };
     let result = match body {
         SessionRequest::ClaudeSessionCommandRequest(request) => {
-            let body = serde_json::to_value(request).map_err(|_| ApiError::internal())?;
-            return command(state, body).await;
+            return command(state, request).await;
         }
         SessionRequest::ClaudeSessionSettingsRequest(request)
         | SessionRequest::ClaudeSessionRollbackRequest(request) => {
@@ -388,35 +387,26 @@ async fn load_agent(
     loaded.ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown managed agent"))
 }
 
-async fn command(state: HttpState, body: Value) -> Result<Json<Value>, ApiError> {
-    let command = body
-        .get("command")
-        .and_then(Value::as_str)
-        .and_then(|command| {
-            studio_runtime_services::claude_controls::service::native_command(command).ok()
-        })
-        .ok_or_else(|| {
+async fn command(
+    state: HttpState,
+    body: crate::generated::ClaudeSessionCommandRequest,
+) -> Result<Json<Value>, ApiError> {
+    let command = studio_runtime_services::claude_controls::service::native_command(&body.command)
+        .map_err(|_| {
             ApiError::new(
                 StatusCode::BAD_REQUEST,
                 "Supply one explicit Claude command",
             )
         })?;
-    let id = body
-        .get("id")
-        .and_then(Value::as_str)
-        .filter(|id| !id.is_empty())
-        .ok_or_else(|| ApiError::validation(vec![json!("body"), json!("id")]))?;
-    let request_id = body
-        .get("request_id")
-        .and_then(Value::as_str)
-        .filter(|id| !id.is_empty())
-        .ok_or_else(|| {
-            ApiError::new(StatusCode::BAD_REQUEST, "Supply a command request identity")
-        })?;
-    let message = serde_json::from_value::<crate::generated::ManagedMessageBody>(json!({
-        "id":request_id,"room":id,"text":command,"delivery":studio_runtime_schema::DeliveryMoment::CurrentTurn
-    }))
-    .map_err(|_| ApiError::validation(vec![json!("body")]))?;
+    if body.request_id.is_empty() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "Supply a command request identity",
+        ));
+    }
+    let mut message =
+        crate::generated::ManagedMessageBody::new(body.request_id, body.id, command.into());
+    message.delivery = Some(studio_runtime_schema::DeliveryMoment::CurrentTurn);
     let receipt = super::messages::post_message(State(state), ApiJson(message)).await?;
     serde_json::to_value(receipt.0)
         .map(Json)
