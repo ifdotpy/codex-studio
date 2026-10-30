@@ -11,11 +11,12 @@ pub use crate::codex_generated::KnownCodexErrorKind;
 /// External and historical records may carry a string or a single-key object.
 /// Never choose an arbitrary key from an ambiguous provider extension object.
 pub fn raw_error_kind(error: &Value) -> Option<&str> {
-    match error.get("codexErrorInfo")? {
-        Value::String(value) => Some(value),
-        Value::Object(object) if object.len() == 1 => object.keys().next().map(String::as_str),
-        _ => None,
-    }
+    let info = error.get("codexErrorInfo")?;
+    info.as_str().or_else(|| {
+        let mut keys = info.as_object()?.keys();
+        let key = keys.next()?;
+        keys.next().is_none().then_some(key.as_str())
+    })
 }
 
 /// Classify known tags only. Unknown external records remain with their caller;
