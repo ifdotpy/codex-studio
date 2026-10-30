@@ -542,7 +542,7 @@ async fn lifecycle_effect_refusals_preserve_rows_and_projections() {
                     target: "worker".into(),
                 }
             } else {
-                Action::Stop {
+                Action::Pause {
                     target: "worker".into(),
                     descendants: true,
                     reason: None,
@@ -605,7 +605,7 @@ async fn ended_voice_allows_stop_and_delete_clears_saved_voice_in_transaction() 
     }).await.expect("saved voice");
     let result = execute(
         std::sync::Arc::clone(&store),
-        &Action::Stop {
+        &Action::Pause {
             target: "lead".into(),
             descendants: true,
             reason: None,
@@ -829,7 +829,7 @@ async fn incremental_lifecycle_projection_matches_full_rebuild() {
     let epoch = 1;
     for (action, retained) in [
         (
-            Action::Stop {
+            Action::Pause {
                 target: "lead-0001".to_owned(),
                 descendants: true,
                 reason: None,
@@ -938,7 +938,7 @@ async fn lifecycle_projection_benchmark_on_large_state() {
             started.elapsed().as_millis()
         );
         for action in [
-            Action::Stop {
+            Action::Pause {
                 target: "lead-0010".to_owned(),
                 descendants: true,
                 reason: None,

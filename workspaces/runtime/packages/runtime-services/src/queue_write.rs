@@ -57,6 +57,12 @@ pub enum QueueWriteError {
     InvalidRequest(&'static str),
     #[error("{0}")]
     Conflict(&'static str),
+    /// A running turn holds the message. The caller interrupts that turn and
+    /// the user withdraws the message again when the turn has ended.
+    #[error(
+        "A running turn holds this message. It is being interrupted; withdraw it again when the turn ends"
+    )]
+    HeldByTurn,
     #[error("invalid stored object {object}/{id}")]
     InvalidStoredObject { object: &'static str, id: String },
     #[error("Not implemented: requires cross-server/remote-events")]
@@ -136,6 +142,14 @@ pub fn action(
         QueueCommand::Cancel(_) => {
             // Withdraw: a user message leaves the queue and its text returns to the
             // composer of the chat as a server draft.
+            let id = body.target_id().unwrap_or_default();
+            if !rows
+                .iter()
+                .any(|row| row.get("id").and_then(Value::as_str) == Some(id))
+                && QueueWriteRepository::held_user_message(transaction, agent_id, id)?
+            {
+                return Err(QueueWriteError::HeldByTurn);
+            }
             let (target_id, row) = target_row(body, rows)?;
             QueueWriteRepository::update_status(transaction, target_id, "cancelled")?;
             let text = row.get("text").and_then(Value::as_str).unwrap_or_default();

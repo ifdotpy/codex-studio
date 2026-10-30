@@ -593,7 +593,7 @@ async fn lifecycle_cancel_intent_survives_crash_before_committed_and_dispatches_
         .transaction_with_error(move |tx| {
             agent_lifecycle_runtime::execute_in_transaction(
                 tx,
-                &Action::Stop {
+                &Action::Pause {
                     target: "agent".to_owned(),
                     descendants: false,
                     reason: None,

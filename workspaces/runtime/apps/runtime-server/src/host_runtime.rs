@@ -3022,7 +3022,7 @@ mod voice_composition_tests {
         ));
         ports
             .execute(
-                &Action::Stop {
+                &Action::Pause {
                     target: "stale-agent".into(),
                     descendants: false,
                     reason: None,

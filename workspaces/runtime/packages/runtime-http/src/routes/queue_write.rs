@@ -1,8 +1,12 @@
 //! HTTP adapter for durable queue mutations.
 
+use axum::Extension;
 use axum::Json;
 use axum::extract::State;
+use std::sync::Arc;
 use studio_runtime_schema::queue_command::QueueCommand;
+use studio_runtime_services::agent_lifecycle_runtime::{self, LifecyclePorts};
+use studio_runtime_services::agent_management::Action;
 use studio_runtime_services::queue_write;
 
 use super::extractors::ApiJson;
@@ -11,6 +15,7 @@ use crate::router::HttpState;
 
 pub(crate) async fn queue_action(
     State(state): State<HttpState>,
+    ports: Option<Extension<Arc<dyn LifecyclePorts>>>,
     ApiJson(body): ApiJson<QueueCommand>,
 ) -> Result<Json<queue_write::QueueReply>, ApiError> {
     let agent_id = body
@@ -19,6 +24,7 @@ pub(crate) async fn queue_action(
         .unwrap_or_else(|| state.workspace_id.clone());
     let signature = signature(&agent_id, &body)?;
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let held_agent = agent_id.clone();
     let result = store
         .transaction_with_error(move |transaction| {
             queue_write::action(
@@ -29,8 +35,32 @@ pub(crate) async fn queue_action(
                 |connection, agent| super::queue_read::queue_snapshot(connection, agent),
             )
         })
+        .await;
+    if let (Err(queue_write::QueueWriteError::HeldByTurn), Some(Extension(ports))) =
+        (&result, ports)
+    {
+        // Withdraw of a message that a running turn holds: interrupt that turn.
+        // The message returns to the queue or is delivered when the turn ends.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| ApiError::internal())?
+            .as_secs_f64();
+        agent_lifecycle_runtime::execute(
+            Arc::clone(&store),
+            &Action::Stop {
+                target: held_agent,
+                descendants: false,
+                reason: None,
+                sender: None,
+                sender_epoch: None,
+            },
+            now,
+            ports,
+        )
         .await
-        .map_err(super::queue_read::api_error)?;
+        .map_err(|_| ApiError::internal())?;
+    }
+    let result = result.map_err(super::queue_read::api_error)?;
     state.event_wake.notify_one();
     Ok(Json(result))
 }
@@ -403,6 +433,41 @@ mod tests {
             queued_ids(&store).is_empty(),
             "the withdrawn messages left the queue"
         );
+    }
+
+    #[tokio::test]
+    async fn withdrawing_a_message_held_by_a_turn_is_refused_until_the_turn_ends() {
+        let directory = tempfile::tempdir().expect("isolated state");
+        let store = seeded_store(directory.path()).await;
+        store
+            .transaction(|tx| {
+                tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES('held','workspace','user','Held','dispatching',0,0)", [])?;
+                Ok(())
+            })
+            .await
+            .expect("held message");
+        let state = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            directory.path().to_string_lossy().into_owned(),
+            4620,
+            None,
+            Some(store.clone()),
+            None,
+        );
+        let app = crate::router(state).expect("router");
+        let body = json!({"action":"cancel","id":"held","request_id":studio_runtime_schema::persistence::RequestIdentity::issue_root()});
+        assert_eq!(call(&app, body).await.0, 409);
+        let status: String = store
+            .test_reader()
+            .expect("reader")
+            .query_row(
+                "SELECT status FROM runtime_events WHERE id='held'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("status");
+        assert_eq!(status, "dispatching", "the held message is not cancelled");
     }
 }
 inventory::submit! {
