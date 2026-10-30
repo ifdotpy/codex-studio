@@ -537,12 +537,30 @@ static CATALOG: &[&dyn Migration] = &[
     &SqlMigration {
         definition: MigrationDefinition {
             id: "2026-10-30-agent-volatile-complete",
-            introduced: MigrationDate { year: 2026, month: 10, day: 30 },
+            introduced: MigrationDate {
+                year: 2026,
+                month: 10,
+                day: 30,
+            },
             target: MigrationTarget::Canvas,
             supported_source: "Agent volatile fields before complete typed writes",
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| m2026_10_30_agent_volatile::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-retired-auth-probe-receipts",
+            introduced: MigrationDate {
+                year: 2026,
+                month: 10,
+                day: 30,
+            },
+            target: MigrationTarget::Canvas,
+            supported_source: "Retired Claude auth probe receipts in any status",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_26_canvas::remove_auth_probe_receipts(c.transaction),
     },
     &SqlMigration {
         definition: MigrationDefinition {

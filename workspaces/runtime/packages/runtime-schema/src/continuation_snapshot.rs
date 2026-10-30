@@ -68,25 +68,6 @@ impl<'de> Deserialize<'de> for BoundedNumber {
         }
     }
 }
-/// Creation timestamp must be positive.
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[serde(transparent)]
-pub struct PositiveNumber(Number);
-impl PositiveNumber {
-    pub fn get(&self) -> f64 {
-        self.0.as_f64().expect("positive JSON number")
-    }
-}
-impl<'de> Deserialize<'de> for PositiveNumber {
-    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let n = BoundedNumber::deserialize(d)?;
-        if n.get() > 0.0 {
-            Ok(Self(n.0))
-        } else {
-            Err(D::Error::custom("number must be positive"))
-        }
-    }
-}
 fn optional_nonnull<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
     d: D,
 ) -> Result<Option<T>, D::Error> {
@@ -97,33 +78,24 @@ fn optional_string_enum<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
 ) -> Result<Option<T>, D::Error> {
     crate::string_enum::deserialize(d).map(Some)
 }
-fn required_nullable<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
-    d: D,
-) -> Result<Option<T>, D::Error> {
-    Option::<T>::deserialize(d)
-}
-
 pub type ContinuationSnapshotRecord = JsonObject<ContinuationSnapshot>;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ContinuationRecord {
     Usage(UsageContinuation),
     Capacity(CapacityContinuation),
-    Auth(AuthWaitReceipt),
 }
 impl ContinuationRecord {
     pub fn extra_mut(&mut self) -> &mut BTreeMap<String, Value> {
         match self {
             Self::Usage(record) => &mut record.extra,
             Self::Capacity(record) => &mut record.extra,
-            Self::Auth(record) => &mut record.extra,
         }
     }
     pub fn id(&self) -> &str {
         match self {
             Self::Usage(record) => record.id.as_str(),
             Self::Capacity(record) => record.id.as_str(),
-            Self::Auth(record) => record.id.as_str(),
         }
     }
 }
@@ -137,30 +109,6 @@ pub struct ContinuationSnapshot {
     #[serde(default, deserialize_with = "optional_nonnull")]
     pub claims: Option<BoundedVec<BoundedString<1, 4096>, 4096>>,
     pub record: Option<ContinuationRecord>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AuthWaitReceipt {
-    pub account_key: BoundedString<1, 4096>,
-    pub account_pin: BTreeMap<String, Value>,
-    pub agent: BoundedString<1, 4096>,
-    pub attempt: ContinuationAttempt,
-    #[serde(deserialize_with = "crate::string_enum::deserialize")]
-    pub cause: AuthWaitReceiptCause,
-    pub created_at: PositiveNumber,
-    #[serde(deserialize_with = "required_nullable")]
-    pub due_at: Option<BoundedNumber>,
-    #[serde(deserialize_with = "crate::string_enum::deserialize")]
-    pub error: AuthWaitReceiptError,
-    pub id: BoundedString<1, 4096>,
-    pub inputs: BoundedVec<BTreeMap<String, Value>, 64>,
-    pub source: BTreeMap<String, Value>,
-    #[serde(deserialize_with = "crate::string_enum::deserialize")]
-    pub status: AuthWaitReceiptStatus,
-    pub task_claims: BoundedVec<BoundedString<1, 4096>, 4096>,
-    #[serde(flatten)]
-    pub extra: BTreeMap<String, Value>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -241,36 +189,6 @@ pub struct ContinuationAgent {
     pub usage_resume_enabled: Option<bool>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ContinuationAttempt {
-    #[serde(default, skip_serializing_if = "Field::is_missing")]
-    pub action: Field<String>,
-    #[serde(
-        default,
-        deserialize_with = "optional_nonnull",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub active_at_reservation: Option<bool>,
-    #[serde(default, skip_serializing_if = "Field::is_missing")]
-    pub capacity_retry_id: Field<BoundedString<1, 4096>>,
-    pub epoch: SafeInteger,
-    #[serde(
-        default,
-        deserialize_with = "optional_nonnull",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub events: Option<BoundedVec<BoundedString<1, 4096>, 4096>>,
-    pub id: BoundedString<1, 4096>,
-    #[serde(default, skip_serializing_if = "Field::is_missing")]
-    pub observed_turn_id: Field<BoundedString<1, 4096>>,
-    pub submitted: bool,
-    #[serde(default, skip_serializing_if = "Field::is_missing")]
-    pub turn_id: Field<BoundedString<1, 4096>>,
-    #[serde(flatten)]
-    pub extra: BTreeMap<String, Value>,
-}
-
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageContinuation {
@@ -314,28 +232,6 @@ pub struct UsageContinuation {
     pub turn_id: BoundedString<1, 4096>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum AuthWaitReceiptCause {
-    #[serde(rename = "claude_auth_probe")]
-    ClaudeAuthProbe,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum AuthWaitReceiptError {
-    #[serde(rename = "Cannot read Claude Code sign-in status")]
-    CannotReadClaudeCodeSignInStatus,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum AuthWaitReceiptStatus {
-    #[serde(rename = "auth_probe_wait")]
-    AuthProbeWait,
-    #[serde(rename = "completed")]
-    Completed,
-    #[serde(rename = "cancelled")]
-    Cancelled,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -410,9 +306,6 @@ mod tests {
         let c = CapacityContinuation::deserialize(capacity.clone()).unwrap();
         assert_eq!(json!(u), usage);
         assert_eq!(json!(c), capacity);
-        let auth = json!({"id":"a","agent":"a","accountKey":"x","status":"auth_probe_wait","cause":"claude_auth_probe","error":"Cannot read Claude Code sign-in status","createdAt":1,"dueAt":null,"source":{},"attempt":{"id":"x","epoch":1.0,"submitted":false,"action":null},"inputs":[],"accountPin":{},"taskClaims":[],"future":true});
-        let a = AuthWaitReceipt::deserialize(auth.clone()).unwrap();
-        assert_eq!(json!(a), auth);
     }
 
     #[test]
@@ -420,7 +313,7 @@ mod tests {
         let text = include_str!("schemas/persisted-continuation-snapshot.schema.json");
         assert_eq!(
             data_encoding::HEXLOWER.encode(&Sha256::digest(text.as_bytes())),
-            "a553ffcd35f8ec1f0dd3017237f96639315a259cbd87f67d4bfc454374f98fd3",
+            "02286c794c76f2018c329f6dcc0a49c3509493d7e2f6582d624187efceb723f6",
             "schema changed: review continuation_snapshot typed owner"
         );
         let schema: Value = serde_json::from_str(text).expect("schema");
@@ -451,11 +344,6 @@ mod tests {
                 |v| serde_json::from_value::<ContinuationSnapshotRecord>(v).is_ok(),
             ),
             (
-                "AuthWaitReceipt",
-                json!({"id":"x","agent":"x","accountKey":"x","status":"auth_probe_wait","cause":"claude_auth_probe","error":"Cannot read Claude Code sign-in status","createdAt":1,"dueAt":0,"source":{},"attempt":{"id":"x","epoch":0,"submitted":false},"inputs":[],"accountPin":{},"taskClaims":[]}),
-                |v| serde_json::from_value::<AuthWaitReceipt>(v).is_ok(),
-            ),
-            (
                 "CapacityContinuation",
                 json!({"id":"x","accountKey":"x","threadId":"x","epoch":0,"turnId":"x","status":"scheduled","cause":"serverOverloaded","cwd":"","settings":{},"attempt":0,"maxAttempts":0}),
                 |v| serde_json::from_value::<CapacityContinuation>(v).is_ok(),
@@ -464,11 +352,6 @@ mod tests {
                 "ContinuationAgent",
                 json!({"id":"x","rootId":"x","epoch":0,"status":"x","provider":"codex"}),
                 |v| serde_json::from_value::<ContinuationAgent>(v).is_ok(),
-            ),
-            (
-                "ContinuationAttempt",
-                json!({"id":"x","epoch":0,"submitted":false}),
-                |v| serde_json::from_value::<ContinuationAttempt>(v).is_ok(),
             ),
             (
                 "UsageContinuation",

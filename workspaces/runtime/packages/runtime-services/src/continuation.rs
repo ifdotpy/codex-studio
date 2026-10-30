@@ -4,9 +4,8 @@ use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::sync::{Arc, OnceLock};
 use studio_runtime_schema::continuation_snapshot::{
-    AuthWaitReceiptStatus, CapacityContinuation, CapacityContinuationStatus, ContinuationAgent,
-    ContinuationRecord, ContinuationSnapshotRecord, UsageContinuation, UsageContinuationCause,
-    UsageContinuationStatus,
+    CapacityContinuation, CapacityContinuationStatus, ContinuationAgent, ContinuationRecord,
+    ContinuationSnapshotRecord, UsageContinuation, UsageContinuationCause, UsageContinuationStatus,
 };
 use studio_runtime_schema::provider_errors::is_misalignment_policy_violation;
 use studio_runtime_schema::shared_values::MAX_SAFE_INTEGER;
@@ -42,9 +41,6 @@ pub(crate) enum WaitStatus {
     Unknown,
     Exhausted,
     Failed,
-    /// Retired Claude auth probe wait; startup recovery migrates it once.
-    AuthProbeWait,
-    Completed,
 }
 #[derive(Clone)]
 pub struct Snapshot {
@@ -75,7 +71,6 @@ impl Snapshot {
         let key = match &record {
             ContinuationRecord::Usage(_) => Some("usageResume"),
             ContinuationRecord::Capacity(_) => Some("capacityRetry"),
-            ContinuationRecord::Auth(_) => None,
         };
         let reuse =
             key.filter(|key| raw.get("agent").and_then(|a| a.get(*key)) == raw.get("record"));
@@ -216,12 +211,6 @@ impl Snapshot {
                     && self.agent.get("lastCompletedTurn").and_then(Value::as_str)
                         == Some(r.turn_id.as_str())
             }
-            Some(ContinuationRecord::Auth(_)) => self.record.as_ref().is_some_and(|r| {
-                ["threadId", "epoch"]
-                    .iter()
-                    .all(|k| self.agent.get(*k) == r.get(*k))
-                    && self.agent.get("lastCompletedTurn") == r.get("turnId")
-            }),
             None => false,
         }
     }
@@ -229,7 +218,6 @@ impl Snapshot {
         self.typed.0.record.as_ref().map(|r| match r {
             ContinuationRecord::Usage(r) => r.account_key.as_str(),
             ContinuationRecord::Capacity(r) => r.account_key.as_str(),
-            ContinuationRecord::Auth(r) => r.account_key.as_str(),
         })
     }
     pub(crate) fn record_due_at(&self) -> Option<f64> {
@@ -240,7 +228,6 @@ impl Snapshot {
             .and_then(|r| match r {
                 ContinuationRecord::Usage(r) => r.due_at.as_ref(),
                 ContinuationRecord::Capacity(r) => r.due_at.as_ref(),
-                ContinuationRecord::Auth(r) => r.due_at.as_ref(),
             })
             .map(|due| due.get())
     }
@@ -251,7 +238,7 @@ impl Snapshot {
     pub(crate) fn usage_record(&self) -> Option<&UsageContinuation> {
         match self.typed.0.record.as_ref()? {
             ContinuationRecord::Usage(record) => Some(record),
-            ContinuationRecord::Capacity(_) | ContinuationRecord::Auth(_) => None,
+            ContinuationRecord::Capacity(_) => None,
         }
     }
     pub(crate) fn record_failed_at(&self) -> Option<f64> {
@@ -276,17 +263,15 @@ impl Snapshot {
         match self.typed.0.record.as_ref()? {
             ContinuationRecord::Usage(r) => r.reason.as_ref().map(|v| v.as_str()),
             ContinuationRecord::Capacity(r) => r.reason.as_ref().map(|v| v.as_str()),
-            ContinuationRecord::Auth(r) => r.extra.get("reason").and_then(Value::as_str),
         }
     }
     pub(crate) fn capacity_record(&self) -> Option<&CapacityContinuation> {
         match self.typed.0.record.as_ref()? {
             ContinuationRecord::Capacity(record) => Some(record),
-            ContinuationRecord::Usage(_) | ContinuationRecord::Auth(_) => None,
+            ContinuationRecord::Usage(_) => None,
         }
     }
     pub(crate) fn status(&self) -> Option<WaitStatus> {
-        use AuthWaitReceiptStatus as A;
         use CapacityContinuationStatus as C;
         use UsageContinuationStatus as U;
         Some(match self.typed.0.record.as_ref()? {
@@ -305,11 +290,6 @@ impl Snapshot {
                 C::Exhausted => WaitStatus::Exhausted,
                 C::Failed => WaitStatus::Failed,
             },
-            ContinuationRecord::Auth(record) => match record.status {
-                A::AuthProbeWait => WaitStatus::AuthProbeWait,
-                A::Completed => WaitStatus::Completed,
-                A::Cancelled => WaitStatus::Cancelled,
-            },
         })
     }
     // Pending settings are merged into the raw agent before a capacity claim.
@@ -327,7 +307,6 @@ impl Snapshot {
         let claims = match self.typed.0.record.as_ref() {
             Some(ContinuationRecord::Usage(r)) => r.task_claims.as_ref(),
             Some(ContinuationRecord::Capacity(r)) => r.task_claims.as_ref(),
-            Some(ContinuationRecord::Auth(r)) => Some(&r.task_claims),
             None => None,
         };
         let saved: BTreeSet<&str> = claims
@@ -492,9 +471,6 @@ impl ProposedRecord {
                         ContinuationRecord::Capacity(r) => {
                             r.status = studio_runtime_schema::string_enum::deserialize(wire).ok()?
                         }
-                        ContinuationRecord::Auth(r) => {
-                            r.status = studio_runtime_schema::string_enum::deserialize(wire).ok()?
-                        }
                     }
                 }
                 ContinuationUpdate::DueAt(v) => match &mut record {
@@ -502,22 +478,18 @@ impl ProposedRecord {
                     ContinuationRecord::Capacity(r) => {
                         r.due_at = Field::deserialize(json!(v)).ok()?
                     }
-                    ContinuationRecord::Auth(r) => r.due_at = Option::deserialize(json!(v)).ok()?,
                 },
                 ContinuationUpdate::Reason(v) => match &mut record {
                     ContinuationRecord::Usage(r) => r.reason = Field::deserialize(json!(v)).ok()?,
                     ContinuationRecord::Capacity(r) => {
                         r.reason = Field::deserialize(json!(v)).ok()?
                     }
-                    ContinuationRecord::Auth(r) => {
-                        r.extra.insert("reason".into(), json!(v));
-                    }
                 },
                 ContinuationUpdate::PlannedAt(v) => match &mut record {
                     ContinuationRecord::Usage(r) => {
                         r.planned_at = Field::deserialize(json!(v)).ok()?
                     }
-                    ContinuationRecord::Capacity(_) | ContinuationRecord::Auth(_) => {
+                    ContinuationRecord::Capacity(_) => {
                         record.extra_mut().insert("plannedAt".into(), json!(v));
                     }
                 },
@@ -525,7 +497,7 @@ impl ProposedRecord {
                     ContinuationRecord::Usage(r) => {
                         r.reset_at = Field::deserialize(json!(v)).ok()?
                     }
-                    ContinuationRecord::Capacity(_) | ContinuationRecord::Auth(_) => {
+                    ContinuationRecord::Capacity(_) => {
                         record.extra_mut().insert("resetAt".into(), json!(v));
                     }
                 },
@@ -533,13 +505,13 @@ impl ProposedRecord {
                     ContinuationRecord::Usage(r) => {
                         r.proof_at = Field::deserialize(json!(v)).ok()?
                     }
-                    ContinuationRecord::Capacity(_) | ContinuationRecord::Auth(_) => {
+                    ContinuationRecord::Capacity(_) => {
                         record.extra_mut().insert("proofAt".into(), json!(v));
                     }
                 },
                 ContinuationUpdate::RemoveClaimedAt => match &mut record {
                     ContinuationRecord::Capacity(r) => r.claimed_at = Field::Missing,
-                    ContinuationRecord::Usage(_) | ContinuationRecord::Auth(_) => {
+                    ContinuationRecord::Usage(_) => {
                         record.extra_mut().remove("claimedAt");
                     }
                 },
@@ -547,7 +519,7 @@ impl ProposedRecord {
                     ContinuationRecord::Capacity(r) => {
                         r.claimed_at = Field::deserialize(json!(v)).ok()?
                     }
-                    ContinuationRecord::Usage(_) | ContinuationRecord::Auth(_) => {
+                    ContinuationRecord::Usage(_) => {
                         record.extra_mut().insert("claimedAt".into(), json!(v));
                     }
                 },
@@ -555,7 +527,7 @@ impl ProposedRecord {
                     ContinuationRecord::Capacity(r) => {
                         r.accepted_turn_id = Field::deserialize(json!(v)).ok()?
                     }
-                    ContinuationRecord::Usage(_) | ContinuationRecord::Auth(_) => {
+                    ContinuationRecord::Usage(_) => {
                         record.extra_mut().insert("acceptedTurnId".into(), json!(v));
                     }
                 },
@@ -563,7 +535,7 @@ impl ProposedRecord {
                     ContinuationRecord::Capacity(r) => {
                         r.waits = Some(Deserialize::deserialize(json!(v)).ok()?)
                     }
-                    ContinuationRecord::Usage(_) | ContinuationRecord::Auth(_) => {
+                    ContinuationRecord::Usage(_) => {
                         record.extra_mut().insert("waits".into(), json!(v));
                     }
                 },
@@ -575,7 +547,7 @@ impl ProposedRecord {
                             .map(|(k, v)| (k.clone(), v.clone()))
                             .collect()
                     }
-                    ContinuationRecord::Usage(_) | ContinuationRecord::Auth(_) => {
+                    ContinuationRecord::Usage(_) => {
                         record.extra_mut().insert("settings".into(), v.clone());
                     }
                 },
@@ -645,7 +617,6 @@ impl ProposedRecord {
                             .all(|(key, value)| record.settings.get(key) == Some(value))
                 }),
                 ContinuationRecord::Usage(record) => record.extra.get("settings") == Some(current),
-                ContinuationRecord::Auth(record) => record.extra.get("settings") == Some(current),
             };
             if !unchanged {
                 updates.push(ContinuationUpdate::Settings(current.clone()));
@@ -685,9 +656,6 @@ impl ProposedAgent {
     }
     pub fn value(&self) -> &Value {
         &self.evidence
-    }
-    pub fn into_value(self) -> Value {
-        self.evidence
     }
     pub(crate) fn checked(&self) -> Option<&AgentRecord> {
         self.identity.as_ref()
@@ -928,7 +896,6 @@ mod tests {
         let samples = [
             json!({"id":"u","accountKey":"a","threadId":"t","epoch":1.0,"turnId":"v","status":"scheduled","cause":"auth","failedAt":1,"future":true}),
             json!({"id":"c","accountKey":"a","threadId":"t","epoch":1,"turnId":"v","status":"scheduled","cause":"serverOverloaded","cwd":"","settings":{},"attempt":1,"maxAttempts":4}),
-            json!({"id":"a","agent":"a","accountKey":"a","status":"auth_probe_wait","cause":"claude_auth_probe","error":"Cannot read Claude Code sign-in status","createdAt":1,"dueAt":null,"source":{},"attempt":{"id":"x","epoch":1,"submitted":false},"inputs":[],"accountPin":{},"taskClaims":[]}),
         ];
         let updates = vec![
             ContinuationUpdate::Status("scheduled"),

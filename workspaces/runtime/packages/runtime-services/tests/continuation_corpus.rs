@@ -426,7 +426,7 @@ fn claimed_capacity_retry_ends_finished_after_its_turn_settles() {
         let snapshot = Snapshot::from_records(raw.clone()).expect("snapshot");
         let decision = capacity_retry::transition(&snapshot, action, 1000.0).expect("transition");
         raw["record"] = decision.record.clone().expect("record").value();
-        raw["agent"] = decision.agent.clone().expect("agent").into_value();
+        raw["agent"] = decision.agent.clone().expect("agent").value().clone();
         decision
     };
     step(
@@ -488,7 +488,7 @@ fn rejected_capacity_start_ends_failed_and_lost_reply_ends_unknown() {
         )
         .expect("claim");
         raw["record"] = claimed.record.expect("record").value();
-        raw["agent"] = claimed.agent.expect("agent").into_value();
+        raw["agent"] = claimed.agent.expect("agent").value().clone();
         let snapshot = Snapshot::from_records(raw).expect("claimed snapshot");
         let failed = capacity_retry::transition(
             &snapshot,
