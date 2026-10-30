@@ -35,7 +35,30 @@ fn cases() -> Vec<Value> {
 }
 
 fn decode_records(value: &Value) -> RadioAuthorizationRecords {
-    serde_json::from_value(value.clone()).expect("Python-written radio records")
+    let mut records: RadioAuthorizationRecords =
+        serde_json::from_value(value.clone()).expect("Python-written radio records");
+    let mut db = rusqlite::Connection::open_in_memory().expect("migrate radio fixture");
+    db.execute_batch("CREATE TABLE runtime_rooms(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+        .expect("migrate radio fixture");
+    let tx = db.transaction().expect("migrate radio fixture");
+    for (id, raw) in &records.rooms {
+        tx.execute(
+            "INSERT INTO runtime_rooms VALUES(?1,?2)",
+            rusqlite::params![id, raw],
+        )
+        .expect("migrate radio fixture");
+    }
+    studio_runtime_store::migrations::migrate_radio_room(&tx).expect("migrate radio fixture");
+    for (id, raw) in &mut records.rooms {
+        *raw = tx
+            .query_row(
+                "SELECT record FROM runtime_rooms WHERE id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .expect("migrate radio fixture");
+    }
+    records
 }
 
 fn python_denial(value: &str) -> RadioDenial {

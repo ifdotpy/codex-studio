@@ -71,18 +71,6 @@ fn optional_string(
     }
 }
 
-fn required_nullable_string(
-    object: &Value,
-    field: &str,
-    location: &str,
-) -> Result<Option<String>, RadioSnapshotError> {
-    match object.get(field) {
-        Some(Value::Null) => Ok(None),
-        Some(Value::String(value)) => Ok(Some(value.clone())),
-        _ => Err(invalid(format!("{location}/{field}"))),
-    }
-}
-
 fn optional_bool(
     object: &Value,
     field: &str,
@@ -91,19 +79,6 @@ fn optional_bool(
 ) -> Result<bool, RadioSnapshotError> {
     match object.get(field) {
         None => Ok(default),
-        Some(Value::Bool(value)) => Ok(*value),
-        _ => Err(invalid(format!("{location}/{field}"))),
-    }
-}
-
-fn nullable_bool(
-    object: &Value,
-    field: &str,
-    location: &str,
-    default: bool,
-) -> Result<bool, RadioSnapshotError> {
-    match object.get(field) {
-        None | Some(Value::Null) => Ok(default),
         Some(Value::Bool(value)) => Ok(*value),
         _ => Err(invalid(format!("{location}/{field}"))),
     }
@@ -197,7 +172,8 @@ struct Room {
     active: Option<ActiveTurn>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
 enum RadioStatus {
     Idle,
     Waiting,
@@ -206,12 +182,50 @@ enum RadioStatus {
     Blocked,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ActiveTurn {
     event_id: String,
     agent_id: String,
     epoch: u64,
+    #[serde(deserialize_with = "present_nullable")]
     thread_id: Option<String>,
+}
+
+fn present_nullable<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Option::<String>::deserialize(d)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredRadioRoom {
+    id: String,
+    kind: PrivateRoom,
+    members: Vec<String>,
+    project_path: String,
+    radio: StoredRadio,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum PrivateRoom {
+    Private,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredRadio {
+    direct: bool,
+    team_id: String,
+    status: RadioStatus,
+    #[serde(deserialize_with = "present_radio_active")]
+    active: Option<ActiveTurn>,
+}
+
+fn present_radio_active<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<ActiveTurn>, D::Error> {
+    Option::<ActiveTurn>::deserialize(d)
 }
 
 #[derive(Clone, Debug)]
@@ -319,58 +333,37 @@ impl RadioAuthorizationSnapshot {
                 return Err(invalid(format!("rooms/{key}/id")));
             }
             let location = format!("rooms/{key}");
-            let row = parse_object(raw, &location)?;
-            let id = required_string(&row, "id", &location)?;
-            if id != *key || row.get("kind").and_then(Value::as_str) != Some("private") {
+            let mut decoder = serde_json::Deserializer::from_str(raw);
+            let row: StoredRadioRoom =
+                serde_path_to_error::deserialize(&mut decoder).map_err(|error| {
+                    invalid(format!(
+                        "{location}/{}",
+                        error.path().to_string().replace('.', "/")
+                    ))
+                })?;
+            decoder.end().map_err(|_| invalid(&location))?;
+            if row.id != *key
+                || row.id.is_empty()
+                || row.project_path.is_empty()
+                || row.radio.team_id.is_empty()
+                || row.members.iter().any(String::is_empty)
+                || row
+                    .radio
+                    .active
+                    .as_ref()
+                    .is_some_and(|active| active.event_id.is_empty() || active.agent_id.is_empty())
+            {
                 return Err(invalid(format!("{location}/id")));
             }
-            let members = string_list(&row, "members", &location)?;
-            let project_path = required_string(&row, "projectPath", &location)?;
-            let radio = row
-                .get("radio")
-                .filter(|value| value.is_object())
-                .ok_or_else(|| invalid(format!("{location}/radio")))?;
-            let direct = nullable_bool(radio, "direct", &format!("{location}/radio"), false)?;
-            let team_id = required_string(radio, "teamId", &format!("{location}/radio"))?;
-            let status = match radio.get("status").and_then(Value::as_str) {
-                Some("idle") => RadioStatus::Idle,
-                Some("waiting") => RadioStatus::Waiting,
-                Some("speaking") => RadioStatus::Speaking,
-                Some("stopping") => RadioStatus::Stopping,
-                Some("blocked") => RadioStatus::Blocked,
-                _ => return Err(invalid(format!("{location}/radio/status"))),
-            };
-            let active = match radio.get("active") {
-                None | Some(Value::Null) => None,
-                Some(value) if value.is_object() => Some(ActiveTurn {
-                    event_id: required_string(
-                        value,
-                        "eventId",
-                        &format!("{location}/radio/active"),
-                    )?,
-                    agent_id: required_string(
-                        value,
-                        "agentId",
-                        &format!("{location}/radio/active"),
-                    )?,
-                    epoch: optional_u64(value, "epoch", &format!("{location}/radio/active"))?
-                        .ok_or_else(|| invalid(format!("{location}/radio/active/epoch")))?,
-                    thread_id: required_nullable_string(
-                        value,
-                        "threadId",
-                        &format!("{location}/radio/active"),
-                    )?,
-                }),
-                _ => return Err(invalid(format!("{location}/radio/active"))),
-            };
+            let PrivateRoom::Private = row.kind;
             rooms.push(Room {
-                id,
-                members,
-                project_path,
-                direct,
-                team_id,
-                status,
-                active,
+                id: row.id,
+                members: row.members,
+                project_path: row.project_path,
+                direct: row.radio.direct,
+                team_id: row.radio.team_id,
+                status: row.radio.status,
+                active: row.radio.active,
             });
         }
 

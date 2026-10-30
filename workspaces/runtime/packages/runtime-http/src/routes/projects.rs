@@ -1288,7 +1288,7 @@ async fn peer_teams(
         .await
         .map_err(projects_error)?;
     let result = super::generated_json::<crate::generated::PeerProjectResponse>(value)
-        .map(PeerTeamWriteResponse::Project)?;
+        .map(|project| PeerTeamWriteResponse::Project(Box::new(project)))?;
     Ok(Json(result))
 }
 
@@ -1297,7 +1297,7 @@ async fn peer_teams(
 enum PeerTeamWriteResponse {
     Radio(studio_runtime_services::radio_runtime::RadioReply),
     Conversion(studio_runtime_services::peer_conversion::ConversionReply),
-    Project(crate::generated::PeerProjectResponse),
+    Project(Box<crate::generated::PeerProjectResponse>),
 }
 
 fn projects_error(error: ProjectsError) -> ApiError {

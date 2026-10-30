@@ -260,6 +260,7 @@ async fn seed(store: &RuntimeStore, snapshot: &Value) {
                 }
             }
             db.execute("INSERT OR IGNORE INTO runtime_agent_volatile(id) SELECT id FROM runtime_agents", [])?;
+            studio_runtime_store::migrations::migrate_radio_room(db)?;
             Ok(())
         })
         .await
@@ -334,6 +335,9 @@ fn state(store: &RuntimeStore, tables: &Value) -> Value {
 fn normalize(value: &mut Value) {
     match value {
         Value::Object(map) => {
+            if map.contains_key("teamId") && map.get("direct") == Some(&json!(false)) {
+                map.remove("direct");
+            }
             if map.contains_key("rootId") && map.contains_key("epoch") && map.contains_key("status")
             {
                 for key in studio_runtime_store::agent_volatile::AGENT_VOLATILE_FIELDS
