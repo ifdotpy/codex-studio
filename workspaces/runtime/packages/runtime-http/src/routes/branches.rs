@@ -940,65 +940,31 @@ async fn branch_needs_catalog(
         .await
 }
 
-// Historical copy rows have a looser shape than selected transcript records.
+// Historical copy rows contain optional fields and opaque input evidence.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BranchTurn {
     turn_id: Option<String>,
 }
-#[derive(Default, Deserialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BranchItem {
     #[serde(default)]
     turn_id: Value,
-    #[serde(default, deserialize_with = "copy_text")]
     role: Option<String>,
-    #[serde(default, deserialize_with = "copy_text")]
     title: Option<String>,
-    #[serde(default, deserialize_with = "copy_text")]
     text: Option<String>,
-    #[serde(default, deserialize_with = "copy_present")]
     assets: Option<Value>,
-    #[serde(default, deserialize_with = "copy_inputs")]
     inputs: Option<Vec<BranchInput>>,
 }
-#[derive(Default, Deserialize)]
+#[derive(Deserialize)]
 struct BranchInput {
-    #[serde(default, deserialize_with = "copy_present")]
-    id: Option<Value>,
-    #[serde(default, deserialize_with = "copy_present")]
-    kind: Option<Value>,
-    #[serde(default, deserialize_with = "copy_present")]
-    created: Option<Value>,
-    #[serde(default, deserialize_with = "copy_present")]
-    at: Option<Value>,
-    #[serde(default, deserialize_with = "copy_present")]
+    id: Option<Box<serde_json::value::RawValue>>,
+    kind: Option<Box<serde_json::value::RawValue>>,
+    created: Option<Box<serde_json::value::RawValue>>,
+    at: Option<Box<serde_json::value::RawValue>>,
     assets: Option<Value>,
-    #[serde(default, deserialize_with = "copy_text")]
     text: Option<String>,
-}
-fn copy_text<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
-    Ok(Value::deserialize(d)?.as_str().map(str::to_owned))
-}
-fn copy_present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Value>, D::Error> {
-    Value::deserialize(d).map(Some)
-}
-fn copy_inputs<'de, D: serde::Deserializer<'de>>(
-    d: D,
-) -> Result<Option<Vec<BranchInput>>, D::Error> {
-    Ok(match Value::deserialize(d)? {
-        Value::Array(inputs) => Some(inputs.into_iter().map(copy_object).collect()),
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) | Value::Object(_) => {
-            None
-        }
-    })
-}
-fn copy_object<T: for<'de> Deserialize<'de> + Default>(value: Value) -> T {
-    if value.is_object() {
-        T::deserialize(value).unwrap_or_default()
-    } else {
-        T::default()
-    }
 }
 
 struct BranchCopy<'a> {
@@ -1061,8 +1027,8 @@ async fn copy_branch_history(
         };
         let mut assets=BTreeMap::<String,Value>::new();
         for (old_id, raw, _created) in rows.into_iter().take_while(|(_, _, created)| *created <= cutoff) {
-            let source_record: Value = serde_json::from_str(&raw)?;
-            let source_record: BranchItem = copy_object(source_record);
+            let source_record = serde_json::from_str::<studio_runtime_schema::json_object::JsonObject<BranchItem>>(&raw)
+                .map_err(|_| studio_runtime_store::StoreError::InvalidStoredObject { table: "runtime_items", id: old_id.clone() })?.0;
             if before && source_record.turn_id.as_str()==selected.record.extra("turnId").and_then(Value::as_str){continue;}
             let local_id=old_id.split_once(':').map(|(_,id)|id).unwrap_or(&old_id);
             let id=format!("{target}:{local_id}");
@@ -1361,10 +1327,9 @@ mod tests {
             tx.execute("INSERT INTO runtime_agents(id,record) VALUES('child',?1)", [child.to_string()])?;
             tx.execute("INSERT INTO runtime_workspace_operations(id,record) VALUES('op',?1)", [json!({"source":source_identity,"phase":"provider_ready"}).to_string()])?;
             tx.execute("INSERT INTO runtime_assets(id,record) VALUES('asset',?1)", [json!({"id":"asset","agent":"source","name":"file.txt","path":asset_path,"mime":"text/plain","image":false,"size":1,"hash":"h","created":1}).to_string()])?;
-            tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES('source:a','source',?1,1)", [r#"{"role":9,"text":"old","text":"first","turnId":"t","assets":[{"id":"asset"}],"inputs":[null,{"text":"second","created":null,"at":2,"assets":[{"id":"asset"}]}]}"#])?;
+            tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES('source:a','source',?1,1)", [r#"{"role":"assistant","text":"first","turnId":"t","assets":[{"id":"asset"}],"inputs":[{"text":"second","created":null,"at":2,"assets":[{"id":"asset"}]}]}"#])?;
             tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES('source:b','source',?1,1)", [r#"{"turnId":"t","text":null,"assets":null}"#])?;
             tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES('source:c','source',?1,1)", [json!({"turnId":7,"text":"🦀".repeat(20_001),"inputs":[{"text":"Ж".repeat(19_999)},{"text":"AB"}]}).to_string()])?;
-            tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES('source:d','source','42',1)", [])?;
             tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES('source:after','source',?1,2)", [r#"{"turnId":"later","future":1e400}"#])?;
             Ok(())
         }).await.unwrap();
@@ -1402,17 +1367,16 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(rows.len(), 4);
+        assert_eq!(rows.len(), 3);
         let a: Value = serde_json::from_str(&rows[0].1).unwrap();
         let b: Value = serde_json::from_str(&rows[1].1).unwrap();
         assert_eq!(a["role"], "assistant");
         assert_eq!(a["text"], "first");
-        assert_eq!(a["inputs"][1]["at"], Value::Null);
-        assert_eq!(a["assets"][0]["id"], a["inputs"][1]["assets"][0]["id"]);
+        assert_eq!(a["inputs"][0]["at"], 2);
+        assert_eq!(a["assets"][0]["id"], a["inputs"][0]["assets"][0]["id"]);
         assert!(a["assets"][0].get("path").is_none());
-        assert_eq!(b["assets"], Value::Null);
+        assert_eq!(b["assets"], json!([]));
         let c: Value = serde_json::from_str(&rows[2].1).unwrap();
-        let d: Value = serde_json::from_str(&rows[3].1).unwrap();
         assert_eq!(c["turnId"], 7);
         assert_eq!(c["text"].as_str().unwrap().chars().count(), 20_000);
         assert_eq!(c["truncated"], true);
@@ -1422,8 +1386,6 @@ mod tests {
         );
         assert_eq!(c["inputs"][1]["text"], "A");
         assert_eq!(c["inputs"][1]["truncated"], true);
-        assert_eq!(d["role"], "assistant");
-        assert_eq!(d["text"], "");
         store
             .read_async("fixture", |db| {
                 let item = TranscriptRepository::item(db, "child", "child:c")
@@ -1500,7 +1462,7 @@ mod tests {
             .transaction(|tx| {
                 tx.execute(
                     "UPDATE runtime_items SET record=?1 WHERE id='source:a'",
-                    [r#"{"turnId":"t","future":1e400}"#],
+                    [r#"{"turnId":"t","role":9}"#],
                 )?;
                 tx.execute(
                     "UPDATE runtime_items SET record=?1 WHERE id='source:b'",
@@ -1510,10 +1472,12 @@ mod tests {
             })
             .await
             .unwrap();
+        let error = copy_branch_history(&store, copy(), Arc::new(tokio::sync::Notify::new()))
+            .await
+            .expect_err("malformed read field fails the copy");
         assert!(
-            copy_branch_history(&store, copy(), Arc::new(tokio::sync::Notify::new()))
-                .await
-                .is_err()
+            format!("{error:?}").contains("runtime_items/source:a"),
+            "{error:?}"
         );
         store
             .read_async("fixture", |db| {
