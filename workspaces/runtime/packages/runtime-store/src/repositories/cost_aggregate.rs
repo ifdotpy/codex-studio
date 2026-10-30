@@ -144,7 +144,7 @@ fn cost_observation(
 
 /// The members of an agent record that decide how its usage is priced and
 /// where its Claude session logs are.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CostMember {
     #[serde(default)]
@@ -157,7 +157,7 @@ pub struct CostMember {
 }
 
 /// One earlier account of an agent.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CostAccountHistory {
     #[serde(default)]

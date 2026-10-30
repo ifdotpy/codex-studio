@@ -364,15 +364,45 @@ async fn replace(
     write_entities(store, collection, rows, None).await
 }
 
-const AGENT_ROOTS_SQL: &str =
-    "SELECT rowid, COALESCE(root_id,id) FROM runtime_agents INDEXED BY runtime_agent_root_v2";
+#[derive(Clone, Debug, PartialEq)]
+struct AgentCostSource {
+    id: String,
+    root: String,
+    deleted: bool,
+    fields: Option<AgentCostFields>,
+}
 
-async fn read_agent_roots(store: &Arc<RuntimeStore>) -> Result<BTreeMap<i64, String>, StoreError> {
+#[derive(Clone, Debug, serde::Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct AgentCostFields {
+    #[serde(default)]
+    is_lead: Option<bool>,
+    #[serde(flatten)]
+    member: studio_runtime_store::cost_aggregate::CostMember,
+}
+
+fn agent_cost_source(row: &rusqlite::Row<'_>, offset: usize) -> rusqlite::Result<AgentCostSource> {
+    let record: String = row.get(offset + 3)?;
+    Ok(AgentCostSource {
+        id: row.get(offset)?,
+        root: row.get(offset + 1)?,
+        deleted: row.get(offset + 2)?,
+        // Unknown legacy records must still trigger conservative refreshes.
+        fields: serde_json::from_str(&record).ok(),
+    })
+}
+
+const AGENT_ROOTS_SQL: &str =
+    "SELECT rowid,id,COALESCE(root_id,id),deleted_at IS NOT NULL,record FROM runtime_agents";
+
+async fn read_agent_roots(
+    store: &Arc<RuntimeStore>,
+) -> Result<BTreeMap<i64, AgentCostSource>, StoreError> {
     store
         .read_async("bounded-entities/agent-roots", |tx| {
             let mut statement = tx.prepare(AGENT_ROOTS_SQL)?;
             Ok(statement
-                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .query_map([], |row| Ok((row.get(0)?, agent_cost_source(row, 1)?)))?
                 .collect::<rusqlite::Result<_>>()?)
         })
         .await
@@ -380,32 +410,30 @@ async fn read_agent_roots(store: &Arc<RuntimeStore>) -> Result<BTreeMap<i64, Str
 
 async fn changed_agent_roots(
     store: &Arc<RuntimeStore>,
-    previous: &mut BTreeMap<i64, String>,
+    previous: &mut BTreeMap<i64, AgentCostSource>,
     rows: Vec<i64>,
 ) -> Result<BTreeSet<String>, StoreError> {
-    let current = store
-        .read_async("bounded-entities/changed-agent-roots", move |tx| {
-            let mut statement =
-                tx.prepare("SELECT COALESCE(root_id,id) FROM runtime_agents WHERE rowid=?1")?;
-            rows.into_iter()
-                .map(|rowid| {
-                    Ok((
-                        rowid,
-                        statement
-                            .query_row([rowid], |row| row.get::<_, String>(0))
-                            .optional()?,
-                    ))
-                })
-                .collect::<Result<Vec<_>, StoreError>>()
-        })
-        .await?;
+    let current = store.read_async("bounded-entities/changed-agent-roots", move |tx| {
+        let mut statement = tx.prepare("SELECT id,COALESCE(root_id,id),deleted_at IS NOT NULL,record FROM runtime_agents WHERE rowid=?1")?;
+        rows.into_iter().collect::<BTreeSet<_>>().into_iter().map(|rowid| Ok((rowid, statement.query_row([rowid], |row| agent_cost_source(row, 0)).optional()?))).collect::<Result<Vec<_>, StoreError>>()
+    }).await?;
     let mut roots = BTreeSet::new();
     for (rowid, root) in current {
-        if let Some(old) = previous.remove(&rowid) {
-            roots.insert(old);
+        let old = previous.remove(&rowid);
+        let unchanged = match (&old, &root) {
+            (Some(old), Some(new)) => old.fields.is_some() && old == new,
+            (None, None) => true,
+            _ => false,
+        };
+        if !unchanged {
+            if let Some(old) = &old {
+                roots.insert(old.root.clone());
+            }
+            if let Some(new) = &root {
+                roots.insert(new.root.clone());
+            }
         }
         if let Some(root) = root {
-            roots.insert(root.clone());
             previous.insert(rowid, root);
         }
     }
@@ -790,15 +818,14 @@ mod tests {
         assert!(!AGENT_ROOTS_SQL.contains("json_"));
         let db = rusqlite::Connection::open_in_memory().expect("database");
         db.execute_batch(
-            "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, root_id TEXT);\
-             CREATE INDEX runtime_agent_root_v2 ON runtime_agents(root_id);\
-             INSERT INTO runtime_agents VALUES('lead','lead'),('child','lead'),('legacy',NULL);",
+            "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, root_id TEXT, deleted_at TEXT, record TEXT);\
+             INSERT INTO runtime_agents VALUES('lead','lead',NULL,'{}'),('child','lead',NULL,'{}'),('legacy',NULL,NULL,'{}');",
         )
         .expect("agents");
         let mut statement = db.prepare(AGENT_ROOTS_SQL).expect("root query");
         let roots = statement
             .query_map([], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(2)?))
             })
             .expect("root rows")
             .collect::<rusqlite::Result<BTreeMap<_, _>>>()
@@ -1746,6 +1773,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn session_cost_agent_changes_only_republish_cost_inputs() {
+        let (_root, state) = state().await;
+        let store = state.store.as_ref().expect("store");
+        store.transaction(|tx| {
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('a',?1)", [json!({"id":"a","rootId":"a","isLead":true,"provider":"codex","accountKey":"default","threadId":"thread"}).to_string()])?;
+            Ok(())
+        }).await.expect("agent");
+        let mut roots = read_agent_roots(store).await.expect("initial roots");
+        let rowid = *roots.keys().next().expect("rowid");
+        store.transaction(|tx| {
+            tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.tail','new output') WHERE id='a'", [])?;
+            Ok(())
+        }).await.expect("output update");
+        assert!(
+            changed_agent_roots(store, &mut roots, vec![rowid])
+                .await
+                .expect("roots")
+                .is_empty(),
+            "unrelated output must not trigger a session-cost read"
+        );
+        store.transaction(|tx| {
+            tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.threadId','new-thread') WHERE id='a'", [])?;
+            Ok(())
+        }).await.expect("thread update");
+        assert_eq!(
+            changed_agent_roots(store, &mut roots, vec![rowid])
+                .await
+                .expect("roots"),
+            BTreeSet::from(["a".into()])
+        );
+        for (path, value) in [
+            ("$.accountKey", json!("other")),
+            ("$.provider", json!("claude")),
+            (
+                "$.accountHistory",
+                json!([{"provider":"codex","accountKey":"old","threadId":"past"}]),
+            ),
+            ("$.isLead", json!(false)),
+            ("$.deletedAt", json!(1)),
+        ] {
+            let value = value.to_string();
+            store.transaction(move |tx| {
+                tx.execute("UPDATE runtime_agents SET record=json_set(record,?1,json(?2)) WHERE id='a'", rusqlite::params![path, value])?;
+                Ok(())
+            }).await.expect("cost field update");
+            assert_eq!(
+                changed_agent_roots(store, &mut roots, vec![rowid, rowid])
+                    .await
+                    .expect("roots"),
+                BTreeSet::from(["a".into()]),
+                "changed {path}"
+            );
+        }
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "UPDATE runtime_agents SET record=json_set(record,'$.rootId','b') WHERE id='a'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("move");
+        assert_eq!(
+            changed_agent_roots(store, &mut roots, vec![rowid])
+                .await
+                .expect("roots"),
+            BTreeSet::from(["a".into(), "b".into()])
+        );
+    }
+
+    #[tokio::test]
     async fn scoped_session_cost_update_and_delete_preserve_an_unrelated_team() {
         let (_root, state) = state().await;
         let store = state.store.as_ref().expect("store");
@@ -1778,7 +1877,7 @@ mod tests {
         let mut roots = read_agent_roots(store).await.expect("root identities");
         let rowid = *roots
             .iter()
-            .find(|(_, root)| *root == "a")
+            .find(|(_, root)| root.root == "a")
             .expect("a rowid")
             .0;
         store
