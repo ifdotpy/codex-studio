@@ -7,6 +7,7 @@ pub mod agent_progress;
 pub mod annotation_command;
 pub mod annotation_record;
 pub mod api_schema;
+pub mod approvals;
 pub mod checkpoint_record;
 pub mod claude_controls;
 pub mod claude_failure;

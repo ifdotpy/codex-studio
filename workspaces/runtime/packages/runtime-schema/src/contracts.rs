@@ -1776,6 +1776,7 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             .into_generator();
         generator.subschema_for::<crate::supervisor_contract::HealthResult>();
         generator.subschema_for::<crate::persistence::RecipientDelivery>();
+        generator.subschema_for::<crate::approvals::Approval>();
         generator.subschema_for::<crate::provider_diagnostics::StdinTimingDiagnostic>();
         generator.subschema_for::<crate::provider_diagnostics::ReplyTimingDiagnostic>();
         generator.subschema_for::<studio_client_domain::protocol::Request>();
