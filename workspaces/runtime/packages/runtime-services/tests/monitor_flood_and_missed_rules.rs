@@ -1,33 +1,33 @@
 //! Deterministic witnesses for bounded monitor wakes and missed one-shot rules.
-use crate::TestJson;
 use crate::monitor_fixtures as fixtures;
 use serde_json::{Value, json};
 use studio_runtime_services::{
     monitor_policy::{self, Effect, Operation},
-    rules_engine::{TickObservation},
+    rules_engine::TickObservation,
 };
 
-fn monitor() -> (Value, Value, Operation) {
+fn monitor() -> (studio_runtime_store::MonitorRecord, Value, Operation) {
     let root = fixtures::tempdir();
     let case = fixtures::corpus(root.path()).remove(0);
-    let mut record = case["before"].clone();
-    record["outputPatterns"] = json!(["READY"]);
-    let operation = serde_json::from_value(record["operation"].clone()).expect("operation");
+    let mut record = fixtures::monitor(root.path());
+    record.output_patterns = Some(vec!["READY".into()]);
+    let operation = record.operation.clone().expect("operation");
     (record, case["actor"].clone(), operation)
 }
 
 fn output(
-    record: &mut Value,
+    record: &mut studio_runtime_store::MonitorRecord,
     actor: &Value,
     operation: &Operation,
     stream: &str,
     bytes: &[u8],
     now: f64,
 ) -> Vec<Value> {
-    let snapshot = fixtures::checked(record.clone(), actor.clone()).expect("snapshot");
+    let snapshot =
+        monitor_policy::MonitorSnapshot::checked_stored(record, actor.clone()).expect("snapshot");
     let decision =
         monitor_policy::output_stream(&snapshot, operation, stream, bytes, now).expect("output");
-    *record = decision.record.value();
+    *record = decision.record;
     decision
         .effects
         .into_iter()
@@ -57,14 +57,22 @@ fn monitor_bucket_admits_then_suppresses_and_refills() {
             b"READY\n",
             2000.0 + f64::from(second),
         ));
-        record = serde_json::from_str(&record.to_string()).expect("persisted budget");
+        record = serde_json::from_str(&serde_json::to_string(&record).expect("serialize budget"))
+            .expect("persisted budget");
     }
     assert_eq!(
         events.len(),
         23,
         "22 admitted batches and one initial suppression notice"
     );
-    assert_eq!(record["outputWakeBudget"]["totalSuppressedMatches"], 3);
+    assert_eq!(
+        record
+            .output_wake_budget
+            .as_ref()
+            .expect("budget")
+            .total_suppressed_matches,
+        3
+    );
     assert!(
         events
             .iter()
@@ -125,7 +133,8 @@ fn sustained_monitor_flood_pauses_only_output_wakes_with_notice() {
         .is_empty(),
         "pause survives quiet time"
     );
-    let snapshot = fixtures::checked(record, actor).expect("snapshot");
+    let snapshot =
+        monitor_policy::MonitorSnapshot::checked_stored(&record, actor).expect("snapshot");
     let finished =
         monitor_policy::finish(&snapshot, Some(&operation), Some(0), None, 3001.0).expect("finish");
     assert!(
@@ -181,9 +190,11 @@ fn monitor_payload_has_first_line_excerpt_and_exact_log_offset_across_streams() 
     assert_eq!(events[0]["matches"][0]["count"], 2);
 }
 
+const ONCE_RULE: &str = r#"{"id":"once","agent":"owner","epoch":1,"name":"Once","kind":"once","status":"active","intervalSeconds":60,"nextAt":2000.0,"at":2000.0,"created":1900.0,"command":"echo should-run-only-on-time","text":"Check result","checks":0,"wakes":0,"inFlight":false,"fileGeneration":0,"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"livenessCommand":"","event":""}"#;
+
 fn once() -> (Value, Value) {
     (
-        json!({"id":"once","agent":"owner","epoch":1,"name":"Once","kind":"once","status":"active","intervalSeconds":60,"nextAt":2000.0,"at":2000.0,"created":1900.0,"command":"echo should-run-only-on-time","text":"Check result","checks":0,"wakes":0,"inFlight":false,"fileGeneration":0,"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"livenessCommand":"","event":""}),
+        serde_json::from_str(ONCE_RULE).expect("rule fixture"),
         json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"owner","rootId":"owner","epoch":1,"status":"idle","autoWake":true,"isLead":true}),
     )
 }
@@ -202,10 +213,14 @@ fn overdue_once_rule_emits_missed_event_without_command_and_stays_pending() {
     assert_eq!(payload["rule"], "once");
     assert_eq!(payload["dueAt"], 2000.0);
     assert_eq!(payload["delaySeconds"], 61.0);
-    let record = decision.record.expect("pending rule").value();
-    assert_eq!(record["status"], "paused");
-    assert_eq!(record["nextAt"], 2000.0);
-    let snapshot = crate::rule_snapshot(record, owner).expect("persisted rule");
+    let record = decision.record.expect("pending rule");
+    assert_eq!(
+        record.status,
+        studio_runtime_schema::rule_record::RuleStatus::Paused
+    );
+    assert_eq!(record.next_at.as_f64(), Some(2000.0));
+    let snapshot = studio_runtime_services::rules_engine::RuleSnapshot::from_stored(&record, owner)
+        .expect("persisted rule");
     assert_eq!(
         snapshot
             .tick(3000.0, TickObservation::default())
@@ -258,8 +273,8 @@ fn monitor_excerpt_is_bounded_and_invalid_budget_is_rejected() {
             .expect("offset")
             > 0
     );
-    record["outputWakeBudget"]["tokens"] = json!(OUTPUT_WAKE_CAPACITY + 1);
-    assert!(fixtures::checked(record, actor).is_err());
+    record.output_wake_budget.as_mut().expect("budget").tokens = OUTPUT_WAKE_CAPACITY as f64 + 1.0;
+    assert!(monitor_policy::MonitorSnapshot::checked_stored(&record, actor).is_err());
 }
 
 #[tokio::test]
@@ -277,7 +292,13 @@ async fn monitor_output_receipt_commits_excerpt_budget_and_pause_across_restart(
         serde_json::from_value(case["before"]["operation"].clone()).expect("operation");
     case["before"]["outputPatterns"] = json!(["READY"]);
     case["before"]["log"] = json!(monitor_output::log_root(store.root()).join(format!("{id}.log")));
-    fixtures::seed(&store, &case).await;
+    let mut initial = fixtures::monitor(root.path());
+    initial.output_patterns = Some(vec!["READY".into()]);
+    initial.log = monitor_output::log_root(store.root())
+        .join(format!("{id}.log"))
+        .to_string_lossy()
+        .into_owned();
+    fixtures::seed(&store, &case, initial).await;
     let output = MonitorOutput::default();
     for second in 0..60_u64 {
         output
@@ -340,10 +361,14 @@ async fn monitor_output_receipt_commits_excerpt_budget_and_pause_across_restart(
     let monitor = MonitorsRepository::get(&store.test_reader().expect("reader"), &id)
         .expect("read monitor")
         .expect("monitor");
-    assert_eq!(monitor.value()["status"], "running");
-    assert_eq!(monitor.value()["bytes"], 61 * 6);
-    assert_eq!(monitor.value()["outputWakeBudget"]["paused"], true);
-    let total = monitor.value()["outputWakeBudget"]["totalSuppressedMatches"].clone();
+    assert_eq!(monitor.status.as_str(), "running");
+    assert_eq!(monitor.bytes.get(), 61 * 6);
+    assert!(monitor.output_wake_budget.as_ref().expect("budget").paused);
+    let total = monitor
+        .output_wake_budget
+        .as_ref()
+        .expect("budget")
+        .total_suppressed_matches;
     store
         .transaction_with(move |tx| {
             monitor_runtime::finish_in_transaction(tx, &id, Some(&operation), Some(0), None, 2201.0)
@@ -400,12 +425,13 @@ async fn missed_once_rule_is_atomic_durable_and_owner_can_resume_or_delete() {
     }
     let root = fixtures::tempdir();
     let store = RuntimeStore::open(Some(root.path())).await.expect("store");
-    let (rule, mut owner) = once();
+    let (_, mut owner) = once();
+    let rule: RuleRecord = serde_json::from_str(ONCE_RULE).expect("rule fixture");
     owner["cwd"] = json!(root.path());
     store
         .transaction(move |tx| {
             AgentRepository::put(tx, &AgentRecord::from_value(owner)?)?;
-            RulesRepository::put(tx, &serde_json::from_value::<RuleRecord>(rule)?)
+            RulesRepository::put(tx, &rule)
         })
         .await
         .expect("seed");
@@ -423,9 +449,12 @@ async fn missed_once_rule_is_atomic_durable_and_owner_can_resume_or_delete() {
         RulesRepository::get(&store.test_reader().expect("reader"), "once")
             .expect("read rule")
             .expect("rule")
-            .value()
     };
-    assert_eq!(read()["status"], "active", "event failure rolls back pause");
+    assert_eq!(
+        read().status,
+        studio_runtime_schema::rule_record::RuleStatus::Active,
+        "event failure rolls back pause"
+    );
     assert!(
         fixtures::events(&store)
             .as_array()
@@ -443,7 +472,10 @@ async fn missed_once_rule_is_atomic_durable_and_owner_can_resume_or_delete() {
         .await
         .expect("missed tick");
     assert_eq!(monitor.0.load(std::sync::atomic::Ordering::SeqCst), 0);
-    assert_eq!(read()["status"], "paused");
+    assert_eq!(
+        read().status,
+        studio_runtime_schema::rule_record::RuleStatus::Paused
+    );
     let original = fixtures::events(&store);
     assert_eq!(original[0]["kind"], "rule_missed");
     assert_eq!(original[0]["text"]["dueAt"], 2000.0);
@@ -487,15 +519,21 @@ async fn missed_once_rule_is_atomic_durable_and_owner_can_resume_or_delete() {
     )
     .await
     .expect("owner cancel");
-    assert_eq!(serde_json::from_str::<Value>(deleted.value.0.get()).unwrap()["deleted"], "once");
+    assert_eq!(
+        serde_json::from_str::<Value>(deleted.value.0.get()).unwrap()["deleted"],
+        "once"
+    );
 }
 
 #[test]
 fn legacy_matcher_context_never_invents_a_log_offset() {
     use base64::{Engine, engine::general_purpose::STANDARD};
     let (mut record, actor, operation) = monitor();
-    record["bytes"] = json!(100);
-    record["outputMatcherTail"] = json!({"stdout":STANDARD.encode(b"REA")});
+    record.bytes = 100.try_into().expect("bytes");
+    record.output_matcher_tail = Some(studio_runtime_schema::monitor_record::StreamValues {
+        stdout: Some(STANDARD.encode(b"REA")),
+        stderr: None,
+    });
     let events = output(
         &mut record,
         &actor,
@@ -507,13 +545,14 @@ fn legacy_matcher_context_never_invents_a_log_offset() {
     // The old stream prefix has no log location. The new fragment does.
     assert_eq!(events[0]["matches"][0]["excerpt"], "DY done");
     assert_eq!(events[0]["matches"][0]["logOffset"], 100);
-    fixtures::checked(record, actor).expect("legacy context remains readable");
+    monitor_policy::MonitorSnapshot::checked_stored(&record, actor)
+        .expect("legacy context remains readable");
 }
 
 #[test]
 fn multiline_pattern_excerpt_contains_the_complete_match() {
     let (mut record, actor, operation) = monitor();
-    record["outputPatterns"] = json!(["A\nB"]);
+    record.output_patterns = Some(vec!["A\nB".into()]);
     let events = output(
         &mut record,
         &actor,

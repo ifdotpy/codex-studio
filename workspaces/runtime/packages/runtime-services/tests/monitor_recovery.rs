@@ -36,7 +36,10 @@ fn recovery_without_start_is_readable_only_when_closed() {
     assert!(fixtures::checked(record.clone(), case["actor"].clone()).is_ok());
     record["reattachRecovery"]["unexpected"] = json!(true);
     assert!(fixtures::checked(record.clone(), case["actor"].clone()).is_ok());
-    record["reattachRecovery"].as_object_mut().unwrap().remove("unexpected");
+    record["reattachRecovery"]
+        .as_object_mut()
+        .unwrap()
+        .remove("unexpected");
     for status in ["running", "starting"] {
         record["reattachRecovery"]["status"] = json!(status);
         assert!(fixtures::checked(record.clone(), case["actor"].clone()).is_err());
@@ -71,8 +74,7 @@ fn input_attempt_requires_settlement_identity() {
     let op = operation(&case);
     let mut record = case["before"].clone();
     record["interactive"] = json!(true);
-    let snapshot =
-        fixtures::checked(record.clone(), case["actor"].clone()).expect("snapshot");
+    let snapshot = fixtures::checked(record.clone(), case["actor"].clone()).expect("snapshot");
     let input = Input {
         text: "hello".into(),
         rows: None,
@@ -126,10 +128,7 @@ async fn local_cancel_persists_before_fake_provider_termination() {
             effect: &'a monitor_policy::Effect,
         ) -> futures_util::future::BoxFuture<'a, Submission> {
             Box::pin(async move {
-                assert_eq!(
-                    record(&self.store, &self.id).cancel_requested,
-                    Some(true)
-                );
+                assert_eq!(record(&self.store, &self.id).cancel_requested, Some(true));
                 let monitor_policy::Effect::Native { method, params, .. } = effect else {
                     panic!("expected provider termination")
                 };
@@ -149,7 +148,9 @@ async fn local_cancel_persists_before_fake_provider_termination() {
     let id = "local-cancel-provider-test";
     case["before"]["id"] = json!(id);
     let store = Arc::new(fixtures::store(root.path(), "local-cancel").await);
-    fixtures::seed(&store, &case).await;
+    let mut monitor = fixtures::monitor(root.path());
+    monitor.id = id.into();
+    fixtures::seed(&store, &case, monitor).await;
     let port = Port {
         store: Arc::clone(&store),
         id: id.into(),
@@ -175,7 +176,7 @@ async fn receipt_survives_store_failure_restart_and_replays_once() {
     let case = running(&cases);
     let id = case["before"]["id"].as_str().expect("monitor fixture");
     let store = fixtures::store(root.path(), "receipt").await;
-    fixtures::seed(&store, &case).await;
+    fixtures::seed(&store, &case, fixtures::monitor(root.path())).await;
     let receipt = ResultReceipt {
         version: 1,
         key: id.into(),
@@ -240,7 +241,12 @@ async fn output_queued_before_a_finish_is_ignored_without_a_cursor_gap() {
     case["before"]["log"] = json!(
         studio_runtime_services::monitor_output::log_root(store.root()).join(format!("{id}.log"))
     );
-    fixtures::seed(&store, &case).await;
+    let mut monitor = fixtures::monitor(root.path());
+    monitor.log = studio_runtime_services::monitor_output::log_root(store.root())
+        .join(format!("{id}.log"))
+        .to_string_lossy()
+        .into_owned();
+    fixtures::seed(&store, &case, monitor).await;
     let operation = operation(&case);
     monitor_receipts::finish(
         &store,
@@ -290,7 +296,9 @@ async fn unknown_input_stays_blocked_and_foreign_receipt_cannot_release_it() {
     let mut case = running(&cases);
     case["before"]["interactive"] = json!(true);
     let store = fixtures::store(root.path(), "input").await;
-    fixtures::seed(&store, &case).await;
+    let mut monitor = fixtures::monitor(root.path());
+    monitor.interactive = true;
+    fixtures::seed(&store, &case, monitor).await;
     let id = case["before"]["id"].as_str().expect("monitor fixture");
     let operation = operation(&case);
     let input = Input {
@@ -313,7 +321,10 @@ async fn unknown_input_stays_blocked_and_foreign_receipt_cannot_release_it() {
     .await
     .expect("monitor fixture");
     let unknown = record(&store, id);
-    assert_eq!(unknown.input_attempt.as_ref().expect("attempt").status, studio_runtime_schema::monitor_record::MonitorInputStatus::Uncertain);
+    assert_eq!(
+        unknown.input_attempt.as_ref().expect("attempt").status,
+        studio_runtime_schema::monitor_record::MonitorInputStatus::Uncertain
+    );
     assert!(
         monitor_runtime::reserve_input(&store, id, &operation, "ticket-2", &input, 2002.0)
             .await
@@ -352,7 +363,7 @@ async fn monitor_cancel_persists_before_dispatch_and_malformed_state_is_refused(
     let cases = fixtures::corpus(root.path());
     let case = running(&cases);
     let store = fixtures::store(root.path(), "refusal").await;
-    fixtures::seed(&store, &case).await;
+    fixtures::seed(&store, &case, fixtures::monitor(root.path())).await;
     let id = case["before"]["id"].as_str().expect("monitor fixture");
     let before = record(&store, id);
     let result = monitor_runtime::cancel(&store, id, None, 2000.0)
@@ -399,10 +410,24 @@ async fn actual_child_start_output_receipt_and_exit_event_cross_the_consumer() {
         .as_object_mut()
         .expect("monitor fixture")
         .remove("operation");
-    fixtures::seed(&store, &case).await;
+    let mut monitor = fixtures::monitor(root.path());
+    monitor.status = studio_runtime_schema::studio_errors::MonitorStatus::Starting;
+    monitor.log = store
+        .root()
+        .join("monitor-logs")
+        .join(format!("{id}.log"))
+        .to_string_lossy()
+        .into_owned();
+    monitor.operation = None;
+    fixtures::seed(&store, &case, monitor).await;
     let params = json!({"processId":id,"cwd":case["before"]["cwd"],"timeoutMs":case["before"]["timeout_ms"],"sandboxPolicy":{},"command":["/bin/sh","-c","printf marker"]});
     let prepared = monitor_runtime::PreparedStart {
-        monitor: studio_runtime_store::MonitorsRepository::get(&store.test_reader().expect("read"), &id).expect("get").expect("monitor"),
+        monitor: studio_runtime_store::MonitorsRepository::get(
+            &store.test_reader().expect("read"),
+            &id,
+        )
+        .expect("get")
+        .expect("monitor"),
         actor: case["actor"].clone(),
         operation: operation.clone(),
         params,
@@ -501,7 +526,7 @@ async fn result_write_boundaries_roll_back_then_recover_the_first_receipt() {
     for table in tables {
         for boundary in ["BEFORE", "AFTER"] {
             let store = fixtures::store(root.path(), &format!("{table}-{boundary}")).await;
-            fixtures::seed(&store, &case).await;
+            fixtures::seed(&store, &case, fixtures::monitor(root.path())).await;
             let receipt = ResultReceipt {
                 version: 1,
                 key: id.clone(),
@@ -521,7 +546,12 @@ async fn result_write_boundaries_roll_back_then_recover_the_first_receipt() {
                 monitor_receipts::finish(&store, &receipt).await.is_err(),
                 "{table}-{boundary}"
             );
-            assert_eq!(record(&store, &id), *fixtures::checked(case["before"].clone(), case["actor"].clone()).expect("before").record());
+            assert_eq!(
+                record(&store, &id),
+                *fixtures::checked(case["before"].clone(), case["actor"].clone())
+                    .expect("before")
+                    .record()
+            );
             assert_eq!(fixtures::events(&store), json!([]));
             store
                 .transaction(move |tx| {
@@ -538,7 +568,12 @@ async fn result_write_boundaries_roll_back_then_recover_the_first_receipt() {
                     .1
                     .is_ok()
             );
-            assert_eq!(record(&store, &id), *fixtures::checked(case["after"].clone(), case["actor"].clone()).expect("after").record());
+            assert_eq!(
+                record(&store, &id),
+                *fixtures::checked(case["after"].clone(), case["actor"].clone())
+                    .expect("after")
+                    .record()
+            );
             assert_eq!(fixtures::events(&store), case["events"]);
         }
     }
@@ -566,10 +601,7 @@ async fn native_input_is_called_after_commit_and_unknown_is_never_resent() {
                     .transaction(move |tx| {
                         let saved = MonitorsRepository::get(tx, &id)?.expect("admitted row");
                         assert_eq!(
-                            saved
-                                .input_attempt
-                                .as_ref()
-                                .map(|v| v.id.as_str()),
+                            saved.input_attempt.as_ref().map(|v| v.id.as_str()),
                             Some("ticket-1")
                         );
                         Ok(())
@@ -586,7 +618,9 @@ async fn native_input_is_called_after_commit_and_unknown_is_never_resent() {
     let mut case = running(&cases);
     case["before"]["interactive"] = json!(true);
     let store = fixtures::store(root.path(), "port").await;
-    fixtures::seed(&store, &case).await;
+    let mut monitor = fixtures::monitor(root.path());
+    monitor.interactive = true;
+    fixtures::seed(&store, &case, monitor).await;
     let id = case["before"]["id"].as_str().expect("id").to_owned();
     let operation = operation(&case);
     let input = Input {
@@ -675,10 +709,19 @@ async fn cancel_of_a_running_command_is_admitted_after_its_submission() {
         .expect("record")
         .remove("operation");
     let store = Arc::new(fixtures::store(root.path(), "sequence").await);
-    fixtures::seed(&store, &case).await;
+    let mut monitor = fixtures::monitor(root.path());
+    monitor.id = "monitor-admission-barrier".into();
+    monitor.status = studio_runtime_schema::studio_errors::MonitorStatus::Starting;
+    monitor.operation = None;
+    fixtures::seed(&store, &case, monitor).await;
     let id = case["before"]["id"].as_str().expect("id").to_owned();
     let prepared = monitor_runtime::PreparedStart {
-        monitor: studio_runtime_store::MonitorsRepository::get(&store.test_reader().expect("read"), &id).expect("get").expect("monitor"),
+        monitor: studio_runtime_store::MonitorsRepository::get(
+            &store.test_reader().expect("read"),
+            &id,
+        )
+        .expect("get")
+        .expect("monitor"),
         actor: case["actor"].clone(),
         operation: op,
         params: json!({"processId":id,"cwd":case["before"]["cwd"],"timeoutMs":case["before"]["timeout_ms"],"sandboxPolicy":{}}),
@@ -736,8 +779,14 @@ async fn reattach_requires_exact_proof_and_cancels_a_stopped_owner() {
     };
     let snapshot = fixtures::checked(lost.clone(), case["actor"].clone()).expect("snapshot");
     let restored = monitor_policy::reattach(&snapshot, &proof).expect("reattach");
-    assert_eq!(restored.record.status, studio_runtime_schema::studio_errors::MonitorStatus::Running);
-    assert_eq!(restored.record.reattached_connection_id.as_deref(), Some("new-connection"));
+    assert_eq!(
+        restored.record.status,
+        studio_runtime_schema::studio_errors::MonitorStatus::Running
+    );
+    assert_eq!(
+        restored.record.reattached_connection_id.as_deref(),
+        Some("new-connection")
+    );
     assert!(restored.effects.is_empty());
     let mut foreign = op.clone();
     foreign.connection_id = "foreign".to_owned().try_into().unwrap();
@@ -779,7 +828,14 @@ fn transferred_monitor_keeps_its_source_for_interactive_input_and_reattach() {
         monitor_policy::begin_input(&snapshot, &op, "input-after-transfer", &input, 2000.0)
             .expect("the same active actor can use its existing source process");
     assert_eq!(
-        decision.record.input_attempt.as_ref().expect("input attempt").operation.account_key.as_str(),
+        decision
+            .record
+            .input_attempt
+            .as_ref()
+            .expect("input attempt")
+            .operation
+            .account_key
+            .as_str(),
         op.account_key.as_str()
     );
     watch["reattachRecovery"] =
@@ -808,7 +864,7 @@ async fn exit_of_a_command_without_output_is_queued_and_delivered() {
     let case = running(&fixtures::corpus(root.path()));
     assert!(case["before"].get("streamQueue").is_none());
     let store = fixtures::store(root.path(), "silent-exit").await;
-    fixtures::seed(&store, &case).await;
+    fixtures::seed(&store, &case, fixtures::monitor(root.path())).await;
     let id = case["before"]["id"].as_str().expect("id");
     let cursor = format!("provider-result:monitor:{id}");
     monitor_event_queue::enqueue_exit(
@@ -849,8 +905,7 @@ fn a_cancelled_command_sends_no_stall_notice() {
     quiet["activityGeneration"] = json!(1);
     quiet["stallWakeGeneration"] = json!(0);
     let stalled = |record: Value| {
-        let snapshot =
-            fixtures::checked(record, case["actor"].clone()).expect("monitor snapshot");
+        let snapshot = fixtures::checked(record, case["actor"].clone()).expect("monitor snapshot");
         monitor_policy::tick(&snapshot, 5000.0)
             .expect("tick")
             .effects
@@ -894,7 +949,13 @@ async fn output_accepts_a_log_named_through_a_link_to_the_state_folder() {
     let output = MonitorOutput::default();
 
     case["before"]["log"] = json!(canonical.join("other").join(format!("{id}.log")));
-    fixtures::seed(&store, &case).await;
+    let mut monitor = fixtures::monitor(root.path());
+    monitor.log = canonical
+        .join("other")
+        .join(format!("{id}.log"))
+        .to_string_lossy()
+        .into_owned();
+    fixtures::seed(&store, &case, monitor).await;
     assert!(
         output
             .append(&store, &id, &operation, 0, b"marker", 2001.0)
@@ -905,7 +966,12 @@ async fn output_accepts_a_log_named_through_a_link_to_the_state_folder() {
 
     case["before"]["log"] =
         json!(studio_runtime_services::monitor_output::log_root(&link).join(format!("{id}.log")));
-    fixtures::seed(&store, &case).await;
+    let mut monitor = fixtures::monitor(root.path());
+    monitor.log = studio_runtime_services::monitor_output::log_root(&link)
+        .join(format!("{id}.log"))
+        .to_string_lossy()
+        .into_owned();
+    fixtures::seed(&store, &case, monitor).await;
     output
         .append(&store, &id, &operation, 0, b"marker", 2001.0)
         .await

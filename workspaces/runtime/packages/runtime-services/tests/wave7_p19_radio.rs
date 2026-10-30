@@ -52,6 +52,17 @@ struct LegacyReceipt {
     signature: String,
     result: String,
 }
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LegacyRule {
+    id: String,
+    root_id: String,
+    agent: String,
+    in_flight: bool,
+    status: Option<studio_runtime_schema::rule_record::RuleStatus>,
+    epoch: Option<i64>,
+    error: Option<String>,
+}
 fn corpus() -> RadioCorpus {
     let bytes =
         crate::media_auth_fixtures::state_bytes(include_str!("wave7_p19/initial-state.json"));
@@ -66,13 +77,21 @@ fn corpus() -> RadioCorpus {
         for side in ["before", "after"] {
             if let Some(rows) = case[side]["rules"].as_array_mut() {
                 for row in rows {
-                    let saved: Value = serde_json::from_str(row["record"].as_str().expect("valid fixture")).expect("valid fixture");
-                    let mut rule = json!({"epoch":1,"name":"watch","kind":"interval","status":"active",
-                        "intervalSeconds":60,"nextAt":1,"created":1,"command":"","text":"",
-                        "checks":0,"wakes":0,"fileGeneration":0,"stallTimeoutSeconds":0,
-                        "stallWakeGeneration":-1,"livenessCommand":"","event":""});
-                    rule.as_object_mut().expect("valid fixture").extend(saved.as_object().expect("valid fixture").clone());
-                    let typed: studio_runtime_store::RuleRecord = serde_json::from_value(rule).expect("valid fixture");
+                    let saved: LegacyRule =
+                        serde_json::from_str(row["record"].as_str().expect("valid fixture"))
+                            .expect("valid fixture");
+                    let mut typed: studio_runtime_store::RuleRecord = serde_json::from_str(r#"{"id":"fixture","agent":"fixture","inFlight":false,"epoch":1,"name":"watch","kind":"interval","status":"active","intervalSeconds":60,"nextAt":1,"created":1,"command":"","text":"","checks":0,"wakes":0,"fileGeneration":0,"stallTimeoutSeconds":0,"stallWakeGeneration":-1,"livenessCommand":"","event":""}"#).expect("rule defaults");
+                    typed.id = saved.id;
+                    typed.root_id = Some(saved.root_id);
+                    typed.agent = saved.agent;
+                    typed.in_flight = saved.in_flight;
+                    if let Some(status) = saved.status {
+                        typed.status = status;
+                    }
+                    if let Some(epoch) = saved.epoch {
+                        typed.epoch = epoch.try_into().expect("epoch");
+                    }
+                    typed.error = saved.error;
                     row["record"] = json!(serde_json::to_string(&typed).expect("valid fixture"));
                 }
             }
@@ -286,7 +305,8 @@ fn state(store: &RuntimeStore, tables: &Value) -> Value {
                 for (index, column) in columns.iter().enumerate() {
                     if table == "agents"
                         && ["hold_status", "hold_incident"].contains(&column.as_str())
-                        || matches!(table.as_str(), "annotations" | "chat_messages") && column == "rev"
+                        || matches!(table.as_str(), "annotations" | "chat_messages")
+                            && column == "rev"
                     {
                         continue;
                     }
@@ -316,7 +336,10 @@ fn normalize(value: &mut Value) {
         Value::Object(map) => {
             if map.contains_key("rootId") && map.contains_key("epoch") && map.contains_key("status")
             {
-                for key in studio_runtime_store::agent_volatile::AGENT_VOLATILE_FIELDS.into_iter().chain(["parentId", "threadId", "turnId"]) {
+                for key in studio_runtime_store::agent_volatile::AGENT_VOLATILE_FIELDS
+                    .into_iter()
+                    .chain(["parentId", "threadId", "turnId"])
+                {
                     if map.get(key).is_some_and(Value::is_null) {
                         map.remove(key);
                     }

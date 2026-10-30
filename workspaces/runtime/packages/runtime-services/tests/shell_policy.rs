@@ -32,7 +32,10 @@ async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, String) {
     case["before"]["created"] = json!(0.0);
     let id = case["before"]["id"].as_str().unwrap().to_owned();
     let store = Arc::new(fixtures::store(root.path(), "shell-policy").await);
-    fixtures::seed(&store, &case).await;
+    let mut monitor = fixtures::monitor(root.path());
+    monitor.activity_at = 0.0.try_into().expect("activity");
+    monitor.created = 0.0.try_into().expect("created");
+    fixtures::seed(&store, &case, monitor).await;
     (root, store, id)
 }
 
@@ -103,12 +106,16 @@ async fn pressure_requires_thirty_idle_minutes_and_preserves_active_turns() {
             ..Settings::default()
         };
         assert_ne!(
-            maintain(&store, &id, 1800.0, &source, settings.clone()).await.cancel_requested,
+            maintain(&store, &id, 1800.0, &source, settings.clone())
+                .await
+                .cancel_requested,
             Some(true)
         );
         source.0.store(true, Ordering::SeqCst);
         assert_ne!(
-            maintain(&store, &id, 1799.999, &source, settings.clone()).await.cancel_requested,
+            maintain(&store, &id, 1799.999, &source, settings.clone())
+                .await
+                .cancel_requested,
             Some(true)
         );
         let record = maintain(&store, &id, 1800.0, &source, settings).await;

@@ -974,19 +974,44 @@ async fn an_ancestor_cancels_a_descendant_watch_and_others_are_refused_by_name()
     let (directory, store, oracle) = frozen::state().await;
     let log_root = store.state_dir().join("monitor-logs");
     let watch = |id: &str, owner: &Value| {
-        json!({"id":id,"agent":owner["id"],"epoch":owner["epoch"],"turnId":null,
-            "requestId":format!("request-{id}"),"command":"gh run watch 1 > watch.log 2>&1",
-            "cwd":directory.path().to_string_lossy(),"timeout_ms":3600000,
+        let mut record: studio_runtime_store::MonitorRecord = serde_json::from_str(
+            r#"{"id":"fixture","agent":"fixture","epoch":1,"turnId":null,
+            "requestId":"fixture","command":"gh run watch 1 > watch.log 2>&1",
+            "cwd":"/","timeout_ms":3600000,
             "stallTimeoutSeconds":1800,"livenessCommand":"","activityAt":10.0,
             "activityGeneration":0,"stallWakeGeneration":-1,"wakeOn":"exit",
             "successExitCodes":[0],"outputPatterns":[],"outputEventSequence":0,
             "outputEventCount":0,"outputEventIds":[],"status":"running","created":10.0,
             "exitCode":null,"tail":"","bytes":0,"interactive":false,"ruleId":null,
-            "log":log_root.join(format!("{id}.log")).to_string_lossy(),
-            "operation":{"agent":owner["id"],"epoch":owner["epoch"],
-                "accountKey":owner.get("accountKey").and_then(Value::as_str).unwrap_or("default"),
+            "log":"fixture",
+            "operation":{"agent":"fixture","epoch":1,
+                "accountKey":"default",
                 "connectionId":"connection"},
-            "cancelRequested":false})
+            "cancelRequested":false}"#,
+        )
+        .expect("monitor fixture");
+        let agent = owner["id"].as_str().expect("owner id").to_owned();
+        let epoch = owner["epoch"].as_i64().expect("owner epoch");
+        record.id = id.to_owned();
+        record.agent = agent.clone();
+        record.epoch = epoch.try_into().expect("owner epoch");
+        record.request_id = format!("request-{id}");
+        record.cwd = directory.path().to_string_lossy().into_owned();
+        record.log = log_root
+            .join(format!("{id}.log"))
+            .to_string_lossy()
+            .into_owned();
+        let operation = record.operation.as_mut().expect("operation");
+        operation.agent = agent.try_into().expect("owner id");
+        operation.epoch = epoch.try_into().expect("owner epoch");
+        operation.account_key = owner
+            .get("accountKey")
+            .and_then(Value::as_str)
+            .unwrap_or("default")
+            .to_owned()
+            .try_into()
+            .expect("account key");
+        record
     };
     let lead = oracle["agents"][0].clone();
     let child = oracle["agents"][1].clone();
@@ -994,8 +1019,7 @@ async fn an_ancestor_cancels_a_descendant_watch_and_others_are_refused_by_name()
     store
         .transaction(move |tx| {
             for record in watches {
-                studio_runtime_store::Table::new(tx)
-                    .put(&serde_json::from_value::<studio_runtime_store::MonitorRecord>(record)?)?;
+                studio_runtime_store::Table::new(tx).put(&record)?;
             }
             Ok(())
         })

@@ -98,7 +98,9 @@ async fn monitor_restart_http_preserves_identity_and_waits_for_old_exit() {
     case["actor"]["yoloMode"] = json!(true);
     case["before"]["outputPatterns"] = json!(["marker"]);
     let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
-    crate::monitor_fixtures::seed(&store, &case).await;
+    let mut monitor = crate::monitor_fixtures::monitor(root.path());
+    monitor.output_patterns = Some(vec!["marker".into()]);
+    crate::monitor_fixtures::seed(&store, &case, monitor).await;
     let port = Arc::new(crate::monitor_runtime_support::Port::default());
     let state = HttpState::new(
         "fixture-token".into(),

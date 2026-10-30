@@ -23,8 +23,14 @@ fn lost(proof: &str, rule: bool) -> (studio_runtime_store::MonitorRecord, Value,
     (snapshot.record().clone(), actor, operation)
 }
 
-fn finish(record: &studio_runtime_store::MonitorRecord, actor: &Value, operation: &Operation, now: f64) -> (studio_runtime_store::MonitorRecord, Vec<Effect>) {
-    let snapshot = monitor_policy::MonitorSnapshot::checked_stored(record, actor.clone()).expect("snapshot");
+fn finish(
+    record: &studio_runtime_store::MonitorRecord,
+    actor: &Value,
+    operation: &Operation,
+    now: f64,
+) -> (studio_runtime_store::MonitorRecord, Vec<Effect>) {
+    let snapshot =
+        monitor_policy::MonitorSnapshot::checked_stored(record, actor.clone()).expect("snapshot");
     let decision =
         monitor_policy::finish(&snapshot, Some(operation), Some(0), None, now).expect("finish");
     (decision.record, decision.effects)
@@ -34,10 +40,16 @@ fn finish(record: &studio_runtime_store::MonitorRecord, actor: &Value, operation
 fn a_late_answer_completes_a_deadline_loss_once() {
     let (record, actor, operation) = lost(monitor_policy::DEADLINE_PASSED, false);
     let (completed, effects) = finish(&record, &actor, &operation, 3100.0);
-    assert_eq!(completed.status, studio_runtime_schema::studio_errors::MonitorStatus::Completed);
+    assert_eq!(
+        completed.status,
+        studio_runtime_schema::studio_errors::MonitorStatus::Completed
+    );
     assert_eq!(completed.exit_code, Some(0));
     assert!(completed.error.is_none());
-    assert_eq!(completed.finished.as_ref().map(|time| time.seconds()), Some(3100.0));
+    assert_eq!(
+        completed.finished.as_ref().map(|time| time.seconds()),
+        Some(3100.0)
+    );
     assert_eq!(completed.late_answer_at, Some(3100.0));
     assert!(completed.reattach_recovery.is_none());
     assert!(
@@ -74,7 +86,7 @@ async fn a_reattach_proof_observed_before_deadline_loss_is_superseded() {
     let root = fixtures::tempdir();
     let store = fixtures::store(root.path(), "stale-proof").await;
     let case = fixtures::corpus(root.path()).remove(0);
-    fixtures::seed(&store, &case).await;
+    fixtures::seed(&store, &case, fixtures::monitor(root.path())).await;
     let id = case["before"]["id"].as_str().expect("id");
     let operation: Operation =
         serde_json::from_value(case["before"]["operation"].clone()).expect("operation");
@@ -131,7 +143,7 @@ async fn an_unanswered_command_commits_only_its_loss_and_replays_without_changes
     let root = fixtures::tempdir();
     let store = fixtures::store(root.path(), "atomic-loss").await;
     let case = fixtures::corpus(root.path()).remove(0);
-    fixtures::seed(&store, &case).await;
+    fixtures::seed(&store, &case, fixtures::monitor(root.path())).await;
     let id = case["before"]["id"].as_str().expect("id");
     let operation: Operation =
         serde_json::from_value(case["before"]["operation"].clone()).expect("operation");
@@ -153,10 +165,19 @@ async fn an_unanswered_command_commits_only_its_loss_and_replays_without_changes
         let record = MonitorsRepository::get(&store.test_reader().expect("reader"), id)
             .expect("read")
             .expect("monitor");
-        assert_eq!(record.status, studio_runtime_schema::studio_errors::MonitorStatus::Lost);
-        assert_eq!(record.finished.as_ref().map(|time| time.seconds()), Some(3000.0));
         assert_eq!(
-            record.reattach_recovery.as_ref().and_then(|recovery| recovery.proof.as_deref()),
+            record.status,
+            studio_runtime_schema::studio_errors::MonitorStatus::Lost
+        );
+        assert_eq!(
+            record.finished.as_ref().map(|time| time.seconds()),
+            Some(3000.0)
+        );
+        assert_eq!(
+            record
+                .reattach_recovery
+                .as_ref()
+                .and_then(|recovery| recovery.proof.as_deref()),
             Some(monitor_policy::DEADLINE_PASSED)
         );
         assert_eq!(

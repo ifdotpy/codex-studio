@@ -60,7 +60,7 @@ async fn migrated_monitor_inputs_remain_visible_through_process_receipt() {
     let root = fixtures::tempdir();
     let case = running(&fixtures::corpus(root.path()));
     let store = fixtures::store(root.path(), "migration").await;
-    fixtures::seed(&store, &case).await;
+    fixtures::seed(&store, &case, crate::monitor_fixtures::monitor(root.path())).await;
     let path = store.root().to_owned();
     drop(store);
     let db = rusqlite::Connection::open(path.join("canvas.sqlite3")).expect("old store");
@@ -204,7 +204,14 @@ async fn oversized_provider_delta_is_persisted_in_order_and_replayed_exactly() {
         .as_str()
         .expect("account")
         .to_owned();
-    fixtures::seed(&store, &case).await;
+    let mut monitor = crate::monitor_fixtures::monitor(root.path());
+    monitor.log = store
+        .root()
+        .join("monitor-logs")
+        .join(format!("{id}.log"))
+        .to_string_lossy()
+        .into_owned();
+    fixtures::seed(&store, &case, monitor).await;
     let mut bytes = vec![b'a'; studio_runtime_services::monitor_policy::CHUNK_BYTES];
     bytes.push(b'z');
     let params = monitor_event_queue::OutputDelta {
@@ -271,7 +278,7 @@ async fn account_worker_monitor_output_is_durable_ordered_and_exactly_acknowledg
     let cases = fixtures::corpus(root.path());
     let case = running(&cases);
     let store = fixtures::store(root.path(), "monitor-output-queue").await;
-    fixtures::seed(&store, &case).await;
+    fixtures::seed(&store, &case, crate::monitor_fixtures::monitor(root.path())).await;
     let id = case["before"]["id"].as_str().expect("monitor id");
     let account = case["before"]["operation"]["accountKey"]
         .as_str()
@@ -396,7 +403,12 @@ async fn transient_rule_submit_failure_reconciles_the_saved_launch_identity() {
     let root = fixtures::tempdir();
     let monitor_cases = fixtures::corpus(root.path());
     let store = Arc::new(fixtures::store(root.path(), "rule-retry").await);
-    fixtures::seed(&store, &running(&monitor_cases)).await;
+    fixtures::seed(
+        &store,
+        &running(&monitor_cases),
+        crate::monitor_fixtures::monitor(root.path()),
+    )
+    .await;
     let rule_case = due_rule_case();
     let rule = rule_case.rule.clone();
     let rule_id = rule.id.clone();
@@ -467,7 +479,12 @@ async fn event_submission_failure_recovers_the_committed_launch_intent() {
     let root = fixtures::tempdir();
     let monitor_cases = fixtures::corpus(root.path());
     let store = Arc::new(fixtures::store(root.path(), "event-rule-retry").await);
-    fixtures::seed(&store, &running(&monitor_cases)).await;
+    fixtures::seed(
+        &store,
+        &running(&monitor_cases),
+        crate::monitor_fixtures::monitor(root.path()),
+    )
+    .await;
     let event_case = rule_case("event-work_review");
     let event = event_case.event.expect("event");
     let event_kind = event.kind;
@@ -553,7 +570,9 @@ async fn durable_results_win_over_stalls_across_every_write_failure_and_restart(
         for boundary in ["BEFORE", "AFTER"] {
             let store =
                 Arc::new(fixtures::store(root.path(), &format!("{table}-{boundary}")).await);
-            fixtures::seed(&store, &case).await;
+            let mut monitor = crate::monitor_fixtures::monitor(root.path());
+            monitor.activity_at = 1.0.try_into().expect("activity");
+            fixtures::seed(&store, &case, monitor).await;
             let id = case["before"]["id"].as_str().expect("id");
             let original = record(&store, id);
             let receipt = ResultReceipt {
@@ -603,7 +622,7 @@ async fn lifecycle_cancel_intent_survives_crash_before_committed_and_dispatches_
         .expect("monitor id")
         .to_owned();
     let store = fixtures::store(root.path(), "lifecycle-cancel").await;
-    fixtures::seed(&store, &case).await;
+    fixtures::seed(&store, &case, crate::monitor_fixtures::monitor(root.path())).await;
     let wake = Arc::new(Notify::new());
     let lifecycle = MonitorLifecyclePorts::new(wake);
     store
@@ -660,7 +679,14 @@ async fn output_cursor_and_exit_replay_after_lost_ack_are_exactly_once() {
     let store = Arc::new(fixtures::store(root.path(), "output").await);
     let id = case["before"]["id"].as_str().expect("id").to_owned();
     case["before"]["log"] = json!(store.root().join("monitor-logs").join(format!("{id}.log")));
-    fixtures::seed(&store, &case).await;
+    let mut monitor = crate::monitor_fixtures::monitor(root.path());
+    monitor.log = store
+        .root()
+        .join("monitor-logs")
+        .join(format!("{id}.log"))
+        .to_string_lossy()
+        .into_owned();
+    fixtures::seed(&store, &case, monitor).await;
     let port = Arc::new(Port::default());
     let output = delivery(
         &store,
@@ -731,7 +757,17 @@ async fn reattach_cancel_and_unknown_input_never_resend_a_command() {
     case["before"]["reattachRecovery"] =
         json!({"status":"running","epoch":2,"accountKey":"default","startedAt":2000.0});
     let store = Arc::new(fixtures::store(root.path(), "attach").await);
-    fixtures::seed(&store, &case).await;
+    let mut monitor = crate::monitor_fixtures::monitor(root.path());
+    monitor.interactive = true;
+    monitor.reattach_recovery = Some(studio_runtime_schema::monitor_record::ReattachRecovery {
+        account_key: "default".into(),
+        epoch: 2,
+        state: studio_runtime_schema::monitor_record::ReattachState::Running { started_at: 2000.0 },
+        proof: None,
+        error: None,
+        finished: None,
+    });
+    fixtures::seed(&store, &case, monitor).await;
     let port = Arc::new(Port::default());
     let runtime = runtime(&store, &port);
     runtime.tick(2000.0).await.expect("attach");
@@ -922,7 +958,7 @@ async fn foreign_exit_cannot_poison_the_first_result_journal() {
     let cases = fixtures::corpus(root.path());
     let case = running(&cases);
     let store = Arc::new(fixtures::store(root.path(), "foreign").await);
-    fixtures::seed(&store, &case).await;
+    fixtures::seed(&store, &case, crate::monitor_fixtures::monitor(root.path())).await;
     let runtime = runtime(&store, &Arc::new(Port::default()));
     let exit = delivery(
         &store,
@@ -968,7 +1004,7 @@ async fn cancelled_intent_is_committed_before_transport_and_rolls_back_on_each_w
         for timing in ["BEFORE", "AFTER"] {
             let store =
                 Arc::new(fixtures::store(root.path(), &format!("cancel-{table}-{timing}")).await);
-            fixtures::seed(&store, &case).await;
+            fixtures::seed(&store, &case, crate::monitor_fixtures::monitor(root.path())).await;
             let port = Arc::new(Port::default());
             let runtime = runtime(&store, &port);
             let id = case["before"]["id"].as_str().expect("id");
@@ -1001,7 +1037,7 @@ async fn cancel_intent_replays_after_restart_until_written_and_holds_unknown() {
     let case = running(&cases);
     let id = case["before"]["id"].as_str().expect("id").to_owned();
     let store = fixtures::store(root.path(), "cancel-restart").await;
-    fixtures::seed(&store, &case).await;
+    fixtures::seed(&store, &case, crate::monitor_fixtures::monitor(root.path())).await;
 
     // Crash witness: the reservation commits, then the process stops before the
     // native port is called. The next runtime must recover this exact intent.
@@ -1102,7 +1138,12 @@ async fn cancel_intent_replays_after_restart_until_written_and_holds_unknown() {
 
     let unknown_case = running(&cases);
     let unknown_store = Arc::new(fixtures::store(root.path(), "cancel-unknown").await);
-    fixtures::seed(&unknown_store, &unknown_case).await;
+    fixtures::seed(
+        &unknown_store,
+        &unknown_case,
+        crate::monitor_fixtures::monitor(root.path()),
+    )
+    .await;
     let unknown_id = unknown_case["before"]["id"].as_str().expect("id");
     let unknown_port = Arc::new(Port::default());
     *unknown_port.unknown.lock().expect("unknown") = true;
@@ -1145,7 +1186,7 @@ async fn permanent_cancel_refusal_settles_and_is_not_retried() {
         ),
     ] {
         let store = Arc::new(fixtures::store(root.path(), name).await);
-        fixtures::seed(&store, &case).await;
+        fixtures::seed(&store, &case, crate::monitor_fixtures::monitor(root.path())).await;
         let port = Arc::new(Port::default());
         *port.not_sent.lock().expect("not sent") = true;
         *port.not_sent_reason.lock().expect("not sent reason") = reason;
@@ -1212,7 +1253,7 @@ async fn cancellation_racing_exit_settles_without_native_terminate() {
     let case = running(&cases);
     let id = case["before"]["id"].as_str().expect("id").to_owned();
     let store = Arc::new(fixtures::store(root.path(), "cancel-exit-race").await);
-    fixtures::seed(&store, &case).await;
+    fixtures::seed(&store, &case, crate::monitor_fixtures::monitor(root.path())).await;
     let id_for_reservation = id.clone();
     let (_, operation) = store
         .transaction_with(move |tx| {
@@ -1262,7 +1303,12 @@ async fn quarantined_delivery_does_not_stop_other_monitors_or_timer() {
     healthy_case["before"]["id"] = json!("healthy-monitor");
     healthy_case["before"]["log"] = json!("unused-until-output");
     let store = Arc::new(fixtures::store(root.path(), "bad-delivery").await);
-    fixtures::seed(&store, &bad_case).await;
+    fixtures::seed(
+        &store,
+        &bad_case,
+        crate::monitor_fixtures::monitor(root.path()),
+    )
+    .await;
     let bad_id = bad_case["before"]["id"]
         .as_str()
         .expect("monitor id")
@@ -1379,7 +1425,7 @@ async fn http_input_retry_after_ack_replays_one_logical_input() {
     let case = running(&cases);
     let store = Arc::new(fixtures::store(root.path(), "http-input-replay").await);
     input_schema(&store).await;
-    fixtures::seed(&store, &case).await;
+    fixtures::seed(&store, &case, crate::monitor_fixtures::monitor(root.path())).await;
     let id = case["before"]["id"].as_str().expect("monitor id");
     let mut monitor = MonitorsRepository::get(&store.test_reader().expect("read"), id)
         .expect("get")
@@ -1433,7 +1479,9 @@ async fn http_input_busy_sequence_records_a_refusal_and_preserves_prior_receipts
     case["before"]["interactive"] = json!(true);
     let store = Arc::new(fixtures::store(root.path(), "http-input-busy").await);
     input_schema(&store).await;
-    fixtures::seed(&store, &case).await;
+    let mut monitor = crate::monitor_fixtures::monitor(root.path());
+    monitor.interactive = true;
+    fixtures::seed(&store, &case, monitor).await;
     let id = case["before"]["id"]
         .as_str()
         .expect("monitor id")
@@ -1565,7 +1613,9 @@ async fn http_input_receipts_survive_restart_and_refuse_uncertain_or_changed_con
         case["before"]["interactive"] = json!(true);
         let store = Arc::new(fixtures::store(root.path(), boundary).await);
         input_schema(&store).await;
-        fixtures::seed(&store, &case).await;
+        let mut monitor = crate::monitor_fixtures::monitor(root.path());
+        monitor.interactive = true;
+        fixtures::seed(&store, &case, monitor).await;
         let id = case["before"]["id"].as_str().expect("monitor id");
         let port = Arc::new(Port::default());
         *port.unknown.lock().expect("unknown") = boundary == "unknown";
@@ -1712,7 +1762,7 @@ async fn committed_managed_start_is_dispatched_after_admission() {
     monitor_runtime::recover_on_startup(&store, 1999.0)
         .await
         .expect("server startup recovery");
-    fixtures::seed(&store, &case).await;
+    fixtures::seed(&store, &case, crate::monitor_fixtures::monitor(root.path())).await;
     let id = case["before"]["id"].as_str().expect("monitor id");
     let mut monitor = MonitorsRepository::get(&store.test_reader().expect("read"), id)
         .expect("get")
@@ -1740,7 +1790,7 @@ async fn output_queue_enforces_capacity_and_preserves_terminal_reserve_atomicall
     let root = fixtures::tempdir();
     let case = running(&fixtures::corpus(root.path()));
     let store = fixtures::store(root.path(), "output-count-boundary").await;
-    fixtures::seed(&store, &case).await;
+    fixtures::seed(&store, &case, crate::monitor_fixtures::monitor(root.path())).await;
     let id = case["before"]["id"].as_str().expect("monitor id");
     let account = case["before"]["operation"]["accountKey"]
         .as_str()
@@ -1834,7 +1884,7 @@ async fn output_queue_enforces_byte_limit_and_keeps_room_for_terminal_receipts()
     let root = fixtures::tempdir();
     let case = running(&fixtures::corpus(root.path()));
     let store = fixtures::store(root.path(), "output-byte-boundary").await;
-    fixtures::seed(&store, &case).await;
+    fixtures::seed(&store, &case, crate::monitor_fixtures::monitor(root.path())).await;
     let id = case["before"]["id"].as_str().expect("monitor id");
     let account = case["before"]["operation"]["accountKey"]
         .as_str()
@@ -1919,7 +1969,7 @@ async fn bounded_probes_preserve_room_for_the_largest_exit_receipt() {
     let cases = fixtures::corpus(root.path());
     let case = running(&cases);
     let store = fixtures::store(root.path(), "probe-terminal-reserve").await;
-    fixtures::seed(&store, &case).await;
+    fixtures::seed(&store, &case, crate::monitor_fixtures::monitor(root.path())).await;
     let id = case["before"]["id"].as_str().expect("id");
     let operation_json: String = store
         .test_reader()
@@ -2019,7 +2069,14 @@ async fn cancellation_recovery_runs_after_a_full_delivery_batch() {
     let id = case["before"]["id"].as_str().expect("id").to_owned();
     let store = Arc::new(fixtures::store(root.path(), "cancel-full-batch").await);
     case["before"]["log"] = json!(store.root().join("monitor-logs").join(format!("{id}.log")));
-    fixtures::seed(&store, &case).await;
+    let mut monitor = crate::monitor_fixtures::monitor(root.path());
+    monitor.log = store
+        .root()
+        .join("monitor-logs")
+        .join(format!("{id}.log"))
+        .to_string_lossy()
+        .into_owned();
+    fixtures::seed(&store, &case, monitor).await;
     let id_for_reservation = id.clone();
     let (_, operation) = store
         .transaction_with(move |tx| {

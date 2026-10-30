@@ -391,7 +391,18 @@ async fn transferred_monitor_fixture(
     }
     case["before"]["operation"] =
         json!({"agent":"owner","epoch":1,"accountKey":"default","connectionId":"actual-uuid"});
-    crate::monitor_fixtures::seed(&port.store, &case).await;
+    let mut initial = crate::monitor_fixtures::monitor(port.store.root());
+    initial.agent = "owner".into();
+    initial.epoch = 1.try_into().expect("epoch");
+    initial.interactive = true;
+    if behavior == "transferred_reattached" {
+        initial.reattached_connection_id = Some("reattached-source".into());
+    }
+    let operation = initial.operation.as_mut().expect("operation");
+    operation.agent = "owner".to_owned().try_into().expect("agent");
+    operation.epoch = 1.try_into().expect("epoch");
+    operation.connection_id = "actual-uuid".to_owned().try_into().expect("connection");
+    crate::monitor_fixtures::seed(&port.store, &case, initial).await;
     let monitor = case["before"].clone();
     let id = monitor["id"].as_str().unwrap().to_owned();
     let receipt_monitor = monitor.clone();

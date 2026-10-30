@@ -3329,7 +3329,11 @@ async fn transferred_monitor_cancel_uses_the_original_command_and_settles_its_ex
                     let record =
                         studio_runtime_store::MonitorsRepository::get(tx, "transfer-watch")?
                             .unwrap();
-                    assert_eq!(serde_json::to_value(&record).unwrap()["streamQueue"][0]["deltaBase64"], "aGVsbG8=");
+                    assert!(matches!(
+                        record.stream_queue.as_deref(),
+                        Some([studio_runtime_schema::monitor_record::MonitorQueueEvent::Output { delta_base64, .. }])
+                            if delta_base64 == "aGVsbG8="
+                    ));
                     assert!(!crate::monitor_event_queue::enqueue_output_in_transaction(
                         tx,
                         "transfer-watch",

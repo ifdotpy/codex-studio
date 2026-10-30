@@ -14,7 +14,7 @@ async fn fixture() -> (tempfile::TempDir, RuntimeStore, String, Operation) {
     let id = case["before"]["id"].as_str().expect("id").to_owned();
     let operation = serde_json::from_value(case["before"]["operation"].clone()).expect("operation");
     let store = fixtures::store(root.path(), "wake").await;
-    fixtures::seed(&store, &case).await;
+    fixtures::seed(&store, &case, fixtures::monitor(root.path())).await;
     (root, store, id, operation)
 }
 
@@ -105,7 +105,8 @@ async fn restart_surviving_command_wakes_only_on_its_real_exit() {
         MonitorsRepository::get(&store.test_reader().expect("reader"), &id)
             .expect("read monitor")
             .expect("monitor")
-            .status.as_str(),
+            .status
+            .as_str(),
         "running"
     );
     monitor_runtime::reattach(
@@ -158,7 +159,13 @@ async fn restart_dead_or_unreachable_command_wakes_once_as_lost() {
     let record = MonitorsRepository::get(&store.test_reader().expect("reader"), &id)
         .expect("read")
         .expect("monitor");
-    assert_eq!(record.reattach_recovery.as_ref().and_then(|recovery| recovery.proof.as_deref()), Some(reason));
+    assert_eq!(
+        record
+            .reattach_recovery
+            .as_ref()
+            .and_then(|recovery| recovery.proof.as_deref()),
+        Some(reason)
+    );
     assert_eq!(
         record.status.as_str(),
         "lost",
@@ -479,7 +486,13 @@ async fn unknown_submission_enters_the_same_reconciliation_and_wakes_once() {
         .expect("read")
         .expect("monitor");
     assert_eq!(monitor.status.as_str(), "running");
-    assert!(matches!(monitor.reattach_recovery.as_ref().map(|recovery| &recovery.state), Some(studio_runtime_schema::monitor_record::ReattachState::Running { .. })));
+    assert!(matches!(
+        monitor
+            .reattach_recovery
+            .as_ref()
+            .map(|recovery| &recovery.state),
+        Some(studio_runtime_schema::monitor_record::ReattachState::Running { .. })
+    ));
     assert_eq!(fixtures::events(&store), json!([]));
     monitor_runtime::settle_reattach(&store, snapshot.id(), "provider_rejected", 2002.0)
         .await
@@ -567,7 +580,13 @@ async fn unknown_submission_reconciliation_is_retried_after_a_failed_write_and_w
         .expect("read")
         .expect("monitor");
     assert_eq!(monitor.status.as_str(), "running");
-    assert!(matches!(monitor.reattach_recovery.as_ref().map(|recovery| &recovery.state), Some(studio_runtime_schema::monitor_record::ReattachState::Running { .. })));
+    assert!(matches!(
+        monitor
+            .reattach_recovery
+            .as_ref()
+            .map(|recovery| &recovery.state),
+        Some(studio_runtime_schema::monitor_record::ReattachState::Running { .. })
+    ));
     assert_eq!(fixtures::events(&store), json!([]));
     monitor_runtime::settle_reattach(&store, snapshot.id(), "provider_rejected", 2002.0)
         .await
@@ -700,7 +719,13 @@ mod orphan {
     async fn running_command_without_an_exit_owner_is_reattached_and_settled_once() {
         let (_root, store, port, runtime, id) = runtime(false).await;
         runtime.tick(2001.0).await.expect("orphan check");
-        assert!(matches!(monitor(&store, &id).reattach_recovery.as_ref().map(|recovery| &recovery.state), Some(studio_runtime_schema::monitor_record::ReattachState::Running { .. })));
+        assert!(matches!(
+            monitor(&store, &id)
+                .reattach_recovery
+                .as_ref()
+                .map(|recovery| &recovery.state),
+            Some(studio_runtime_schema::monitor_record::ReattachState::Running { .. })
+        ));
         assert_eq!(fixtures::events(&store), json!([]));
         runtime.tick(2002.0).await.expect("exact reattach");
         assert_eq!(port.reattaches.load(Ordering::SeqCst), 1);
