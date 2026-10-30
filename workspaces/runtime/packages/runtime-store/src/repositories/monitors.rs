@@ -129,20 +129,14 @@ impl MonitorsRepository {
             .collect::<Result<Vec<_>, _>>()?)
     }
 
-    /// The record of monitor `id` when it was created at or after `since`
-    /// (Unix seconds) and may be a Studio-caused ending.
+    /// Raw changed monitor for classification by the Studio-error owner.
     pub fn studio_error_candidate(
         connection: &Connection,
         id: &str,
-        since: f64,
     ) -> StoreResult<Option<String>> {
-        let predicate = studio_error_predicate();
         Ok(connection
-            .prepare_cached(&format!(
-                "SELECT record FROM runtime_monitors WHERE id=?1 AND {predicate} \
-                 AND ({CREATED_EXPRESSION}>=?2 OR {CREATED_EXPRESSION}=0)"
-            ))?
-            .query_row(rusqlite::params![id, since], |row| row.get(0))
+            .prepare_cached("SELECT record FROM runtime_monitors WHERE id=?1")?
+            .query_row([id], |row| row.get(0))
             .optional()?)
     }
 
@@ -170,6 +164,32 @@ inventory::submit! {
 mod tests {
     use super::{MonitorsRepository, QUEUED_STREAM_INDEX, STUDIO_ERROR_INDEX};
     use rusqlite::Connection;
+
+    #[test]
+    fn single_studio_error_candidate_does_not_parse_json_in_sql() {
+        thread_local! { static JSON_SQL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+        let connection = Connection::open_in_memory().expect("database");
+        connection.execute_batch("CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL); INSERT INTO runtime_monitors VALUES('m','{\"status\":\"lost\",\"created\":100}');").expect("monitor");
+        connection.trace_v2(
+            rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+            Some(|event| {
+                if let rusqlite::trace::TraceEvent::Stmt(_, sql) = event
+                    && sql.contains("json_")
+                {
+                    JSON_SQL.set(true);
+                }
+            }),
+        );
+        assert!(
+            MonitorsRepository::studio_error_candidate(&connection, "m")
+                .expect("candidate")
+                .is_some()
+        );
+        assert!(
+            !JSON_SQL.get(),
+            "single-monitor lookup should not parse JSON in SQLite"
+        );
+    }
 
     #[test]
     fn monitor_rows_check_identity_and_discard_unknown_fields() {
