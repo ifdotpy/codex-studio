@@ -442,6 +442,16 @@ pub(crate) fn project(connection: &Connection, id: &str, record: &Value) -> Stor
                      WHERE account_key IS NOT excluded.account_key",
                 )?
                 .execute(params![session, id, thread, account, SessionState::Ready.column()])?;
+            if fields.in_flight == Some(true) {
+                // A turn runs on the thread again: the provider connection is back.
+                connection
+                    .prepare_cached("UPDATE sessions SET state=?2 WHERE id=?1 AND state=?3")?
+                    .execute(params![
+                        session,
+                        SessionState::Ready.column(),
+                        SessionState::Lost.column()
+                    ])?;
+            }
             Some(SessionId(session))
         }
         _ => None,
@@ -661,6 +671,44 @@ pub fn read_sessions(connection: &Connection, chat: &str) -> StoreResult<Vec<Ses
         })
     })
     .collect()
+}
+
+/// Turn `provider_turn` of `chat` is completed. The one writer of Turn `Completed`:
+/// it ends the unfinished turn with that provider turn, or records a completed turn
+/// when none exists. It also writes the legacy `runtime_completed_turns` row, which
+/// readers still use until slice 3 retires the table. Repeating it changes nothing.
+pub fn complete_turn(connection: &Connection, chat: &str, provider_turn: &str) -> StoreResult<()> {
+    let id = format!("{chat}:{provider_turn}");
+    connection
+        .prepare_cached(
+            "UPDATE turns SET state='completed',session=NULL,attempt=NULL,interrupt_ticket=NULL
+             WHERE chat=?1 AND provider_turn=?2",
+        )?
+        .execute([chat, provider_turn])?;
+    connection
+        .prepare_cached(
+            "INSERT INTO turns(id,chat,state,provider_turn)
+             SELECT ?3,?1,'completed',?2
+             WHERE NOT EXISTS(SELECT 1 FROM turns WHERE chat=?1 AND provider_turn=?2)",
+        )?
+        .execute(params![chat, provider_turn, id])?;
+    connection
+        .prepare_cached("INSERT OR IGNORE INTO runtime_completed_turns(id) VALUES(?1)")?
+        .execute([id])?;
+    Ok(())
+}
+
+/// Whether turn `provider_turn` of `chat` is completed.
+pub fn turn_completed(
+    connection: &Connection,
+    chat: &str,
+    provider_turn: &str,
+) -> StoreResult<bool> {
+    Ok(connection
+        .prepare_cached(
+            "SELECT EXISTS(SELECT 1 FROM turns WHERE chat=?1 AND provider_turn=?2 AND state='completed')",
+        )?
+        .query_row([chat, provider_turn], |row| row.get(0))?)
 }
 
 /// A lost provider connection: every ready session of the chat is `Lost`.
@@ -1091,6 +1139,59 @@ mod tests {
         assert_eq!(
             read_turns(&db, "c").unwrap()[0].state,
             TurnState::Interrupted
+        );
+    }
+
+    #[test]
+    fn complete_turn_is_the_one_writer_of_completed_and_is_idempotent() {
+        let db = crate::fresh_state::test_canvas();
+        put(
+            &db,
+            &agent(
+                "c",
+                json!({"status":"running","inFlight":true,"turnId":"p1","threadId":"th"}),
+            ),
+        );
+        assert!(!turn_completed(&db, "c", "p1").unwrap());
+        complete_turn(&db, "c", "p1").unwrap();
+        complete_turn(&db, "c", "p1").unwrap();
+        assert!(turn_completed(&db, "c", "p1").unwrap());
+        assert!(!chat_busy(&db, "c").unwrap());
+        assert_eq!(read_turns(&db, "c").unwrap().len(), 1);
+        complete_turn(&db, "c", "p2").unwrap();
+        assert!(turn_completed(&db, "c", "p2").unwrap());
+        let legacy: i64 = db
+            .query_row("SELECT count(*) FROM runtime_completed_turns", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(legacy, 2);
+    }
+
+    #[test]
+    fn a_lost_session_is_ready_again_when_a_turn_runs_on_its_thread() {
+        let db = crate::fresh_state::test_canvas();
+        put(&db, &agent("c", json!({"threadId":"th"})));
+        mark_sessions_lost(&db, "c").unwrap();
+        assert_eq!(
+            read_sessions(&db, "c").unwrap()[0].state,
+            SessionState::Lost
+        );
+        put(&db, &agent("c", json!({"threadId":"th"})));
+        assert_eq!(
+            read_sessions(&db, "c").unwrap()[0].state,
+            SessionState::Lost
+        );
+        put(
+            &db,
+            &agent(
+                "c",
+                json!({"status":"running","inFlight":true,"turnId":"p","threadId":"th"}),
+            ),
+        );
+        assert_eq!(
+            read_sessions(&db, "c").unwrap()[0].state,
+            SessionState::Ready
         );
     }
 }

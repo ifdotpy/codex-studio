@@ -1049,6 +1049,30 @@ fn a_retained_host_provider_disconnects_only_the_vm_actors() {
 }
 
 #[test]
+fn a_provider_disconnect_loses_the_session_and_interrupts_the_turn() {
+    let mut connection = database();
+    put(
+        &connection,
+        json!({"status": "running", "autoWake": true, "inFlight": true, "turnId": "turn",
+            "threadId": "thread", "error": null, "executionMode": "vm",
+            "startAttempt": {"id": "a", "epoch": 0, "accountKey": ACCOUNT, "events": ["event-a"],
+                "submitted": true, "turnId": "turn", "connectionGeneration": 4, "created": 1.0,
+                "settingsFixed": true, "connectionId": "connection", "threadId": "thread"}}),
+    );
+    assert!(crate::domain::chat_busy(&connection, "agent").expect("busy before"));
+    with(&mut connection, |tx| {
+        SchedulerRepository::disconnect_vm_actors(tx, ACCOUNT, 4, 20.0).expect("disconnect runs")
+    });
+    assert!(!crate::domain::chat_busy(&connection, "agent").expect("busy after"));
+    let sessions = crate::domain::read_sessions(&connection, "agent").expect("sessions");
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].state, crate::domain::SessionState::Lost);
+    let turns = crate::domain::read_turns(&connection, "agent").expect("turns");
+    assert_eq!(turns.len(), 1);
+    assert_eq!(turns[0].state, crate::domain::TurnState::Interrupted);
+}
+
+#[test]
 fn a_restart_of_an_attempt_without_a_supervisor_identity_records_no_supervisor() {
     // A Rust start attempt has a connection generation but no supervisor
     // identity. Its restart receipt once stored `{"generation": N}` as the
