@@ -1071,7 +1071,7 @@ pub(crate) fn supervisor(db: &mut Connection) -> StoreResult<()> {
 
 #[cfg(test)]
 pub(crate) fn m2026_10_30_domain_model_for_tests(tx: &Transaction<'_>) -> StoreResult<()> {
-    m2026_10_30_domain_model::apply(tx)
+    crate::domain::backfill(tx)
 }
 
 #[cfg(any(test, feature = "test-support"))]

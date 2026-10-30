@@ -284,15 +284,44 @@ pub fn owner_delete_trigger_sql() -> String {
     )
 }
 
-/// Everything the migration installs. Safe to run again.
-pub(crate) fn install(transaction: &Transaction<'_>) -> StoreResult<()> {
-    transaction.execute_batch(&tables_sql())?;
-    transaction.execute_batch(&check_triggers_sql())?;
-    transaction.execute_batch(&owner_delete_trigger_sql())?;
-    if crate::schema::table_exists(transaction, "runtime_completed_turns")? {
-        transaction.execute_batch(&completed_turns_trigger_sql())?;
+fn words(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Create the trigger of each `DROP ...; CREATE ...;` pair in `sql` when it is
+/// missing or differs from the stored one. A trigger that is current is not written.
+fn ensure_triggers(transaction: &Transaction<'_>, sql: &str) -> StoreResult<()> {
+    for pair in sql.split("DROP TRIGGER IF EXISTS ").skip(1) {
+        let name = pair.split(';').next().unwrap_or_default().trim();
+        let create = pair
+            .find("CREATE TRIGGER")
+            .map(|start| pair[start..].trim_end_matches([';', '\n', ' ']))
+            .ok_or(StoreError::RecordContract("generated trigger has no body"))?;
+        let stored: Option<String> = transaction
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?1",
+                [name],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if stored.as_deref().map(words) != Some(words(create)) {
+            transaction.execute_batch(&format!("DROP TRIGGER IF EXISTS {name}; {create};"))?;
+        }
     }
     Ok(())
+}
+
+/// Everything the migration installs. It runs at every start, so it writes only
+/// what is missing or changed. Returns whether the tables were new.
+pub(crate) fn install(transaction: &Transaction<'_>) -> StoreResult<bool> {
+    let fresh = !crate::schema::table_exists(transaction, CHAT_TABLE)?;
+    transaction.execute_batch(&tables_sql())?;
+    ensure_triggers(transaction, &check_triggers_sql())?;
+    ensure_triggers(transaction, &owner_delete_trigger_sql())?;
+    if crate::schema::table_exists(transaction, "runtime_completed_turns")? {
+        ensure_triggers(transaction, &completed_turns_trigger_sql())?;
+    }
+    Ok(fresh)
 }
 
 /// Copy every completed turn and project every agent, in the caller's transaction.
