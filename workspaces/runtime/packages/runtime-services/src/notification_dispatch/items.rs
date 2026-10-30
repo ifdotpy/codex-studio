@@ -2,6 +2,7 @@
 use super::notices::{json_text, remove};
 use super::{NotificationDispatchError, suffix};
 use serde_json::{Value, json};
+use studio_runtime_store::TaskRecord;
 
 pub(super) const TOOL_OUTPUT_CHARS: usize = 12_000;
 const TASK_TYPES: &[&str] = &[
@@ -24,7 +25,7 @@ pub(super) fn task_transition(
     agent: &Value,
     method: &str,
     params: &Value,
-    previous: Option<&Value>,
+    previous: Option<&TaskRecord>,
     stale: bool,
     at: f64,
 ) -> Result<Option<Value>, NotificationDispatchError> {
@@ -43,38 +44,43 @@ pub(super) fn task_transition(
     let historical_tool = stale
         && matches!(method, "item/started" | "item/completed")
         && previous.is_some_and(|t| {
-            t["kind"] == "tool"
-                && t["agent"] == agent["id"]
-                && t["itemId"] == item_id
-                && t["turnId"] == params["turnId"]
-                && t["type"] == kind
+            t.kind() == Some("tool")
+                && t.agent().map(Value::from).unwrap_or(Value::Null) == agent["id"]
+                && t.item_id() == Some(item_id)
+                && t.turn_id().map(Value::from).unwrap_or(Value::Null) == params["turnId"]
+                && t.task_type() == Some(kind)
         });
     if stale
         && !historical_tool
-        && !previous.is_some_and(|t| t["kind"] == "command" && t["turnId"] == params["turnId"])
+        && !previous.is_some_and(|t| {
+            t.kind() == Some("command")
+                && t.turn_id().map(Value::from).unwrap_or(Value::Null) == params["turnId"]
+        })
     {
         return Ok(None);
     }
     if method == "item/commandExecution/outputDelta" {
-        let Some(mut task) = previous.cloned() else {
+        let Some(task) = previous else {
             return Ok(None);
         };
         let output = format!(
             "{}{}",
-            task["tail"].as_str().unwrap_or_default(),
+            task.tail().unwrap_or_default(),
             params["delta"].as_str().unwrap_or_default()
         );
-        task["tail"] = json!(suffix(&output, TOOL_OUTPUT_CHARS));
-        task["outputTruncated"] =
-            json!(task["outputTruncated"] == true || output.chars().count() > TOOL_OUTPUT_CHARS);
-        return Ok(Some(task));
+        let mut task = task.clone();
+        task.set_tail(suffix(&output, TOOL_OUTPUT_CHARS));
+        task.set_output_truncated(
+            task.output_truncated() == Some(true) || output.chars().count() > TOOL_OUTPUT_CHARS,
+        );
+        return Ok(Some(task.into_value()));
     }
     if let Some(task) = previous
-        && task["status"] != "running"
+        && task.status() != Some("running")
     {
-        return Ok(Some(task.clone()));
+        return Ok(Some(task.value()));
     }
-    let mut task = previous.cloned().unwrap_or_else(||json!({"id":format!("{}:{item_id}",agent["id"].as_str().unwrap_or_default()),"agent":agent["id"],"itemId":item_id,"turnId":params.get("turnId").filter(|t|!t.is_null() && **t != "").unwrap_or(&agent["turnId"]),"created":at,"kind":if kind=="commandExecution"{"command"}else{"tool"}}));
+    let mut task = previous.map(TaskRecord::value).unwrap_or_else(||json!({"id":format!("{}:{item_id}",agent["id"].as_str().unwrap_or_default()),"agent":agent["id"],"itemId":item_id,"turnId":params.get("turnId").filter(|t|!t.is_null() && **t != "").unwrap_or(&agent["turnId"]),"created":at,"kind":if kind=="commandExecution"{"command"}else{"tool"}}));
     task["type"] = json!(kind);
     task["name"] = item
         .get("tool")
@@ -152,7 +158,7 @@ pub(super) fn non_text(
     agent: &mut Value,
     method: &str,
     params: &Value,
-    previous_task: Option<&Value>,
+    previous_task: Option<&TaskRecord>,
     already_compacted: bool,
     at: f64,
 ) -> Result<ItemDecision, NotificationDispatchError> {
@@ -238,12 +244,10 @@ pub(super) fn non_text(
                 if started {
                     None
                 } else {
-                    decision
-                        .task
-                        .as_ref()
-                        .or(previous_task)
-                        .and_then(|t| t.get("durationMs"))
-                        .cloned()
+                    match &decision.task {
+                        Some(task) => task.get("durationMs").cloned(),
+                        None => previous_task.and_then(TaskRecord::duration_json),
+                    }
                 }
             }),
     };

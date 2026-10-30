@@ -145,9 +145,9 @@ async fn session(
         | SessionRequest::ClaudeSessionStateRequest(_)
         | SessionRequest::ClaudeSessionStopTaskRequest(_) => operation.clone(),
     };
-    let snapshot = studio_runtime_services::claude_controls::ControlSnapshot::from_records(
+    let snapshot = studio_runtime_services::claude_controls::ControlSnapshot::from_stored(
         agent.clone(),
-        snapshot_operation,
+        snapshot_operation.as_ref(),
     )
     .map_err(control_error)?;
     let account = if is_state {
@@ -214,9 +214,7 @@ async fn session(
         request @ (SessionRequest::ClaudeSessionStateRequest(_)
         | SessionRequest::ClaudeSessionStopTaskRequest(_)) => {
             let body = serde_json::to_value(request).map_err(|_| ApiError::internal())?;
-            controls()?
-                .read_or_stop(snapshot.agent(), &body, operation)
-                .await
+            controls()?.read_or_stop_snapshot(&snapshot, &body).await
         }
     };
     state.event_wake.notify_one();
@@ -338,9 +336,8 @@ async fn require_claude_account(state: &HttpState, agent: &Value) -> Result<(), 
     let provider = accounts
         .accounts
         .iter()
-        .find(|account| account.get("id").and_then(Value::as_str) == Some(account_key.as_str()))
-        .and_then(|account| account.get("provider"))
-        .and_then(Value::as_str);
+        .find(|account| account.id.as_str() == Some(account_key.as_str()))
+        .and_then(|account| account.provider.as_str());
     if provider != Some(ProviderKind::Claude.key()) {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
@@ -388,7 +385,13 @@ impl ControlSession for LocalControlSession {
 async fn load_agent(
     store: Arc<RuntimeStore>,
     id: String,
-) -> Result<(Value, Option<Value>), ApiError> {
+) -> Result<
+    (
+        Value,
+        Option<studio_runtime_store::WorkspaceOperationRecord>,
+    ),
+    ApiError,
+> {
     let loaded = store
         .read_async("runtime-http/routes/claude_controls", move |tx| {
             let Some(agent) = AgentRepository::get(tx, &AgentId::from(id.as_str()))? else {

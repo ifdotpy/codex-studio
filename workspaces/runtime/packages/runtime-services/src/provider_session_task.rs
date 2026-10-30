@@ -259,6 +259,8 @@ pub struct SessionHandle {
 #[derive(Clone)]
 pub struct SessionControl {
     clock: SessionClock,
+    factory: Arc<dyn ProviderTaskFactory>,
+    handle: ProviderHandle,
     commands: mpsc::Sender<Command>,
     /// Progress lane: callback answers and turn interrupts. See [`Command`].
     priority: mpsc::Sender<Command>,
@@ -388,6 +390,8 @@ impl SessionHandle {
             },
         });
         let stop = Shutdown::default();
+        let query_handle = handle.clone();
+        let query_factory = Arc::clone(&factory);
         let actor = SessionTask {
             state,
             clock: clock.clone(),
@@ -410,6 +414,8 @@ impl SessionHandle {
             events: receiver,
             control: SessionControl {
                 clock,
+                factory: query_factory,
+                handle: query_handle,
                 commands,
                 priority,
                 settlements,
@@ -448,6 +454,18 @@ impl SessionHandle {
     }
 }
 impl SessionControl {
+    pub async fn operation_status(
+        &self,
+        operation: OperationId,
+    ) -> Result<
+        studio_runtime_providers::supervisor_protocol::ProviderOperationStatus,
+        SessionTaskError,
+    > {
+        Ok(self
+            .factory
+            .operation_status(self.handle.clone(), operation, self.stop.clone())
+            .await?)
+    }
     pub fn cancel(&self) {
         self.stop.cancel();
     }

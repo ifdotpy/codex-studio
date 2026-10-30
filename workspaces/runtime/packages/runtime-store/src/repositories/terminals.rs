@@ -596,10 +596,7 @@ mod tests {
         let row = TerminalsRepository::get(&database, "terminal")
             .expect("terminal snapshot reads")
             .expect("terminal exists");
-        assert_eq!(
-            row.record.get("status").and_then(serde_json::Value::as_str),
-            Some("running")
-        );
+        assert_eq!(row.record.status(), Some("running"));
         assert_eq!((row.output.as_str(), row.offset), ("old", 0));
 
         drop(database);

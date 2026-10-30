@@ -30,9 +30,10 @@ async fn claim_retry(state: &State) -> String {
                     row.auto_wake = Some(true);
                     for (key, value) in [
                         ("lastCompletedTurn", json!(PREVIOUS_TURN)),
-
                         ("status", json!("completed")),
-                    ] { row.extra.insert(key.into(), value); }
+                    ] {
+                        row.extra.insert(key.into(), value);
+                    }
                     row.extra.remove("startAttempt");
                     AgentRepository::put(tx, &row)?;
                     let raw = ContinuationRepository::snapshot(
@@ -51,8 +52,8 @@ async fn claim_retry(state: &State) -> String {
                         NOW,
                     )
                     .expect("failure");
-                    let scheduled = failure.record.expect("scheduled retry");
-                    let held = AgentRecord::from_value(failure.agent.expect("agent"))
+                    let scheduled = failure.record.expect("scheduled retry").value();
+                    let held = AgentRecord::from_value(failure.agent.expect("agent").into_value())
                         .map_err(StoreError::from)?;
                     AgentRepository::put(tx, &held)?;
                     ContinuationRepository::put_record(
@@ -77,15 +78,16 @@ async fn claim_retry(state: &State) -> String {
                         NOW,
                     )
                     .expect("claim");
-                    let record = claim.record.expect("claimed record");
+                    let record = claim.record.expect("claimed record").value();
                     ContinuationRepository::put_record(
                         tx,
                         ContinuationTable::Capacity,
                         &agent,
                         &record,
                     )?;
-                    let claimed = AgentRecord::from_value(claim.agent.expect("claimed agent"))
-                        .map_err(StoreError::from)?;
+                    let claimed =
+                        AgentRecord::from_value(claim.agent.expect("claimed agent").into_value())
+                            .map_err(StoreError::from)?;
                     AgentRepository::put(tx, &claimed)?;
                     Ok(record["id"].as_str().expect("id").to_owned())
                 })
@@ -230,7 +232,7 @@ async fn complete(state: &State, id: &str, action: Action<'static>) {
                         tx,
                         ContinuationTable::Capacity,
                         &agent,
-                        &decision.record.expect("record"),
+                        &decision.record.expect("record").value(),
                     )?;
                     Ok::<_, WorkerError>(())
                 })

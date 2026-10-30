@@ -1,7 +1,7 @@
 import { required } from "./components/componentTestFixtures.ts";
 import type { SpawnSyncOptions } from "node:child_process";
 import assert from "node:assert/strict";
-import { rmSync } from "node:fs";
+import { existsSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, test, vi } from "vitest";
 
@@ -32,6 +32,7 @@ beforeEach(() => {
   vi.stubEnv("CODEX_HOME", join(callerHome, ".codex"));
   vi.stubEnv("CLAUDE_CONFIG_DIR", join(callerHome, ".claude"));
   vi.stubEnv("PLAYWRIGHT_OUTPUT_DIR", "");
+  vi.stubEnv("KEEP_TEST_ARTIFACTS", "");
   vi.spyOn(console, "log").mockImplementation(() => {});
   vi.spyOn(console, "error").mockImplementation(() => {});
   childProcess.spawnSync.mockReset();
@@ -100,14 +101,30 @@ test("runs Playwright in an isolated home with no interpreter probe", async () =
     "--list",
   ]);
   assert.equal(process.exitCode, 0);
+  assert.equal(
+    existsSync(required(calls[0]).environment.PLAYWRIGHT_OUTPUT_DIR!),
+    false,
+  );
 });
 
 test("a failing Playwright run sets the exit code", async () => {
+  let output = "";
+  let home = "";
   childProcess.spawnSync.mockImplementation((command, args, options) => {
     observeCommand(command, args, options);
+    output = options.env!.PLAYWRIGHT_OUTPUT_DIR!;
+    home = options.env!.HOME!;
+    writeFileSync(join(output, "trace.zip"), "fixture trace");
     return { status: 3 };
   });
 
   await import("../scripts/run-browser-tests.ts");
   assert.equal(process.exitCode, 3);
+  assert.equal(existsSync(join(output, "trace.zip")), true);
+  assert.equal(existsSync(home), false);
+  assert.ok(
+    vi
+      .mocked(console.log)
+      .mock.calls.some(([message]) => String(message).includes(output)),
+  );
 });

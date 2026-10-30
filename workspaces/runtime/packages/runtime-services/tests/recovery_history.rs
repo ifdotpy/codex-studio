@@ -191,6 +191,22 @@ async fn repeated_cursor_and_foreign_item_are_refused() {
     assert_eq!(read(vec![Ok(page(t))]).await, Err(HistoryError::Identity));
 }
 #[tokio::test]
+async fn pagination_requires_object_pages_and_valid_cursors() {
+    for value in [
+        json!([]),
+        json!({"data":null}),
+        json!({"data":[],"nextCursor":1}),
+        json!({"data":[],"nextCursor":""}),
+    ] {
+        assert!(read(vec![Ok(value)]).await.is_err());
+    }
+    assert_eq!(read(vec![Ok(json!({"data":[]}))]).await, Ok(None));
+    assert_eq!(
+        read(vec![Ok(json!({"data":[],"nextCursor":null}))]).await,
+        Ok(None)
+    );
+}
+#[tokio::test]
 async fn foreign_transport_receipt_is_refused_before_use() {
     let mut reader = Reader {
         replies: vec![Ok(page(turn()))].into(),

@@ -6,7 +6,7 @@ use thiserror::Error;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct DraftWrite {
-    pub id: String,
+    pub version: studio_runtime_schema::drafts::DraftVersion,
     pub payload: Value,
     pub deleted: bool,
     pub assumed_payload: Option<Value>,
@@ -39,30 +39,31 @@ pub async fn push_drafts(
                 let mut conflicts = Vec::new();
                 let mut changed = false;
                 for row in rows {
-                    let current = SyncDocumentsRepository::draft(transaction, &row.id)?;
+                    let id = &row.version.id;
+                    let current = SyncDocumentsRepository::draft(transaction, id)?;
                     let current_value = if let Some(current) = &current {
                         if crate::sync_policy::contains_unrepresentable_integer(&current.payload) {
                             return Err(StoreError::InvalidSyncObject {
                                 scope: "drafts".to_owned(),
-                                id: row.id.clone(),
+                                id: id.clone(),
                             });
                         }
                         let value =
                             serde_json::from_str::<Value>(&current.payload).map_err(|_| {
                                 StoreError::InvalidSyncObject {
                                     scope: "drafts".to_owned(),
-                                    id: row.id.clone(),
+                                    id: id.clone(),
                                 }
                             })?;
                         if studio_runtime_schema::drafts::DraftVersion::from_stored_value(
-                            &row.id,
+                            id,
                             value.clone(),
                         )
                         .is_err()
                         {
                             return Err(StoreError::InvalidSyncObject {
                                 scope: "drafts".to_owned(),
-                                id: row.id.clone(),
+                                id: id.clone(),
                             });
                         }
                         Some(value)
@@ -84,12 +85,8 @@ pub async fn push_drafts(
                     }
 
                     let payload = serde_json::to_string(&row.payload).map_err(StoreError::from)?;
-                    changed |= SyncDocumentsRepository::put_draft(
-                        transaction,
-                        &row.id,
-                        &payload,
-                        row.deleted,
-                    )?;
+                    changed |=
+                        SyncDocumentsRepository::put_draft(transaction, id, &payload, row.deleted)?;
                 }
                 Ok(DraftPushResult { conflicts, changed })
             },

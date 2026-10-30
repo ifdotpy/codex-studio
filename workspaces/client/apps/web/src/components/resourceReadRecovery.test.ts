@@ -185,6 +185,7 @@ function receiveReceipts(receipts: unknown[]) {
 
 import { useMessageReceipts } from "./useMessageReceipts";
 import { useMessageQueue } from "./useMessageQueue";
+import { ApiError } from "../api";
 import {
   useWorkerModels,
   readWorkerModels,
@@ -444,6 +445,39 @@ describe("resource read callers", () => {
     });
     expect(get).not.toHaveBeenCalled();
     expect(syncPost).not.toHaveBeenCalled();
+  });
+
+  it("retains a request on signature conflict and clears an ordinary refusal", async () => {
+    const key = "studio-queue-change:scope:lead";
+    const request = {
+      action: "cancel",
+      agent: "lead",
+      id: "a",
+      expectedText: "text",
+      expected_revision: "r",
+      request_id: "request",
+    };
+    localStorage.setItem(key, JSON.stringify(request));
+    get.mockResolvedValue({
+      items: [],
+      revision: "r",
+      capabilities: { reorder: true, receipts: true },
+    });
+    const queue = mount(() =>
+      useMessageQueue({
+        id: "lead",
+        enabled: true,
+        scope: "scope",
+        workspaceId: "workspace",
+        refresh: vi.fn(async () => {}),
+      }),
+    );
+    syncPost.mockRejectedValueOnce(new ApiError("signature conflict", 409));
+    await expect(queue.retry()).rejects.toThrow("signature conflict");
+    expect(localStorage.getItem(key)).toBe(JSON.stringify(request));
+    syncPost.mockRejectedValueOnce(new ApiError("ordinary conflict", 400));
+    await expect(queue.retry()).rejects.toThrow("ordinary conflict");
+    expect(localStorage.getItem(key)).toBeNull();
   });
 
   it("uses streamed model lists for display and fresh metadata for account selection", async () => {

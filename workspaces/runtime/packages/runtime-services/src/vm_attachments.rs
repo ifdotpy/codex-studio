@@ -135,12 +135,12 @@ async fn current(
             }
             for asset in &snapshot.assets {
                 let saved = WorkspaceFilesRepository::asset(tx, &asset.id)?.ok_or_else(refused)?;
-                if !crate::payload_store::valid_asset_record(saved.value(), &asset.id, &root)
-                    || saved.value() != &Value::Object(asset.view.clone())
-                    || saved.value()["path"] != asset.path
-                    || saved.value()["name"] != asset.name
-                    || saved.value()["size"] != asset.size
-                    || saved.value()["image"] != asset.image
+                if !crate::payload_store::valid_asset_record(&saved, &asset.id, &root)
+                    || saved.clone().into_value() != Value::Object(asset.view.clone())
+                    || saved.path() != asset.path
+                    || saved.name() != asset.name
+                    || saved.size().as_u64() != Some(asset.size)
+                    || saved.image() != asset.image
                     || asset.owner_deleted
                     || (asset.owner_root_id != snapshot.actor.root_id
                         && snapshot.actor.forked_from.as_ref() != Some(&asset.owner_id))
@@ -153,7 +153,7 @@ async fn current(
                 if value["rootId"] != asset.owner_root_id
                     || !value["deletedAt"].is_null()
                     || value["deleted"] == true
-                    || saved.value()["agent"] != asset.owner_id
+                    || saved.agent() != asset.owner_id
                 {
                     return Err(refused());
                 }
@@ -708,8 +708,7 @@ print(json.dumps({'stdin':value(limit.comparators[0]),'command':command,'wait':w
             .await
             .expect("asset")
             .expect("saved asset")
-            .value()
-            .clone();
+            .into_value();
         let mut s = snapshot();
         s.assets.push(Asset {
             id: saved["id"].as_str().expect("id").into(),

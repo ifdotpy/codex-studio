@@ -71,7 +71,7 @@ pub(crate) async fn work_for_agent(state: HttpState, agent_id: String) -> Result
             item["submissionRefusal"] =
                 studio_runtime_services::work_write::current_submission_refusal(
                     connection,
-                    record.value(),
+                    &record.value(),
                 )
                 .map_err(super::work_write::write_error)?;
         }

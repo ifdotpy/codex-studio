@@ -2643,6 +2643,17 @@ pub async fn push_preferences(
 #[allow(clippy::unwrap_used)]
 mod tests {
     #[test]
+    fn changed_agent_publication_rejects_decimal_root_epoch() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+            .unwrap();
+        db.execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
+            .unwrap();
+        let raw = r#"{"id":"a","rootId":"r","epoch":1.0,"status":"idle"}"#;
+        assert!(super::CheckedAgentRow::decode(&db, 1, "a", raw).is_err());
+    }
+
+    #[test]
     fn event_window_triggers_use_the_event_window_owner() {
         let sql = include_str!("../../runtime-store/src/sync_schema.sql");
         let limits = sql.match_indices("LIMIT ").count();
@@ -3208,7 +3219,7 @@ mod tests {
         let store = RuntimeStore::open(Some(root.path()))
             .await
             .expect("open isolated runtime store");
-        let agent = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":0,"status":"idle","isLead":true});
+        let agent = json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":0,"status":"idle","isLead":true});
         let snapshot = ProjectVaultSnapshot::default();
 
         store
@@ -3334,6 +3345,7 @@ mod tests {
                             "id": id,
                             "rootId": id,
                             "epoch": 0,
+                            "accountKey": "default",
                             "status": "idle",
                             "isLead": true
                         }),
@@ -3640,7 +3652,7 @@ mod tests {
                 for id in ["a", "b"] {
                     let agent = studio_runtime_store::AgentRecord::from_value(
                         json!({"provider":studio_runtime_schema::ProviderKind::Codex,
-                            "id": id, "rootId": id, "epoch": 0, "status": "idle", "isLead": true
+                            "id": id, "rootId": id, "epoch": 0, "status": "idle", "accountKey": "default", "isLead": true
                         }),
                     )?;
                     studio_runtime_store::AgentRepository::put(transaction, &agent)?;
@@ -3951,7 +3963,10 @@ mod tests {
                 .expect("server row"),
         )
         .expect("JSON");
-        assert_eq!(persisted["value"]["fields"][key]["value"], json!({"codex:astra": "blacklisted"}));
+        assert_eq!(
+            persisted["value"]["fields"][key]["value"],
+            json!({"codex:astra": "blacklisted"})
+        );
         assert_eq!(persisted["value"]["fields"][other]["value"], true);
         let user_row: Value = serde_json::from_str(
             &SyncDocumentsRepository::preference_payload(&reader, "user")

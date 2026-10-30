@@ -829,18 +829,46 @@ pub fn project_entity_view(
     project_persisted_record("project", &Value::Object(view))
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RetainedWorktreeView<'a> {
+    #[serde(borrow)]
+    workspace_cleanup_intent:
+        Option<studio_runtime_schema::json_object::JsonObject<RetainedIntent<'a>>>,
+    remote_worker: Option<serde::de::IgnoredAny>,
+}
+
+#[derive(serde::Deserialize)]
+struct RetainedIntent<'a> {
+    phase: Option<&'a str>,
+    #[serde(borrow)]
+    effect: Option<studio_runtime_schema::json_object::JsonObject<RetainedEffect<'a>>>,
+}
+
+#[derive(serde::Deserialize)]
+struct RetainedEffect<'a> {
+    kind: Option<&'a str>,
+}
+
 /// Public retained-folder entity. Cleanup operation identities never leave the server.
 pub fn retained_worktree_entity(member: &Value) -> Option<Value> {
-    let intent = member.get("workspaceCleanupIntent")?;
-    if !matches!(
-        intent.get("phase").and_then(Value::as_str),
-        Some("not_sent" | "unknown")
-    ) || !matches!(
-        intent.pointer("/effect/kind").and_then(Value::as_str),
-        Some("remove_worktree" | "save_worktree_ref")
-    ) || member
-        .get("remoteWorker")
-        .is_some_and(|value| !value.is_null())
+    use serde::Deserialize;
+    let view =
+        studio_runtime_schema::json_object::JsonObject::<RetainedWorktreeView<'_>>::deserialize(
+            member,
+        )
+        .ok()?
+        .0;
+    let intent = view.workspace_cleanup_intent?.0;
+    if !matches!(intent.phase, Some("not_sent" | "unknown"))
+        || !intent
+            .effect
+            .as_ref()
+            .and_then(|effect| effect.0.kind)
+            .is_some_and(|kind| {
+                crate::workspace_cleanup_runtime::RETAINED_WORKTREE_EFFECTS.contains(&kind)
+            })
+        || view.remote_worker.is_some()
     {
         return None;
     }
@@ -856,6 +884,64 @@ mod projection_plan_tests {
         schema_projection_properties,
     };
     use serde_json::json;
+
+    #[test]
+    fn retained_cleanup_admission_preserves_partial_legacy_fields() {
+        for (raw, expected) in [
+            (
+                r#"{"id":"a","workspaceCleanupIntent":{"phase":"unknown","effect":{"kind":"remove_worktree"}}}"#,
+                true,
+            ),
+            (
+                r#"{"id":"a","remoteWorker":null,"workspaceCleanupIntent":{"phase":"not_sent","effect":{"kind":"save_worktree_ref"}}}"#,
+                true,
+            ),
+            (
+                r#"{"id":"a","remoteWorker":false,"workspaceCleanupIntent":{"phase":"unknown","effect":{"kind":"remove_worktree"}}}"#,
+                false,
+            ),
+            (
+                r#"{"id":"a","remoteWorker":0,"workspaceCleanupIntent":{"phase":"unknown","effect":{"kind":"remove_worktree"}}}"#,
+                false,
+            ),
+            (
+                r#"{"id":"a","workspaceCleanupIntent":{"phase":null,"effect":{"kind":"remove_worktree"}}}"#,
+                false,
+            ),
+            (
+                r#"{"id":"a","workspaceCleanupIntent":{"phase":"unknown","effect":[]}}"#,
+                false,
+            ),
+            (
+                r#"{"id":"a","workspaceCleanupIntent":{"phase":"confirmed","phase":"unknown","effect":{"kind":"remove_worktree"}}}"#,
+                true,
+            ),
+            (
+                r#"{"id":"","workspaceCleanupIntent":{"phase":"unknown","effect":{"kind":"remove_worktree"}}}"#,
+                false,
+            ),
+        ] {
+            let value: serde_json::Value = serde_json::from_str(raw).expect("fixture JSON");
+            let result = super::retained_worktree_entity(&value);
+            assert_eq!(result.is_some(), expected, "{raw}");
+            if let Some(view) = result {
+                assert_eq!(view["rootId"], value["rootId"]);
+            }
+        }
+    }
+
+    #[test]
+    fn retained_cleanup_prefers_present_nested_values_before_type_checks() {
+        let member = json!({"id":"worker","rootId":"root","cwd":"/fallback",
+            "workspaceCleanupIntent":{"phase":"unknown","path":"/intent", "reason":"fallback",
+                "effect":{"kind":"remove_worktree","identity":{"cwd":null,"private":"secret"}},
+                "receipt":{"reason":false,"private":"secret"},"requestId":"private"}});
+        let view = super::retained_worktree_entity(&member).expect("retained");
+        assert_eq!(view["cleanup"]["path"], serde_json::Value::Null);
+        assert_eq!(view["cleanup"]["reason"], serde_json::Value::Null);
+        assert!(!view.to_string().contains("secret"));
+        assert!(!view.to_string().contains("private"));
+    }
 
     #[test]
     fn complaint_names_preserve_missing_and_null() {

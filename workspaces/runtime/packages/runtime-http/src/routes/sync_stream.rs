@@ -33,7 +33,14 @@ use studio_runtime_services::change_notifications::{
     ChangeSnapshot, MAX_SAFE_REVISION, SYNC_FRAME_MIN_INTERVAL,
 };
 use studio_runtime_services::resource_notify::{
+<<<<<<< head
     LiveDelta, ResourceChanges, ResourceNotifications, ResourceNotifyError,
+||||||| base
+    ResourceChanges, ResourceNotifications, ResourceNotifyError,
+=======
+    LiveDelta, ResourceChanges, ResourceIdentity, ResourceKind, ResourceNotifications,
+    ResourceNotifyError,
+>>>>>>> ec8db553cf8c7355af2401a18b81608d
 };
 #[cfg(test)]
 use studio_runtime_services::token_rate::TokenRateHub;
@@ -79,16 +86,79 @@ pub(crate) async fn notify_resources(
 #[derive(Default)]
 pub(crate) struct SyncSessions(Mutex<BTreeMap<String, SyncSession>>);
 
+#[derive(Clone, Serialize)]
+#[serde(transparent)]
+pub(super) struct SubscribedResource {
+    resource: ResourceRef,
+    #[serde(skip)]
+    key: String,
+}
+
+impl SubscribedResource {
+    fn from_validated_value(value: Value) -> Result<Self, serde_json::Error> {
+        let key = value.to_string();
+        let resource = serde_json::from_value(value)?;
+        Ok(Self { resource, key })
+    }
+
+    pub(super) fn new(resource: ResourceRef) -> Result<Self, ApiError> {
+        let key = serde_json::to_value(&resource)
+            .map_err(|_| ApiError::internal())?
+            .to_string();
+        Ok(Self { resource, key })
+    }
+}
+
+impl ResourceIdentity for SubscribedResource {
+    fn notification_key(&self) -> Result<String, ResourceNotifyError> {
+        Ok(self.key.clone())
+    }
+    fn notification_kind(&self) -> Result<ResourceKind, ResourceNotifyError> {
+        Ok(match &self.resource {
+            ResourceRef::StateResource(_) => ResourceKind::State,
+            ResourceRef::AgentDetailResource(_) => ResourceKind::AgentDetail,
+            ResourceRef::CostsResource(_) => ResourceKind::Costs,
+            ResourceRef::DesktopResource(_) => ResourceKind::Desktop,
+            ResourceRef::MonitorsResource(_) => ResourceKind::Monitors,
+            ResourceRef::SessionCostResource(_) => ResourceKind::SessionCost,
+            ResourceRef::TerminalResource(_) => ResourceKind::Terminal,
+            ResourceRef::TerminalsResource(_) => ResourceKind::Terminals,
+            ResourceRef::TranscriptResource(_) => ResourceKind::Transcript,
+            ResourceRef::TranscriptsResource(_) => ResourceKind::Transcripts,
+            ResourceRef::RoomResource(_) => ResourceKind::Room,
+            ResourceRef::ProcessesResource(_) => ResourceKind::Processes,
+            ResourceRef::ComplaintResource(_) => ResourceKind::Complaint,
+            ResourceRef::WorkResource(_) => ResourceKind::Work,
+            ResourceRef::TerminalOutputResource(_) => ResourceKind::TerminalOutput,
+            ResourceRef::TaskResource(_) => ResourceKind::Task,
+            ResourceRef::TasksResource(_) => ResourceKind::Tasks,
+            ResourceRef::WorkspaceResource(_) => ResourceKind::Workspace,
+            ResourceRef::MultiServerResource(_) => ResourceKind::MultiServer,
+            ResourceRef::AccountsResource(_)
+            | ResourceRef::AuthProgressResource(_)
+            | ResourceRef::DraftsResource(_)
+            | ResourceRef::LimitsResource(_)
+            | ResourceRef::ModelsResource(_)
+            | ResourceRef::QueueResource(_)
+            | ResourceRef::ReceiptsResource(_)
+            | ResourceRef::RenameProgressResource(_)
+            | ResourceRef::VaultJobProgressResource(_)
+            | ResourceRef::VaultReadinessResource(_)
+            | ResourceRef::VoiceResource(_) => ResourceKind::Other,
+        })
+    }
+}
+
 struct SyncSession {
-    resources: Vec<Value>,
+    resources: Vec<SubscribedResource>,
     generation: i64,
     sender: tokio::sync::mpsc::Sender<SubscriptionChange>,
 }
 
 struct SubscriptionChange {
     generation: i64,
-    resources: Vec<Value>,
-    added: Vec<Value>,
+    resources: Vec<SubscribedResource>,
+    added: Vec<SubscribedResource>,
     token_rates: Option<bool>,
     since: BTreeMap<String, SubscriptionCursor>,
 }
@@ -128,12 +198,7 @@ async fn sync_subscriptions(
     State(state): State<HttpState>,
     ApiJson(request): ApiJson<crate::generated::SyncSubscriptionRequest>,
 ) -> Result<Json<crate::generated::SyncSubscriptionAck>, ApiError> {
-    for resources in [
-        serde_json::to_value(&request.add),
-        serde_json::to_value(&request.remove),
-    ] {
-        let resources = resources.map_err(|_| ApiError::internal())?;
-        let resources = resources.as_array().ok_or_else(ApiError::internal)?;
+    fn check_size<T: Serialize>(resources: &[T]) -> Result<(), ApiError> {
         if resources.len() > MAX_SYNC_RESOURCE_COUNT
             || serde_json::to_vec(resources)
                 .map_err(|_| ApiError::internal())?
@@ -142,7 +207,10 @@ async fn sync_subscriptions(
         {
             return Err(ApiError::validation(vec![json!("body")]));
         }
+        Ok(())
     }
+    check_size(&request.add)?;
+    check_size(&request.remove)?;
     let mut sessions = state
         .sync_sessions
         .0
@@ -166,25 +234,24 @@ async fn sync_subscriptions(
     let remove = request
         .remove
         .into_iter()
-        .map(serde_json::to_value)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| ApiError::internal())?;
+        .map(SubscribedResource::new)
+        .collect::<Result<Vec<_>, _>>()?;
     let mut resources = session
         .resources
         .iter()
-        .filter(|resource| !remove.contains(resource))
+        .filter(|resource| !remove.iter().any(|item| item.key == resource.key))
         .cloned()
         .collect::<Vec<_>>();
     let mut added = Vec::new();
     let mut since = BTreeMap::new();
     for addition in request.add {
-        let value = serde_json::to_value(addition.resource).map_err(|_| ApiError::internal())?;
-        if !resources.contains(&value) {
+        let resource = SubscribedResource::new(addition.resource)?;
+        if !resources.iter().any(|item| item.key == resource.key) {
             if let Some(cursor) = addition.since {
-                since.insert(value.to_string(), cursor);
+                since.insert(resource.key.clone(), cursor);
             }
-            added.push(value.clone());
-            resources.push(value);
+            added.push(resource.clone());
+            resources.push(resource);
         }
     }
     if resources.len() > MAX_SYNC_RESOURCE_COUNT
@@ -319,10 +386,9 @@ async fn sync_stream(
         &state.workspace_id,
         &view,
         reason,
-        initial_entity_sequence,
-        None,
-        initial_draft_sequence,
-        None,
+        typed_resources(&view.resources),
+        (initial_entity_sequence, None),
+        (initial_draft_sequence, None),
     ) {
         Ok(event) => event,
         Err(error) => return error.into_response(),
@@ -478,19 +544,19 @@ async fn sync_stream(
 /// Read the same projections as the resource endpoints. Unsupported resources
 /// and failed reads retain broad invalidation; this path never starts providers,
 /// local-cost scanners, terminal processes, or projection maintenance writes.
-async fn resource_content(state: HttpState, resource: Value) -> Option<Vec<u8>> {
-    super::subscriptions::resource_content(state, resource).await
+async fn resource_content(state: HttpState, resource: SubscribedResource) -> Option<Vec<u8>> {
+    super::subscriptions::resource_content(state, resource.resource).await
 }
 
 /// Only sessions with a live readiness selector own a filesystem source. Dropping
 /// the stream or removing that selector drops its OS watcher as well.
 async fn readiness_source(
     state: &HttpState,
-    resources: &[Value],
+    resources: &[SubscribedResource],
 ) -> Result<Option<studio_runtime_services::vault::VaultReadinessWatcher>, ApiError> {
     if !resources
         .iter()
-        .any(|resource| resource["kind"] == "vault-readiness")
+        .any(|resource| matches!(resource.resource, ResourceRef::VaultReadinessResource(_)))
     {
         return Ok(None);
     }
@@ -515,16 +581,18 @@ async fn readiness_source(
 /// must never enter SQLite, RxDB, entity replay, or durable checkpoints.
 pub(super) async fn append_progress_frames(
     state: &HttpState,
-    view: &ResourceChanges,
+    view: &ResourceChanges<SubscribedResource>,
     frames: &mut VecDeque<Event>,
 ) {
     for (resource, revision) in view.resources.iter().zip(&view.versions) {
-        let value = match resource["kind"].as_str() {
-            Some("auth-progress") => match (&state.claude_login, resource["requestId"].as_str()) {
-                (Some(login), Some(id)) => login.progress(id).await.unwrap_or(Value::Null),
+        let value = match &resource.resource {
+            ResourceRef::AuthProgressResource(r) => match &state.claude_login {
+                Some(login) => login.progress(&r.request_id).await.unwrap_or(Value::Null),
                 _ => Value::Null,
             },
-            Some("rename-progress") | Some("vault-job-progress") | Some("vault-readiness") => {
+            ResourceRef::RenameProgressResource(_)
+            | ResourceRef::VaultJobProgressResource(_)
+            | ResourceRef::VaultReadinessResource(_) => {
                 let Some(bytes) = resource_content(state.clone(), resource.clone()).await else {
                     continue;
                 };
@@ -533,14 +601,39 @@ pub(super) async fn append_progress_frames(
                 };
                 value
             }
-            _ => continue,
+            ResourceRef::AccountsResource(_)
+            | ResourceRef::CostsResource(_)
+            | ResourceRef::DesktopResource(_)
+            | ResourceRef::DraftsResource(_)
+            | ResourceRef::LimitsResource(_)
+            | ResourceRef::ModelsResource(_)
+            | ResourceRef::MultiServerResource(_)
+            | ResourceRef::QueueResource(_)
+            | ResourceRef::ReceiptsResource(_)
+            | ResourceRef::RoomResource(_)
+            | ResourceRef::SessionCostResource(_)
+            | ResourceRef::StateResource(_)
+            | ResourceRef::TaskResource(_)
+            | ResourceRef::TasksResource(_)
+            | ResourceRef::TerminalResource(_)
+            | ResourceRef::TerminalsResource(_)
+            | ResourceRef::TranscriptResource(_)
+            | ResourceRef::TranscriptsResource(_)
+            | ResourceRef::VoiceResource(_)
+            | ResourceRef::WorkspaceResource(_)
+            | ResourceRef::AgentDetailResource(_)
+            | ResourceRef::MonitorsResource(_)
+            | ResourceRef::ProcessesResource(_)
+            | ResourceRef::WorkResource(_)
+            | ResourceRef::ComplaintResource(_)
+            | ResourceRef::TerminalOutputResource(_) => continue,
         };
         let payload = json!({
             "protocol": SYNC_PROTOCOL_VERSION,
             "workspaceId": state.workspace_id,
             "epoch": view.cursor.epoch,
             "revision": revision,
-            "resource": resource,
+            "resource": resource.resource,
             "value": value,
         });
         if state
@@ -603,7 +696,7 @@ pub(super) async fn transcript_initial_snapshot(
     let mut entry: ResourceRevisionEntry =
         super::generated_json(json!({"resource": resource,"revision":through}))?;
     let is_delta = after == Some(through) && response.documents.is_empty();
-    let batch = after.and_then(|after| transcript_change_batch(response.clone(), &scope, after));
+    let batch = after.and_then(|after| transcript_change_batch(&response, &scope, after));
     if is_delta || batch.is_some() {
         entry.reply_kind = Some(crate::generated::SubscriptionReplyKind::Delta);
         entry.transcript_changes = batch.map(Some);
@@ -628,7 +721,7 @@ pub(super) async fn transcript_initial_snapshot(
 fn parse_since(
     query: &QueryParams,
     state: &HttpState,
-    resources: &[Value],
+    resources: &[SubscribedResource],
 ) -> Result<BTreeMap<String, SubscriptionCursor>, ApiError> {
     let mut since = BTreeMap::new();
     let invalid = || ApiError::validation(vec![json!("query"), json!("since")]);
@@ -651,12 +744,12 @@ fn parse_since(
         }
         let addition: crate::generated::SubscriptionAdd =
             serde_json::from_value(value).map_err(|_| invalid())?;
-        let resource = serde_json::to_value(addition.resource).map_err(|_| invalid())?;
-        if !resources.contains(&resource) {
+        let resource = SubscribedResource::new(addition.resource).map_err(|_| invalid())?;
+        if !resources.iter().any(|item| item.key == resource.key) {
             return Err(invalid());
         }
         if let Some(cursor) = addition.since
-            && since.insert(resource.to_string(), cursor).is_some()
+            && since.insert(resource.key, cursor).is_some()
         {
             return Err(invalid());
         }
@@ -691,7 +784,10 @@ async fn attach_initial_entries(
     Ok(())
 }
 
-fn parse_resources(query: &QueryParams, state: &HttpState) -> Result<Vec<Value>, ApiError> {
+fn parse_resources(
+    query: &QueryParams,
+    state: &HttpState,
+) -> Result<Vec<SubscribedResource>, ApiError> {
     let invalid = || {
         ApiError::validation(vec![
             Value::String("query".to_owned()),
@@ -717,10 +813,11 @@ fn parse_resources(query: &QueryParams, state: &HttpState) -> Result<Vec<Value>,
     let mut seen = BTreeSet::new();
     let mut resources = Vec::new();
     for value in values {
-        let resource: ResourceRef = serde_json::from_value(value.clone()).map_err(|_| invalid())?;
-        let key = super::subscriptions::handler(&resource)?.debug_key(&resource);
+        let resource =
+            SubscribedResource::from_validated_value(value.clone()).map_err(|_| invalid())?;
+        let key = super::subscriptions::handler(&resource.resource)?.debug_key(&resource.resource);
         if seen.insert(key) {
-            resources.push(value.clone());
+            resources.push(resource);
         }
     }
     Ok(resources)
@@ -728,24 +825,61 @@ fn parse_resources(query: &QueryParams, state: &HttpState) -> Result<Vec<Value>,
 
 async fn read_entity_sequence(
     store: Option<Arc<RuntimeStore>>,
-    resources: &[Value],
+    resources: &[SubscribedResource],
 ) -> Result<i64, ApiError> {
     Ok(read_entity_changes(store, resources, None).await?.0)
 }
 
-/// One SQLite snapshot proves the advertised interval, including the tombstone floor.
-/// A missing, oversized or unreadable interval carries only its revision for pull recovery.
+fn typed_resources(resources: &[SubscribedResource]) -> Vec<ResourceRef> {
+    resources
+        .iter()
+        .map(|resource| resource.resource.clone())
+        .collect()
+}
+
 async fn read_entity_changes(
     store: Option<Arc<RuntimeStore>>,
-    resources: &[Value],
+    resources: &[SubscribedResource],
     after: Option<i64>,
 ) -> Result<(i64, Option<EntityChangeBatch>), ApiError> {
-    let resources = resources
-        .iter()
-        .cloned()
-        .map(serde_json::from_value::<ResourceRef>)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| ApiError::internal())?;
+    read_entity_changes_typed(store, &typed_resources(resources), after).await
+}
+
+async fn read_draft_changes(
+    store: Option<Arc<RuntimeStore>>,
+    resources: &[SubscribedResource],
+    after: Option<i64>,
+) -> Result<(i64, Option<DraftChangeBatch>), ApiError> {
+    read_draft_changes_typed(store, &typed_resources(resources), after).await
+}
+
+#[cfg(test)]
+async fn read_transcript_changes(
+    store: Option<Arc<RuntimeStore>>,
+    resources: &[Value],
+    sequences: &mut BTreeMap<String, i64>,
+    complete: bool,
+) -> BTreeMap<String, TranscriptStreamUpdate> {
+    read_transcript_changes_typed(
+        store,
+        &resources
+            .iter()
+            .cloned()
+            .map(|value| serde_json::from_value(value).expect("resource fixture"))
+            .collect::<Vec<_>>(),
+        sequences,
+        complete,
+    )
+    .await
+}
+
+/// One SQLite snapshot proves the advertised interval, including the tombstone floor.
+/// A missing, oversized or unreadable interval carries only its revision for pull recovery.
+async fn read_entity_changes_typed(
+    store: Option<Arc<RuntimeStore>>,
+    resources: &[ResourceRef],
+    after: Option<i64>,
+) -> Result<(i64, Option<EntityChangeBatch>), ApiError> {
     if !resources
         .iter()
         .any(|resource| matches!(resource, ResourceRef::StateResource(_)))
@@ -804,19 +938,22 @@ enum TranscriptStreamUpdate {
     Unchanged,
     Snapshot {
         revision: i64,
-        snapshot: Option<Box<TranscriptPageResponse>>,
+        snapshot: Box<TranscriptPageResponse>,
     },
     Changed {
         revision: i64,
-        batch: Option<Box<TranscriptChangeBatch>>,
+        batch: Box<TranscriptChangeBatch>,
+    },
+    Recovery {
+        revision: i64,
     },
 }
 
 /// Reuse the pull projection owner only for transcript scopes hinted in this flush.
 /// Its existing revision cache shares page computation across stream subscribers.
-async fn read_transcript_changes(
+async fn read_transcript_changes_typed(
     store: Option<Arc<RuntimeStore>>,
-    resources: &[Value],
+    resources: &[ResourceRef],
     sequences: &mut BTreeMap<String, i64>,
     complete: bool,
 ) -> BTreeMap<String, TranscriptStreamUpdate> {
@@ -826,12 +963,10 @@ async fn read_transcript_changes(
         return updates;
     };
     for resource in resources {
-        let Ok(ResourceRef::TranscriptResource(resource)) =
-            serde_json::from_value(resource.clone())
-        else {
+        let ResourceRef::TranscriptResource(resource) = resource else {
             continue;
         };
-        let agent = resource.agent_id;
+        let agent = resource.agent_id.clone();
         let scope = format!("transcript:{agent}");
         let after = if complete {
             sequences.get(&agent).copied()
@@ -885,9 +1020,12 @@ async fn read_transcript_changes(
             sequences.insert(agent.clone(), through);
             updates.insert(
                 agent,
-                TranscriptStreamUpdate::Snapshot {
-                    revision: through,
-                    snapshot,
+                match snapshot {
+                    Some(snapshot) => TranscriptStreamUpdate::Snapshot {
+                        revision: through,
+                        snapshot,
+                    },
+                    None => TranscriptStreamUpdate::Recovery { revision: through },
                 },
             );
             continue;
@@ -907,21 +1045,26 @@ async fn read_transcript_changes(
                 inline_bytes = remaining.checked_sub(bytes);
                 if inline_bytes.is_none() {
                     for update in updates.values_mut() {
-                        if let TranscriptStreamUpdate::Changed { batch, .. } = update {
-                            *batch = None;
+                        if let TranscriptStreamUpdate::Changed { revision, .. } = update {
+                            *update = TranscriptStreamUpdate::Recovery {
+                                revision: *revision,
+                            };
                         }
                     }
                     return None;
                 }
-                transcript_change_batch(response, &scope, after)
+                transcript_change_batch(&response, &scope, after)
             })
             .map(Box::new);
         sequences.insert(agent.clone(), through);
         updates.insert(
             agent,
-            TranscriptStreamUpdate::Changed {
-                revision: through,
-                batch,
+            match batch {
+                Some(batch) => TranscriptStreamUpdate::Changed {
+                    revision: through,
+                    batch,
+                },
+                None => TranscriptStreamUpdate::Recovery { revision: through },
             },
         );
     }
@@ -929,7 +1072,7 @@ async fn read_transcript_changes(
 }
 
 fn transcript_change_batch(
-    response: TranscriptSyncPage,
+    response: &TranscriptSyncPage,
     scope: &str,
     after: i64,
 ) -> Option<TranscriptChangeBatch> {
@@ -940,7 +1083,7 @@ fn transcript_change_batch(
     {
         return None;
     }
-    let document = response.documents.into_iter().next()?;
+    let document = response.documents.first()?;
     if document.id != scope || document.seq != through || document.deleted {
         return None;
     }
@@ -961,17 +1104,11 @@ fn transcript_change_batch(
 }
 
 /// Read the scoped watermark and its complete interval in the same SQLite snapshot.
-async fn read_draft_changes(
+async fn read_draft_changes_typed(
     store: Option<Arc<RuntimeStore>>,
-    resources: &[Value],
+    resources: &[ResourceRef],
     after: Option<i64>,
 ) -> Result<(i64, Option<DraftChangeBatch>), ApiError> {
-    let resources = resources
-        .iter()
-        .cloned()
-        .map(serde_json::from_value::<ResourceRef>)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| ApiError::internal())?;
     if !resources
         .iter()
         .any(|resource| matches!(resource, ResourceRef::DraftsResource(_)))
@@ -1039,12 +1176,13 @@ fn attach_transcript_changes(
                 Some(TranscriptStreamUpdate::Unchanged) => continue,
                 Some(TranscriptStreamUpdate::Snapshot { revision, snapshot }) => {
                     entry.revision = revision;
-                    entry.transcript_snapshot = snapshot.map(|snapshot| Some(*snapshot));
+                    entry.transcript_snapshot = Some(Some(*snapshot));
                 }
                 Some(TranscriptStreamUpdate::Changed { revision, batch }) => {
                     entry.revision = revision;
-                    entry.transcript_changes = batch.map(|batch| Some(*batch));
+                    entry.transcript_changes = Some(Some(*batch));
                 }
+                Some(TranscriptStreamUpdate::Recovery { revision }) => entry.revision = revision,
                 None => {}
             }
         }
@@ -1150,7 +1288,7 @@ struct ResourceStream {
     workspace_id: String,
     epoch: String,
     last_revision: i64,
-    resources: Vec<Value>,
+    resources: Vec<SubscribedResource>,
     entity_sequence: i64,
     transcript_sequences: BTreeMap<String, i64>,
     terminal_cursors: BTreeMap<String, SubscriptionCursor>,
@@ -1186,7 +1324,7 @@ async fn subscription_frame(state: &mut ResourceStream, update: SubscriptionChan
     let retained_scopes = state
         .resources
         .iter()
-        .map(Value::to_string)
+        .map(|resource| resource.key.clone())
         .collect::<BTreeSet<_>>();
     state
         .scoped_sequences
@@ -1194,7 +1332,7 @@ async fn subscription_frame(state: &mut ResourceStream, update: SubscriptionChan
     let readiness_interest = state
         .resources
         .iter()
-        .any(|resource| resource["kind"] == "vault-readiness");
+        .any(|resource| matches!(resource.resource, ResourceRef::VaultReadinessResource(_)));
     if readiness_interest != state.vault_readiness.is_some()
         && let Some(http) = &state.http_state
     {
@@ -1204,19 +1342,19 @@ async fn subscription_frame(state: &mut ResourceStream, update: SubscriptionChan
         state
             .resources
             .iter()
-            .any(|resource| resource["kind"] == "terminal-output" && resource["terminalId"] == *id)
+            .any(|resource| matches!(&resource.resource, ResourceRef::TerminalOutputResource(r) if r.terminal_id == *id))
     });
     state.voice_sequences.retain(|id, _| {
         state
             .resources
             .iter()
-            .any(|resource| resource["kind"] == "voice" && resource["agentId"] == *id)
+            .any(|resource| matches!(&resource.resource, ResourceRef::VoiceResource(r) if r.agent_id == *id))
     });
     state.transcript_sequences.retain(|id, _| {
         state
             .resources
             .iter()
-            .any(|resource| resource["kind"] == "transcript" && resource["agentId"] == *id)
+            .any(|resource| matches!(&resource.resource, ResourceRef::TranscriptResource(r) if r.agent_id == *id))
     });
     state.initial.push_back(sse_event(
         "subscriptions",
@@ -1240,7 +1378,7 @@ async fn subscription_frame(state: &mut ResourceStream, update: SubscriptionChan
         if update
             .added
             .iter()
-            .any(|resource| resource["kind"] == "state")
+            .any(|resource| matches!(resource.resource, ResourceRef::StateResource(_)))
         {
             state.entity_sequence = read_entity_sequence(state.store.clone(), &update.added)
                 .await
@@ -1249,7 +1387,7 @@ async fn subscription_frame(state: &mut ResourceStream, update: SubscriptionChan
         if update
             .added
             .iter()
-            .any(|resource| resource["kind"] == "drafts")
+            .any(|resource| matches!(resource.resource, ResourceRef::DraftsResource(_)))
         {
             state.draft_sequence = read_draft_changes(state.store.clone(), &update.added, None)
                 .await
@@ -1260,10 +1398,9 @@ async fn subscription_frame(state: &mut ResourceStream, update: SubscriptionChan
             &state.workspace_id,
             &view,
             ResourceChangeEventReason::Initial,
-            state.entity_sequence,
-            None,
-            state.draft_sequence,
-            None,
+            typed_resources(&view.resources),
+            (state.entity_sequence, None),
+            (state.draft_sequence, None),
         )
         .ok()?;
         attach_initial_entries(http_state, &mut event, &update.since)
@@ -1325,6 +1462,7 @@ async fn subscription_frame(state: &mut ResourceStream, update: SubscriptionChan
 /// ahead: the durable item carries the text that was dropped.
 async fn next_live_delta(
     live: &mut tokio::sync::broadcast::Receiver<LiveDelta>,
+<<<<<<< head
     resources: &[Value],
 ) -> Event {
     use tokio::sync::broadcast::error::RecvError;
@@ -1333,6 +1471,17 @@ async fn next_live_delta(
             Ok(delta)
                 if resources.iter().any(|resource| {
                     resource["kind"] == "transcript" && resource["agentId"] == delta.agent_id
+||||||| base
+=======
+    resources: &[SubscribedResource],
+) -> Event {
+    use tokio::sync::broadcast::error::RecvError;
+    loop {
+        match live.recv().await {
+            Ok(delta)
+                if resources.iter().any(|resource| {
+                    matches!(&resource.resource, ResourceRef::TranscriptResource(transcript) if transcript.agent_id == delta.agent_id)
+>>>>>>> ec8db553cf8c7355af2401a18b81608d
                 }) =>
             {
                 return sse_event(
@@ -1439,13 +1588,14 @@ async fn next_frame(
         state.next_resources_frame_at = Some(Instant::now() + SYNC_FRAME_MIN_INTERVAL);
         if !view.resources.is_empty() {
             state.consecutive_token_frames = 0;
+            let resources = typed_resources(&view.resources);
             let (sequence, batch) = if state.http_state.is_some() {
                 // Scoped delivery below owns the one source read, including state.
                 (state.entity_sequence, None)
             } else {
-                match read_entity_changes(
+                match read_entity_changes_typed(
                     state.store.clone(),
-                    &view.resources,
+                    &resources,
                     (!view.overflow && !view.entity_reset).then_some(state.entity_sequence),
                 )
                 .await
@@ -1458,9 +1608,9 @@ async fn next_frame(
                 }
             };
             state.entity_sequence = sequence;
-            let (draft_sequence, draft_changes) = read_draft_changes(
+            let (draft_sequence, draft_changes) = read_draft_changes_typed(
                 state.store.clone(),
-                &view.resources,
+                &resources,
                 (!view.overflow).then_some(state.draft_sequence),
             )
             .await
@@ -1474,9 +1624,9 @@ async fn next_frame(
             } else {
                 ResourceChangeEventReason::Change
             };
-            let transcript_updates = read_transcript_changes(
+            let transcript_updates = read_transcript_changes_typed(
                 state.store.clone(),
-                &view.resources,
+                &resources,
                 &mut state.transcript_sequences,
                 !view.overflow,
             )
@@ -1485,10 +1635,9 @@ async fn next_frame(
                 &state.workspace_id,
                 &view,
                 reason,
-                sequence,
-                batch,
-                draft_sequence,
-                draft_changes,
+                resources,
+                (sequence, batch),
+                (draft_sequence, draft_changes),
             )
             .ok()?;
             attach_transcript_changes(&mut event, transcript_updates);
@@ -1614,20 +1763,12 @@ fn token_snapshot(
 
 fn resource_changes_event(
     workspace: &str,
-    view: &ResourceChanges,
+    view: &ResourceChanges<SubscribedResource>,
     reason: ResourceChangeEventReason,
-    sequence: i64,
-    mut changes: Option<EntityChangeBatch>,
-    draft_sequence: i64,
-    mut draft_changes: Option<DraftChangeBatch>,
+    resources: Vec<ResourceRef>,
+    (sequence, mut changes): (i64, Option<EntityChangeBatch>),
+    (draft_sequence, mut draft_changes): (i64, Option<DraftChangeBatch>),
 ) -> Result<ResourceChangeEvent, ApiError> {
-    let resources = view
-        .resources
-        .iter()
-        .cloned()
-        .map(serde_json::from_value::<ResourceRef>)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| ApiError::internal())?;
     let resource_versions = resources
         .iter()
         .zip(&view.versions)
@@ -1695,6 +1836,18 @@ fn token_rate_event(workspace_id: &str, snapshot: &ChangeSnapshot, rates: &Token
 }
 
 #[cfg(test)]
+fn fixture_resources(values: &[Value]) -> Vec<SubscribedResource> {
+    values
+        .iter()
+        .cloned()
+        .map(|value| {
+            SubscribedResource::new(serde_json::from_value(value).expect("fixture resource"))
+                .expect("resource identity")
+        })
+        .collect()
+}
+
+#[cfg(test)]
 fn resource_event(
     workspace_id: &str,
     epoch: &str,
@@ -1714,16 +1867,15 @@ fn resource_event(
                     resource_revision: revision,
                     closed: false,
                 },
-                resources: resources.to_vec(),
+                resources: fixture_resources(resources),
                 versions: vec![revision; resources.len()],
                 entity_reset,
                 overflow: false,
             },
             serde_json::from_value(json!(reason)).expect("fixture reason"),
-            entity_sequence,
-            None,
-            0,
-            None,
+            typed_resources(&fixture_resources(resources)),
+            (entity_sequence, None),
+            (0, None),
         )
         .expect("typed fixture event"),
     )
@@ -1960,6 +2112,10 @@ where
 
 #[cfg(test)]
 mod tests {
+    async fn fixture_resource_content(state: HttpState, value: Value) -> Option<Vec<u8>> {
+        crate::routes::subscriptions::resource_content(state, serde_json::from_value(value).ok()?)
+            .await
+    }
     use super::*;
     use studio_runtime_services::change_notifications::ChangeNotificationHub;
 
@@ -2214,7 +2370,7 @@ mod tests {
         let receipt = json!({"id":"agent", "request_id":request_id, "status":"failed", "error":"The title could not be generated. Try /rename again."});
         let view = ResourceChanges {
             cursor: state.sync_changes.snapshot(),
-            resources: vec![resource.clone()],
+            resources: fixture_resources(std::slice::from_ref(&resource)),
             versions: vec![1],
             entity_reset: false,
             overflow: false,
@@ -2228,7 +2384,7 @@ mod tests {
         assert!(frame.get("entityChanges").is_none());
         let wrong =
             json!({"kind":"rename-progress", "agentId":"another-agent", "requestId":request_id});
-        let bytes = resource_content(state, wrong)
+        let bytes = fixture_resource_content(state, wrong)
             .await
             .expect("missing scoped receipt");
         assert_eq!(
@@ -2251,7 +2407,9 @@ mod tests {
         state.validators = crate::validation::Registry::compile(&[]).expect("validators");
         let view = ResourceChanges {
             cursor: state.sync_changes.snapshot(),
-            resources: vec![json!({"kind":"vault-job-progress","requestId":"one","job":"setup"})],
+            resources: fixture_resources(&[
+                json!({"kind":"vault-job-progress","requestId":"one","job":"setup"}),
+            ]),
             versions: vec![1],
             entity_reset: false,
             overflow: false,
@@ -2399,7 +2557,7 @@ mod tests {
         let resource = json!({"kind":"auth-progress","requestId":id});
         let view = ResourceChanges {
             cursor: state.sync_changes.snapshot(),
-            resources: vec![resource.clone()],
+            resources: fixture_resources(std::slice::from_ref(&resource)),
             versions: vec![1],
             entity_reset: false,
             overflow: false,
@@ -2428,7 +2586,7 @@ mod tests {
             .expect("durable receipt");
         assert!(!receipt.contains(url), "the OAuth URL never reaches disk");
         let unselected = ResourceChanges {
-            resources: vec![json!({"kind":"state"})],
+            resources: fixture_resources(&[json!({"kind":"state"})]),
             ..view
         };
         append_progress_frames(&state, &unselected, &mut frames).await;
@@ -2493,7 +2651,7 @@ mod tests {
                 resource_revision: 2,
                 closed: false,
             },
-            resources: vec![json!({"kind":"state"}), json!({"kind":"drafts"})],
+            resources: fixture_resources(&[json!({"kind":"state"}), json!({"kind":"drafts"})]),
             versions: vec![2, 2],
             entity_reset: false,
             overflow: false,
@@ -2502,10 +2660,9 @@ mod tests {
             "workspace",
             &view,
             ResourceChangeEventReason::Change,
-            2,
-            Some(changes),
-            2,
-            Some(drafts),
+            typed_resources(&view.resources),
+            (2, Some(changes)),
+            (2, Some(drafts)),
         )
         .expect("event");
         let entities = event.resource_versions[0]
@@ -3308,7 +3465,7 @@ mod tests {
                 &http.sync_changes,
                 &http.token_rates,
                 http.resource_notifications.clone(),
-                vec![],
+                &[],
             );
             stream.http_state = Some(http.clone());
             stream.store = Some(store.clone());
@@ -3318,8 +3475,8 @@ mod tests {
                 &mut stream,
                 SubscriptionChange {
                     generation: 1,
-                    resources: vec![resource.clone()],
-                    added: vec![resource.clone()],
+                    resources: fixture_resources(std::slice::from_ref(&resource)),
+                    added: fixture_resources(std::slice::from_ref(&resource)),
                     token_rates: None,
                     since,
                 },
@@ -3468,7 +3625,7 @@ mod tests {
             &http.sync_changes,
             &http.token_rates,
             http.resource_notifications.clone(),
-            vec![],
+            &[],
         );
         let app = crate::router(http.clone()).expect("router");
         let full = studio_runtime_services::transcript::pull_scope(
@@ -3487,8 +3644,8 @@ mod tests {
                 &mut state,
                 SubscriptionChange {
                     generation,
-                    resources: vec![resource.clone()],
-                    added: vec![resource.clone()],
+                    resources: fixture_resources(std::slice::from_ref(&resource)),
+                    added: fixture_resources(std::slice::from_ref(&resource)),
                     token_rates: None,
                     since: BTreeMap::new(),
                 },
@@ -3777,7 +3934,7 @@ mod tests {
             &http.sync_changes,
             &http.token_rates,
             http.resource_notifications.clone(),
-            resources,
+            &resources,
         );
         state.http_state = Some(http.clone());
         state.store = Some(store.clone());
@@ -3833,9 +3990,9 @@ mod tests {
         assert_eq!(batch["through"], event["resourceVersions"][0]["revision"]);
         state.next_resources_frame_at = None;
         http.resource_notifications.publish_once(&json!({"requestId":"preflush-empty","resources":[{"kind":"transcript","agentId":"open"}]})).expect("scoped preflush hint");
-        let updates = read_transcript_changes(
+        let updates = read_transcript_changes_typed(
             Some(store.clone()),
-            &state.resources,
+            &typed_resources(&state.resources),
             &mut state.transcript_sequences,
             true,
         )
@@ -3894,14 +4051,14 @@ mod tests {
             read_transcript_changes(Some(store.clone()), &resources[..1], &mut single, true).await;
         assert!(matches!(
             first["first"],
-            TranscriptStreamUpdate::Changed { batch: Some(_), .. }
+            TranscriptStreamUpdate::Changed { .. }
         ));
         let updates = read_transcript_changes(Some(store), &resources, &mut sequences, true).await;
         assert_eq!(updates.len(), 3);
         for agent in ["first", "second", "last"] {
             assert!(sequences[agent] > before[agent]);
             assert!(
-                matches!(updates[agent], TranscriptStreamUpdate::Changed { revision, batch: None } if revision == sequences[agent]),
+                matches!(updates[agent], TranscriptStreamUpdate::Recovery { revision } if revision == sequences[agent]),
                 "{agent}: only revisions may remain after the budget is crossed"
             );
         }
@@ -3913,7 +4070,7 @@ mod tests {
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         store.transaction(|tx| {
             tx.execute("INSERT INTO runtime_agents(id,record) VALUES('open',?1)",
-                [json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"open","rootId":"open","epoch":0,"status":"idle"}).to_string()])?;
+                [json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"open","rootId":"open","epoch":0,"status":"idle"}).to_string()])?;
             tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES('answer','open',?1,1)",
                 [json!({"id":"answer","role":"assistant","text":"before"}).to_string()])?;
             tx.execute_batch("CREATE TABLE transcript_build_witness(count INTEGER NOT NULL);
@@ -3933,17 +4090,11 @@ mod tests {
         assert_eq!(first, second);
         assert!(matches!(
             left["open"],
-            TranscriptStreamUpdate::Snapshot {
-                snapshot: Some(_),
-                ..
-            }
+            TranscriptStreamUpdate::Snapshot { .. }
         ));
         assert!(matches!(
             right["open"],
-            TranscriptStreamUpdate::Snapshot {
-                snapshot: Some(_),
-                ..
-            }
+            TranscriptStreamUpdate::Snapshot { .. }
         ));
         store.transaction(|tx| {
             tx.execute("UPDATE runtime_items SET record=json_set(record,'$.text','after') WHERE id='answer'", [])?;
@@ -3953,16 +4104,10 @@ mod tests {
             read_transcript_changes(Some(store.clone()), &resources, &mut first, true),
             read_transcript_changes(Some(store.clone()), &resources, &mut second, true),
         );
-        let TranscriptStreamUpdate::Changed {
-            batch: Some(left), ..
-        } = &left["open"]
-        else {
+        let TranscriptStreamUpdate::Changed { batch: left, .. } = &left["open"] else {
             panic!("complete left delta");
         };
-        let TranscriptStreamUpdate::Changed {
-            batch: Some(right), ..
-        } = &right["open"]
-        else {
+        let TranscriptStreamUpdate::Changed { batch: right, .. } = &right["open"] else {
             panic!("complete right delta");
         };
         assert_eq!(
@@ -4039,7 +4184,7 @@ mod tests {
             );
             let response: TranscriptSyncPage = serde_json::from_value(json!({"workspaceId":"workspace", "checkpoint":{"seq":2}, "documents":[{"id":"transcript:open","seq":2,"payload":payload.to_string(),"_deleted":false}]})).expect("projection response");
             assert!(
-                transcript_change_batch(response, "transcript:open", 1).is_none(),
+                transcript_change_batch(&response, "transcript:open", 1).is_none(),
                 "{scenario} must preserve pull recovery"
             );
         }
@@ -4075,7 +4220,7 @@ mod tests {
             }))
             .expect("typed projection response");
             assert_eq!(
-                transcript_change_batch(response, "transcript:open", 1).is_some(),
+                transcript_change_batch(&response, "transcript:open", 1).is_some(),
                 scenario == "complete",
                 "{scenario}"
             );
@@ -4102,7 +4247,7 @@ mod tests {
                 }
                 Ok(())
             }).await.expect("draft interval");
-            let resources = [json!({"kind":"drafts"})];
+            let resources = fixture_resources(&[json!({"kind":"drafts"})]);
             let (through, batch) = read_draft_changes(Some(store.clone()), &resources, Some(0))
                 .await
                 .expect("batch");
@@ -4147,7 +4292,7 @@ mod tests {
         let resources = vec![json!({"kind":"drafts"})];
         http.resource_notifications
             .changes_since_with_content(&resources, None, |resource| {
-                resource_content(http.clone(), resource)
+                fixture_resource_content(http.clone(), resource)
             })
             .await
             .expect("baseline");
@@ -4155,7 +4300,7 @@ mod tests {
             &http.sync_changes,
             &http.token_rates,
             http.resource_notifications.clone(),
-            resources,
+            &resources,
         );
         state.store = Some(store.clone());
         state.http_state = Some(http);
@@ -4193,11 +4338,11 @@ mod tests {
             Some(store.clone()),
             None,
         );
-        let resources = [json!({"kind":"drafts"})];
+        let resources = vec![json!({"kind":"drafts"})];
         let baseline = state
             .resource_notifications
             .changes_since_with_content(&resources, None, |resource| {
-                resource_content(state.clone(), resource)
+                fixture_resource_content(state.clone(), resource)
             })
             .await
             .expect("baseline");
@@ -4221,7 +4366,7 @@ mod tests {
         let unchanged = state
             .resource_notifications
             .changes_since_with_content(&resources, Some(baseline.cursor.revision), |resource| {
-                resource_content(state.clone(), resource)
+                fixture_resource_content(state.clone(), resource)
             })
             .await
             .expect("unchanged drafts");
@@ -4239,7 +4384,7 @@ mod tests {
         let edited = state
             .resource_notifications
             .changes_since_with_content(&resources, Some(unchanged.cursor.revision), |resource| {
-                resource_content(state.clone(), resource)
+                fixture_resource_content(state.clone(), resource)
             })
             .await
             .expect("edited draft");
@@ -4254,7 +4399,7 @@ mod tests {
         let deleted = state
             .resource_notifications
             .changes_since_with_content(&resources, Some(edited.cursor.revision), |resource| {
-                resource_content(state.clone(), resource)
+                fixture_resource_content(state.clone(), resource)
             })
             .await
             .expect("deleted draft");
@@ -4271,7 +4416,7 @@ mod tests {
         let hub = Arc::new(ChangeNotificationHub::new());
         let notifications = Arc::new(ResourceNotifications::new(hub.clone()));
         let tokens = TokenRateHub::new();
-        let mut state = test_stream(&hub, &tokens, notifications, vec![json!({"kind":"state"})]);
+        let mut state = test_stream(&hub, &tokens, notifications, &[json!({"kind":"state"})]);
         state.store = Some(store.clone());
         state.entity_sequence = read_entity_sequence(Some(store.clone()), &state.resources)
             .await
@@ -4328,7 +4473,7 @@ mod tests {
     async fn state_stream_accepts_the_full_contract_document_limit() {
         let root = tempfile::tempdir().expect("isolated state");
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
-        let resources = vec![json!({"kind":"state"})];
+        let resources = fixture_resources(&[json!({"kind":"state"})]);
         let baseline = read_entity_sequence(Some(store.clone()), &resources)
             .await
             .expect("baseline");
@@ -4366,8 +4511,7 @@ mod tests {
             let hub = Arc::new(ChangeNotificationHub::new());
             let tokens = TokenRateHub::new();
             let notifications = Arc::new(ResourceNotifications::new(hub.clone()));
-            let mut state =
-                test_stream(&hub, &tokens, notifications, vec![json!({"kind":"state"})]);
+            let mut state = test_stream(&hub, &tokens, notifications, &[json!({"kind":"state"})]);
             state.store = Some(store.clone());
             store.transaction(move |tx| {
                 let count = if scenario == "documents" { 513 } else { 1 };
@@ -4427,12 +4571,7 @@ mod tests {
         let hub = Arc::new(ChangeNotificationHub::new());
         let tokens = TokenRateHub::new();
         let notifications = Arc::new(ResourceNotifications::new(hub.clone()));
-        let state = test_stream(
-            &hub,
-            &tokens,
-            notifications,
-            vec![json!({"kind":"accounts"})],
-        );
+        let state = test_stream(&hub, &tokens, notifications, &[json!({"kind":"accounts"})]);
         hub.notify_one();
         let (_, state) = next_frame(state).await.expect("first frame");
         let mut next = Box::pin(next_frame(state));
@@ -4466,7 +4605,7 @@ mod tests {
         let baseline = state
             .resource_notifications
             .changes_since_with_content(&resources, None, |resource| {
-                resource_content(state.clone(), resource)
+                fixture_resource_content(state.clone(), resource)
             })
             .await
             .expect("baseline");
@@ -4493,7 +4632,7 @@ mod tests {
         let changed = state
             .resource_notifications
             .changes_since_with_content(&resources, Some(baseline.cursor.revision), |resource| {
-                resource_content(state.clone(), resource)
+                fixture_resource_content(state.clone(), resource)
             })
             .await
             .expect("streaming delta");
@@ -4514,7 +4653,7 @@ mod tests {
         let replay = state
             .resource_notifications
             .changes_since_with_content(&resources, Some(changed.cursor.revision), |resource| {
-                resource_content(state.clone(), resource)
+                fixture_resource_content(state.clone(), resource)
             })
             .await
             .expect("replay");
@@ -4526,7 +4665,7 @@ mod tests {
         let unrelated = state
             .resource_notifications
             .changes_since_with_content(&resources, Some(replay.cursor.revision), |resource| {
-                resource_content(state.clone(), resource)
+                fixture_resource_content(state.clone(), resource)
             })
             .await
             .expect("other chat");
@@ -4553,7 +4692,7 @@ mod tests {
         let baseline = state
             .resource_notifications
             .changes_since_with_content(&resources, None, |resource| {
-                resource_content(state.clone(), resource)
+                fixture_resource_content(state.clone(), resource)
             })
             .await
             .expect("baseline");
@@ -4571,7 +4710,7 @@ mod tests {
         let unchanged = state
             .resource_notifications
             .changes_since_with_content(&resources, Some(baseline.cursor.revision), |resource| {
-                resource_content(state.clone(), resource)
+                fixture_resource_content(state.clone(), resource)
             })
             .await
             .expect("unchanged conversation");
@@ -4593,7 +4732,7 @@ mod tests {
         let active = state
             .resource_notifications
             .changes_since_with_content(&resources, Some(unchanged.cursor.revision), |resource| {
-                resource_content(state.clone(), resource)
+                fixture_resource_content(state.clone(), resource)
             })
             .await
             .expect("active conversation revision");
@@ -4612,7 +4751,7 @@ mod tests {
         let text = state
             .resource_notifications
             .changes_since_with_content(&resources, Some(active.cursor.revision), |resource| {
-                resource_content(state.clone(), resource)
+                fixture_resource_content(state.clone(), resource)
             })
             .await
             .expect("active text revision");
@@ -4689,7 +4828,7 @@ mod tests {
             json!({"kind":"limits","accountKey":"first"}),
             json!({"kind":"limits","accountKey":"second"}),
         ];
-        let cold = resource_content(state.clone(), resources[0].clone())
+        let cold = fixture_resource_content(state.clone(), resources[0].clone())
             .await
             .expect("policy-only cold snapshot is filterable");
         let port = Arc::new(CachedLimits(Mutex::new(
@@ -4698,14 +4837,14 @@ mod tests {
         state.account_session = Some(port.clone());
         assert_eq!(
             cold,
-            resource_content(state.clone(), resources[0].clone())
+            fixture_resource_content(state.clone(), resources[0].clone())
                 .await
                 .expect("session cold snapshot is filterable")
         );
         let notifications = &state.resource_notifications;
         let initial = notifications
             .changes_since_with_content(&resources, None, |resource| {
-                resource_content(state.clone(), resource)
+                fixture_resource_content(state.clone(), resource)
             })
             .await
             .expect("baseline");
@@ -4713,7 +4852,7 @@ mod tests {
         notifications.notify_store_commit(studio_runtime_store::ResourceChange::All);
         let unchanged = notifications
             .changes_since_with_content(&resources, Some(initial.cursor.revision), |resource| {
-                resource_content(state.clone(), resource)
+                fixture_resource_content(state.clone(), resource)
             })
             .await
             .expect("unrelated commit");
@@ -4726,7 +4865,7 @@ mod tests {
         notifications.notify_store_commit(studio_runtime_store::ResourceChange::All);
         let changed = notifications
             .changes_since_with_content(&resources, Some(unchanged.cursor.revision), |resource| {
-                resource_content(state.clone(), resource)
+                fixture_resource_content(state.clone(), resource)
             })
             .await
             .expect("changed cached snapshot");
@@ -4737,7 +4876,7 @@ mod tests {
             "accountKey":"first", "data":{"accountId":"native-first"},
             "at":1.0, "readAt":1.0, "checkedAt":1.0, "processedAt":1.0
         });
-        let before = resource_content(state.clone(), resources[0].clone())
+        let before = fixture_resource_content(state.clone(), resources[0].clone())
             .await
             .expect("semantic limits");
         for field in studio_runtime_store::account_state::LIMITS_OBSERVATION_TIME_FIELDS {
@@ -4745,7 +4884,7 @@ mod tests {
         }
         assert_eq!(
             before,
-            resource_content(state.clone(), resources[0].clone())
+            fixture_resource_content(state.clone(), resources[0].clone())
                 .await
                 .expect("reobserved limits"),
             "private observation times must not invalidate streamed limits"
@@ -4753,7 +4892,7 @@ mod tests {
         port.0.lock().expect("snapshot")["data"]["accountId"] = json!("replacement");
         assert_ne!(
             before,
-            resource_content(state, resources[0].clone())
+            fixture_resource_content(state, resources[0].clone())
                 .await
                 .expect("changed account limits")
         );
@@ -4787,7 +4926,7 @@ mod tests {
             .0;
         let initial = notifications
             .changes_since_with_content(&resources, None, |resource| {
-                resource_content(state.clone(), resource)
+                fixture_resource_content(state.clone(), resource)
             })
             .await
             .expect("baseline");
@@ -4798,7 +4937,7 @@ mod tests {
             changed();
             let progress = notifications
                 .changes_since_with_content(&resources, Some(after), |resource| {
-                    resource_content(state.clone(), resource)
+                    fixture_resource_content(state.clone(), resource)
                 })
                 .await
                 .expect("login progress");
@@ -4825,7 +4964,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bounded_entities_never_reconstruct_resource_content() {
+    async fn bounded_entities_never_reconstruct_fixture_resource_content() {
         let root = tempfile::tempdir().expect("isolated state");
         let state = HttpState::new(
             "token".into(),
@@ -4844,7 +4983,11 @@ mod tests {
             json!({"kind":"queue","agentId":"agent"}),
             json!({"kind":"session-cost","agentId":"agent"}),
         ] {
-            assert!(resource_content(state.clone(), resource).await.is_none());
+            assert!(
+                fixture_resource_content(state.clone(), resource)
+                    .await
+                    .is_none()
+            );
         }
     }
 
@@ -4923,7 +5066,7 @@ mod tests {
             workspace_id: "workspace".to_owned(),
             epoch: baseline.epoch,
             last_revision: baseline.revision,
-            resources: vec![json!({"kind": "queue", "agentId": "agent-a"})],
+            resources: fixture_resources(&[json!({"kind": "queue", "agentId": "agent-a"})]),
             entity_sequence: 0,
             transcript_sequences: BTreeMap::new(),
             terminal_cursors: BTreeMap::new(),
@@ -4976,7 +5119,7 @@ mod tests {
             workspace_id: "workspace".to_owned(),
             epoch: baseline.epoch,
             last_revision: baseline.revision,
-            resources: vec![json!({"kind":"accounts"})],
+            resources: fixture_resources(&[json!({"kind":"accounts"})]),
             entity_sequence: 0,
             transcript_sequences: BTreeMap::new(),
             terminal_cursors: BTreeMap::new(),
@@ -5040,7 +5183,7 @@ mod tests {
             &hub,
             &token_hub,
             notifications,
-            vec![json!({"kind":"accounts"})],
+            &[json!({"kind":"accounts"})],
         );
         hub.notify_one();
         token_hub.publish(test_rates(1)).expect("token rate");
@@ -5106,7 +5249,7 @@ mod tests {
             &http.sync_changes,
             &http.token_rates,
             http.resource_notifications.clone(),
-            vec![],
+            &[],
         );
         state.http_state = Some(http.clone());
         state.store = Some(store.clone());
@@ -5114,8 +5257,8 @@ mod tests {
             &mut state,
             SubscriptionChange {
                 generation: 1,
-                resources: vec![resource.clone()],
-                added: vec![resource.clone()],
+                resources: fixture_resources(std::slice::from_ref(&resource)),
+                added: fixture_resources(std::slice::from_ref(&resource)),
                 token_rates: None,
                 since: BTreeMap::new(),
             },
@@ -5183,7 +5326,7 @@ mod tests {
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         store.transaction(|tx| {
             tx.execute("INSERT INTO runtime_agents(id,record) VALUES('voice-chat',?1)",
-                [json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"voice-chat","rootId":"voice-chat","epoch":0,"status":"idle","isLead":true}).to_string()])?;
+                [json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"voice-chat","rootId":"voice-chat","epoch":0,"status":"idle","isLead":true}).to_string()])?;
             tx.execute("INSERT INTO voice_sessions(id,agent,created,state) VALUES('session','voice-chat',1,'ready')", [])?;
             tx.execute("INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('first','voice-chat','session','user','hello','','','{}',1)", [])?;
             Ok(())
@@ -5201,7 +5344,7 @@ mod tests {
             &http.sync_changes,
             &http.token_rates,
             http.resource_notifications.clone(),
-            vec![json!({"kind":"voice","agentId":"voice-chat"})],
+            &[json!({"kind":"voice","agentId":"voice-chat"})],
         );
         state.http_state = Some(http.clone());
         state.store = Some(store.clone());
@@ -5258,6 +5401,7 @@ mod tests {
             &hub,
             &tokens,
             notifications.clone(),
+<<<<<<< head
             vec![json!({"kind":"transcript","agentId":"a"})],
         );
         let other = test_stream(
@@ -5265,6 +5409,16 @@ mod tests {
             &tokens,
             notifications.clone(),
             vec![json!({"kind":"transcript","agentId":"b"})],
+||||||| base
+=======
+            &[json!({"kind":"transcript","agentId":"a"})],
+        );
+        let other = test_stream(
+            &hub,
+            &tokens,
+            notifications.clone(),
+            &[json!({"kind":"transcript","agentId":"b"})],
+>>>>>>> ec8db553cf8c7355af2401a18b81608d
         );
         notifications.publish_live(LiveDelta {
             agent_id: "a".into(),
@@ -5292,7 +5446,7 @@ mod tests {
         hub: &Arc<ChangeNotificationHub>,
         tokens: &TokenRateHub,
         notifications: Arc<ResourceNotifications>,
-        resources: Vec<Value>,
+        resources: &[Value],
     ) -> ResourceStream {
         let changes = hub.subscribe();
         let baseline = changes.borrow().clone();
@@ -5306,7 +5460,7 @@ mod tests {
             workspace_id: "workspace".into(),
             epoch: baseline.epoch,
             last_revision: baseline.revision,
-            resources,
+            resources: fixture_resources(resources),
             entity_sequence: 0,
             transcript_sequences: BTreeMap::new(),
             terminal_cursors: BTreeMap::new(),
@@ -5375,12 +5529,12 @@ mod tests {
         let resources = vec![json!({"kind":"limits","accountKey":"default"})];
         notifications
             .changes_since_with_content(&resources, None, |resource| {
-                resource_content(http.clone(), resource)
+                fixture_resource_content(http.clone(), resource)
             })
             .await
             .expect("baseline");
         port.0.store(0, Ordering::SeqCst);
-        let mut state = test_stream(&hub, &tokens, notifications, resources);
+        let mut state = test_stream(&hub, &tokens, notifications, &resources);
         state.http_state = Some(http);
         let mut pending = Box::pin(next_frame(state));
         assert!(futures_util::poll!(&mut pending).is_pending());
@@ -5474,7 +5628,7 @@ mod tests {
                     .changes_since_with_content(
                         &[json!({"kind":"processes","agentId":"owner"})],
                         None,
-                        |resource| resource_content(http.clone(), resource),
+                        |resource| fixture_resource_content(http.clone(), resource),
                     )
                     .await
             })
@@ -5487,7 +5641,7 @@ mod tests {
             &hub,
             &tokens,
             notifications,
-            vec![json!({"kind":"limits","accountKey":"default"})],
+            &[json!({"kind":"limits","accountKey":"default"})],
         );
         other.http_state = Some(http);
         other.heartbeat = interval_at(Instant::now(), Duration::from_secs(15));
@@ -5565,7 +5719,7 @@ mod tests {
                 &hub,
                 &tokens,
                 notifications.clone(),
-                vec![json!({"kind":"accounts"})],
+                &[json!({"kind":"accounts"})],
             ),
             next_frame,
         ));
@@ -5574,7 +5728,7 @@ mod tests {
                 &hub,
                 &tokens,
                 notifications.clone(),
-                vec![json!({"kind":"accounts"})],
+                &[json!({"kind":"accounts"})],
             ),
             next_frame,
         ));
@@ -5642,7 +5796,7 @@ mod tests {
                 &hub,
                 &tokens,
                 notifications.clone(),
-                case["resources"].as_array().expect("resources").clone(),
+                case["resources"].as_array().expect("resources"),
             );
             let mut events = Box::pin(stream::unfold(state, next_frame));
             let mut expected = expected.into_iter();
@@ -5723,7 +5877,7 @@ mod tests {
         let hub = Arc::new(ChangeNotificationHub::new());
         let tokens = TokenRateHub::with_change_hub(hub.clone());
         let notifications = Arc::new(ResourceNotifications::new(hub.clone()));
-        let mut state = test_stream(&hub, &tokens, notifications.clone(), vec![]);
+        let mut state = test_stream(&hub, &tokens, notifications.clone(), &[]);
         let record = |id: &str, root: &str, rate: f64| {
             json!({
                 "agentId":id,"rootId":root,"turnId":"turn","active":true,
@@ -5756,7 +5910,7 @@ mod tests {
         assert_eq!(unchanged["records"], json!([]));
         assert_eq!(unchanged["removed"], json!([]));
 
-        let mut reconnect = test_stream(&hub, &tokens, notifications, vec![]);
+        let mut reconnect = test_stream(&hub, &tokens, notifications, &[]);
         let full =
             event_document(Ok(token_rate_sse_frame(&mut reconnect).expect("reconnect"))).await;
         assert_eq!(full["snapshot"], true);
@@ -5788,7 +5942,7 @@ mod tests {
         let hub = Arc::new(ChangeNotificationHub::new());
         let tokens = TokenRateHub::with_change_hub(hub.clone());
         let notifications = Arc::new(ResourceNotifications::new(hub.clone()));
-        let mut state = test_stream(&hub, &tokens, notifications, vec![]);
+        let mut state = test_stream(&hub, &tokens, notifications, &[]);
         let mut records: Vec<Value> = (0..50).map(|id| json!({
             "agentId":format!("agent-{id:02}"),"rootId":"root","turnId":"turn",
             "active":id < 2,"estimated":false,"rate":if id < 2 {10.0} else {0.0},"outputTokens":100.0

@@ -25,7 +25,7 @@ pub fn normalize(value: &Value) -> Result<Value, EventWriteError> {
 pub fn set_default(
     tx: &Transaction<'_>,
     actor_id: &str,
-    gate: &Value,
+    gate: Option<studio_runtime_schema::task_gate::GateInput>,
     request_id: Option<&str>,
     signature: &str,
 ) -> Result<Value, EventWriteError> {
@@ -35,8 +35,10 @@ pub fn set_default(
             "Only the lead can set the default acceptance gate",
         ));
     }
-    let gate =
-        studio_runtime_schema::task_gate::parse(gate).map_err(EventWriteError::InvalidRequest)?;
+    let gate = gate
+        .map(studio_runtime_schema::task_gate::GateInput::normalize)
+        .transpose()
+        .map_err(EventWriteError::InvalidRequest)?;
     let admitted = if let Some(root) = request_id {
         match event_write::begin_request::<DefaultGateReply>(
             tx,
@@ -90,7 +92,7 @@ pub fn admit(
     state_dir: &Path,
     now: f64,
 ) -> Result<bool, MonitorError> {
-    let Some(config) = task.get("gate").filter(|v| !v.is_null()).cloned() else {
+    let Some(config) = task.extension("gate").filter(|v| !v.is_null()).cloned() else {
         return Ok(false);
     };
     let config = normalize(&config)?;
@@ -354,7 +356,7 @@ mod tests {
         let cwd = root.path().to_string_lossy().into_owned();
         store.transaction(move |tx| {
             for id in ["lead", "worker", "dependent"] {
-                AgentRepository::put(tx, &AgentRecord::from_value(json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":"lead","isLead":id=="lead",
+                AgentRepository::put(tx, &AgentRecord::from_value(json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":"lead","isLead":id=="lead",
                     "epoch":1,"status":"running","autoWake":true,"agentMode":"multi","concurrency":8,"cwd":cwd,"yoloMode":approved}))?)?;
             }
             for (id, owner, deps) in [("task","worker",json!([])),("next","dependent",json!(["task"]))] {
@@ -555,8 +557,7 @@ mod tests {
             .transaction_with(move |tx| {
                 let mut monitor = MonitorsRepository::get(tx, &id)?
                     .expect("gate monitor exists")
-                    .value()
-                    .clone();
+                    .value();
                 monitor["status"] = json!("completed");
                 monitor["exitCode"] = json!(0);
                 settle(tx, &monitor, 4.0)

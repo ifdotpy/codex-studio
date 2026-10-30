@@ -930,11 +930,19 @@ pub fn dispatch_notification_with_effects(
 
 /// Store one task record through the canonical task writer, which also keeps
 /// the task's sync window. Its caller owns the decision and the transaction.
+#[cfg(test)]
 pub(crate) fn put_task_record(
     tx: &Transaction<'_>,
     task: &Value,
 ) -> Result<(), NotificationDispatchError> {
     kinds::put_task(tx, task)
+}
+
+pub(crate) fn put_checked_task_record(
+    tx: &Transaction<'_>,
+    task: &studio_runtime_store::TaskRecord,
+) -> Result<(), NotificationDispatchError> {
+    kinds::put_checked_task(tx, task, &task.value())
 }
 
 /// Shared completion formatter for recovery; its caller owns the recovery receipt.
@@ -966,17 +974,13 @@ pub fn recover_task_in_transaction(
                 .as_str()
                 .ok_or(NotificationDispatchError::invalid())?,
         )?;
-        if current.as_ref().map(|record| record.value()) != Some(previous)
+        if current.as_ref().map(|record| record.value()).as_ref() != Some(previous)
             || stored_agent.as_ref() != Some(agent)
         {
             return Err(NotificationDispatchError::invalid());
         }
-        let snapshot = snapshot::NotificationSnapshot::from_records(
-            agent.clone(),
-            Some(previous.clone()),
-            None,
-        )?;
-        if previous["status"] != "running" {
+        let snapshot = snapshot::NotificationSnapshot::from_records(agent.clone(), current, None)?;
+        if snapshot.task().and_then(TaskRecord::status) != Some("running") {
             return Ok(());
         }
         let params = json!({"item":item,"turnId":previous["turnId"]});
@@ -2233,6 +2237,24 @@ mod tests {
         RuntimeStore, SchedulerRepository, StoreError, TranscriptRepository,
     };
 
+    #[test]
+    fn plan_notification_updates_typed_record() {
+        let mut connection = database();
+        connection
+            .execute_batch("CREATE TABLE runtime_plans(id TEXT PRIMARY KEY,record TEXT NOT NULL)")
+            .unwrap();
+        let transaction = connection.transaction().unwrap();
+        let mut streams = NotificationStreamBuffer::default();
+        dispatch(&transaction, &mut streams, 1, &json!({"method":"turn/plan/updated","params":{"threadId":"thread","turnId":"turn","plan":[{"step":"one"}]}}), 4.0).unwrap();
+        let record = studio_runtime_store::WorkItemsRepository::plan(&transaction, "agent")
+            .unwrap()
+            .unwrap()
+            .value();
+        assert_eq!(record["steps"], json!([{"step":"one"}]));
+        assert_eq!(record["updated"], json!(4.0));
+        assert_eq!(record["native"]["threadId"], "thread");
+    }
+
     #[tokio::test]
     async fn typed_usage_dispatch_reaches_priced_cost_groups() {
         use super::NotificationPostCommit;
@@ -3341,6 +3363,73 @@ mod tests {
             .expect("turn/start acceptance commits chat delivery");
     }
 
+    #[tokio::test]
+    async fn chat_delivery_receipt_keeps_value_admission_and_exact_message_match() {
+        for (payload, delivered) in [
+            (
+                r#"{"message_id":"wrong","message_id":"message-1","room":"room-1","sender":"user","text":"answer this prompt","future":[null,1]}"#,
+                true,
+            ),
+            (
+                r#"{"message_id":"message-1","room":"room-1","sender":"user"}"#,
+                false,
+            ),
+            (
+                r#"{"message_id":"message-1","room":"room-1","sender":"other","text":"answer this prompt"}"#,
+                false,
+            ),
+            (
+                r#"{"message_id":"message-1","room":"room-1","sender":"user","text":"answer this prompt","future":1e999}"#,
+                false,
+            ),
+            (
+                r#"{"message_id":"message-1","room":"room-1","sender":"user","text":""}"#,
+                true,
+            ),
+            ("{", false),
+        ] {
+            let (_directory, store) = submitted_chat_runtime().await;
+            store
+                .transaction(move |tx| {
+                    tx.execute(
+                        "UPDATE runtime_events SET text=?1 WHERE id='chat:message-1:agent'",
+                        [payload],
+                    )?;
+                    if payload.contains(r#""text":"""#) {
+                        let mut message =
+                            MessageRepository::get(tx, &ChatMessageId::from("message-1"))?.unwrap();
+                        message.text.clear();
+                        MessageRepository::put(tx, &message)?;
+                    }
+                    SchedulerRepository::settle_started_provider(
+                        tx,
+                        "agent",
+                        1,
+                        "attempt-1",
+                        "ticket-1",
+                        "default",
+                        7,
+                        "thread",
+                        "turn-1",
+                    )?;
+                    let event =
+                        QueueEventRepository::get(tx, &QueueEventId::from("chat:message-1:agent"))?
+                            .unwrap();
+                    let message =
+                        MessageRepository::get(tx, &ChatMessageId::from("message-1"))?.unwrap();
+                    assert_eq!(event.status, "delivered");
+                    assert_eq!(
+                        message.deliveries["agent"],
+                        if delivered { "delivered" } else { "queued" },
+                        "{payload}"
+                    );
+                    Ok::<_, studio_runtime_store::StoreError>(())
+                })
+                .await
+                .unwrap();
+        }
+    }
+
     #[test]
     fn injected_unload_refusal_keeps_pending_text_and_has_no_receipt() {
         let mut connection = database();
@@ -3482,7 +3571,7 @@ mod tests {
         let item = TranscriptRepository::item(&connection, "agent", "agent:answer")
             .expect("transcript read succeeds")
             .expect("answer exists");
-        assert_eq!(item.record["text"], "hello");
+        assert_eq!(item.record.value()["text"], "hello");
         let agent = NotificationDispatchRepository::agent_record(
             &connection
                 .unchecked_transaction()
@@ -3584,7 +3673,7 @@ mod tests {
         let answer = TranscriptRepository::item(&transaction, "agent", "agent:answer")
             .expect("answer reads")
             .expect("answer exists");
-        assert_eq!(answer.record["text"], "basependinglate");
+        assert_eq!(answer.record.value()["text"], "basependinglate");
         transaction.commit().expect("persisted-base case commits");
 
         // Without a persisted base, the flush uses the current snapshot row and
@@ -3617,7 +3706,7 @@ mod tests {
         let answer = TranscriptRepository::item(&transaction, "agent", "agent:answer")
             .expect("answer reads")
             .expect("answer exists");
-        assert_eq!(answer.record["text"], "snapshotpendinglate");
+        assert_eq!(answer.record.value()["text"], "snapshotpendinglate");
         transaction.commit().expect("snapshot-base case commits");
     }
 
@@ -3672,7 +3761,7 @@ mod tests {
         let item = TranscriptRepository::item(&connection, "agent", "agent:rollback")
             .expect("retried item reads")
             .expect("retried item exists");
-        assert_eq!(item.record["text"], "written then refused");
+        assert_eq!(item.record.value()["text"], "written then refused");
     }
 
     #[test]
@@ -3760,14 +3849,14 @@ mod tests {
         let item = TranscriptRepository::item(&connection, "agent", "agent:e1")
             .expect("item reads")
             .expect("item exists");
-        assert_eq!(item.record["text"], retry.text);
-        assert_eq!(item.record["inputs"][1]["text"], "more");
+        assert_eq!(item.record.value()["text"], retry.text);
+        assert_eq!(item.record.value()["inputs"][1]["text"], "more");
         assert_eq!(
             connection
                 .query_row("SELECT count(*) FROM request_results", [], |row| row
                     .get::<_, i64>(0))
                 .expect("result count"),
-            2
+            0
         );
         assert_eq!(
             write(&mut connection, &retry, true).expect("identical replay"),
@@ -3898,12 +3987,20 @@ mod tests {
             DispatchOutcome::Written
         );
         transaction.commit().expect("submission commits");
+        let receipts: i64 = connection.query_row(
+            "SELECT count(*) FROM request_results WHERE id LIKE '%provider-submission%'",
+            [], |row| row.get(0),
+        ).expect("submission receipts");
+        assert_eq!(receipts, 0, "the typed submission owner holds the outcome");
         let item = TranscriptRepository::item(&connection, "agent", "agent:e1")
             .expect("user item reads")
             .expect("batch row exists");
-        assert_eq!(item.record["text"], submission.text);
-        assert_eq!(item.record["inputs"][1]["kind"], "followup");
-        assert_eq!(item.record["inputs"][0]["assets"][0]["id"], "asset-1");
+        assert_eq!(item.record.value()["text"], submission.text);
+        assert_eq!(item.record.value()["inputs"][1]["kind"], "followup");
+        assert_eq!(
+            item.record.value()["inputs"][0]["assets"][0]["id"],
+            "asset-1"
+        );
         for event_id in ["e1", "e2"] {
             let meta: String = connection
                 .query_row(
@@ -3945,16 +4042,8 @@ mod tests {
         transaction.commit().expect("deleted-agent replay commits");
         let now = chrono::Utc::now().timestamp_millis();
         let expired = now - studio_runtime_schema::persistence::REQUEST_RESULT_TTL_MS - 1;
-        connection
-            .execute("UPDATE request_results SET created=?1", [expired])
-            .expect("age response");
         connection.execute("UPDATE runtime_event_meta SET record=json_set(record,'$.providerSubmission.admission.created',?1)", [expired]).expect("age admitted owner");
-        let tx = connection.transaction().expect("GC transaction");
-        assert_eq!(
-            studio_runtime_store::request_results::RequestResults::gc(&tx, now)
-                .expect("bounded GC"),
-            1
-        );
+        let tx = connection.transaction().expect("expired replay transaction");
         assert!(matches!(
             record_user_submission(&tx, "agent", &submission),
             Err(super::NotificationDispatchError::RequestResult(
@@ -3973,7 +4062,8 @@ mod tests {
             TranscriptRepository::item(&tx, "agent", "agent:e1")
                 .expect("item")
                 .expect("published input")
-                .record["text"],
+                .record
+                .value()["text"],
             submission.text
         );
     }
@@ -4029,7 +4119,7 @@ mod tests {
             tx.query_row("SELECT count(*) FROM request_results", [], |row| row
                 .get::<_, i64>(0))
                 .expect("exact result count"),
-            1
+            0
         );
     }
 
@@ -4171,11 +4261,11 @@ mod tests {
         let item = TranscriptRepository::item(&connection, "agent", "agent:answer")
             .expect("replacement item reads")
             .expect("replacement item exists");
-        assert_eq!(item.record["text"], "replacement");
-        assert_eq!(item.record["turnId"], "turn");
+        assert_eq!(item.record.value()["text"], "replacement");
+        assert_eq!(item.record.value()["turnId"], "turn");
         for field in ["afterRestore", "inputs", "assets", "obsolete"] {
             assert!(
-                item.record.get(field).is_none(),
+                item.record.value().get(field).is_none(),
                 "old field {field} survived"
             );
         }
@@ -4205,7 +4295,7 @@ mod tests {
         let item = TranscriptRepository::item(&connection, "agent", "agent:no-turn")
             .expect("null-turn item reads")
             .expect("null-turn item exists");
-        assert_eq!(item.record.get("turnId"), Some(&Value::Null));
+        assert_eq!(item.record.value().get("turnId"), Some(&Value::Null));
         let agent = TranscriptRepository::agent(&connection, "agent")
             .expect("updated agent reads")
             .expect("updated agent exists");
@@ -4342,7 +4432,7 @@ mod tests {
         let item = TranscriptRepository::item(&transaction, "agent", "agent:answer")
             .expect("read")
             .expect("item");
-        assert_eq!(item.record["text"], "beforeafter");
+        assert_eq!(item.record.value()["text"], "beforeafter");
         assert!(
             serde_json::from_str::<Value>(&serde_json::to_string(&streams).expect("stream state"))
                 .expect("JSON")["entries"][0]["base"]
@@ -4378,7 +4468,12 @@ mod tests {
                 .expect("item exists");
             TranscriptRepository::full_text(tx, &item)
                 .expect("full text")
-                .unwrap_or_else(|| item.record["text"].as_str().expect("text").to_owned())
+                .unwrap_or_else(|| {
+                    item.record.value()["text"]
+                        .as_str()
+                        .expect("text")
+                        .to_owned()
+                })
         };
         // A long answer, flushed after every delta.
         let mut expected = String::new();

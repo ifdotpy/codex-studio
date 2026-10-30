@@ -31,7 +31,8 @@ use studio_runtime_providers::supervisor_protocol::{
 };
 use studio_runtime_store::path_identity::CanonicalPath;
 use studio_runtime_store::supervisor_journal::{
-    JournalError, START_FAILED_REASON, StoredHandle, SupervisorJournal, launch_signature,
+    JournalError, START_FAILED_REASON, StoredHandle, SupervisorJournal, SupervisorRecovery,
+    launch_signature,
 };
 
 use crate::supervisor_contract::{SUPERVISOR_JOURNAL_EPOCH_FIELD, SUPERVISOR_JOURNAL_ID_KEY};
@@ -81,7 +82,7 @@ struct Supervisor {
     children: Mutex<BTreeMap<String, Arc<ChildSlot>>>,
     active_children: AtomicUsize,
     ownership: Mutex<Ownership>,
-    recovery: Mutex<Value>,
+    recovery: Mutex<SupervisorRecovery>,
     connections: AtomicUsize,
 }
 /// The map is only an index. This lock serializes lifecycle and requests for
@@ -192,12 +193,12 @@ impl Supervisor {
             }
             Command::FinishFallback => {
                 let mut recovery = lock(&self.recovery)?;
-                if !recovery["blocked"].is_null() {
+                if recovery.blocked() {
                     return Err(Error::Refused(
                         "Cannot finish supervisor fallback while child ownership is uncertain",
                     ));
                 }
-                let clean = json!({"degraded":false,"fallbackReady":false,"blocked":null});
+                let clean = SupervisorRecovery::clean();
                 self.journal.save_recovery(&clean)?;
                 *recovery = clean;
                 Ok(json!({"finished":true}))
@@ -244,9 +245,7 @@ impl Supervisor {
                     stopped = true;
                 }
                 if let Some(saved) = self.journal.handle(handle)? {
-                    if !lock(&self.recovery)?["blocked"].is_null()
-                        || (!stopped && saved.closed_at.is_none())
-                    {
+                    if lock(&self.recovery)?.blocked() || (!stopped && saved.closed_at.is_none()) {
                         return Err(Error::Refused(
                             "Supervisor handle is orphaned; native outcome remains unknown",
                         ));
@@ -377,8 +376,7 @@ impl Supervisor {
                     let mut recovery = lock(&self.recovery)?;
                     let mut clean = recovery.clone();
                     if !unresolved {
-                        clean["blocked"] = Value::Null;
-                        clean["fallbackReady"] = clean["degraded"].clone();
+                        clean.clear_blocked();
                     }
                     self.journal
                         .close_unknown(&self.saved(&row.id)?, now()?, &clean)?;
@@ -454,15 +452,8 @@ impl Supervisor {
         )?;
         let events = rows
             .into_iter()
-            .map(|row| {
-                Ok(SupervisorEventV2 {
-                    sequence: crate::EventCursor(row.sequence),
-                    generation: crate::Generation(row.generation),
-                    kind: serde_json::from_value(json!(row.kind))?,
-                    payload: row.payload,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
+            .map(SupervisorEventV2::from)
+            .collect::<Vec<_>>();
         let exit_sequence = child.durable_exit_sequence()?;
         let terminal = exit_delivered(
             request.cursor.0,
@@ -530,6 +521,7 @@ impl Supervisor {
                         ..
                     } => {
                         child.write(&outbound)?;
+                        self.journal.mark_written(&handle, &operation_id)?;
                         (false, remote_id)
                     }
                 };
@@ -538,7 +530,14 @@ impl Supervisor {
                 )
             }
             Command::OperationStatus { operation_id, .. } => {
-                Ok(self.journal.operation_status(&handle, &operation_id)?)
+                if operation_id.starts_with("monitor:") {
+                    Ok(self.journal.operation_status(&handle, &operation_id)?)
+                } else {
+                    Ok(serde_json::to_value(
+                        self.journal
+                            .provider_operation_status(&handle, &operation_id)?,
+                    )?)
+                }
             }
             Command::Ack { sequence, .. } => {
                 self.journal.ack(&handle, sequence)?;
@@ -593,41 +592,38 @@ impl Supervisor {
         }
     }
     fn recover(&self) -> Result<()> {
-        let mut recovery = json!({"degraded":false,"fallbackReady":false,"blocked":null});
+        let mut recovery = SupervisorRecovery::clean();
         for row in self.journal.handles(true)? {
-            let (outcome, detail): (&str, String) = if let (Some(expected), Some(pgid)) =
-                (&row.start_time, row.pgid)
-            {
-                let live_leader = inspect_start(row.pid, expected)?.0 == StartMatch::Exact;
-                if live_leader {
-                    recovery["degraded"] = json!(true);
-                    recovery["notice"] =
-                        json!("The process supervisor restarted; native work is using recovery.");
-                }
-                match stop_verified(row.pid, pgid, expected) {
-                    Ok(outcome) => (
-                        outcome.journal_outcome(),
-                        "verified process group terminated".into(),
-                    ),
-                    Err(error) => {
-                        let blocked = "Could not terminate verified child process group";
-                        recovery["blocked"] = json!(blocked);
-                        ("termination-failed", format!("{blocked}: {error}"))
+            let (outcome, detail): (&str, String) =
+                if let (Some(expected), Some(pgid)) = (&row.start_time, row.pgid) {
+                    let live_leader = inspect_start(row.pid, expected)?.0 == StartMatch::Exact;
+                    if live_leader {
+                        recovery.mark_degraded(
+                            "The process supervisor restarted; native work is using recovery.",
+                        );
                     }
-                }
-            } else {
-                recovery["blocked"] =
-                    json!("A native child is missing its recorded PID and start time");
-                (
-                    "missing-identity",
-                    "Native child PID and start time were not recorded".into(),
-                )
-            };
+                    match stop_verified(row.pid, pgid, expected) {
+                        Ok(outcome) => (
+                            outcome.journal_outcome(),
+                            "verified process group terminated".into(),
+                        ),
+                        Err(error) => {
+                            let blocked = "Could not terminate verified child process group";
+                            recovery.block(blocked);
+                            ("termination-failed", format!("{blocked}: {error}"))
+                        }
+                    }
+                } else {
+                    recovery.block("A native child is missing its recorded PID and start time");
+                    (
+                        "missing-identity",
+                        "Native child PID and start time were not recorded".into(),
+                    )
+                };
             self.journal
                 .recovered(&self.saved(&row.id)?, outcome, &detail, now()?)?;
         }
-        recovery["fallbackReady"] =
-            json!(recovery["degraded"] == true && recovery["blocked"].is_null());
+        recovery.finish_recovery();
         self.journal.save_recovery(&recovery)?;
         *lock(&self.recovery)? = recovery;
         Ok(())
@@ -638,7 +634,7 @@ fn read_frame(
     reader: &mut BufReader<UnixStream>,
     mut deadline: Option<Instant>,
     budget: Duration,
-) -> Result<Option<Value>> {
+) -> Result<Option<SupervisorHandshakeV2>> {
     let mut bytes = Vec::new();
     loop {
         let remaining = deadline
@@ -704,7 +700,7 @@ fn read_frame(
         }
     }
 }
-fn write_frame(writer: &mut impl Write, value: &Value) -> Result<()> {
+fn write_frame(writer: &mut impl Write, value: &impl serde::Serialize) -> Result<()> {
     serde_json::to_writer(&mut *writer, value)?;
     writer.write_all(b"\n")?;
     writer.flush()?;
@@ -947,9 +943,8 @@ fn connection_with_budget(supervisor: Arc<Supervisor>, mut socket: UnixStream, b
     let result = (|| -> Result<()> {
         socket.set_write_timeout(Some(Duration::from_secs(10)))?;
         let mut reader = BufReader::new(socket.try_clone()?);
-        let first_value = read_frame(&mut reader, Some(Instant::now() + budget), budget)?
+        let first = read_frame(&mut reader, Some(Instant::now() + budget), budget)?
             .ok_or(Error::Refused("Missing supervisor handshake"))?;
-        let first: SupervisorHandshakeV2 = serde_json::from_value(first_value)?;
         if first.protocol != SUPERVISOR_PROTOCOL_VERSION {
             return Err(Error::Refused("Supervisor protocol mismatch"));
         }
@@ -995,6 +990,13 @@ fn connection_with_budget(supervisor: Arc<Supervisor>, mut socket: UnixStream, b
     supervisor.connections.fetch_sub(1, Ordering::AcqRel);
 }
 
+#[derive(Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SupervisorLease {
+    pid: u32,
+    start_time: String,
+}
+
 /// Serve only the explicitly selected directory. Does not install or connect to another service.
 #[allow(
     clippy::disallowed_methods,
@@ -1032,8 +1034,8 @@ pub fn serve(root: &Path, wait_for_lease: bool) -> Result<()> {
                     Read::by_ref(&mut lease)
                         .take(4096)
                         .read_to_string(&mut text)?;
-                    let value: Value = serde_json::from_str(&text)?;
-                    eprintln!("supervisor waiting for owner {}", value["pid"]);
+                    let identity: SupervisorLease = serde_json::from_str(&text)?;
+                    eprintln!("supervisor waiting for owner {}", identity.pid);
                     announced = true;
                 }
                 thread::sleep(RETRY);
@@ -1046,17 +1048,17 @@ pub fn serve(root: &Path, wait_for_lease: bool) -> Result<()> {
         .take(4096)
         .read_to_string(&mut previous)?;
     if !previous.trim().is_empty() {
-        let identity: Value = serde_json::from_str(&previous)?;
-        let pid = identity["pid"]
-            .as_u64()
-            .and_then(|v| u32::try_from(v).ok())
-            .ok_or(Error::Refused(
-                "The previous supervisor lease identity is invalid",
-            ))?;
-        let expected = identity["startTime"].as_str().ok_or(Error::Refused(
-            "The previous supervisor lease identity is invalid",
-        ))?;
-        if matches!(inspect_start(pid, expected)?.0, StartMatch::Exact) {
+        let identity: SupervisorLease = serde_json::from_str(&previous).map_err(|error| {
+            if error.is_data() {
+                Error::Refused("The previous supervisor lease identity is invalid")
+            } else {
+                error.into()
+            }
+        })?;
+        if matches!(
+            inspect_start(identity.pid, &identity.start_time)?.0,
+            StartMatch::Exact
+        ) {
             return Err(Error::Refused(
                 "The previous supervisor process is still alive",
             ));
@@ -1076,7 +1078,7 @@ pub fn serve(root: &Path, wait_for_lease: bool) -> Result<()> {
         children: Mutex::new(BTreeMap::new()),
         active_children: AtomicUsize::new(0),
         ownership: Mutex::new(Ownership::default()),
-        recovery: Mutex::new(json!({"degraded":false,"fallbackReady":false,"blocked":null})),
+        recovery: Mutex::new(SupervisorRecovery::clean()),
         connections: AtomicUsize::new(0),
     });
     supervisor.recover()?;
@@ -1086,7 +1088,10 @@ pub fn serve(root: &Path, wait_for_lease: bool) -> Result<()> {
     lease.set_len(0)?;
     write_frame(
         &mut lease,
-        &json!({"pid":std::process::id(),"startTime":own_start}),
+        &SupervisorLease {
+            pid: std::process::id(),
+            start_time: own_start,
+        },
     )?;
     lease.sync_all()?;
     let socket = root.join("supervisor.sock");
@@ -1147,3 +1152,94 @@ mod deadline_tests;
 #[cfg(all(test, target_os = "macos"))]
 #[path = "../tests/supervisor/legacy_start.rs"]
 mod legacy_start_tests;
+
+#[cfg(test)]
+mod lease_tests {
+    use super::*;
+
+    #[test]
+    fn previous_lease_refuses_invalid_and_live_identity_before_starting() {
+        let root = tempfile::tempdir().unwrap();
+        let lease_path = root.path().join("supervisor.lock");
+        std::fs::write(&lease_path, br#"{"pid":4294967296,"startTime":"x"}"#).unwrap();
+        assert!(matches!(
+            serve(root.path(), false),
+            Err(Error::Refused(
+                "The previous supervisor lease identity is invalid"
+            ))
+        ));
+        let start_time = start_time(std::process::id(), false).unwrap().unwrap();
+        let lease = SupervisorLease {
+            pid: std::process::id(),
+            start_time,
+        };
+        std::fs::write(&lease_path, serde_json::to_vec(&lease).unwrap()).unwrap();
+        assert!(matches!(
+            serve(root.path(), false),
+            Err(Error::Refused(
+                "The previous supervisor process is still alive"
+            ))
+        ));
+        assert!(!root.path().join("supervisor.sock").exists());
+    }
+
+    #[test]
+    fn lease_record_round_trips_and_rejects_invalid_identity() {
+        let identity = SupervisorLease {
+            pid: 42,
+            start_time: "linux:boot:123".into(),
+        };
+        let mut encoded = Vec::new();
+        write_frame(&mut encoded, &identity).unwrap();
+        let decoded: SupervisorLease = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(decoded, identity);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&encoded).unwrap(),
+            json!({"pid":42,"startTime":"linux:boot:123"})
+        );
+        for value in [
+            json!({"pid":4294967296u64,"startTime":"x"}),
+            json!({"pid":42,"startTime":null}),
+            json!({"pid":42}),
+        ] {
+            assert!(serde_json::from_value::<SupervisorLease>(value).is_err());
+        }
+    }
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+
+    #[test]
+    fn recovery_and_finish_fallback_preserve_blocking_and_health() {
+        let (_root, supervisor) = super::deadline_tests::fixture();
+        let capabilities = super::deadline_tests::backend_capabilities(&supervisor);
+        supervisor.recover().unwrap();
+        assert_eq!(
+            supervisor.handle(Command::Health, &capabilities).unwrap()["recovery"],
+            json!({"degraded":false,"fallbackReady":false,"blocked":null})
+        );
+        *lock(&supervisor.recovery).unwrap() =
+            serde_json::from_str(r#"{"degraded":true,"blocked":false,"extra":1}"#).unwrap();
+        assert!(matches!(
+            supervisor.handle(Command::FinishFallback, &capabilities),
+            Err(Error::Refused(_))
+        ));
+        assert_eq!(
+            supervisor.handle(Command::Health, &capabilities).unwrap()["recovery"]["extra"],
+            1
+        );
+        lock(&supervisor.recovery).unwrap().clear_blocked();
+        assert_eq!(
+            supervisor
+                .handle(Command::FinishFallback, &capabilities)
+                .unwrap(),
+            json!({"finished":true})
+        );
+        assert_eq!(
+            supervisor.handle(Command::Health, &capabilities).unwrap()["recovery"],
+            json!({"degraded":false,"fallbackReady":false,"blocked":null})
+        );
+    }
+}

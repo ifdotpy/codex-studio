@@ -77,8 +77,7 @@ pub fn vm_actor_matches(
             studio_runtime_providers::ProviderKind::of_field(record.extra.get("provider"))
                 .is_ok_and(|kind| kind.key() == provider)
         })
-        && record.account_key.as_str()
-            == account_key
+        && record.account_key.as_str() == account_key
         && !record
             .extra
             .get("deletedAt")

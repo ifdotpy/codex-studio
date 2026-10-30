@@ -183,12 +183,9 @@ async fn new_account_sign_in_starts_its_session_and_returns_the_device_code() {
 async fn signed_out_account_sign_in_starts_its_session_and_returns_the_device_code() {
     let fixture = Fixture::new();
     let listed = fixture.driver.listing_snapshot().expect("listing");
-    assert!(
-        listed
-            .accounts
-            .iter()
-            .any(|row| row["id"] == "signed-out" && row["status"] == "signedOut")
-    );
+    assert!(listed.accounts.iter().any(
+        |row| row.id.as_str() == Some("signed-out") && row.status.as_str() == Some("signedOut")
+    ));
     let session = BrokerSession::new(true);
     let receipt = fixture
         .login(Arc::clone(&session), Some("signed-out"))

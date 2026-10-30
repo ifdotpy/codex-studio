@@ -460,9 +460,17 @@ mod tests {
                     |row| row.get(0),
                 )
                 .unwrap();
-            assert_eq!(attempts, i64::from(outcome == ReplyOutcome::Unknown), "unknown answers stay durable; written answers retire");
+            assert_eq!(
+                attempts,
+                i64::from(outcome == ReplyOutcome::Unknown),
+                "unknown answers stay durable; written answers retire"
+            );
             if outcome == ReplyOutcome::Written {
-                let results: i64 = store.test_reader().unwrap().query_row("SELECT count(*) FROM request_results", [], |row| row.get(0)).unwrap();
+                let results: i64 = store
+                    .test_reader()
+                    .unwrap()
+                    .query_row("SELECT count(*) FROM request_results", [], |row| row.get(0))
+                    .unwrap();
                 assert!(results > 0, "the written answer has a durable result");
             }
         }

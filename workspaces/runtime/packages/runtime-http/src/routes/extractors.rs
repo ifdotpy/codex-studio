@@ -7,7 +7,6 @@ use std::sync::Arc;
 use crate::error::ApiError;
 use crate::validation::ValidatedRequest;
 
-#[allow(dead_code, reason = "shared typed extractors consume serde paths")]
 fn serde_location(section: &str, path: &serde_path_to_error::Path) -> Vec<Value> {
     let mut location = vec![Value::String(section.to_owned())];
     location.extend(path.iter().filter_map(|segment| match segment {
@@ -19,14 +18,10 @@ fn serde_location(section: &str, path: &serde_path_to_error::Path) -> Vec<Value>
     location
 }
 
-/// JSON request bodies validated against their registered OpenAPI schema.
-#[allow(dead_code, reason = "route handlers consume the shared JSON extractor")]
+/// JSON request bodies read from the validated wire bytes.
 pub(crate) struct ApiJson<T>(pub T);
 
-/// JSON request bodies read from the validated wire bytes.
-pub(crate) struct ApiRawJson<T>(pub T);
-
-impl<T, S> FromRequest<S> for ApiRawJson<T>
+impl<T, S> FromRequest<S> for ApiJson<T>
 where
     T: DeserializeOwned + Send,
     S: Send + Sync,
@@ -45,34 +40,12 @@ where
             .raw_body
             .ok_or_else(ApiError::internal)?;
         let mut deserializer = serde_json::Deserializer::from_slice(&bytes);
-        serde_path_to_error::deserialize(&mut deserializer)
-            .map(Self)
-            .map_err(|error| ApiError::validation(serde_location("body", error.path())))
-    }
-}
-
-impl<T, S> FromRequest<S> for ApiJson<T>
-where
-    T: DeserializeOwned + Send,
-    S: Send + Sync,
-{
-    type Rejection = ApiError;
-
-    async fn from_request(
-        request: axum::extract::Request,
-        _state: &S,
-    ) -> Result<Self, Self::Rejection> {
-        let (mut parts, _) = request.into_parts();
-        let value = parts
-            .extensions
-            .remove::<ValidatedRequest>()
-            .ok_or_else(ApiError::internal)?
-            .body
-            .ok_or_else(ApiError::internal)?;
-        match serde_path_to_error::deserialize(value) {
-            Ok(value) => Ok(Self(value)),
-            Err(error) => Err(ApiError::validation(serde_location("body", error.path()))),
-        }
+        let value = serde_path_to_error::deserialize(&mut deserializer)
+            .map_err(|error| ApiError::validation(serde_location("body", error.path())))?;
+        deserializer
+            .end()
+            .map_err(|_| ApiError::validation(vec![Value::String("body".into())]))?;
+        Ok(Self(value))
     }
 }
 
@@ -250,11 +223,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn json_handler_decodes_validated_wire_bytes() {
+        let app = with_validated(
+            Router::new().route("/items", post(json_handler)),
+            ValidatedRequest {
+                raw_body: Some(br#"{"count":2}"#.as_slice().into()),
+                ..ValidatedRequest::default()
+            },
+        );
+        let request = Request::builder()
+            .method("POST")
+            .uri("/items")
+            .body(Body::empty())
+            .expect("request builds");
+        assert_eq!(
+            response(app, request).await,
+            (StatusCode::OK, json!({"count":2}))
+        );
+    }
+
+    #[tokio::test]
     async fn wrongly_typed_json_uses_one_located_error() {
         let app = with_validated(
             Router::new().route("/items", post(json_handler)),
             ValidatedRequest {
-                body: Some(json!({"count":"wrong"})),
+                raw_body: Some(br#"{"count":"wrong"}"#.as_slice().into()),
                 ..ValidatedRequest::default()
             },
         );

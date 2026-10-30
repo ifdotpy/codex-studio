@@ -797,16 +797,108 @@ pub(crate) fn open_confined_native_file(
 }
 
 /// Native session header identity; the first supported alias is authoritative.
+#[derive(serde::Deserialize)]
+pub(crate) struct SessionHeader {
+    #[serde(rename = "type", default)]
+    kind: Value,
+    #[serde(default)]
+    payload: SessionPayload,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum SessionPayload {
+    Object(studio_runtime_schema::json_object::JsonObject<SessionFields>),
+    Other(serde::de::IgnoredAny),
+}
+impl Default for SessionPayload {
+    fn default() -> Self {
+        Self::Other(serde::de::IgnoredAny)
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct SessionFields {
+    #[serde(default, rename = "id")]
+    raw_id: Value,
+    #[serde(default)]
+    session_id: Value,
+    #[serde(default, deserialize_with = "present_header_field")]
+    history_base: Option<Value>,
+    #[serde(default, deserialize_with = "present_header_field")]
+    context_window: Option<Value>,
+    #[serde(default, deserialize_with = "present_fork_field")]
+    forked_from_id: Option<serde::de::IgnoredAny>,
+    #[serde(default)]
+    timestamp: Value,
+}
+
+fn present_header_field<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Value>, D::Error> {
+    serde::Deserialize::deserialize(d).map(Some)
+}
+fn present_fork_field<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<serde::de::IgnoredAny>, D::Error> {
+    serde::Deserialize::deserialize(d).map(Some)
+}
+
+impl SessionHeader {
+    pub(crate) fn from_value(value: &Value) -> Option<Self> {
+        use serde::Deserialize;
+        studio_runtime_schema::json_object::JsonObject::<Self>::deserialize(value)
+            .ok()
+            .map(|value| value.0)
+    }
+
+    pub(crate) fn is_session(&self) -> bool {
+        self.kind == "session_meta"
+    }
+
+    fn fields(&self) -> Option<&SessionFields> {
+        match &self.payload {
+            SessionPayload::Object(fields) => Some(&fields.0),
+            SessionPayload::Other(_) => None,
+        }
+    }
+
+    pub(crate) fn exact_id(&self, thread: &str) -> bool {
+        self.fields().is_some_and(|fields| fields.raw_id == thread)
+    }
+
+    pub(crate) fn first_id(&self, thread: &str) -> bool {
+        self.fields().is_some_and(|fields| {
+            crate::analytics_capture::first(&[&fields.raw_id, &fields.session_id]) == thread
+        })
+    }
+
+    pub(crate) fn history_base(&self) -> Option<&Value> {
+        self.fields()
+            .and_then(|fields| fields.history_base.as_ref())
+    }
+    pub(crate) fn raw_id(&self) -> Option<&Value> {
+        self.fields().map(|fields| &fields.raw_id)
+    }
+    pub(crate) fn id(&self) -> Option<&str> {
+        self.raw_id().and_then(Value::as_str)
+    }
+    pub(crate) fn is_fork(&self) -> bool {
+        self.fields()
+            .is_some_and(|fields| fields.forked_from_id.is_some())
+    }
+    pub(crate) fn timestamp(&self) -> Option<&str> {
+        self.fields().and_then(|fields| fields.timestamp.as_str())
+    }
+    pub(crate) fn context_window(&self) -> Option<&Value> {
+        self.fields()
+            .and_then(|fields| fields.context_window.as_ref())
+    }
+}
+
 pub(crate) fn native_rollout_header_matches(header: &[u8], thread: &str) -> bool {
     serde_json::from_slice::<Value>(header)
         .ok()
-        .is_some_and(|value| {
-            value["type"] == "session_meta"
-                && crate::analytics_capture::first(&[
-                    &value["payload"]["id"],
-                    &value["payload"]["session_id"],
-                ]) == thread
-        })
+        .and_then(|value| SessionHeader::from_value(&value))
+        .is_some_and(|header| header.is_session() && header.first_id(thread))
 }
 
 pub fn prepare(
@@ -1276,10 +1368,10 @@ impl HistoryCollector {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .invalidate(profile);
     }
-    pub async fn step<'a>(
+    pub async fn step<'a, T: crate::analytics_history_schedule::HistoryActor + 'a>(
         &mut self,
         store: &RuntimeStore,
-        lookup: impl FnOnce(i64) -> Option<&'a Value>,
+        lookup: impl FnOnce(i64) -> Option<&'a T>,
         profile: impl FnOnce(&str) -> Result<PathBuf, HistoryError> + Send + 'static,
         clock: HistoryClock,
         cancel: Arc<AtomicBool>,
@@ -1290,7 +1382,8 @@ impl HistoryCollector {
         };
         let agent = lookup(row)
             .ok_or(CaptureError::Invalid("/history/roster"))?
-            .clone();
+            .history_value()
+            .into_owned();
         if self.visited.len() >= self.schedule.roster_len()
             || self.visited.contains(text(&agent["id"]))
         {
@@ -1401,6 +1494,78 @@ impl HistoryCollector {
 #[cfg(test)]
 mod invalid_record_tests {
     use super::*;
+
+    #[test]
+    fn session_header_projection_preserves_partial_and_presence_rules() {
+        for raw in [
+            "null",
+            "[]",
+            "{}",
+            r#"{"type":"session_meta","payload":null}"#,
+            r#"{"type":"session_meta","payload":{"id":"","session_id":"t","history_base":null}}"#,
+            r#"{"type":"session_meta","payload":{"id":7,"session_id":"t","history_base":false}}"#,
+            r#"{"type":"session_meta","payload":{"id":"","forked_from_id":null,"timestamp":7,"context_window":null}}"#,
+            r#"{"type":"session_meta","payload":{"id":"t","forked_from_id":false,"timestamp":"time","context_window":4}}"#,
+            r#"{"type":"other","type":"session_meta","payload":{"id":"t","extra":1}}"#,
+            r#"{"type":"session_meta","payload":{"id":"t","id":"other"}}"#,
+        ] {
+            let value: Value = serde_json::from_str(raw).expect("valid fixture");
+            let header = SessionHeader::from_value(&value);
+            let session = value["type"] == "session_meta";
+            assert_eq!(
+                header.as_ref().is_some_and(SessionHeader::is_session),
+                session,
+                "{raw}"
+            );
+            assert_eq!(
+                header
+                    .as_ref()
+                    .is_some_and(|h| h.is_session() && h.exact_id("t")),
+                session && value["payload"]["id"] == "t",
+                "{raw}"
+            );
+            assert_eq!(
+                native_rollout_header_matches(raw.as_bytes(), "t"),
+                session
+                    && crate::analytics_capture::first(&[
+                        &value["payload"]["id"],
+                        &value["payload"]["session_id"]
+                    ]) == "t",
+                "{raw}"
+            );
+            assert_eq!(
+                header.as_ref().and_then(SessionHeader::history_base),
+                value.pointer("/payload/history_base"),
+                "{raw}"
+            );
+            assert_eq!(
+                header.as_ref().and_then(SessionHeader::id),
+                value["payload"]["id"].as_str(),
+                "{raw}"
+            );
+            assert_eq!(
+                header.as_ref().is_some_and(SessionHeader::is_fork),
+                value.pointer("/payload/forked_from_id").is_some(),
+                "{raw}"
+            );
+            assert_eq!(
+                header.as_ref().and_then(SessionHeader::timestamp),
+                value["payload"]["timestamp"].as_str(),
+                "{raw}"
+            );
+            assert_eq!(
+                header.as_ref().and_then(SessionHeader::context_window),
+                value.pointer("/payload/context_window"),
+                "{raw}"
+            );
+        }
+        let deep = format!("{}0{}", "[".repeat(140), "]".repeat(140));
+        assert!(!native_rollout_header_matches(deep.as_bytes(), "t"));
+        assert!(!native_rollout_header_matches(
+            br#"{"type":"session_meta"} trailing"#,
+            "t"
+        ));
+    }
 
     #[tokio::test]
     async fn invalid_history_checkpoint_is_quarantined_without_blocking_valid_row() {

@@ -9,7 +9,8 @@ use studio_runtime_services::workspace_views::{
     reported_change_files, task_feed_response,
 };
 use studio_runtime_store::{
-    AgentRecord, CheckpointRecord, Connection, StoreError, StoredRecord, TranscriptRepository,
+    AgentRecord, AnnotationRecord, CheckpointRecord, ComplaintRecord, Connection, PlanRecord,
+    RequestRecord, RuleRecord, StoreError, TaskRecord, TranscriptRepository,
     WorkspaceViewsRepository,
 };
 
@@ -58,7 +59,7 @@ async fn changes(
         .read_async("runtime-http/routes/workspace_views", move |transaction| {
             let actor = WorkspaceViewsRepository::agent(transaction, &actor_id)?
                 .ok_or_else(invalid_request)?;
-            let actor = actor.value().clone();
+            let actor = actor.value();
             if deleted(&actor) {
                 return Err(invalid_request());
             }
@@ -116,6 +117,13 @@ fn git_changes(cwd: &str) -> Result<Value, ApiError> {
     })
 }
 
+#[derive(serde::Deserialize)]
+struct ReportedChangePayload {
+    diff: String,
+    #[serde(rename = "turnId")]
+    turn_id: Option<Value>,
+}
+
 fn reported_changes(connection: &Connection, agent: &str) -> Result<Value, ApiError> {
     let prefix = format!("{agent}:turn/diff/updated:");
     let items = TranscriptRepository::items_for_agent_including_restored(connection, agent)
@@ -125,33 +133,33 @@ fn reported_changes(connection: &Connection, agent: &str) -> Result<Value, ApiEr
     }) else {
         return Ok(empty_reported_changes());
     };
-    if studio_runtime_services::event_write::truthy(item.record.get("afterRestore")) {
+    if studio_runtime_services::event_write::truthy(item.record.extra("afterRestore")) {
         return Ok(empty_reported_changes());
     }
     let text = TranscriptRepository::full_text(connection, &item).map_err(map_transcript_error)?;
-    if item.record.get("truncated").and_then(Value::as_bool) == Some(true) && text.is_none() {
+    if item.record.extra("truncated").and_then(Value::as_bool) == Some(true) && text.is_none() {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
             "The complete reported changes are unavailable",
         ));
     }
-    let raw = text.or_else(|| {
-        item.record
-            .get("text")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-    });
+    let raw = text.or_else(|| item.record.text().value().cloned());
     let payload: Value = serde_json::from_str(raw.as_deref().unwrap_or_default())
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "The recorded changes are invalid"))?;
-    let diff = payload.get("diff").and_then(Value::as_str).ok_or_else(|| {
-        ApiError::new(StatusCode::BAD_REQUEST, "The recorded changes are invalid")
-    })?;
-    let files = reported_change_files(diff);
-    let truncated = diff.chars().count() > 300_000;
-    let diff = diff.chars().take(300_000).collect::<String>();
+    if !payload.is_object() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "The recorded changes are invalid",
+        ));
+    }
+    let payload: ReportedChangePayload = serde::Deserialize::deserialize(payload)
+        .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "The recorded changes are invalid"))?;
+    let files = reported_change_files(&payload.diff);
+    let truncated = payload.diff.chars().count() > 300_000;
+    let diff = payload.diff.chars().take(300_000).collect::<String>();
     Ok(json!({
         "scope":"chat", "git":true, "files":files, "diff":diff, "patch":diff,
-        "truncated":truncated, "turnId":payload.get("turnId"), "reportedAt":item.record.get("at"),
+        "truncated":truncated, "turnId":payload.turn_id, "reportedAt":item.record.extra("at"),
     }))
 }
 
@@ -169,12 +177,7 @@ fn workspace_view(
     view: &str,
 ) -> Result<Value, ApiError> {
     let stored_agents = WorkspaceViewsRepository::agents(connection).map_err(ApiError::stored)?;
-    let agents = parse_records(
-        validators,
-        "AgentRecordResponse",
-        "runtime_agents",
-        stored_agents,
-    )?;
+    let agents = record_values(stored_agents)?;
     let root = studio_runtime_services::workspace_views::agent_root(&agents, agent_id).map_err(
         |error| match error {
             studio_runtime_services::workspace_views::AgentScopeError::MissingAgent => {
@@ -201,15 +204,9 @@ fn workspace_view(
         .collect::<Result<Vec<_>, _>>()?;
 
     if view == "annotations" {
-        let annotations = parse_records(
-            validators,
-            "AnnotationReceipt",
-            "runtime_annotations",
-            WorkspaceViewsRepository::records_for_agents(
-                connection,
-                "runtime_annotations",
-                "agent",
-                &ids,
+        let annotations = record_values(
+            WorkspaceViewsRepository::records_for_agents::<AnnotationRecord>(
+                connection, "agent", &ids,
             )
             .map_err(ApiError::stored)?,
         )?;
@@ -255,38 +252,25 @@ fn workspace_view(
         );
     }
 
-    let requests = parse_records(
-        validators,
-        "RequestRecordResponse",
-        "runtime_requests",
-        WorkspaceViewsRepository::records_for_agents(connection, "runtime_requests", "agent", &ids)
+    let requests = record_values(
+        WorkspaceViewsRepository::records_for_agents::<RequestRecord>(connection, "agent", &ids)
             .map_err(ApiError::stored)?,
     )?;
     let complaints = if root.is_some() {
-        parse_records(
-            validators,
-            "ComplaintRecordResponse",
-            "runtime_complaints",
-            WorkspaceViewsRepository::records_for_agents(
-                connection,
-                "runtime_complaints",
-                "leadId",
-                &ids,
+        record_values(
+            WorkspaceViewsRepository::records_for_agents::<ComplaintRecord>(
+                connection, "leadId", &ids,
             )
             .map_err(ApiError::stored)?,
         )?
     } else {
-        parse_records(
-            validators,
-            "ComplaintRecordResponse",
-            "runtime_complaints",
-            WorkspaceViewsRepository::records(connection, "runtime_complaints")
+        record_values(
+            WorkspaceViewsRepository::records::<ComplaintRecord>(connection)
                 .map_err(ApiError::stored)?,
         )?
     };
-    let rules = parse_open_records(
-        "runtime_rules",
-        WorkspaceViewsRepository::records_for_agents(connection, "runtime_rules", "agent", &ids)
+    let rules = record_values(
+        WorkspaceViewsRepository::records_for_agents::<RuleRecord>(connection, "agent", &ids)
             .map_err(ApiError::stored)?,
     )?;
     let tasks = project_task_records(
@@ -297,20 +281,11 @@ fn workspace_view(
     let monitors = WorkspaceViewsRepository::snapshot_monitors(connection, root.as_deref())
         .map_err(ApiError::stored)?
         .into_iter()
-        .map(|row| {
-            let id = row.id;
-            let raw = row
-                .record
-                .ok_or_else(|| invalid_stored("runtime_monitors", &id))?;
-            let monitor: Value =
-                serde_json::from_str(&raw).map_err(|_| invalid_stored("runtime_monitors", &id))?;
-            if monitor.get("id").and_then(Value::as_str) != Some(id.as_str()) {
-                return Err(invalid_stored("runtime_monitors", &id));
-            }
-            let projection = validators
-                .project_entity("monitor", &monitor)
-                .ok_or_else(|| invalid_stored("runtime_monitors", &id))?;
-            Ok(projection)
+        .map(|monitor| {
+            let id = monitor.id().to_owned();
+            validators
+                .project_entity("monitor", &monitor.into_value())
+                .ok_or_else(|| invalid_stored("runtime_monitors", &id))
         })
         .collect::<Result<Vec<_>, ApiError>>()?
         .into_iter()
@@ -345,52 +320,25 @@ fn workspace_view(
         );
     }
 
-    let annotations = parse_records(
-        validators,
-        "AnnotationReceipt",
-        "runtime_annotations",
-        WorkspaceViewsRepository::records_for_agents(
-            connection,
-            "runtime_annotations",
-            "agent",
-            &ids,
-        )
-        .map_err(ApiError::stored)?,
+    let annotations = record_values(
+        WorkspaceViewsRepository::records_for_agents::<AnnotationRecord>(connection, "agent", &ids)
+            .map_err(ApiError::stored)?,
     )?;
     let checkpoint_ids = agent_id
         .map(|id| vec![id.to_owned()])
         .unwrap_or_else(|| ids.clone());
-    let checkpoint_records = parse_open_records(
-        "runtime_checkpoints",
-        WorkspaceViewsRepository::records_for_agents(
-            connection,
-            "runtime_checkpoints",
-            "agent",
-            &checkpoint_ids,
-        )
-        .map_err(ApiError::stored)?,
-    )?;
+    let checkpoint_records = WorkspaceViewsRepository::records_for_agents::<CheckpointRecord>(
+        connection,
+        "agent",
+        &checkpoint_ids,
+    )
+    .map_err(ApiError::stored)?;
+    // Full views also admit the AgentRecord fields used by checkpoint reads.
     let agent_records = all_agents
         .into_iter()
         .map(|agent| {
-            let id = agent
-                .get("id")
-                .and_then(Value::as_str)
-                .ok_or_else(|| invalid_stored("runtime_agents", "unknown"))?
-                .to_owned();
+            let id = agent["id"].as_str().unwrap_or("unknown").to_owned();
             AgentRecord::from_value(agent).map_err(|_| invalid_stored("runtime_agents", &id))
-        })
-        .collect::<Result<Vec<_>, ApiError>>()?;
-    let checkpoint_records = checkpoint_records
-        .into_iter()
-        .map(|record| {
-            let id = record
-                .get("id")
-                .and_then(Value::as_str)
-                .ok_or_else(|| invalid_stored("runtime_checkpoints", "unknown"))?
-                .to_owned();
-            CheckpointRecord::from_value(record)
-                .map_err(|_| invalid_stored("runtime_checkpoints", &id))
         })
         .collect::<Result<Vec<_>, ApiError>>()?;
     let checkpoints = studio_runtime_services::questions_reads::checkpoint_list(
@@ -402,11 +350,8 @@ fn workspace_view(
         .as_array()
         .cloned()
         .ok_or_else(|| invalid_stored("runtime_checkpoints", "unknown"))?;
-    let plans = parse_records(
-        validators,
-        "PlanView",
-        "runtime_plans",
-        WorkspaceViewsRepository::records_for_agents(connection, "runtime_plans", "id", &ids)
+    let plans = record_values(
+        WorkspaceViewsRepository::records_for_agents::<PlanRecord>(connection, "id", &ids)
             .map_err(ApiError::stored)?,
     )?
     .into_iter()
@@ -429,65 +374,24 @@ fn workspace_view(
     )
 }
 
-fn parse_records(
-    _validators: &Registry,
-    _schema: &str,
-    table: &str,
-    records: Vec<StoredRecord>,
-) -> Result<Vec<Value>, ApiError> {
+fn record_values<T: serde::Serialize>(records: Vec<T>) -> Result<Vec<Value>, ApiError> {
     records
         .into_iter()
-        .map(|row| {
-            let raw = row.record.ok_or_else(|| invalid_stored(table, &row.id))?;
-            let value: Value =
-                serde_json::from_str(&raw).map_err(|_| invalid_stored(table, &row.id))?;
-            if !value.is_object()
-                || value.get("id").and_then(Value::as_str) != Some(row.id.as_str())
-            {
-                return Err(invalid_stored(table, &row.id));
-            }
-            Ok(value)
-        })
-        .collect()
-}
-
-fn parse_open_records(table: &str, records: Vec<StoredRecord>) -> Result<Vec<Value>, ApiError> {
-    records
-        .into_iter()
-        .map(|row| {
-            let raw = row.record.ok_or_else(|| invalid_stored(table, &row.id))?;
-            let value: Value =
-                serde_json::from_str(&raw).map_err(|_| invalid_stored(table, &row.id))?;
-            if !value.is_object()
-                || value.get("id").and_then(Value::as_str) != Some(row.id.as_str())
-            {
-                return Err(invalid_stored(table, &row.id));
-            }
-            Ok(value)
-        })
+        .map(|record| serde_json::to_value(record).map_err(|_| ApiError::internal()))
         .collect()
 }
 
 fn project_task_records(
     validators: &Registry,
-    records: Vec<StoredRecord>,
+    records: Vec<TaskRecord>,
 ) -> Result<Vec<Value>, ApiError> {
     records
         .into_iter()
-        .map(|row| {
-            let id = row.id;
-            let raw = row
-                .record
-                .ok_or_else(|| invalid_stored("runtime_tasks", &id))?;
-            let task: Value =
-                serde_json::from_str(&raw).map_err(|_| invalid_stored("runtime_tasks", &id))?;
-            if task.get("id").and_then(Value::as_str) != Some(id.as_str()) {
-                return Err(invalid_stored("runtime_tasks", &id));
-            }
-            let projection = validators
-                .project_entity("task", &task)
-                .ok_or_else(|| invalid_stored("runtime_tasks", &id))?;
-            Ok(projection)
+        .map(|task| {
+            let id = task.id().as_ref().to_owned();
+            validators
+                .project_entity("task", &task.into_value())
+                .ok_or_else(|| invalid_stored("runtime_tasks", &id))
         })
         .collect()
 }
@@ -543,7 +447,7 @@ async fn task_output(
                 .ok_or_else(invalid_request)?;
             let agent =
                 WorkspaceViewsRepository::agent(connection, &owner)?.ok_or_else(invalid_request)?;
-            Ok::<_, ApiError>((task, agent.value().clone()))
+            Ok::<_, ApiError>((task, agent.value()))
         })
         .await?;
     let owner = agent["id"].as_str().ok_or_else(invalid_request)?.to_owned();
@@ -572,16 +476,12 @@ async fn workspace_tasks(
     let before = parse_task_cursor(query.nonempty_str("before"), CursorKind::Before)
         .map_err(|_| invalid_cursor("before"))?;
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let validators = state.validators.clone();
     let result = store
         .read_async(
             "runtime-http/routes/workspace_views",
             move |connection| -> Result<Value, ApiError> {
                 // Each served row is decoded below; rows outside the page are not read.
-                let agents = parse_records(
-                    &validators,
-                    "AgentRecordResponse",
-                    "runtime_agents",
+                let agents = record_values(
                     WorkspaceViewsRepository::agents(connection).map_err(map_store_error)?,
                 )?;
                 let root =
@@ -679,6 +579,146 @@ mod tests {
     use studio_runtime_store::StoreError;
 
     #[tokio::test]
+    async fn reported_changes_http_preserves_payload_and_visibility_boundaries() {
+        use axum::body::{Body, to_bytes};
+        use axum::extract::ConnectInfo;
+        use axum::http::Request;
+        use serde_json::{Value, json};
+        use std::sync::Arc;
+        use studio_runtime_store::RuntimeStore;
+        use tower::ServiceExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
+        store.transaction_with(|tx| {
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('agent',?1)", [json!({"accountKey":"default","provider":"codex","id":"agent","rootId":"agent","epoch":0,"status":"idle"}).to_string()])?;
+            Ok::<_, StoreError>(())
+        }).await.unwrap();
+        let state = crate::HttpState::new(
+            "fixture-token".into(),
+            "fixture".into(),
+            store.root().to_string_lossy().into(),
+            49171,
+            None,
+            Some(store.clone()),
+            None,
+        );
+        let app = crate::router(state).unwrap();
+        let long_text = json!({"diff":"🦀".repeat(300_001)}).to_string();
+        for (text, extra, status, expected) in [
+            (
+                long_text.as_str(),
+                json!({}),
+                StatusCode::OK,
+                json!({"diff":"🦀".repeat(300_000), "truncated":true}),
+            ),
+            (
+                r#"{"diff":"first","diff":"second","turnId":null}"#,
+                json!({}),
+                StatusCode::OK,
+                json!({"diff":"second","turnId":null}),
+            ),
+            (
+                r#"{"diff":9}"#,
+                json!({}),
+                StatusCode::BAD_REQUEST,
+                json!({"error":"The recorded changes are invalid"}),
+            ),
+            (
+                r#"{}"#,
+                json!({}),
+                StatusCode::BAD_REQUEST,
+                json!({"error":"The recorded changes are invalid"}),
+            ),
+            (
+                r#"{"diff":"ok","extra":1e400}"#,
+                json!({}),
+                StatusCode::BAD_REQUEST,
+                json!({"error":"The recorded changes are invalid"}),
+            ),
+            (
+                r#"["diff"]"#,
+                json!({}),
+                StatusCode::BAD_REQUEST,
+                json!({"error":"The recorded changes are invalid"}),
+            ),
+            (
+                "invalid",
+                json!({"truncated":true}),
+                StatusCode::BAD_REQUEST,
+                json!({"error":"The complete reported changes are unavailable"}),
+            ),
+            (
+                "fulltext fixture",
+                json!({"truncated":true}),
+                StatusCode::OK,
+                json!({"diff":"full","turnId":"turn"}),
+            ),
+            (
+                "invalid",
+                json!({"afterRestore":true}),
+                StatusCode::OK,
+                json!({"diff":"","turnId":null}),
+            ),
+        ] {
+            let mut record = json!({"id":"agent:turn/diff/updated","role":"output","text":text});
+            record
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            let fulltext = text == "fulltext fixture";
+            store.transaction_with(move |tx| {
+                tx.execute("DELETE FROM runtime_item_fulltext WHERE id='agent:turn/diff/updated'", [])?;
+                tx.execute("INSERT OR REPLACE INTO runtime_items(id,agent,record,created) VALUES('agent:turn/diff/updated','agent',?1,1)", [record.to_string()])?;
+                if fulltext {
+                    tx.execute("INSERT INTO runtime_item_fulltext(id,body) VALUES('agent:turn/diff/updated',?1)", [r#"{"diff":"full","turnId":"turn"}"#])?;
+                }
+                Ok::<_, StoreError>(())
+            }).await.unwrap();
+            let request = Request::builder()
+                .uri("/api/changes?agent=agent&scope=chat")
+                .header("host", "127.0.0.1:49171")
+                .header("x-canvas-token", "fixture-token")
+                .header(crate::API_SCHEMA_HASH_HEADER, crate::api_schema_hash())
+                .extension(ConnectInfo(
+                    "127.0.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
+                ))
+                .body(Body::empty())
+                .unwrap();
+            let response = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), status, "{text}");
+            let body: Value =
+                serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                    .unwrap();
+            for (key, value) in expected.as_object().unwrap() {
+                assert_eq!(&body[key], value);
+            }
+        }
+    }
+
+    #[test]
+    fn reported_payload_preserves_opaque_turn_ids_after_json_admission() {
+        use serde_json::Value;
+        for raw in [
+            r#"{"diff":"ok"}"#,
+            r#"{"diff":"ok","turnId":null}"#,
+            r#"{"diff":"ok","turnId":{"future":[1]}}"#,
+        ] {
+            let value: Value = serde_json::from_str(raw).unwrap();
+            let expected = value.get("turnId").cloned().unwrap_or(Value::Null);
+            let payload: super::ReportedChangePayload = serde_json::from_value(value).unwrap();
+            assert_eq!(payload.turn_id.unwrap_or(Value::Null), expected);
+        }
+        assert!(
+            serde_json::from_str::<Value>(&format!(
+                "{{\"diff\":\"ok\",\"extra\":{}}}",
+                "[".repeat(140) + &"]".repeat(140)
+            ))
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
     async fn task_page_http_keeps_summary_and_ignores_invalid_lookahead() {
         use axum::body::{Body, to_bytes};
         use axum::extract::ConnectInfo;
@@ -691,7 +731,7 @@ mod tests {
         let root = tempfile::tempdir().expect("temporary runtime");
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         store.transaction_with(|tx| {
-            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('agent',?1)", [json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":0,"status":"idle"}).to_string()])?;
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('agent',?1)", [json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":0,"status":"idle"}).to_string()])?;
             for (id, created) in [("a", 1), ("b", 2), ("c", 3)] {
                 tx.execute("INSERT INTO runtime_tasks VALUES(?1,?2)", (id, json!({"id":if id == "a" { "wrong" } else { id },"agent":"agent","created":created,"tail":"large tail","arguments":{},"error":"detail"}).to_string()))?;
             }
@@ -735,6 +775,89 @@ mod tests {
             assert!(task.get("arguments").is_none());
             assert!(task.get("error").is_none());
         }
+    }
+
+    #[tokio::test]
+    async fn workspace_http_scopes_checked_checkpoints_and_rejects_selected_bad_identity() {
+        use axum::body::{Body, to_bytes};
+        use axum::extract::ConnectInfo;
+        use axum::http::Request;
+        use serde_json::{Value, json};
+        use std::sync::Arc;
+        use studio_runtime_store::{RuntimeStore, StoreError};
+        use tower::ServiceExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
+        store.transaction_with(|tx| {
+            for id in ["lead", "foreign"] {
+                tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)", (id, json!({"accountKey":"default","provider":"codex","id":id,"rootId":id,"epoch":0,"status":"idle"}).to_string()))?;
+            }
+            tx.execute("INSERT INTO runtime_checkpoints(id,record) VALUES('good',?1)", [json!({"id":"good","agent":"lead","created":1,"items":["private"],"future":{"kept":true}}).to_string()])?;
+            tx.execute("INSERT INTO runtime_checkpoints(id,record) VALUES('foreign',?1)", [json!({"id":"wrong","agent":"foreign","created":1}).to_string()])?;
+            Ok::<_, StoreError>(())
+        }).await.unwrap();
+        let state = crate::HttpState::new(
+            "fixture-token".into(),
+            "fixture".into(),
+            store.root().to_string_lossy().into(),
+            49171,
+            None,
+            Some(store.clone()),
+            None,
+        );
+        let app = crate::router(state).unwrap();
+        let request = || {
+            Request::builder()
+                .uri("/api/workspace?agent=lead")
+                .header("host", "127.0.0.1:49171")
+                .header("x-canvas-token", "fixture-token")
+                .header(crate::API_SCHEMA_HASH_HEADER, crate::api_schema_hash())
+                .extension(ConnectInfo(
+                    "127.0.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
+                ))
+                .body(Body::empty())
+                .unwrap()
+        };
+        let response = app.clone().oneshot(request()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(body["checkpoints"].as_array().unwrap().len(), 1);
+        assert_eq!(body["checkpoints"][0]["future"]["kept"], true);
+        assert!(body["checkpoints"][0].get("items").is_none());
+        store.transaction_with(|tx| {
+            tx.execute("UPDATE runtime_checkpoints SET record=json_set(record,'$.id','wrong') WHERE id='good'", [])?;
+            Ok::<_, StoreError>(())
+        }).await.unwrap();
+        assert_eq!(
+            app.clone().oneshot(request()).await.unwrap().status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        store.transaction_with(|tx| {
+            tx.execute("UPDATE runtime_checkpoints SET record=json_set(record,'$.id','good') WHERE id='good'", [])?;
+            tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.firedEvents',3) WHERE id='lead'", [])?;
+            Ok::<_, StoreError>(())
+        }).await.unwrap();
+        let annotations = Request::builder()
+            .uri("/api/workspace?agent=lead&view=annotations")
+            .header("host", "127.0.0.1:49171")
+            .header("x-canvas-token", "fixture-token")
+            .header(crate::API_SCHEMA_HASH_HEADER, crate::api_schema_hash())
+            .extension(ConnectInfo(
+                "127.0.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
+            ))
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(annotations).await.unwrap().status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            app.oneshot(request()).await.unwrap().status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
     }
 
     #[test]

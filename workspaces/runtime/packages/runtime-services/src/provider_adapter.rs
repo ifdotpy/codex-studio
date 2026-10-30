@@ -8,7 +8,7 @@
 use crate::account_driver::auth_cache::CredentialLocation;
 use crate::account_driver::{AuthMetadata, AuthProfile, AuthStatus, account_server_root};
 use crate::account_worker::WorkerError;
-use crate::claude_bridge::{BridgeSnapshot, ResolvedBridge};
+use crate::claude_bridge::{BridgeSnapshot, ClaudeLaunchProfile, ResolvedBridge};
 use crate::continuation_runtime::classify_usage_failure;
 use crate::thread_prepare::{Snapshot, TurnInput};
 use crate::usage_resume::Cause as UsageCause;
@@ -26,7 +26,7 @@ use studio_runtime_store::path_identity::CanonicalPath;
 /// Inputs for launching the retained provider session of one host account.
 pub struct HostLaunch<'a> {
     /// The account's registry profile (Claude reads its pinned identity and options).
-    pub profile: &'a Value,
+    pub profile: Option<&'a ClaudeLaunchProfile>,
     /// Provider home (`CODEX_HOME` for Codex).
     pub home: String,
     /// The account has its own home and must not use ambient API keys.
@@ -445,7 +445,9 @@ impl ProviderAdapter for ClaudeAdapter {
         // its session snapshots there let an agent that Python started resume.
         let bridge_root = account_server_root(&input.root, input.account);
         let (spec, executable) = claude_launch(
-            input.profile,
+            input
+                .profile
+                .ok_or_else(|| refused(CLAUDE_ACCOUNT_IDENTITY_REFUSAL))?,
             input.claude_bridge_dir,
             bridge_root.clone(),
             input.environment,
@@ -547,26 +549,30 @@ fn refused(code: &str) -> WorkerError {
 }
 
 fn claude_launch(
-    profile: &Value,
+    profile: &ClaudeLaunchProfile,
     bridge_dir: &Path,
     root: PathBuf,
     environment: BTreeMap<String, String>,
 ) -> Result<(ProviderLaunchSpec, PathBuf), WorkerError> {
-    let text = |key: &str| profile.get(key).and_then(Value::as_str);
-    let account_id = text("accountId")
+    let account_id = profile
+        .account_id
+        .as_str()
         .filter(|value| value.starts_with("claude:"))
         .ok_or_else(|| refused(CLAUDE_ACCOUNT_IDENTITY_REFUSAL))?;
-    let email = text("email")
+    let email = profile
+        .email
+        .as_str()
         .filter(|value| !value.is_empty())
         .ok_or_else(|| refused(CLAUDE_ACCOUNT_IDENTITY_REFUSAL))?;
-    let credential_identity =
-        text("_credentialIdentity").ok_or_else(|| refused(CLAUDE_ACCOUNT_IDENTITY_REFUSAL))?;
+    let credential_identity = profile
+        .credential_identity
+        .as_str()
+        .ok_or_else(|| refused(CLAUDE_ACCOUNT_IDENTITY_REFUSAL))?;
     if account_id != format!("claude:{email}")
         || !crate::account_driver::claude_identity::belongs_to(credential_identity, email)
     {
         return Err(refused(CLAUDE_ACCOUNT_IDENTITY_REFUSAL));
     }
-    let options = profile.get("claudeOptions").unwrap_or(&Value::Null);
     let path = environment.get("PATH").map(String::as_str);
     let home = environment.get("HOME").map(PathBuf::from);
     let node = if let Some(configured) = environment.get("STUDIO_NODE_BIN") {
@@ -590,9 +596,9 @@ fn claude_launch(
         })
     }
     .ok_or_else(|| refused("claude/node-unavailable"))?;
-    let binary_path = options
-        .get("binaryPath")
-        .and_then(Value::as_str)
+    let binary_path = profile
+        .binary_path
+        .as_str()
         .filter(|value| !value.trim().is_empty())
         .or_else(|| environment.get("STUDIO_CLAUDE_BIN").map(String::as_str));
     let claude = match binary_path {
@@ -608,7 +614,7 @@ fn claude_launch(
         status: AuthStatus::Ready,
         account_id: Some(account_id.to_owned()),
         email: Some(email.to_owned()),
-        plan: text("plan").map(str::to_owned),
+        plan: profile.plan.as_str().map(str::to_owned),
         organization_name: None,
         credential_identity: Some(credential_identity.to_owned()),
         error: None,
@@ -626,7 +632,7 @@ fn claude_launch(
             .join("node_modules/@anthropic-ai/claude-agent-sdk/package.json")
             .is_file(),
     };
-    let launch = BridgeSnapshot::from_record(profile.clone())
+    let launch = BridgeSnapshot::from_launch(profile)
         .and_then(|snapshot| snapshot.launch(resolved, &metadata, environment))
         .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
     Ok((launch, claude))
@@ -667,6 +673,27 @@ pub fn is_executable(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    fn test_claude_launch(
+        profile: &serde_json::Value,
+        bridge_dir: &std::path::Path,
+        root: std::path::PathBuf,
+        environment: std::collections::BTreeMap<String, String>,
+    ) -> Result<
+        (
+            studio_runtime_process::ProviderLaunchSpec,
+            std::path::PathBuf,
+        ),
+        crate::account_worker::WorkerError,
+    > {
+        let profile =
+            crate::claude_bridge::ClaudeLaunchProfile::from_record(profile).map_err(|_| {
+                crate::account_worker::WorkerError::PreparationRefused(
+                    super::CLAUDE_ACCOUNT_IDENTITY_REFUSAL.into(),
+                )
+            })?;
+        super::claude_launch(&profile, bridge_dir, root, environment)
+    }
+
     use super::{ProviderKind, UsageCause, adapter};
     use serde_json::json;
 
@@ -744,6 +771,97 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn checked_private_profile_launch_keeps_pin_options_and_refusal_order() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("temporary root");
+        let binary = dir.path().join("fake-executable");
+        std::fs::write(&binary, "#!/bin/sh\n").expect("fake executable");
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700))
+            .expect("permissions");
+        let sdk = dir
+            .path()
+            .join("node_modules/@anthropic-ai/claude-agent-sdk");
+        std::fs::create_dir_all(&sdk).expect("sdk");
+        std::fs::write(sdk.join("package.json"), "{}").expect("sdk package");
+        let registry = dir.path().join("registry.json");
+        let row = serde_json::json!({"id":"claude","provider":"claude","status":"ready","home":dir.path(),"label":"Fixture","source":"CLI","email":"a@example.test","accountId":"claude:a@example.test","_credentialIdentity":"claude:a@example.test","claudeOptions":{"binaryPath":binary,"launchArgs":"--verbose","vendor":{"n":1.0}}});
+        let write = |row: &serde_json::Value| {
+            std::fs::write(&registry, serde_json::json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"claude","accounts":{"claude":row},"logins":{}}).to_string()).expect("registry");
+            crate::account_driver::AccountDriver::open(&registry).expect("driver")
+        };
+        let driver = write(&row);
+        let profile = driver
+            .claude_launch_profile("claude")
+            .expect("private profile");
+        let env = std::collections::BTreeMap::from([
+            (
+                "STUDIO_NODE_BIN".to_owned(),
+                binary.to_string_lossy().into_owned(),
+            ),
+            (
+                "STUDIO_CLAUDE_BIN".to_owned(),
+                binary.to_string_lossy().into_owned(),
+            ),
+        ]);
+        let spec = adapter(ProviderKind::Claude)
+            .host_launch(super::HostLaunch {
+                profile: Some(&profile),
+                home: dir.path().to_string_lossy().into_owned(),
+                isolated: false,
+                codex_executable: None,
+                claude_bridge_dir: dir.path(),
+                account: "claude",
+                root: dir.path().join("state"),
+                environment: env.clone(),
+            })
+            .expect("adapter launch")
+            .spec;
+        assert_eq!(
+            spec.environment["STUDIO_CLAUDE_CREDENTIAL_IDENTITY"],
+            "claude:a@example.test"
+        );
+        let options: serde_json::Value =
+            serde_json::from_str(&spec.environment["STUDIO_CLAUDE_OPTIONS"]).expect("options");
+        assert_eq!(options["vendor"]["n"], serde_json::json!(1.0));
+        assert_eq!(options["extraArgs"]["verbose"], serde_json::Value::Null);
+        let mut invalid = row.clone();
+        invalid["_credentialIdentity"] = serde_json::json!("claude:other@example.test");
+        let invalid = write(&invalid)
+            .claude_launch_profile("claude")
+            .expect("private profile");
+        let error = super::claude_launch(
+            &invalid,
+            dir.path(),
+            dir.path().join("identity-refused"),
+            Default::default(),
+        )
+        .err()
+        .expect("refusal");
+        assert!(
+            matches!(error, crate::account_worker::WorkerError::PreparationRefused(ref code) if code == super::CLAUDE_ACCOUNT_IDENTITY_REFUSAL)
+        );
+        assert!(!dir.path().join("identity-refused").exists());
+        let mut null_options = row;
+        null_options["claudeOptions"] = serde_json::Value::Null;
+        let null_options = write(&null_options)
+            .claude_launch_profile("claude")
+            .expect("private profile");
+        let error = super::claude_launch(
+            &null_options,
+            dir.path(),
+            dir.path().join("options-refused"),
+            env,
+        )
+        .err()
+        .expect("refusal");
+        assert!(
+            matches!(error, crate::account_worker::WorkerError::PreparationRefused(ref code) if code == "Claude bridge settings are invalid")
+        );
+        assert!(dir.path().join("options-refused").is_dir());
+    }
+
     /// A profile added after startup has no account server directory yet; the
     /// bridge launch creates it because the bridge spawns with it as its cwd.
     #[cfg(unix)]
@@ -771,7 +889,7 @@ mod tests {
             "STUDIO_NODE_BIN".to_owned(),
             binary.to_string_lossy().into_owned(),
         )]);
-        super::claude_launch(&profile, dir.path(), root.clone(), environment.clone())
+        test_claude_launch(&profile, dir.path(), root.clone(), environment.clone())
             .expect("launch spec");
         assert!(root.is_dir());
         let identity = crate::account_driver::claude_identity::identity(
@@ -780,8 +898,8 @@ mod tests {
             Some("account-a"),
         );
         profile["_credentialIdentity"] = json!(identity);
-        let (launch, _) = super::claude_launch(&profile, dir.path(), root, environment)
-            .expect("organization pin");
+        let (launch, _) =
+            test_claude_launch(&profile, dir.path(), root, environment).expect("organization pin");
         assert_eq!(
             launch.environment["STUDIO_CLAUDE_CREDENTIAL_IDENTITY"],
             identity
@@ -837,7 +955,7 @@ mod tests {
         let codex = |isolated: bool| {
             adapter(ProviderKind::Codex)
                 .host_launch(super::HostLaunch {
-                    profile: &serde_json::Value::Null,
+                    profile: None,
                     home: format!("{}/codex", dir.path().display()),
                     isolated,
                     codex_executable: None,
@@ -871,7 +989,7 @@ mod tests {
                 "STUDIO_NODE_BIN".to_owned(),
                 binary.to_string_lossy().into_owned(),
             );
-            super::claude_launch(
+            test_claude_launch(
                 &profile,
                 dir.path(),
                 dir.path().join("account-servers/account"),
@@ -1068,7 +1186,7 @@ mod tests {
                 format!("{}:/usr/bin:/bin", dir.join("bin").display()),
             ),
         ]);
-        super::claude_launch(
+        test_claude_launch(
             &profile,
             dir,
             dir.join("account-servers/account"),
@@ -1176,7 +1294,7 @@ mod tests {
                 "STUDIO_NODE_BIN".to_owned(),
                 binary.to_string_lossy().into_owned(),
             )]);
-            super::claude_launch(
+            test_claude_launch(
                 &profile,
                 dir.path(),
                 dir.path().join("account-servers/account"),

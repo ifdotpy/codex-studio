@@ -2,6 +2,7 @@
 
 #![allow(clippy::unwrap_used)]
 use rusqlite::Transaction;
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use studio_runtime_providers::{Method, RequestId, RequestTicket};
@@ -152,7 +153,7 @@ async fn fixture(path: &std::path::Path, mode: Mode) -> (Arc<RuntimeStore>, Epis
         let mut agent=json!({"id":"claude","rootId":"claude","epoch":1,"events":0,"provider":"claude","status":"idle","autoWake":true,"inFlight":false,"cwd":"/work","accountKey":"default","threadId":"thread","startAttempt":{"id":"previous"}});
         idle::observe(tx,&mut agent,&json!({"requestId":"response","ttl":"1h","warm":true,"lastActivityAt":(idle::wall_now()-3240.0)*1000.0,"contextTokens":210000,"prefix":"prefix"}), None)?;
         AgentRepository::put(tx,&AgentRecord::from_value(agent.clone()).unwrap())?;
-        serde_json::from_value(agent["idleCompactionEpisode"].clone()).map_err(|error|StoreError::SchemaMismatch(error.to_string()))
+        Episode::deserialize(&agent["idleCompactionEpisode"]).map_err(|error|StoreError::SchemaMismatch(error.to_string()))
     }).await.unwrap();
     (store, episode)
 }
@@ -201,6 +202,149 @@ async fn episode_index_upgrade_preserves_deadlines_and_rolls_back_on_failure() {
         assert_eq!(current, ddl, "fresh and migrated index DDL agree");
         assert_eq!(idle::next(&store).await.unwrap().unwrap().1.id, episode.id);
     }
+}
+
+#[tokio::test]
+async fn five_minute_sleep_episode_uses_actual_ttl_and_unload_deadline() {
+    let root = tempfile::tempdir().unwrap();
+    let (store, _) = fixture(root.path(), Mode::Compact).await;
+    store
+        .transaction(|tx| {
+            let mut agent = AgentRepository::get(tx, &AgentId::from("claude"))?
+                .unwrap()
+                .value();
+            idle::observe(
+                tx,
+                &mut agent,
+                &json!({"requestId":"short", "ttl":"5m", "warm":true,
+            "lastActivityAt":100000.0,"contextTokens":150000,"prefix":"prefix"}),
+                None,
+            )?;
+            let episode: Episode = Episode::deserialize(&agent["idleCompactionEpisode"]).unwrap();
+            assert_eq!(episode.expires_at, 400.0);
+            assert_eq!(episode.fire_at, 370.0);
+            agent["idleCache"]["ttl"] = json!("5m");
+            let settings = Settings {
+                mode: Mode::Compact,
+                min_tokens: 150000,
+            };
+            assert_eq!(
+                idle::refusal(&settings, &episode, &agent, 370.0, true, false),
+                None
+            );
+            Ok::<_, StoreError>(())
+        })
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn actual_unload_deadline_advances_one_episode_and_its_receipt_releases_unload() {
+    use std::collections::BTreeMap;
+    let root = tempfile::tempdir().unwrap();
+    let (store, _) = fixture(root.path(), Mode::Log).await;
+    let now = idle::wall_now();
+    let episode = store
+        .transaction(move |tx| {
+            let mut agent = AgentRepository::get(tx, &AgentId::from("claude"))?
+                .unwrap()
+                .value();
+            idle::observe(
+                tx,
+                &mut agent,
+                &json!({"requestId":"warm", "ttl":"1h", "warm":true,
+            "lastActivityAt":now*1000.0,"contextTokens":210000,"prefix":"prefix"}),
+                None,
+            )?;
+            AgentRepository::put(tx, &AgentRecord::from_value(agent).unwrap())?;
+            let deadlines = BTreeMap::from([("thread".into(), now + 120.0)]);
+            idle::sync_unload_deadlines(tx, "default", &deadlines, now)?;
+            let agent = AgentRepository::get(tx, &AgentId::from("claude"))?
+                .unwrap()
+                .value();
+            let episode: Episode = Episode::deserialize(&agent["idleCompactionEpisode"]).unwrap();
+            assert!((episode.fire_at - (now + 90.0)).abs() < 0.001);
+            assert!(!idle::pending_before_unload(
+                tx,
+                "default",
+                "thread",
+                now + 89.0
+            )?);
+            assert!(idle::pending_before_unload(
+                tx,
+                "default",
+                "thread",
+                now + 90.0
+            )?);
+            assert!(!idle::pending_before_unload(
+                tx,
+                "other",
+                "thread",
+                now + 90.0
+            )?);
+            idle::sync_unload_deadlines(tx, "default", &deadlines, now + 5.0)?;
+            assert_eq!(
+                AgentRepository::get(tx, &AgentId::from("claude"))?
+                    .unwrap()
+                    .value(),
+                agent
+            );
+            idle::sync_unload_deadlines(tx, "default", &BTreeMap::new(), now + 5.0)?;
+            let reset = AgentRepository::get(tx, &AgentId::from("claude"))?
+                .unwrap()
+                .value();
+            assert_eq!(reset["idleCompactionEpisode"]["id"], episode.id);
+            assert!(
+                (reset["idleCompactionEpisode"]["fireAt"].as_f64().unwrap() - (now + 3240.0)).abs()
+                    < 0.001
+            );
+            idle::sync_unload_deadlines(
+                tx,
+                "default",
+                &BTreeMap::from([("thread".into(), now)]),
+                now,
+            )?;
+            let immediate = AgentRepository::get(tx, &AgentId::from("claude"))?
+                .unwrap()
+                .value();
+            let immediate: Episode =
+                Episode::deserialize(&immediate["idleCompactionEpisode"]).unwrap();
+            assert_eq!(immediate.fire_at, now);
+            Ok::<_, StoreError>(immediate)
+        })
+        .await
+        .unwrap();
+    let host = HostPort {
+        store: store.clone(),
+        session: Arc::new(Session::default()),
+    };
+    idle::fire(
+        store.clone(),
+        "claude".into(),
+        episode,
+        limits(now),
+        now,
+        &host,
+    )
+    .await
+    .unwrap();
+    assert!(host.session.calls.lock().unwrap().is_empty());
+    store
+        .read_async("sleep-unload-settled", move |connection| {
+            assert!(!idle::pending_before_unload(
+                connection, "default", "thread", now
+            )?);
+            let agent = AgentRepository::get(connection, &AgentId::from("claude"))?
+                .unwrap()
+                .value();
+            assert_eq!(
+                agent["idleCompactionEpisode"]["fired"], true,
+                "the fire is an agent change that wakes the blocked unload owner"
+            );
+            Ok::<_, StoreError>(())
+        })
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -469,29 +613,48 @@ async fn input_during_preparation_refuses_handoff_and_restores_the_idle_agent() 
 
 #[tokio::test]
 async fn compact_boundary_writes_the_notice_once_and_advances_the_roster_epoch() {
-    let root = tempfile::tempdir().unwrap();
-    let (store, episode) = fixture(root.path(), Mode::Compact).await;
-    let session = Arc::new(Session::default());
-    let host = HostPort {
-        store: store.clone(),
-        session,
-    };
-    idle::fire(
-        store.clone(),
-        "claude".into(),
-        episode.clone(),
-        limits(idle::wall_now()),
-        idle::wall_now(),
-        &host,
-    )
-    .await
-    .unwrap();
-    let id = episode.id.clone();
-    store.transaction_with(move|tx| {
+    for deferred in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let (store, episode) = fixture(
+            root.path(),
+            if deferred {
+                Mode::CompactOnReturn
+            } else {
+                Mode::Compact
+            },
+        )
+        .await;
+        let session = Arc::new(Session::default());
+        let host = HostPort {
+            store: store.clone(),
+            session,
+        };
+        idle::fire(
+            store.clone(),
+            "claude".into(),
+            episode.clone(),
+            limits(idle::wall_now()),
+            idle::wall_now(),
+            &host,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            host.session.calls.lock().unwrap()[0]["idleCompaction"]["mode"],
+            if deferred {
+                "compact_on_return"
+            } else {
+                "compact"
+            }
+        );
+        let id = episode.id.clone();
+        store.transaction_with(move|tx| {
         let mut agent=AgentRepository::get(tx,&AgentId::from("claude"))?.unwrap().value();
         agent["turnId"]=json!("compact-turn");agent["status"]=json!("running");
+        if deferred { agent["startAttempt"]=json!({"id":"return-turn"}); }
         AgentRepository::put(tx,&AgentRecord::from_value(agent).unwrap())?;
-        let value=json!({"method":"item/completed","params":{"threadId":"thread","turnId":"compact-turn","item":{"id":"compact-boundary","type":"contextCompaction","status":"completed"}}});
+        let mut value=json!({"method":"item/completed","params":{"threadId":"thread","turnId":"compact-turn","item":{"id":"compact-boundary","type":"contextCompaction","status":"completed"}}});
+        if deferred { value["params"]["item"]["idleCompactionRequestId"]=json!(id);value["params"]["item"]["idleCompactionOnReturn"]=json!(true); }
         let frame=match studio_runtime_providers::decode_journal_entry_borrowed(1, 1, format!("{value}\n").as_bytes()).payload { studio_runtime_providers::DecodedJournalPayload::Frame(frame) => frame, other @ studio_runtime_providers::DecodedJournalPayload::RawStdout { .. } => panic!("fixture must decode: {other:?}"), };
         for _ in 0..2 {
             studio_runtime_services::notification_dispatch::dispatch_notification(tx,"claude",
@@ -501,12 +664,13 @@ async fn compact_boundary_writes_the_notice_once_and_advances_the_roster_epoch()
         }
         let agent=AgentRepository::get(tx,&AgentId::from("claude"))?.unwrap().value();
         assert_eq!(agent["compactions"],1);
-        let notices:i64=tx.query_row("SELECT count(*) FROM runtime_items WHERE json_extract(record,'$.idleCompaction')=1 AND json_extract(record,'$.text')=?1",[idle::NOTICE],|row|row.get(0)).map_err(StoreError::from)?;
+        let notices:i64=tx.query_row("SELECT count(*) FROM runtime_items WHERE json_extract(record,'$.idleCompaction')=1 AND json_extract(record,'$.text')=?1",[if deferred {idle::ON_RETURN_NOTICE} else {idle::NOTICE}],|row|row.get(0)).map_err(StoreError::from)?;
         assert_eq!(notices,1);
         let receipt:String=tx.query_row("SELECT json_extract(record,'$.idleCompactionEpisode.outcome') FROM runtime_agents WHERE idle_episode_id=?1",[id],|row|row.get(0)).map_err(StoreError::from)?;
         assert_eq!(receipt,"compacted");
         Ok::<_,studio_runtime_services::notification_dispatch::NotificationDispatchError>(())
     }).await.unwrap();
+    }
 }
 
 #[tokio::test]
@@ -558,7 +722,7 @@ async fn cache_notification_replaces_the_timer_without_changing_token_accounting
     store.transaction_with(move|tx| {
         let mut agent=AgentRepository::get(tx,&AgentId::from("claude"))?.unwrap().value();
         agent["tokensUsed"]=json!(123);AgentRepository::put(tx,&AgentRecord::from_value(agent).unwrap())?;
-        for (cursor,ttl) in [(1,"1h"),(2,"5m")] {
+        for (cursor,ttl) in [(1,"1h"),(2,"5m"),(3,"unknown")] {
             let value=json!({"method":"thread/idleCompaction/updated","params":{"threadId":"thread","report":{
                 "requestId":"next-response","ttl":ttl,"warm":true,"lastActivityAt":idle::wall_now()*1000.0,"contextTokens":220000,"prefix":"prefix"}}});
             let frame=match studio_runtime_providers::decode_journal_entry_borrowed(1, 1, format!("{value}\n").as_bytes()).payload { studio_runtime_providers::DecodedJournalPayload::Frame(frame) => frame, other @ studio_runtime_providers::DecodedJournalPayload::RawStdout { .. } => panic!("fixture must decode: {other:?}"), };
@@ -568,10 +732,57 @@ async fn cache_notification_replaces_the_timer_without_changing_token_accounting
                 &studio_runtime_services::notification_dispatch::ProviderDeliveryIdentity {provider_handle:"account:default".into(),generation:1,cursor},&frame,idle::wall_now())?;
             let agent=AgentRepository::get(tx,&AgentId::from("claude"))?.unwrap().value();
             assert_eq!(agent["tokensUsed"],123);
-            if ttl=="1h" { assert_ne!(agent["idleCompactionEpisode"]["id"],old); }
+            if ttl!="unknown" { assert_ne!(agent["idleCompactionEpisode"]["id"],old); }
             else { assert!(agent.get("idleCompactionEpisode").is_none()); }
         }
         Ok::<_,studio_runtime_services::notification_dispatch::NotificationDispatchError>(())
     }).await.unwrap();
     assert!(idle::next(&store).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn default_mode_arms_leads_only_and_an_explicit_mode_wins() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
+    let armed = |lead: bool| {
+        let store = store.clone();
+        async move {
+            store.transaction(move |tx| {
+                let mut agent = json!({"id":"claude","rootId":"claude","epoch":1,"events":0,"provider":"claude","status":"idle","autoWake":true,"inFlight":false,"cwd":"/work","accountKey":"default","threadId":"thread","isLead":lead,"startAttempt":{"id":"previous"}});
+                idle::observe(tx,&mut agent,&json!({"requestId":"response","ttl":"1h","warm":true,"lastActivityAt":(idle::wall_now()-3240.0)*1000.0,"contextTokens":210000,"prefix":"prefix"}),None)?;
+                Ok(agent["idleCompactionEpisode"].is_object())
+            }).await.unwrap()
+        }
+    };
+    // No stored setting: the default applies.
+    assert!(armed(true).await, "a lead is armed by default");
+    assert!(!armed(false).await, "a worker is off by default");
+    // Explicit Off wins for a lead.
+    store
+        .transaction(|tx| {
+            OrchestrationSettingsRepository::set_idle_compaction(
+                tx,
+                &Settings {
+                    mode: Mode::Off,
+                    min_tokens: 200000,
+                },
+            )
+        })
+        .await
+        .unwrap();
+    assert!(!armed(true).await, "explicit Off stays Off for a lead");
+    // Explicit Compact wins for a worker.
+    store
+        .transaction(|tx| {
+            OrchestrationSettingsRepository::set_idle_compaction(
+                tx,
+                &Settings {
+                    mode: Mode::Compact,
+                    min_tokens: 200000,
+                },
+            )
+        })
+        .await
+        .unwrap();
+    assert!(armed(false).await, "explicit Compact arms a worker");
 }

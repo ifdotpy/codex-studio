@@ -900,7 +900,15 @@ test("execution settings ui", async ({ browser: _browser }) => {
     await page
       .getByRole("button", { name: "Check settings save", exact: true })
       .waitFor({ state: "hidden" });
-    await waitFor(() => pendingBodies.length === 2);
+    try {
+      await waitFor(() => pendingBodies.length === 2);
+    } catch (cause) {
+      const ids = pendingBodies.slice(0, 4).map((body) => body.request_id);
+      throw new Error(
+        `Expected two settings requests; captured ${pendingBodies.length} with IDs ${JSON.stringify(ids)}`,
+        { cause },
+      );
+    }
     assert.deepEqual(
       pendingBodies[1],
       pendingBodies[0],

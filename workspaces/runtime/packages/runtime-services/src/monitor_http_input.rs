@@ -142,7 +142,7 @@ pub(crate) fn read(connection: &Connection, query: &Value) -> Result<ProcessRece
         return Ok(missing());
     };
     let snapshot =
-        monitor_policy::MonitorSnapshot::checked(monitor.value().clone(), actor.value().clone())?;
+        monitor_policy::MonitorSnapshot::checked(monitor.value(), actor.value().clone())?;
     if !snapshot.active_owner() || snapshot.operation() != Some(&receipt.operation) {
         return Ok(missing());
     }

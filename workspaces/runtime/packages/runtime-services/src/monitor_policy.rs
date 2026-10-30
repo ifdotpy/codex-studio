@@ -297,6 +297,147 @@ pub(crate) struct Fields {
     #[serde(default)]
     input_attempt: Option<InputAttempt>,
 }
+impl Fields {
+    fn from_monitor(row: &studio_runtime_store::MonitorRecord) -> Result<Self, ()> {
+        fn optional<T: serde::de::DeserializeOwned>(
+            value: Option<&Value>,
+        ) -> Result<Option<T>, ()> {
+            value
+                .map(|v| serde_json::from_value(v.clone()).map_err(|_| ()))
+                .transpose()
+                .map(Option::flatten)
+        }
+        fn signed(number: Option<&serde_json::Number>) -> Result<Option<i64>, ()> {
+            number.map(|n| n.as_i64().ok_or(())).transpose()
+        }
+        fn unsigned(number: Option<&serde_json::Number>) -> Result<Option<u64>, ()> {
+            number.map(|n| n.as_u64().ok_or(())).transpose()
+        }
+        let operation = row
+            .operation
+            .value()
+            .map(|value| {
+                let evidence = OperationEvidence::deserialize(serde::de::value::MapDeserializer::<
+                    _,
+                    serde_json::Error,
+                >::new(
+                    value.extra.clone().into_iter()
+                ))
+                .map_err(|_| ())?;
+                Ok(Operation {
+                    agent: value.agent.as_str().to_owned(),
+                    epoch: value.epoch.number().as_i64().ok_or(())?,
+                    account_key: value.account_key.as_str().to_owned(),
+                    connection_id: value.connection_id.as_str().to_owned(),
+                    evidence,
+                })
+            })
+            .transpose()?;
+        let input_attempt =
+            row.input_attempt
+                .value()
+                .map(|value| {
+                    InputAttempt::deserialize(serde::de::value::MapDeserializer::<
+                        _,
+                        serde_json::Error,
+                    >::new(value.clone().into_iter()))
+                    .map_err(|_| ())
+                })
+                .transpose()?;
+        let probe_generation = signed(row.stall_probe_generation.value().map(|v| v.number()))?;
+        let probe_started = row
+            .stall_probe_started
+            .value()
+            .and_then(|v| v.number().as_f64());
+        let probe = ProbeState::try_from(ProbeFields {
+            stall_probe_generation: probe_generation,
+            stall_probe_started: probe_started,
+        })
+        .map_err(|_| ())?;
+        let success_exit_codes = match &row.success_exit_codes {
+            Some(values) => values
+                .values()
+                .iter()
+                .map(|n| n.number().as_i64().ok_or(()))
+                .collect::<Result<Vec<_>, _>>()?,
+            None => success_default(),
+        };
+        Ok(Self {
+            id: row.id.clone(),
+            agent: row.agent().ok_or(())?.to_owned(),
+            epoch: signed(row.epoch.value().map(|v| v.number()))?,
+            status: row.status().ok_or(())?,
+            reattach_recovery: optional(row.extra.get("reattachRecovery"))?,
+            rule_id: row.rule_id.value().cloned(),
+            operation,
+            cancel_requested: row.cancel_requested.unwrap_or(false),
+            interactive: row.interactive.unwrap_or(false),
+            _tail: row
+                .tail
+                .as_ref()
+                .map(|v| v.as_str().to_owned())
+                .unwrap_or_default(),
+            bytes: unsigned(row.bytes.as_ref().map(|v| v.number()))?.unwrap_or(0),
+            log: row.log.clone(),
+            activity_generation: signed(row.activity_generation.as_ref().map(|v| v.number()))?
+                .unwrap_or(0),
+            stall_wake_generation: signed(row.stall_wake_generation.as_ref().map(|v| v.number()))?
+                .unwrap_or(-1),
+            probe,
+            activity_at: row.activity_at.as_ref().and_then(|v| v.number().as_f64()),
+            created: row.created.as_ref().and_then(|v| v.number().as_f64()),
+            stall_timeout_seconds: unsigned(
+                row.stall_timeout_seconds.as_ref().map(|v| v.number()),
+            )?
+            .unwrap_or(DEFAULT_MONITOR_STALL_SECONDS),
+            liveness_command: row
+                .liveness_command
+                .as_ref()
+                .map(|v| v.as_str().to_owned())
+                .unwrap_or_default(),
+            success_exit_codes,
+            stdin_closed: row.stdin_closed.unwrap_or(false),
+            stdin_close_requested: row.stdin_close_requested.value().cloned(),
+            input_attempt,
+        })
+    }
+}
+
+#[cfg(test)]
+mod typed_conversion_tests {
+    use super::*;
+
+    #[test]
+    fn operation_rejects_fractional_integer_and_unknown_evidence() {
+        let base = json!({"id":"m", "agent":"a", "status":"running", "operation": {
+            "agent":"a", "epoch":1, "accountKey":"account", "connectionId":"connection"
+        }});
+        for (key, value) in [("epoch", json!(1.0)), ("future", json!(true))] {
+            let mut raw = base.clone();
+            raw["operation"][key] = value;
+            let record = studio_runtime_store::MonitorRecord::deserialize(raw).unwrap();
+            assert!(Fields::from_monitor(&record).is_err(), "{key}");
+        }
+        let record = studio_runtime_store::MonitorRecord::deserialize(base).unwrap();
+        assert!(Fields::from_monitor(&record).is_ok());
+    }
+
+    #[test]
+    fn input_attempt_uses_strict_epoch_and_keeps_raw_extensions() {
+        let raw = json!({"id":"m", "agent":"a", "status":"running", "inputAttempt": {
+            "id":"ticket", "agent":"a", "epoch":1, "accountKey":"account",
+            "connectionId":"connection", "method":"input", "future":{"data":true}
+        }});
+        let record = studio_runtime_store::MonitorRecord::deserialize(raw.clone()).unwrap();
+        assert!(Fields::from_monitor(&record).is_ok());
+        assert_eq!(record.value(), raw);
+        let mut invalid = raw;
+        invalid["inputAttempt"]["epoch"] = json!(1.0);
+        let record = studio_runtime_store::MonitorRecord::deserialize(invalid).unwrap();
+        assert!(Fields::from_monitor(&record).is_err());
+    }
+}
+
 fn minus_one() -> i64 {
     -1
 }
@@ -336,24 +477,36 @@ impl MonitorSnapshot {
             .and_then(Value::as_str)
             .unwrap_or("?")
             .to_owned();
+        let typed =
+            serde_path_to_error::deserialize::<_, studio_runtime_store::MonitorRecord>(record)
+                .map_err(|error| MonitorError::InvalidStored {
+                    id,
+                    location: format!("/{}", error.path()),
+                })?;
+        Self::checked_stored(&typed, actor)
+    }
+
+    pub fn checked_stored(
+        typed: &studio_runtime_store::MonitorRecord,
+        actor: Value,
+    ) -> Result<Self, MonitorError> {
+        let record = typed.value();
+        let id = record
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("?")
+            .to_owned();
         let invalid = |location: &str| MonitorError::InvalidStored {
             id: id.clone(),
             location: location.into(),
         };
-        if let Some((path, _)) =
-            studio_runtime_schema::first_error("PersistedMonitorRecord", &record)
-                .map_err(|_| invalid("schema"))?
-        {
-            return Err(invalid(&path));
-        }
         if !studio_runtime_schema::validate("PersistedAgentRecord", &actor)
             .map_err(|_| invalid("agent"))?
         {
             return Err(invalid("agent"));
         }
         crate::monitor_matches::validate(&record).map_err(invalid)?;
-        let fields: Fields =
-            serde_json::from_value(record.clone()).map_err(|_| invalid("record"))?;
+        let fields = Fields::from_monitor(typed).map_err(|_| invalid("record"))?;
         if fields.reattach_recovery.as_ref().is_some_and(|recovery| {
             recovery.status == RecoveryStatus::Running && recovery.started_at.is_none()
         }) {
@@ -380,6 +533,12 @@ impl MonitorSnapshot {
     }
     pub fn id(&self) -> &str {
         &self.fields.id
+    }
+    pub fn status(&self) -> MonitorStatus {
+        self.fields.status
+    }
+    pub fn rule_id(&self) -> Option<&str> {
+        self.fields.rule_id.as_deref()
     }
     pub fn agent(&self) -> &str {
         &self.fields.agent

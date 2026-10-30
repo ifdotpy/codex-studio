@@ -20,6 +20,88 @@ use crate::browser::BrowserForwarder;
 use crate::linux_vm_guest::{GuestError, GuestRpc};
 
 pub const METHOD: &str = "browser/open";
+
+/// Partial browser/open parameters; non-string legacy fields remain absent to
+/// consumers, while unrelated provider data is kept as open JSON.
+#[derive(Default, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BrowserParams {
+    #[serde(
+        default,
+        deserialize_with = "browser_text",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub bridge_id: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "browser_text",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub url: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "browser_text",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub host: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "browser_text",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub source: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "browser_text",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub phase: Option<String>,
+    #[serde(default)]
+    pub redirect: Value,
+    #[serde(default, skip_serializing, deserialize_with = "browser_forward")]
+    pub forward: Option<BrowserForward>,
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, Value>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BrowserForward {
+    #[serde(
+        default,
+        deserialize_with = "browser_text",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub token_hash: Option<String>,
+    #[serde(default)]
+    pub expires_at: Value,
+}
+
+fn browser_forward<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<BrowserForward>, D::Error> {
+    use serde::Deserialize;
+    let raw = Value::deserialize(d)?;
+    Ok(
+        studio_runtime_schema::json_object::JsonObject::<BrowserForward>::deserialize(&raw)
+            .ok()
+            .map(|object| object.0),
+    )
+}
+
+fn browser_text<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    use serde::Deserialize;
+    Ok(Value::deserialize(d)?.as_str().map(str::to_owned))
+}
+
+impl BrowserParams {
+    pub(crate) fn read(value: &Value) -> Option<Self> {
+        use serde::Deserialize;
+        studio_runtime_schema::json_object::JsonObject::<Self>::deserialize(value)
+            .ok()
+            .map(|object| object.0)
+    }
+}
 /// The long poll of `browser.wait`, in seconds (`POLL_SECONDS`).
 const POLL_SECONDS: u64 = 20;
 /// Guest request states that end a card (`FINAL_STATES`).
@@ -418,17 +500,24 @@ pub async fn apply(
                         )
                         .ok()
                         .and_then(|checked| checked.user_code);
+                        let params = BrowserParams {
+                            bridge_id: Some(bridge_id.clone()),
+                            url: item["url"].as_str().map(str::to_owned),
+                            host: item["host"].as_str().map(str::to_owned),
+                            source: Some(source.source.to_owned()),
+                            redirect: item.get("redirect").cloned().unwrap_or(Value::Null),
+                            extra: serde_json::Map::from_iter([
+                                ("clientId".into(), item.get("clientId").cloned().unwrap_or(Value::Null)),
+                                ("scope".into(), item.get("scope").cloned().unwrap_or(Value::Null)),
+                                ("linuxUser".into(), item.get("linuxUser").cloned().unwrap_or(Value::Null)),
+                                ("userCode".into(), json!(user_code)),
+                                ("expiresAt".into(), item.get("expiresAt").cloned().unwrap_or(Value::Null)),
+                            ]),
+                            ..BrowserParams::default()
+                        };
                         let record = json!({
                             "id": key, "method": METHOD, "agent": item["agentId"], "status": "pending",
-                            "createdAt": now, "params": {
-                                "bridgeId": bridge_id, "url": item["url"], "host": item["host"],
-                                "redirect": item.get("redirect").cloned().unwrap_or(Value::Null),
-                                "clientId": item.get("clientId").cloned().unwrap_or(Value::Null),
-                                "scope": item.get("scope").cloned().unwrap_or(Value::Null),
-                                "linuxUser": item.get("linuxUser").cloned().unwrap_or(Value::Null),
-                                "userCode": user_code,
-                                "expiresAt": item.get("expiresAt").cloned().unwrap_or(Value::Null),
-                                "source": source.source}});
+                            "createdAt": now, "params": params});
                         if let Err(error) = put_request(tx, &key, &record) {
                             applied.refused = Some(format!("The card is invalid: {error}"));
                         }

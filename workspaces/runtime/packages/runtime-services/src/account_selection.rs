@@ -3,6 +3,12 @@ use crate::account_transfer::{TransferError, read_record, remove};
 use serde_json::{Value, json};
 use studio_runtime_store::{AccountTransferRepository, AgentRepository, RuntimeStore, StoreError};
 
+struct SelectionAccount {
+    deleted: bool,
+    disconnected: bool,
+    provider: Option<studio_runtime_providers::ProviderKind>,
+}
+
 pub struct SelectionSnapshot {
     agent: Value,
 }
@@ -16,6 +22,21 @@ impl SelectionSnapshot {
         &self,
         target: &str,
         account: Option<&Value>,
+        directory: &str,
+        empty: bool,
+    ) -> Result<Value, TransferError> {
+        let account = account.map(|account| SelectionAccount {
+            deleted: crate::event_write::truthy(account.get("deleted")),
+            disconnected: crate::event_write::truthy(account.get("disconnected")),
+            provider: studio_runtime_providers::ProviderKind::of_record(account).ok(),
+        });
+        self.decide_account(target, account.as_ref(), directory, empty)
+    }
+
+    fn decide_account(
+        &self,
+        target: &str,
+        account: Option<&SelectionAccount>,
         directory: &str,
         empty: bool,
     ) -> Result<Value, TransferError> {
@@ -41,12 +62,12 @@ impl SelectionSnapshot {
             return Ok(agent);
         }
         let account = account.ok_or(TransferError::Refused("Unknown account"))?;
-        if truthy(account.get("deleted")) {
+        if account.deleted {
             return Err(TransferError::Refused(
                 "This account was deleted. Select another account",
             ));
         }
-        if truthy(account.get("disconnected")) {
+        if account.disconnected {
             return Err(TransferError::Refused(
                 "Reconnect this account before selecting it",
             ));
@@ -66,8 +87,9 @@ impl SelectionSnapshot {
             remove(&mut agent, &["projectFolder"])?;
             agent["projectFolderRevision"] = json!(revision);
         }
-        let provider = studio_runtime_providers::ProviderKind::of_record(account)
-            .map_err(|_| TransferError::Refused("Unknown account provider"))?;
+        let provider = account
+            .provider
+            .ok_or(TransferError::Refused("Unknown account provider"))?;
         if studio_runtime_providers::ProviderKind::of_record(&agent).ok() != Some(provider) {
             agent["provider"] = json!(provider.key());
             agent["model"] = json!(crate::provider_adapter::default_model(provider));
@@ -161,8 +183,15 @@ pub async fn select(
         .accounts
         .iter()
         .chain(&accounts.archived_accounts)
-        .find(|row| row["id"] == target)
-        .cloned();
+        .find(|row| row.id.as_str() == Some(target))
+        .map(|row| SelectionAccount {
+            deleted: row.deleted.truthy(),
+            disconnected: row.disconnected.truthy(),
+            provider: row
+                .provider
+                .as_str()
+                .and_then(|provider| provider.parse().ok()),
+        });
     let id = id.to_owned();
     let target = target.to_owned();
     let directory = directory.clone();
@@ -180,8 +209,12 @@ pub async fn select(
                 ))?;
             let context =
                 crate::sync_entity_context::agent_view_context(tx, &snapshot.agent, None)?;
-            let mut value =
-                snapshot.decide(&target, account.as_ref(), directory, context.empty_lead)?;
+            let mut value = snapshot.decide_account(
+                &target,
+                account.as_ref(),
+                directory,
+                context.empty_lead,
+            )?;
             if source_account(&snapshot.agent) != target
                 && let Some(resume_id) = value
                     .pointer("/usageResume/id")

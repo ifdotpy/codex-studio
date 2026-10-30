@@ -16,11 +16,167 @@
 //!   that did not change for that long while a member waits for Studio or for
 //!   the owner.
 use rusqlite::OptionalExtension;
+use serde::de::{Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
+use std::marker::PhantomData;
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, SchedulerRepository, StoreError, Transaction,
 };
+// Liveness reads only observations, not the stricter scheduler or transfer
+// records. Invalid field types retain the historical indexing defaults.
+trait Observation: Default {
+    fn observes(name: &str) -> bool;
+    fn field(&mut self, name: &str, value: Value);
+}
+
+struct ObservationVisitor<T>(PhantomData<T>);
+impl<'de, T: Observation> Visitor<'de> for ObservationVisitor<T> {
+    type Value = T;
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("a liveness observation")
+    }
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<T, A::Error> {
+        let mut result = T::default();
+        while let Some(name) = map.next_key::<String>()? {
+            if T::observes(&name) {
+                result.field(&name, map.next_value()?);
+            } else {
+                map.next_value::<Value>()?;
+            }
+        }
+        Ok(result)
+    }
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<T, A::Error> {
+        while seq.next_element::<Value>()?.is_some() {}
+        Ok(T::default())
+    }
+    fn visit_bool<E: serde::de::Error>(self, _: bool) -> Result<T, E> {
+        Ok(T::default())
+    }
+    fn visit_i64<E: serde::de::Error>(self, _: i64) -> Result<T, E> {
+        Ok(T::default())
+    }
+    fn visit_u64<E: serde::de::Error>(self, _: u64) -> Result<T, E> {
+        Ok(T::default())
+    }
+    fn visit_f64<E: serde::de::Error>(self, _: f64) -> Result<T, E> {
+        Ok(T::default())
+    }
+    fn visit_str<E: serde::de::Error>(self, _: &str) -> Result<T, E> {
+        Ok(T::default())
+    }
+    fn visit_unit<E: serde::de::Error>(self) -> Result<T, E> {
+        Ok(T::default())
+    }
+}
+macro_rules! deserialize_observation {
+    ($record:ty) => {
+        impl<'de> Deserialize<'de> for $record {
+            fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                deserializer.deserialize_any(ObservationVisitor::<Self>(PhantomData))
+            }
+        }
+    };
+}
+fn string(value: &Value) -> Option<String> {
+    value.as_str().map(str::to_owned)
+}
+
+#[derive(Default)]
+struct SessionFailure {
+    reason: Option<String>,
+}
+impl Observation for SessionFailure {
+    fn observes(name: &str) -> bool {
+        name == "reason"
+    }
+    fn field(&mut self, _: &str, value: Value) {
+        self.reason = string(&value);
+    }
+}
+deserialize_observation!(SessionFailure);
+
+#[derive(Default)]
+struct ScheduleObservation {
+    id: Option<String>,
+    due_at: Option<f64>,
+    claimed_at: Option<f64>,
+    attempt: Option<u64>,
+    max_attempts: Option<u64>,
+    reason: Option<String>,
+}
+impl Observation for ScheduleObservation {
+    fn observes(name: &str) -> bool {
+        matches!(
+            name,
+            "id" | "dueAt" | "claimedAt" | "attempt" | "maxAttempts" | "reason"
+        )
+    }
+    fn field(&mut self, name: &str, value: Value) {
+        match name {
+            "id" => self.id = string(&value),
+            "dueAt" => self.due_at = value.as_f64(),
+            "claimedAt" => self.claimed_at = value.as_f64(),
+            "attempt" => self.attempt = value.as_u64(),
+            "maxAttempts" => self.max_attempts = value.as_u64(),
+            "reason" => self.reason = string(&value),
+            _ => {}
+        }
+    }
+}
+deserialize_observation!(ScheduleObservation);
+
+#[derive(Default)]
+struct MemberObservation {
+    phase: Option<String>,
+    name: Option<String>,
+    error: Option<String>,
+}
+#[derive(Default)]
+struct TransferObservation {
+    lead_id: Option<String>,
+    target: Option<String>,
+    updated: Option<f64>,
+    created: Option<f64>,
+    members: BTreeMap<String, MemberObservation>,
+}
+impl Observation for TransferObservation {
+    fn observes(name: &str) -> bool {
+        matches!(
+            name,
+            "leadId" | "targetAccountKey" | "updated" | "created" | "members"
+        )
+    }
+    fn field(&mut self, name: &str, value: Value) {
+        match name {
+            "leadId" => self.lead_id = string(&value),
+            "targetAccountKey" => self.target = string(&value),
+            "updated" => self.updated = value.as_f64(),
+            "created" => self.created = value.as_f64(),
+            "members" => {
+                self.members = value
+                    .as_object()
+                    .into_iter()
+                    .flatten()
+                    .map(|(id, row)| {
+                        (
+                            id.clone(),
+                            MemberObservation {
+                                phase: string(&row["phase"]),
+                                name: string(&row["name"]),
+                                error: string(&row["error"]),
+                            },
+                        )
+                    })
+                    .collect()
+            }
+            _ => {}
+        }
+    }
+}
+deserialize_observation!(TransferObservation);
+
 /// Unit: seconds without a provider event before a running turn is stalled.
 pub const SILENT_TURN_SECONDS: f64 = 600.0;
 /// Unit: seconds an owner message waits in an idle chat before it is stuck.
@@ -69,7 +225,7 @@ pub fn record_session_start_failure(
     let current = session_start_failure(tx, account)?;
     if current
         .as_ref()
-        .is_some_and(|value| value["reason"].as_str() == Some(reason))
+        .is_some_and(|value| value.reason.as_deref() == Some(reason))
     {
         return Ok(());
     }
@@ -93,7 +249,7 @@ pub fn clear_session_start_failure(tx: &Transaction<'_>, account: &str) -> Resul
 fn session_start_failure(
     db: &studio_runtime_store::Connection,
     account: &str,
-) -> Result<Option<Value>, StoreError> {
+) -> Result<Option<SessionFailure>, StoreError> {
     let raw: Option<String> = db
         .query_row(
             "SELECT start_failure FROM runtime_account_state WHERE account=?1",
@@ -370,7 +526,7 @@ fn waiting_sessions(
             1 => "1 chat waits for it.".to_owned(),
             count => format!("{count} chats wait for it."),
         };
-        let detail = match failure.as_ref().and_then(|value| value["reason"].as_str()) {
+        let detail = match failure.as_ref().and_then(|value| value.reason.as_deref()) {
             Some(reason) => format!("{chats} The last start error: {reason}"),
             None => format!("{chats} Studio recorded no start error."),
         };
@@ -419,33 +575,28 @@ fn stalled_schedules(
         .collect::<Result<Vec<_>, _>>()?;
     drop(statement);
     for (kind, agent, raw) in rows {
-        let Ok(record) = serde_json::from_str::<Value>(&raw) else {
+        let Ok(record) = serde_json::from_str::<ScheduleObservation>(&raw) else {
             continue;
         };
         let Some(owner) = merged_agent(tx, &agent)? else {
             continue;
         };
-        let due = record["dueAt"]
-            .as_f64()
-            .or_else(|| record["claimedAt"].as_f64())
-            .unwrap_or(now);
+        let due = record.due_at.or(record.claimed_at).unwrap_or(now);
         let subject = if kind == "usage" {
             "Usage resume".to_owned()
         } else {
             format!(
                 "Capacity retry, attempt {} of {}",
-                record["attempt"].as_u64().unwrap_or(0),
-                record["maxAttempts"].as_u64().unwrap_or(0)
+                record.attempt.unwrap_or(0),
+                record.max_attempts.unwrap_or(0)
             )
         };
-        let reason = record["reason"]
-            .as_str()
-            .filter(|reason| !reason.is_empty());
+        let reason = record.reason.as_deref().filter(|reason| !reason.is_empty());
         found.push(Finding {
             code: Code::ScheduleStalled,
             id: format!(
                 "liveness:schedule_stalled:{kind}:{}",
-                record["id"].as_str().unwrap_or(&agent)
+                record.id.as_deref().unwrap_or(&agent)
             ),
             agent: agent.clone(),
             agent_name: agent_name(&owner),
@@ -477,12 +628,12 @@ fn stalled_schedules(
         .collect::<Result<Vec<_>, _>>()?;
     drop(statement);
     for (id, raw) in rows {
-        let Ok(transfer) = serde_json::from_str::<Value>(&raw) else {
+        let Ok(transfer) = serde_json::from_str::<TransferObservation>(&raw) else {
             continue;
         };
         let mut stuck = Vec::new();
-        for (member, state) in transfer["members"].as_object().into_iter().flatten() {
-            let phase = state["phase"].as_str().unwrap_or_default();
+        for (member, state) in &transfer.members {
+            let phase = state.phase.as_deref().unwrap_or_default();
             let waiting_idle = phase == "waiting"
                 && merged_agent(tx, member)?.is_some_and(|record| {
                     record["inFlight"] != true
@@ -503,12 +654,12 @@ fn stalled_schedules(
             ) || waiting_idle
             {
                 stuck.push(
-                    match state["error"].as_str().filter(|error| !error.is_empty()) {
+                    match state.error.as_deref().filter(|error| !error.is_empty()) {
                         Some(error) => format!(
                             "{} ({phase}): {error}",
-                            state["name"].as_str().unwrap_or(member)
+                            state.name.as_deref().unwrap_or(member)
                         ),
-                        None => format!("{} ({phase})", state["name"].as_str().unwrap_or(member)),
+                        None => format!("{} ({phase})", state.name.as_deref().unwrap_or(member)),
                     },
                 );
             }
@@ -516,14 +667,11 @@ fn stalled_schedules(
         if stuck.is_empty() {
             continue;
         }
-        let lead = transfer["leadId"].as_str().unwrap_or_default().to_owned();
+        let lead = transfer.lead_id.unwrap_or_default();
         let name = merged_agent(tx, &lead)?
             .map(|record| agent_name(&record))
             .unwrap_or_else(|| "Agent".to_owned());
-        let updated = transfer["updated"]
-            .as_f64()
-            .or_else(|| transfer["created"].as_f64())
-            .unwrap_or(now);
+        let updated = transfer.updated.or(transfer.created).unwrap_or(now);
         found.push(Finding {
             code: Code::ScheduleStalled,
             id: format!("liveness:schedule_stalled:transfer:{id}:{}", updated as i64),
@@ -536,7 +684,7 @@ fn stalled_schedules(
             ),
             subject: format!(
                 "Account transfer to {}",
-                transfer["targetAccountKey"].as_str().unwrap_or("another account")
+                transfer.target.as_deref().unwrap_or("another account")
             ),
             event: None,
             first_at: updated,
@@ -544,4 +692,55 @@ fn stalled_schedules(
         });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod observation_tests {
+    use super::*;
+
+    #[test]
+    fn observations_match_legacy_json_indexing() {
+        for raw in [
+            "null",
+            "false",
+            "9",
+            "[]",
+            "\"text\"",
+            "{}",
+            r#"{"id":null,"id":"last","dueAt":1,"claimedAt":1.5,"attempt":3.0,"maxAttempts":18446744073709551615,"reason":false}"#,
+            r#"{"members":{"z":{"phase":"ready","name":null},"a":4,"z":{"phase":"blocked","error":"last"}},"created":-1,"updated":null}"#,
+        ] {
+            let old: Value = serde_json::from_str(raw).unwrap();
+            let schedule: ScheduleObservation = serde_json::from_str(raw).unwrap();
+            assert_eq!(schedule.id.as_deref(), old["id"].as_str());
+            assert_eq!(schedule.due_at, old["dueAt"].as_f64());
+            assert_eq!(schedule.claimed_at, old["claimedAt"].as_f64());
+            assert_eq!(schedule.attempt, old["attempt"].as_u64());
+            assert_eq!(schedule.max_attempts, old["maxAttempts"].as_u64());
+            assert_eq!(schedule.reason.as_deref(), old["reason"].as_str());
+            let session: SessionFailure = serde_json::from_str(raw).unwrap();
+            assert_eq!(session.reason.as_deref(), old["reason"].as_str());
+            let transfer: TransferObservation = serde_json::from_str(raw).unwrap();
+            assert_eq!(transfer.lead_id.as_deref(), old["leadId"].as_str());
+            assert_eq!(transfer.updated, old["updated"].as_f64());
+            assert_eq!(transfer.created, old["created"].as_f64());
+            let members = old["members"].as_object();
+            assert_eq!(
+                transfer.members.len(),
+                members.map_or(0, |members| members.len())
+            );
+            for (id, member) in transfer.members {
+                let expected = &old["members"][&id];
+                assert_eq!(member.phase.as_deref(), expected["phase"].as_str());
+                assert_eq!(member.name.as_deref(), expected["name"].as_str());
+                assert_eq!(member.error.as_deref(), expected["error"].as_str());
+            }
+        }
+        for raw in ["{", r#"{"future":1e400}"#, "[1e400]"] {
+            assert_eq!(
+                serde_json::from_str::<SessionFailure>(raw).is_ok(),
+                serde_json::from_str::<Value>(raw).is_ok()
+            );
+        }
+    }
 }

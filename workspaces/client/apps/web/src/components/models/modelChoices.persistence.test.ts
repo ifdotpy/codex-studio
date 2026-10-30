@@ -72,16 +72,13 @@ it("persists server-only selections via HTTP, restores an SSE projection after r
   await expectState(local, "saved");
   writeModelChoices(astra, local);
   await expectState(local, "saved");
-  expect(post).toHaveBeenCalledWith(
-    "/api/sync/preferences",
-    {
-      scope: "server",
-      fields: expect.objectContaining({
-        [key]: expect.objectContaining({ value: astra }),
-        [other]: fields[other],
-      }),
-    },
-  );
+  expect(post).toHaveBeenCalledWith("/api/sync/preferences", {
+    scope: "server",
+    fields: expect.objectContaining({
+      [key]: expect.objectContaining({ value: astra }),
+      [other]: fields[other],
+    }),
+  });
   expect(readModelChoices(remote)).toEqual({});
   expect(readPreferenceFields("server", local)[other]).toEqual(fields[other]);
   const saved = readPreferenceFields("server", local);

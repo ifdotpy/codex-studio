@@ -57,7 +57,7 @@ async fn costs(
         .accounts()
         .accounts
         .into_iter()
-        .find(|account| account.get("id").and_then(Value::as_str) == Some(&account_key))
+        .find(|account| account.id.as_str() == Some(&account_key))
         .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown Codex account"))?;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -261,8 +261,9 @@ async fn usage_resume(
         let Some(value) = value else {
             return Ok(Json(None));
         };
-        let response = serde_json::from_value::<crate::generated::UsageResumeResponse>(value)
-            .map_err(|_| ApiError::internal())?;
+        let response =
+            serde_json::from_value::<crate::generated::UsageResumeResponse>(value.value())
+                .map_err(|_| ApiError::internal())?;
         return Ok(Json(Some(
             serde_json::to_value(response).map_err(|_| ApiError::internal())?,
         )));

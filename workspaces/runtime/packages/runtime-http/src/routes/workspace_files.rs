@@ -28,18 +28,23 @@ pub(crate) fn routes() -> RouteGroup {
 
 async fn upload_asset(
     State(state): State<HttpState>,
-    ApiJson(mut body): ApiJson<Value>,
+    ApiJson(body): ApiJson<crate::generated::AssetUpload>,
 ) -> Result<Json<crate::generated::AssetRecord>, ApiError> {
-    let agent = take_string(&mut body, "agent").ok_or_else(ApiError::internal)?;
-    let name = take_string(&mut body, "name").ok_or_else(ApiError::internal)?;
-    let id = take_string(&mut body, "id");
-    let encoded = take_string(&mut body, "base64")
-        .or_else(|| take_string(&mut body, "data"))
+    let encoded = body
+        .base64
+        .flatten()
+        .or(body.data.flatten())
         .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Invalid file data"))?;
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let asset = payload_store::upload(&store, &agent, &name, id.as_deref(), &encoded)
-        .await
-        .map_err(map_payload_store_error)?;
+    let asset = payload_store::upload(
+        &store,
+        &body.agent,
+        &body.name,
+        body.id.flatten().as_deref(),
+        &encoded,
+    )
+    .await
+    .map_err(map_payload_store_error)?;
     super::generated_json::<crate::generated::AssetRecord>(asset).map(Json)
 }
 
@@ -119,19 +124,10 @@ async fn file_target(
                 let asset = WorkspaceFilesRepository::asset(connection, &asset_id)
                     .map_err(map_store_error)?
                     .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown attachment"))?;
-                let asset_value = asset.value();
-                let field = |name: &str| {
-                    asset_value
-                        .get(name)
-                        .and_then(Value::as_str)
-                        .map(str::to_owned)
-                        .ok_or_else(|| invalid_stored("assets", asset.id().as_ref()))
-                };
-                let owner_id = field("agent")?;
-                validate_agent(connection, &owner_id)?;
+                validate_agent(connection, asset.agent())?;
                 Ok(FileTarget::Asset {
-                    path: field("path")?,
-                    mime: field("mime")?,
+                    path: asset.path().to_owned(),
+                    mime: asset.mime().to_owned(),
                 })
             })
             .await;
@@ -291,11 +287,114 @@ fn map_payload_store_error(error: PayloadStoreError) -> ApiError {
     }
 }
 
-fn take_string(body: &mut Value, key: &str) -> Option<String> {
-    match body.as_object_mut()?.remove(key)? {
-        Value::String(value) => Some(value),
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::Array(_) | Value::Object(_) => {
-            None
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use axum::{
+        body::{Body, to_bytes},
+        http::{Request, StatusCode},
+    };
+    use serde_json::{Value, json};
+    use studio_runtime_store::{AgentRecord, AgentRepository, RuntimeStore};
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn asset_upload_uses_nullable_fields_and_base64_precedence() {
+        let directory = tempfile::tempdir().expect("isolated directory");
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("store"),
+        );
+        let agent = AgentRecord::from_value(json!({"id":"worker","rootId":"worker","epoch":1,
+            "status":"idle","accountKey":"claude","provider":"claude","model":"sonnet",
+            "cwd":"/fixture","isLead":true}))
+        .expect("agent");
+        store
+            .transaction(move |tx| AgentRepository::put(tx, &agent))
+            .await
+            .expect("agent persists");
+        let app = crate::router::router(crate::router::HttpState::new(
+            "token".into(),
+            "fixture".into(),
+            "isolated".into(),
+            49171,
+            None,
+            Some(store),
+            None,
+        ))
+        .expect("router");
+        for (body, token, status, size) in [
+            (
+                json!({"agent":"worker","name":"a.txt","base64":"YQ==","data":"YmM=","id":null}),
+                "token",
+                StatusCode::OK,
+                Some(1),
+            ),
+            (
+                json!({"agent":"worker","name":"a.txt","base64":null,"data":"YmM="}),
+                "token",
+                StatusCode::OK,
+                Some(2),
+            ),
+            (
+                json!({"agent":"worker","name":"a.txt","data":"YmM="}),
+                "token",
+                StatusCode::OK,
+                Some(2),
+            ),
+            (
+                json!({"agent":"worker","name":"a.txt","base64":null,"data":null}),
+                "token",
+                StatusCode::BAD_REQUEST,
+                None,
+            ),
+            (
+                json!({"agent":"worker","name":"a.txt","base64":"","data":"YmM="}),
+                "token",
+                StatusCode::BAD_REQUEST,
+                None,
+            ),
+            (
+                json!({"agent":"worker","name":"a.txt","base64":"YQ==","id":"invalid"}),
+                "token",
+                StatusCode::BAD_REQUEST,
+                None,
+            ),
+            (
+                json!({"agent":"worker","name":"a.txt","base64":"YQ=="}),
+                "wrong",
+                StatusCode::FORBIDDEN,
+                None,
+            ),
+        ] {
+            let request = Request::builder()
+                .method("POST")
+                .uri("/api/assets")
+                .header("host", "127.0.0.1:49171")
+                .header("x-canvas-token", token)
+                .header("content-type", "application/json")
+                .header(
+                    crate::schema::API_SCHEMA_HASH_HEADER,
+                    crate::schema::api_schema_hash(),
+                )
+                .extension(axum::extract::ConnectInfo(
+                    "127.0.0.1:12345"
+                        .parse::<std::net::SocketAddr>()
+                        .expect("address"),
+                ))
+                .body(Body::from(body.to_string()))
+                .expect("request");
+            let response = app.clone().oneshot(request).await.expect("response");
+            assert_eq!(response.status(), status);
+            if let Some(size) = size {
+                let body: Value = serde_json::from_slice(
+                    &to_bytes(response.into_body(), 65536).await.expect("body"),
+                )
+                .expect("json");
+                assert_eq!(body["size"], size);
+            }
         }
     }
 }

@@ -97,17 +97,15 @@ impl ClaudeControlRepository {
                 Some(RecordPredicate::PhysicalAgentEquals(&actor.id.0)),
                 RecordOrder::RowId,
             )? {
-                let mut value = item.value().clone();
-                if value
-                    .get("turnId")
+                let mut item = item;
+                if item
+                    .extra("turnId")
                     .and_then(Value::as_str)
                     .is_some_and(|turn| turns.contains(turn))
-                    && !truthy(value.get("afterRestore"))
+                    && !truthy(item.extra("afterRestore"))
                 {
-                    value["afterRestore"] = serde_json::json!(id);
-                    if !Table::<TranscriptItemRecord>::new(tx)
-                        .update(&TranscriptItemRecord::from_value(value)?)?
-                    {
+                    item.set_after_restore(serde_json::json!(id));
+                    if !Table::<TranscriptItemRecord>::new(tx).update(&item)? {
                         return Err(invalid("transcript"));
                     }
                 }

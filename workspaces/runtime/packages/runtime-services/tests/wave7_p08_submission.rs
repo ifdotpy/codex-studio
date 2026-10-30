@@ -298,7 +298,7 @@ fn compare(db: &rusqlite::Connection, expected: &Value, label: &str) {
 fn assert_current_receipts(db: &rusqlite::Connection) {
     use studio_runtime_schema::persistence::ExecutionReceiptKind;
     use studio_runtime_services::notification_dispatch::DispatchOutcome;
-    use studio_runtime_store::request_results::{AdmittedRequest, RequestResults, ResultEnvelope};
+    use studio_runtime_store::request_results::{AdmittedRequest, RequestResults};
     #[derive(serde::Deserialize)]
     struct Input {
         agent: String,
@@ -359,14 +359,9 @@ fn assert_current_receipts(db: &rusqlite::Connection) {
     assert_eq!(owner.attempt_id.as_deref(), Some("attempt"));
     assert_eq!(owner.first_event_id, "one");
     assert_eq!(owner.publication_outcome, DispatchOutcome::Written);
-    let result = RequestResults::admitted_result(db, &owner.admission)
+    assert!(RequestResults::admitted_result(db, &owner.admission)
         .expect("retained result read")
-        .expect("retained result exists");
-    let envelope: ResultEnvelope<DispatchOutcome> =
-        serde_json::from_str(&result.result).expect("typed retained result");
-    assert_eq!(envelope.actor.as_deref(), Some("agent"));
-    assert_eq!(envelope.reply, DispatchOutcome::Written);
-    assert_eq!(envelope.references, vec!["agent:one"]);
+        .is_none());
     for event in ["one", "two"] {
         let raw: String = db.query_row("SELECT json_extract(record,'$.providerSubmission') FROM runtime_event_meta WHERE id=?1",[event],|r| r.get(0)).expect("event owner");
         let event_owner: Owner = serde_json::from_str(&raw).expect("typed event owner");

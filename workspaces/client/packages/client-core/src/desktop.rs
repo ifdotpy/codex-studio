@@ -63,15 +63,12 @@ fn permissions() -> &'static Mutex<Permissions> {
 fn purpose(method: &str) -> Option<u32> {
     Some(match method {
         "desktop.pickDirectory" => 1,
-        "desktop.pickFiles" | "desktop.pickAttachments" => 2,
+        "desktop.pickAttachments" => 2,
         "desktop.revealPath" => 3,
         "desktop.openExternal"
         | crate::desktop::SIGN_IN_OPEN_METHOD
         | crate::desktop::SIGN_IN_PREPARE_METHOD => EXTERNAL_LINK_PURPOSE,
-        "desktop.saveBegin"
-        | "desktop.savePreview"
-        | "desktop.saveTerminal"
-        | "desktop.saveRecording" => 5,
+        "desktop.saveBegin" | "desktop.savePreview" => 5,
         "desktop.fileAction" => 6,
         "desktop.requestMicrophone" | "desktop.reserveMicrophone" => 7,
         "desktop.prepareTranscription" => 8,
@@ -238,7 +235,6 @@ async fn prepare_sign_in(
 
 pub async fn dispatch(
     request: Request,
-    sender: Option<&crate::delivery::StoreSender>,
     backend: Option<&crate::backend::Backend>,
     previews: Option<&crate::file_preview::Previews>,
 ) -> Response {
@@ -297,34 +293,6 @@ pub async fn dispatch(
         }
         #[cfg(target_os = "macos")]
         {
-            if request.method == "desktop.saveTerminal" {
-                let backend = backend.ok_or("The native backend is unavailable.")?;
-                let (name, bytes) = crate::terminal::history(backend, &value).await?;
-                return save_snapshot(name, bytes).await;
-            }
-            if request.method == "desktop.saveRecording" {
-                let sender = sender.ok_or("The native state service is unavailable.")?;
-                let id = value
-                    .as_str()
-                    .filter(|v| !v.is_empty() && v.len() <= 128)
-                    .ok_or("Invalid recording.")?;
-                let directory = tempfile::Builder::new()
-                    .prefix("codex-studio-recording-")
-                    .tempdir()
-                    .map_err(|e| e.to_string())?;
-                let exported = crate::delivery::state(
-                    sender,
-                    "dictation.wav",
-                    serde_json::json!({"id":id,"directory":directory.path()}),
-                )
-                .await?;
-                let path = exported["path"]
-                    .as_str()
-                    .ok_or("The recording was not exported.")?;
-                let bytes = tokio::fs::read(path).await.map_err(|e| e.to_string())?;
-                return save_snapshot(format!("dictation-{id}.wav"), std::sync::Arc::new(bytes))
-                    .await;
-            }
             if request.method == "desktop.savePreview" {
                 let (name, bytes) = previews
                     .ok_or("The preview service is unavailable.")?
@@ -337,36 +305,10 @@ pub async fn dispatch(
                 return mac::file_action(file).await;
             }
             let value = mac::run(request.method.clone(), value).await?;
-            if matches!(
-                request.method.as_str(),
-                "desktop.pickFiles" | "desktop.pickAttachments"
-            ) {
-                let files = tokio::task::spawn_blocking(move || read_selected_files(value))
+            if request.method == "desktop.pickAttachments" {
+                tokio::task::spawn_blocking(move || read_selected_files(value))
                     .await
-                    .map_err(|e| e.to_string())??;
-                if request.method == "desktop.pickAttachments" {
-                    return Ok(files);
-                }
-                let sender = sender.ok_or("The native state service is unavailable.")?;
-                let (reply, receive) = tokio::sync::oneshot::channel();
-                sender
-                    .send((
-                        Request {
-                            id: format!("{}:files", request.id),
-                            method: "files.stage_many".into(),
-                            params: serde_json::json!({"files":files}),
-                        },
-                        reply,
-                    ))
-                    .await
-                    .map_err(|e| e.to_string())?;
-                let response = receive.await.map_err(|e| e.to_string())?;
-                response.result.ok_or_else(|| {
-                    response
-                        .error
-                        .map(|e| e.message)
-                        .unwrap_or("Missing file state response.".into())
-                })
+                    .map_err(|e| e.to_string())?
             } else {
                 Ok(value)
             }
@@ -411,6 +353,9 @@ async fn save_snapshot(name: String, bytes: std::sync::Arc<Vec<u8>>) -> Result<V
     Ok(Value::Bool(true))
 }
 
+// Maximum aggregate size, in bytes, of files selected in one native picker.
+const MAX_SELECTED_ATTACHMENT_BYTES: usize = 20 * 1024 * 1024;
+
 fn read_selected_files(paths: Value) -> Result<Value, String> {
     use base64::Engine;
     use std::{io::Read, os::unix::fs::OpenOptionsExt};
@@ -428,15 +373,15 @@ fn read_selected_files(paths: Value) -> Result<Value, String> {
             .open(path)
             .map_err(|e| e.to_string())?;
         let info = file.metadata().map_err(|e| e.to_string())?;
-        if !info.is_file() || info.len() == 0 || info.len() > crate::uploads::LIMIT as u64 {
+        if !info.is_file() || info.len() == 0 || info.len() > MAX_SELECTED_ATTACHMENT_BYTES as u64 {
             return Err("Select regular files with 1 byte to 20 MiB.".into());
         }
         let mut bytes = vec![];
-        file.take((crate::uploads::LIMIT + 1) as u64)
+        file.take((MAX_SELECTED_ATTACHMENT_BYTES + 1) as u64)
             .read_to_end(&mut bytes)
             .map_err(|e| e.to_string())?;
         total += bytes.len();
-        if bytes.is_empty() || total > crate::uploads::LIMIT {
+        if bytes.is_empty() || total > MAX_SELECTED_ATTACHMENT_BYTES {
             return Err("The selected files exceed 20 MiB or contain an empty file.".into());
         }
         let name = path
@@ -557,7 +502,7 @@ mod mac {
             autoreleasepool(|_| {
                 let result = match method.as_str() {
                     "desktop.pickDirectory" => pick_directory(),
-                    "desktop.pickFiles" | "desktop.pickAttachments" => pick_files(),
+                    "desktop.pickAttachments" => pick_files(),
                     "desktop.saveChoose" => save_choose(&value),
                     "desktop.copyText" => copy_text(&value),
                     "desktop.revealPath" => reveal(&value),
@@ -714,7 +659,7 @@ mod tests {
                 "value":{"url":"https://example.com/authorize", "requestId":"card-1"}
             }),
         };
-        let response = dispatch(request, None, None, None).await;
+        let response = dispatch(request, None, None).await;
         assert!(response.error.is_none(), "{:?}", response.error);
         let preparation = response.result.unwrap();
         assert!(preparation.as_str().is_some_and(|id| id.len() >= 32));
@@ -734,7 +679,6 @@ mod tests {
             },
             None,
             None,
-            None,
         ).await;
         assert_eq!(canceled.result, Some(Value::Bool(true)));
     }
@@ -749,12 +693,12 @@ mod tests {
             method: crate::desktop::SIGN_IN_OPEN_METHOD.into(),
             params,
         };
-        let first = dispatch(make_request(params.clone()), None, None, None).await;
+        let first = dispatch(make_request(params.clone()), None, None).await;
         assert_eq!(
             first.error.unwrap().message,
             "This sign-in belongs to another server view."
         );
-        let replay = dispatch(make_request(params.clone()), None, None, None).await;
+        let replay = dispatch(make_request(params.clone()), None, None).await;
         assert!(
             replay
                 .error
@@ -768,7 +712,7 @@ mod tests {
             serde_json::json!("forged"),
         ] {
             params["value"]["preparation"] = invalid;
-            let response = dispatch(make_request(params.clone()), None, None, None).await;
+            let response = dispatch(make_request(params.clone()), None, None).await;
             assert!(
                 response
                     .error
@@ -878,7 +822,6 @@ mod tests {
             "desktop.showVaultKeys",
             "desktop.saveBegin",
             "desktop.savePreview",
-            "desktop.saveTerminal",
             "desktop.fileAction",
         ] {
             let reply = dispatch(
@@ -887,7 +830,6 @@ mod tests {
                     method: method.into(),
                     params: serde_json::json!({"value":"https://example.com"}),
                 },
-                None,
                 None,
                 None,
             )
@@ -925,7 +867,8 @@ mod tests {
         assert!(read_selected_files(serde_json::json!([directory.path()])).is_err());
         assert!(read_selected_files(serde_json::json!(["/dev/null"])).is_err());
         let huge = std::fs::File::create(directory.path().join("huge")).unwrap();
-        huge.set_len((crate::uploads::LIMIT + 1) as u64).unwrap();
+        huge.set_len((MAX_SELECTED_ATTACHMENT_BYTES + 1) as u64)
+            .unwrap();
         assert!(read_selected_files(serde_json::json!([directory.path().join("huge")])).is_err());
     }
 }

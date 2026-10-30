@@ -1,17 +1,9 @@
 {
-  "$defs": {
-    "JsonValue": {}
-  },
-  "additionalProperties": {
-    "$ref": "#/$defs/JsonValue"
-  },
-  "description": "Optional event metadata row, keyed by runtime_events.id, not JSON id.",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
   "properties": {
     "assets": {
-      "items": {
-        "$ref": "#/$defs/JsonValue"
-      },
-      "title": "Assets",
+      "items": true,
       "type": "array"
     },
     "delivery": {
@@ -35,29 +27,11 @@
       ]
     },
     "timing": {
-      "anyOf": [
-        {
-          "additionalProperties": {
-            "$ref": "#/$defs/JsonValue"
-          },
-          "type": "object"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Timing"
+      "additionalProperties": true,
+      "type": ["object", "null"]
     },
     "transcriptItemId": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Transcriptitemid"
+      "type": ["string", "null"]
     }
   },
   "title": "RuntimeEventMetadataRecord",

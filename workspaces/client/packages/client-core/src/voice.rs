@@ -11,6 +11,7 @@ use rtc::media::Sample;
 use rtc::rtp_transceiver::rtp_sender::{
     RTCRtpCodec, RTCRtpCodingParameters, RTCRtpEncodingParameters, RtpCodecKind,
 };
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
     sync::{
@@ -19,6 +20,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
+use studio_client_domain::json_object::JsonObject;
 use studio_client_domain::protocol::NativeVoiceEvent;
 use tokio::{sync::mpsc, task::JoinHandle};
 use webrtc::{
@@ -425,13 +427,13 @@ impl Peer {
 struct Service {
     active: Option<Active>,
 }
-type Subscribers = std::sync::Mutex<std::collections::HashMap<String, mpsc::Sender<Value>>>;
+type Subscribers = std::sync::Mutex<std::collections::HashMap<SessionId, mpsc::Sender<Value>>>;
 fn subscribers() -> &'static Subscribers {
     static VALUE: std::sync::OnceLock<Subscribers> = std::sync::OnceLock::new();
     VALUE.get_or_init(Default::default)
 }
 struct Active {
-    session: String,
+    session: SessionId,
     peer: Option<Peer>,
     muted: Arc<AtomicBool>,
 }
@@ -439,12 +441,107 @@ fn service() -> &'static tokio::sync::Mutex<Service> {
     static VALUE: std::sync::OnceLock<tokio::sync::Mutex<Service>> = std::sync::OnceLock::new();
     VALUE.get_or_init(Default::default)
 }
-fn session_id(value: &Value) -> Result<String, String> {
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Deserialize)]
+#[serde(try_from = "String")]
+struct SessionId(String);
+impl TryFrom<String> for SessionId {
+    type Error = &'static str;
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        if value.is_empty() || value.len() > 120 {
+            return Err("Invalid voice session identity.");
+        }
+        Ok(Self(value))
+    }
+}
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Field<T> {
+    Valid(T),
+    Invalid(serde::de::IgnoredAny),
+}
+impl<T> Field<T> {
+    fn valid(self) -> Option<T> {
+        match self {
+            Self::Valid(value) => Some(value),
+            Self::Invalid(_) => None,
+        }
+    }
+}
+#[derive(Deserialize)]
+struct SessionWire {
+    session: Option<Field<SessionId>>,
+}
+#[derive(Deserialize)]
+struct CreateWire {
+    session: Option<Field<SessionId>>,
+    muted: Option<Field<bool>>,
+}
+#[derive(Deserialize)]
+struct AnswerWire {
+    session: Option<Field<SessionId>>,
+    sdp: Option<Field<String>>,
+}
+#[derive(Deserialize)]
+struct MuteWire {
+    session: Option<Field<SessionId>>,
+    muted: Option<Field<bool>>,
+}
+enum VoiceCommand {
+    Create { session: SessionId, muted: bool },
+    Answer { session: SessionId, sdp: String },
+    Mute { session: SessionId, muted: bool },
+    Close { session: SessionId },
+}
+fn session_field(value: Option<Field<SessionId>>) -> Result<SessionId, String> {
     value
-        .as_str()
-        .filter(|v| !v.is_empty() && v.len() <= 120)
-        .map(str::to_owned)
-        .ok_or("Invalid voice session identity.".into())
+        .and_then(Field::valid)
+        .ok_or_else(|| "Invalid voice session identity.".into())
+}
+fn decode_wire<'a, T: Deserialize<'a>>(value: &'a Value) -> Result<T, String> {
+    JsonObject::<T>::deserialize(value)
+        .map(|v| v.0)
+        .map_err(|_| "Invalid voice session identity.".into())
+}
+fn command(method: &str, params: &Value) -> Result<VoiceCommand, String> {
+    match method {
+        "voice.create" => {
+            let wire: CreateWire = decode_wire(params)?;
+            Ok(VoiceCommand::Create {
+                session: session_field(wire.session)?,
+                muted: wire.muted.and_then(Field::valid).unwrap_or(false),
+            })
+        }
+        "voice.answer" => {
+            let wire: AnswerWire = decode_wire(params)?;
+            Ok(VoiceCommand::Answer {
+                session: session_field(wire.session)?,
+                sdp: wire
+                    .sdp
+                    .and_then(Field::valid)
+                    .ok_or("Invalid WebRTC answer.")?,
+            })
+        }
+        "voice.mute" => {
+            let wire: MuteWire = decode_wire(params)?;
+            Ok(VoiceCommand::Mute {
+                session: session_field(wire.session)?,
+                muted: wire
+                    .muted
+                    .and_then(Field::valid)
+                    .ok_or("Invalid mute state.")?,
+            })
+        }
+        "voice.close" => {
+            let wire: SessionWire = decode_wire(params)?;
+            Ok(VoiceCommand::Close {
+                session: session_field(wire.session)?,
+            })
+        }
+        _ => Err("Unknown voice command.".into()),
+    }
+}
+fn session_id(value: &Value) -> Result<SessionId, String> {
+    SessionId::deserialize(value).map_err(|_| "Invalid voice session identity.".into())
 }
 
 /// A view subscription receives one session's events.
@@ -465,7 +562,7 @@ pub fn attach(session: &Value) -> Result<mpsc::Receiver<Value>, String> {
 async fn stop(active: Active) {
     #[cfg(target_os = "macos")]
     {
-        let session = active.session.clone();
+        let session = active.session.0.clone();
         // Audio shutdown remains best effort; the peer is closed below even if its UI owner left.
         drop(crate::media::mac::on_main(move || Ok(crate::voice_audio::mac::stop(&session))).await);
     }
@@ -474,8 +571,7 @@ async fn stop(active: Active) {
     }
 }
 
-async fn create(params: &Value) -> Result<Value, String> {
-    let session = session_id(&params["session"])?;
+async fn create(session: SessionId, muted: bool) -> Result<Value, String> {
     if crate::platform::hidden_check() {
         return Err("Hidden checks do not use the microphone.".into());
     }
@@ -490,7 +586,7 @@ async fn create(params: &Value) -> Result<Value, String> {
         .remove(&session)
         .filter(|s| !s.is_closed())
         .ok_or("Subscribe to the voice session before it starts.")?;
-    let muted = Arc::new(AtomicBool::new(params["muted"].as_bool().unwrap_or(false)));
+    let muted = Arc::new(AtomicBool::new(muted));
     // Reserve the session before any await, so a second start cannot pass.
     state.active = Some(Active {
         session: session.clone(),
@@ -505,7 +601,7 @@ async fn create(params: &Value) -> Result<Value, String> {
         #[cfg(target_os = "macos")]
         {
             let (id, device_playback, device_muted, ended) = (
-                session.clone(),
+                session.0.clone(),
                 playback.clone(),
                 muted.clone(),
                 events.clone(),
@@ -569,15 +665,9 @@ async fn create(params: &Value) -> Result<Value, String> {
 pub async fn dispatch(request: crate::protocol::Request) -> crate::protocol::Response {
     use crate::protocol::Response;
     let result = async {
-        let p = &request.params;
-        match request.method.as_str() {
-            "voice.create" => create(p).await,
-            "voice.answer" => {
-                let session = session_id(&p["session"])?;
-                let sdp = p["sdp"]
-                    .as_str()
-                    .ok_or("Invalid WebRTC answer.")?
-                    .to_owned();
+        match command(&request.method, &request.params)? {
+            VoiceCommand::Create { session, muted } => create(session, muted).await,
+            VoiceCommand::Answer { session, sdp } => {
                 let state = service().lock().await;
                 let peer = state
                     .active
@@ -587,9 +677,7 @@ pub async fn dispatch(request: crate::protocol::Request) -> crate::protocol::Res
                     .ok_or("The voice session ended.")?;
                 peer.answer(sdp).await.map(|_| Value::Null)
             }
-            "voice.mute" => {
-                let session = session_id(&p["session"])?;
-                let muted = p["muted"].as_bool().ok_or("Invalid mute state.")?;
+            VoiceCommand::Mute { session, muted } => {
                 let state = service().lock().await;
                 let active = state
                     .active
@@ -599,8 +687,7 @@ pub async fn dispatch(request: crate::protocol::Request) -> crate::protocol::Res
                 active.muted.store(muted, Ordering::Relaxed);
                 Ok(Value::Bool(muted))
             }
-            "voice.close" => {
-                let session = session_id(&p["session"])?;
+            VoiceCommand::Close { session } => {
                 let active = service()
                     .lock()
                     .await
@@ -612,7 +699,6 @@ pub async fn dispatch(request: crate::protocol::Request) -> crate::protocol::Res
                 }
                 Ok(Value::Bool(closed))
             }
-            _ => Err("Unknown voice command.".to_owned()),
         }
     }
     .await;
@@ -651,6 +737,100 @@ mod tests {
     use bytes::BytesMut;
     use webrtc::data_channel::DataChannel;
     use webrtc::media_stream::track_local::static_rtp::TrackLocalStaticRTP;
+
+    #[tokio::test]
+    async fn typed_voice_commands_validate_before_effects_and_preserve_ids() {
+        let session = "typed-voice-fixture";
+        let subscription = attach(&json!(session)).unwrap();
+        let call = |id: &str, method: &str, params: Value| crate::protocol::Request {
+            id: id.into(),
+            method: method.into(),
+            params,
+        };
+        for (method, params, expected) in [
+            (
+                "voice.create",
+                json!({"session":"","muted":true}),
+                "Invalid voice session identity.",
+            ),
+            (
+                "voice.answer",
+                json!({"session":session,"sdp":false}),
+                "Invalid WebRTC answer.",
+            ),
+            (
+                "voice.mute",
+                json!({"session":session,"muted":null}),
+                "Invalid mute state.",
+            ),
+            (
+                "voice.close",
+                json!([session]),
+                "Invalid voice session identity.",
+            ),
+        ] {
+            let response = dispatch(call("request-1", method, params)).await;
+            assert_eq!(response.id, "request-1");
+            assert_eq!(response.error.unwrap().message, expected);
+        }
+        assert!(
+            attach(&json!(session)).is_err(),
+            "invalid commands did not remove subscriber"
+        );
+        assert_eq!(
+            dispatch(call("close", "voice.close", json!({"session":session})))
+                .await
+                .result,
+            Some(json!(false))
+        );
+        #[cfg(not(target_os = "macos"))]
+        {
+            let flag = Arc::new(AtomicBool::new(false));
+            service().lock().await.active = Some(Active {
+                session: session_id(&json!(session)).unwrap(),
+                peer: None,
+                muted: flag.clone(),
+            });
+            assert!(
+                dispatch(call(
+                    "foreign",
+                    "voice.mute",
+                    json!({"session":"other","muted":true})
+                ))
+                .await
+                .error
+                .is_some()
+            );
+            assert!(!flag.load(Ordering::Relaxed));
+            assert_eq!(
+                dispatch(call(
+                    "mute",
+                    "voice.mute",
+                    json!({"session":session,"muted":true})
+                ))
+                .await
+                .result,
+                Some(json!(true))
+            );
+            assert!(flag.load(Ordering::Relaxed));
+            assert_eq!(
+                dispatch(call("close", "voice.close", json!({"session":session})))
+                    .await
+                    .result,
+                Some(json!(true))
+            );
+        }
+        drop(subscription);
+        assert!(attach(&json!(session)).is_ok());
+        for muted in [json!(null), json!("yes"), json!([])] {
+            assert!(matches!(
+                command("voice.create", &json!({"session":session,"muted":muted})),
+                Ok(VoiceCommand::Create { muted: false, .. })
+            ));
+        }
+        assert!(session_id(&json!("x".repeat(120))).is_ok());
+        assert!(session_id(&json!("x".repeat(121))).is_err());
+    }
 
     fn tone(frequency: f64, samples: usize, start: usize) -> Vec<f32> {
         (start..start + samples)

@@ -109,7 +109,8 @@ impl CoordinationRepository {
             result.push((agent.id().0.clone(), agent.value(), false));
         }
         for agent in Table::<GraphAgentRecord>::new(connection).list()? {
-            result.push((agent.id().as_str().to_owned(), agent.value().clone(), true));
+            let id = agent.id().clone();
+            result.push((id, agent.into_value(), true));
         }
         Ok(result)
     }
@@ -319,5 +320,49 @@ inventory::submit! {
     crate::repositories::SchemaRegistration {
         repository: "coordination",
         requirements: &REQUIREMENTS,
+    }
+}
+
+#[cfg(test)]
+mod graph_agent_tests {
+    use super::CoordinationRepository;
+    use crate::StoreError;
+    use rusqlite::Connection;
+    use serde_json::json;
+
+    #[test]
+    fn graph_agent_projection_preserves_last_duplicate_and_checks_row_identity() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL); CREATE TABLE graph_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL);").unwrap();
+        connection
+            .execute(
+                "INSERT INTO graph_agents VALUES(?1,?2)",
+                [
+                    "",
+                    r#"{"id":"discarded","id":"","opaque":{"nested":[1,null]},"number":1.0}"#,
+                ],
+            )
+            .unwrap();
+        let agents = CoordinationRepository::agents(&connection).unwrap();
+        assert_eq!(
+            agents,
+            vec![(
+                "".into(),
+                json!({"id":"","opaque":{"nested":[1,null]},"number":1.0}),
+                true
+            )]
+        );
+        for raw in [r#"{"id":"other"}"#, r#"{"id":null}"#, r#"{}"#, r#"[]"#] {
+            connection
+                .execute("UPDATE graph_agents SET record=?1 WHERE id=''", [raw])
+                .unwrap();
+            assert!(matches!(
+                CoordinationRepository::agents(&connection),
+                Err(StoreError::InvalidStoredObject {
+                    table: "graph_agents",
+                    ..
+                })
+            ));
+        }
     }
 }

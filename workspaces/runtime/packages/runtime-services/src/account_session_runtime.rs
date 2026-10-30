@@ -285,59 +285,60 @@ pub enum LimitsDecision {
 }
 
 /// Schema-checked response retaining absent/null fields and provider extensions.
-pub struct LimitsSnapshot(Value);
+pub struct LimitsSnapshot {
+    value: Value,
+    response: studio_runtime_schema::usage_limits::UsageLimitsResponse,
+}
 impl LimitsSnapshot {
     pub fn read(account: &str, value: Value) -> Result<Self, AccountSessionError> {
-        let invalid = studio_runtime_schema::first_error(
-            "workspace-usage-limits/UsageLimitsResponse",
-            &value,
-        )
-        .map_err(|_| AccountSessionError::InvalidResponse("/".into()))?;
-        if let Some((pointer, _)) = invalid {
-            return Err(AccountSessionError::InvalidResponse(pointer));
-        }
-        if value.get("accountKey").is_some_and(|key| key != account) {
+        let studio_runtime_schema::json_object::JsonObject(response): studio_runtime_schema::json_object::JsonObject<studio_runtime_schema::usage_limits::UsageLimitsResponse> =
+            serde_path_to_error::deserialize(&value).map_err(|error| {
+                let mut pointer = String::new();
+                for segment in error.path() {
+                    let part = match segment {
+                        serde_path_to_error::Segment::Map { key } => key.clone(),
+                        serde_path_to_error::Segment::Seq { index } => index.to_string(),
+                        serde_path_to_error::Segment::Enum { variant } => variant.clone(),
+                        serde_path_to_error::Segment::Unknown => continue,
+                    };
+                    pointer.push('/');
+                    pointer.push_str(&part.replace('~', "~0").replace('/', "~1"));
+                }
+                AccountSessionError::InvalidResponse(if pointer.is_empty() { "/".into() } else { pointer })
+            })?;
+        if response.account_key != account {
             return Err(AccountSessionError::InvalidResponse("/accountKey".into()));
         }
-        Ok(Self(value))
+        Ok(Self { value, response })
     }
     fn is_fresh_for_provider(&self, now: f64) -> bool {
-        let error = self
-            .0
-            .get("error")
-            .and_then(Value::as_str)
-            .is_some_and(|value| !value.is_empty());
-        if error {
-            return self
-                .0
-                .get("checkedAt")
-                .and_then(Value::as_f64)
-                .is_some_and(|checked_at| {
-                    checked_at > 0.0 && now - checked_at < ACCOUNT_LIMITS_ERROR_RETRY_SECONDS
-                });
+        if self
+            .response
+            .error
+            .as_deref()
+            .is_some_and(|error| !error.is_empty())
+        {
+            return self.response.checked_at.is_some_and(|checked_at| {
+                checked_at > 0.0 && now - checked_at < ACCOUNT_LIMITS_ERROR_RETRY_SECONDS
+            });
         }
         let at_is_fresh = self
-            .0
-            .get("at")
-            .and_then(Value::as_f64)
+            .response
+            .at
             .is_some_and(|at| at > 0.0 && now - at < ACCOUNT_LIMITS_WINDOW_FRESH_SECONDS);
-        let read_at_is_fresh =
-            self.0
-                .get("readAt")
-                .and_then(Value::as_f64)
-                .is_some_and(|read_at| {
-                    read_at > 0.0 && now - read_at < ACCOUNT_LIMITS_FULL_READ_FRESH_SECONDS
-                });
+        let read_at_is_fresh = self.response.read_at.is_some_and(|read_at| {
+            read_at > 0.0 && now - read_at < ACCOUNT_LIMITS_FULL_READ_FRESH_SECONDS
+        });
         at_is_fresh && read_at_is_fresh
     }
 
     pub fn decision(&self, cached: bool, now: f64) -> LimitsDecision {
-        let data = self.0.get("data").is_some_and(|value| !value.is_null());
+        let data = self.response.data.is_some();
         let error = self
-            .0
-            .get("error")
-            .and_then(Value::as_str)
-            .is_some_and(|value| !value.is_empty());
+            .response
+            .error
+            .as_deref()
+            .is_some_and(|error| !error.is_empty());
         if (cached && (data || error)) || self.is_fresh_for_provider(now) {
             LimitsDecision::Cached
         } else if data {
@@ -347,7 +348,7 @@ impl LimitsSnapshot {
         }
     }
     pub fn into_value(self) -> Value {
-        self.0
+        self.value
     }
 }
 
@@ -1807,7 +1808,7 @@ async fn read_limits_with_freshness(
         .accounts
         .iter()
         .chain(&snapshot.archived_accounts)
-        .any(|row| row["id"] == account)
+        .any(|row| row.id.as_str() == Some(account))
     {
         return Err(AccountSessionError::Refused("Unknown Codex account"));
     }
@@ -1980,22 +1981,66 @@ fn public_login(mut receipt: Value) -> Value {
     }
     receipt
 }
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ClaudeProfileInput {
+    binary_path: Option<String>,
+    config_dir: Option<String>,
+    #[serde(default)]
+    custom_models: Vec<ClaudeModelInput>,
+    auto_compact_window: Option<ClaudeWindowInput>,
+    #[serde(default)]
+    launch_args: String,
+    #[serde(flatten)]
+    extensions: serde_json::Map<String, Value>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ClaudeWindowInput {
+    Text(String),
+    Number(serde_json::Number),
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ClaudeModelInput {
+    Name(String),
+    Model(ClaudeModelObject),
+}
+
+#[derive(Deserialize)]
+struct ClaudeModelObject {
+    id: String,
+    label: Option<String>,
+    #[serde(flatten)]
+    extensions: serde_json::Map<String, Value>,
+}
+
 pub fn normalize_profile(
-    mut options: serde_json::Map<String, Value>,
+    options: serde_json::Map<String, Value>,
     home: &Path,
 ) -> Result<serde_json::Map<String, Value>, AccountSessionError> {
     let invalid = || AccountSessionError::Refused("Invalid Claude profile options");
-    if options.keys().any(|key| {
-        !matches!(
-            key.as_str(),
-            "binaryPath" | "configDir" | "customModels" | "autoCompactWindow" | "launchArgs"
-        )
-    }) {
+    // Path fields reject explicit null, whereas omitted fields are allowed.
+    if ["configDir", "binaryPath"]
+        .iter()
+        .any(|key| options.get(*key) == Some(&Value::Null))
+    {
         return Err(invalid());
     }
-    for field in ["configDir", "binaryPath"] {
-        if let Some(value) = options.remove(field) {
-            let value = value.as_str().ok_or_else(invalid)?.trim();
+    let input: ClaudeProfileInput =
+        serde::Deserialize::deserialize(Value::Object(options)).map_err(|_| invalid())?;
+    if !input.extensions.is_empty() || input.custom_models.len() > 100 {
+        return Err(invalid());
+    }
+    let mut options = serde_json::Map::new();
+    for (field, value) in [
+        ("configDir", input.config_dir),
+        ("binaryPath", input.binary_path),
+    ] {
+        if let Some(value) = value {
+            let value = value.trim();
             if value.contains('\0') {
                 return Err(invalid());
             }
@@ -2020,80 +2065,54 @@ pub fn normalize_profile(
             }
         }
     }
-    let models = options
-        .entry("customModels")
-        .or_insert_with(|| serde_json::json!([]))
-        .as_array_mut()
-        .ok_or_else(invalid)?;
-    if models.len() > 100 {
-        return Err(invalid());
-    }
     let identifier =
         regex::Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,199}$").map_err(|_| invalid())?;
     let mut seen = std::collections::BTreeSet::new();
-    for model in models {
-        if let Some(id) = model.as_str() {
-            *model = serde_json::json!({"id":id,"label":id});
-        }
-        let object = model.as_object_mut().ok_or_else(invalid)?;
-        if object
-            .keys()
-            .any(|key| !matches!(key.as_str(), "id" | "label"))
-        {
-            return Err(invalid());
-        }
-        let id = object
-            .get("id")
-            .and_then(Value::as_str)
-            .ok_or_else(invalid)?
-            .to_owned();
+    let mut models = Vec::new();
+    for model in input.custom_models {
+        let (id, label) = match model {
+            ClaudeModelInput::Name(id) => (id, None),
+            ClaudeModelInput::Model(model) if model.extensions.is_empty() => {
+                (model.id, model.label)
+            }
+            ClaudeModelInput::Model(_) => return Err(invalid()),
+        };
         if !identifier.is_match(&id) || !seen.insert(id.clone()) {
             return Err(invalid());
         }
-        let label = match object.get("label") {
-            None | Some(Value::Null) => id.as_str(),
-            Some(Value::String(label)) if label.is_empty() => id.as_str(),
-            Some(Value::String(label)) => label.as_str(),
-            _ => return Err(invalid()),
-        };
+        let label = label
+            .as_deref()
+            .filter(|label| !label.is_empty())
+            .unwrap_or(&id);
         if label.trim().is_empty() || label.chars().count() > 200 {
             return Err(invalid());
         }
-        let label = label.trim().to_owned();
-        object.insert("label".into(), Value::String(label));
+        models.push(serde_json::json!({"id":id,"label":label.trim()}));
     }
-    if let Some(window) = options.remove("autoCompactWindow")
-        && !window.is_null()
-        && window != ""
-    {
-        let text = window
-            .as_str()
-            .map(str::to_owned)
-            .unwrap_or_else(|| window.to_string());
-        if !text.bytes().all(|value| value.is_ascii_digit()) {
-            return Err(invalid());
+    options.insert("customModels".into(), Value::Array(models));
+    if let Some(window) = input.auto_compact_window {
+        let text = match window {
+            ClaudeWindowInput::Text(value) => value,
+            ClaudeWindowInput::Number(value) => value.to_string(),
+        };
+        if !text.is_empty() {
+            if !text.bytes().all(|value| value.is_ascii_digit()) {
+                return Err(invalid());
+            }
+            let value: u64 = text.parse().map_err(|_| invalid())?;
+            if !(100_000..=1_000_000).contains(&value) {
+                return Err(invalid());
+            }
+            options.insert("autoCompactWindow".into(), serde_json::json!(value));
         }
-        let value: u64 = text.parse().map_err(|_| invalid())?;
-        if !(100_000..=1_000_000).contains(&value) {
-            return Err(invalid());
-        }
-        options.insert("autoCompactWindow".into(), serde_json::json!(value));
     }
-    let args = match options.get("launchArgs") {
-        None => "",
-        Some(Value::String(args)) if args.chars().count() <= 4096 => args.as_str(),
-        _ => return Err(invalid()),
-    };
-    let tokens = shlex::split(args).ok_or_else(invalid)?;
-    let args = shlex::try_join(tokens.iter().map(String::as_str)).map_err(|_| invalid())?;
-    options.insert("launchArgs".into(), Value::String(args));
-    let value = Value::Object(options.clone());
-    if !studio_runtime_schema::validate("account-registry/ClaudeOptionsRecord", &value)
-        .map_err(|_| invalid())?
-    {
+    if input.launch_args.chars().count() > 4096 {
         return Err(invalid());
     }
-    crate::claude_bridge::bridge_options(&value).map_err(|_| invalid())?;
+    let tokens = shlex::split(&input.launch_args).ok_or_else(invalid)?;
+    let args = shlex::try_join(tokens.iter().map(String::as_str)).map_err(|_| invalid())?;
+    crate::claude_bridge::bridge_launch_args(&args).map_err(|_| invalid())?;
+    options.insert("launchArgs".into(), Value::String(args));
     Ok(options)
 }
 

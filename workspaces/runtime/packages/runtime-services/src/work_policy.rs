@@ -14,7 +14,7 @@ pub enum WorkPolicyError {
 
 pub struct PreparedQueueItem {
     event: StoredQueueEvent,
-    metadata: Value,
+    metadata: studio_runtime_store::EventMetadataRecord,
 }
 
 pub struct PreparedQueue {
@@ -26,7 +26,7 @@ pub fn work_list(root: &str, records: &[WorkItemRecord]) -> Value {
     let statuses = work_statuses(records);
     let items = records
         .iter()
-        .filter(|item| item.value()["rootId"] == root)
+        .filter(|item| item.root_id() == Some(root))
         .map(|item| work_item_view(item, &statuses))
         .collect::<Vec<_>>();
     json!({"items": items, "tasks": items})
@@ -40,7 +40,7 @@ pub fn work_statuses(records: &[WorkItemRecord]) -> BTreeMap<String, WorkStatus>
 }
 
 pub fn work_item_view(item: &WorkItemRecord, statuses: &BTreeMap<String, WorkStatus>) -> Value {
-    let mut view = item.value().clone();
+    let mut view = item.value();
     if let Some(fields) = view.as_object_mut() {
         for private in ["archiveIntent", "vmSubmit", "vmAccept", "resultFailures"] {
             fields.remove(private);
@@ -66,15 +66,9 @@ pub fn prepare_queue(events: Vec<StoredQueueEvent>) -> Result<PreparedQueue, Wor
         if !event.valid {
             return Err(invalid("runtime_events", &event.id));
         }
-        let metadata = event.metadata.clone().unwrap_or_else(|| json!({}));
-        let Some(metadata_object) = metadata.as_object() else {
-            return Err(invalid("runtime_event_meta", &event.id));
-        };
-        if let Some(assets) = metadata_object.get("assets") {
-            for value in assets
-                .as_array()
-                .ok_or_else(|| invalid("runtime_event_meta", &event.id))?
-            {
+        let metadata = event.metadata.clone().unwrap_or_default();
+        if let Some(assets) = &metadata.assets {
+            for value in assets {
                 asset_ids.push(
                     value
                         .as_str()
@@ -102,11 +96,7 @@ pub fn queue_items(
         .map(|prepared| {
             let event = prepared.event;
             let metadata = prepared.metadata;
-            let ids = metadata
-                .get("assets")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten();
+            let ids = metadata.assets.iter().flatten();
             let attachments = ids
                 .map(|value| {
                     let id = value.as_str().expect("validated queue asset id");
@@ -116,18 +106,24 @@ pub fn queue_items(
                         .ok_or_else(|| invalid("runtime_assets", id))
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            let delivery = metadata
-                .get("delivery")
-                .cloned()
-                .unwrap_or_else(|| json!("queue"));
+            let delivery = match &metadata.delivery {
+                studio_runtime_schema::queue_command::Field::Missing => json!("queue"),
+                other @ (studio_runtime_schema::queue_command::Field::Null
+                | studio_runtime_schema::queue_command::Field::Value(_)) => json!(other),
+            };
+            let requested = match &metadata.requested_delivery {
+                studio_runtime_schema::queue_command::Field::Missing => delivery.clone(),
+                other @ (studio_runtime_schema::queue_command::Field::Null
+                | studio_runtime_schema::queue_command::Field::Value(_)) => json!(other),
+            };
             let mut item = json!({
                 "id": event.id, "kind": event.kind, "text": event.text,
                 "status": event.status, "created": event.created,
                 "error": event.error, "assets": attachments,
                 "delivery": delivery,
-                "requestedDelivery": metadata.get("requestedDelivery").cloned().unwrap_or(delivery),
+                "requestedDelivery": requested,
             });
-            if let Some(accepted) = metadata.get("acceptedAt") {
+            if let Some(accepted) = metadata.extensions.get("acceptedAt") {
                 item["acceptedAt"] = accepted.clone();
             }
             Ok(item)
@@ -150,7 +146,7 @@ mod tests {
 
     #[test]
     fn work_public_projection_excludes_private_effect_authority() {
-        let record=studio_runtime_store::WorkItemRecord::checked(json!({"id":"work","rootId":"root","status":"accepted","dependencies":[],"title":"Title","archiveIntent":{"publicAdmission":{"id":"private"}},"vmSubmit":{"publicAdmission":{"id":"private"}},"vmAccept":{"publicAdmission":{"id":"private"}},"resultFailures":{"errors":[]}})).expect("owner");
+        let record=studio_runtime_store::WorkItemRecord::checked(&json!({"id":"work","rootId":"root","status":"accepted","dependencies":[],"title":"Title","archiveIntent":{"publicAdmission":{"id":"private"}},"vmSubmit":{"publicAdmission":{"id":"private"}},"vmAccept":{"publicAdmission":{"id":"private"}},"resultFailures":{"errors":[]}})).expect("owner");
         let view = super::work_item_view(&record, &std::collections::BTreeMap::new());
         assert_eq!(view["title"], "Title");
         assert!(!view.to_string().contains("private"));
@@ -182,7 +178,6 @@ mod tests {
                 .as_array()
                 .expect("work records are an array")
                 .iter()
-                .cloned()
                 .map(studio_runtime_store::WorkItemRecord::checked)
                 .collect::<Result<Vec<_>, _>>()
                 .expect("typed records"),
@@ -208,7 +203,10 @@ mod tests {
             status: "pending".into(),
             created: 1.0,
             error: None,
-            metadata: Some(json!({"assets":["asset"]})),
+            metadata: Some(
+                studio_runtime_store::EventMetadataRecord::from_value(json!({"assets":["asset"]}))
+                    .unwrap(),
+            ),
             valid: true,
         }])
         .expect("queue event is valid");

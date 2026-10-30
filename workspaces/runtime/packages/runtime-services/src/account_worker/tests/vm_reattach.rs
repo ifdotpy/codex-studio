@@ -98,13 +98,28 @@ async fn edit_actor(state: &State, changes: Value) {
                     let mut record =
                         AgentRepository::get(tx, &AgentId::from(actor.as_str()))?.unwrap();
                     for (key, value) in changes.as_object().unwrap() {
-                        if key == "epoch" {
-                            record.epoch = value.as_i64().unwrap();
-                        } else {
-                            record.extra.insert(key.clone(), value.clone());
+                        match key.as_str() {
+                            "epoch" => record.epoch = value.as_i64().unwrap(),
+                            "accountKey" => record.account_key = value.as_str().unwrap().to_owned(),
+                            "threadId" => record.thread_id = value.as_str().map(str::to_owned),
+                            "turnId" => record.turn_id = value.as_str().map(str::to_owned),
+                            _ => {
+                                record.extra.insert(key.clone(), value.clone());
+                            }
                         }
                     }
-                    AgentRepository::put(tx, &record)
+                    AgentRepository::put(tx, &record)?;
+                    let written = AgentRepository::get(tx, &AgentId::from(actor.as_str()))?
+                        .unwrap()
+                        .value();
+                    for (key, value) in changes.as_object().unwrap() {
+                        assert_eq!(
+                            written.get(key),
+                            Some(value),
+                            "fixture failed to write {key}"
+                        );
+                    }
+                    Ok(())
                 })
                 .await?;
             Ok(())
