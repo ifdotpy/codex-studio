@@ -683,7 +683,7 @@ mod tests {
         let db = Connection::open_in_memory().unwrap();
         db.execute_batch("CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,record TEXT);")
             .unwrap();
-        let agent = AgentRecord::from_value(json!({"id":"worker","provider":"codex","rootId":"lead","epoch":4,"status":"paused","activeExecution":{"runId":"run","attemptId":null}})).unwrap();
+        let agent = AgentRecord::from_value(json!({"accountKey":"default","id":"worker","provider":"codex","rootId":"lead","epoch":4,"status":"paused","activeExecution":{"runId":"run","attemptId":null}})).unwrap();
         let raw = r#"{"id":"wrong","id":"run","agent":"wrong","agent":"worker","accountKey":"default","epoch":4.0,"epoch":4,"status":"bad","status":"running","created":1}"#;
         db.execute("INSERT INTO runtime_execution_runs VALUES('run',?1)", [raw])
             .unwrap();

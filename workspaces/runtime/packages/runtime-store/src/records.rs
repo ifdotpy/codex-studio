@@ -3140,14 +3140,14 @@ mod agent_projection_tests {
     }
 
     #[test]
-    fn stored_agent_account_key_defaults_only_when_missing() {
+    fn stored_agent_account_key_must_be_present() {
         let db = Connection::open_in_memory().unwrap();
         db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
             .unwrap();
         db.execute_batch(crate::agent_volatile::agent_volatile_table_sql())
             .unwrap();
         for (account, valid) in [
-            (None, true),
+            (None, false),
             (Some(json!(null)), false),
             (Some(json!(12)), false),
             (Some(json!("custom")), true),
@@ -3166,7 +3166,7 @@ mod agent_projection_tests {
             if valid {
                 assert_eq!(
                     result.unwrap().unwrap().account_key,
-                    raw["accountKey"].as_str().unwrap_or("default")
+                    raw["accountKey"].as_str().unwrap()
                 );
             }
         }

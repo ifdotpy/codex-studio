@@ -1099,6 +1099,9 @@ mod tests {
     use tempfile::tempdir;
 
     fn typed_actor(mut value: Value) -> AgentRecord {
+        if value.get("accountKey").is_none() {
+            value["accountKey"] = json!("default");
+        }
         value["rootId"] = value["id"].clone();
         value["epoch"] = json!(0);
         value["status"] = json!("idle");

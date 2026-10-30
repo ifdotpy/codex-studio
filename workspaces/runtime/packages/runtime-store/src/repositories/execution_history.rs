@@ -813,7 +813,7 @@ mod tests {
     fn malformed_recovery_turn_does_not_match_missing_run_turn() {
         let raw = r#"{"id":"run","agent":"agent","accountKey":"default","epoch":1,"created":1,"status":"running","turnId":null}"#;
         let mut run = decode("runtime_execution_runs", "run", raw).unwrap();
-        let agent = AgentRecord::from_value(json!({"id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"idle","disconnectRecovery":{"turnId":false}})).unwrap();
+        let agent = AgentRecord::from_value(json!({"accountKey":"default","id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"idle","disconnectRecovery":{"turnId":false}})).unwrap();
         merge_recovery(&mut run, &agent);
         assert!(!run.extra.contains_key("disconnectRecovery"));
         for (marker, accepted) in [
@@ -823,7 +823,7 @@ mod tests {
             (json!({"turnId":"other"}), false),
         ] {
             run.extra.clear();
-            let agent = AgentRecord::from_value(json!({"id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"idle","disconnectRecovery":marker})).unwrap();
+            let agent = AgentRecord::from_value(json!({"accountKey":"default","id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"idle","disconnectRecovery":marker})).unwrap();
             merge_recovery(&mut run, &agent);
             assert_eq!(run.extra.contains_key("disconnectRecovery"), accepted);
         }
@@ -959,7 +959,7 @@ mod tests {
         let raw = r#"{"id":"run","agent":"agent","accountKey":"default","epoch":1,"created":1,"status":"running","firstAttemptId":false,"rootAttemptId":{"future":true}}"#;
         db.execute("INSERT INTO runtime_execution_runs VALUES('run',?1)", [raw])
             .unwrap();
-        let agent = AgentRecord::from_value(json!({"id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"idle","activeExecution":{"runId":"run","attemptId":null}})).unwrap();
+        let agent = AgentRecord::from_value(json!({"accountKey":"default","id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"idle","activeExecution":{"runId":"run","attemptId":null}})).unwrap();
         assert_eq!(
             crate::repositories::work_items::WorkItemsRepository::submission_identity(&db, &agent)
                 .unwrap(),

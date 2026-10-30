@@ -1353,8 +1353,8 @@ mod tests {
     async fn branch_history_copy_preserves_partial_rows_and_rolls_back_missing_assets() {
         let root = tempfile::tempdir().unwrap();
         let store = RuntimeStore::open(Some(root.path())).await.unwrap();
-        let source = json!({"id":"source","rootId":"source","epoch":0,"status":"idle","provider":"codex","cwd":root.path(),"workspaceReservationId":"op"});
-        let child = json!({"id":"child","rootId":"child","epoch":0,"status":"idle","provider":"codex","cwd":root.path()});
+        let source = json!({"accountKey":"default","id":"source","rootId":"source","epoch":0,"status":"idle","provider":"codex","cwd":root.path(),"workspaceReservationId":"op"});
+        let child = json!({"accountKey":"default","id":"child","rootId":"child","epoch":0,"status":"idle","provider":"codex","cwd":root.path()});
         let source_identity = CheckpointsRepository::workspace_source(&source);
         let asset_path = root.path().join("file.txt");
         store.transaction(move |tx| {

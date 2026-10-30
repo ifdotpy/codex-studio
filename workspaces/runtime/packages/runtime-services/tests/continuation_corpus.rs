@@ -5,7 +5,7 @@ use studio_runtime_services::{capacity_retry, continuation::Snapshot};
 fn capacity_wait_accepts_usage_record_with_matching_embedded_id() {
     let retry = json!({"id":"same","accountKey":"default","threadId":"thread","epoch":1,"turnId":"turn","status":"scheduled","cause":"serverOverloaded","cwd":"","settings":{},"attempt":1,"maxAttempts":4});
     let usage = json!({"id":"same","accountKey":"default","threadId":"thread","epoch":1,"turnId":"turn","status":"scheduled","cause":"auth","failedAt":10});
-    let snapshot = Snapshot::from_records(json!({"agent":{"id":"a","rootId":"a","epoch":1,"status":"failed","provider":"codex","capacityRetry":retry},"record":usage})).unwrap();
+    let snapshot = Snapshot::from_records(json!({"agent":{"accountKey":"default","id":"a","rootId":"a","epoch":1,"status":"failed","provider":"codex","capacityRetry":retry},"record":usage})).unwrap();
     let decision =
         capacity_retry::transition(&snapshot, capacity_retry::Action::Wait("wait"), 20.0).unwrap();
     let record = decision.record.unwrap().value();
@@ -69,7 +69,7 @@ fn typed_continuation_snapshot_enforces_schema_bounds() {
 #[test]
 fn continuation_event_identity_keeps_exact_epoch_evidence() {
     let mut input = json!({
-        "agent":{"id":"a","rootId":"a","epoch":1,"status":"running","provider":"codex"},
+        "agent":{"accountKey":"default","id":"a","rootId":"a","epoch":1,"status":"running","provider":"codex"},
         "events":[{"id":"e","agent":"a","epoch":1,"kind":"input","text":"x","status":"pending","created":1}]
     });
     assert!(Snapshot::from_records(input.clone()).is_ok());
