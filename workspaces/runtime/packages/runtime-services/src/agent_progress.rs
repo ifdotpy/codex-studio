@@ -324,7 +324,7 @@ mod tests {
         }
         tasks[0].set_status(WorkStatus::Running);
         for (id, status) in [("m1", "running"), ("m2", "starting"), ("old", "completed")] {
-            connection.execute("INSERT INTO runtime_monitors(id,record) VALUES(?1,?2)",rusqlite::params![id,crate::monitor_policy::complete_test_monitor(json!({"id":id,"agent":"worker","status":status,"command":"just test-fast\nsecond line","created":5,"tail":"old output\nfinal output\n"})).to_string()]).expect("test fixture value");
+            connection.execute("INSERT INTO runtime_monitors(id,record,monitor_status) VALUES(?1,?2,COALESCE(CASE WHEN json_valid(?2) THEN json_extract(?2,'$.status') END,'lost'))",rusqlite::params![id,crate::monitor_policy::complete_test_monitor(json!({"id":id,"agent":"worker","status":status,"command":"just test-fast\nsecond line","created":5,"tail":"old output\nfinal output\n"})).to_string()]).expect("test fixture value");
         }
         let progress = derive(&connection, &agent, &tasks).expect("test fixture value");
         assert!(progress.stall.is_none());
@@ -382,10 +382,10 @@ mod tests {
         let insert = |from: usize| {
             for index in from..from + HISTORY {
                 let id = format!("old-{index}");
-                connection.execute("INSERT INTO runtime_monitors(id,record) VALUES(?1,?2)", rusqlite::params![id, json!({"id":id,"agent":format!("other-{index}"),"status":"completed","command":"old","created":1,"tail":"done"}).to_string()]).expect("test fixture value");
+                connection.execute("INSERT INTO runtime_monitors(id,record,monitor_status) VALUES(?1,?2,COALESCE(CASE WHEN json_valid(?2) THEN json_extract(?2,'$.status') END,'lost'))", rusqlite::params![id, json!({"id":id,"agent":format!("other-{index}"),"status":"completed","command":"old","created":1,"tail":"done"}).to_string()]).expect("test fixture value");
             }
         };
-        connection.execute("INSERT INTO runtime_monitors(id,record) VALUES('live',?1)", [crate::monitor_policy::complete_test_monitor(json!({"id":"live","agent":"worker","status":"running","command":"owner gate","created":5,"tail":"still running"})).to_string()]).expect("test fixture value");
+        connection.execute("INSERT INTO runtime_monitors(id,record,monitor_status) VALUES('live',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))", [crate::monitor_policy::complete_test_monitor(json!({"id":"live","agent":"worker","status":"running","command":"owner gate","created":5,"tail":"still running"})).to_string()]).expect("test fixture value");
         let agent = json!({"id":"worker","status":"idle"});
         insert(0);
         let (small, progress) = derive_work(&connection, &agent);
@@ -417,7 +417,7 @@ mod tests {
             ("other-owner", json!({"id":"other-owner","agent":"other","status":"running","command":"other gate"}).to_string()),
             ("live", crate::monitor_policy::complete_test_monitor(json!({"id":"live","agent":"worker","status":"running","command":"owner gate","tail":"still running"})).to_string()),
         ] {
-            connection.execute("INSERT INTO runtime_monitors(id,record) VALUES(?1,?2)", [id,&raw]).expect("test fixture value");
+            connection.execute("INSERT INTO runtime_monitors(id,record,monitor_status) VALUES(?1,?2,COALESCE(CASE WHEN json_valid(?2) THEN json_extract(?2,'$.status') END,'lost'))", [id,&raw]).expect("test fixture value");
         }
         let progress = derive(&connection, &json!({"id":"worker","status":"idle"}), &[])
             .expect("test fixture value");

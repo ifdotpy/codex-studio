@@ -39,6 +39,7 @@ mod m2026_10_29_model_choices;
 mod m2026_10_29_request_results_v2;
 mod m2026_10_30_agent_volatile;
 pub(crate) mod m2026_10_30_monitor_queue;
+pub(crate) mod m2026_10_30_monitor_status;
 mod m2026_10_30_rule_monitor_records;
 mod m2026_10_30_unused_agent_columns;
 mod m2026_10_30_unused_start_action;
@@ -332,6 +333,16 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| m2026_10_30_monitor_queue::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-monitor-status-column",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Monitor rows with JSON status indexes",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_monitor_status::apply(c.transaction),
     },
     &SqlMigration {
         definition: MigrationDefinition {

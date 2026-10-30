@@ -178,6 +178,11 @@ mod tests {
             monitor.stream_queue = None;
             assert!(crate::Table::<super::MonitorRecord>::new(tx).update(&monitor)?);
             assert!(MonitorsRepository::first_queued_stream(tx)?.is_none());
+            monitor.status = studio_runtime_schema::studio_errors::MonitorStatus::Running;
+            assert!(crate::Table::<super::MonitorRecord>::new(tx).update(&monitor)?);
+            let sql: String = tx.query_row("SELECT sql FROM sqlite_schema WHERE name='runtime_monitor_startup_active'", [], |row| row.get(0))?;
+            assert!(!sql.contains("json_"), "active monitor index must use a plain status column");
+            assert_eq!(crate::StartupRecoveryRepository::active_monitors(tx)?.len(), 1);
             Ok::<_, crate::StoreError>(())
         }).await.expect("typed writes");
     }

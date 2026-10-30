@@ -1816,7 +1816,7 @@ mod recovery_selection_tests {
             json!({"id":"watch","agent":"agent","epoch":3,"status":"running","operation":operation,"streamQueue":[{"kind":"output","cursor":"output:1","operation":operation,"offset":0,"byteLength":1,"deltaBase64":"YQ==","stream":"stdout"}]}),
         );
         tx.execute(
-            "INSERT INTO runtime_monitors(id,record) VALUES('watch',?1)",
+            "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES('watch',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
             [record.to_string()],
         )
         .expect("owner and prior output");
@@ -1913,15 +1913,16 @@ mod recovery_selection_tests {
                     ('duplicate-invalid-last', '{\"status\":\"running\",\"status\":17}'),
                     ('duplicate-unknown-last', '{\"status\":\"running\",\"status\":\"future-status\"}'),
                     ('duplicate-escaped-key', '{\"status\":\"completed\",\"sta\\u0074us\":\"approval\"}'),
-                    ('malformed', '{invalid json}');",
+                    ('malformed', '{invalid json}');
+                 UPDATE runtime_monitors SET monitor_status=CASE WHEN json_valid(record) THEN json_extract(record,'$.status') END;",
             )
             .expect("monitor fixture");
         studio_runtime_store::StartupRecoveryRepository::prepare_indexes(&connection)
             .expect("startup recovery indexes");
         let tx = connection.transaction().expect("fixture transaction");
 
-        // Selection uses SQLite's JSON reader through the startup partial
-        // index: a duplicated key resolves to its first literal occurrence.
+        // The migration uses SQLite's JSON reader to populate the index key:
+        // a duplicated key resolves to its first literal occurrence.
         // No writer produces duplicate keys; malformed rows stay unselected.
         assert_eq!(
             active_monitor_ids(&tx).expect("active monitor selection"),

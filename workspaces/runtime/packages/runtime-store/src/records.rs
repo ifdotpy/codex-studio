@@ -1342,6 +1342,9 @@ impl JsonRecord for MonitorRecord {
             .as_ref()
             .is_some_and(|queue| !queue.is_empty())
     }
+    fn monitor_status(&self) -> Option<&str> {
+        Some(self.status.as_str())
+    }
 }
 pub use studio_runtime_schema::terminal_record::TerminalRecord;
 
@@ -1806,6 +1809,10 @@ pub trait JsonRecord: Serialize + DeserializeOwned {
         false
     }
 
+    fn monitor_status(&self) -> Option<&str> {
+        None
+    }
+
     fn decode_stored(connection: &Connection, row_id: &str, encoded: &str) -> StoreResult<Self> {
         decode_record::<Self>(connection, row_id, encoded)
     }
@@ -2119,8 +2126,8 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
         let encoded = encode_record(record, id)?;
         if R::TABLE == MonitorRecord::TABLE {
             let changed = self.connection.execute(
-                "UPDATE runtime_monitors SET record=?1,stream_pending=?2 WHERE id=?3",
-                params![encoded, record.monitor_stream_pending(), id],
+                "UPDATE runtime_monitors SET record=?1,stream_pending=?2,monitor_status=?3 WHERE id=?4",
+                params![encoded, record.monitor_stream_pending(), record.monitor_status(), id],
             )?;
             return Ok(changed == 1);
         }
@@ -2139,16 +2146,22 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
         let encoded = encode_record(record, id)?;
         if R::TABLE == MonitorRecord::TABLE {
             let conflict = if update {
-                "DO UPDATE SET record=excluded.record,stream_pending=excluded.stream_pending"
+                "DO UPDATE SET record=excluded.record,stream_pending=excluded.stream_pending,monitor_status=excluded.monitor_status"
             } else {
                 "DO NOTHING"
             };
             let sql = format!(
-                "INSERT INTO runtime_monitors(id,record,stream_pending) VALUES (?1,?2,?3) ON CONFLICT(id) {conflict}"
+                "INSERT INTO runtime_monitors(id,record,stream_pending,monitor_status) VALUES (?1,?2,?3,?4) ON CONFLICT(id) {conflict}"
             );
-            let changed = self
-                .connection
-                .execute(&sql, params![id, encoded, record.monitor_stream_pending()])?;
+            let changed = self.connection.execute(
+                &sql,
+                params![
+                    id,
+                    encoded,
+                    record.monitor_stream_pending(),
+                    record.monitor_status()
+                ],
+            )?;
             return Ok(changed == 1);
         }
         let conflict = if update {

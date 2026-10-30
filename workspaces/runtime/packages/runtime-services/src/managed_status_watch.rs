@@ -1508,7 +1508,7 @@ mod tests {
                     )?;
                 }
                 tx.execute(
-                    "INSERT INTO runtime_monitors(id,record) VALUES('m-done',?1)",
+                    "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES('m-done',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
                     [json!({"id":"m-done","agent":"done","epoch":2,"status":"failed","exitCode":9,"error":"failed","requestId":"m-done-request","created":0,"activityAt":0,"activityGeneration":0,"bytes":0,"command":"","cwd":std::env::temp_dir(),"interactive":false,"livenessCommand":"","log":std::env::temp_dir().join("m-done.log"),"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":3600000,"wakeOn":"exit"}).to_string()],
                 )?;
                 Ok::<_, studio_runtime_store::StoreError>(())
@@ -1901,7 +1901,7 @@ mod tests {
         store
             .transaction_with(move |tx| {
                 tx.execute(
-                    "INSERT INTO runtime_monitors(id,record) VALUES('watch-monitor',?1)",
+                    "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES('watch-monitor',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
                     [json!({
                         "id":"watch-monitor",
                         "agent":"lead",
@@ -2065,7 +2065,7 @@ mod tests {
         store
             .transaction_with(|tx| {
                 tx.execute(
-                    "INSERT INTO runtime_monitors(id,record) VALUES('m-live',?1)",
+                    "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES('m-live',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
                     [json!({"id":"m-live","agent":"queued","epoch":4,"status":"running","requestId":"m-live-request","created":0,"activityAt":0,"activityGeneration":0,"bytes":0,"command":"","cwd":std::env::temp_dir(),"interactive":false,"livenessCommand":"","log":std::env::temp_dir().join("m-live.log"),"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":3600000,"wakeOn":"exit"}).to_string()],
                 )?;
                 Ok::<_, StoreError>(())
@@ -2081,7 +2081,7 @@ mod tests {
         store
             .transaction_with(|tx| {
                 tx.execute(
-                    "INSERT INTO runtime_monitors(id,record) VALUES('m-stranger',?1)",
+                    "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES('m-stranger',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
                     [
                         json!({"id":"m-stranger","agent":"stranger","status":"running"})
                             .to_string(),
@@ -2089,7 +2089,7 @@ mod tests {
                 )?;
                 // The payload id differs from the row id, so decoding fails.
                 tx.execute(
-                    "INSERT INTO runtime_monitors(id,record) VALUES('m-corrupt',?1)",
+                    "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES('m-corrupt',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
                     [json!({"id":"other","agent":"stranger","status":"failed"}).to_string()],
                 )?;
                 Ok::<_, StoreError>(())

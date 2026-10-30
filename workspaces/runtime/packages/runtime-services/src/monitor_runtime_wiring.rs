@@ -2049,7 +2049,7 @@ mod tests {
         store
             .transaction_with(|tx| {
                 tx.execute(
-                    "INSERT INTO runtime_monitors(id,record) VALUES ('m',?1)",
+                    "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES ('m',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
                     [
                         serde_json::json!({"id":"m","agent":"claude-agent","status":"running"})
                             .to_string(),
@@ -2244,7 +2244,7 @@ mod tests {
         let (_root, store, port) = fixture().await;
         insert_active_owner(&store).await;
         store.transaction_with(|tx| {
-            tx.execute("INSERT INTO runtime_monitors(id,record) VALUES ('watch',?1)",
+            tx.execute("INSERT INTO runtime_monitors(id,record,monitor_status) VALUES ('watch',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
                 [serde_json::json!({"id":"watch","agent":"owner","epoch":0,"status":"running","requestId":"request","created":0,"activityAt":0,"activityGeneration":0,"bytes":0,"command":"","cwd":std::env::temp_dir(),"interactive":false,"livenessCommand":"","log":std::env::temp_dir().join("watch.log"),"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":3600000,"wakeOn":"exit","outputEventIds":["event"]}).to_string()])?;
             tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES ('event','owner','user','invalid','pending',0,0)", [])?;
             Ok::<_,studio_runtime_store::StoreError>(())
@@ -2270,7 +2270,7 @@ mod tests {
         let (_root, store, port) = fixture().await;
         insert_active_owner(&store).await;
         store.transaction_with(|tx| {
-            tx.execute("INSERT INTO runtime_monitors(id,record) VALUES ('watch',?1)",
+            tx.execute("INSERT INTO runtime_monitors(id,record,monitor_status) VALUES ('watch',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
                 [serde_json::json!({"id":"watch","agent":"owner","epoch":0,"status":"running","requestId":"request","created":0,"activityAt":0,"activityGeneration":0,"bytes":0,"command":"","cwd":std::env::temp_dir(),"interactive":false,"livenessCommand":"","log":std::env::temp_dir().join("watch.log"),"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":3600000,"wakeOn":"exit"}).to_string()])?;
             Ok::<_,studio_runtime_store::StoreError>(())
         }).await.unwrap();
@@ -2319,7 +2319,7 @@ mod tests {
         let (_root, store, port) = fixture().await;
         insert_active_owner(&store).await;
         store.transaction_with(|tx| {
-            tx.execute("INSERT INTO runtime_monitors(id,record) VALUES ('watch',?1)",
+            tx.execute("INSERT INTO runtime_monitors(id,record,monitor_status) VALUES ('watch',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
                 [serde_json::json!({"id":"watch","agent":"owner","epoch":0,"status":"running","requestId":"request","created":0,"activityAt":0,"activityGeneration":0,"bytes":0,"command":"","cwd":std::env::temp_dir(),"interactive":false,"livenessCommand":"","log":std::env::temp_dir().join("watch.log"),"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":3600000,"wakeOn":"exit"}).to_string()])?;
             Ok::<_,studio_runtime_store::StoreError>(())
         }).await.unwrap();
@@ -2571,7 +2571,7 @@ mod tests {
                 for index in 0..count {
                     let id = format!("late-{index:03}");
                     tx.execute(
-                        "INSERT INTO runtime_monitors(id,record) VALUES (?1,?2)",
+                        "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES (?1,?2,COALESCE(CASE WHEN json_valid(?2) THEN json_extract(?2,'$.status') END,'lost'))",
                         (
                             &id,
                             crate::monitor_policy::complete_test_monitor(serde_json::json!({
@@ -2629,7 +2629,7 @@ mod tests {
                     let id = format!("monitor-{index:03}");
                     let activity_at = if index == 64 { 0.0 } else { 100.0 };
                     tx.execute(
-                        "INSERT INTO runtime_monitors(id,record) VALUES (?1,?2)",
+                        "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES (?1,?2,COALESCE(CASE WHEN json_valid(?2) THEN json_extract(?2,'$.status') END,'lost'))",
                         (
                             &id,
                             crate::monitor_policy::complete_test_monitor(serde_json::json!({
@@ -2670,7 +2670,7 @@ mod tests {
         for expected_probes in 1..=2 {
             store.transaction_with(|tx| {
                 tx.execute(
-                    "INSERT INTO runtime_monitors(id,record) VALUES ('monitor',?1) ON CONFLICT(id) DO UPDATE SET record=excluded.record",
+                    "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES ('monitor',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost')) ON CONFLICT(id) DO UPDATE SET record=excluded.record,monitor_status=excluded.monitor_status",
                     [crate::monitor_policy::complete_test_monitor(serde_json::json!({
                         "id":"monitor","agent":"owner","epoch":0,"status":"running",
                         "created":0.0,"activityAt":0.0,"activityGeneration":1,
@@ -2699,7 +2699,7 @@ mod tests {
                 for index in 0..monitor_count {
                     let id = format!("monitor-{index:04}");
                     tx.execute(
-                        "INSERT INTO runtime_monitors(id,record) VALUES (?1,?2)",
+                        "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES (?1,?2,COALESCE(CASE WHEN json_valid(?2) THEN json_extract(?2,'$.status') END,'lost'))",
                         (
                             &id,
                             crate::monitor_policy::complete_test_monitor(serde_json::json!({
@@ -2768,7 +2768,7 @@ mod tests {
                         active_at
                     };
                     tx.execute(
-                        "INSERT INTO runtime_monitors(id,record) VALUES (?1,?2)",
+                        "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES (?1,?2,COALESCE(CASE WHEN json_valid(?2) THEN json_extract(?2,'$.status') END,'lost'))",
                         (
                             &id,
                             crate::monitor_policy::complete_test_monitor(serde_json::json!({
@@ -2914,7 +2914,7 @@ mod tests {
                     [serde_json::json!({"id":"owner","provider":studio_runtime_schema::ProviderKind::Codex,"epoch":1,"autoWake":true}).to_string()],
                 )?;
                 tx.execute(
-                    "INSERT INTO runtime_monitors(id,record) VALUES ('watch',?1)",
+                    "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES ('watch',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
                     [serde_json::json!({
                         "id":"watch","agent":"owner","epoch":1,"status":"running",
                         "created":90.0,"activityAt":100.0,"activityGeneration":2,
@@ -3023,7 +3023,7 @@ mod tests {
         store
             .transaction_with(|tx| {
                 tx.execute(
-                    "INSERT INTO runtime_monitors(id,record) VALUES ('legacy-monitor',?1)",
+                    "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES ('legacy-monitor',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
                     [serde_json::json!({
                         "id":"legacy-monitor","agent":"owner","epoch":0,
                         "status":"running","created":100.0,"activityAt":100.0,
@@ -3049,7 +3049,7 @@ mod tests {
         store
             .transaction_with(|tx| {
                 tx.execute(
-                    "INSERT INTO runtime_monitors(id,record) VALUES ('legacy-probe',?1)",
+                    "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES ('legacy-probe',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
                     [serde_json::json!({
                         "id":"legacy-probe","agent":"owner","epoch":0,
                         "status":"running","created":100.0,"activityAt":100.0,
@@ -3346,7 +3346,7 @@ mod tests {
         store
             .transaction_with(|tx| {
                 tx.execute(
-                    "INSERT INTO runtime_monitors(id,record) VALUES ('cancel',?1)",
+                    "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES ('cancel',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
                     [serde_json::json!({
                         "id":"cancel","status":"running","cancelRequested":true,
                         "cancelDispatch":{"status":"pending"}
@@ -3389,7 +3389,7 @@ mod tests {
             .transaction_with(move |tx| {
                 for (id, record) in [("fresh", fresh), ("stuck", stuck)] {
                     tx.execute(
-                        "INSERT INTO runtime_monitors(id,record) VALUES (?1,?2)",
+                        "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES (?1,?2,COALESCE(CASE WHEN json_valid(?2) THEN json_extract(?2,'$.status') END,'lost'))",
                         (id, record.to_string()),
                     )?;
                 }

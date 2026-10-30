@@ -177,7 +177,7 @@ mod tests {
         ] {
             let record = complete(json!({"status":status,"outputEventSequence":sequence}));
             db.execute(
-                "INSERT OR REPLACE INTO runtime_monitors(id,record) VALUES('watch',?1)",
+                "INSERT OR REPLACE INTO runtime_monitors(id,record,monitor_status) VALUES('watch',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
                 [record.to_string()],
             )
             .unwrap();
@@ -185,14 +185,14 @@ mod tests {
         }
         let missing = json!({"agent":"owner","epoch":1});
         db.execute(
-            "INSERT OR REPLACE INTO runtime_monitors(id,record) VALUES('watch',?1)",
+            "INSERT OR REPLACE INTO runtime_monitors(id,record,monitor_status) VALUES('watch',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
             [missing.to_string()],
         )
         .unwrap();
         assert!(read_in(&db, "owner", 1, "default", "watch", None, None).is_err());
         let record = complete(json!({"status":"running"}));
         db.execute(
-            "INSERT OR REPLACE INTO runtime_monitors(id,record) VALUES('watch',?1)",
+            "INSERT OR REPLACE INTO runtime_monitors(id,record,monitor_status) VALUES('watch',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
             [record.to_string()],
         )
         .unwrap();
@@ -202,7 +202,7 @@ mod tests {
         assert!(!terminal);
         let record = complete(json!({"status":"completed"}));
         db.execute(
-            "INSERT OR REPLACE INTO runtime_monitors(id,record) VALUES('watch',?1)",
+            "INSERT OR REPLACE INTO runtime_monitors(id,record,monitor_status) VALUES('watch',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
             [record.to_string()],
         )
         .unwrap();
@@ -222,7 +222,7 @@ mod tests {
         )
         .unwrap();
         db.execute(
-            "INSERT INTO runtime_monitors(id,record) VALUES('watch',?1)",
+            "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES('watch',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
             [complete(json!({"outputEventSequence":1,"outputEventIds":["event"]})).to_string()],
         )
         .unwrap();
@@ -261,7 +261,7 @@ mod tests {
             [json!({"id":"owner","epoch":1,"autoWake":true,"accountKey":"target"}).to_string()],
         )
         .expect("transferred owner");
-        db.execute("INSERT INTO runtime_monitors(id,record) VALUES('watch',?1)",[complete(json!({"tail":"kept output","operation":{"agent":"owner","epoch":1,"accountKey":"source","connectionId":"original"}})).to_string()]).expect("original source monitor");
+        db.execute("INSERT INTO runtime_monitors(id,record,monitor_status) VALUES('watch',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",[complete(json!({"tail":"kept output","operation":{"agent":"owner","epoch":1,"accountKey":"source","connectionId":"original"}})).to_string()]).expect("original source monitor");
         let (record, _, terminal) = read_in(&db, "owner", 1, "target", "watch", None, None)
             .expect("read the existing process after transfer");
         assert_eq!(record.record.tail.as_str(), "kept output");
