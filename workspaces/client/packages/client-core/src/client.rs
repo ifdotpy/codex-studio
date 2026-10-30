@@ -330,6 +330,22 @@ mod tests {
         }
     }
     #[tokio::test]
+    async fn retired_navigation_view_is_rejected() {
+        let directory = tempfile::tempdir().unwrap();
+        let client = open(directory.path());
+        let response = client
+            .request(request(
+                "navigation",
+                "view.subscribe",
+                json!({"subscription":"nav","topic":"navigation"}),
+            ))
+            .await
+            .unwrap();
+        assert!(
+            matches!(response.outcome, NativeOutcome::Failure(error) if error.code == "invalid_subscription")
+        );
+    }
+    #[tokio::test]
     async fn sync_open_reaches_identity_backend() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
