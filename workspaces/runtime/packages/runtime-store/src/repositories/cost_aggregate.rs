@@ -1176,6 +1176,83 @@ pub fn cost_groups(
             ))
         })?
         .collect::<Result<BTreeMap<_, _>, _>>()?;
+    for (key, delta) in journal_group_deltas(db, root, partition)? {
+        *groups.entry(key).or_default() += delta;
+    }
+    Ok(groups
+        .into_iter()
+        .filter(|(_, count)| *count > 0)
+        .map(|(key, count)| CostGroup {
+            model: key.model,
+            account_key: key.account,
+            tokens: CostTokens {
+                input_tokens: amount(key.input),
+                cached_input_tokens: amount(key.cached),
+                cache_write_input_tokens: amount(key.cache_write),
+                cache_write_input_1h_tokens: amount(key.cache_write_1h),
+                output_tokens: amount(key.output),
+            },
+            input_uncached: key.uncached,
+            count: count as u64,
+        })
+        .collect())
+}
+
+/// Original and journal-adjusted groups for only the identities affected by receipts.
+pub fn cost_group_adjustments(
+    db: &Connection,
+    root: &str,
+    partition: &JournalPartition,
+) -> StoreResult<Vec<(Option<CostGroup>, Option<CostGroup>)>> {
+    let mut result = Vec::new();
+    let mut query = db.prepare_cached("SELECT count FROM analytics_cost_groups WHERE root=?1 AND model IS ?2 AND account=?3 AND input IS ?4 AND cached IS ?5 AND cache_write IS ?6 AND output IS ?7 AND uncached=?8 AND cache_write_1h IS ?9")?;
+    for (key, delta) in journal_group_deltas(db, root, partition)? {
+        if delta == 0 {
+            continue;
+        }
+        let count = query
+            .query_row(
+                params![
+                    root,
+                    key.model,
+                    key.account,
+                    amount(key.input),
+                    amount(key.cached),
+                    amount(key.cache_write),
+                    amount(key.output),
+                    key.uncached,
+                    amount(key.cache_write_1h)
+                ],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .unwrap_or(0);
+        let group = |count: i64| {
+            (count > 0).then(|| CostGroup {
+                model: key.model.clone(),
+                account_key: key.account.clone(),
+                tokens: CostTokens {
+                    input_tokens: amount(key.input),
+                    cached_input_tokens: amount(key.cached),
+                    cache_write_input_tokens: amount(key.cache_write),
+                    cache_write_input_1h_tokens: amount(key.cache_write_1h),
+                    output_tokens: amount(key.output),
+                },
+                input_uncached: key.uncached,
+                count: count as u64,
+            })
+        };
+        result.push((group(count), group(count + delta)));
+    }
+    Ok(result)
+}
+
+fn journal_group_deltas(
+    db: &Connection,
+    root: &str,
+    partition: &JournalPartition,
+) -> StoreResult<BTreeMap<GroupKey, i64>> {
+    let mut changes = BTreeMap::<GroupKey, i64>::new();
     let mut replaced = HashSet::new();
     let mut scopes = BTreeMap::<String, TurnScopes>::new();
     for (account, thread, response) in &partition.accepted {
@@ -1202,30 +1279,14 @@ pub fn cost_groups(
                 continue;
             }
             if let Some(model) = &row.counted {
-                *groups.entry(row.group_key(model.clone())).or_default() -= 1;
+                *changes.entry(row.group_key(model.clone())).or_default() -= 1;
             }
             if let Some(model) = contribution {
-                *groups.entry(row.group_key(model)).or_default() += 1;
+                *changes.entry(row.group_key(model)).or_default() += 1;
             }
         }
     }
-    Ok(groups
-        .into_iter()
-        .filter(|(_, count)| *count > 0)
-        .map(|(key, count)| CostGroup {
-            model: key.model,
-            account_key: key.account,
-            tokens: CostTokens {
-                input_tokens: amount(key.input),
-                cached_input_tokens: amount(key.cached),
-                cache_write_input_tokens: amount(key.cache_write),
-                cache_write_input_1h_tokens: amount(key.cache_write_1h),
-                output_tokens: amount(key.output),
-            },
-            input_uncached: key.uncached,
-            count: count as u64,
-        })
-        .collect())
+    Ok(changes)
 }
 
 #[cfg(test)]
@@ -2319,6 +2380,10 @@ mod tests {
             }));
             let partition = partition_journal_receipts(tx, &receipts, &receipt_members())?;
             let groups = super::cost_groups(tx, "root", &partition)?;
+            let adjustments = super::cost_group_adjustments(tx, "root", &partition)?;
+            assert_eq!(adjustments.len(), 1);
+            assert_eq!(adjustments[0].0.as_ref().map(|g| g.count), Some(2));
+            assert_eq!(adjustments[0].1.as_ref().map(|g| g.count), Some(1));
             tx.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
             assert_eq!(PARTITIONS.get(), 1, "one receipt partition supplies both journal filtering and grouped costs");
             assert_eq!(groups.iter().map(|group| group.count).sum::<u64>(), 1,
