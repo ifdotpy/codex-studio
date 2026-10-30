@@ -84,8 +84,10 @@ pub fn saved_result(
     let Some(task) = records::get(connection, TABLE, id)? else {
         return Ok(None);
     };
-    if !terminal(&task)? || (read_only(connection, id)? && connection.query_row("SELECT coalesce(json_type(record,'$.result')='object',0) FROM runtime_tool_requests WHERE id=?1", [id], |row| row.get::<_, bool>(0))?) {
-        return Ok(task.get("result").cloned());
+    if (!terminal(&task)? || read_only(connection, id)?)
+        && let Some(result) = task.get("result").filter(|value| !value.is_null())
+    {
+        return Ok(Some(result.clone()));
     }
     let admitted = admitted(&task)?;
     let now = crate::event_write::unix_time()
@@ -700,6 +702,32 @@ pub fn expire(result: &mut Value, now: f64) {
 #[cfg(test)]
 mod admission_lookup_tests {
     use super::*;
+
+    #[test]
+    fn unknown_finished_receipt_reads_externalized_result() {
+        let db = studio_runtime_store::Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE runtime_tool_requests(id TEXT PRIMARY KEY, record TEXT NOT NULL); CREATE TABLE request_results(id TEXT PRIMARY KEY, signature TEXT NOT NULL, result TEXT NOT NULL, created INTEGER NOT NULL);").unwrap();
+        let record = json!({"id":"request", "agent":"agent", "stage":"interrupted", "outcome":"unknown", "finished":1, "admitted":{"id":"request", "signature":"sig", "created":1}});
+        db.execute(
+            "INSERT INTO runtime_tool_requests VALUES(?1,?2)",
+            params!["request", record.to_string()],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO request_results VALUES(?1,?2,?3,?4)",
+            params![
+                "request",
+                "sig",
+                r#"{"actor":null,"reply":{"outcome":"unknown"},"references":[]}"#,
+                i64::MAX
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            saved_result(&db, "request").unwrap(),
+            Some(json!({"outcome":"unknown"}))
+        );
+    }
 
     #[test]
     fn direct_and_alias_lookup_preserve_ownership_and_ambiguity() {
