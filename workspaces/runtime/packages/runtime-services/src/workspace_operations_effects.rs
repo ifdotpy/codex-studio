@@ -40,7 +40,7 @@ pub async fn checkpoint_after_turn(
             ))
         })
         .await?;
-    if !CompletionSnapshot::from_record(&snapshot.agent.record, committed)?.eligible(request) {
+    if !CompletionSnapshot::from_record(&snapshot.agent.value(), committed)?.eligible(request) {
         return Ok(None);
     }
     if let Some(checkpoint) = existing {
@@ -61,7 +61,7 @@ pub async fn checkpoint_after_turn(
     )
     .await
     .map_err(|_| WorkspaceEffectsError::Worker)?;
-    checkpoints::ensure_agent_available(&snapshot.agent)?;
+    checkpoints::ensure_workspace_agent_available(&snapshot.agent)?;
     let transaction_snapshot = snapshot;
     let transaction_agent_id = request.agent_id().to_owned();
     let transaction_turn_id = request.turn_id().map(str::to_owned);

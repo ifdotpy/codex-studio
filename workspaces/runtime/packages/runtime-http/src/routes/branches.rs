@@ -150,7 +150,7 @@ async fn branch(
             })
             .await?
     };
-    let source = snapshot.agent.record.clone();
+    let source = snapshot.agent.value();
     if selected.record.extra("afterRestore").is_some()
         || selected
             .record
