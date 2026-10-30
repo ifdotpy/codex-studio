@@ -404,60 +404,6 @@ pub(crate) fn hide(row: &mut Approval, at: f64) {
     }
 }
 
-// Value-based helpers of the provider card path. Removed with that path (cluster 4).
-pub(crate) fn state_only_delete_allowed(
-    record: &Value,
-    agent_deleted: bool,
-    reject_pending_native: bool,
-) -> Result<bool, QuestionsWriteError> {
-    let is_question = match record.get("method").and_then(Value::as_str) {
-        Some("agent/asyncQuestion" | "item/tool/requestUserInput") => true,
-        Some("mcpServer/elicitation/request") => {
-            record
-                .get("params")
-                .and_then(|params| params.get("mode"))
-                .and_then(Value::as_str)
-                == Some("form")
-        }
-        _ => false,
-    };
-    if !is_question {
-        return Err(QuestionsWriteError::InvalidRequest(
-            "Only a question can be deleted",
-        ));
-    }
-    if agent_deleted {
-        return Err(QuestionsWriteError::InvalidRequest(
-            "This agent was deleted",
-        ));
-    }
-    if event_write::truthy(record.get("deletedAt")) {
-        return Ok(false);
-    }
-    if reject_pending_native
-        && record.get("status").and_then(Value::as_str) == Some(PENDING)
-        && record.get("method").and_then(Value::as_str) != Some("agent/asyncQuestion")
-    {
-        return Err(QuestionsWriteError::QuestionAnswerUnavailable);
-    }
-    if matches!(
-        record.get("status").and_then(Value::as_str),
-        Some("answering" | "uncertain")
-    ) {
-        return Err(QuestionsWriteError::InvalidRequest(
-            "Question delivery is uncertain; wait for its receipt",
-        ));
-    }
-    Ok(true)
-}
-
-pub(crate) fn mark_state_only_deleted(record: &mut Value, deleted_at: f64) {
-    record["status"] = json!("deleted");
-    record["deletedAt"] = json!(deleted_at);
-    record["deletedBy"] = json!(USER);
-    record["deferred"] = json!(false);
-}
-
 pub fn submit_complaint(
     transaction: &Transaction<'_>,
     lead_id: &str,

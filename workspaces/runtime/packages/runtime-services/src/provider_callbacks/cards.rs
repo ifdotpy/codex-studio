@@ -9,8 +9,8 @@ use serde_json::{Map, Value, json};
 use studio_runtime_providers::{ProviderKind, RequestId, ResponseBody};
 use studio_runtime_schema::approvals::{
     AgentId, Answer, Approval, ApprovalId, ApprovalState, CloseReason, CommandId, Decision,
-    Delivery, Detail, ElicitationAction, Hidden, Principal, ProviderObject, Question,
-    QuestionAnswer, QuestionOption, Request, RpcId, Supervisor, Timestamp, TurnId,
+    Delivery, Detail, ElicitationAction, ProviderObject, Question, QuestionAnswer, Request, RpcId,
+    Supervisor, Timestamp, TurnId,
 };
 use studio_runtime_schema::persistence::ExecutionEffectKind;
 use studio_runtime_store::{RuntimeStore, approvals, system_reads as records};
@@ -337,39 +337,12 @@ fn take_text(params: &mut Map<String, Value>, key: &str) -> Option<String> {
     }
 }
 
-fn questions(params: &mut Map<String, Value>) -> Vec<Question> {
-    let Some(Value::Array(list)) = params.remove("questions") else {
-        return Vec::new();
+fn questions(params: &mut Map<String, Value>) -> Result<Vec<Question>, CallbackError> {
+    let Some(list) = params.remove("questions") else {
+        return Ok(Vec::new());
     };
-    list.iter()
-        .enumerate()
-        .map(|(index, question)| {
-            let text = |key: &str| question.get(key).and_then(Value::as_str).map(str::to_owned);
-            Question {
-                id: text("id").unwrap_or_else(|| index.to_string()),
-                question: text("question").unwrap_or_default(),
-                header: text("header"),
-                options: question
-                    .get("options")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|option| {
-                        let text =
-                            |key: &str| option.get(key).and_then(Value::as_str).map(str::to_owned);
-                        Some(QuestionOption {
-                            label: text("label")?,
-                            description: text("description"),
-                            preview: text("preview"),
-                        })
-                    })
-                    .collect(),
-                is_secret: studio_runtime_store::truthy(question.get("isSecret")),
-                multi_select: question.get("multiSelect").and_then(Value::as_bool),
-                is_other: question.get("isOther").and_then(Value::as_bool),
-            }
-        })
-        .collect()
+    approvals::questions_from_provider(list, false)
+        .map_err(|_| CallbackError::Invalid("Invalid question fields"))
 }
 
 /// The typed request of a provider method. Typed fields leave `params`.
@@ -424,7 +397,7 @@ fn typed_request(
             schema: params.remove("requestedSchema").unwrap_or(Value::Null),
         },
         "item/tool/requestUserInput" => Request::Question {
-            questions: questions(params),
+            questions: questions(params)?,
         },
         _ => return Err(CallbackError::Invalid("Unsupported request type")),
     })
@@ -1124,52 +1097,6 @@ fn prepare_answer_in(
     Ok(Some(reply))
 }
 
-/// A form question or an agent question can be deleted. A delivery in flight
-/// must settle first.
-fn delete_allowed(row: &Approval, agent_deleted: bool) -> Result<bool, CallbackError> {
-    let question = match &row.request {
-        Request::AgentQuestion { .. } | Request::Question { .. } => true,
-        Request::Elicitation { .. } => {
-            row.detail.params.0.get("mode").and_then(Value::as_str) == Some("form")
-        }
-        Request::Exec { .. }
-        | Request::Patch { .. }
-        | Request::Permissions { .. }
-        | Request::ToolUse { .. }
-        | Request::MonitorStart { .. }
-        | Request::BrowserOpen { .. } => false,
-    };
-    if !question {
-        return Err(CallbackError::Invalid("Only a question can be deleted"));
-    }
-    if agent_deleted {
-        return Err(CallbackError::Invalid("This agent was deleted"));
-    }
-    if row.hidden.is_some() {
-        return Ok(false);
-    }
-    if matches!(
-        row.state,
-        ApprovalState::Answering { .. } | ApprovalState::Unknown { .. }
-    ) {
-        return Err(CallbackError::Invalid(
-            "Question delivery is uncertain; wait for its receipt",
-        ));
-    }
-    Ok(true)
-}
-
-/// History stays: a deleted card is hidden and keeps its state.
-fn hide(row: &mut Approval, at: f64) {
-    row.hidden = Some(Hidden {
-        at: Timestamp(at),
-        by: Principal::Owner,
-    });
-    if let Some(deferral) = row.deferral.as_mut() {
-        deferral.active = false;
-    }
-}
-
 pub async fn prepare_delete(
     store: &RuntimeStore,
     id: &str,
@@ -1181,54 +1108,10 @@ pub async fn prepare_delete(
     let id = id.to_owned();
     store
         .transaction_with(move |tx| {
-<<<<<<< head
             let mut card = get_row(tx, &id)?.ok_or(CallbackError::Invalid("Unknown question"))?;
             let actor = records::get(tx, "runtime_agents", card.agent.as_str())?
                 .ok_or(CallbackError::Stale)?;
-            if !delete_allowed(&card, studio_runtime_store::truthy(actor.get("deletedAt")))? {
-||||||| base
-            let mut card = records::get(tx, "runtime_requests", &id)?
-                .ok_or(CallbackError::Invalid("Unknown question"))?;
-            let actor = records::get(
-                tx,
-                "runtime_agents",
-                card["agent"].as_str().ok_or(CallbackError::Stale)?,
-            )?
-            .ok_or(CallbackError::Stale)?;
-            let allowed = crate::questions_write::state_only_delete_allowed(
-                &card,
-                studio_runtime_store::truthy(actor.get("deletedAt")),
-                false,
-            )
-            .map_err(|error| match error {
-                crate::questions_write::QuestionsWriteError::InvalidRequest(message) => {
-                    CallbackError::Invalid(message)
-                }
-                crate::questions_write::QuestionsWriteError::QuestionAnswerUnavailable => {
-                    CallbackError::Dependency("provider-session/question-answer")
-                }
-                crate::questions_write::QuestionsWriteError::Conflict(_)
-                | crate::questions_write::QuestionsWriteError::InvalidStoredObject { .. }
-                | crate::questions_write::QuestionsWriteError::Event(_)
-                | crate::questions_write::QuestionsWriteError::Store(_)
-                | crate::questions_write::QuestionsWriteError::Json(_)
-                | crate::questions_write::QuestionsWriteError::Clock
-                | crate::questions_write::QuestionsWriteError::Coordination(_)
-                | crate::questions_write::QuestionsWriteError::Projects(_) => {
-                    CallbackError::Invalid("Unable to delete question")
-                }
-            })?;
-            if !allowed {
-=======
-            let mut card = records::get(tx, "runtime_requests", &id)?
-                .ok_or(CallbackError::Invalid("Unknown question"))?;
-            let actor = records::get(
-                tx,
-                "runtime_agents",
-                card["agent"].as_str().ok_or(CallbackError::Stale)?,
-            )?
-            .ok_or(CallbackError::Stale)?;
-            let allowed = crate::questions_write::state_only_delete_allowed(
+            let allowed = crate::questions_write::delete_allowed(
                 &card,
                 studio_runtime_store::truthy(actor.get("deletedAt")),
                 false,
@@ -1253,7 +1136,6 @@ pub async fn prepare_delete(
                 }
             })?;
             if !allowed {
->>>>>>> origin/feat/approval-entity
                 return Ok(None);
             }
             if matches!(card.state, ApprovalState::Pending)
@@ -1270,7 +1152,7 @@ pub async fn prepare_delete(
                 };
                 return prepare_answer_in(tx, &id, &data, now, true);
             }
-            hide(&mut card, now);
+            crate::questions_write::hide(&mut card, now);
             save(tx, &card)?;
             Ok(None)
         })
