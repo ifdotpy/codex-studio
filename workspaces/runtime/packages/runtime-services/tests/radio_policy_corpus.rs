@@ -75,6 +75,15 @@ fn decode_records(value: &Value) -> RadioAuthorizationRecords {
             )
             .expect("project fixture");
     }
+    for raw in records.agents.values_mut() {
+        let mut agent: Value = serde_json::from_str(raw).expect("agent record");
+        agent
+            .as_object_mut()
+            .expect("agent object")
+            .entry("compactions")
+            .or_insert(json!(0));
+        *raw = agent.to_string();
+    }
     records
 }
 
@@ -198,4 +207,16 @@ fn radio_snapshot_refuses_malformed_consumed_records_with_locations() {
     );
     let error = RadioAuthorizationSnapshot::from_records(&input).expect_err("null autoWake");
     assert!(error.location.ends_with("/autoWake"), "{error}");
+}
+
+#[test]
+fn radio_snapshot_accepts_numeric_deletion_timestamp() {
+    let oracle = Oracle::new();
+    let expected = oracle.call(&json!({"name":"ready-peer-team"}));
+    let mut input = decode_records(&expected["records"]);
+    let (agent_id, raw) = input.agents.iter().next().expect("agent");
+    let mut agent: Value = serde_json::from_str(raw).expect("agent record");
+    agent["deletedAt"] = json!(1.0);
+    input.agents.insert(agent_id.clone(), agent.to_string());
+    RadioAuthorizationSnapshot::from_records(&input).expect("numeric deletion timestamp");
 }

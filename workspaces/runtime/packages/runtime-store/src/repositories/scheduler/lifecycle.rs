@@ -2561,9 +2561,6 @@ pub(super) fn interrupt_uncertain(attempt: &Value, thread: &str, turn: &str) -> 
         && receipt["turnId"] == turn
         && matches!(receipt["outcome"].as_str(), Some("unknown" | "accepted"))
 }
-pub(super) fn same_native_scope(a: &AgentRecord, b: &AgentRecord) -> bool {
-    a.account_key == b.account_key && a.thread_id == b.thread_id
-}
 pub(super) fn same_recovery_scope(a: &Value, b: &Value) -> bool {
     ["epoch", "accountKey", "threadId"]
         .iter()

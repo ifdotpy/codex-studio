@@ -145,13 +145,18 @@ struct Agent {
     cwd: Option<LexicalPath>,
     shared_room_id: Option<String>,
     account_transfer: Option<String>,
-    native_thread_blocked: bool,
-    native_failure_held: bool,
+    native_hold: NativeHold,
     auto_wake: bool,
     thread_id: Option<String>,
     epoch: Option<u64>,
-    compactions: Option<Option<u64>>,
+    compactions: Option<u64>,
     start_attempt: Option<StartAttempt>,
+}
+
+#[derive(Clone, Debug)]
+struct NativeHold {
+    thread_blocked: bool,
+    failure_held: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -293,7 +298,13 @@ impl RadioAuthorizationSnapshot {
                 }
                 _ => return Err(invalid(format!("{location}/startAttempt"))),
             };
-            let deleted_at = optional_string(&row, "deletedAt", &location)?;
+            let deleted = match row.get("deletedAt") {
+                None | Some(Value::Null) => false,
+                Some(Value::Number(value)) => value.as_f64().is_some_and(|at| at != 0.0),
+                Some(Value::Bool(_) | Value::String(_) | Value::Array(_) | Value::Object(_)) => {
+                    return Err(invalid(format!("{location}/deletedAt")));
+                }
+            };
             let native_thread_blocked = match row.get("nativeThreadBlock") {
                 None | Some(Value::Null) => false,
                 Some(Value::Object(value)) => !value.is_empty(),
@@ -317,24 +328,28 @@ impl RadioAuthorizationSnapshot {
                     root_id: optional_string(&row, "rootId", &location)?,
                     parent_id: optional_string(&row, "parentId", &location)?,
                     is_lead: optional_bool(&row, "isLead", &location, false)?,
-                    deleted: deleted_at.is_some_and(|value| !value.is_empty()),
+                    deleted,
                     cwd,
                     shared_room_id: optional_string(&row, "sharedRoomId", &location)?,
                     account_transfer: optional_string(&row, "accountTransferId", &location)?,
-                    native_thread_blocked,
-                    native_failure_held,
+                    native_hold: NativeHold {
+                        thread_blocked: native_thread_blocked,
+                        failure_held: native_failure_held,
+                    },
                     auto_wake: optional_bool(&row, "autoWake", &location, false)?,
                     thread_id: optional_string(&row, "threadId", &location)?,
                     epoch: optional_u64(&row, "epoch", &location)?,
                     compactions: match row.get("compactions") {
-                        None => None,
-                        Some(Value::Null) => Some(None),
-                        Some(Value::Number(value)) => Some(Some(
+                        Some(Value::Null) => None,
+                        Some(Value::Number(value)) => Some(
                             value
                                 .as_u64()
                                 .ok_or_else(|| invalid(format!("{location}/compactions")))?,
-                        )),
-                        _ => return Err(invalid(format!("{location}/compactions"))),
+                        ),
+                        None
+                        | Some(
+                            Value::Bool(_) | Value::String(_) | Value::Array(_) | Value::Object(_),
+                        ) => return Err(invalid(format!("{location}/compactions"))),
                     },
                     start_attempt,
                 },
@@ -518,11 +533,11 @@ impl RadioAuthorizationSnapshot {
                 .account_transfer
                 .as_ref()
                 .is_some_and(|value| !value.is_empty())
-                || agent.native_thread_blocked
+                || agent.native_hold.thread_blocked
             {
                 return Some(RadioDenial::ParticipantUnavailable);
             }
-            if ready && (!agent.auto_wake || agent.native_failure_held) {
+            if ready && (!agent.auto_wake || agent.native_hold.failure_held) {
                 return Some(RadioDenial::ParticipantStopped);
             }
         }
@@ -567,7 +582,7 @@ fn bind_thread(
         agent_id: agent.id.clone(),
         thread_id: thread_id.clone(),
         epoch: active.epoch,
-        compactions: agent.compactions.unwrap_or(Some(0)),
+        compactions: agent.compactions,
     })
 }
 

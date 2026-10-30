@@ -114,10 +114,35 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ClaimedEvents {
-    pub agent: AgentRecord,
+    pub agent: ClaimedAgent,
     pub events: Vec<QueueEvent>,
     pub metadata: BTreeMap<String, Value>,
     pub refusal_reason: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaimedAgent {
+    pub account_key: String,
+    pub provider: Option<studio_runtime_schema::provider_kind::ProviderKind>,
+    pub thread_id: Option<String>,
+    pub cwd: Option<String>,
+    pub model: Option<String>,
+}
+
+impl From<&AgentRecord> for ClaimedAgent {
+    fn from(agent: &AgentRecord) -> Self {
+        Self {
+            account_key: agent.account_key.clone(),
+            provider: studio_runtime_schema::provider_kind::ProviderKind::of_field(
+                agent.extra.get("provider"),
+            )
+            .ok(),
+            thread_id: agent.thread_id.clone(),
+            cwd: agent.cwd.clone(),
+            model: agent.model.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -328,12 +353,12 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["first", "tie"]
         );
-        assert_eq!(claimed.agent.extra["startAttempt"]["submitted"], false);
         transaction.commit().expect("claim commits");
         let agent = AgentRepository::get(&connection, &AgentId::from("agent"))
             .expect("agent reads")
             .expect("agent remains");
         assert_eq!(agent.status, AgentStatus::Starting);
+        assert_eq!(agent.extra["startAttempt"]["submitted"], false);
         assert_eq!(
             agent.extra["startAttempt"]["events"],
             json!(["first", "tie"])
@@ -1081,6 +1106,39 @@ mod tests {
             )
             .expect("no reservation");
         assert_eq!(reserved, 0);
+    }
+
+    #[test]
+    fn legacy_claim_replays_consumed_agent_fields_without_rewriting_receipt() {
+        let mut connection = database();
+        let tx = connection.transaction().expect("transaction");
+        let first = SchedulerRepository::claim(&tx, "agent", 4, "legacy", 10.0, 1)
+            .expect("claim")
+            .expect("input");
+        tx.execute("UPDATE runtime_execution_attempts SET record=json_set(json_remove(record,'$.claimResult.agent.compactions'),'$.claimResult.agent.role',json('{}'),'$.claimResult.agent.startAttempt',json('false')) WHERE id='legacy'", []).expect("legacy snapshot");
+        let receipt: String = tx
+            .query_row(
+                "SELECT record FROM runtime_execution_attempts WHERE id='legacy'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("receipt");
+        let replay = SchedulerRepository::claim(&tx, "agent", 4, "legacy", 10.0, 1)
+            .expect("replay")
+            .expect("input");
+        assert_eq!(replay.agent.account_key, first.agent.account_key);
+        assert_eq!(replay.agent.provider, first.agent.provider);
+        assert_eq!(replay.agent.thread_id, first.agent.thread_id);
+        assert_eq!(replay.agent.cwd, first.agent.cwd);
+        assert_eq!(replay.agent.model, first.agent.model);
+        let after: String = tx
+            .query_row(
+                "SELECT record FROM runtime_execution_attempts WHERE id='legacy'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("receipt");
+        assert_eq!(receipt, after);
     }
 }
 

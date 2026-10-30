@@ -810,10 +810,10 @@ pub(crate) fn claim_selected_event_in_transaction(
         epoch,
         attempt_id: attempt_id.to_owned(),
         account_key: claimed.agent.account_key.clone(),
-        provider: studio_runtime_providers::ProviderKind::of_field(
-            claimed.agent.extra.get("provider"),
-        )
-        .map_err(|_| StoreError::RecordContract("agent provider"))?,
+        provider: claimed
+            .agent
+            .provider
+            .ok_or(StoreError::RecordContract("agent provider"))?,
         thread_id: claimed.agent.thread_id.clone(),
         cwd: claimed.agent.cwd.clone(),
         model: claimed.agent.model.clone(),
@@ -871,10 +871,10 @@ fn claim_intent_selected(
         epoch,
         attempt_id: attempt_id.to_owned(),
         account_key: claimed.agent.account_key.clone(),
-        provider: studio_runtime_providers::ProviderKind::of_field(
-            claimed.agent.extra.get("provider"),
-        )
-        .map_err(|_| StoreError::RecordContract("agent provider"))?,
+        provider: claimed
+            .agent
+            .provider
+            .ok_or(StoreError::RecordContract("agent provider"))?,
         thread_id: claimed.agent.thread_id.clone(),
         cwd: claimed.agent.cwd.clone(),
         model: claimed.agent.model.clone(),

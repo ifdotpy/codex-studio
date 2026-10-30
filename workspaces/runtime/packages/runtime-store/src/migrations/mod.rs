@@ -37,6 +37,7 @@ mod m2026_10_28_usage_revision;
 mod m2026_10_29_agent_authorizations;
 mod m2026_10_29_model_choices;
 mod m2026_10_29_request_results_v2;
+mod m2026_10_30_agent_compactions;
 mod m2026_10_30_agent_volatile;
 mod m2026_10_30_branch_phase;
 mod m2026_10_30_capture_errors;
@@ -283,6 +284,16 @@ static CATALOG: &[&dyn Migration] = &[
             crate::schema::ensure_analytics_limits_index(c.transaction)?;
             crate::repositories::cost_aggregate::install(c.transaction)
         },
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-agent-compactions",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Agent records with missing compaction counts",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_agent_compactions::apply(c.transaction),
     },
     &SqlMigration {
         definition: MigrationDefinition {

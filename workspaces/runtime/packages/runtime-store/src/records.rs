@@ -340,11 +340,7 @@ pub struct AgentRecord {
     pub cwd: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    #[serde(
-        default,
-        deserialize_with = "deserialize_optional_safe_counter",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(deserialize_with = "deserialize_optional_safe_counter")]
     pub compactions: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worktree_ready: Option<bool>,
@@ -3217,7 +3213,7 @@ mod agent_projection_tests {
     fn stored_agent_rejects_legacy_start_wait_shapes() {
         for wait in [r#"{"reason":"slot","epoch":1,"runningTurns":null}"#, "null"] {
             let raw = format!(
-                r#"{{"id":"a","rootId":"a","epoch":1,"status":"queued","accountKey":"default","startWait":{wait}}}"#
+                r#"{{"id":"a","rootId":"a","epoch":1,"status":"queued","accountKey":"default","compactions":0,"startWait":{wait}}}"#
             );
             assert!(super::parse_agent_record("a", &raw).is_err());
         }
@@ -3232,7 +3228,7 @@ mod agent_projection_tests {
             .unwrap();
         db.execute(
             "INSERT INTO runtime_agents VALUES('a',?1)",
-            [r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default"}"#],
+            [r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default","compactions":0}"#],
         )
         .unwrap();
         db.execute("INSERT INTO runtime_agent_volatile(id,events,tail,contextUsage) VALUES('a','3','\"answer\"','{\"tokens\":20,\"window\":100,\"at\":1.5}')", []).unwrap();
@@ -3254,7 +3250,7 @@ mod agent_projection_tests {
             .unwrap();
         db.execute(
             "INSERT INTO runtime_agents VALUES('a',?1)",
-            [r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default"}"#],
+            [r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default","compactions":0}"#],
         )
         .unwrap();
         db.execute(
@@ -3280,25 +3276,25 @@ mod agent_projection_tests {
 
     #[test]
     fn stored_agent_rejects_malformed_archive() {
-        let raw = r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default","agentArchive":{"at":"bad","epoch":1}}"#;
+        let raw = r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default","compactions":0,"agentArchive":{"at":"bad","epoch":1}}"#;
         assert!(serde_json::from_str::<AgentRecord>(raw).is_err());
     }
 
     #[test]
     fn stored_agent_rejects_malformed_sandbox() {
-        let raw = r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default","sandbox":{"type":"invalid"}}"#;
+        let raw = r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default","compactions":0,"sandbox":{"type":"invalid"}}"#;
         assert!(serde_json::from_str::<AgentRecord>(raw).is_err());
     }
 
     #[test]
     fn stored_agent_rejects_malformed_cleanup_receipt() {
-        let raw = r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default","cleanedWorktree":{"bytes":"bad"}}"#;
+        let raw = r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default","compactions":0,"cleanedWorktree":{"bytes":"bad"}}"#;
         assert!(serde_json::from_str::<AgentRecord>(raw).is_err());
     }
 
     #[test]
     fn stored_agent_rejects_malformed_safety_buffering() {
-        let raw = r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default","nativeSafetyBuffering":{"showBufferingUi":"yes"}}"#;
+        let raw = r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default","compactions":0,"nativeSafetyBuffering":{"showBufferingUi":"yes"}}"#;
         assert!(serde_json::from_str::<AgentRecord>(raw).is_err());
     }
 
@@ -3306,7 +3302,7 @@ mod agent_projection_tests {
     fn stored_agent_rejects_malformed_parent_and_deletion_marker() {
         for field in [r#""parentId":false"#, r#""deletedAt":"bad""#] {
             let raw = format!(
-                r#"{{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default",{field}}}"#
+                r#"{{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default","compactions":0,{field}}}"#
             );
             assert!(serde_json::from_str::<AgentRecord>(&raw).is_err());
         }
@@ -3319,7 +3315,7 @@ mod agent_projection_tests {
             studio_runtime_schema::shared_values::MAX_SAFE_INTEGER + 1,
         ] {
             let raw = format!(
-                r#"{{"id":"a","rootId":"a","epoch":{epoch},"status":"idle","accountKey":"default"}}"#
+                r#"{{"id":"a","rootId":"a","epoch":{epoch},"status":"idle","accountKey":"default","compactions":0}}"#
             );
             assert!(serde_json::from_str::<AgentRecord>(&raw).is_err());
         }
@@ -3339,7 +3335,7 @@ mod agent_projection_tests {
             .unwrap();
         db.execute(
             "INSERT INTO runtime_agents VALUES('a',?1)",
-            [r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default"}"#],
+            [r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default","compactions":0}"#],
         )
         .unwrap();
         db.execute(
@@ -3367,6 +3363,19 @@ mod agent_projection_tests {
             Table::<AgentRecord>::new(&db)
                 .get(&AgentId::from("a"))
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn stored_agent_requires_explicit_compactions_but_accepts_unknown() {
+        let missing = r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default"}"#;
+        let unknown = r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default","compactions":null}"#;
+        assert!(serde_json::from_str::<AgentRecord>(missing).is_err());
+        assert_eq!(
+            serde_json::from_str::<AgentRecord>(unknown)
+                .unwrap()
+                .compactions,
+            None
         );
     }
 
@@ -3400,7 +3409,7 @@ mod agent_projection_tests {
             .expect("agents");
         db.execute_batch(crate::agent_volatile::agent_volatile_table_sql())
             .expect("volatile");
-        let raw = r#"{"id":"a","rootId":"r","epoch":1.0,"status":"idle","accountKey":"default"}"#;
+        let raw = r#"{"id":"a","rootId":"r","epoch":1.0,"status":"idle","accountKey":"default","compactions":0}"#;
         db.execute(
             "INSERT INTO runtime_agents(id,record) VALUES('a',?1)",
             [raw],
@@ -3421,7 +3430,7 @@ mod agent_projection_tests {
             .unwrap();
         db.execute_batch(crate::agent_volatile::agent_volatile_table_sql())
             .unwrap();
-        let raw = json!({"id":"a","rootId":"r","epoch":1,"status":"idle", "accountKey":"default",
+        let raw = json!({"id":"a","rootId":"r","epoch":1,"status":"idle", "accountKey":"default", "compactions":0,
             "events":1,"agentArchive":{"at":1.5,"epoch":1},"future":{"x":[1,null]},
             "titleJob":{"legacy":true},"startOutcomeHold":{"stage":"held","reason":"pending"},"firedEvents":["one"]});
         db.execute(
@@ -3452,7 +3461,7 @@ mod agent_projection_tests {
             (Some(json!(12)), false),
             (Some(json!("custom")), true),
         ] {
-            let mut raw = json!({"id":"a","rootId":"a","epoch":1,"status":"idle"});
+            let mut raw = json!({"id":"a","rootId":"a","epoch":1,"status":"idle","compactions":0});
             if let Some(value) = account {
                 raw["accountKey"] = value;
             }
