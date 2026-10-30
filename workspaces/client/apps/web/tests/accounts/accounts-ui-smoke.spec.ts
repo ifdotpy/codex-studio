@@ -1664,10 +1664,7 @@ async function runAccountsUi(
         revision: "claude-queue-1",
         capabilities: {
           receipts: true,
-          edit: true,
-          cancel: true,
           reorder: true,
-          steer: true,
         },
       },
     };

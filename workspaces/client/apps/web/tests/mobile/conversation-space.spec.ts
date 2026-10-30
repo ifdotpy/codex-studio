@@ -78,7 +78,7 @@ test("phone conversation gives the transcript its viewport budget", async ({
               }
             : null,
         };
-        stream = createServer(async (request, response) => {
+        const fixtureStream = createServer(async (request, response) => {
           response.setHeader("Access-Control-Allow-Origin", "*");
           response.setHeader("Access-Control-Allow-Headers", "*");
           if (request.method === "OPTIONS") {
@@ -98,11 +98,13 @@ test("phone conversation gives the transcript its viewport budget", async ({
           )
             response.writeHead(404).end();
         });
+        stream = fixtureStream;
         await new Promise<void>((resolve) =>
-          stream.listen(0, "127.0.0.1", resolve),
+          fixtureStream.listen(0, "127.0.0.1", resolve),
         );
-        const streamPort = (stream.address() as import("node:net").AddressInfo)
-          .port;
+        const streamPort = (
+          fixtureStream.address() as import("node:net").AddressInfo
+        ).port;
         await stubEntityState(page, view, contract);
         for (const route of [
           "**/api/sync/stream?*",
