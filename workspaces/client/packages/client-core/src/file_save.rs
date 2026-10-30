@@ -609,7 +609,6 @@ mod tests {
                 },
                 None,
                 None,
-                None,
             )
             .await;
             assert!(response.error.is_none(), "{:?}", response.error);

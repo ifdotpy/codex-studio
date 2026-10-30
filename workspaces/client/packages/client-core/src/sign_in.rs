@@ -369,7 +369,7 @@ mod tests {
         let mut invalid = value.clone();
         invalid["value"]["url"] = json!("file:///not-supported");
         invalid["value"]["preparation"] = json!(null);
-        let response = crate::desktop::dispatch(request(invalid), None, None, None).await;
+        let response = crate::desktop::dispatch(request(invalid), None, None).await;
         assert_eq!(
             response.error.unwrap().message,
             "Only HTTP and HTTPS links without credentials are supported."
@@ -377,7 +377,7 @@ mod tests {
         let mut wrong = value.clone();
         wrong["_nativeWindow"] = json!("elsewhere");
         assert!(
-            crate::desktop::dispatch(request(wrong), None, None, None)
+            crate::desktop::dispatch(request(wrong), None, None)
                 .await
                 .error
                 .is_some()
@@ -389,7 +389,6 @@ mod tests {
                 method: crate::desktop::SIGN_IN_CANCEL_METHOD.into(),
                 params: value,
             },
-            None,
             None,
             None,
         )
