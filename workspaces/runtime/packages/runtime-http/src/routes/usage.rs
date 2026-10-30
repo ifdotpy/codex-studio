@@ -225,7 +225,7 @@ async fn capacity_retry(
 async fn usage_resume(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<crate::generated::UsageResumeRequest>,
-) -> Result<Json<Option<Value>>, ApiError> {
+) -> Result<Json<Option<crate::generated::UsageResumeResponse>>, ApiError> {
     let agent_id = body.id;
     let resume_id = body.resume_id;
     let enabled = body.enabled;
@@ -253,24 +253,19 @@ async fn usage_resume(
         let response =
             serde_json::from_value::<crate::generated::UsageResumeResponse>(value.value())
                 .map_err(|_| ApiError::internal())?;
-        return Ok(Json(Some(
-            serde_json::to_value(response).map_err(|_| ApiError::internal())?,
-        )));
+        return Ok(Json(Some(response)));
     }
     let result = store
         .transaction_with(
-            move |transaction| -> Result<Option<Value>, UsageRepositoryError> {
+            move |transaction| -> Result<
+                Option<crate::generated::UsageResumeResponse>,
+                UsageRepositoryError,
+            > {
                 let value = disable_usage_resume(transaction, &agent_id, &resume_id, now)?;
                 if value.is_null() {
                     return Ok(None);
                 }
-                let response =
-                    serde_json::from_value::<crate::generated::UsageResumeResponse>(value)
-                        .map_err(|_| UsageRepositoryError::InvalidStoredObject {
-                            table: "runtime_usage_resumes",
-                            id: resume_id.clone(),
-                        })?;
-                serde_json::to_value(response).map(Some).map_err(|_| {
+                serde_json::from_value(value).map(Some).map_err(|_| {
                     UsageRepositoryError::InvalidStoredObject {
                         table: "runtime_usage_resumes",
                         id: resume_id.clone(),
@@ -497,6 +492,50 @@ mod tests {
             let body: Value = serde_json::from_slice(&bytes).unwrap();
             assert_eq!(status, StatusCode::OK, "{body}");
             assert_eq!(body["id"], id);
+            assert_eq!(body["status"], expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn usage_resume_http_returns_enable_and_disable_receipts() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            studio_runtime_store::RuntimeStore::open(Some(root.path()))
+                .await
+                .unwrap(),
+        );
+        store.transaction_with(|tx| {
+            let resume = json!({"id":"resume","accountKey":"default","threadId":"thread","epoch":1,
+                "turnId":"turn","cause":"usage_limit","status":"scheduled","failedAt":900.0,"authAttempt":0,
+                "dueAt":990.0,"taskClaims":[],"updatedAt":800.0});
+            let agent = json!({"provider":"codex","id":"a","rootId":"a","epoch":1,"status":"failed",
+                "accountKey":"default","threadId":"thread","usageResume":resume});
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES ('a',?1)", [agent.to_string()])?;
+            tx.execute("INSERT INTO runtime_usage_resumes(id,agent,record) VALUES ('resume','a',?1)", [resume.to_string()])?;
+            Ok::<_, studio_runtime_store::StoreError>(())
+        }).await.unwrap();
+        let state = crate::router::HttpState::new(
+            "reset-test-token".into(),
+            "fixture".into(),
+            root.path().to_string_lossy().into_owned(),
+            49_172,
+            None,
+            Some(store),
+            None,
+        );
+        let app = crate::router::router(state).unwrap();
+        for (enabled, expected) in [(true, "scheduled"), (false, "cancelled")] {
+            let mut request =
+                reset_request(json!({"id":"a","resume_id":"resume","enabled":enabled}));
+            *request.uri_mut() = "/api/usage-resume".parse().unwrap();
+            let response = app.clone().oneshot(request).await.unwrap();
+            let status = response.status();
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(body["id"], "resume");
             assert_eq!(body["status"], expected);
         }
     }
