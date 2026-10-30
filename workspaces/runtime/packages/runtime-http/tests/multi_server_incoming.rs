@@ -1334,7 +1334,7 @@ async fn peer_read_status(offered: Option<&str>, nonce: &str) -> (StatusCode, Op
         "GET",
         "/api/ui-summary",
         b"",
-        nonce,
+        &format!("{nonce:0<32}"),
     );
     if let Some(hash) = offered {
         request.headers_mut().insert(
