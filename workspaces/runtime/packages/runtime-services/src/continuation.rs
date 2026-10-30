@@ -704,10 +704,10 @@ impl ProposedAgent {
     pub(crate) fn auth_attempt(&mut self, value: u64) {
         self.set_extra("authResumeAttempt", json!(value));
     }
-    pub(crate) fn usage_enabled(&mut self, value: bool) {
-        self.evidence["usageResumeEnabled"] = json!(value);
+    pub(crate) fn enable_usage(&mut self) {
+        self.evidence["usageResumeEnabled"] = json!(true);
         if let Some(agent) = &mut self.identity {
-            agent.usage_resume_enabled = Some(value);
+            agent.usage_resume_enabled = Some(true);
         }
     }
     pub(crate) fn capacity_count(&mut self, value: u64) {

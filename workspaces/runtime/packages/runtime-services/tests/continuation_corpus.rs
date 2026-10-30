@@ -49,6 +49,29 @@ fn limits_observation_keeps_its_own_validation() {
 }
 
 #[test]
+fn enable_reschedules_a_current_cancelled_resume() {
+    let cases = cases();
+    let mut input = cases
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "disable-scheduled")
+        .unwrap()["input"]
+        .clone();
+    input["record"]["status"] = json!("cancelled");
+    input["record"]["dueAt"] = Value::Null;
+    input["record"]["reason"] = json!("Automatic resume is off for this chat.");
+    input["agent"]["usageResume"] = input["record"].clone();
+    input["agent"]["usageResumeEnabled"] = json!(false);
+    input["agent"]["lastCompletedTurnStatus"] = json!("failed");
+    input["agent"]["error"] = json!({"codexErrorInfo":"usageLimitExceeded"});
+    let snapshot = Snapshot::from_records(input).unwrap();
+    let decision = studio_runtime_services::usage_resume::enable(&snapshot, 1000.0).unwrap();
+    assert_eq!(decision.record.unwrap().value()["status"], "scheduled");
+    assert_eq!(decision.agent.unwrap().value()["usageResumeEnabled"], true);
+}
+
+#[test]
 fn typed_continuation_snapshot_enforces_schema_bounds() {
     use studio_runtime_schema::continuation_snapshot::ContinuationSnapshotRecord;
     let base =
@@ -136,6 +159,7 @@ fn capacity_counts_preserve_integer_and_decimal_alias_behavior() {
             "turn",
             &json!({}),
             1000.0,
+            None,
         )
         .expect("failure");
         assert_eq!(

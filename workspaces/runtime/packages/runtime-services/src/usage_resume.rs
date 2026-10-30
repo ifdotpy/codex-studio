@@ -533,7 +533,7 @@ pub fn limits_changed(s: &Snapshot, limits: &LimitsObservation, now: f64) -> Res
     Ok(d)
 }
 /// Existing exact cancelled rows can be re-enabled; a changed failed turn needs turn capture.
-pub fn set_enabled(s: &Snapshot, enabled: bool, now: f64) -> Result<Decision> {
+pub fn enable(s: &Snapshot, now: f64) -> Result<Decision> {
     now_checked(now)?;
     let Some(_r) = &s.record else {
         return Err(ContinuationError::Invalid("/record".into()));
@@ -542,12 +542,7 @@ pub fn set_enabled(s: &Snapshot, enabled: bool, now: f64) -> Result<Decision> {
         return Ok(Decision::default());
     }
     let mut r = ProposedRecord::existing(s).expect("validated record");
-    if !enabled && s.status() == Some(WaitStatus::Scheduled) {
-        r.update(U::Status("cancelled"));
-        r.update(U::DueAt(None));
-        r.update(U::Reason(Some(OFF.into())));
-    } else if enabled
-        && s.status() == Some(WaitStatus::Cancelled)
+    if s.status() == Some(WaitStatus::Cancelled)
         && s.record_reason() == Some(OFF)
         && s.agent_view().native_failure_hold.unwrap_or(false)
         && s.agent_view().last_completed_turn_status.as_deref() == Some("failed")
@@ -571,7 +566,7 @@ pub fn set_enabled(s: &Snapshot, enabled: bool, now: f64) -> Result<Decision> {
     }
     let mut d = Decision::save(s, r, "usageResume", now);
     if let Some(a) = &mut d.agent {
-        a.usage_enabled(enabled);
+        a.enable_usage();
     }
     Ok(d)
 }

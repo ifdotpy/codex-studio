@@ -50,6 +50,7 @@ async fn claim_retry(state: &State) -> String {
                         PREVIOUS_TURN,
                         &settings,
                         NOW,
+                        None,
                     )
                     .expect("failure");
                     let scheduled = failure.record.expect("scheduled retry").value();

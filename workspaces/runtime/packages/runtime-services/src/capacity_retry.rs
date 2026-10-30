@@ -85,17 +85,6 @@ pub fn failed(
     turn_id: &str,
     settings: &Value,
     now: f64,
-) -> Result<Decision> {
-    failed_with_reason(s, kind, turn_id, settings, now, None)
-}
-
-/// As [`failed`], with the visible reason of a disk-full hold.
-pub fn failed_with_reason(
-    s: &Snapshot,
-    kind: Failure,
-    turn_id: &str,
-    settings: &Value,
-    now: f64,
     reason: Option<&str>,
 ) -> Result<Decision> {
     now_checked(now)?;
