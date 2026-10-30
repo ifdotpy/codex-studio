@@ -1021,41 +1021,35 @@ fn stored_parent_defaults(
     parent_id: &str,
     ignore_stored_worker_account: bool,
 ) -> studio_runtime_store::StoreResult<Option<StoredParentDefaults>> {
-    let Some(parent) =
-        studio_runtime_store::system_reads::get(connection, "runtime_agents", parent_id)?
+    let Some(parent) = studio_runtime_store::WorkspaceViewsRepository::agent(connection, parent_id)?
     else {
         return Ok(None);
     };
     let mut defaults = StoredParentDefaults {
-        parent_account: parent
-            .get("accountKey")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
+        parent_account: Some(parent.account_key.clone()),
         ..StoredParentDefaults::default()
     };
-    if let Some(root_id) = parent.get("rootId").and_then(Value::as_str) {
-        let root = studio_runtime_store::system_reads::get(connection, "runtime_agents", root_id)?
-            .unwrap_or(parent);
-        if !ignore_stored_worker_account {
-            defaults.selected_account = root
-                .pointer("/workerDefaults/accountKey")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
-            defaults.worker_model = root
-                .pointer("/workerDefaults/model")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
-        }
-        defaults.root_model = root.get("model").and_then(Value::as_str).map(str::to_owned);
-        defaults.excluded.extend(
-            root.get("excludedAccountKeys")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_str)
-                .map(str::to_owned),
-        );
+    let root = studio_runtime_store::system_reads::get(connection, "runtime_agents", &parent.root_id.0)?
+        .unwrap_or_else(|| parent.value());
+    if !ignore_stored_worker_account {
+        defaults.selected_account = root
+            .pointer("/workerDefaults/accountKey")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        defaults.worker_model = root
+            .pointer("/workerDefaults/model")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
     }
+    defaults.root_model = root.get("model").and_then(Value::as_str).map(str::to_owned);
+    defaults.excluded.extend(
+        root.get("excludedAccountKeys")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_owned),
+    );
     Ok(Some(defaults))
 }
 
@@ -1604,11 +1598,7 @@ async fn finish_title_request(
                     .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Unknown managed agent"))?;
                 let record = agent.value();
                 Ok::<_, ApiError>((
-                    record
-                        .get("accountKey")
-                        .and_then(Value::as_str)
-                        .unwrap_or("default")
-                        .to_owned(),
+                    agent.account_key,
                     ProviderKind::of_record(&record).map_err(|_| ApiError::internal())?,
                 ))
             },

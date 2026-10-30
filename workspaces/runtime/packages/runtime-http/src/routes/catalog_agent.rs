@@ -120,13 +120,14 @@ async fn skills(
     params: QueryParams,
 ) -> Result<Json<crate::generated::SkillsResponse>, ApiError> {
     let agent_id = required_agent(&params)?;
-    let agent = read_agent(&state, agent_id).await?;
+    let record = read_agent(&state, agent_id).await?;
+    let agent = record.value();
     ensure_live_agent(&agent)?;
     let cwd = agent
         .get("cwd")
         .and_then(Value::as_str)
         .ok_or_else(invalid_stored_agent)?;
-    let account = account_context(&state, &agent)?;
+    let account = account_context(&state, &record.account_key)?;
     let responses = account_provider_exchange(
         state.account_session.clone(),
         account,
@@ -157,7 +158,8 @@ async fn capabilities(
     params: QueryParams,
 ) -> Result<Json<crate::generated::CapabilitiesResponse>, ApiError> {
     let agent_id = required_agent(&params)?;
-    let agent = read_agent(&state, agent_id).await?;
+    let record = read_agent(&state, agent_id).await?;
+    let agent = record.value();
     ensure_live_agent(&agent)?;
     let catalog = match state.tool_catalog.as_ref() {
         Some(catalog) => catalog,
@@ -179,7 +181,7 @@ async fn capabilities(
         CapabilityAgentSnapshot::from_record(&agent).map_err(|_| invalid_stored_agent())?;
     let managed = studio_runtime_services::catalog_reads::managed_tool_catalog(catalog)
         .map_err(|_| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "Invalid tool catalog"))?;
-    let account = account_context(&state, &agent)?;
+    let account = account_context(&state, &record.account_key)?;
     let store = state.store.as_ref().ok_or_else(ApiError::internal)?;
     let store = std::sync::Arc::clone(store);
     let observed_agent_id = agent_id.to_owned();
@@ -200,7 +202,7 @@ async fn capabilities(
     let cache = std::sync::Arc::clone(&state.capabilities_cache);
     let session = state.account_session.clone();
     let cwd = cwd.to_owned();
-    let thread_id = agent.get("threadId").cloned();
+    let thread_id = record.thread_id.clone();
     let fetch = || async move {
         let scope = match &session {
             Some(port) => port.ensure_session(&account.key).await.ok(),
@@ -208,7 +210,7 @@ async fn capabilities(
         };
         result["mcpSession"] = scope
             .as_ref()
-            .and_then(|scope| super::mcp_reconnect::binding(&agent, scope))
+            .and_then(|scope| super::mcp_reconnect::binding(&record, scope))
             .unwrap_or(Value::Null);
         let mut server_params =
             json!({"threadId":thread_id,"limit":NATIVE_TERMINAL_ITEMS_PER_PAGE});
@@ -768,14 +770,13 @@ fn required_agent(params: &QueryParams) -> Result<&str, ApiError> {
         .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Select an agent"))
 }
 
-async fn read_agent(state: &HttpState, agent_id: &str) -> Result<Value, ApiError> {
+async fn read_agent(state: &HttpState, agent_id: &str) -> Result<studio_runtime_store::AgentRecord, ApiError> {
     let store = state.store.as_ref().ok_or_else(ApiError::internal)?;
     let agent_id = agent_id.to_owned();
     store
         .read_async("runtime-http/routes/catalog_agent", move |connection| {
             WorkspaceViewsRepository::agent(connection, &agent_id)
                 .map_err(|_| ApiError::internal())?
-                .map(|agent| agent.value())
                 .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Unknown managed agent"))
         })
         .await
@@ -802,11 +803,7 @@ struct AccountContext {
     available: bool,
 }
 
-fn account_context(state: &HttpState, agent: &Value) -> Result<AccountContext, ApiError> {
-    let key = agent
-        .get("accountKey")
-        .and_then(Value::as_str)
-        .unwrap_or("default");
+fn account_context(state: &HttpState, key: &str) -> Result<AccountContext, ApiError> {
     let policy = state
         .account_policy
         .as_ref()

@@ -63,7 +63,7 @@ fn permissions() -> &'static Mutex<Permissions> {
 fn purpose(method: &str) -> Option<u32> {
     Some(match method {
         "desktop.pickDirectory" => 1,
-        "desktop.pickFiles" | "desktop.pickAttachments" => 2,
+        "desktop.pickAttachments" => 2,
         "desktop.revealPath" => 3,
         "desktop.openExternal"
         | crate::desktop::SIGN_IN_OPEN_METHOD
@@ -235,7 +235,6 @@ async fn prepare_sign_in(
 
 pub async fn dispatch(
     request: Request,
-    sender: Option<&crate::delivery::StoreSender>,
     backend: Option<&crate::backend::Backend>,
     previews: Option<&crate::file_preview::Previews>,
 ) -> Response {
@@ -311,18 +310,10 @@ pub async fn dispatch(
                 return mac::file_action(file).await;
             }
             let value = mac::run(request.method.clone(), value).await?;
-            if matches!(
-                request.method.as_str(),
-                "desktop.pickFiles" | "desktop.pickAttachments"
-            ) {
-                let files = tokio::task::spawn_blocking(move || read_selected_files(value))
+            if request.method == "desktop.pickAttachments" {
+                tokio::task::spawn_blocking(move || read_selected_files(value))
                     .await
-                    .map_err(|e| e.to_string())??;
-                if request.method == "desktop.pickAttachments" {
-                    return Ok(files);
-                }
-                let sender = sender.ok_or("The native state service is unavailable.")?;
-                stage_files(sender, &request.id, files).await
+                    .map_err(|e| e.to_string())?
             } else {
                 Ok(value)
             }
@@ -338,32 +329,6 @@ pub async fn dispatch(
         Ok(value) => Response::success(request.id, value),
         Err(error) => Response::failure(request.id, "desktop_action", error),
     }
-}
-
-async fn stage_files(
-    sender: &crate::delivery::StoreSender,
-    id: &str,
-    files: Value,
-) -> Result<Value, String> {
-    let (reply, receive) = tokio::sync::oneshot::channel();
-    sender
-        .send(crate::delivery::StoreCommand::Request(
-            Request {
-                id: format!("{id}:files"),
-                method: "files.stage_many".into(),
-                params: serde_json::json!({"files":files}),
-            },
-            reply,
-        ))
-        .await
-        .map_err(|e| e.to_string())?;
-    let response = receive.await.map_err(|e| e.to_string())?;
-    response.result.ok_or_else(|| {
-        response
-            .error
-            .map(|e| e.message)
-            .unwrap_or("Missing file state response.".into())
-    })
 }
 
 #[cfg(target_os = "macos")]
@@ -393,6 +358,9 @@ async fn save_snapshot(name: String, bytes: std::sync::Arc<Vec<u8>>) -> Result<V
     Ok(Value::Bool(true))
 }
 
+// Maximum aggregate size, in bytes, of files selected in one native picker.
+const MAX_SELECTED_ATTACHMENT_BYTES: usize = 20 * 1024 * 1024;
+
 fn read_selected_files(paths: Value) -> Result<Value, String> {
     use base64::Engine;
     use std::{io::Read, os::unix::fs::OpenOptionsExt};
@@ -410,15 +378,15 @@ fn read_selected_files(paths: Value) -> Result<Value, String> {
             .open(path)
             .map_err(|e| e.to_string())?;
         let info = file.metadata().map_err(|e| e.to_string())?;
-        if !info.is_file() || info.len() == 0 || info.len() > crate::uploads::LIMIT as u64 {
+        if !info.is_file() || info.len() == 0 || info.len() > MAX_SELECTED_ATTACHMENT_BYTES as u64 {
             return Err("Select regular files with 1 byte to 20 MiB.".into());
         }
         let mut bytes = vec![];
-        file.take((crate::uploads::LIMIT + 1) as u64)
+        file.take((MAX_SELECTED_ATTACHMENT_BYTES + 1) as u64)
             .read_to_end(&mut bytes)
             .map_err(|e| e.to_string())?;
         total += bytes.len();
-        if bytes.is_empty() || total > crate::uploads::LIMIT {
+        if bytes.is_empty() || total > MAX_SELECTED_ATTACHMENT_BYTES {
             return Err("The selected files exceed 20 MiB or contain an empty file.".into());
         }
         let name = path
@@ -539,7 +507,7 @@ mod mac {
             autoreleasepool(|_| {
                 let result = match method.as_str() {
                     "desktop.pickDirectory" => pick_directory(),
-                    "desktop.pickFiles" | "desktop.pickAttachments" => pick_files(),
+                    "desktop.pickAttachments" => pick_files(),
                     "desktop.saveChoose" => save_choose(&value),
                     "desktop.copyText" => copy_text(&value),
                     "desktop.revealPath" => reveal(&value),
@@ -677,37 +645,6 @@ mod mac {
 mod tests {
     use super::*;
     #[tokio::test]
-    async fn file_staging_sends_request_and_returns_reply_or_error() {
-        for fail in [false, true] {
-            let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
-            let files = serde_json::json!([{"name":"a.txt","data":"YQ=="}]);
-            let expected = files.clone();
-            let worker = tokio::spawn(async move {
-                let Some(crate::delivery::StoreCommand::Request(request, reply)) =
-                    receiver.recv().await
-                else {
-                    panic!("request command")
-                };
-                assert_eq!(request.id, "picker:files");
-                assert_eq!(request.method, "files.stage_many");
-                assert_eq!(request.params, serde_json::json!({"files":expected}));
-                let response = if fail {
-                    Response::failure(request.id, "stage", "denied")
-                } else {
-                    Response::success(request.id, serde_json::json!(["staged"]))
-                };
-                reply.send(response).unwrap();
-            });
-            let result = stage_files(&sender, "picker", files).await;
-            if fail {
-                assert_eq!(result.unwrap_err(), "denied");
-            } else {
-                assert_eq!(result.unwrap(), serde_json::json!(["staged"]));
-            }
-            worker.await.unwrap();
-        }
-    }
-    #[tokio::test]
     async fn sign_in_preparation_consumes_the_gesture_and_returns_only_an_opaque_intent() {
         let now = Instant::now();
         let token = 0x5151_1212;
@@ -727,7 +664,7 @@ mod tests {
                 "value":{"url":"https://example.com/authorize", "requestId":"card-1"}
             }),
         };
-        let response = dispatch(request, None, None, None).await;
+        let response = dispatch(request, None, None).await;
         assert!(response.error.is_none(), "{:?}", response.error);
         let preparation = response.result.unwrap();
         assert!(preparation.as_str().is_some_and(|id| id.len() >= 32));
@@ -747,7 +684,6 @@ mod tests {
             },
             None,
             None,
-            None,
         ).await;
         assert_eq!(canceled.result, Some(Value::Bool(true)));
     }
@@ -762,12 +698,12 @@ mod tests {
             method: crate::desktop::SIGN_IN_OPEN_METHOD.into(),
             params,
         };
-        let first = dispatch(make_request(params.clone()), None, None, None).await;
+        let first = dispatch(make_request(params.clone()), None, None).await;
         assert_eq!(
             first.error.unwrap().message,
             "This sign-in belongs to another server view."
         );
-        let replay = dispatch(make_request(params.clone()), None, None, None).await;
+        let replay = dispatch(make_request(params.clone()), None, None).await;
         assert!(
             replay
                 .error
@@ -781,7 +717,7 @@ mod tests {
             serde_json::json!("forged"),
         ] {
             params["value"]["preparation"] = invalid;
-            let response = dispatch(make_request(params.clone()), None, None, None).await;
+            let response = dispatch(make_request(params.clone()), None, None).await;
             assert!(
                 response
                     .error
@@ -902,7 +838,6 @@ mod tests {
                 },
                 None,
                 None,
-                None,
             )
             .await;
             assert!(reply.error.is_some());
@@ -938,7 +873,8 @@ mod tests {
         assert!(read_selected_files(serde_json::json!([directory.path()])).is_err());
         assert!(read_selected_files(serde_json::json!(["/dev/null"])).is_err());
         let huge = std::fs::File::create(directory.path().join("huge")).unwrap();
-        huge.set_len((crate::uploads::LIMIT + 1) as u64).unwrap();
+        huge.set_len((MAX_SELECTED_ATTACHMENT_BYTES + 1) as u64)
+            .unwrap();
         assert!(read_selected_files(serde_json::json!([directory.path().join("huge")])).is_err());
     }
 }

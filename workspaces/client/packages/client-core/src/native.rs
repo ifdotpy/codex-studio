@@ -170,7 +170,6 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
             enum Work {
                 Network(Request),
                 Action(Request),
-                Upload(Request),
                 Desktop(Request),
                 Preview(Request),
                 RichDocument(Request),
@@ -220,14 +219,6 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                 }
                 Ok(request) if request.method == "drafts.refresh" => Work::DraftSync(request),
                 Ok(request) if request.method.starts_with("sync.") => Work::Sync(request),
-                Ok(request)
-                    if matches!(
-                        request.method.as_str(),
-                        "uploads.pending" | "uploads.enqueue" | "uploads.deliver"
-                    ) =>
-                {
-                    Work::Upload(request)
-                }
                 Ok(request) if request.method == "actions.submit" => Work::Action(request),
                 Ok(request) if request.method == "api.request" => Work::Network(request),
                 Ok(request) if request.method == "outbox.deliver" => Work::Delivery(request),
@@ -287,7 +278,6 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                     Work::Desktop(request) => {
                         crate::desktop::dispatch(
                             request,
-                            Some(&sender),
                             backend.as_ref().as_ref().ok(),
                             Some(&previews),
                         )
@@ -302,10 +292,6 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                             Err(error) => Response::failure(request.id, "notification", error),
                         }
                     }
-                    Work::Upload(request) => match backend.as_ref() {
-                        Ok(backend) => crate::uploads::dispatch(backend, &sender, request).await,
-                        Err(error) => Response::failure(request.id, "backend_config", error),
-                    },
                     Work::Action(request) => match backend.as_ref() {
                         Ok(backend) => crate::actions::submit(backend, &sender, request).await,
                         Err(error) => Response::failure(request.id, "backend_config", error),

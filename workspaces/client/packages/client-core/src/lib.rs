@@ -37,7 +37,6 @@ pub mod stream_log;
 pub mod sync;
 pub mod terminal;
 mod tls;
-pub mod uploads;
 pub mod views;
 pub mod voice;
 pub mod voice_audio;

@@ -36,8 +36,9 @@ pub(super) fn snapshot(tx: &Transaction<'_>, actor: &Value) -> Result<Option<Val
     let mut children = Vec::new();
     let mut has_children = false;
     for (_, raw) in team {
-        let worker: Value =
+        let record: studio_runtime_store::AgentRecord =
             serde_json::from_str(&raw).map_err(|_| refusal("invalid child record".into()))?;
+        let worker = record.value();
         if worker["id"] == id
             || (!lead && worker["parentId"] != id)
             || studio_runtime_store::truthy(worker.get("deletedAt"))
@@ -49,7 +50,7 @@ pub(super) fn snapshot(tx: &Transaction<'_>, actor: &Value) -> Result<Option<Val
             worker["status"].as_str(),
             Some("completed" | "failed" | "interrupted")
         ) || (worker["status"] == "paused"
-            && !studio_runtime_store::truthy(worker.get("autoWake")))
+            && record.auto_wake != Some(true))
         {
             continue;
         }

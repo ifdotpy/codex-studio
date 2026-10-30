@@ -87,7 +87,6 @@ impl Store {
         crate::outbox::initialize(&connection)?;
         crate::projections::initialize(&connection)?;
         crate::draft_store::initialize(&connection)?;
-        crate::uploads::initialize(&connection)?;
         Ok(Self { connection })
     }
 
@@ -104,9 +103,6 @@ impl Store {
     fn execute(&mut self, request: &Request) -> rusqlite::Result<Response> {
         let id = request.id.clone();
         match request.method.as_str() {
-            method if method.starts_with("uploads.") || method.starts_with("files.") => {
-                Ok(crate::uploads::stored(&mut self.connection, request))
-            }
             method if method.starts_with("file_link.") => Ok(crate::file_links::dispatch(request)),
             "markdown.parse" => Ok(crate::markdown::dispatch(request)),
             method
@@ -489,6 +485,51 @@ pub(crate) fn unsigned(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retired_upload_commands_leave_existing_files_intact() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("client.sqlite3");
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch("CREATE TABLE client_file_sources(id TEXT PRIMARY KEY,name TEXT NOT NULL,mime TEXT NOT NULL,bytes BLOB NOT NULL); INSERT INTO client_file_sources VALUES('old','file','text/plain',X'0102'); CREATE TABLE client_uploads(id TEXT PRIMARY KEY,workspace TEXT NOT NULL,state_dir TEXT NOT NULL,agent TEXT NOT NULL,document TEXT NOT NULL,bytes BLOB NOT NULL); INSERT INTO client_uploads VALUES('old','workspace','directory','agent','saved',X'0304'); CREATE TABLE client_upload_tombstones(id TEXT PRIMARY KEY,cancelled INTEGER NOT NULL); INSERT INTO client_upload_tombstones VALUES('old',1);").unwrap();
+        drop(connection);
+        let mut store = Store::open(&path).unwrap();
+        for method in ["uploads.list", "files.stage"] {
+            let response = store.dispatch(Request {
+                id: method.into(),
+                method: method.into(),
+                params: json!({}),
+            });
+            assert_eq!(response.error.unwrap().code, "unknown_method");
+        }
+        let source: Vec<u8> = store
+            .connection
+            .query_row(
+                "SELECT bytes FROM client_file_sources WHERE id='old'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let upload: (String, Vec<u8>) = store
+            .connection
+            .query_row(
+                "SELECT document, bytes FROM client_uploads WHERE id='old'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let cancelled: bool = store
+            .connection
+            .query_row(
+                "SELECT cancelled FROM client_upload_tombstones WHERE id='old'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(source, [1, 2]);
+        assert_eq!(upload, ("saved".into(), vec![3, 4]));
+        assert!(cancelled);
+    }
 
     #[test]
     fn retired_dictation_commands_leave_existing_recordings_intact() {

@@ -34,10 +34,10 @@ pub(crate) fn routes() -> RouteGroup {
     )])
 }
 
-pub(super) fn binding(agent: &Value, scope: &ConnectionScope) -> Option<Value> {
-    let thread = agent.get("threadId")?.as_str().filter(|v| !v.is_empty())?;
+pub(super) fn binding(agent: &studio_runtime_store::AgentRecord, scope: &ConnectionScope) -> Option<Value> {
+    let thread = agent.thread_id.as_deref().filter(|v| !v.is_empty())?;
     Some(
-        json!({"account":scope.account,"thread":thread,"epoch":agent.get("epoch")?.as_u64()?,
+        json!({"account":scope.account,"thread":thread,"epoch":u64::try_from(agent.epoch).ok()?,
         "connection":scope.connection,"generation":scope.generation}),
     )
 }
@@ -48,16 +48,12 @@ fn changed() -> ApiError {
         "The agent session changed. Refresh the tools list.",
     )
 }
-fn matches_agent(agent: &Value, expected: &crate::generated::McpSessionBinding) -> bool {
-    !studio_runtime_store::truthy(agent.get("deletedAt"))
-        && agent.get("deleted") != Some(&json!(true))
-        && agent.get("threadId").and_then(Value::as_str) == Some(expected.thread.as_str())
-        && agent.get("epoch").and_then(Value::as_i64) == Some(expected.epoch)
-        && agent
-            .get("accountKey")
-            .and_then(Value::as_str)
-            .unwrap_or("default")
-            == expected.account
+fn matches_agent(agent: &studio_runtime_store::AgentRecord, expected: &crate::generated::McpSessionBinding) -> bool {
+    !studio_runtime_store::truthy(agent.extra.get("deletedAt"))
+        && agent.extra.get("deleted") != Some(&json!(true))
+        && agent.thread_id.as_deref() == Some(expected.thread.as_str())
+        && agent.epoch == expected.epoch
+        && agent.account_key == expected.account
 }
 
 async fn reconnect(
@@ -141,8 +137,7 @@ async fn execute(
         .transaction_with_error(move |tx| {
             let agent = WorkspaceViewsRepository::agent(tx, &claim_id)
                 .map_err(ApiError::stored)?
-                .ok_or_else(changed)?
-                .value();
+                .ok_or_else(changed)?;
             if !matches_agent(&agent, &claim_expected) {
                 return Err(changed());
             }
@@ -314,6 +309,6 @@ mod tests {
         ) {
         }
         typed_execute(execute);
-        const _: fn(&Value, &crate::generated::McpSessionBinding) -> bool = matches_agent;
+        const _: fn(&studio_runtime_store::AgentRecord, &crate::generated::McpSessionBinding) -> bool = matches_agent;
     }
 }

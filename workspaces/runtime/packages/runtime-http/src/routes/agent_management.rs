@@ -324,22 +324,20 @@ async fn run_native_action(
             }
             let agent = AgentRepository::get(tx, &AgentId::from(preflight_request.agent.as_str()))?
                 .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown managed agent"))?;
-            let agent = agent.value();
-            if agent
-                .get("threadId")
-                .and_then(Value::as_str)
-                .is_none_or(str::is_empty)
-            {
+            if agent.thread_id.as_deref().is_none_or(str::is_empty) {
                 return Err(ApiError::new(
                     StatusCode::BAD_REQUEST,
                     "This agent has no active conversation",
                 ));
             }
-            if agent.get("autoWake") != Some(&Value::Bool(true))
-                || agent.get("inFlight") == Some(&Value::Bool(true))
+            if agent.auto_wake != Some(true)
+                || agent.in_flight == Some(true)
                 || matches!(
-                    agent.get("status").and_then(Value::as_str),
-                    Some("queued" | "starting" | "running" | "approval")
+                    agent.status,
+                    studio_runtime_store::AgentStatus::Queued
+                        | studio_runtime_store::AgentStatus::Starting
+                        | studio_runtime_store::AgentStatus::Running
+                        | studio_runtime_store::AgentStatus::Approval
                 )
             {
                 return Err(ApiError::new(
@@ -536,15 +534,15 @@ impl NativeActionPreparationRun {
         request: &native_actions::Request,
         ticket: &studio_runtime_services::workspace_operations::ProviderTicket,
     ) -> native_actions::Result<()> {
-        let agent = self.agent(request).await?.value().clone();
-        if agent.get("executionMode").and_then(Value::as_str) != Some("vm") {
+        let agent = self.agent(request).await?;
+        if agent.execution_mode != Some(studio_runtime_store::AgentExecutionMode::Vm) {
             return Ok(());
         }
         let guest = self
             .guest
             .clone()
             .ok_or(NativeError::Unavailable("workspace-state/vm-workspace"))?;
-        if agent.get("isLead").and_then(Value::as_bool) == Some(true) {
+        if agent.extra.get("isLead").and_then(Value::as_bool) == Some(true) {
             studio_runtime_services::vm_preparation::prepare_lead(
                 self.store.as_ref(),
                 guest,
