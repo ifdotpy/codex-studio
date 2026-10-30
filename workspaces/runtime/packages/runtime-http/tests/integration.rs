@@ -2,6 +2,7 @@ mod checkpoint_rewind;
 mod child_permissions;
 mod claude_file_backups;
 mod claude_login;
+mod catalog_last_good;
 mod claude_repair_report;
 mod draft_replication;
 mod future_worker_account;
