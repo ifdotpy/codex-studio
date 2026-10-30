@@ -33,6 +33,7 @@ pub mod analytics_history_schedule;
 pub mod analytics_measurements;
 pub mod analytics_projection;
 pub mod analytics_rollout;
+mod approval_sync;
 pub mod atomic_file;
 pub mod bounded_child;
 pub mod browser;

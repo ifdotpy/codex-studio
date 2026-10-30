@@ -91,6 +91,7 @@ fn invalid_row(row: &str) -> String {
 
 /// Create the table and replace the check triggers. Safe to run again.
 pub fn create_schema(tx: &Connection) -> rusqlite::Result<()> {
+<<<<<<< head
     let mut sql = String::from(
         "CREATE TABLE IF NOT EXISTS approvals (
             id TEXT PRIMARY KEY, agent TEXT NOT NULL, turn TEXT, created REAL NOT NULL, epoch INTEGER,
@@ -116,6 +117,126 @@ pub fn create_schema(tx: &Connection) -> rusqlite::Result<()> {
         ));
     }
     tx.execute_batch(&sql)
+||||||| base
+=======
+    let sql = String::from(
+        "CREATE TABLE IF NOT EXISTS approvals (
+            id TEXT PRIMARY KEY, agent TEXT NOT NULL, turn TEXT, created REAL NOT NULL, epoch INTEGER,
+            kind TEXT NOT NULL, request TEXT NOT NULL, delivery TEXT, detail TEXT NOT NULL,
+            state TEXT NOT NULL,
+            answer TEXT, command TEXT, answered_by TEXT, at REAL, since REAL, reason TEXT,
+            deferral_active INTEGER, deferral_at REAL, deferral_by TEXT,
+            fire_at REAL, hidden_at REAL, hidden_by TEXT);
+         CREATE INDEX IF NOT EXISTS approvals_turn ON approvals(turn,state);
+         CREATE INDEX IF NOT EXISTS approvals_agent_open ON approvals(agent) WHERE state IN ('pending','answering');
+         CREATE INDEX IF NOT EXISTS approvals_account_open ON approvals(json_extract(delivery,'$.account')) WHERE state IN ('pending','answering');
+         CREATE INDEX IF NOT EXISTS approvals_fire_at ON approvals(fire_at) WHERE fire_at IS NOT NULL;",
+    );
+    tx.execute_batch(&sql)?;
+    // Replace a trigger only when its text changed, so reopening a database
+    // leaves the schema (and its change counter) as it was.
+    for (name, event) in [
+        ("approvals_check_insert", "INSERT"),
+        ("approvals_check_update", "UPDATE"),
+    ] {
+        let wanted = format!(
+            "CREATE TRIGGER {name} BEFORE {event} ON approvals WHEN {}\n             BEGIN SELECT RAISE(ABORT,'invalid approval state'); END",
+            invalid_row("NEW")
+        );
+        let current: Option<String> = tx
+            .query_row(
+                "SELECT sql FROM sqlite_schema WHERE type='trigger' AND name=?1",
+                [name],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if current.as_deref() != Some(wanted.as_str()) {
+            tx.execute_batch(&format!("DROP TRIGGER IF EXISTS {name}; {wanted};"))?;
+        }
+    }
+    Ok(())
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProviderOption {
+    label: String,
+    description: Option<String>,
+    preview: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProviderQuestion {
+    id: Option<String>,
+    question: Option<String>,
+    header: Option<String>,
+    options: Option<Vec<ProviderOption>>,
+    is_secret: Option<bool>,
+    multi_select: Option<bool>,
+    is_other: Option<bool>,
+}
+
+/// Decodes the `questions` list of a provider request. A question without an id
+/// gets its index. With `strict`, a key Studio does not know is an error (the
+/// migration). Otherwise unknown keys are dropped, so a new provider field never
+/// loses the user's question.
+pub fn questions_from_provider(
+    mut list: serde_json::Value,
+    strict: bool,
+) -> Result<Vec<studio_runtime_schema::approvals::Question>, serde_json::Error> {
+    use studio_runtime_schema::approvals::{Question, QuestionOption};
+    if !strict {
+        const QUESTION_KEYS: [&str; 7] = [
+            "id",
+            "question",
+            "header",
+            "options",
+            "isSecret",
+            "multiSelect",
+            "isOther",
+        ];
+        const OPTION_KEYS: [&str; 3] = ["label", "description", "preview"];
+        for question in list.as_array_mut().into_iter().flatten() {
+            if let Some(object) = question.as_object_mut() {
+                object.retain(|key, _| QUESTION_KEYS.contains(&key.as_str()));
+                for option in object
+                    .get_mut("options")
+                    .and_then(serde_json::Value::as_array_mut)
+                    .into_iter()
+                    .flatten()
+                {
+                    if let Some(option) = option.as_object_mut() {
+                        option.retain(|key, _| OPTION_KEYS.contains(&key.as_str()));
+                    }
+                }
+            }
+        }
+    }
+    let list: Vec<ProviderQuestion> = serde_json::from_value(list)?;
+    Ok(list
+        .into_iter()
+        .enumerate()
+        .map(|(index, q)| Question {
+            id: q.id.unwrap_or_else(|| index.to_string()),
+            question: q.question.unwrap_or_default(),
+            header: q.header,
+            options: q
+                .options
+                .unwrap_or_default()
+                .into_iter()
+                .map(|o| QuestionOption {
+                    label: o.label,
+                    description: o.description,
+                    preview: o.preview,
+                })
+                .collect(),
+            is_secret: q.is_secret.unwrap_or(false),
+            multi_select: q.multi_select,
+            is_other: q.is_other,
+        })
+        .collect())
+>>>>>>> origin/feat/approval-entity
 }
 
 /// What a caller supplies to create an approval.

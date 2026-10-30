@@ -220,6 +220,7 @@ fn async_question_error(error: QuestionsWriteError) -> ApiError {
         }
         E::InvalidStoredObject { object, id } => ApiError::invalid_stored(object, &id),
         E::Store(error) => ApiError::stored(error),
+        E::Approval(error) => ApiError::stored(error.into()),
         E::Json(_) | E::Clock => ApiError::internal(),
         E::Coordination(error) => match error {
             studio_runtime_services::coordination::CoordinationError::RequestResult(error) => {
@@ -378,7 +379,24 @@ async fn delete_question(
             .await
             .map_err(callback_error)?
     } else {
+<<<<<<< head
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "Unknown question"));
+||||||| base
+        let store = state.store.clone().ok_or_else(ApiError::internal)?;
+        let validators = state.validators.clone();
+        write(store, move |transaction| {
+            questions_write::delete_question(transaction, &id, |record| {
+                validators.validate_table_record("runtime_requests", record)
+            })
+        })
+        .await?
+=======
+        let store = state.store.clone().ok_or_else(ApiError::internal)?;
+        write(store, move |transaction| {
+            questions_write::delete_question(transaction, &id)
+        })
+        .await?
+>>>>>>> origin/feat/approval-entity
     };
     if state.callback_runtime.is_some() {
         state.event_wake.notify_one();
@@ -522,6 +540,7 @@ fn api_error(error: QuestionsWriteError) -> ApiError {
             ApiError::invalid_stored(object, &id)
         }
         QuestionsWriteError::Store(error) => ApiError::stored(error),
+        QuestionsWriteError::Approval(error) => ApiError::stored(error.into()),
         QuestionsWriteError::Event(error) => super::work_items::write_error(error),
         QuestionsWriteError::Json(_) | QuestionsWriteError::Clock => ApiError::internal(),
         QuestionsWriteError::Coordination(_) | QuestionsWriteError::Projects(_) => {

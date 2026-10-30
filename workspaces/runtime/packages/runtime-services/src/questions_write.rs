@@ -4,17 +4,30 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 use studio_runtime_schema::approvals::{
+<<<<<<< head
     Answer, Approval, ApprovalId, ApprovalState, CommandId, Deferral, Hidden, Principal, Question,
+||||||| base
+=======
+    Answer, Approval, ApprovalId, ApprovalState, CommandId, Deferral, Hidden, Principal,
+>>>>>>> origin/feat/approval-entity
     QuestionAnswer, Request, Timestamp,
 };
 use studio_runtime_schema::complaints::ComplaintResponseStatus;
 use studio_runtime_store::approvals::{self, ApprovalError};
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, QuestionsWriteRepository, RuntimeStore, Transaction,
+<<<<<<< head
+||||||| base
+    AgentId, AgentRecord, AgentRepository, QuestionsWriteRepository, RuntimeStore,
+    SyncDocumentsRepository, Transaction,
+=======
+    approvals,
+>>>>>>> origin/feat/approval-entity
 };
 use thiserror::Error;
 use uuid::Uuid;
 
+use crate::approval_sync;
 use crate::event_write::{self, EventWriteError};
 use crate::{
     coordination::{self, CoordinationError, SystemFollowup},
@@ -40,6 +53,8 @@ pub enum QuestionsWriteError {
     Event(#[from] EventWriteError),
     #[error(transparent)]
     Store(#[from] studio_runtime_store::StoreError),
+    #[error(transparent)]
+    Approval(#[from] studio_runtime_store::approvals::ApprovalError),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
     #[error("system clock is before the Unix epoch")]
@@ -114,6 +129,7 @@ pub async fn answer_async_question_in_store(
     let id_for_preparation = id.clone();
     let read = store
         .read_async("runtime-services/questions_write", move |transaction| {
+<<<<<<< head
             let Some(row) = get_row(transaction, &id_for_preparation)? else {
                 return Ok(None);
             };
@@ -125,6 +141,37 @@ pub async fn answer_async_question_in_store(
                 row.agent.as_str(),
             )?;
             Ok::<_, QuestionsWriteError>(Some(admission))
+||||||| base
+            let raw = QuestionsWriteRepository::request(transaction, &id_for_preparation)?
+                .ok_or(QuestionsWriteError::InvalidRequest("Unknown question"))?;
+            let record: Value = serde_json::from_str(&raw)
+                .map_err(|_| invalid_stored("runtime_requests", &id_for_preparation))?;
+            if record.get("id").and_then(Value::as_str) != Some(id_for_preparation.as_str())
+                || !validate_for_preparation(&record)
+            {
+                return Err(invalid_stored("runtime_requests", &id_for_preparation));
+            }
+            if record.get("method").and_then(Value::as_str) != Some("agent/asyncQuestion") {
+                return Ok(None);
+            }
+            let agent_id = record
+                .get("agent")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid_stored("runtime_requests", &id_for_preparation))?;
+            let admission =
+                crate::message_admission::MessageIngressAdmission::read(transaction, agent_id)?;
+            Ok(Some(admission))
+=======
+            let row = request(transaction, &id_for_preparation)?;
+            if !matches!(row.request, Request::AgentQuestion { .. }) {
+                return Ok::<_, QuestionsWriteError>(None);
+            }
+            let admission = crate::message_admission::MessageIngressAdmission::read(
+                transaction,
+                row.agent.as_str(),
+            )?;
+            Ok(Some(admission))
+>>>>>>> origin/feat/approval-entity
         })
         .await?;
     let Some(admission) = read else {
@@ -163,11 +210,19 @@ pub fn answer_async_question(
         prepared,
         now,
     } = input;
+<<<<<<< head
     let row =
         get_row(transaction, id)?.ok_or(QuestionsWriteError::InvalidRequest("Unknown question"))?;
+||||||| base
+    let mut record = request(transaction, id, &validate)?;
+    if record.get("method").and_then(Value::as_str) != Some("agent/asyncQuestion") {
+=======
+    let row = request(transaction, id)?;
+>>>>>>> origin/feat/approval-entity
     let Request::AgentQuestion { questions } = &row.request else {
         return Err(QuestionsWriteError::InvalidRequest("Not an async question"));
     };
+<<<<<<< head
     let given = given_answers(questions, data)?;
     let answer = Answer::Answers {
         answers: given
@@ -183,8 +238,51 @@ pub fn answer_async_question(
         ApprovalState::Pending | ApprovalState::Closed { .. } => {
             return Err(QuestionsWriteError::InvalidRequest(
                 "Request is no longer pending",
+||||||| base
+    }
+    let signature = crate::provider_callbacks::answer_signature(data);
+    if let Some(previous) = record.get("answerSignature").and_then(Value::as_str) {
+        if previous != signature {
+            return Err(QuestionsWriteError::Conflict(
+                "This request already has a different answer",
+=======
+    let answers = answered_questions(questions, data)?;
+    // A secret answer is sent to the agent but stored redacted.
+    let stored = Answer::Answers {
+        answers: answers
+            .iter()
+            .map(|question| QuestionAnswer {
+                id: question.id.clone(),
+                answer: if question.secret {
+                    vec!["[redacted]".to_owned()]
+                } else {
+                    question.answers.clone()
+                },
+            })
+            .collect(),
+    };
+    match &row.state {
+        ApprovalState::Pending => {}
+        ApprovalState::Answering { answer, .. }
+        | ApprovalState::Answered { answer, .. }
+        | ApprovalState::Unknown { answer, .. } => {
+            if *answer != stored {
+                return Err(QuestionsWriteError::Conflict(
+                    "This request already has a different answer",
+                ));
+            }
+            if matches!(row.state, ApprovalState::Answered { .. }) {
+                return Ok(AsyncQuestionAnswerResult {
+                    response: json!({"status":"answered","replayed":true}),
+                    event_inserted: false,
+                });
+            }
+            return Err(QuestionsWriteError::InvalidRequest(
+                "Answer delivery is uncertain. Do not resend; inspect the agent conversation",
+>>>>>>> origin/feat/approval-entity
             ));
         }
+<<<<<<< head
         ApprovalState::Answered { answer: stored, .. } => {
             if *stored != answer {
                 return Err(QuestionsWriteError::Conflict(
@@ -195,7 +293,20 @@ pub fn answer_async_question(
                 response: json!({"status":"answered","replayed":true}),
                 event_inserted: false,
             });
+||||||| base
+        if record.get("status").and_then(Value::as_str) == Some("answered") {
+            return Ok(AsyncQuestionAnswerResult {
+                response: json!({"status":"answered","replayed":true}),
+                event_inserted: false,
+            });
+=======
+        ApprovalState::Closed { .. } => {
+            return Err(QuestionsWriteError::InvalidRequest(
+                "Request is no longer pending",
+            ));
+>>>>>>> origin/feat/approval-entity
         }
+<<<<<<< head
         ApprovalState::Answering { answer: stored, .. }
         | ApprovalState::Unknown { answer: stored, .. } => {
             return Err(if *stored != answer {
@@ -206,6 +317,17 @@ pub fn answer_async_question(
                 )
             });
         }
+||||||| base
+        return Err(QuestionsWriteError::InvalidRequest(
+            "Answer delivery is uncertain. Do not resend; inspect the agent conversation",
+        ));
+    }
+    if record.get("status").and_then(Value::as_str) != Some(PENDING) {
+        return Err(QuestionsWriteError::InvalidRequest(
+            "Request is no longer pending",
+        ));
+=======
+>>>>>>> origin/feat/approval-entity
     }
     let agent_id = row.agent.as_str();
     let agent = stored_agent(transaction, agent_id)?
@@ -216,14 +338,27 @@ pub fn answer_async_question(
         ));
     }
     if event_write::truthy(agent.extra.get("deletedAt"))
+<<<<<<< head
         || row.epoch.and_then(|epoch| i64::try_from(epoch).ok()) != Some(agent.epoch)
+||||||| base
+        || record.get("epoch").and_then(Value::as_i64) != Some(agent.epoch)
+=======
+        || row.epoch.map(|epoch| epoch as i64) != Some(agent.epoch)
+>>>>>>> origin/feat/approval-entity
         || agent.auto_wake != Some(true)
     {
         return Err(QuestionsWriteError::InvalidRequest(
             "This question belongs to a stopped turn",
         ));
     }
+<<<<<<< head
     let text = given
+||||||| base
+    let answers = answered_questions(&record, data)?;
+    let text = answers
+=======
+    let text = answers
+>>>>>>> origin/feat/approval-entity
         .iter()
         .map(|given| {
             std::iter::once(given.question.question.as_str())
@@ -265,6 +400,7 @@ pub fn answer_async_question(
             send_followup(Some(turn_id))?
         }
     };
+<<<<<<< head
     // The answer needs no provider delivery: the follow-up above is the delivery.
     approvals::answer(transaction, &row.id, answer, CommandId(id.to_owned())).map_err(approval)?;
     let mut answered =
@@ -275,12 +411,35 @@ pub fn answer_async_question(
         approvals::put(transaction, &answered).map_err(approval)?;
     }
     crate::approval_sync::publish(transaction, &answered)?;
+||||||| base
+
+    record["status"] = json!("answered");
+    record["answerSignature"] = json!(signature);
+    record["answeredBy"] = json!(USER);
+    record["answeredAt"] = json!(now);
+    record["decision"] = data.get("decision").cloned().unwrap_or(json!("answer"));
+    record["deferred"] = json!(false);
+    record["answerHistory"] = json!(answers.into_iter().map(|question| {
+        json!({"id":question.id,"question":question.prompt,"isSecret":question.secret,"answer":if question.secret { json!("[redacted]") } else { json!(question.answers) }})
+    }).collect::<Vec<_>>());
+    put_request(transaction, id, &record, &validate)?;
+=======
+    approvals::answer(transaction, &row.id, stored, CommandId(id.to_owned()))?;
+    let mut answered =
+        approvals::confirm_delivery(transaction, &row.id, Principal::Owner, Timestamp(now))?;
+    if let Some(deferral) = answered.deferral.as_mut() {
+        deferral.active = false;
+        approvals::put(transaction, &answered)?;
+    }
+    approval_sync::publish(transaction, &answered)?;
+>>>>>>> origin/feat/approval-entity
     Ok(AsyncQuestionAnswerResult {
         response: json!({"status":"answered"}),
         event_inserted,
     })
 }
 
+<<<<<<< head
 /// The user's leaves for one question. `values` are what the user typed; the
 /// stored answer hides them for a secret question. The secret itself is never
 /// stored, so a second, different secret for the same question compares equal
@@ -288,8 +447,24 @@ pub fn answer_async_question(
 struct Given<'a> {
     question: &'a Question,
     values: Vec<String>,
+||||||| base
+/// Consumed leaves of an async answer. The original request JSON still owns its signature.
+struct AnsweredQuestion {
+    id: String,
+    prompt: String,
+    secret: bool,
+    answers: Vec<String>,
+=======
+/// Consumed leaves of an async answer.
+struct AnsweredQuestion {
+    id: String,
+    prompt: String,
+    secret: bool,
+    answers: Vec<String>,
+>>>>>>> origin/feat/approval-entity
 }
 
+<<<<<<< head
 impl Given<'_> {
     fn stored(&self) -> Vec<String> {
         if self.question.is_secret {
@@ -302,13 +477,56 @@ impl Given<'_> {
 
 fn given_answers<'a>(
     questions: &'a [Question],
+||||||| base
+fn answered_questions(
+    record: &Value,
+=======
+/// The body of the answer route for questions: one `answers` list per question id.
+#[derive(serde::Deserialize)]
+struct AnswerBody {
+    answers: std::collections::BTreeMap<String, AnswerLeaf>,
+}
+
+/// Historical missing and null leaves mean no selected answers.
+#[derive(serde::Deserialize)]
+struct AnswerLeaf {
+    answers: Option<Vec<String>>,
+}
+
+fn answered_questions(
+    questions: &[studio_runtime_schema::approvals::Question],
+>>>>>>> origin/feat/approval-entity
     data: &Value,
+<<<<<<< head
 ) -> Result<Vec<Given<'a>>, QuestionsWriteError> {
     let answers = data.get("answers").and_then(Value::as_object).ok_or(
         QuestionsWriteError::InvalidRequest("Supply question answers"),
     )?;
     questions
+||||||| base
+) -> Result<Vec<AnsweredQuestion>, QuestionsWriteError> {
+    let stored = || {
+        invalid_stored(
+            "runtime_requests",
+            record["id"].as_str().unwrap_or_default(),
+        )
+    };
+    let questions = record
+        .pointer("/params/questions")
+        .and_then(Value::as_array)
+        .ok_or_else(stored)?;
+    let answers = data.get("answers").and_then(Value::as_object).ok_or(
+        QuestionsWriteError::InvalidRequest("Supply question answers"),
+    )?;
+    questions
+=======
+) -> Result<Vec<AnsweredQuestion>, QuestionsWriteError> {
+    let body: AnswerBody = serde_json::from_value(data.clone())
+        .map_err(|_| QuestionsWriteError::InvalidRequest("Supply question answers"))?;
+    Ok(questions
+>>>>>>> origin/feat/approval-entity
         .iter()
+<<<<<<< head
         .map(|question| {
             // Historical missing, null and non-array leaves mean no selected answers.
             let values = answers
@@ -321,8 +539,49 @@ fn given_answers<'a>(
                 .map_err(|_| QuestionsWriteError::InvalidRequest("Supply question answers"))?
                 .unwrap_or_default();
             Ok(Given { question, values })
+||||||| base
+        .map(|question| {
+            let id = question
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(stored)?;
+            // Historical missing, null and non-array leaves mean no selected answers.
+            let values = answers
+                .get(id)
+                .and_then(|answer| answer.get("answers"))
+                .and_then(Value::as_array);
+            let answers = values
+                .map(|values| serde_json::from_value::<Vec<String>>(json!(values)))
+                .transpose()
+                .map_err(|_| QuestionsWriteError::InvalidRequest("Supply question answers"))?
+                .unwrap_or_default();
+            Ok(AnsweredQuestion {
+                id: id.to_owned(),
+                prompt: question
+                    .get("question")
+                    .and_then(Value::as_str)
+                    .unwrap_or(id)
+                    .to_owned(),
+                secret: event_write::truthy(question.get("isSecret")),
+                answers,
+            })
+=======
+        .map(|question| AnsweredQuestion {
+            id: question.id.clone(),
+            prompt: if question.question.is_empty() {
+                question.id.clone()
+            } else {
+                question.question.clone()
+            },
+            secret: question.is_secret,
+            answers: body
+                .answers
+                .get(&question.id)
+                .and_then(|leaf| leaf.answers.clone())
+                .unwrap_or_default(),
+>>>>>>> origin/feat/approval-entity
         })
-        .collect()
+        .collect())
 }
 
 pub fn defer_question(
@@ -330,14 +589,27 @@ pub fn defer_question(
     id: &str,
     deferred: bool,
 ) -> Result<Value, QuestionsWriteError> {
+<<<<<<< head
     let mut row =
         get_row(transaction, id)?.ok_or(QuestionsWriteError::InvalidRequest("Unknown question"))?;
+||||||| base
+    let mut record = request(transaction, id, &validate)?;
+    if !is_question(&record) {
+=======
+    let mut row = request(transaction, id)?;
+>>>>>>> origin/feat/approval-entity
     if !is_question(&row) {
         return Err(QuestionsWriteError::InvalidRequest(
             "Only a question can be deferred",
         ));
     }
+<<<<<<< head
     if !matches!(row.state, ApprovalState::Pending) || row.hidden.is_some() {
+||||||| base
+    if record.get("status").and_then(Value::as_str) != Some(PENDING) {
+=======
+    if !matches!(row.state, ApprovalState::Pending) {
+>>>>>>> origin/feat/approval-entity
         return Err(QuestionsWriteError::InvalidRequest(
             "This question is no longer pending",
         ));
@@ -349,6 +621,7 @@ pub fn defer_question(
             "This conversation was deleted",
         ));
     }
+<<<<<<< head
     if row.deferral.as_ref().is_some_and(|d| d.active) != deferred {
         row.deferral = Some(Deferral {
             active: deferred,
@@ -357,6 +630,27 @@ pub fn defer_question(
         });
         approvals::put(transaction, &row).map_err(approval)?;
         crate::approval_sync::publish(transaction, &row)?;
+||||||| base
+    let previous_deferred = record
+        .get("deferred")
+        .cloned()
+        .unwrap_or(Value::Bool(false));
+    if previous_deferred != Value::Bool(deferred) {
+        record["deferred"] = json!(deferred);
+        record["deferredAt"] = json!(unix_time()?);
+        record["deferredBy"] = json!(USER);
+        put_request(transaction, id, &record, &validate)?;
+=======
+    let previous = row.deferral.as_ref().is_some_and(|d| d.active);
+    if previous != deferred {
+        row.deferral = Some(Deferral {
+            active: deferred,
+            at: Timestamp(unix_time()?),
+            by: Principal::Owner,
+        });
+        approvals::put(transaction, &row)?;
+        approval_sync::publish(transaction, &row)?;
+>>>>>>> origin/feat/approval-entity
     }
     Ok(json!({"id":id,"status":PENDING,"deferred":deferred}))
 }
@@ -366,6 +660,7 @@ pub fn defer_question(
 pub fn delete_question(
     transaction: &Transaction<'_>,
     id: &str,
+<<<<<<< head
 ) -> Result<Option<Value>, QuestionsWriteError> {
     let Some(mut row) = get_row(transaction, id)? else {
         return Ok(None);
@@ -373,8 +668,22 @@ pub fn delete_question(
     if !matches!(row.request, Request::AgentQuestion { .. }) {
         return Ok(None);
     }
+||||||| base
+    validate: impl Fn(&Value) -> bool,
+) -> Result<Value, QuestionsWriteError> {
+    let mut record = request(transaction, id, &validate)?;
+    let agent_id = record
+        .get("agent")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid_stored("runtime_requests", id))?;
+    let agent = stored_agent(transaction, agent_id)?
+=======
+) -> Result<Value, QuestionsWriteError> {
+    let mut row = request(transaction, id)?;
+>>>>>>> origin/feat/approval-entity
     let agent = stored_agent(transaction, row.agent.as_str())?
         .ok_or(QuestionsWriteError::InvalidRequest("Unknown agent"))?;
+<<<<<<< head
     if event_write::truthy(agent.extra.get("deletedAt")) {
         return Err(QuestionsWriteError::InvalidRequest(
             "This agent was deleted",
@@ -400,8 +709,33 @@ pub fn delete_question(
         crate::approval_sync::publish(transaction, &row)?;
     }
     Ok(Some(json!({"id":id,"status":"deleted"})))
+||||||| base
+    if !state_only_delete_allowed(
+        &record,
+        event_write::truthy(agent.extra.get("deletedAt")),
+        true,
+    )? {
+        return Ok(json!({"id":id,"status":"deleted"}));
+    }
+    mark_state_only_deleted(&mut record, unix_time()?);
+    put_request(transaction, id, &record, &validate)?;
+    Ok(json!({"id":id,"status":"deleted"}))
+=======
+    if !delete_allowed(
+        &row,
+        event_write::truthy(agent.extra.get("deletedAt")),
+        true,
+    )? {
+        return Ok(json!({"id":id,"status":"deleted"}));
+    }
+    hide(&mut row, unix_time()?);
+    approvals::put(transaction, &row)?;
+    approval_sync::publish(transaction, &row)?;
+    Ok(json!({"id":id,"status":"deleted"}))
+>>>>>>> origin/feat/approval-entity
 }
 
+<<<<<<< head
 fn is_question(row: &Approval) -> bool {
     match &row.request {
         Request::AgentQuestion { .. } | Request::Question { .. } => true,
@@ -415,12 +749,80 @@ fn is_question(row: &Approval) -> bool {
 // Legacy helpers of the provider-card cluster (`provider_callbacks/cards.rs`
 // still stores cards as JSON). They leave with that cluster.
 
+||||||| base
+=======
+/// Whether a question may be hidden. `false` means it is hidden already.
+pub(crate) fn delete_allowed(
+    row: &Approval,
+    agent_deleted: bool,
+    reject_pending_native: bool,
+) -> Result<bool, QuestionsWriteError> {
+    if !is_question(row) {
+        return Err(QuestionsWriteError::InvalidRequest(
+            "Only a question can be deleted",
+        ));
+    }
+    if agent_deleted {
+        return Err(QuestionsWriteError::InvalidRequest(
+            "This agent was deleted",
+        ));
+    }
+    if row.hidden.is_some() {
+        return Ok(false);
+    }
+    if reject_pending_native
+        && matches!(row.state, ApprovalState::Pending)
+        && !matches!(row.request, Request::AgentQuestion { .. })
+    {
+        return Err(QuestionsWriteError::QuestionAnswerUnavailable);
+    }
+    if matches!(
+        row.state,
+        ApprovalState::Answering { .. } | ApprovalState::Unknown { .. }
+    ) {
+        return Err(QuestionsWriteError::InvalidRequest(
+            "Question delivery is uncertain; wait for its receipt",
+        ));
+    }
+    Ok(true)
+}
+
+/// History stays: a deleted question is hidden, its state is kept.
+pub(crate) fn hide(row: &mut Approval, at: f64) {
+    row.hidden = Some(Hidden {
+        at: Timestamp(at),
+        by: Principal::Owner,
+    });
+    if let Some(deferral) = row.deferral.as_mut() {
+        deferral.active = false;
+    }
+}
+
+// Value-based helpers of the provider card path. Removed with that path (cluster 4).
+>>>>>>> origin/feat/approval-entity
 pub(crate) fn state_only_delete_allowed(
     record: &Value,
     agent_deleted: bool,
     reject_pending_native: bool,
 ) -> Result<bool, QuestionsWriteError> {
+<<<<<<< head
     if !legacy_is_question(record) {
+||||||| base
+    if !is_question(record) {
+=======
+    let is_question = match record.get("method").and_then(Value::as_str) {
+        Some("agent/asyncQuestion" | "item/tool/requestUserInput") => true,
+        Some("mcpServer/elicitation/request") => {
+            record
+                .get("params")
+                .and_then(|params| params.get("mode"))
+                .and_then(Value::as_str)
+                == Some("form")
+        }
+        _ => false,
+    };
+    if !is_question {
+>>>>>>> origin/feat/approval-entity
         return Err(QuestionsWriteError::InvalidRequest(
             "Only a question can be deleted",
         ));
@@ -705,6 +1107,7 @@ pub fn respond_to_complaint(
     })
 }
 
+<<<<<<< head
 fn legacy_is_question(record: &Value) -> bool {
     match record.get("method").and_then(Value::as_str) {
         Some("agent/asyncQuestion" | "item/tool/requestUserInput") => true,
@@ -714,6 +1117,66 @@ fn legacy_is_question(record: &Value) -> bool {
                 .and_then(|params| params.get("mode"))
                 .and_then(Value::as_str)
                 == Some("form")
+||||||| base
+fn request(
+    transaction: &Transaction<'_>,
+    id: &str,
+    validate: &impl Fn(&Value) -> bool,
+) -> Result<Value, QuestionsWriteError> {
+    let raw = QuestionsWriteRepository::request(transaction, id)?
+        .ok_or(QuestionsWriteError::InvalidRequest("Unknown question"))?;
+    let record: Value =
+        serde_json::from_str(&raw).map_err(|_| invalid_stored("runtime_requests", id))?;
+    if record.get("id").and_then(Value::as_str) != Some(id) || !validate(&record) {
+        return Err(invalid_stored("runtime_requests", id));
+    }
+    Ok(record)
+}
+
+fn put_request(
+    transaction: &Transaction<'_>,
+    id: &str,
+    record: &Value,
+    validate: &impl Fn(&Value) -> bool,
+) -> Result<(), QuestionsWriteError> {
+    if !validate(record) {
+        return Err(invalid_stored("runtime_requests", id));
+    }
+    QuestionsWriteRepository::put_request(transaction, id, &event_write::python_json(record))?;
+    // The renderer reads requests as entities: publish the stored change with it.
+    let view = crate::sync_views::project_persisted_record("request", record)
+        .ok_or_else(|| invalid_stored("runtime_requests", id))?;
+    SyncDocumentsRepository::put_entity(
+        transaction,
+        "request",
+        id,
+        view,
+        record["status"] != PENDING,
+    )?;
+    Ok(())
+}
+
+fn is_question(record: &Value) -> bool {
+    match record.get("method").and_then(Value::as_str) {
+        Some("agent/asyncQuestion" | "item/tool/requestUserInput") => true,
+        Some("mcpServer/elicitation/request") => {
+            record
+                .get("params")
+                .and_then(|params| params.get("mode"))
+                .and_then(Value::as_str)
+                == Some("form")
+=======
+fn request(transaction: &Transaction<'_>, id: &str) -> Result<Approval, QuestionsWriteError> {
+    approvals::get(transaction, &ApprovalId(id.to_owned()))?
+        .ok_or(QuestionsWriteError::InvalidRequest("Unknown question"))
+}
+
+fn is_question(row: &Approval) -> bool {
+    match &row.request {
+        Request::AgentQuestion { .. } | Request::Question { .. } => true,
+        Request::Elicitation { .. } => {
+            row.detail.params.0.get("mode").and_then(Value::as_str) == Some("form")
+>>>>>>> origin/feat/approval-entity
         }
         _ => false,
     }
