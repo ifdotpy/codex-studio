@@ -651,9 +651,14 @@ mod tests {
             rules: &[],
         })
         .unwrap();
-        let value = serde_json::to_value(inbox).unwrap();
-        assert_eq!(value[0]["agent"], "lead");
-        assert_eq!(value[1]["agent"], json!(null));
+        let agents: Vec<_> = inbox
+            .iter()
+            .map(|item| match item {
+                super::WorkspaceInboxItem::Other(value) => value["agent"].clone(),
+                super::WorkspaceInboxItem::Monitor { .. } => unreachable!("work items only"),
+            })
+            .collect();
+        assert_eq!(agents, [json!("lead"), json!(null)]);
     }
 
     #[test]

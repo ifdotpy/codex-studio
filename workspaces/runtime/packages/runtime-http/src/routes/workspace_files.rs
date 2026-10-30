@@ -301,7 +301,9 @@ mod tests {
     async fn file_preview_returns_info_and_content() {
         let directory = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
-        std::fs::write(workspace.path().join("sample.txt"), "hello").unwrap();
+        tokio::fs::write(workspace.path().join("sample.txt"), "hello")
+            .await
+            .unwrap();
         let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
         let agent = AgentRecord::from_value(json!({"id":"worker","rootId":"worker","epoch":1,"status":"idle","accountKey":"default","provider":"codex","cwd":workspace.path()})).unwrap();
         store
