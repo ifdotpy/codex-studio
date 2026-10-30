@@ -262,17 +262,11 @@ impl PeerProjects {
             .await
     }
 
-    fn request_id(_action: &str, _server: &str) -> Option<String> {
-        Some(studio_runtime_schema::persistence::RequestIdentity::issue_root())
-    }
-
     async fn notify(&self, server: &str) {
-        let (Some(key), Ok(now)) = (
-            Self::request_id(CHANGED_ACTION, server),
-            crate::event_write::unix_time(),
-        ) else {
+        let Ok(now) = crate::event_write::unix_time() else {
             return;
         };
+        let key = studio_runtime_schema::persistence::RequestIdentity::issue_root();
         // The receiver reads the list; a lost notice is repaired by its next contact.
         if let Err(error) = self
             .driver
@@ -318,7 +312,7 @@ impl PeerProjects {
 
     /// The `projects` list of a paired server, or `None` when it did not answer.
     async fn read(&self, server: &str) -> Option<Vec<PeerProject>> {
-        let key = Self::request_id("projects", server)?;
+        let key = studio_runtime_schema::persistence::RequestIdentity::issue_root();
         let now = crate::event_write::unix_time().ok()? as i64;
         match self
             .driver
