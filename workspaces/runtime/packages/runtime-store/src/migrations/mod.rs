@@ -37,13 +37,9 @@ mod m2026_10_28_usage_revision;
 mod m2026_10_29_agent_authorizations;
 mod m2026_10_29_model_choices;
 mod m2026_10_29_request_results_v2;
-<<<<<<< head
-mod m2026_10_30_one_outbox;
-||||||| base
-=======
 mod m2026_10_30_agent_volatile;
+mod m2026_10_30_one_outbox;
 mod m2026_10_30_rule_monitor_records;
->>>>>>> origin/main
 
 #[cfg(any(test, feature = "test-support"))]
 pub use m2026_10_20_agents::migrate_2026_10_20;
@@ -97,11 +93,6 @@ const OCTOBER_28: MigrationDate = MigrationDate {
     year: 2026,
     month: 10,
     day: 28,
-};
-const OCTOBER_30: MigrationDate = MigrationDate {
-    year: 2026,
-    month: 10,
-    day: 30,
 };
 const OCTOBER_29: MigrationDate = MigrationDate {
     year: 2026,
@@ -620,7 +611,6 @@ static CATALOG: &[&dyn Migration] = &[
     },
     &SqlMigration {
         definition: MigrationDefinition {
-<<<<<<< head
             id: "2026-10-30-one-outbox",
             introduced: OCTOBER_30,
             target: MigrationTarget::Canvas,
@@ -628,8 +618,9 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| m2026_10_30_one_outbox::apply(c.transaction),
-||||||| base
-=======
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
             id: "2026-10-30-rule-monitor-records",
             introduced: OCTOBER_30,
             target: MigrationTarget::Canvas,
@@ -637,7 +628,6 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| m2026_10_30_rule_monitor_records::apply(c.transaction),
->>>>>>> origin/main
     },
     &RegistryMigration,
 ];
