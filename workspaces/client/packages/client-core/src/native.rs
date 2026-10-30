@@ -196,10 +196,6 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                 // Pure computations never wait behind database writes: the UI
                 // calls several of them synchronously.
                 Ok(request) if pure(&request.method) => Work::Immediate(compute(&request)),
-                // Only Rust services export recordings to private files.
-                Ok(request) if request.method == "dictation.wav" => Work::Immediate(
-                    Response::failure(request.id, "invalid_request", "Unknown command."),
-                ),
                 Ok(request)
                     if matches!(
                         request.method.as_str(),
@@ -297,8 +293,8 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                         )
                         .await
                     }
-                    Work::Speech(request) => crate::speech::dispatch(&sender, request).await,
-                    Work::Media(request) => crate::media::dispatch(request, &sender).await,
+                    Work::Speech(request) => crate::speech::dispatch(request).await,
+                    Work::Media(request) => crate::media::dispatch(request).await,
                     Work::Voice(request) => crate::voice::dispatch(request).await,
                     Work::Notify(request) => {
                         match crate::notifications::notify(&request.params["value"]).await {
@@ -610,8 +606,6 @@ mod audio_ownership_tests {
             "media.captureStart",
             "media.captureStop",
             "media.requestMicrophone",
-            "media.playRecording",
-            "media.stopPlayback",
             "voice.create",
             "voice.answer",
             "voice.close",

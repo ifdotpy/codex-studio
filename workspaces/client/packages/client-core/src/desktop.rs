@@ -68,10 +68,7 @@ fn purpose(method: &str) -> Option<u32> {
         "desktop.openExternal"
         | crate::desktop::SIGN_IN_OPEN_METHOD
         | crate::desktop::SIGN_IN_PREPARE_METHOD => EXTERNAL_LINK_PURPOSE,
-        "desktop.saveBegin"
-        | "desktop.savePreview"
-        | "desktop.saveTerminal"
-        | "desktop.saveRecording" => 5,
+        "desktop.saveBegin" | "desktop.savePreview" | "desktop.saveTerminal" => 5,
         "desktop.fileAction" => 6,
         "desktop.requestMicrophone" | "desktop.reserveMicrophone" => 7,
         "desktop.prepareTranscription" => 8,
@@ -301,29 +298,6 @@ pub async fn dispatch(
                 let backend = backend.ok_or("The native backend is unavailable.")?;
                 let (name, bytes) = crate::terminal::history(backend, &value).await?;
                 return save_snapshot(name, bytes).await;
-            }
-            if request.method == "desktop.saveRecording" {
-                let sender = sender.ok_or("The native state service is unavailable.")?;
-                let id = value
-                    .as_str()
-                    .filter(|v| !v.is_empty() && v.len() <= 128)
-                    .ok_or("Invalid recording.")?;
-                let directory = tempfile::Builder::new()
-                    .prefix("codex-studio-recording-")
-                    .tempdir()
-                    .map_err(|e| e.to_string())?;
-                let exported = crate::delivery::state(
-                    sender,
-                    "dictation.wav",
-                    serde_json::json!({"id":id,"directory":directory.path()}),
-                )
-                .await?;
-                let path = exported["path"]
-                    .as_str()
-                    .ok_or("The recording was not exported.")?;
-                let bytes = tokio::fs::read(path).await.map_err(|e| e.to_string())?;
-                return save_snapshot(format!("dictation-{id}.wav"), std::sync::Arc::new(bytes))
-                    .await;
             }
             if request.method == "desktop.savePreview" {
                 let (name, bytes) = previews

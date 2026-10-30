@@ -3,7 +3,6 @@ pub mod backend;
 pub mod client;
 pub mod delivery;
 pub mod desktop;
-pub mod dictation;
 pub mod draft_replication;
 pub mod draft_store;
 pub use studio_client_domain::drafts;
