@@ -37,7 +37,7 @@ async fn post(app: &axum::Router, body: Value) -> (u16, Value) {
 }
 
 fn owner_held_rule() -> Value {
-    json!({"id":"rule","agent":"owner","rootId":"owner","epoch":0,"name":"Watch",
+    json!({"accountKey":"default","id":"rule","agent":"owner","rootId":"owner","epoch":0,"name":"Watch",
         "kind":"interval","intervalSeconds":240,"nextAt":1_800_000_000.0,"at":1_800_000_000.0,
         "path":null,"event":"worker_completed","command":"check.sh","stallTimeoutSeconds":0,
         "livenessCommand":"","fileActivityAt":1_800_000_000.0,"fileGeneration":0,

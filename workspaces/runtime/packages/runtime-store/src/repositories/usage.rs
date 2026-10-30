@@ -400,7 +400,7 @@ mod tests {
             .execute_batch(crate::agent_volatile::agent_volatile_table_sql())
             .expect("volatile agent table creates");
         let mut agent =
-            json!({"id":AGENT,"provider":"codex","rootId":AGENT,"epoch":1,"status":"idle"});
+            json!({"accountKey":"default","id":AGENT,"provider":"codex","rootId":AGENT,"epoch":1,"status":"idle"});
         agent
             .as_object_mut()
             .expect("agent fixture is an object")

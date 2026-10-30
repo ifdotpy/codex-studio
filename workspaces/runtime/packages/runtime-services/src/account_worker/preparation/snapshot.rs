@@ -1883,7 +1883,7 @@ mod resource_tests {
             .expect("resources");
         store.transaction_with(move |tx| {
             for error in [json!(false), json!(42), json!([])] {
-                let record = json!({"id":"lead","rootId":"lead","epoch":1,"status":"queued",
+                let record = json!({"accountKey":"default","id":"lead","rootId":"lead","epoch":1,"status":"queued",
                     "isLead":true,"provider":"claude","cwd":"/project","threadId":"existing-thread","error":error});
                 AgentRepository::put(tx, &AgentRecord::from_value(record.clone()).expect("agent"))?;
                 assert!(matches!(thread_snapshot(tx, &resources, &record, "connection", Path::new("/state"), None),
@@ -2149,7 +2149,7 @@ mod resource_tests {
             (Value::Null, false, canonical_custom),
             (Value::Null, true, default_root.clone()),
         ] {
-            let record = json!({"id":"reviewer", "rootId":"reviewer", "epoch":1,
+            let record = json!({"accountKey":"default","id":"reviewer", "rootId":"reviewer", "epoch":1,
                 "isLead":true, "role":"reviewer", "provider":"claude", "status":"queued",
                 "cwd":"/scratch", "workspaceMode":"layr-native", "layrReady":ready,
                 "layrReadCwd":default_root.join("projects/project/lines/main"),
@@ -2747,7 +2747,7 @@ mod workspace_fence_tests {
     async fn receipt_store_and_scratch_changes_are_isolatable() {
         let state = tempfile::tempdir().expect("state");
         let store = RuntimeStore::open(Some(state.path())).await.expect("store");
-        let record = json!({"id":"reviewer", "rootId":"reviewer", "epoch":1,
+        let record = json!({"accountKey":"default","id":"reviewer", "rootId":"reviewer", "epoch":1,
             "status":"running", "isLead":true, "provider":"claude", "cwd":"/scratch",
             "workspaceMode":"layr-native", "role":"reviewer", "layrStoreRoot":"/store-a", "layrScratch":"/scratch"});
         let saved = record.clone();
@@ -2878,11 +2878,11 @@ mod workspace_fence_tests {
         let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
             .expect("resources");
         store.transaction_with(move |tx| {
-            AgentRepository::put(tx, &AgentRecord::from_value(json!({"id":"lead","rootId":"lead","epoch":1,
+            AgentRepository::put(tx, &AgentRecord::from_value(json!({"accountKey":"default","id":"lead","rootId":"lead","epoch":1,
                 "status":"running","isLead":true,"cwd":"/project","provider":studio_runtime_schema::ProviderKind::Claude})).expect("lead"))?;
             for mode in crate::claude_controls::PERMISSION_MODES {
                 for resumed in [false, true] {
-                    let mut record = json!({"id":"worker","rootId":"lead","parentId":"lead","epoch":1,
+                    let mut record = json!({"accountKey":"default","id":"worker","rootId":"lead","parentId":"lead","epoch":1,
                         "status":"queued","isLead":false,"role":"implementer","provider":"claude","cwd":"/project",
                         "workspaceMode":"shared","yoloMode":*mode == "bypassPermissions","claudeOptions":{"permissionMode": mode}});
                     if resumed {
@@ -2919,7 +2919,7 @@ mod workspace_fence_tests {
         }).collect();
         store
             .transaction_with(move |tx| {
-                let root = json!({"id":"lead","rootId":"lead","epoch":1,"status":"running",
+                let root = json!({"accountKey":"default","id":"lead","rootId":"lead","epoch":1,"status":"running",
                 "isLead":true,"cwd":"/source checkout","hostProjectPath":"/source checkout","provider":studio_runtime_schema::ProviderKind::Claude});
                 AgentRepository::put(tx, &AgentRecord::from_value(root).expect("lead"))?;
                 for (mode, provider, role, ready, fenced, expected_sandbox) in [
@@ -2981,7 +2981,7 @@ mod workspace_fence_tests {
                         "danger-full-access",
                     ),
                 ] {
-                    let record = json!({"id":"worker","rootId":"lead","parentId":"lead",
+                    let record = json!({"accountKey":"default","id":"worker","rootId":"lead","parentId":"lead",
                     "epoch":1,"status":"queued","isLead":false,"role":role,"provider":provider,
                     "cwd":"/worker copy:quoted\"path","hostProjectPath":"/parent copy",
                     "workspaceMode":mode,"worktree":mode == "worktree","worktreeReady":ready,

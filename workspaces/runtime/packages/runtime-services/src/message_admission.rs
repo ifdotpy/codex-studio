@@ -314,14 +314,14 @@ mod tests {
         );
         let operation = "provision:child:0";
         let agents = [
-            json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":0,"status":"idle","isLead":true,
+            json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":0,"status":"idle","isLead":true,
                 "autoWake":true,"cwd":project}),
             // A failed provisioning keeps its reservation; its cwd is the source.
-            json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"child","rootId":"lead","parentId":"lead","epoch":0,"status":"failed",
+            json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"child","rootId":"lead","parentId":"lead","epoch":0,"status":"failed",
                 "autoWake":true,"cwd":project,"worktree":true,"worktreeReady":false,
                 "workspaceOperation":"provision","workspaceReservationId":operation,
                 "worktreePreparation":"preparing"}),
-            json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"inside","rootId":"inside","epoch":0,"status":"idle","autoWake":true,
+            json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"inside","rootId":"inside","epoch":0,"status":"idle","autoWake":true,
                 "cwd":destination.join("project")}),
         ];
         let record = json!({"id":operation,"kind":"provision","agent":"child","epoch":0,

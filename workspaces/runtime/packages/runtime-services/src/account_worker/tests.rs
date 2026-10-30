@@ -390,7 +390,7 @@ struct Peer {
     wire: studio_runtime_providers::WireProfile,
     account: String,
     generation: Generation,
-    factory: Arc<Factory>,
+    factory: Arc<dyn ProviderTaskFactory>,
     entries: mpsc::Sender<JournalEntry>,
     writes: mpsc::Receiver<Wire>,
     acks: mpsc::Receiver<EventCursor>,
@@ -1335,7 +1335,7 @@ async fn invalid_agent_hold_rechecks_the_same_field_before_publishing() {
         .transaction(move |tx| {
             tx.execute(
                 "INSERT INTO runtime_agents(id,record) VALUES('racy',?1)",
-                [json!({
+                [json!({"accountKey":"default",
                     "id":"racy", "rootId":17, "epoch":1,
                     "provider":studio_runtime_schema::ProviderKind::Codex,
                     "status":"idle", "isLead":true
@@ -1388,7 +1388,7 @@ async fn invalid_agent_hold_rechecks_the_same_field_before_publishing() {
         .transaction(move |tx| {
             AgentRepository::put(
                 tx,
-                &studio_runtime_store::AgentRecord::from_value(json!({
+                &studio_runtime_store::AgentRecord::from_value(json!({"accountKey":"default",
                     "id":"racy", "rootId":"racy", "epoch":1,
                     "provider":studio_runtime_schema::ProviderKind::Codex,
                     "status":"idle", "isLead":true
@@ -2685,7 +2685,18 @@ async fn worker_barrier(worker: &AccountHandle) {
     if injected() {
         return;
     }
-    tokio::select! { () = crashed() => {}, () = barrier => {} }
+    let mut finished = worker.completion_signal();
+    let exited = async {
+        loop {
+            if *finished.borrow_and_update() { break; }
+            if finished.changed().await.is_err() { break; }
+        }
+    };
+    tokio::select! {
+        () = crashed() => {},
+        () = barrier => {},
+        () = exited => panic!("account worker exited before the test barrier completed"),
+    }
 }
 
 async fn worker_barrier_with_history(worker: &AccountHandle, peer: &mut Peer) {

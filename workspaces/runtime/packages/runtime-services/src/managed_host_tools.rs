@@ -1099,7 +1099,7 @@ mod tests {
 
     #[test]
     fn actor_snapshot_binds_id_and_epoch() {
-        let value = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":3,"status":"running","isLead":true});
+        let value = json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":3,"status":"running","isLead":true});
         let actor = Actor::from_record(&value, "lead", 3).unwrap();
         assert_eq!(actor.id, "lead");
         assert_eq!(actor.root_id, "lead");
@@ -1149,7 +1149,7 @@ mod tests {
     #[test]
     fn remote_local_reads_are_allowed_and_cross_server_calls_name_the_dependency() {
         let actor = Actor::from_record(
-            &json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"lead","epoch":5,"status":"running","remoteOrigin":true}),
+            &json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"lead","epoch":5,"status":"running","remoteOrigin":true}),
             "worker",
             5,
         )

@@ -591,7 +591,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
         store.transaction_with(|tx| {
-            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('agent',?1)", [json!({"provider":"codex","id":"agent","rootId":"agent","epoch":0,"status":"idle"}).to_string()])?;
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('agent',?1)", [json!({"accountKey":"default","provider":"codex","id":"agent","rootId":"agent","epoch":0,"status":"idle"}).to_string()])?;
             Ok::<_, StoreError>(())
         }).await.unwrap();
         let state = crate::HttpState::new(
@@ -731,7 +731,7 @@ mod tests {
         let root = tempfile::tempdir().expect("temporary runtime");
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         store.transaction_with(|tx| {
-            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('agent',?1)", [json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":0,"status":"idle"}).to_string()])?;
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('agent',?1)", [json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":0,"status":"idle"}).to_string()])?;
             for (id, created) in [("a", 1), ("b", 2), ("c", 3)] {
                 tx.execute("INSERT INTO runtime_tasks VALUES(?1,?2)", (id, json!({"id":if id == "a" { "wrong" } else { id },"agent":"agent","created":created,"tail":"large tail","arguments":{},"error":"detail"}).to_string()))?;
             }
@@ -791,7 +791,7 @@ mod tests {
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
         store.transaction_with(|tx| {
             for id in ["lead", "foreign"] {
-                tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)", (id, json!({"provider":"codex","id":id,"rootId":id,"epoch":0,"status":"idle"}).to_string()))?;
+                tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)", (id, json!({"accountKey":"default","provider":"codex","id":id,"rootId":id,"epoch":0,"status":"idle"}).to_string()))?;
             }
             tx.execute("INSERT INTO runtime_checkpoints(id,record) VALUES('good',?1)", [json!({"id":"good","agent":"lead","created":1,"items":["private"],"future":{"kept":true}}).to_string()])?;
             tx.execute("INSERT INTO runtime_checkpoints(id,record) VALUES('foreign',?1)", [json!({"id":"wrong","agent":"foreign","created":1}).to_string()])?;

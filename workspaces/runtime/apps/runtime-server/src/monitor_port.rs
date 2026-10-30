@@ -4217,7 +4217,7 @@ mod tests {
         let cwd = root.path().to_string_lossy().into_owned();
         let owner = json!({"id":"owner","rootId":"owner","epoch":0,"status":"waiting",
             "autoWake":true,"cwd":cwd,"accountKey":"default","provider":"codex"});
-        let rule = json!({"id":"rule","agent":"owner","rootId":"owner","epoch":0,
+        let rule = json!({"accountKey":"default","id":"rule","agent":"owner","rootId":"owner","epoch":0,
             "name":"watch","kind":"interval","intervalSeconds":240,"nextAt":2.0,"at":1.0,
             "path":null,"event":"worker_completed","command":"true","text":"Report.",
             "status":"active","created":1.0,"inFlight":true,"checks":7,"wakes":0,
@@ -4250,7 +4250,7 @@ mod tests {
         let cwd = root.to_string_lossy().into_owned();
         let owner = json!({"id":"owner","rootId":"owner","epoch":0,"status":"waiting",
             "autoWake":true,"cwd":cwd,"accountKey":"default","provider":"codex"});
-        let mut rule = json!({"id":"rule","agent":"owner","rootId":"owner","epoch":0,
+        let mut rule = json!({"accountKey":"default","id":"rule","agent":"owner","rootId":"owner","epoch":0,
             "name":"watch","kind":"interval","intervalSeconds":240,"nextAt":2.0,"at":1.0,
             "path":null,"event":"worker_completed","command":"sleep 3600","text":"Report.",
             "status":"active","created":1.0,"inFlight":true,"checks":7,"wakes":0,

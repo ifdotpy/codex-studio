@@ -563,7 +563,7 @@ mod receipt_tests {
         let directory = tempfile::tempdir().unwrap();
         let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
         store.transaction_with(|tx| {
-            tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)", ("agent", json!({"id":"agent","rootId":"agent","provider":"claude","threadId":"thread","epoch":1,"autoWake":true,"status":"idle"}).to_string()))?;
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)", ("agent", json!({"accountKey":"default","id":"agent","rootId":"agent","provider":"claude","threadId":"thread","epoch":1,"autoWake":true,"status":"idle"}).to_string()))?;
             tx.execute("INSERT INTO runtime_tasks(id,record) VALUES(?1,?2)", ("task", json!({"id":"task","agent":"agent","status":"running","name":"local_bash"}).to_string()))?;
             Ok::<_, StoreError>(())
         }).await.unwrap();

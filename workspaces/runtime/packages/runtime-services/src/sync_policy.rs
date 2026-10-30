@@ -3219,7 +3219,7 @@ mod tests {
         let store = RuntimeStore::open(Some(root.path()))
             .await
             .expect("open isolated runtime store");
-        let agent = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":0,"status":"idle","isLead":true});
+        let agent = json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":0,"status":"idle","isLead":true});
         let snapshot = ProjectVaultSnapshot::default();
 
         store
@@ -3345,6 +3345,7 @@ mod tests {
                             "id": id,
                             "rootId": id,
                             "epoch": 0,
+                            "accountKey": "default",
                             "status": "idle",
                             "isLead": true
                         }),
@@ -3651,7 +3652,7 @@ mod tests {
                 for id in ["a", "b"] {
                     let agent = studio_runtime_store::AgentRecord::from_value(
                         json!({"provider":studio_runtime_schema::ProviderKind::Codex,
-                            "id": id, "rootId": id, "epoch": 0, "status": "idle", "isLead": true
+                            "id": id, "rootId": id, "epoch": 0, "status": "idle", "accountKey": "default", "isLead": true
                         }),
                     )?;
                     studio_runtime_store::AgentRepository::put(transaction, &agent)?;

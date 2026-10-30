@@ -163,6 +163,56 @@ async fn probe_provider_calls(
     Ok(())
 }
 
+async fn probe_provider_callbacks(
+    store: &RuntimeStore,
+    account: &str,
+    scope: &ConnectionScope,
+    control: &crate::provider_session_task::SessionControl,
+) -> Result<(), RecoveryError> {
+    use studio_runtime_providers::supervisor_protocol::ProviderOperationState;
+    let owner = account.to_owned();
+    let generation = scope.generation;
+    let operations = store
+        .read_async("restart provider callbacks", move |tx| {
+            crate::provider_callbacks::storage::held_supervisor_operations(tx, &owner, generation)
+                .map_err(|_| RecoveryError::CommitFailed)
+        })
+        .await?;
+    for operation in operations {
+        let status = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            control.operation_status(studio_runtime_process::OperationId(operation.clone())),
+        )
+        .await;
+        if !matches!(status, Ok(Ok(status)) if status.state == ProviderOperationState::Written) {
+            continue;
+        }
+        let owner = account.to_owned();
+        store
+            .transaction_with(move |tx| {
+                if let Some((owner_id, response_key, fingerprint)) =
+                    crate::provider_callbacks::storage::settle_supervisor_written(
+                        tx, &owner, generation, &operation,
+                    )
+                    .map_err(|_| RecoveryError::CommitFailed)?
+                {
+                    super::callback_record::retire_written_response(
+                        tx,
+                        &owner,
+                        generation,
+                        &owner_id,
+                        &response_key,
+                        &fingerprint,
+                    )
+                    .map_err(|_| RecoveryError::CommitFailed)?;
+                }
+                Ok::<(), RecoveryError>(())
+            })
+            .await?;
+    }
+    Ok(())
+}
+
 async fn reconcile_first_pass(
     store: Arc<RuntimeStore>,
     account: &str,
@@ -176,6 +226,7 @@ async fn reconcile_first_pass(
     let mut recovered_streams = None;
     let result = async {
         probe_provider_calls(&store, account, &scope, &control).await?;
+        probe_provider_callbacks(&store, account, &scope, &control).await?;
         while !cursor.swept() {
             let jobs = match load_recovery_jobs(&store, account, &mut cursor).await {
                 Ok(jobs) => jobs,

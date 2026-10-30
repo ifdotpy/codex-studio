@@ -340,7 +340,7 @@ async fn overlapping_monitor_and_child_reservation_block_restore() {
             if kind == "monitor" {
                 tx.execute("INSERT INTO runtime_monitors VALUES('child',?1)",[json!({"id":"child","cwd":child,"status":"running"}).to_string()])?;
             } else {
-                let agent=json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"child","rootId":"worker","epoch":1,"status":"paused","cwd":child,"inFlight":kind=="agent","workspaceOperation":if kind=="reservation" {json!("restore")} else {Value::Null}});
+                let agent=json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"child","rootId":"worker","epoch":1,"status":"paused","cwd":child,"inFlight":kind=="agent","workspaceOperation":if kind=="reservation" {json!("restore")} else {Value::Null}});
                 AgentRepository::put(tx,&AgentRecord::from_value(agent).unwrap())?;
             }
             Ok(())

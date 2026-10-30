@@ -211,7 +211,7 @@ mod tests {
             .await
             .unwrap();
         store.transaction_with_error(|tx| -> Result<()> {
-            let snapshot = Snapshot::from_records(json!({"agent":{"id":"a","rootId":"a","provider":"codex","epoch":1,"status":"running","inFlight":true}}))?;
+            let snapshot = Snapshot::from_records(json!({"agent":{"accountKey":"default","id":"a","rootId":"a","provider":"codex","epoch":1,"status":"running","inFlight":true}}))?;
             studio_runtime_store::AgentRepository::put(tx, snapshot.agent_record())?;
             let mut proposal = crate::continuation::ProposedAgent::new(&snapshot);
             proposal.failed("excluded");
@@ -230,7 +230,7 @@ mod tests {
             .await
             .unwrap();
         store.transaction_with_error(|tx| -> Result<()> {
-            let agent = json!({"id":"a","rootId":"a","provider":"codex","epoch":1,"status":"failed","autoWake":true});
+            let agent = json!({"accountKey":"default","id":"a","rootId":"a","provider":"codex","epoch":1,"status":"failed","autoWake":true});
             let mut snapshot = Snapshot::from_records(json!({"agent":agent}))?;
             snapshot.agent["autoWake"] = json!(false);
             let decision = Decision { effects: vec![Effect::Followup { id:"follow".into(), text:"continue".into() }], ..Decision::default() };

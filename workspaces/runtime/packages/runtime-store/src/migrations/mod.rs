@@ -563,6 +563,16 @@ static CATALOG: &[&dyn Migration] = &[
         },
         apply: |c| m2026_10_29_request_results_v2::annotation_revision(c.transaction),
     },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-29-chat-message-revision",
+            introduced: OCTOBER_29,
+            target: MigrationTarget::Canvas,
+            supported_source: "Chat message rows without a revision",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_29_request_results_v2::message_revision(c.transaction),
+    },
     &RegistryMigration,
 ];
 

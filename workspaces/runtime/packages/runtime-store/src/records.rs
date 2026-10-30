@@ -145,11 +145,6 @@ pub enum AgentExecutionMode {
     Vm,
 }
 
-// Transitional for Value-based creation paths; remove when they supply accountKey.
-fn default_account_key() -> String {
-    crate::cost_aggregate::DEFAULT_ACCOUNT.to_owned()
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentRecord {
@@ -165,7 +160,6 @@ pub struct AgentRecord {
     pub execution_mode: Option<AgentExecutionMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_epoch: Option<i64>,
-    #[serde(default = "default_account_key")]
     pub account_key: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread_id: Option<String>,
@@ -468,7 +462,7 @@ impl AgentRecord {
             auto_wake: None,
             execution_mode: None,
             turn_epoch: None,
-            account_key: default_account_key(),
+            account_key: crate::cost_aggregate::DEFAULT_ACCOUNT.to_owned(),
             thread_id: None,
             turn_id: None,
             title_job: None,
@@ -667,7 +661,7 @@ impl JsonRecord for AgentRecord {
             .map(String::deserialize)
             .transpose()
             .map_err(decode)?
-            .unwrap_or_else(default_account_key);
+            .ok_or_else(|| invalid_agent_field(row_id, "accountKey", "record_decode", None))?;
         let thread_id = field(&mut fields, "threadId").map_err(decode)?;
         let turn_id = field(&mut fields, "turnId").map_err(decode)?;
         let title_job = field(&mut fields, "titleJob").map_err(decode)?;
@@ -2356,6 +2350,11 @@ pub(crate) fn decode_json_record<T: DeserializeOwned>(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn agent_record_requires_materialized_account() {
+        let old = r#"{"id":"agent","rootId":"agent","epoch":1,"status":"idle"}"#;
+        assert!(serde_json::from_str::<super::AgentRecord>(old).is_err());
+    }
     use super::{
         AgentId, AgentRecord, AgentStatus, EventMetadataRecord, QueueEventId, RecordOrder,
         RecordPredicate, RequestRecord, Table, TaskRecord, TranscriptAssetId,
@@ -2368,7 +2367,7 @@ mod tests {
 
     #[test]
     fn agent_effect_records_keep_live_and_current_shapes() {
-        let legacy = r#"{"id":"agent","rootId":"agent","epoch":1,"status":"idle","nativeReviewThread":{"attempt":"attempt","connection":"connection","generation":2,"operation":"operation","requestDigest":"digest","sequence":1,"status":"accepted","threadId":"thread"},"nativeRelease":{"id":"release","phase":"released","resetPending":false}}"#;
+        let legacy = r#"{"id":"agent","rootId":"agent","epoch":1,"status":"idle","accountKey":"default","nativeReviewThread":{"attempt":"attempt","connection":"connection","generation":2,"operation":"operation","requestDigest":"digest","sequence":1,"status":"accepted","threadId":"thread"},"nativeRelease":{"id":"release","phase":"released","resetPending":false}}"#;
         let agent: AgentRecord = serde_json::from_str(legacy).expect("live review and release");
         assert!(
             agent
@@ -2415,7 +2414,7 @@ mod tests {
                 "nativeRequest":{"params":{"vendorExtension":[1,2]}}}),
         ] {
             let mut record = agent(
-                json!({"id":"agent","rootId":"agent","epoch":1,"status":"idle","startAttempt":attempt}),
+                json!({"accountKey":"default","id":"agent","rootId":"agent","epoch":1,"status":"idle","startAttempt":attempt}),
             );
             let before = record.extra.get("startAttempt").cloned().expect("attempt");
             let view = record.start_attempt().expect("view").expect("attempt");
@@ -2434,7 +2433,7 @@ mod tests {
     fn start_attempt_action_view_rejects_unnormalized_values() {
         for action in ["compact", "review", "capacity", "safety"] {
             let record = agent(
-                json!({"id":"agent","rootId":"agent","epoch":1,"status":"idle","startAttempt":{"action":action}}),
+                json!({"accountKey":"default","id":"agent","rootId":"agent","epoch":1,"status":"idle","startAttempt":{"action":action}}),
             );
             assert!(
                 record
@@ -2454,7 +2453,7 @@ mod tests {
             json!({}),
         ] {
             let record = agent(
-                json!({"id":"agent","rootId":"agent","epoch":1,"status":"idle","startAttempt":{"action":action}}),
+                json!({"accountKey":"default","id":"agent","rootId":"agent","epoch":1,"status":"idle","startAttempt":{"action":action}}),
             );
             assert!(record.start_attempt().is_err());
         }
@@ -2466,7 +2465,7 @@ mod tests {
             json!({"x":1}),
         ] {
             let record = agent(
-                json!({"id":"agent","rootId":"agent","epoch":1,"status":"idle","startAttempt":{"action":action}}),
+                json!({"accountKey":"default","id":"agent","rootId":"agent","epoch":1,"status":"idle","startAttempt":{"action":action}}),
             );
             assert!(record.start_attempt().is_err());
         }
@@ -2475,7 +2474,7 @@ mod tests {
     #[test]
     fn active_execution_view_and_field_writes_preserve_migration_record() {
         let mut record = agent(
-            json!({"id":"agent","rootId":"agent","epoch":1,"status":"idle",
+            json!({"accountKey":"default","id":"agent","rootId":"agent","epoch":1,"status":"idle",
             "activeExecution":{"runId":"run","attemptId":null,"futureField":{"keep":true}}}),
         );
         let view = record
@@ -2502,7 +2501,7 @@ mod tests {
 
     #[test]
     fn consuming_agent_projection_moves_extra_json() {
-        let record = agent(json!({
+        let record = agent(json!({"accountKey":"default",
             "id":"agent-1", "provider":"codex", "rootId":"root-1", "epoch":3, "status":"running",
             "futureField":[{"nested":"retained"}]
         }));
@@ -2779,9 +2778,9 @@ mod tests {
         let connection = database();
         let table = Table::<AgentRecord>::new(&connection);
         let first =
-            agent(json!({"id":"a1","provider":"codex","rootId":"a1","epoch":0,"status":"idle"}));
+            agent(json!({"accountKey":"default","id":"a1","provider":"codex","rootId":"a1","epoch":0,"status":"idle"}));
         let second =
-            agent(json!({"id":"a2","provider":"codex","rootId":"a2","epoch":0,"status":"queued"}));
+            agent(json!({"accountKey":"default","id":"a2","provider":"codex","rootId":"a2","epoch":0,"status":"queued"}));
 
         assert!(table.insert_new(&first).expect("first insert succeeds"));
         assert!(!table.insert_new(&first).expect("duplicate id is ignored"));
@@ -2980,7 +2979,7 @@ mod tests {
             .expect("volatile agent table creates");
         let table = Table::<AgentRecord>::new(&connection);
         let blocked = agent(
-            json!({"id":"blocked","provider":"codex","rootId":"blocked","epoch":0,"status":"idle"}),
+            json!({"accountKey":"default","id":"blocked","provider":"codex","rootId":"blocked","epoch":0,"status":"idle"}),
         );
         assert!(matches!(
             table.insert_new(&blocked),
@@ -3141,14 +3140,14 @@ mod agent_projection_tests {
     }
 
     #[test]
-    fn stored_agent_account_key_defaults_only_when_missing() {
+    fn stored_agent_account_key_must_be_present() {
         let db = Connection::open_in_memory().unwrap();
         db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
             .unwrap();
         db.execute_batch(crate::agent_volatile::agent_volatile_table_sql())
             .unwrap();
         for (account, valid) in [
-            (None, true),
+            (None, false),
             (Some(json!(null)), false),
             (Some(json!(12)), false),
             (Some(json!("custom")), true),
@@ -3167,7 +3166,7 @@ mod agent_projection_tests {
             if valid {
                 assert_eq!(
                     result.unwrap().unwrap().account_key,
-                    raw["accountKey"].as_str().unwrap_or("default")
+                    raw["accountKey"].as_str().unwrap()
                 );
             }
         }

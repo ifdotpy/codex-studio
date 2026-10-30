@@ -456,7 +456,7 @@ mod tests {
             .execute(
                 "INSERT INTO runtime_agents(id,record) VALUES('a',?1)",
                 [
-                    json!({"id":"a","provider":"codex","rootId":"a","name":"Agent","status":"running","epoch":2,
+                    json!({"accountKey":"default","id":"a","provider":"codex","rootId":"a","name":"Agent","status":"running","epoch":2,
                 "inFlight":true,"turnId":"turn-1","lastAnswer":"",
                 "disconnectRecovery":{"epoch":2,"turnId":"turn-1"},
                 "startOutcomeHold":{"stage":"held","reason":"pending"},

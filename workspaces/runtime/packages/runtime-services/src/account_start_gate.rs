@@ -617,7 +617,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("state directory");
         let store = RuntimeStore::open(Some(dir.path())).await.expect("store");
         store.transaction_with(|tx| {
-            let agent = AgentRecord::from_value(json!({"provider":"codex", "id":"worker", "rootId":"worker", "epoch":4, "status":"queued", "autoWake":true})).expect("agent");
+            let agent = AgentRecord::from_value(json!({"accountKey":"default","provider":"codex", "id":"worker", "rootId":"worker", "epoch":4, "status":"queued", "autoWake":true})).expect("agent");
             AgentRepository::put(tx, &agent)
         }).await.expect("seed");
         super::show_wait(

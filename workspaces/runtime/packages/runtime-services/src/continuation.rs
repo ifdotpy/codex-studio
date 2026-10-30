@@ -859,7 +859,7 @@ mod tests {
 
     #[test]
     fn agent_snapshot_preserves_future_status_and_nullable_evidence() {
-        let agent = json!({"id":"a","rootId":"a","epoch":1,"status":"future-state","provider":"codex","titleJob":null,"nativeRelease":null,"firedEvents":[],"opaque":{"n":1}});
+        let agent = json!({"accountKey":"default","id":"a","rootId":"a","epoch":1,"status":"future-state","provider":"codex","titleJob":null,"nativeRelease":null,"firedEvents":[],"opaque":{"n":1}});
         let snapshot = Snapshot::from_records(json!({"agent":agent})).unwrap();
         assert_eq!(snapshot.agent, agent);
         assert_eq!(snapshot.identity.status.as_str(), "future-state");
@@ -889,7 +889,7 @@ mod tests {
 
     #[test]
     fn proposal_reuses_current_identity_and_fences_pending_settings() {
-        let raw = json!({"agent":{"id":"a","rootId":"a","epoch":1,"status":"failed","provider":"codex","titleJob":null}});
+        let raw = json!({"agent":{"accountKey":"default","id":"a","rootId":"a","epoch":1,"status":"failed","provider":"codex","titleJob":null}});
         let mut original = Snapshot::from_records(raw.clone()).unwrap();
         let proposal = ProposedAgent::new(&original);
         IDENTITY_DECODES.with(|count| count.set(0));
@@ -913,7 +913,7 @@ mod tests {
         let usage = json!({"id":"u","accountKey":"a","threadId":"t","epoch":1.0,"turnId":"v","status":"scheduled","cause":"auth","failedAt":1,"future":{"x":[1]}});
         let capacity = json!({"id":"c","accountKey":"a","threadId":"t","epoch":1,"turnId":"v","status":"scheduled","cause":"serverOverloaded","cwd":"","settings":{},"attempt":1,"maxAttempts":4});
         for (key, record) in [("usageResume", usage), ("capacityRetry", capacity)] {
-            let mut raw = json!({"agent":{"id":"a","rootId":"a","epoch":1,"status":"failed","provider":"codex"},"record":record});
+            let mut raw = json!({"agent":{"accountKey":"default","id":"a","rootId":"a","epoch":1,"status":"failed","provider":"codex"},"record":record});
             raw["agent"][key] = record.clone();
             let checked = ContinuationRecord::deserialize(record.clone()).unwrap();
             REUSED_EMBEDDED.with(|count| count.set(0));
@@ -943,7 +943,7 @@ mod tests {
     fn checked_snapshot_keeps_invalid_embedded_and_size_error_order() {
         use serde::Deserialize;
         let record = json!({"id":"u","accountKey":"a","threadId":"t","epoch":1,"turnId":"v","status":"scheduled","cause":"auth","failedAt":1});
-        let mut raw = json!({"agent":{"id":"a","rootId":"a","epoch":1,"status":"failed","provider":"codex","usageResume":record},"record":record});
+        let mut raw = json!({"agent":{"accountKey":"default","id":"a","rootId":"a","epoch":1,"status":"failed","provider":"codex","usageResume":record},"record":record});
         raw["agent"]["usageResume"]["status"] = json!(false);
         let expected = Snapshot::from_records(raw.clone())
             .err()
@@ -1021,7 +1021,7 @@ mod tests {
     fn current_uses_the_agent_after_pending_settings_are_applied() {
         let retry = json!({"id":"r","accountKey":"default","threadId":"t","epoch":1,"turnId":"turn",
             "status":"scheduled","cause":"serverOverloaded","cwd":"","settings":{},"attempt":0,"maxAttempts":1});
-        let mut snapshot = Snapshot::from_records(json!({"agent":{"id":"a","rootId":"a","epoch":1,
+        let mut snapshot = Snapshot::from_records(json!({"agent":{"accountKey":"default","id":"a","rootId":"a","epoch":1,
             "status":"failed","provider":"codex","capacityRetry":retry},"record":retry}))
         .expect("snapshot");
         assert!(snapshot.current("capacityRetry"));
