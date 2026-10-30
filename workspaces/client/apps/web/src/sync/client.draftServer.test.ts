@@ -391,11 +391,11 @@ it.each(fixture.orders)(
           pulls: mocks.syncGet.mock.calls,
         }),
       );
-      // The page merges a master that arrives before its push, so the other
-      // writer's text may need no server-side conflict at all.
-      expect(
-        posts.filter((post) => post.conflicts.length).length,
-      ).toBeLessThanOrEqual(order === "second-writer" ? 1 : 0);
+      // Intended behavior: the other writer's master reaches the page before
+      // its second push, and the page merges it first (both texts kept, as the
+      // alternatives assertion above shows). The server then sees no conflict.
+      // The replaced replication pushed first and took one server conflict.
+      expect(posts.filter((post) => post.conflicts.length)).toHaveLength(0);
       expect(posts.length).toBeLessThanOrEqual(
         order === "ack-first" || order === "echo-first" ? 2 : 3,
       );

@@ -1,17 +1,12 @@
-import { required } from "../teams/helpers.ts";
 import type { Page } from "@playwright/test";
 import type { ServerResponse } from "node:http";
 import type { components } from "../../src/generated/api.ts";
 import type { GetResult } from "../../src/apiTypes.ts";
-import { fixtureOrigin, fixtureResources, fixturePostBody } from "./helpers.ts";
-import type { Connect } from "vite";
-type ResourceRef = components["schemas"]["ResourceRef"];
-type Projection = components["schemas"]["SyncDocument"];
+import { fixtureResources, fixturePostBody } from "./helpers.ts";
 type ResourceRevisionEntry = components["schemas"]["ResourceRevisionEntry"];
 type EntityChangeBatch = components["schemas"]["EntityChangeBatch"];
 type ResourceCursor = components["schemas"]["SubscriptionCursor"];
 import assert from "node:assert/strict";
-import { ENTITY_PROJECTION_CACHE_VERSION } from "../../src/sync/entityCacheStorage.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdtemp, readFile, readdir } from "node:fs/promises";
@@ -23,13 +18,15 @@ import { readResourceBaselines } from "../fixtures/resource-baselines.ts";
 
 import {
   waitForFixturePort,
-  createFixtureViteServer,
   API_SCHEMA_HASH_HEADER,
   apiSchemaHandshakeSse,
   protocol3SseEvent,
   readApiSchemaHash,
   spawnFixture,
   rustUiFixture,
+  readCacheKeys,
+  readCachedRows,
+  remoteOrigin,
   test,
   expect,
 } from "../playwright.ts";
@@ -115,7 +112,7 @@ test.describe("legacy schema mismatch", () => {
       after: string | null;
       query: Record<string, string>;
     }[] = [];
-    let validProjectionDatabaseNames: string[] = [];
+    let validCacheKeys: string[] = [];
     const entityChangePages = new WeakSet();
     const confirmedResources = new Set();
     const transcriptRows: components["schemas"]["SyncPullResponse"]["documents"] =
@@ -517,7 +514,8 @@ test.describe("legacy schema mismatch", () => {
       });
       const origin = `http://127.0.0.1:${port}`;
       backendOrigin = origin;
-      appOrigin = streamOrigin;
+      // A remote host name: only a remote frontend keeps the thin cache.
+      appOrigin = remoteOrigin(streamOrigin);
       await page.goto(appOrigin);
       await expect(page.locator(".startup")).toBeVisible({ timeout: 10_000 });
       await expect(leadChat(page)).toBeVisible({ timeout: 60_000 });
@@ -601,35 +599,30 @@ test.describe("legacy schema mismatch", () => {
         ).length,
         transcripts: transcriptRows.length,
       });
-      const oldBuildNames = [
-        `rxdb-dexie-studio-entity-projection-${workspaceId}-${oldHash}--${ENTITY_PROJECTION_CACHE_VERSION}--projections`,
-        `rxdb-dexie-studio-entity-projection-${workspaceId}-${oldHash}--0--_rxdb_internal`,
-        `rxdb-dexie-studio-entity-projection-${workspaceId}-${oldHash}--0--rx-replication-meta-${"a".repeat(64)}`,
-      ];
+      // A record of a schema hash that no tab uses. The valid tab removes it
+      // after its first matching response. The old-build tab's own records
+      // are removed too: the cache keeps only the current schema hash.
       const reclaimableHash = "c".repeat(64);
-      const staleNames = [
-        `rxdb-dexie-studio-entity-projection-${workspaceId}-${reclaimableHash}--0--projections`,
-        `rxdb-dexie-studio-entity-projection-${workspaceId}-${reclaimableHash}--0--_rxdb_internal`,
-        `rxdb-dexie-studio-entity-projection-${workspaceId}-${reclaimableHash}--0--rx-replication-meta-${"a".repeat(64)}`,
-      ];
-      const legacyName = `rxdb-dexie-studio${workspaceId}--0--projections`;
-      await page.evaluate(
-        async ({ oldBuildNames, staleNames, legacyName }) => {
-          const open = (name: string) =>
-            new Promise<void>((resolve, reject) => {
-              const request = indexedDB.open(name);
-              request.onsuccess = () => {
-                request.result.close();
-                resolve();
-              };
-              request.onerror = () => reject(request.error);
-            });
-          await Promise.all(
-            [...oldBuildNames, ...staleNames, legacyName].map(open),
-          );
-        },
-        { oldBuildNames, staleNames, legacyName },
-      );
+      const staleKeys = [`${workspaceId}|${reclaimableHash}|entities`];
+      await page.evaluate(async (keys) => {
+        const db = await new Promise<IDBDatabase>((resolve, reject) => {
+          const request = indexedDB.open("studio-thin-cache", 1);
+          request.onupgradeneeded = () => {
+            request.result.createObjectStore("cache");
+            request.result.createObjectStore("unsent");
+          };
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error);
+        });
+        const transaction = db.transaction("cache", "readwrite");
+        for (const key of keys)
+          transaction.objectStore("cache").put({ rows: [] }, key);
+        await new Promise<void>((resolve, reject) => {
+          transaction.oncomplete = () => resolve();
+          transaction.onerror = () => reject(transaction.error);
+        });
+        db.close();
+      }, staleKeys);
 
       activeHash = nextHash;
       for (const stream of openStreams)
@@ -684,58 +677,25 @@ test.describe("legacy schema mismatch", () => {
       await expect(newPage.locator("#message")).toHaveValue(
         "Draft kept across the schema update",
       );
-      validProjectionDatabaseNames = await newPage.evaluate(
-        async ({ workspaceId, schemaHash, cacheVersion }) =>
-          (await indexedDB.databases())
-            .map(({ name }) => name)
-            .filter(
-              (name): name is string =>
-                name!.includes(
-                  `entity-projection-${workspaceId}-${schemaHash}`,
-                ) && name!.endsWith(`--${cacheVersion}--projections`),
-            ),
-        {
-          workspaceId: workspaceId!,
-          schemaHash: nextHash,
-          cacheVersion: ENTITY_PROJECTION_CACHE_VERSION,
-        },
+      await expect
+        .poll(async () =>
+          (await readCacheKeys(newPage!)).filter((key) =>
+            key.startsWith(`${workspaceId}|${nextHash}|`),
+          ),
+        )
+        .not.toEqual([]);
+      validCacheKeys = (await readCacheKeys(newPage)).filter((key) =>
+        key.startsWith(`${workspaceId}|${nextHash}|`),
       );
-      assert.ok(
-        validProjectionDatabaseNames.length > 0,
-        "the valid new-build tab has a populated projection cache",
-      );
-      const readNewPageStateCheckpoint = () =>
-        newPage!.evaluate(async (names) => {
-          const name = names.find((databaseName) =>
-            databaseName.endsWith("--projections"),
-          );
-          if (!name) return {};
-          const db = await new Promise<IDBDatabase>((resolve, reject) => {
-            const request = indexedDB.open(name);
-            request.onsuccess = () => resolve(request.result);
-            request.onerror = () => reject(request.error);
-          });
-          const read = (id: string) =>
-            new Promise<Projection | undefined>((resolve, reject) => {
-              const request = db
-                .transaction("docs", "readonly")
-                .objectStore("docs")
-                .get(id);
-              request.onsuccess = () => resolve(request.result);
-              request.onerror = () => reject(request.error);
-            });
-          const [ready, checkpoint, complete] = await Promise.all([
-            read("state:entities:ready"),
-            read("state:entities:checkpoint"),
-            read("state:entities:complete"),
-          ]);
-          db.close();
-          return {
-            ready: ready?.payload,
-            checkpoint: checkpoint?.seq,
-            complete: complete?.payload === "complete",
-          };
-        }, validProjectionDatabaseNames);
+      const readNewPageStateCheckpoint = async () => {
+        const rows = await readCachedRows(newPage!, "entities");
+        const row = (id: string) => rows.find((entry) => entry.id === id);
+        return {
+          ready: row("state:entities:ready")?.payload,
+          checkpoint: row("state:entities:checkpoint")?.seq,
+          complete: row("state:entities:complete")?.payload === "complete",
+        };
+      };
       assert.deepEqual(
         errors,
         [],
@@ -747,57 +707,14 @@ test.describe("legacy schema mismatch", () => {
         "the reset's first pull failed and retried",
       );
       await expect
-        .poll(() =>
-          newPage!.evaluate(async (names) => {
-            const existing = new Set(
-              (await indexedDB.databases()).map(({ name }) => name),
-            );
-            return names.filter((name) => existing.has(name));
-          }, staleNames),
-        )
-        .toEqual([]);
-      assert.ok(
-        await newPage!.evaluate(async (names) => {
-          const existing = new Set(
-            (await indexedDB.databases()).map(({ name }) => name),
-          );
-          return names.every((name) => existing.has(name));
-        }, oldBuildNames),
-        "cleanup preserves the stale-hash database held by the old-build tab",
-      );
-      // Before the projection cache moved to its own database (2026-10-07), the
-      // workspace database held a projections collection. Its pull checkpoint
-      // and ready marker were rows of that collection, and the only RxDB
-      // replication of that database was for drafts. So deleting it gives an
-      // old build an empty cache that pulls in full. No current build opens it,
-      // and an old build cannot sync with this server (see the old-build tab
-      // below). Cleanup deletes it and keeps the drafts and outbox.
-      await expect
-        .poll(() =>
-          newPage!.evaluate(
-            async (name) =>
-              (await indexedDB.databases()).some(
-                (database) => database.name === name,
-              ),
-            legacyName,
+        .poll(async () =>
+          (await readCacheKeys(newPage!)).filter(
+            (key) =>
+              key.startsWith(`${workspaceId}|`) &&
+              !key.startsWith(`${workspaceId}|${nextHash}|`),
           ),
         )
-        .toBe(false);
-      assert.ok(
-        await newPage!.evaluate(
-          async (names) => {
-            const existing = new Set(
-              (await indexedDB.databases()).map(({ name }) => name),
-            );
-            return names.every((name) => existing.has(name));
-          },
-          [
-            `rxdb-dexie-studio${workspaceId}--0--drafts`,
-            `rxdb-dexie-studio${workspaceId}--0--outbox`,
-          ],
-        ),
-        "cleanup keeps the drafts and outbox of the workspace database",
-      );
+        .toEqual([]);
 
       // Reopen the old build after the server hash changes. It is now rejected;
       // its startup cleanup must not remove the live new-build cache.
@@ -808,15 +725,11 @@ test.describe("legacy schema mismatch", () => {
         }),
       ).toBeVisible({ timeout: 20_000 });
       await expect
-        .poll(() =>
-          newPage!.evaluate(async (expected) => {
-            const names = new Set(
-              (await indexedDB.databases()).map(({ name }) => name),
-            );
-            return expected.filter((name) => names.has(name));
-          }, validProjectionDatabaseNames),
-        )
-        .toEqual(validProjectionDatabaseNames);
+        .poll(async () => {
+          const keys = new Set(await readCacheKeys(newPage!));
+          return validCacheKeys.filter((key) => !keys.has(key));
+        })
+        .toEqual([]);
       await expect
         .poll(readNewPageStateCheckpoint)
         .toMatchObject({ ready: "ready", complete: true });
@@ -989,190 +902,3 @@ test.describe("legacy schema mismatch", () => {
     }
   });
 });
-
-test("different build collection sets share only drafts and outbox", async ({
-  browser,
-}) => {
-  // This cache belongs to the retired build, whose broad agent projection
-  // included answers. Keep its size independent of today's narrowed server view.
-  const legacyCacheRows = 256;
-  const workspaceId = randomUUID().replaceAll("-", "");
-  const legacyRows = Array.from({ length: legacyCacheRows }, (_, index) => ({
-    id: `entity:agent:legacy-${index}`,
-    seq: index + 1,
-    payload: JSON.stringify({
-      collection: "agent",
-      id: `legacy-${index}`,
-      value: {
-        id: `legacy-${index}`,
-        name: `Cached chat ${index}`,
-        lastAnswer: "Saved report from the previous build. ".repeat(32),
-      },
-    }),
-    _deleted: false,
-  }));
-  const server = await createFixtureViteServer({
-    configFile: false,
-    root: fileURLToPath(new URL("../../", import.meta.url)),
-    server: {
-      host: "127.0.0.1",
-      port: 0,
-      fs: {
-        allow: [
-          fileURLToPath(new URL("../../", import.meta.url)),
-          fileURLToPath(new URL("../../..", import.meta.url)),
-        ],
-      },
-    },
-  });
-  server.middlewares.stack.unshift({
-    route: "",
-    handle: ((request, response, next) => {
-      if (
-        new URL(request.url || "/", "http://localhost").pathname !==
-        "/sync-check"
-      )
-        return next();
-      response.setHeader("Content-Type", "text/html");
-      response.end("<!doctype html><title>Cache collection sets</title>");
-    }) satisfies Connect.NextHandleFunction,
-  });
-  await server.listen();
-  const context = await browser.newContext();
-  const oldPage = await context.newPage();
-  const newPage = await context.newPage();
-
-  const fixtureModule = `/@fs${fileURLToPath(new URL("./fixtures/schemaCacheBrowserFixture.ts", import.meta.url))}`;
-  const databaseName = `studio${workspaceId}`;
-  const origin = fixtureOrigin(server);
-  try {
-    await Promise.all([
-      oldPage.goto(`${origin}/sync-check`),
-      newPage.goto(`${origin}/sync-check`),
-    ]);
-    await oldPage.evaluate(
-      async ({ name, rows, fixtureModule }) => {
-        const fixture: typeof import("./fixtures/schemaCacheBrowserFixture.ts") =
-          await import(fixtureModule);
-        const db = await fixture.openBuildDatabase(name, true);
-        await db.projections.bulkInsert(rows);
-        await db.drafts.insert({
-          id: "draft-from-old",
-          payload: "draft",
-          seq: 1,
-        });
-        await db.outbox.insert({
-          id: "message-from-old",
-          payload: "queued",
-          seq: 1,
-        });
-        window.oldBuildDatabase = db;
-      },
-      { name: databaseName, rows: legacyRows, fixtureModule },
-    );
-    await newPage.evaluate(
-      async ({ name, fixtureModule }) => {
-        const fixture: typeof import("./fixtures/schemaCacheBrowserFixture.ts") =
-          await import(fixtureModule);
-        const db = await fixture.openBuildDatabase(name, false);
-        if (db.collections.projections)
-          throw new Error(
-            "The new stable database opened the legacy projection collection",
-          );
-        const draft = await db.drafts.findOne("draft-from-old").exec();
-        const message = await db.outbox.findOne("message-from-old").exec();
-        if (draft?.payload !== "draft" || message?.payload !== "queued")
-          throw new Error("The new build could not read old user data");
-        await db.drafts.insert({
-          id: "draft-from-new",
-          payload: "new draft",
-          seq: 2,
-        });
-        await db.outbox.insert({
-          id: "message-from-new",
-          payload: "new queued",
-          seq: 2,
-        });
-        const projections = await fixture.openProjectionDatabase(
-          `${name}-entities-hash-a`,
-        );
-        await projections.projections.insert({
-          id: "entity:new-build",
-          payload: "new-shape",
-          seq: 1,
-        });
-        const otherHash = await fixture.openProjectionDatabase(
-          `${name}-entities-hash-b`,
-        );
-        if (await otherHash.projections.findOne("entity:new-build").exec())
-          throw new Error("Different build caches were shared");
-
-        if (await otherHash.projections.findOne("entity:new-build").exec())
-          throw new Error("Different build caches were shared");
-        window.newBuildDatabase = db;
-      },
-      { name: databaseName, fixtureModule },
-    );
-    const oldData = await oldPage.evaluate(
-      async (legacyRowId) => ({
-        draft: (
-          await window.oldBuildDatabase.drafts.findOne("draft-from-new").exec()
-        )?.payload,
-        message: (
-          await window.oldBuildDatabase.outbox
-            .findOne("message-from-new")
-            .exec()
-        )?.payload,
-        projection: (
-          await window.oldBuildDatabase.projections.findOne(legacyRowId).exec()
-        )?.payload,
-        legacyProjectionStats: await (async () => {
-          const rows = await window.oldBuildDatabase.projections.find().exec();
-          const serialized = rows.map((row) => row.toJSON());
-          return {
-            rows: serialized.length,
-            bytes: new TextEncoder().encode(JSON.stringify(serialized)).length,
-          };
-        })(),
-      }),
-      required(legacyRows[0]).id,
-    );
-    const { legacyProjectionStats, ...sharedData } = oldData;
-    assert.deepEqual(sharedData, {
-      draft: "new draft",
-      message: "new queued",
-      projection: required(legacyRows[0]).payload,
-    });
-    assert.equal(legacyProjectionStats.rows, legacyRows.length);
-    assert.ok(legacyProjectionStats.bytes > 200_000);
-    assert.ok(legacyProjectionStats.rows > 200);
-    console.log("Legacy projections fixture:", {
-      ...legacyProjectionStats,
-      entityRows: legacyRows.length,
-    });
-  } finally {
-    await context.close();
-    await server.close();
-  }
-});
-
-/** The renderer under test owns these serialized cursor records. */
-function fixtureCursors(
-  value: string | null,
-): components["schemas"]["SubscriptionAdd"][] {
-  return JSON.parse(
-    value || "[]",
-  ) as components["schemas"]["SubscriptionAdd"][];
-}
-
-/** Preserve the fixture's kind/agent matching for baseline records. */
-function fixtureResourceMatches(
-  left: ResourceRef | null | undefined,
-  right: ResourceRef,
-) {
-  return (
-    left?.kind === right.kind &&
-    (left && "agentId" in left ? left.agentId : undefined) ===
-      ("agentId" in right ? right.agentId : undefined)
-  );
-}

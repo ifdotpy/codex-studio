@@ -204,7 +204,7 @@ test("direct screens automatically include paired servers on phones", async ({
       "keep local phone draft",
     );
     await expect(
-      page.getByRole("alert").filter({ hasText: "RxDB" }),
+      page.getByRole("alert").filter({ hasText: "local workspace cache" }),
     ).toHaveCount(0);
     await page.reload();
     await openChats();

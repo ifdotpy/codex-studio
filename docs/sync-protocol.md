@@ -246,8 +246,8 @@ shares its complete merged terminal view with followers as a snapshot only after
 persistence succeeds. Raw server intervals retain delta semantics.
 Saved terminal history and explicit retries remain user actions.
 
-The existing native EventSource transport and RxDB projection cache remain in
-use. Adding a separate query cache is unnecessary for this contract. The Rust HTTP adapter
+The existing native EventSource transport and the in-memory projection cache
+remain in use. Adding a separate query cache is unnecessary for this contract. The Rust HTTP adapter
 owns SSE framing; the renderer and server compare the same generated schema
 identity before continuing with live updates.
 
