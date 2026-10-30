@@ -876,8 +876,6 @@ fn collect_apply(
             .record
             .as_ref()
             .is_some_and(|record| snapshot.record.as_ref() != Some(&record.value()))
-        || !decision.events.is_empty()
-        || !decision.metadata.is_empty()
         || !decision.effects.is_empty();
     if !changed {
         return Ok(());

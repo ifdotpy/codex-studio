@@ -67,23 +67,6 @@ fn typed_continuation_snapshot_enforces_schema_bounds() {
 }
 
 #[test]
-fn continuation_event_identity_keeps_exact_epoch_evidence() {
-    let mut input = json!({
-        "agent":{"accountKey":"default","id":"a","rootId":"a","epoch":1,"status":"running","provider":"codex"},
-        "events":[{"id":"e","agent":"a","epoch":1,"kind":"input","text":"x","status":"pending","created":1}]
-    });
-    assert!(Snapshot::from_records(input.clone()).is_ok());
-    input["events"][0]["epoch"] = json!(1.0);
-    assert!(
-        Snapshot::from_records(input)
-            .err()
-            .expect("different numeric spelling must not match")
-            .to_string()
-            .contains("/events/identity")
-    );
-}
-
-#[test]
 fn usage_identity_keeps_exact_epoch_evidence() {
     let records = cases();
     let mut input = records
@@ -197,6 +180,12 @@ fn cases() -> Value {
     // The frozen corpus predates explicit identity for these Codex continuations.
     for case in cases.as_array_mut().expect("corpus cases") {
         case["input"]["agent"]["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
+        for key in ["events", "metadata", "assets", "complaints", "work"] {
+            case["input"]
+                .as_object_mut()
+                .expect("snapshot object")
+                .remove(key);
+        }
         for ancestor in case["input"]["ancestors"]
             .as_array_mut()
             .expect("corpus ancestors")

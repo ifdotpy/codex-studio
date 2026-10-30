@@ -287,24 +287,6 @@
       "title": "CapacityContinuation",
       "type": "object"
     },
-    "ComplaintResponse": {
-      "additionalProperties": {
-        "$ref": "#/$defs/JsonValue"
-      },
-      "properties": {
-        "author": {
-          "maxLength": 4096,
-          "minLength": 1,
-          "title": "Author",
-          "type": "string"
-        }
-      },
-      "required": [
-        "author"
-      ],
-      "title": "ComplaintResponse",
-      "type": "object"
-    },
     "ContinuationAgent": {
       "additionalProperties": {
         "$ref": "#/$defs/JsonValue"
@@ -614,97 +596,6 @@
       "title": "ContinuationAttempt",
       "type": "object"
     },
-    "ContinuationEvent": {
-      "additionalProperties": {
-        "$ref": "#/$defs/JsonValue"
-      },
-      "properties": {
-        "agent": {
-          "maxLength": 4096,
-          "minLength": 1,
-          "title": "Agent",
-          "type": "string"
-        },
-        "created": {
-          "maximum": 9007199254740991,
-          "minimum": 0,
-          "title": "Created",
-          "type": "number"
-        },
-        "epoch": {
-          "maximum": 9007199254740991,
-          "minimum": 0,
-          "title": "Epoch",
-          "type": "integer"
-        },
-        "error": {
-          "anyOf": [
-            {
-              "maxLength": 1048576,
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "title": "Error"
-        },
-        "id": {
-          "maxLength": 4096,
-          "minLength": 1,
-          "title": "Id",
-          "type": "string"
-        },
-        "kind": {
-          "maxLength": 4096,
-          "minLength": 1,
-          "title": "Kind",
-          "type": "string"
-        },
-        "status": {
-          "enum": [
-            "pending",
-            "reserved",
-            "dispatching",
-            "uncertain",
-            "delivered",
-            "stored_only",
-            "cancelled"
-          ],
-          "title": "Status",
-          "type": "string"
-        },
-        "text": {
-          "maxLength": 1048576,
-          "title": "Text",
-          "type": "string"
-        },
-        "turn_id": {
-          "anyOf": [
-            {
-              "maxLength": 4096,
-              "minLength": 1,
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "title": "Turn Id"
-        }
-      },
-      "required": [
-        "id",
-        "agent",
-        "epoch",
-        "kind",
-        "text",
-        "status",
-        "created"
-      ],
-      "title": "ContinuationEvent",
-      "type": "object"
-    },
     "ContinuationLimitsObservation": {
       "additionalProperties": false,
       "properties": {
@@ -812,35 +703,6 @@
         "accountKey"
       ],
       "title": "ContinuationLimitsObservation",
-      "type": "object"
-    },
-    "ContinuationMetadata": {
-      "additionalProperties": {
-        "$ref": "#/$defs/JsonValue"
-      },
-      "properties": {
-        "assets": {
-          "items": {
-            "maxLength": 4096,
-            "minLength": 1,
-            "type": "string"
-          },
-          "maxItems": 64,
-          "title": "Assets",
-          "type": "array"
-        },
-        "earlierProgressUpdates": {
-          "maximum": 9007199254740991,
-          "minimum": 0,
-          "title": "Earlierprogressupdates",
-          "type": "integer"
-        },
-        "preserveProgress": {
-          "title": "Preserveprogress",
-          "type": "boolean"
-        }
-      },
-      "title": "ContinuationMetadata",
       "type": "object"
     },
     "JsonValue": {},
@@ -1391,137 +1253,6 @@
       },
       "title": "UsageLimitsData",
       "type": "object"
-    },
-    "WakeComplaint": {
-      "additionalProperties": {
-        "$ref": "#/$defs/JsonValue"
-      },
-      "properties": {
-        "id": {
-          "maxLength": 4096,
-          "minLength": 1,
-          "title": "Id",
-          "type": "string"
-        },
-        "leadId": {
-          "maxLength": 4096,
-          "minLength": 1,
-          "title": "Leadid",
-          "type": "string"
-        },
-        "recipient": {
-          "title": "Recipient",
-          "type": "string"
-        },
-        "responses": {
-          "items": {
-            "$ref": "#/$defs/ComplaintResponse"
-          },
-          "maxItems": 4096,
-          "title": "Responses",
-          "type": "array"
-        },
-        "sourceType": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "title": "Sourcetype"
-        },
-        "status": {
-          "title": "Status",
-          "type": "string"
-        }
-      },
-      "required": [
-        "id",
-        "leadId",
-        "recipient",
-        "status"
-      ],
-      "title": "WakeComplaint",
-      "type": "object"
-    },
-    "WakeWork": {
-      "additionalProperties": {
-        "$ref": "#/$defs/JsonValue"
-      },
-      "properties": {
-        "decisions": {
-          "items": {
-            "$ref": "#/$defs/WorkDecision"
-          },
-          "maxItems": 4096,
-          "title": "Decisions",
-          "type": "array"
-        },
-        "id": {
-          "maxLength": 4096,
-          "minLength": 1,
-          "title": "Id",
-          "type": "string"
-        },
-        "results": {
-          "items": {
-            "$ref": "#/$defs/WorkResult"
-          },
-          "maxItems": 4096,
-          "title": "Results",
-          "type": "array"
-        },
-        "rootId": {
-          "maxLength": 4096,
-          "minLength": 1,
-          "title": "Rootid",
-          "type": "string"
-        }
-      },
-      "required": [
-        "id",
-        "rootId"
-      ],
-      "title": "WakeWork",
-      "type": "object"
-    },
-    "WorkDecision": {
-      "additionalProperties": {
-        "$ref": "#/$defs/JsonValue"
-      },
-      "properties": {
-        "resultId": {
-          "maxLength": 4096,
-          "minLength": 1,
-          "title": "Resultid",
-          "type": "string"
-        }
-      },
-      "required": [
-        "resultId"
-      ],
-      "title": "WorkDecision",
-      "type": "object"
-    },
-    "WorkResult": {
-      "additionalProperties": {
-        "$ref": "#/$defs/JsonValue"
-      },
-      "properties": {
-        "id": {
-          "maxLength": 4096,
-          "minLength": 1,
-          "title": "Id",
-          "type": "string"
-        }
-      },
-      "required": [
-        "id"
-      ],
-      "title": "WorkResult",
-      "type": "object"
     }
   },
   "additionalProperties": false,
@@ -1537,16 +1268,6 @@
       "title": "Ancestors",
       "type": "array"
     },
-    "assets": {
-      "additionalProperties": {
-        "additionalProperties": {
-          "$ref": "#/$defs/JsonValue"
-        },
-        "type": "object"
-      },
-      "title": "Assets",
-      "type": "object"
-    },
     "claims": {
       "items": {
         "maxLength": 4096,
@@ -1555,21 +1276,6 @@
       },
       "maxItems": 4096,
       "title": "Claims",
-      "type": "array"
-    },
-    "complaints": {
-      "additionalProperties": {
-        "$ref": "#/$defs/WakeComplaint"
-      },
-      "title": "Complaints",
-      "type": "object"
-    },
-    "events": {
-      "items": {
-        "$ref": "#/$defs/ContinuationEvent"
-      },
-      "maxItems": 4096,
-      "title": "Events",
       "type": "array"
     },
     "limits": {
@@ -1581,20 +1287,6 @@
           "type": "null"
         }
       ]
-    },
-    "metadata": {
-      "additionalProperties": {
-        "anyOf": [
-          {
-            "$ref": "#/$defs/ContinuationMetadata"
-          },
-          {
-            "type": "null"
-          }
-        ]
-      },
-      "title": "Metadata",
-      "type": "object"
     },
     "record": {
       "anyOf": [
@@ -1612,13 +1304,6 @@
         }
       ],
       "title": "Record"
-    },
-    "work": {
-      "additionalProperties": {
-        "$ref": "#/$defs/WakeWork"
-      },
-      "title": "Work",
-      "type": "object"
     }
   },
   "required": [

@@ -1,7 +1,7 @@
 //! Checked, bounded snapshots and write intents shared by continuation policies.
 //! Stored JSON is retained verbatim except for the fields a decision changes.
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::sync::{Arc, OnceLock};
 use studio_runtime_schema::continuation_snapshot::{
     AuthWaitReceiptStatus, CapacityContinuation, CapacityContinuationStatus, ContinuationAgent,
@@ -55,9 +55,6 @@ pub struct Snapshot {
     pub(crate) ancestors: Vec<Value>,
     pub(crate) claims: Vec<String>,
     pub(crate) record: Option<Value>,
-    pub(crate) events: Vec<Value>,
-    pub(crate) metadata: BTreeMap<String, Option<Value>>,
-    pub(crate) complaints: BTreeMap<String, Value>,
 }
 impl Snapshot {
     #[cfg(test)]
@@ -141,14 +138,6 @@ impl Snapshot {
                 .cloned()
                 .unwrap_or_default()
         };
-        let get_map = |key: &str| {
-            raw.get(key)
-                .and_then(Value::as_object)
-                .cloned()
-                .unwrap_or_default()
-                .into_iter()
-                .collect()
-        };
         let identity = match checked_agent {
             Some(agent) => agent.clone(),
             None => {
@@ -158,7 +147,7 @@ impl Snapshot {
                     .map_err(|_| ContinuationError::Invalid("/agent".into()))?
             }
         };
-        let snapshot = Self {
+        Ok(Self {
             identity,
             identity_current: true,
             claims: typed
@@ -177,27 +166,7 @@ impl Snapshot {
             agent: raw["agent"].clone(),
             ancestors: get_vec("ancestors"),
             record: raw.get("record").filter(|v| !v.is_null()).cloned(),
-            events: get_vec("events"),
-            metadata: raw
-                .get("metadata")
-                .and_then(Value::as_object)
-                .into_iter()
-                .flat_map(|m| m.iter())
-                .map(|(k, v)| (k.clone(), (!v.is_null()).then(|| v.clone())))
-                .collect(),
-            complaints: get_map("complaints"),
-        };
-        let mut ids = BTreeSet::new();
-        if snapshot.typed.0.events.as_ref().is_some_and(|events| {
-            events.as_slice().iter().any(|event| {
-                !ids.insert(event.id.as_str())
-                    || event.agent.as_str() != snapshot.typed.0.agent.id.as_str()
-                    || event.epoch.number() != snapshot.typed.0.agent.epoch.number()
-            })
-        }) {
-            return Err(ContinuationError::Invalid("/events/identity".into()));
-        }
-        Ok(snapshot)
+        })
     }
     pub fn agent_id(&self) -> &str {
         &self.identity.id.0
@@ -774,11 +743,7 @@ impl ProposedAgent {
 pub struct Decision {
     pub agent: Option<ProposedAgent>,
     pub record: Option<ProposedRecord>,
-    pub events: Vec<Value>,
-    pub metadata: BTreeMap<String, Value>,
     pub effects: Vec<Effect>,
-    /// Ephemeral model projection, never written over the original event text.
-    pub batch: Vec<Value>,
 }
 impl Decision {
     pub(crate) fn save(s: &Snapshot, mut record: ProposedRecord, key: &str, now: f64) -> Self {
@@ -816,11 +781,6 @@ pub(crate) fn present(v: &Value, key: &str) -> bool {
 pub(crate) fn remove(v: &mut Value, key: &str) {
     if let Some(o) = v.as_object_mut() {
         o.remove(key);
-    }
-}
-pub(crate) fn patch(v: &mut Value, fields: Value) {
-    if let (Some(o), Some(fields)) = (v.as_object_mut(), fields.as_object()) {
-        o.extend(fields.clone());
     }
 }
 pub(crate) fn account(v: &Value) -> &str {
@@ -1015,8 +975,10 @@ mod tests {
     fn current_uses_the_agent_after_pending_settings_are_applied() {
         let retry = json!({"id":"r","accountKey":"default","threadId":"t","epoch":1,"turnId":"turn",
             "status":"scheduled","cause":"serverOverloaded","cwd":"","settings":{},"attempt":0,"maxAttempts":1});
-        let mut snapshot = Snapshot::from_records(json!({"agent":{"accountKey":"default","id":"a","rootId":"a","epoch":1,
-            "status":"failed","provider":"codex","capacityRetry":retry},"record":retry}))
+        let mut snapshot = Snapshot::from_records(
+            json!({"agent":{"accountKey":"default","id":"a","rootId":"a","epoch":1,
+            "status":"failed","provider":"codex","capacityRetry":retry},"record":retry}),
+        )
         .expect("snapshot");
         assert!(snapshot.current("capacityRetry"));
         snapshot.agent["capacityRetry"]["id"] = json!("replaced");
