@@ -1886,8 +1886,10 @@ impl RuntimeStore {
         E: From<StoreError> + Send + 'static,
     {
         // A command registers before it waits for admission, so background parts yield to it.
-        let _command = (!writer_lanes::BACKGROUND_PART.try_with(|part| *part).unwrap_or(false))
-            .then(|| self.command_gate.enter());
+        let in_background = writer_lanes::BACKGROUND_PART
+            .try_with(|part| *part)
+            .unwrap_or(false);
+        let _command = (!in_background).then(|| self.command_gate.enter());
         let diagnostics_enabled = DIAGNOSTICS_ENABLED.load(Ordering::Acquire);
         let waiting = diagnostics_enabled.then(Instant::now);
         let did_wait = self.writer.available_admissions() == 0;
