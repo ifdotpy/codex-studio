@@ -47,6 +47,7 @@ pub mod provider_rate_limits;
 pub mod question_answers;
 pub mod queue_command;
 pub mod raw_json;
+pub mod raw_object;
 pub mod records;
 pub mod recovery_record;
 pub mod request_record;

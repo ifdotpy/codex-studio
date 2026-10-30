@@ -27,6 +27,7 @@ mod path;
 pub mod path_identity;
 pub mod receipt_migration_contract;
 pub mod receipt_schema;
+pub use studio_runtime_schema::raw_object;
 mod records;
 mod repositories;
 pub use repositories::multi_server_delivery;
