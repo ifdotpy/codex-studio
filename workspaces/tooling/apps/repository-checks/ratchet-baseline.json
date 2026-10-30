@@ -1172,10 +1172,6 @@
       "fingerprint": "05ed782712b957e83aaf934a7100767448f72978163367db2cfb46544d921dad:0"
     },
     {
-      "file": "workspaces/client/packages/client-core/src/views.rs",
-      "fingerprint": "4bf8ba4d2d21bb908196f15eaefd3d0645dd3c0c1402a54fda399ebc3668eae8:0"
-    },
-    {
       "file": "workspaces/client/packages/client-domain/src/protocol.rs",
       "fingerprint": "05ed782712b957e83aaf934a7100767448f72978163367db2cfb46544d921dad:0"
     },
@@ -2043,18 +2039,6 @@
     }
   ],
   "redundant_clone": [
-    {
-      "file": "workspaces/client/packages/client-core/src/store.rs",
-      "fingerprint": "a8a2929f25fa5a52e86b1aaa53c30a886d25438e0ca884d8e019bc756c5bfd99:0"
-    },
-    {
-      "file": "workspaces/client/packages/client-core/src/store.rs",
-      "fingerprint": "a8a2929f25fa5a52e86b1aaa53c30a886d25438e0ca884d8e019bc756c5bfd99:1"
-    },
-    {
-      "file": "workspaces/client/packages/client-core/src/views.rs",
-      "fingerprint": "a8a2929f25fa5a52e86b1aaa53c30a886d25438e0ca884d8e019bc756c5bfd99:0"
-    },
     {
       "file": "workspaces/runtime/apps/process-supervisor/tests/start_failure.rs",
       "fingerprint": "a8a2929f25fa5a52e86b1aaa53c30a886d25438e0ca884d8e019bc756c5bfd99:0"
