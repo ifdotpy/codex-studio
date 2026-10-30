@@ -683,14 +683,13 @@ fn enrich_persisted_items(
     actor: &Value,
     items: &mut [Value],
 ) -> TranscriptStoreResult<()> {
-    let completed_table = table_exists(connection, "runtime_completed_turns")?;
+    let completed_table = table_exists(connection, "turns")?;
     let event_meta_table = table_exists(connection, "runtime_event_meta")?;
     let completion_ids = if completed_table {
         items
             .iter()
             .filter(|item| item.get("turnStatus").is_none())
             .filter_map(|item| item.get("turnId").and_then(Value::as_str))
-            .map(|turn_id| format!("{agent}:{turn_id}"))
             .collect::<std::collections::BTreeSet<_>>()
     } else {
         std::collections::BTreeSet::new()
@@ -699,12 +698,16 @@ fn enrich_persisted_items(
     let completion_id_chunks = completion_ids.iter().collect::<Vec<_>>();
     for chunk in completion_id_chunks.chunks(TRANSCRIPT_IN_QUERY_ID_CHUNK_SIZE) {
         let placeholders = vec!["?"; chunk.len()].join(",");
-        let sql = format!("SELECT id FROM runtime_completed_turns WHERE id IN ({placeholders})");
+        let sql = format!(
+            "SELECT provider_turn FROM turns WHERE chat=?1 AND state='completed' AND provider_turn IN ({placeholders})"
+        );
         let mut statement = connection.prepare_cached(&sql)?;
         completed_turns.extend(
             statement
                 .query_map(
-                    rusqlite::params_from_iter(chunk.iter().map(|id| id.as_str())),
+                    rusqlite::params_from_iter(
+                        std::iter::once(agent).chain(chunk.iter().map(|id| **id)),
+                    ),
                     |row| row.get::<_, String>(0),
                 )?
                 .collect::<Result<Vec<_>, _>>()?,
@@ -718,7 +721,7 @@ fn enrich_persisted_items(
             .map(str::to_owned);
         if let Some(turn_id) = turn_id.as_deref() {
             if item.get("turnStatus").is_none()
-                && completed_turns.contains(&format!("{agent}:{turn_id}"))
+                && completed_turns.contains(turn_id)
             {
                 let status = actor
                     .get("turnStatus")
@@ -1373,9 +1376,10 @@ mod tests {
         let connection = Connection::open_in_memory().expect("in-memory database opens");
         connection
             .execute_batch(
-                "CREATE TABLE runtime_completed_turns(id TEXT PRIMARY KEY);
+                "CREATE TABLE turns(id TEXT PRIMARY KEY,chat TEXT NOT NULL,state TEXT NOT NULL,session TEXT,provider_turn TEXT,attempt TEXT,interrupt_ticket TEXT);
                  CREATE TABLE runtime_event_meta(id TEXT,record TEXT);
-                 INSERT INTO runtime_completed_turns VALUES ('agent:t1'),('agent:t2');",
+                 INSERT INTO turns(id,chat,state,provider_turn) VALUES
+                   ('agent:t1','agent','completed','t1'),('agent:t2','agent','completed','t2');",
             )
             .expect("completion fixtures insert");
         TRACED_SQL.with_borrow_mut(Vec::clear);
@@ -1401,7 +1405,7 @@ mod tests {
             assert_eq!(
                 statements
                     .iter()
-                    .filter(|sql| sql.starts_with("SELECT id FROM runtime_completed_turns"))
+                    .filter(|sql| sql.starts_with("SELECT provider_turn FROM turns"))
                     .count(),
                 1,
                 "eligible turn IDs are checked in one statement"
@@ -1410,7 +1414,7 @@ mod tests {
                 statements
                     .iter()
                     .filter(|sql| sql
-                        .starts_with("SELECT EXISTS(SELECT 1 FROM runtime_completed_turns"))
+                        .starts_with("SELECT EXISTS(SELECT 1 FROM turns"))
                     .count(),
                 0,
                 "per-item completion probes are removed"
@@ -1423,13 +1427,13 @@ mod tests {
         let connection = Connection::open_in_memory().expect("in-memory database opens");
         connection
             .execute_batch(
-                "CREATE TABLE runtime_completed_turns(id TEXT PRIMARY KEY);
+                "CREATE TABLE turns(id TEXT PRIMARY KEY,chat TEXT NOT NULL,state TEXT NOT NULL,session TEXT,provider_turn TEXT,attempt TEXT,interrupt_ticket TEXT);
                  CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY,record TEXT);
                  CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,status TEXT,error TEXT);",
             )
             .expect("transcript lookup tables create");
         let mut completed_turns = connection
-            .prepare("INSERT INTO runtime_completed_turns(id) VALUES(?1)")
+            .prepare("INSERT INTO turns(id,chat,state,provider_turn) VALUES(?1,'agent','completed',?2)")
             .expect("completion insert prepares");
         let mut events = connection
             .prepare("INSERT INTO runtime_events(id,agent,kind,status,error) VALUES(?1,'agent','user','sent',NULL)")
@@ -1439,7 +1443,7 @@ mod tests {
             let event_id = format!("e{index}");
             let turn_id = format!("t{index}");
             completed_turns
-                .execute([format!("agent:{turn_id}")])
+                .execute([format!("agent:{turn_id}"), turn_id.clone()])
                 .expect("completion fixture inserts");
             events.execute([&event_id]).expect("event fixture inserts");
             items.push(json!({
@@ -1471,7 +1475,7 @@ mod tests {
             assert_eq!(
                 statements
                     .iter()
-                    .filter(|sql| sql.starts_with("SELECT id FROM runtime_completed_turns"))
+                    .filter(|sql| sql.starts_with("SELECT provider_turn FROM turns"))
                     .count(),
                 2,
                 "completion IDs use one statement per safe-size chunk"
