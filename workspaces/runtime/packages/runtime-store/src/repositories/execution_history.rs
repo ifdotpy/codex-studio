@@ -791,9 +791,8 @@ fn now() -> f64 {
 
 fn decode(table: &str, id: &str, raw: &str) -> StoreResult<ExecutionRun> {
     let invalid = || ExecutionHistoryRepository::invalid(table, id);
-    let value: Value = serde_json::from_str(raw).map_err(|_| invalid())?;
     let JsonObject(run): JsonObject<ExecutionRun> =
-        JsonObject::deserialize(value).map_err(|_| invalid())?;
+        serde_json::from_str(raw).map_err(|_| invalid())?;
     if run.id != id
         || run.epoch.as_i64().is_none()
         || !run.created.as_f64().is_some_and(f64::is_finite)
@@ -924,31 +923,22 @@ mod tests {
     }
 
     #[test]
-    fn terminal_settlement_accepts_last_duplicate_execution_fields() {
+    fn terminal_settlement_rejects_duplicate_execution_fields() {
         let mut db = rusqlite::Connection::open_in_memory().unwrap();
         db.execute_batch("CREATE TABLE runtime_agents(id TEXT,account_key TEXT,thread_id TEXT); INSERT INTO runtime_agents VALUES('agent','default','thread'); CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,agent TEXT,account TEXT,epoch INTEGER,thread TEXT,turn TEXT,created REAL,record TEXT); CREATE TABLE runtime_execution_attempts(id TEXT,run TEXT,record TEXT);").unwrap();
         let raw = r#"{"id":"old","id":"run","agent":"other","agent":"agent","accountKey":"default","epoch":2,"epoch":1,"status":"unknown","status":"running","threadId":"thread","turnId":"turn","created":1}"#;
         db.execute("INSERT INTO runtime_execution_runs VALUES('run','agent','default',1,'thread','turn',1,?1)", [raw]).unwrap();
         let tx = db.transaction().unwrap();
-        ExecutionHistoryRepository::terminal(
-            &tx,
-            "agent",
-            "turn",
-            ExecutionStatus::Completed,
-            None,
-        )
-        .unwrap();
-        tx.commit().unwrap();
-        let stored: String = db
-            .query_row(
-                "SELECT record FROM runtime_execution_runs WHERE id='run'",
-                [],
-                |r| r.get(0),
+        assert!(
+            ExecutionHistoryRepository::terminal(
+                &tx,
+                "agent",
+                "turn",
+                ExecutionStatus::Completed,
+                None,
             )
-            .unwrap();
-        let value: Value = serde_json::from_str(&stored).unwrap();
-        assert_eq!(value["status"], "completed");
-        assert_eq!(value["epoch"], 1);
+            .is_err()
+        );
     }
 
     #[test]

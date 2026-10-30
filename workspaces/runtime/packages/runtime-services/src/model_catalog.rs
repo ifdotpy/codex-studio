@@ -15,8 +15,8 @@ use studio_runtime_schema::model_catalog::{ModelCatalog, ProviderModel};
 use studio_runtime_schema::shared_values::{
     MODEL_CATALOG_ADMISSION_WAIT_SECONDS, MODEL_CATALOG_CACHE_TTL_SECONDS,
     MODEL_CATALOG_ITEMS_PER_PAGE, MODEL_CATALOG_LAST_GOOD_MAX_AGE_SECONDS,
-    MODEL_CATALOG_MAX_FRAME_BYTES, MODEL_CATALOG_MAX_PAGES,
-    MODEL_CATALOG_MAX_RESPONSE_BYTES, MODEL_CATALOG_OPERATION_TIMEOUT_SECONDS,
+    MODEL_CATALOG_MAX_FRAME_BYTES, MODEL_CATALOG_MAX_PAGES, MODEL_CATALOG_MAX_RESPONSE_BYTES,
+    MODEL_CATALOG_OPERATION_TIMEOUT_SECONDS,
 };
 use tokio::time::Instant;
 
@@ -534,7 +534,10 @@ impl ModelCatalogService {
                 .entries
                 .get(&cache_key)
                 .and_then(|entry| entry.value.clone());
-            let last_read = cache.entries.get(&cache_key).and_then(|entry| entry.read_at);
+            let last_read = cache
+                .entries
+                .get(&cache_key)
+                .and_then(|entry| entry.read_at);
             // A changed home/provider replaces the same account's former entry.
             cache
                 .entries
@@ -978,7 +981,7 @@ pub(crate) mod tests {
             let _: ModelCatalog = value;
         }
         let entry = CacheEntry {
-        read_at: None,
+            read_at: None,
             generation: 1,
             value: None,
             expires_at: None,

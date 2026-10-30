@@ -23768,17 +23768,6 @@
               }
             ]
           },
-          "peerUpdate": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/PeerUpdateStatus"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null
-          },
           "pid": {
             "maximum": 9007199254740991,
             "minimum": 0,
@@ -23983,17 +23972,6 @@
                 "type": "null"
               }
             ]
-          },
-          "peerUpdate": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/PeerUpdateStatus"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null
           },
           "pid": {
             "maximum": 9007199254740991,
@@ -35146,137 +35124,6 @@
           "commit",
           "commitTime",
           "branch"
-        ],
-        "type": "object"
-      },
-      "PeerUpdateEvent": {
-        "additionalProperties": false,
-        "description": "The last pull or install attempt of the update puller.",
-        "properties": {
-          "at": {
-            "description": "Time of the pull or install attempt, in seconds since the epoch.",
-            "format": "double",
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "build": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/PeerUpdateBuild"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "outcome": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "reason": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "server": {
-            "description": "The paired server that offered the build.",
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "at",
-          "server",
-          "build",
-          "outcome",
-          "reason"
-        ],
-        "type": "object"
-      },
-      "PeerUpdatePending": {
-        "additionalProperties": false,
-        "description": "The staged update that the desktop installer takes next.",
-        "properties": {
-          "build": {
-            "$ref": "#/components/schemas/PeerUpdateBuild"
-          },
-          "server": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "build",
-          "server"
-        ],
-        "type": "object"
-      },
-      "PeerUpdateStatus": {
-        "additionalProperties": false,
-        "description": "The update state from a paired server, as `/api/desktop` shows it (`peerUpdate`).",
-        "properties": {
-          "build": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/PeerUpdateBuild"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "The build of the installed app; null for a source checkout."
-          },
-          "checkedAt": {
-            "description": "Time of the last check, in seconds since the epoch.",
-            "format": "double",
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "lastInstall": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/PeerUpdateEvent"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "lastPull": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/PeerUpdateEvent"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "pending": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/PeerUpdatePending"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "required": [
-          "build",
-          "checkedAt",
-          "lastPull",
-          "pending",
-          "lastInstall"
         ],
         "type": "object"
       },

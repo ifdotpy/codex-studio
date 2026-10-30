@@ -13,10 +13,7 @@ use std::{
         unix::{fs::PermissionsExt, net::UnixStream},
     },
     path::PathBuf,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::Arc,
     thread,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -57,7 +54,6 @@ fn open_store(state: &std::path::Path) -> Result<(Store, File), String> {
 }
 
 fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
-    let (changes, changed) = tokio::sync::watch::channel(0u64);
     let (store_sender, mut store_receiver) =
         tokio::sync::mpsc::channel::<crate::delivery::StoreCommand>(64);
     let store_worker = thread::Builder::new()
@@ -67,9 +63,7 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
             while let Some(command) = store_receiver.blocking_recv() {
                 match &mut state {
                     Ok((store, _lock)) => {
-                        command.execute_with(store, || {
-                            changes.send_modify(|version| *version = version.wrapping_add(1));
-                        });
+                        command.execute(store);
                     }
                     Err(error) => {
                         command.unavailable(error);
@@ -94,13 +88,10 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
         let writer = Arc::new(tokio::sync::Mutex::new(writer));
         let permits = Arc::new(tokio::sync::Semaphore::new(64));
         let mut requests = tokio::task::JoinSet::new();
-        let active = Arc::new(AtomicBool::new(false));
         let mut background = tokio::task::JoinSet::new();
         let (events, mut event_receiver) = tokio::sync::mpsc::channel::<serde_json::Value>(64);
         let mut views = crate::views::Views::new(
             backend.clone(),
-            store_sender.clone(),
-            changed,
             events,
         );
         let event_writer = writer.clone();
@@ -109,22 +100,6 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                 if write_packet(&event_writer, event).await.is_err() {
                     break;
                 }
-            }
-        });
-        let (queue_backend, queue_store, queue_active) =
-            (backend.clone(), store_sender.clone(), active.clone());
-        background.spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
-            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            loop {
-                interval.tick().await;
-                if queue_active.load(Ordering::Relaxed)
-                    && let Ok(backend) = queue_backend.as_ref() {
-                        tokio::join!(
-                            crate::delivery::drain(backend, &queue_store),
-                            crate::draft_replication::refresh(backend, &queue_store)
-                        );
-                    }
             }
         });
         let mut assembler = protocol::Assembler::default();
@@ -165,9 +140,7 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                 .map_err(|e| e.to_string())?;
             enum Work {
                 Network(Request),
-                Action(Request),
                 Desktop(Request),
-                Delivery(Request),
                 Sync(Request),
                 DraftSync(Request),
                 Speech(Request),
@@ -196,16 +169,7 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                 }
                 Ok(request) if request.method == "drafts.refresh" => Work::DraftSync(request),
                 Ok(request) if request.method == "sync.open" => Work::Sync(request),
-                Ok(request) if request.method == "actions.submit" => Work::Action(request),
                 Ok(request) if request.method == "api.request" => Work::Network(request),
-                Ok(request) if request.method == "outbox.deliver" => Work::Delivery(request),
-                Ok(request) if request.method == "outbox.activate" => {
-                    active.store(true, Ordering::Relaxed);
-                    Work::Immediate(Response::success(
-                        request.id,
-                        serde_json::json!({"active":true}),
-                    ))
-                }
                 Ok(request) => {
                     let id = request.id.clone();
                     let (reply, receive) = tokio::sync::oneshot::channel();
@@ -235,10 +199,6 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                     Work::Speech(request) => crate::speech::dispatch(request).await,
                     Work::Media(request) => crate::media::dispatch(request).await,
                     Work::Voice(request) => crate::voice::dispatch(request).await,
-                    Work::Action(request) => match backend.as_ref() {
-                        Ok(backend) => crate::actions::submit(backend, &sender, request).await,
-                        Err(error) => Response::failure(request.id, "backend_config", error),
-                    },
                     Work::Network(request) => match backend.as_ref() {
                         Ok(backend) => backend.dispatch(request).await,
                         Err(error) => Response::failure(request.id, "backend_config", error),
@@ -254,10 +214,6 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                             Ok(value) => Response::success(request.id, value),
                             Err(error) => Response { id: request.id, result: None, error: Some(error) },
                         },
-                        Err(error) => Response::failure(request.id, "backend_config", error),
-                    },
-                    Work::Delivery(request) => match backend.as_ref() {
-                        Ok(backend) => crate::delivery::dispatch(backend, &sender, request).await,
                         Err(error) => Response::failure(request.id, "backend_config", error),
                     },
                     Work::Stored(id, receive) => receive

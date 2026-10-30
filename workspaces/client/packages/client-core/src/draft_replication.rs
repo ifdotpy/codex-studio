@@ -249,7 +249,7 @@ pub async fn refresh(backend: &Backend, store: &StoreSender) {
     );
 }
 
-/// Refresh only the opened workspace. This does not activate the message outbox.
+/// Refresh only the opened workspace.
 pub async fn dispatch(
     backend: &Backend,
     store: &StoreSender,

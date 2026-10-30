@@ -12060,8 +12060,6 @@ export interface components {
       /** Mobileprotocol */
       mobileProtocol: number;
       nativeRuntime: components["schemas"]["NativeRuntimeStatus"] | null;
-      /** @default null */
-      peerUpdate?: components["schemas"]["PeerUpdateStatus"] | null | undefined;
       /** Pid */
       pid: number;
       /** Protocol */
@@ -12116,8 +12114,6 @@ export interface components {
       /** Mobileprotocol */
       mobileProtocol: number;
       nativeRuntime: components["schemas"]["NativeRuntimeStatus"] | null;
-      /** @default null */
-      peerUpdate?: components["schemas"]["PeerUpdateStatus"] | null | undefined;
       /** Pid */
       pid: number;
       /** Protocol */
@@ -16872,37 +16868,6 @@ export interface components {
        * @description Format version of the stamp. Always 1.
        */
       version: number;
-    };
-    /** @description The last pull or install attempt of the update puller. */
-    PeerUpdateEvent: {
-      /**
-       * Format: double
-       * @description Time of the pull or install attempt, in seconds since the epoch.
-       */
-      at: number | null;
-      build: components["schemas"]["PeerUpdateBuild"] | null;
-      outcome: string | null;
-      reason: string | null;
-      /** @description The paired server that offered the build. */
-      server: string | null;
-    };
-    /** @description The staged update that the desktop installer takes next. */
-    PeerUpdatePending: {
-      build: components["schemas"]["PeerUpdateBuild"];
-      server: string;
-    };
-    /** @description The update state from a paired server, as `/api/desktop` shows it (`peerUpdate`). */
-    PeerUpdateStatus: {
-      /** @description The build of the installed app; null for a source checkout. */
-      build: components["schemas"]["PeerUpdateBuild"] | null;
-      /**
-       * Format: double
-       * @description Time of the last check, in seconds since the epoch.
-       */
-      checkedAt: number | null;
-      lastInstall: components["schemas"]["PeerUpdateEvent"] | null;
-      lastPull: components["schemas"]["PeerUpdateEvent"] | null;
-      pending: components["schemas"]["PeerUpdatePending"] | null;
     };
     /** PendingSettingsRecordResponse */
     PendingSettingsRecordResponse: {

@@ -39,6 +39,7 @@ mod m2026_10_29_model_choices;
 mod m2026_10_29_request_results_v2;
 mod m2026_10_30_agent_volatile;
 mod m2026_10_30_rule_monitor_records;
+mod m2026_10_30_unused_agent_columns;
 
 #[cfg(any(test, feature = "test-support"))]
 pub use m2026_10_20_agents::migrate_2026_10_20;
@@ -275,6 +276,16 @@ static CATALOG: &[&dyn Migration] = &[
         apply: |c| {
             m2026_10_26_provider_identity::migrate_canvas_2026_10_26(c.transaction, c.accounts)
         },
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-unused-agent-columns",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Agent records with unread stored generated columns",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_unused_agent_columns::apply(c.transaction),
     },
     &SqlMigration {
         definition: MigrationDefinition {
