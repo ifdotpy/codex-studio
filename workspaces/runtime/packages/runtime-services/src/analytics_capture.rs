@@ -755,7 +755,7 @@ pub async fn record_publication_overflow(
     if receipt_id.is_empty() || receipt_id.len() > 1024 {
         return Err(CaptureError::Invalid("/receiptId"));
     }
-    store.analytics_transaction(move |tx, _| {
+    store.analytics_projection_transaction(move |tx| {
         tx.execute_cached(
             "CREATE TABLE IF NOT EXISTS analytics_publication_overflow_receipts (receipt_id TEXT PRIMARY KEY,analytics_overflow INTEGER NOT NULL,publication_overflow INTEGER NOT NULL)",
             [],
@@ -1703,7 +1703,7 @@ pub async fn capture_limit(
         return Err(CaptureError::Invalid("/rateLimits"));
     }
     store
-        .analytics_transaction(move |tx, _| {
+        .analytics_projection_transaction(move |tx| {
             let previous = Repo::last_limit(tx, &json!(account))?;
             if previous.as_ref().map(limit_content) != Some(limit_content(&value)) {
                 tx.execute_cached(

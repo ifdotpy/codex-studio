@@ -45,6 +45,7 @@ pub mod stored_text_compaction;
 pub mod stored_text_dictionary;
 pub mod supervisor_journal;
 pub mod vm_work_intent;
+pub mod writer_lanes;
 pub use schema::{
     python_float_json, python_json, python_json_compact, python_json_utf8,
     python_json_with_separators, sha256_hex, truthy,
@@ -948,6 +949,8 @@ impl RuntimeLock {
 pub struct RuntimeStore {
     root: PathBuf,
     writer: SqliteActor,
+    /// Commands that wait for or hold the writer; background parts yield to them.
+    command_gate: Arc<writer_lanes::CommandGate>,
     analytics: Arc<Mutex<Connection>>,
     cost_reader: repositories::analytics::CostReader,
     analytics_commit_notifiers: Arc<Mutex<CommitNotifiers>>,
@@ -1384,6 +1387,7 @@ impl RuntimeStore {
         let store = Self {
             root,
             writer,
+            command_gate: Arc::new(writer_lanes::CommandGate::default()),
             analytics: Arc::new(Mutex::new(analytics)),
             cost_reader,
             analytics_commit_notifiers: Arc::new(Mutex::new(CommitNotifiers::default())),
@@ -1791,6 +1795,43 @@ impl RuntimeStore {
         }
     }
 
+    /// Run `process` for every row of `rows` as a background batch. Rows are
+    /// written in parts, each one write transaction of at most
+    /// [`writer_lanes::BACKGROUND_PART_TIME_LIMIT_MS`] (plus one row). Before each
+    /// part the batch waits until no command waits for the writer. `process` must
+    /// not do I/O. A failed part rolls back and ends the batch with its error;
+    /// rows of earlier parts stay written.
+    pub async fn background_batch<I>(
+        &self,
+        rows: I,
+        process: impl Fn(&Transaction<'_>, I::Item) -> StoreResult<()> + Send + Sync + 'static,
+    ) -> StoreResult<()>
+    where
+        I: Iterator + Send + 'static,
+    {
+        let rows = Arc::new(Mutex::new(rows));
+        let process = Arc::new(process);
+        let clock = Arc::new(writer_lanes::MonotonicClock::new());
+        writer_lanes::run_parts(&self.command_gate, || {
+            let rows = Arc::clone(&rows);
+            let process = Arc::clone(&process);
+            let clock = Arc::clone(&clock);
+            writer_lanes::BACKGROUND_PART.scope(
+                true,
+                self.transaction(move |transaction| {
+                    let mut rows = rows.lock().map_err(|_| StoreError::WriterPoisoned)?;
+                    writer_lanes::run_part(
+                        &*clock,
+                        Duration::from_millis(writer_lanes::BACKGROUND_PART_TIME_LIMIT_MS),
+                        &mut *rows,
+                        |row| (*process)(transaction, row),
+                    )
+                }),
+            )
+        })
+        .await
+    }
+
     /// Run a write transaction and return its committed change generation.
     /// The generation unit is one committed transaction with row changes.
     #[track_caller]
@@ -1844,6 +1885,9 @@ impl RuntimeStore {
         T: Send + 'static,
         E: From<StoreError> + Send + 'static,
     {
+        // A command registers before it waits for admission, so background parts yield to it.
+        let _command = (!writer_lanes::BACKGROUND_PART.try_with(|part| *part).unwrap_or(false))
+            .then(|| self.command_gate.enter());
         let diagnostics_enabled = DIAGNOSTICS_ENABLED.load(Ordering::Acquire);
         let waiting = diagnostics_enabled.then(Instant::now);
         let did_wait = self.writer.available_admissions() == 0;
