@@ -1774,7 +1774,7 @@ mod tests {
         )
         .expect("read rule row")
         .expect("saved rule remains");
-        assert_eq!(serde_json::to_value(&persisted_after_mismatch).unwrap(), serde_json::from_str::<Value>(saved.value.0.get()).expect("rule reply"));
+        assert_eq!(persisted_after_mismatch, serde_json::from_str(saved.value.0.get()).expect("rule reply"));
         store
             .transaction_with(move |tx| {
                 tx.execute(

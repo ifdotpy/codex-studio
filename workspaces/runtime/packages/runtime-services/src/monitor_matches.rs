@@ -28,12 +28,11 @@ fn new_budget(now: f64) -> OutputWakeBudget {
 
 /// Validate retained cross-field output bounds.
 pub fn validate(record: &MonitorRecord) -> Result<(), &'static str> {
-    if let Some(budget) = &record.output_wake_budget {
-        if !(0.0..=OUTPUT_WAKE_CAPACITY as f64).contains(&budget.tokens)
+    if let Some(budget) = &record.output_wake_budget
+        && (!(0.0..=OUTPUT_WAKE_CAPACITY as f64).contains(&budget.tokens)
             || !budget.updated_at.is_finite() || budget.updated_at < 0.0
-            || [budget.flood_since, budget.last_suppressed_at].into_iter().flatten().any(|time| !time.is_finite() || time < 0.0) {
-            return Err("outputWakeBudget");
-        }
+            || [budget.flood_since, budget.last_suppressed_at].into_iter().flatten().any(|time| !time.is_finite() || time < 0.0)) {
+        return Err("outputWakeBudget");
     }
     for stream in [MonitorStream::Stdout, MonitorStream::Stderr] {
         if record.output_line_tail.as_ref().and_then(|tail| tail.get(stream)).is_some() {
@@ -50,10 +49,9 @@ pub fn validate(record: &MonitorRecord) -> Result<(), &'static str> {
             }
         }
     }
-    if let Some(excerpts) = &record.output_match_excerpts {
-        if excerpts.len() > MONITOR_OUTPUT_MAX_PATTERNS * 2 || excerpts.values().any(|value| value.excerpt.len() > OUTPUT_EXCERPT_BYTES || value.log_offset >= record.bytes.get() as u64) {
-            return Err("outputMatchExcerpts");
-        }
+    if let Some(excerpts) = &record.output_match_excerpts
+        && (excerpts.len() > MONITOR_OUTPUT_MAX_PATTERNS * 2 || excerpts.values().any(|value| value.excerpt.len() > OUTPUT_EXCERPT_BYTES || value.log_offset >= record.bytes.get() as u64)) {
+        return Err("outputMatchExcerpts");
     }
     Ok(())
 }
@@ -169,7 +167,7 @@ pub fn append(record: &mut MonitorRecord, stream: &str, chunk: &[u8], match_outp
             increment(&mut record.output_matches_pending, &key, count);
             increment(&mut record.output_matches_total, &key, count);
             let excerpts = record.output_match_excerpts.get_or_insert_with(Default::default);
-            if !excerpts.contains_key(&key) {
+            if let std::collections::btree_map::Entry::Vacant(entry) = excerpts.entry(key) {
                 let first = first.expect("nonzero match count");
                 let line_start = combined[..first]
                     .iter()
@@ -195,7 +193,7 @@ pub fn append(record: &mut MonitorRecord, stream: &str, chunk: &[u8], match_outp
                 }
                 excerpt.truncate(end);
                 let log_offset = offsets[excerpt_start].ok_or(MonitorError::InvalidOutputReceipt("missing output offset"))?;
-                excerpts.insert(key, OutputMatchExcerpt { excerpt, log_offset });
+                entry.insert(OutputMatchExcerpt { excerpt, log_offset });
             }
         }
     }

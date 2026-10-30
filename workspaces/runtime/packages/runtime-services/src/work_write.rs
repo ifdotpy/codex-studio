@@ -1243,7 +1243,7 @@ pub async fn prepare_vm_submission(
         let mut view = read_vm_view(tx, &input.task_id)?;
         match &view.vm_submit {
             Some(VmWorkIntent::Pending(..) | VmWorkIntent::Unknown(..) | VmWorkIntent::UnknownUnattributed(..)) => return Err(Error::Conflict("A prior layr evidence request has an unknown outcome; inspect it before retrying").into()),
-            Some(VmWorkIntent::Completed { owner, result }) if owner.request_id==rpc_id && owner.owner==owner_id && Some(owner.id.version)==work.version().and_then(serde_json::Number::as_i64) && owner.revision==revision => return Ok(VmSubmissionPreparation::Evidence{evidence:result.evidence.clone(),request_id:rpc_id.clone()}),
+            Some(VmWorkIntent::Completed { owner, result }) if owner.request_id==rpc_id && owner.owner==owner_id && Some(owner.id.version)==work.version().and_then(serde_json::Number::as_i64) && owner.revision==revision => return Ok(VmSubmissionPreparation::Evidence{evidence:result.evidence.clone(),request_id:rpc_id}),
             Some(VmWorkIntent::Completed { .. } | VmWorkIntent::NotSent(..)) | None => {}
         }
         view.vm_submit = Some(VmWorkIntent::Pending(VmOwner {request_id:rpc_id.clone(),owner:owner_id.into(),revision:revision.clone(),id:Submission { version:work.version().and_then(serde_json::Number::as_i64).ok_or_else(|| invalid("runtime_work", &input.task_id))? },public:None}));

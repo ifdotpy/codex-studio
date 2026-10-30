@@ -254,10 +254,10 @@ async fn execute(
     let admitted = record.admitted_request.clone();
     let scope = request.scope();
     match &request {
-        ProcessControlRequest::BackgroundCommand { item_id, .. } => {
+        ProcessControlRequest::BackgroundCommand { item_id, response_target, .. } => {
             let outcome = background_command(
                 &state,
-                &record.response_target,
+                response_target,
                 item_id.as_str(),
                 scope.request_id.as_str(),
                 (&root_request_id, &admitted),
@@ -276,10 +276,10 @@ async fn execute(
                 outcome,
             }));
         }
-        ProcessControlRequest::StopResponse { .. } => {
+        ProcessControlRequest::StopResponse { response_target, .. } => {
             let outcome = stop_response(
                 &state,
-                &record.response_target,
+                response_target,
                 scope.request_id.as_str(),
                 proof.as_ref(),
                 (&root_request_id, &admitted),
@@ -632,7 +632,7 @@ async fn stop_process(
 }
 async fn stop_response(
     state: &HttpState,
-    target: &Value,
+    target: &studio_runtime_schema::process_controls::ProcessResponseTarget,
     request_id: &str,
     proof: Option<&controls::HeldResponseProof>,
     request_identity: (&str, &AdmittedRequest),
@@ -640,7 +640,7 @@ async fn stop_response(
     let expected = target.clone();
     let request_id = request_id.to_owned();
     let binding = async {
-        let agent = text(&expected, "agent").to_owned();
+        let agent = expected.agent.as_str().to_owned();
         let owners = store(state)?
             .read_async("runtime-http/routes/process_controls", move |connection| {
                 controls::owners(connection, &agent).map_err(error)
@@ -649,7 +649,7 @@ async fn stop_response(
         let owner = &owners[0];
         let port = provider(state, owner)?;
         let scope = port
-            .current_scope(text(&expected, "accountKey"))
+            .current_scope(expected.account_key.as_str())
             .ok_or_else(|| invalid("The response connection is unavailable"))?;
         if !controls::validate_stop_response(owner, &expected, &scope, proof) {
             return Err(invalid("The response changed. Refresh the process list"));
@@ -657,10 +657,10 @@ async fn stop_response(
         let ticket = ProviderTicket {
             operation: request_id.clone(),
             request: format!("process-action:{request_id}:response"),
-            agent: text(&expected, "agent").to_owned(),
-            epoch: expected["epoch"].as_u64().ok_or_else(ApiError::internal)?,
+            agent: expected.agent.as_str().to_owned(),
+            epoch: expected.epoch,
             account: scope.account.clone(),
-            thread: Some(text(&expected, "threadId").to_owned()),
+            thread: Some(expected.thread_id.as_str().to_owned()),
             connection: scope.connection.clone(),
             generation: scope.generation,
         };
@@ -680,7 +680,7 @@ async fn stop_response(
             });
         }
     };
-    let mut params = json!({"threadId":target["threadId"],"turnId":target["turnId"]});
+    let mut params = json!({"threadId":target.thread_id.as_str(),"turnId":target.turn_id.as_str()});
     if claude {
         params["stopBackgroundTasks"] = json!(false);
     }
@@ -702,7 +702,7 @@ async fn stop_response(
 }
 async fn background_command(
     state: &HttpState,
-    target: &Value,
+    target: &studio_runtime_schema::process_controls::ProcessResponseTarget,
     item_id: &str,
     request_id: &str,
     request_identity: (&str, &AdmittedRequest),
@@ -710,7 +710,7 @@ async fn background_command(
     let expected = target.clone();
     let request_id = request_id.to_owned();
     let binding = async {
-        let agent = text(&expected, "agent").to_owned();
+        let agent = expected.agent.as_str().to_owned();
         let owners = store(state)?
             .read_async("runtime-http/routes/process_controls", move |connection| {
                 controls::owners(connection, &agent).map_err(error)
@@ -721,7 +721,7 @@ async fn background_command(
         let supported = matches!(ProviderKind::of_record(owner), Ok(ProviderKind::Claude));
         let port = provider(state, owner)?;
         let scope = port
-            .current_scope(text(&expected, "accountKey"))
+            .current_scope(expected.account_key.as_str())
             .ok_or_else(|| invalid("The response connection is unavailable"))?;
         if !controls::validate_response(owner, &expected, Some(&scope.connection)) {
             return Err(invalid("The response changed. Refresh the conversation"));
@@ -729,10 +729,10 @@ async fn background_command(
         let ticket = ProviderTicket {
             operation: request_id.clone(),
             request: format!("process-action:{request_id}:background"),
-            agent: text(&expected, "agent").to_owned(),
-            epoch: expected["epoch"].as_u64().ok_or_else(ApiError::internal)?,
+            agent: expected.agent.as_str().to_owned(),
+            epoch: expected.epoch,
             account: scope.account.clone(),
-            thread: Some(text(&expected, "threadId").to_owned()),
+            thread: Some(expected.thread_id.as_str().to_owned()),
             connection: scope.connection.clone(),
             generation: scope.generation,
         };
@@ -755,7 +755,7 @@ async fn background_command(
     let result = match dispatch(state, &port, &scope, request_identity.1, NativeRequest {
         root_request_id: request_identity.0.to_owned(), admitted_request: None,
         ticket, method: "thread/commandExecution/background".to_owned(),
-        params: json!({"threadId":target["threadId"],"turnId":target["turnId"],"itemId":item_id}),
+        params: json!({"threadId":target.thread_id.as_str(),"turnId":target.turn_id.as_str(),"itemId":item_id}),
     }).await
     {
         Ok(result) => result,

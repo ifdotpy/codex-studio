@@ -44,7 +44,7 @@ pub struct WorkspaceViewData {
 #[serde(untagged)]
 pub enum WorkspaceInboxItem {
     Other(Value),
-    Monitor { id: String, kind: &'static str, agent: String, title: String, text: String, monitor: crate::sync_policy::MonitorProjection },
+    Monitor { id: String, kind: &'static str, agent: String, title: String, text: String, monitor: Box<crate::sync_policy::MonitorProjection> },
 }
 
 #[derive(serde::Serialize)]
@@ -548,7 +548,7 @@ pub fn workspace_inbox(
     }) {
         let text = monitor.error.as_deref().filter(|text| !text.is_empty()).map(str::to_owned)
             .unwrap_or_else(|| format!("Exit {}", monitor.exit_code.map_or_else(|| "None".into(), |code| code.to_string())));
-        inbox.push(WorkspaceInboxItem::Monitor { id: monitor.id.clone(), kind: "monitor", agent: monitor.agent.clone(), title: monitor.command.clone(), text, monitor: monitor.clone() });
+        inbox.push(WorkspaceInboxItem::Monitor { id: monitor.id.clone(), kind: "monitor", agent: monitor.agent.clone(), title: monitor.command.clone(), text, monitor: Box::new(monitor.clone()) });
     }
     for rule in rules.iter().filter(|rule| rule.error.as_ref().is_some_and(|error| !error.is_empty())) {
         inbox.push(WorkspaceInboxItem::Other(json!({"id":rule.id,"kind":"rule","agent":rule.agent,"title":rule.name,"text":rule.error})));

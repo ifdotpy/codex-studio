@@ -103,7 +103,8 @@ fn monitor_kind(record: &studio_runtime_store::MonitorRecord) -> Option<Kind> {
             let owner_stopped = error == MONITOR_OWNER_STOPPED_ERROR || error.ends_with(&format!(": {MONITOR_OWNER_STOPPED_ERROR}"));
             (!owner_stopped).then_some(Kind::MonitorNotRecorded)
         }
-        _ => None,
+        MonitorStatus::Approval | MonitorStatus::Starting | MonitorStatus::Running
+        | MonitorStatus::Completed | MonitorStatus::Failed | MonitorStatus::Cancelled => None,
     }
 }
 

@@ -2216,8 +2216,8 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(result.wait_expired, true);
-        assert_eq!(result.output_events_is_empty(), true);
+        assert!(result.wait_expired);
+        assert!(result.output_events_is_empty());
     }
 
     #[tokio::test]
@@ -2241,7 +2241,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(expired.wait_expired, true);
+        assert!(expired.wait_expired);
         let slots: Vec<_> = (0..studio_runtime_schema::shared_values::MONITOR_WAIT_SLOTS)
             .map(|_| runtime.observation_slot(1).unwrap())
             .collect();
@@ -2300,7 +2300,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(early.record.output_event_sequence.unwrap(), 1);
-        assert_eq!(early.wait_expired, false);
+        assert!(!early.wait_expired);
         let waiter = Arc::clone(&runtime);
         let task = tokio::spawn(async move {
             waiter
@@ -2330,7 +2330,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(result.record.output_event_sequence.unwrap(), 2);
-        assert_eq!(result.wait_expired, false);
+        assert!(!result.wait_expired);
     }
 
     #[tokio::test]
@@ -2348,9 +2348,7 @@ mod tests {
             Some(MonitorError::InvalidResultReceipt("json"))
         ));
 
-        let malformed_rule = serde_json::from_value::<studio_runtime_store::RuleRecord>(serde_json::json!({
-            "agent": "agent-without-id"
-        }))
+        let malformed_rule = serde_json::from_str::<studio_runtime_store::RuleRecord>(r#"{ "agent": "agent-without-id" }"#)
         .expect_err("persisted rule without string id");
         let rule_error = MonitorError::Rules(crate::rules_tick::RulesTickError::Store(
             malformed_rule.into(),

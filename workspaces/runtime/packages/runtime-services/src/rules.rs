@@ -418,6 +418,7 @@ impl CheckedRuleSave {
 }
 
 /// Inputs owned by a single rule save, after ingress validation.
+#[derive(Clone, Copy)]
 pub struct RuleRecordContext<'a> {
     pub id: &'a str,
     pub actor: &'a AgentRecord,

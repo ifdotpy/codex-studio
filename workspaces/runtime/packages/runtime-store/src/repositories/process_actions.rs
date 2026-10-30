@@ -1,6 +1,6 @@
 //! Persisted process-action ownership and its replay result.
 use serde::{Deserialize, Serialize};
-use serde_json::{Number, Value};
+use serde_json::{Number, value::RawValue};
 use studio_runtime_schema::process_controls::{ProcessActionResult, ProcessEntry};
 
 use super::request_results::AdmittedRequest;
@@ -35,7 +35,7 @@ pub struct ProcessActionRecord {
     pub scope_epoch: Number,
     pub action: ProcessActionKind,
     /// Retain the response identity, including numeric spellings in older records.
-    pub response_target: Value,
+    pub response_target: Option<Box<RawValue>>,
     pub processes: Vec<ProcessEntry>,
     pub created: f64,
     pub result: ProcessActionResult,
@@ -44,6 +44,7 @@ pub struct ProcessActionRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
 
     #[test]
     fn process_action_record_round_trips_the_persisted_shape() {

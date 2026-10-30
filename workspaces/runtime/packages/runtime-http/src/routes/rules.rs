@@ -129,7 +129,10 @@ async fn update(
             let path = if matches!(prepare_action, RuleAction::Resume { .. }) {
                 old.as_ref().and_then(|rule| match &rule.kind {
                     studio_runtime_schema::rule_record::RuleKind::File { path } => Some(path.clone()),
-                    _ => None,
+                    studio_runtime_schema::rule_record::RuleKind::Interval
+                    | studio_runtime_schema::rule_record::RuleKind::Once
+                    | studio_runtime_schema::rule_record::RuleKind::Event
+                    | studio_runtime_schema::rule_record::RuleKind::LowWorkers { .. } => None,
                 })
             } else if matches!(prepare_action, RuleAction::Save { .. })
                 && prepare_body.kind.as_deref() == Some("file")

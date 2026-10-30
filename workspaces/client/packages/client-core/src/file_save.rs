@@ -187,13 +187,13 @@ impl Transfers {
         value: &Value,
         now: Instant,
     ) -> Result<(String, Vec<u8>), String> {
-        self.take_id(transfer_id(value, "A save transfer is required.")?, now)
+        self.take_id(&transfer_id(value, "A save transfer is required.")?, now)
     }
-    fn take_id(&mut self, id: String, now: Instant) -> Result<(String, Vec<u8>), String> {
+    fn take_id(&mut self, id: &str, now: Instant) -> Result<(String, Vec<u8>), String> {
         self.expire(now);
         let transfer = self
             .items
-            .get(&id)
+            .get(id)
             .ok_or("The save transfer expired or is no longer available.")?;
         if transfer.bytes.len() != transfer.size {
             return Err("The file transfer is incomplete.".into());
@@ -201,7 +201,7 @@ impl Transfers {
         // The get above found this entry, and no map mutation occurred afterward.
         let transfer = self
             .items
-            .remove(&id)
+            .remove(id)
             .expect("validated save transfer exists");
         Ok((transfer.name, transfer.bytes))
     }

@@ -183,6 +183,7 @@ pub struct RuleDecision {
     pub check: Option<RuleCheck>,
 }
 
+#[derive(Clone, Copy)]
 pub struct CheckResult<'a> {
     pub code: Option<i64>,
     pub error: Option<&'a str>,
@@ -203,9 +204,9 @@ pub struct TickObservation {
 
 impl RuleSnapshot {
     #[cfg(test)]
-    pub fn from_records(rule: Value, owner: Value) -> Result<Self, RuleError> {
-        let record: studio_runtime_store::RuleRecord = serde_path_to_error::deserialize(&rule)
-            .map_err(|error| invalid("rules", &rule, &format!("/{}", error.path())))?;
+    pub fn from_records(rule: &Value, owner: Value) -> Result<Self, RuleError> {
+        let record: studio_runtime_store::RuleRecord = serde_path_to_error::deserialize(rule)
+            .map_err(|error| invalid("rules", rule, &format!("/{}", error.path())))?;
         Self::from_stored(&record, owner)
     }
     pub fn from_stored(record: &studio_runtime_store::RuleRecord, owner: Value) -> Result<Self, RuleError> {
@@ -273,11 +274,11 @@ impl RuleSnapshot {
             && self.owner.epoch == self.raw.epoch.get() as u64
             && !self.owner.recovery_pending(self.raw.epoch.get() as u64)
             && (self.stalled(now) || seconds(&self.raw.next_at) <= now))
-            .then(|| match &self.raw.kind { Kind::File { path } => Some(path.as_str()), _ => None })
+            .then_some(match &self.raw.kind { Kind::File { path } => Some(path.as_str()), Kind::Interval | Kind::Once | Kind::Event | Kind::LowWorkers { .. } => None })
             .flatten()
     }
-    fn with_record(&self, record: studio_runtime_store::RuleRecord) -> Result<Self, RuleError> {
-        Self::from_stored(&record, self.owner_raw.clone())
+    fn with_record(&self, record: &studio_runtime_store::RuleRecord) -> Result<Self, RuleError> {
+        Self::from_stored(record, self.owner_raw.clone())
     }
     fn change(&self, record: studio_runtime_store::RuleRecord) -> RuleDecision {
         RuleDecision {
@@ -380,7 +381,7 @@ impl RuleSnapshot {
             }
             let text = python_json(
                 &json!({"rule":r.id,"name":r.name,"message":"file unchanged",
-                "path":match &r.kind { Kind::File { path } => Some(path.as_str()), _ => None },"quietSeconds":(now-r.file_activity_at.as_ref().map(seconds).unwrap_or(now)) as i64}),
+                "path":match &r.kind { Kind::File { path } => Some(path.as_str()), Kind::Interval | Kind::Once | Kind::Event | Kind::LowWorkers { .. } => None },"quietSeconds":(now-r.file_activity_at.as_ref().map(seconds).unwrap_or(now)) as i64}),
             );
             let id = format!("rule-stall:{}:{}", r.id, r.file_generation.get() as u64);
             if !r.liveness_command.as_str().is_empty() {
@@ -389,7 +390,7 @@ impl RuleSnapshot {
                 next.stall_probe = Some(true);
                 next.stall_event_key = Some(id);
                 next.stall_text = Some(text);
-                return self.launch(next, now);
+                return self.launch(&next, now);
             }
             next.stall_wake_generation = rule_integer(r.file_generation.get() as u64)?;
             return Ok(RuleDecision {
@@ -437,7 +438,7 @@ impl RuleSnapshot {
         next.in_flight = true;
         next.last_at = Some(time_number(now)?);
         next.checks = rule_integer(r.checks.get() as u64 + 1)?;
-        self.launch(next, now)
+        self.launch(&next, now)
     }
 
     /// Resume a rule that the tick paused for its owner once the owner can
@@ -469,7 +470,7 @@ impl RuleSnapshot {
     }
 
     // No-command checks finish in the same durable decision; a crash cannot strand their wake.
-    fn launch(&self, next: studio_runtime_store::RuleRecord, now: f64) -> Result<RuleDecision, RuleError> {
+    fn launch(&self, next: &studio_runtime_store::RuleRecord, now: f64) -> Result<RuleDecision, RuleError> {
         let snapshot = self.with_record(next)?;
         if snapshot.raw.status != Status::Active
             || !snapshot.owner.auto_wake
@@ -522,7 +523,7 @@ impl RuleSnapshot {
                 let output =
                     python_json(&json!({"activeSubagents":count,"minimumSubagents":minimum,
                     "belowThresholdSince":since,"elapsedMinutes":elapsed/60.0}));
-                return self.with_record(next)?.finish(
+                return self.with_record(&next)?.finish(
                     now,
                     CheckResult {
                         code: Some(0),
@@ -571,7 +572,7 @@ impl RuleSnapshot {
         next.last_at = Some(time_number(now)?);
         next.checks = rule_integer(r.checks.get() as u64 + 1)?;
         next.event_text = Some(text.chars().take(OUTPUT_CHARACTERS).collect::<String>().try_into().map_err(|_| RuleError::Schema)?);
-        self.launch(next, now)
+        self.launch(&next, now)
     }
 
     pub fn finish(&self, now: f64, result: CheckResult<'_>) -> Result<RuleDecision, RuleError> {
@@ -593,7 +594,7 @@ impl RuleSnapshot {
                     id,
                     kind: "rule_stall",
                     text: python_json(&json!({
-                    "rule":r.id,"name":r.name,"message":"file unchanged","path":match &r.kind { Kind::File { path } => Some(path.as_str()), _ => None },
+                    "rule":r.id,"name":r.name,"message":"file unchanged","path":match &r.kind { Kind::File { path } => Some(path.as_str()), Kind::Interval | Kind::Once | Kind::Event | Kind::LowWorkers { .. } => None },
                     "quietSeconds":(now-r.file_activity_at.as_ref().map(seconds).unwrap_or(now)) as i64,
                     "livenessResult":output,"livenessExitCode":result.code,"livenessError":result.error})),
                 });
@@ -721,7 +722,7 @@ impl RuleSnapshot {
         next.restart_check = None;
         next.status = Status::Active;
         next.error = None;
-        self.with_record(next)?.finish(now, result)
+        self.with_record(&next)?.finish(now, result)
     }
 }
 
@@ -807,6 +808,14 @@ pub fn active_workers(agents: &[Value], monitors: &[studio_runtime_store::Monito
 }
 
 #[cfg(test)]
+pub(crate) fn complete_test_rule(record: Value) -> Value {
+    let mut complete = json!({"id":"rule","agent":"owner","epoch":0,"name":"rule","kind":"interval","status":"active","intervalSeconds":60,"nextAt":1,"created":1,"command":"","text":"","checks":0,"wakes":0,"inFlight":false,"fileGeneration":0,"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"livenessCommand":"","event":""});
+    let Value::Object(fields) = record else { panic!("rule fixture must be an object") };
+    complete.as_object_mut().unwrap().extend(fields);
+    complete
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -818,10 +827,10 @@ mod tests {
         rule["launchIntent"] = json!({"ruleId":"rule", "checkNumber":1, "agentId":"owner",
             "epoch":7, "accountKey":"fixture", "threadId":"thread-fixture", "monitorId":"m",
             "command":"run", "timeoutMs":1000, "liveness":false});
-        let snapshot = RuleSnapshot::from_records(rule.clone(), seed["owner"].clone()).unwrap();
+        let snapshot = RuleSnapshot::from_records(&rule, seed["owner"].clone()).unwrap();
         assert_eq!(snapshot.launch_intent().unwrap().unwrap().check_number, 1);
         rule["launchIntent"]["checkNumber"] = json!(1.0);
-        assert!(RuleSnapshot::from_records(rule, seed["owner"].clone()).is_err());
+        assert!(RuleSnapshot::from_records(&rule, seed["owner"].clone()).is_err());
     }
 
     #[test]
@@ -831,7 +840,7 @@ mod tests {
         let mut rule = seed["rule"].clone();
         rule["kind"] = json!(42);
         assert!(matches!(
-            RuleSnapshot::from_records(rule, seed["owner"].clone()),
+            RuleSnapshot::from_records(&rule, seed["owner"].clone()),
             Err(RuleError::Invalid { object, location })
                 if object == "rules/rule" && !location.is_empty()
         ));
@@ -874,7 +883,7 @@ mod tests {
             for (field, value) in owner_change.as_object().expect("owner change") {
                 owner[field] = value.clone();
             }
-            let decision = RuleSnapshot::from_records(rule.clone(), owner)
+            let decision = RuleSnapshot::from_records(&rule, owner)
                 .expect("snapshot")
                 .event("worker_completed", "done", "event-1", 1_800_000_000.0)
                 .expect("event decision");
@@ -883,9 +892,3 @@ mod tests {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn complete_test_rule(record: Value) -> Value {
-    let mut complete = json!({"id":"rule","agent":"owner","epoch":0,"name":"rule","kind":"interval","status":"active","intervalSeconds":60,"nextAt":1,"created":1,"command":"","text":"","checks":0,"wakes":0,"inFlight":false,"fileGeneration":0,"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"livenessCommand":"","event":""});
-    complete.as_object_mut().unwrap().extend(record.as_object().unwrap().clone());
-    complete
-}

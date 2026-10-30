@@ -111,14 +111,15 @@ pub fn admit(
         "exitCode":null,"output":"","log":null,"monitorId":null});
     // Never execute a command against an unverified revision. Resubmit with a full Git commit.
     let command = revision_command(config["command"].as_str().unwrap_or_default(), revision);
-    if command.is_none() || result.get("layrStateId").is_some() {
+    let command = command.filter(|_| result.get("layrStateId").is_none());
+    if command.is_none() {
         evidence["error"] =
             json!("Acceptance gates require a Git workspace and its full commit ID");
-    } else if let Some(workspace) = workspace {
+    } else if let (Some(command), Some(workspace)) = (command, workspace) {
         let request_id = RequestIdentity::issue_root();
         evidence["requestId"] = json!(request_id);
         let request = crate::monitor_policy::MonitorCreateInput {
-            command: command.expect("verified command"), timeout_ms: config["timeout_ms"].as_i64(),
+            command, timeout_ms: config["timeout_ms"].as_i64(),
             stall_timeout_seconds: Some(0), success_exit_codes: Some(vec![0]), ..Default::default()
         };
         let log_root = crate::monitor_output::log_root(state_dir)
@@ -133,7 +134,7 @@ pub fn admit(
         };
         let mut monitor =
             crate::monitor_runtime::create_in_transaction(tx, &admission, workspace, now)?;
-        monitor.task_gate = Some(studio_runtime_schema::monitor_record::MonitorTaskGate { task_id: task.id().0.clone(), result_id: result_id.to_owned() });
+        monitor.task_gate = Some(studio_runtime_schema::monitor_record::MonitorTaskGate { task_id: task.id().0.clone(), result_id });
         studio_runtime_store::monitor_runtime::put(tx, &monitor)?;
         evidence["status"] = json!("running");
         evidence["monitorId"] = json!(monitor.id);
@@ -226,7 +227,7 @@ pub fn settle(tx: &Transaction<'_>, monitor: &studio_runtime_store::MonitorRecor
         MonitorStatus::Completed if monitor.exit_code == Some(0) => "passed",
         MonitorStatus::Lost => "unknown",
         MonitorStatus::Failed | MonitorStatus::Cancelled | MonitorStatus::Completed => "failed",
-        _ => return Ok(true),
+        MonitorStatus::Approval | MonitorStatus::Starting | MonitorStatus::Running => return Ok(true),
     };
     result["gate"]["status"] = json!(status);
     result["gate"]["exitCode"] = json!(monitor.exit_code);
@@ -611,9 +612,9 @@ mod tests {
             .await
             .expect("gate monitor query succeeds")
             .expect("gate monitor exists");
-        assert_eq!(serde_json::to_value(&monitor).unwrap()["status"], "approval");
-        assert_eq!(serde_json::to_value(&monitor).unwrap()["agent"], "worker");
-        assert_eq!(serde_json::to_value(&monitor).unwrap()["timeout_ms"], 1234);
+        assert_eq!(monitor.status, studio_runtime_schema::studio_errors::MonitorStatus::Approval);
+        assert_eq!(monitor.agent, "worker");
+        assert_eq!(monitor.timeout_ms.get(), 1234);
         assert!(accept(&store, None).await.is_err());
     }
     #[tokio::test]

@@ -129,7 +129,8 @@ mod tests {
     use super::*;
     fn complete(fields: Value) -> Value {
         let mut record = json!({"id":"watch","agent":"owner","epoch":1,"status":"running","requestId":"request","created":0,"activityAt":0,"activityGeneration":0,"bytes":0,"command":"","cwd":std::env::temp_dir(),"interactive":false,"livenessCommand":"","log":std::env::temp_dir().join("watch.log"),"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":3600000,"wakeOn":"exit"});
-        record.as_object_mut().unwrap().extend(fields.as_object().unwrap().clone());
+        let Value::Object(fields) = fields else { panic!("monitor fixture must be an object") };
+        record.as_object_mut().unwrap().extend(fields);
         record
     }
     thread_local! { static EVENT_SELECTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }

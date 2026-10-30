@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashSet};
 use studio_runtime_providers::ProviderKind;
 use studio_runtime_schema::process_controls::{
-    ProcessActionResult, ProcessActionStatus, ProcessControlRequest, ProcessEntry, ProcessOutcome,
+    ProcessActionResult, ProcessActionStatus, ProcessControlRequest, ProcessEntry, ProcessOutcome, ProcessResponseTarget,
     ProcessReceipt,
 };
 use studio_runtime_store::{
@@ -619,18 +619,27 @@ pub fn matches(process: &Value, identity: &Value) -> bool {
         .iter()
         .all(|k| process[k] == identity[k])
 }
-pub fn validate_response(owner: &Value, target: &Value, connection: Option<&str>) -> bool {
-    !target.is_null() && response_target(owner, connection) == *target
+fn response_matches(expected: &Value, target: &ProcessResponseTarget) -> bool {
+    expected.as_object().is_some_and(|object| object.len() == 6)
+        && expected["agent"] == target.agent.as_str()
+        && expected["accountKey"] == target.account_key.as_str()
+        && expected["epoch"].as_u64() == Some(target.epoch)
+        && expected["connectionId"] == target.connection_id.as_str()
+        && expected["threadId"] == target.thread_id.as_str()
+        && expected["turnId"] == target.turn_id.as_str()
+}
+pub fn validate_response(owner: &Value, target: &ProcessResponseTarget, connection: Option<&str>) -> bool {
+    response_matches(&response_target(owner, connection), target)
 }
 pub fn validate_stop_response(
     owner: &Value,
-    target: &Value,
+    target: &ProcessResponseTarget,
     scope: &ConnectionScope,
     proof: Option<&HeldResponseProof>,
 ) -> bool {
     validate_response(owner, target, Some(&scope.connection))
         || proof.is_some_and(|proof| {
-            proof.matches(owner, scope) && response_identity(owner, &scope.connection) == *target
+            proof.matches(owner, scope) && response_matches(&response_identity(owner, &scope.connection), target)
         })
 }
 
@@ -677,18 +686,18 @@ pub fn claim(
         response_target, ..
     } = command
     {
-        let target = serde_json::to_value(response_target).map_err(StoreError::from)?;
-        let valid = if matches!(command, ProcessControlRequest::StopResponse { .. }) {
-            stop_target(owner, connections) == target
+        let expected = if matches!(command, ProcessControlRequest::StopResponse { .. }) {
+            stop_target(owner, connections)
         } else {
-            validate_response(owner, &target, connections.get(scope).map(String::as_str))
+            self::response_target(owner, connections.get(scope).map(String::as_str))
         };
+        let valid = response_matches(&expected, response_target);
         if !valid {
             return Err(Error::Invalid(
                 "The response changed. Refresh the process list",
             ));
         }
-        target
+        Some(serde_json::value::to_raw_value(response_target).map_err(StoreError::from)?)
     } else {
         let (selected, include_descendants) = match command {
             ProcessControlRequest::StopSelected {
@@ -749,7 +758,7 @@ pub fn claim(
                 targets.push(process.clone());
             }
         }
-        Value::Null
+        None
     };
     let result = ProcessActionResult {
         request_id: id.into(),

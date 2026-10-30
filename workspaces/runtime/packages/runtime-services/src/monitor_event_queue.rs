@@ -162,7 +162,10 @@ pub fn enqueue_output_with_scope_in_transaction(
     }
     let committed_offset = record.bytes.get() as u64;
     let offset = queue.last().map_or(committed_offset, |item| {
-        let offset = match item { MonitorQueueEvent::Output { offset, .. } => *offset, _ => committed_offset };
+        let offset = match item {
+            MonitorQueueEvent::Output { offset, .. } => *offset,
+            MonitorQueueEvent::Probe { .. } | MonitorQueueEvent::Exit { .. } => committed_offset,
+        };
         offset.saturating_add(item.byte_length())
     });
     queue.push(MonitorQueueEvent::Output {

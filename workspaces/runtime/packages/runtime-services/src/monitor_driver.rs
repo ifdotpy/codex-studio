@@ -418,7 +418,7 @@ pub async fn cancel_checked(
                         dispatch.error = Some(error.clone());
                         response_error = Some(error.clone());
                         if status == "unknown" {
-                            decision.record.error = Some(error.clone().try_into().map_err(|_| MonitorError::Refused("Invalid monitor error"))?);
+                            decision.record.error = Some(error.try_into().map_err(|_| MonitorError::Refused("Invalid monitor error"))?);
                         }
                     }
                     decision.record.cancel_dispatch = Some(dispatch);

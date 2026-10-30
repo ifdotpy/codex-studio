@@ -358,8 +358,7 @@ mod tests {
         let aliases = BTreeSet::from([(PEER.to_owned(), "one".to_owned())]);
         let result = mirrored(PEER, "Peer", &items.items, &aliases, "local");
         assert_eq!(result.len(), 1);
-        let view = serde_json::to_value(&result[&entity_id(PEER, "two")]).unwrap();
-        assert_eq!(view, json!({"id":"peer:peer-server:two","path":null,"name":"Second","created":null,"updated":null,"homeServerId":PEER,"serverLabel":"Peer"}));
+        let view = json!({"id":"peer:peer-server:two","path":null,"name":"Second","created":null,"updated":null,"homeServerId":PEER,"serverLabel":"Peer"});
         let old = crate::sync_views::project_entity_view(&view, None, None, None).unwrap();
         assert_eq!(serde_json::to_string(&result[&entity_id(PEER, "two")]).unwrap(), serde_json::to_string(&old).unwrap());
     }

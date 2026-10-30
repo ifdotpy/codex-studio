@@ -378,7 +378,7 @@ pub async fn answer_approval(
     let data = data.clone();
     store
         .transaction_with(move |tx| {
-            let Some(mut request) = Table::<RequestRecord>::new(tx).get(&request_id.to_owned())?
+            let Some(mut request) = Table::<RequestRecord>::new(tx).get(&request_id)?
             else {
                 return Ok(None);
             };
@@ -412,7 +412,7 @@ pub async fn answer_approval(
                     .or_else(|| match snapshot.record().status {
                         studio_runtime_schema::studio_errors::MonitorStatus::Starting | studio_runtime_schema::studio_errors::MonitorStatus::Running | studio_runtime_schema::studio_errors::MonitorStatus::Completed | studio_runtime_schema::studio_errors::MonitorStatus::Failed => Some("accept"),
                         studio_runtime_schema::studio_errors::MonitorStatus::Cancelled => Some("decline"),
-                        _ => None,
+                        studio_runtime_schema::studio_errors::MonitorStatus::Approval | studio_runtime_schema::studio_errors::MonitorStatus::Lost => None,
                     });
                 if saved != Some(decision) {
                     return Err(MonitorError::Refused(
@@ -977,7 +977,9 @@ fn exit_event(
         MonitorStatus::Failed => TerminalStatus::Failed,
         MonitorStatus::Cancelled => TerminalStatus::Cancelled,
         MonitorStatus::Lost => TerminalStatus::Lost,
-        _ => return Err(MonitorError::Refused("Monitor has no terminal status")),
+        MonitorStatus::Approval | MonitorStatus::Starting | MonitorStatus::Running => {
+            return Err(MonitorError::Refused("Monitor has no terminal status"));
+        }
     };
     let payload = TerminalPayload {
         id: monitor.id.clone(), command: monitor.command.as_str().to_owned(), status,
@@ -1203,7 +1205,7 @@ pub async fn provider_request_identity(
             if attempt.id != ticket || !same { return Err(MonitorError::Refused("Monitor input provider identity changed")); }
             (attempt.operation.evidence.root_request_id.clone(), attempt.operation.evidence.provider_request.clone())
         } else if method == Method::CommandExecTerminate {
-            (record.cancel_root_request_id.clone(), record.cancel_provider_request.clone())
+            (record.cancel_root_request_id.clone(), record.cancel_provider_request)
         } else { return Err(MonitorError::Refused("Monitor provider method has no mutation owner")); };
         let root = root.ok_or(MonitorError::Refused("Monitor provider request identity is unavailable"))?;
 

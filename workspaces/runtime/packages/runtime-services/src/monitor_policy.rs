@@ -1087,6 +1087,7 @@ pub fn same_request(previous: &studio_runtime_store::MonitorRecord, proposed: &s
 #[cfg(test)]
 pub(crate) fn complete_test_monitor(record: Value) -> Value {
     let mut complete = json!({"id":"watch","agent":"agent","epoch":0,"status":"running","requestId":"fixture","created":0,"activityAt":0,"activityGeneration":0,"bytes":0,"command":"","cwd":std::env::temp_dir(),"interactive":false,"livenessCommand":"","log":std::env::temp_dir().join("watch.log"),"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":3600000,"wakeOn":"exit"});
-    complete.as_object_mut().unwrap().extend(record.as_object().unwrap().clone());
+    let Value::Object(fields) = record else { panic!("monitor fixture must be an object") };
+    complete.as_object_mut().unwrap().extend(fields);
     complete
 }
