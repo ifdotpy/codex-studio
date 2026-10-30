@@ -127,8 +127,8 @@ async fn local_cancel_persists_before_fake_provider_termination() {
         ) -> futures_util::future::BoxFuture<'a, Submission> {
             Box::pin(async move {
                 assert_eq!(
-                    record(&self.store, &self.id)["cancelRequested"],
-                    json!(true)
+                    record(&self.store, &self.id).cancel_requested,
+                    Some(true)
                 );
                 let monitor_policy::Effect::Native { method, params, .. } = effect else {
                     panic!("expected provider termination")
@@ -371,7 +371,7 @@ async fn monitor_cancel_persists_before_dispatch_and_malformed_state_is_refused(
         ("timeout_ms", json!(0)),
         ("operation", json!({"agent":"foreign"})),
     ] {
-        let mut malformed = before.clone();
+        let mut malformed = case["before"].clone();
         malformed[field] = value;
         assert!(
             fixtures::checked(malformed, case["actor"].clone()).is_err(),
