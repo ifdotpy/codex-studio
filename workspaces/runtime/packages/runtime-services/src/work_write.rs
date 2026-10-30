@@ -1757,8 +1757,7 @@ fn work_receipt_in(
     if reply.get("rootId").and_then(Value::as_str) != Some(agent.root_id.0.as_str()) {
         return Err(Error::InvalidRequest("Invalid request").into());
     }
-    WorkItemsRepository::validate_work(connection, reply.id().as_ref(), reply.value())
-        .map_err(WorkWriteError::Store)?;
+    reply.checked_work().map_err(WorkWriteError::Store)?;
     Ok(Some(reply.into_value()))
 }
 
@@ -4200,6 +4199,33 @@ mod actor_tests {
     }
 
     #[test]
+    fn historical_receipt_lookup_keeps_omitted_fields() {
+        let mut db = database();
+        let tx = db.transaction().unwrap();
+        let root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let token =
+            match crate::event_write::begin_request::<studio_runtime_store::LegacyWorkReply>(
+                &tx,
+                crate::event_write::RequestKey::new("work", &["lead"], &root),
+                "legacy",
+                (crate::event_write::unix_time().unwrap() * 1000.0) as i64,
+            )
+            .unwrap()
+            {
+                crate::event_write::CallerAdmission::Fresh(token) => token,
+                crate::event_write::CallerAdmission::Replay(_) => panic!("fresh receipt"),
+            };
+        let value =
+            json!({"id":"legacy","rootId":"lead","status":"ready","results":null,"version":-1});
+        let reply = studio_runtime_store::LegacyWorkReply::from_value(value.clone()).unwrap();
+        crate::event_write::settle_request(&tx, &token, None, &reply).unwrap();
+        assert_eq!(
+            super::work_receipt_in(&tx, "lead", token.id(), "legacy").unwrap(),
+            Some(value)
+        );
+    }
+
+    #[test]
     fn receipt_domain_archive_final_reply_uses_frozen_public_snapshot() {
         let mut db = database();
         let root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
@@ -4544,7 +4570,7 @@ mod actor_tests {
                 let work = json!({
                     "id":"accepted-task","rootId":"lead","owner":"worker",
                     "status":"accepted","version":3,"title":"Accepted result",
-                    "description":"","dependencies":[],"results":[{"id":"result-1",
+                    "description":"","dependencies":[],"updated":10.0,"results":[{"id":"result-1",
                         "text":"verified","revision":"abc1234"}],"decisions":[],
                     "archiveIntent":{"id":"accepted-task:result-1","owner":"worker",
                         "status":"pending","attempts":0,"created":10.0}
@@ -4623,7 +4649,7 @@ mod actor_tests {
                 let work = json!({
                     "id":"accepted-task","rootId":"lead","owner":"worker",
                     "status":"accepted","version":3,"title":"Accepted result",
-                    "description":"","dependencies":[],"results":[{"id":"result-1",
+                    "description":"","dependencies":[],"updated":10.0,"results":[{"id":"result-1",
                         "text":"verified","revision":"abc1234"}],"decisions":[],
                     "archiveIntent":{"id":"accepted-task:result-1","owner":"worker",
                         "status":"pending","attempts":0,"created":10.0}
@@ -4869,7 +4895,7 @@ mod actor_tests {
                     rusqlite::params![
                         "open-work",
                         json!({"id":"open-work","rootId":"lead","owner":"child",
-                            "status":"ready","version":1,"releases":[]})
+                            "status":"ready","version":1,"dependencies":[],"updated":1.0,"releases":[]})
                         .to_string()
                     ],
                 )?;

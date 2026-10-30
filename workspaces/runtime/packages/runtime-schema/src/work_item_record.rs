@@ -11,11 +11,6 @@ fn present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
 ) -> Result<Option<T>, D::Error> {
     T::deserialize(d).map(Some)
 }
-fn status<'de, D: serde::Deserializer<'de>>(d: D) -> Result<WorkStatus, D::Error> {
-    let text = String::deserialize(d)?;
-    text.parse()
-        .map_err(|()| serde::de::Error::custom("invalid work status"))
-}
 fn status_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
     schemars::json_schema!({"$ref":"https://codex-studio.invalid/openapi.json#/components/schemas/WorkItem/properties/status"})
 }
@@ -30,26 +25,15 @@ fn updated_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
 #[schemars(rename = "PersistedWorkItemRecord")]
 pub struct WorkItem {
     id: TaskId,
-    #[serde(deserialize_with = "status")]
     #[schemars(schema_with = "status_schema")]
     status: WorkStatus,
-    #[serde(
-        default,
-        deserialize_with = "present",
-        skip_serializing_if = "Option::is_none"
-    )]
     #[schemars(schema_with = "dependencies_schema")]
-    dependencies: Option<Vec<String>>,
+    dependencies: Vec<String>,
     #[serde(default, skip_serializing_if = "Field::is_missing")]
     #[schemars(with = "Option<String>")]
     owner: Field<String>,
-    #[serde(
-        default,
-        deserialize_with = "present",
-        skip_serializing_if = "Option::is_none"
-    )]
     #[schemars(schema_with = "updated_schema")]
-    updated: Option<Number>,
+    updated: Number,
     #[serde(rename = "rootId", default, skip_serializing_if = "Field::is_missing")]
     #[schemars(with = "Option<String>")]
     root_id: Field<String>,
@@ -96,7 +80,7 @@ impl WorkItem {
         self.status
     }
     pub fn dependencies(&self) -> &[String] {
-        self.dependencies.as_deref().unwrap_or_default()
+        &self.dependencies
     }
     pub fn owner(&self) -> Option<&str> {
         self.owner.value().map(String::as_str)
@@ -108,10 +92,8 @@ impl WorkItem {
         self.title.value().map(String::as_str)
     }
     pub fn updated(&self) -> f64 {
-        self.updated
-            .as_ref()
-            .and_then(Number::as_f64)
-            .unwrap_or_default()
+        // serde_json numbers always have an f64 representation without arbitrary_precision.
+        self.updated.as_f64().expect("JSON number fits f64")
     }
     pub fn version(&self) -> Option<&Number> {
         self.version.as_ref().map(RuleInteger::number)
@@ -143,10 +125,10 @@ impl WorkItem {
                     return Err(serde::de::Error::custom("work record id is immutable"));
                 }
             }
-            "status" => self.status = status(value)?,
-            "dependencies" => self.dependencies = Some(Vec::<String>::deserialize(value)?),
+            "status" => self.status = WorkStatus::deserialize(value)?,
+            "dependencies" => self.dependencies = Vec::<String>::deserialize(value)?,
             "owner" => self.owner = Field::deserialize(value)?,
-            "updated" => self.updated = Some(Number::deserialize(value)?),
+            "updated" => self.updated = Number::deserialize(value)?,
             "rootId" => self.root_id = Field::deserialize(value)?,
             "title" => self.title = Field::deserialize(value)?,
             "version" => self.version = Some(RuleInteger::deserialize(value)?),
@@ -171,16 +153,12 @@ impl WorkItem {
         let mut fields: serde_json::Map<String, Value> = self.extra.into_iter().collect();
         fields.insert("id".into(), Value::String(self.id.0));
         fields.insert("status".into(), Value::String(self.status.as_str().into()));
-        if let Some(v) = self.dependencies {
-            fields.insert(
-                "dependencies".into(),
-                Value::Array(v.into_iter().map(Value::String).collect()),
-            );
-        }
+        fields.insert(
+            "dependencies".into(),
+            Value::Array(self.dependencies.into_iter().map(Value::String).collect()),
+        );
         insert_field(&mut fields, "owner", self.owner, Value::String);
-        if let Some(v) = self.updated {
-            fields.insert("updated".into(), Value::Number(v));
-        }
+        fields.insert("updated".into(), Value::Number(self.updated));
         insert_field(&mut fields, "rootId", self.root_id, Value::String);
         insert_field(&mut fields, "title", self.title, Value::String);
         if let Some(v) = self.version {
@@ -242,6 +220,11 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn stored_work_requires_dependencies_and_updated() {
+        assert!(WorkItem::deserialize(json!({"id":"task","status":"ready"})).is_err());
+    }
+
+    #[test]
     fn work_schema_matches_typed_fields_and_preserves_json() {
         check_schema_parity().unwrap();
         let fields = [
@@ -276,7 +259,7 @@ mod tests {
                 json!([{}]),
                 json!([1]),
             ] {
-                let mut value = json!({"id":"task", "status":"ready", "extra":{"nested":[1]}});
+                let mut value = json!({"id":"task", "status":"ready", "dependencies":[], "updated":0, "extra":{"nested":[1]}});
                 value[field] = candidate;
                 let parsed = WorkItem::deserialize(value.clone());
                 assert_eq!(

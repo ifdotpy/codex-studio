@@ -1463,10 +1463,10 @@ impl JsonRecord for UsageResumeRecord {
 #[derive(Clone, Debug, PartialEq)]
 pub struct LegacyWorkReply {
     value: Value,
-    fields: WorkItemFields,
+    fields: HistoricalWorkItem,
 }
 #[derive(Clone, Debug, Deserialize, PartialEq)]
-struct WorkItemFields {
+struct HistoricalWorkItem {
     id: TaskId,
     status: WorkStatus,
     #[serde(default)]
@@ -1493,8 +1493,29 @@ impl LegacyWorkReply {
         self.value.get(key)
     }
     pub fn from_value(value: Value) -> Result<Self, serde_json::Error> {
-        let fields = WorkItemFields::deserialize(&value)?;
+        let fields = HistoricalWorkItem::deserialize(&value)?;
         Ok(Self { value, fields })
+    }
+    pub fn checked_work(&self) -> StoreResult<WorkItemRecord> {
+        let mut value = self.value.clone();
+        let object = value
+            .as_object_mut()
+            .ok_or(crate::StoreError::RecordContract(
+                "work reply must be an object",
+            ))?;
+        object
+            .entry("dependencies")
+            .or_insert_with(|| serde_json::json!(self.fields.dependencies));
+        object
+            .entry("updated")
+            .or_insert_with(|| serde_json::json!(self.fields.updated));
+        if object.get("results").is_some_and(Value::is_null) {
+            object.remove("results");
+        }
+        if object.get("version").and_then(Value::as_i64) == Some(-1) {
+            object.remove("version");
+        }
+        WorkItemRecord::checked(&value)
     }
     pub fn value(&self) -> &Value {
         &self.value
@@ -1713,8 +1734,14 @@ impl WorkItemRecord {
             table: Self::TABLE,
             id: row_id.into(),
         };
-        let value = serde_json::from_str(encoded).map_err(|_| invalid())?;
-        let record = Self::checked_at(&value, row_id)?;
+        let record: Self = serde_json::from_str(encoded).map_err(|error| {
+            crate::StoreError::InvalidSyncObjectField {
+                scope: Self::TABLE.into(),
+                id: row_id.into(),
+                pointer: String::new(),
+                reason: error.to_string(),
+            }
+        })?;
         if record.id().as_ref() != row_id {
             return Err(invalid());
         }
@@ -2881,6 +2908,13 @@ mod tests {
     }
 
     #[test]
+    fn stored_work_rejects_duplicate_typed_fields() {
+        let raw =
+            r#"{"id":"work","status":"invalid","status":"ready","dependencies":[],"updated":1}"#;
+        assert!(WorkItemRecord::decode("work", raw).is_err());
+    }
+
+    #[test]
     fn stored_work_boundary_contract_matches_openapi_owner() {
         let openapi: Value = serde_json::from_str(include_str!("../../runtime-http/openapi.json"))
             .expect("OpenAPI owner");
@@ -2906,16 +2940,15 @@ mod tests {
             openapi["components"]["schemas"]["WorkItem"]["properties"]["dependencies"]["default"],
             json!([])
         );
-        let raw = json!({"id":"work","status":"ready","owner":null,"futureField":{"proof":7}});
-        let record =
-            WorkItemRecord::checked(&raw).expect("nullable owner and absent default dependencies");
+        let raw = json!({"id":"work","status":"ready","dependencies":[],"updated":0,"owner":null,"futureField":{"proof":7}});
+        let record = WorkItemRecord::checked(&raw).expect("nullable owner and required fields");
         assert_eq!(record.status(), WorkStatus::Ready);
         assert_eq!(record.owner(), None);
         assert!(record.dependencies().is_empty());
         assert_eq!(
             record.updated(),
             0.0,
-            "omission keeps the existing progress timestamp default"
+            "the stored progress timestamp is retained"
         );
         assert_eq!(
             record.into_value(),

@@ -45,6 +45,7 @@ mod m2026_10_30_rule_monitor_records;
 mod m2026_10_30_start_wait;
 mod m2026_10_30_unused_agent_columns;
 mod m2026_10_30_unused_start_action;
+mod m2026_10_30_work_fields;
 
 #[cfg(any(test, feature = "test-support"))]
 pub use m2026_10_20_agents::migrate_2026_10_20;
@@ -243,6 +244,16 @@ impl Migration for RegistryMigration {
 // Explicit dependency order: provider leaves precede strict generated columns;
 // columns precede indexes; volatile data moves before its new triggers exist.
 static CATALOG: &[&dyn Migration] = &[
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-work-fields",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Work rows before dependencies and updated were required",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_work_fields::apply(c.transaction),
+    },
     &SqlMigration {
         definition: MigrationDefinition {
             id: ANALYTICS_PROVIDER_ID,

@@ -427,8 +427,7 @@ mod tests {
     fn validation_only_checks_once_without_encoding() {
         use crate::records::validation_counts::{CHECKS, ENCODINGS};
         let connection = Connection::open_in_memory().expect("database");
-        let work =
-            json!({"id":"task","rootId":"lead","status":"ready","owner":null,"dependencies":[]});
+        let work = json!({"id":"task","rootId":"lead","status":"ready","owner":null,"dependencies":[],"updated":0});
         CHECKS.with(|count| count.set(0));
         ENCODINGS.with(|count| count.set(0));
         WorkItemsRepository::validate_work(&connection, "task", &work).expect("valid work");
@@ -491,7 +490,7 @@ mod tests {
         connection
             .execute_batch("CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL)")
             .expect("table");
-        let raw = json!({"id":"task","rootId":"lead","status":"ready","owner":null,"dependencies":["parent"],"future":{"nested":[null,42]}});
+        let raw = json!({"id":"task","rootId":"lead","status":"ready","owner":null,"dependencies":["parent"],"updated":0,"future":{"nested":[null,42]}});
         WorkItemsRepository::put_work(&connection, "task", &raw).expect("insert");
         assert_eq!(
             WorkItemsRepository::work(&connection).expect("list")[0].value(),
@@ -517,12 +516,12 @@ mod tests {
     }
 
     #[test]
-    fn work_record_preserves_last_duplicate_and_checks_physical_identity() {
+    fn work_record_preserves_extensions_and_checks_physical_identity() {
         let connection = Connection::open_in_memory().unwrap();
         connection
             .execute_batch("CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL)")
             .unwrap();
-        connection.execute("INSERT INTO runtime_work VALUES('task',?1)", [r#"{"id":"wrong","id":"task","status":"ready","owner":null,"version":1.0,"future":{"x":[9007199254740993]}}"#]).unwrap();
+        connection.execute("INSERT INTO runtime_work VALUES('task',?1)", [r#"{"id":"task","status":"ready","dependencies":[],"updated":0,"owner":null,"version":1.0,"future":{"x":[9007199254740993]}}"#]).unwrap();
         let record = WorkItemsRepository::work_record(&connection, "task")
             .unwrap()
             .unwrap();
@@ -556,7 +555,7 @@ mod tests {
         connection
             .execute_batch("CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL)")
             .unwrap();
-        let value = json!({"id":"task", "owner":"worker", "status":"running", "version":-1, "future":{"proof":true}});
+        let value = json!({"id":"task", "owner":"worker", "status":"running", "dependencies":[], "updated":0, "version":-1, "future":{"proof":true}});
         connection
             .execute(
                 "INSERT INTO runtime_work VALUES('task',?1)",
@@ -757,9 +756,8 @@ mod tests {
         connection
             .execute_batch("CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL);")
             .expect("work family creates");
-        let first = serde_json::json!({"id":"work-1","status":"ready","title":"original"});
-        let replacement =
-            serde_json::json!({"id":"work-1","status":"blocked","title":"replacement"});
+        let first = serde_json::json!({"id":"work-1","status":"ready","dependencies":[],"updated":0,"title":"original"});
+        let replacement = serde_json::json!({"id":"work-1","status":"blocked","dependencies":[],"updated":0,"title":"replacement"});
         assert!(
             WorkItemsRepository::put_work(&connection, "work-1", &first)
                 .expect("new work item inserts")
