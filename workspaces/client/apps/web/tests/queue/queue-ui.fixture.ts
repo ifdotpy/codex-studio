@@ -75,7 +75,7 @@ export async function queueUiFixture(env: NodeJS.ProcessEnv) {
     const current = await queue();
     await post({
       action: "cancel",
-      message_id: item.id,
+      id: item.id,
       expectedText: item.text,
       expected_revision: current.revision,
     });

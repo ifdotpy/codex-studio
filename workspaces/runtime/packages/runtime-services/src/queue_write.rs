@@ -139,7 +139,7 @@ pub fn action(
         }
         QueueCommand::Edit(edit) => {
             let (target_id, row) = target_row(body, rows)?;
-            let text = event_write::python_strip(&edit.text);
+            let text = event_write::python_strip(edit.text.as_str());
             if text.is_empty()
                 && row
                     .get("assets")

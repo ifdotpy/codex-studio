@@ -1,6 +1,6 @@
 //! Durable transfer requests, worker selection, and receipt replay.
 use super::{
-    extractors::{ApiJson, ApiRawJson},
+    extractors::ApiJson,
     manifest::{OperationStatus, RouteGroup, post},
 };
 use crate::{error::ApiError, generated, router::HttpState};
@@ -80,7 +80,7 @@ struct Request {
 }
 async fn transfer(
     State(state): State<HttpState>,
-    ApiRawJson(body): ApiRawJson<Request>,
+    ApiJson(body): ApiJson<Request>,
 ) -> Result<Json<generated::TransferResponse>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let result = if let Some(action) = body.action {

@@ -18727,8 +18727,7 @@ export interface components {
       agent?: string | null | undefined;
       expected_revision?: string | null | undefined;
       expectedText?: string | null | undefined;
-      id?: string | null | undefined;
-      message_id?: string | null | undefined;
+      id: string;
       request_id?: string | null | undefined;
     };
     /** QueueCapabilities */
@@ -18747,8 +18746,7 @@ export interface components {
       agent?: string | null | undefined;
       expected_revision?: string | null | undefined;
       expectedText?: string | null | undefined;
-      id?: string | null | undefined;
-      message_id?: string | null | undefined;
+      id: string;
       request_id?: string | null | undefined;
       text: string;
     };
@@ -18760,19 +18758,25 @@ export interface components {
       /** Revision */
       revision: string;
     };
-    QueueFirstBody: {
-      /**
-       * @description discriminator enum property added by openapi-typescript
-       * @enum {string}
-       */
-      action: "first" | "send_now";
-      agent?: string | null | undefined;
-      expected_revision?: string | null | undefined;
-      expectedText?: string | null | undefined;
-      id?: string | null | undefined;
-      message_id?: string | null | undefined;
-      request_id?: string | null | undefined;
-    };
+    QueueFirstBody:
+      | {
+          /** @constant */
+          action: "first";
+          agent?: string | null | undefined;
+          expected_revision?: string | null | undefined;
+          expectedText?: string | null | undefined;
+          id: string;
+          request_id?: string | null | undefined;
+        }
+      | {
+          /** @constant */
+          action: "send_now";
+          agent?: string | null | undefined;
+          expected_revision?: string | null | undefined;
+          expectedText?: string | null | undefined;
+          id: string;
+          request_id: string;
+        };
     /** QueueItem */
     QueueItem: {
       /**

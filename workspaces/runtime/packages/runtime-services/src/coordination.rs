@@ -1455,10 +1455,9 @@ mod tests {
         crate::queue_write::action(
             &transaction,
             "lead",
-            &studio_runtime_schema::queue_command::QueueCommand::SendNow(studio_runtime_schema::queue_command::QueueTarget {
-                agent: Default::default(), expected_text: Default::default(), expected_revision: Default::default(), id: Default::default(),
-                message_id: studio_runtime_schema::queue_command::Field::Value(id.clone()), request_id: studio_runtime_schema::queue_command::Field::Value(promote),
-            }),
+            &serde_json::from_str::<studio_runtime_schema::queue_command::QueueCommand>(
+                &format!(r#"{{"action":"send_now","id":"{id}","request_id":"{promote}"}}"#),
+            ).expect("valid queue command"),
             "promotion-fixture",
             |tx, _| {
                 let event = studio_runtime_store::QueueEventRepository::get(

@@ -7,5 +7,5 @@ export function queueMutationMessageId(
   mutation: QueueMutation,
 ): string | undefined {
   if (mutation.action === "reorder") return undefined;
-  return mutation.message_id || mutation.id || undefined;
+  return mutation.id || undefined;
 }
