@@ -438,7 +438,9 @@ mod tests {
             let actor = AgentRecord::from_value(json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"worker","epoch":0,"status":"running","autoWake":true})).expect("test fixture value");
             AgentRepository::put(tx,&actor)?;
             let record = json!({"id":"m","agent":"worker","epoch":0,"status":"running","command":"just test-fast","created":5,"tail":"first","requestId":"request","activityAt":5,"activityGeneration":0,"bytes":0,"cwd":std::env::temp_dir(),"interactive":false,"livenessCommand":"","log":std::env::temp_dir().join("m.log"),"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"timeout_ms":3600000,"wakeOn":"exit"});
-            Table::<MonitorRecord>::new(tx).put(&serde_json::from_value::<MonitorRecord>(record.clone()).expect("test fixture value"))?;
+            let raw = format!(r#"{{"id":"m","agent":"worker","epoch":0,"status":"running","command":"just test-fast","created":5,"tail":"first","requestId":"request","activityAt":5,"activityGeneration":0,"bytes":0,"cwd":{},"interactive":false,"livenessCommand":"","log":{},"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"timeout_ms":3600000,"wakeOn":"exit"}}"#, serde_json::to_string(&std::env::temp_dir()).expect("cwd"), serde_json::to_string(&std::env::temp_dir().join("m.log")).expect("log"));
+            let typed: MonitorRecord = serde_json::from_str(&raw).expect("test fixture value");
+            Table::<MonitorRecord>::new(tx).put(&typed)?;
             let snapshot = crate::monitor_policy::MonitorSnapshot::checked(record.clone(),actor.value())?;
             let mut decision = snapshot.decision();
             decision.record.tail = "first\nlast gate passed".to_owned().try_into().expect("tail");

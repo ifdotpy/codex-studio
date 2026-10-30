@@ -1111,13 +1111,15 @@ mod tests {
         let now = crate::event_write::unix_time().expect("valid group publication fixture");
         store.transaction(move |tx| {
             AgentRepository::put(tx, &AgentRecord::from_value(json!({"accountKey":"default","id":"owner","rootId":"owner","epoch":0,"status":"idle","provider":"codex"}))?)?;
-            Table::new(tx).put(&serde_json::from_value::<MonitorRecord>(crate::monitor_policy::complete_test_monitor(json!({"id":"failed","agent":"owner","ruleId":"rule","command":"check","created":now - 10.,"finished":now - 9.,"status":"failed","error":"No live provider session","exitCode":null})))?)?;
+            let raw = format!(r#"{{"id":"failed","agent":"owner","ruleId":"rule","epoch":0,"status":"failed","requestId":"fixture","created":{},"finished":{},"activityAt":0,"activityGeneration":0,"bytes":0,"command":"check","cwd":"/tmp","interactive":false,"livenessCommand":"","log":"/tmp/watch.log","stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":3600000,"wakeOn":"exit","error":"No live provider session","exitCode":null}}"#, now - 10., now - 9.);
+            Table::new(tx).put(&serde_json::from_str::<MonitorRecord>(&raw)?)?;
             Ok::<_, StoreError>(())
         }).await.expect("valid group publication fixture");
         store.transaction(move |tx| {
             let count: i64 = tx.query_row("SELECT count(*) FROM sync_entities WHERE collection='studioError' AND deleted=0", [], |r| r.get(0))?;
             assert_eq!(count, 1, "the failure is published");
-            Table::new(tx).put(&serde_json::from_value::<MonitorRecord>(crate::monitor_policy::complete_test_monitor(json!({"id":"success","agent":"owner","ruleId":"rule","command":"check","created":now,"finished":now,"status":"completed","exitCode":0})))?)?;
+            let raw = format!(r#"{{"id":"success","agent":"owner","ruleId":"rule","epoch":0,"status":"completed","requestId":"fixture","created":{now},"finished":{now},"activityAt":0,"activityGeneration":0,"bytes":0,"command":"check","cwd":"/tmp","interactive":false,"livenessCommand":"","log":"/tmp/watch.log","stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":3600000,"wakeOn":"exit","exitCode":0}}"#);
+            Table::new(tx).put(&serde_json::from_str::<MonitorRecord>(&raw)?)?;
             Ok::<_, StoreError>(())
         }).await.expect("valid group publication fixture");
         store.test_read_transaction(|tx| {

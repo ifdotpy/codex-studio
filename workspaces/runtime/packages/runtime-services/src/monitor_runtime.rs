@@ -1731,12 +1731,10 @@ mod recovery_selection_tests {
         let saved = studio_runtime_store::MonitorsRepository::get(&tx, "watch")
             .expect("read")
             .expect("owner");
-        let saved_value = serde_json::to_value(&saved).unwrap();
-        let queue = saved_value["streamQueue"].as_array().expect("queue");
+        let queue = saved.stream_queue.as_ref().expect("queue");
         assert_eq!(queue.len(), 2);
-        assert_eq!(queue[0]["cursor"], "output:1");
-        assert_eq!(queue[1]["kind"], "exit");
-        assert_eq!(queue[1]["code"], 0);
+        assert_eq!(queue[0].cursor(), "output:1");
+        assert!(matches!(queue[1], studio_runtime_schema::monitor_record::MonitorQueueEvent::Exit { code: Some(0), .. }));
         call.scope.generation += 1;
         assert!(
             !super::settle_provider_call(&tx, &call, &RequestResult::Reply(json!({"exitCode":0})))

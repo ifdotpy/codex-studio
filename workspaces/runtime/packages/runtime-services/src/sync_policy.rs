@@ -2618,10 +2618,14 @@ mod tests {
     #[test]
     fn typed_monitor_projection_keeps_existing_public_bounds() {
         let record = crate::monitor_policy::complete_test_monitor(serde_json::json!({"id":"monitor","agent":"owner","created":0.0,"activityAt":0.0,"command":"雪".repeat(2100),"tail":"é".repeat(2100),"error":"x".repeat(2100),"outputPatterns":["ready"]}));
-        let typed: studio_runtime_store::MonitorRecord = serde_json::from_value(record.clone()).unwrap();
+        let raw = format!(r#"{{"id":"monitor","agent":"owner","epoch":0,"status":"running","requestId":"fixture","created":0.0,"activityAt":0.0,"activityGeneration":0,"bytes":0,"command":{},"cwd":{},"interactive":false,"livenessCommand":"","log":{},"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":{},"error":{},"timeout_ms":3600000,"wakeOn":"exit","outputPatterns":["ready"]}}"#, serde_json::to_string(&"雪".repeat(2100)).unwrap(), serde_json::to_string(&std::env::temp_dir()).unwrap(), serde_json::to_string(&std::env::temp_dir().join("watch.log")).unwrap(), serde_json::to_string(&"é".repeat(2100)).unwrap(), serde_json::to_string(&"x".repeat(2100)).unwrap());
+        let typed: studio_runtime_store::MonitorRecord = serde_json::from_str(&raw).unwrap();
         let old = crate::sync_views::project_persisted_record("monitor", &record).unwrap();
-        let new = serde_json::to_value(super::project_monitor_record(&typed).unwrap()).unwrap();
-        assert_eq!(new, old);
+        let new = super::project_monitor_record(&typed).unwrap();
+        assert_eq!(new.command, old["command"]);
+        assert_eq!(new.tail, old["tail"]);
+        assert_eq!(new.error.as_deref(), old["error"].as_str());
+        assert_eq!(new.output_patterns, Some(vec!["ready".to_owned()]));
     }
 
     #[test]

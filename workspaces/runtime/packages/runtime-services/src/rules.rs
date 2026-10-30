@@ -132,7 +132,8 @@ mod tests {
     }
 
     fn rule(id: &str, agent: &str) -> RuleRecord {
-        serde_json::from_value::<RuleRecord>(json!({"id":id,"agent":agent,"epoch":0,"name":"rule","kind":"interval","status":"active","intervalSeconds":60,"nextAt":1,"created":1,"command":"","text":"","checks":0,"wakes":0,"inFlight":false,"fileGeneration":0,"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"livenessCommand":"","event":""})).expect("rule record")
+        let raw = format!(r#"{{"id":{},"agent":{},"epoch":0,"name":"rule","kind":"interval","status":"active","intervalSeconds":60,"nextAt":1,"created":1,"command":"","text":"","checks":0,"wakes":0,"inFlight":false,"fileGeneration":0,"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"livenessCommand":"","event":""}}"#, serde_json::to_string(id).expect("id"), serde_json::to_string(agent).expect("agent"));
+        serde_json::from_str(&raw).expect("rule record")
     }
 
     #[test]

@@ -928,7 +928,8 @@ mod claim_identity_tests {
         let owner = json!({"id":"owner","epoch":1,"accountKey":"default","threadId":"thread","autoWake":true});
         for status in ["starting", "running"] {
             let raw = json!({"id":"watch","agent":"owner","epoch":1,"status":status,"requestId":"request","created":1,"activityAt":1,"activityGeneration":0,"bytes":12,"command":"printf x","cwd":std::env::temp_dir(),"interactive":true,"livenessCommand":"","log":std::env::temp_dir().join("watch.log"),"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"x","timeout_ms":3600000,"wakeOn":"exit","operation":{"agent":"owner","epoch":1,"accountKey":"default","connectionId":"connection","threadId":"thread"}});
-            let record: studio_runtime_store::MonitorRecord = serde_json::from_value(raw.clone()).unwrap();
+            let fixture = format!(r#"{{"id":"watch","agent":"owner","epoch":1,"status":"{status}","requestId":"request","created":1,"activityAt":1,"activityGeneration":0,"bytes":12,"command":"printf x","cwd":{},"interactive":true,"livenessCommand":"","log":{},"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"x","timeout_ms":3600000,"wakeOn":"exit","operation":{{"agent":"owner","epoch":1,"accountKey":"default","connectionId":"connection","threadId":"thread"}}}}"#, serde_json::to_string(&std::env::temp_dir()).unwrap(), serde_json::to_string(&std::env::temp_dir().join("watch.log")).unwrap());
+            let record: studio_runtime_store::MonitorRecord = serde_json::from_str(&fixture).unwrap();
             let mut expected = legacy_project_bound("monitor", &raw, &owner, Some("connection"), None);
             let mut actual = project_monitor_bound(&record, &owner, Some("connection"), None);
             expected.as_object_mut().unwrap().remove("_raw");

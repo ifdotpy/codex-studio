@@ -378,7 +378,11 @@ mod tests {
             matches: vec![OutputMatch { stream: "stdout".into(), pattern: "ready\n雪".into(), count: 2, excerpt: Some("é".into()), log_offset: Some(13) }],
             suppressed_matches: Some(3), message: Some("paused 雪".into()), output_wakes_paused: Some(true),
         };
-        let legacy = studio_runtime_schema::json_compat::python_json(&serde_json::to_value(&payload).unwrap());
+        let legacy = studio_runtime_schema::json_compat::python_json(&serde_json::json!({
+            "monitorId":"watch-雪", "epoch":4, "sequence":7, "final":true,
+            "matches":[{"stream":"stdout", "pattern":"ready\n雪", "count":2, "excerpt":"é", "logOffset":13}],
+            "suppressedMatches":3, "message":"paused 雪", "outputWakesPaused":true
+        }));
         assert_eq!(payload.python_json(), legacy);
     }
 }

@@ -1242,6 +1242,10 @@ pub(super) fn recorded_operation(
 mod replay_identity_tests {
     use super::*;
 
+    fn monitor_fixture() -> studio_runtime_store::MonitorRecord {
+        serde_json::from_str(r#"{"id":"watch","agent":"agent-1","epoch":7,"status":"running","requestId":"watch","created":1.0,"activityAt":1.0,"activityGeneration":0,"bytes":0,"command":"true","cwd":"/tmp","interactive":false,"livenessCommand":"","log":"/tmp/watch.log","stallTimeoutSeconds":0,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":1000,"wakeOn":"exit"}"#).expect("monitor fixture")
+    }
+
     #[tokio::test]
     async fn unclean_pending_call_is_not_prepared_again() {
         let root = tempfile::tempdir().expect("root");
@@ -1325,15 +1329,6 @@ mod replay_identity_tests {
             provider: &'a str,
         }
         #[derive(Serialize)]
-        struct Monitor<'a> {
-            id: &'a str,
-            agent: &'a str,
-            epoch: i64,
-            status: &'a str,
-            cwd: &'a std::path::Path,
-            operation: crate::monitor_policy::Operation,
-        }
-        #[derive(Serialize)]
         #[serde(rename_all = "camelCase")]
         struct Params<'a> {
             process_id: &'a str,
@@ -1379,24 +1374,14 @@ mod replay_identity_tests {
             account_key: "default",
             provider: "codex",
         });
-        let watch_fields = studio_runtime_store::projection_value(&Monitor {
-            id: "watch",
-            agent: "agent-1",
-            epoch: 7,
-            status: "running",
-            cwd: root.path(),
-            operation,
-        });
-        let mut watch = json!({"activityAt":1.0,"activityGeneration":0,"bytes":0,"command":"true",
-            "created":1.0,"interactive":false,"livenessCommand":"","log":std::env::temp_dir().join("watch.log"),
-            "requestId":"watch","turnId":null,"stallTimeoutSeconds":0,"stallWakeGeneration":-1,
-            "successExitCodes":[0],"tail":"","timeout_ms":1000,"wakeOn":"exit"});
-        watch.as_object_mut().unwrap().extend(watch_fields.as_object().unwrap().clone());
+        let mut watch = monitor_fixture();
+        watch.cwd = root.path().to_string_lossy().into_owned();
+        watch.operation = Some(operation);
         store
             .transaction(move |tx| {
                 AgentRepository::put(tx, &studio_runtime_store::AgentRecord::from_value(agent)?)?;
                 studio_runtime_store::Table::new(tx)
-                    .put(&serde_json::from_value::<studio_runtime_store::MonitorRecord>(watch)?)
+                    .put(&watch)
             })
             .await
             .expect("owners");
@@ -1785,7 +1770,11 @@ mod replay_identity_tests {
         let store = database(root.path()).await;
         store.transaction(|tx| {
             AgentRepository::put(tx, &studio_runtime_store::AgentRecord::from_value(json!({"accountKey":"default","id":"agent-1","rootId":"agent-1","epoch":9,"deletedAt":1,"status":"interrupted","autoWake":false,"provider":studio_runtime_schema::ProviderKind::Codex}))?)?;
-            studio_runtime_store::Table::new(tx).put(&serde_json::from_value::<studio_runtime_store::MonitorRecord>(crate::monitor_policy::complete_test_monitor(json!({"id":"watch","agent":"agent-1","epoch":7,"status":"running","cancelRequested":true,"reattachedConnectionId":"new-connection","operation":{"agent":"agent-1","epoch":7,"accountKey":"default","connectionId":"old"}})))?)?;
+            let mut watch = monitor_fixture();
+            watch.cancel_requested = Some(true);
+            watch.reattached_connection_id = Some("new-connection".into());
+            watch.operation = Some(serde_json::from_str(r#"{"agent":"agent-1","epoch":7,"accountKey":"default","connectionId":"old"}"#)?);
+            studio_runtime_store::Table::new(tx).put(&watch)?;
             Ok::<_,studio_runtime_store::StoreError>(())
         }).await.expect("seed deleted owner and proved handle");
         store
@@ -1884,7 +1873,12 @@ mod replay_identity_tests {
             let key=original.key();
             let request=RecoveredRequest{ticket:RequestTicket{id:RequestId::String(key.clone()),generation:4,method:Method::CommandExec},operation_id:OperationId(key),thread_id:None,lightweight:true,deadline_ms:60000,unknown:true,remote_id:None};
             seed(tx,original,&request,false,None)?;
-            studio_runtime_store::Table::new(tx).put(&serde_json::from_value::<studio_runtime_store::MonitorRecord>(crate::monitor_policy::complete_test_monitor(json!({"id":"watch","agent":"agent-1","epoch":7,"status":"running","interactive":true,"cancelRequested":true,"reattachedConnectionId":"reconnected-source","operation":{"agent":"agent-1","epoch":7,"accountKey":"default","connectionId":"old-connection"}}))).expect("monitor"))?;
+            let mut watch = monitor_fixture();
+            watch.interactive = true;
+            watch.cancel_requested = Some(true);
+            watch.reattached_connection_id = Some("reconnected-source".into());
+            watch.operation = Some(serde_json::from_str(r#"{"agent":"agent-1","epoch":7,"accountKey":"default","connectionId":"old-connection"}"#).expect("operation"));
+            studio_runtime_store::Table::new(tx).put(&watch)?;
             Ok::<_,WorkerError>(())
         }).await.expect("original command and transferred owner");
         store.transaction_with(|tx| {
