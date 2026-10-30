@@ -39,8 +39,25 @@ const BRANCH_TURNS_PER_PAGE: u32 = 10;
 struct BranchOperation {
     #[serde(default, skip_serializing_if = "Field::is_missing")]
     signature: Field<Value>,
-    #[serde(default, skip_serializing_if = "Field::is_missing")]
-    phase: Field<Value>,
+    phase: OperationPhase,
+    #[serde(
+        rename = "legacyPhase",
+        default,
+        skip_serializing_if = "Field::is_missing"
+    )]
+    legacy_phase: Field<Box<serde_json::value::RawValue>>,
+    #[serde(
+        rename = "legacyPhaseCollision",
+        default,
+        skip_serializing_if = "Field::is_missing"
+    )]
+    legacy_phase_collision: Field<Box<serde_json::value::RawValue>>,
+    #[serde(
+        rename = "legacyRecord",
+        default,
+        skip_serializing_if = "Field::is_missing"
+    )]
+    legacy_record: Field<Box<serde_json::value::RawValue>>,
     #[serde(default, skip_serializing_if = "Field::is_missing")]
     provider: Field<Value>,
     #[serde(default, skip_serializing_if = "Field::is_missing")]
@@ -49,22 +66,14 @@ struct BranchOperation {
     other: serde_json::Map<String, Value>,
 }
 
-fn decode_branch_operation(value: Value) -> Result<BranchOperation, serde_json::Error> {
-    studio_runtime_schema::json_object::JsonObject::<BranchOperation>::deserialize(value)
+fn decode_branch_operation(raw: &str) -> Result<BranchOperation, serde_json::Error> {
+    serde_json::from_str::<studio_runtime_schema::json_object::JsonObject<BranchOperation>>(raw)
         .map(|object| object.0)
 }
 
 impl BranchOperation {
-    fn phase(&self) -> Option<OperationPhase> {
-        let text = self.phase.value()?.as_str()?;
-        OperationPhase::deserialize(
-            serde::de::value::StrDeserializer::<serde::de::value::Error>::new(text),
-        )
-        .ok()
-    }
-
     fn set_phase(&mut self, phase: OperationPhase) {
-        self.phase = Field::Value(serde_json::to_value(phase).expect("phase serializes"));
+        self.phase = phase;
     }
 
     fn value(field: &Field<Value>) -> Option<&Value> {
@@ -206,19 +215,18 @@ async fn branch(
                     )
                     .optional()?
                 {
-                    let prior: Value = serde_json::from_str(&prior)?;
-                    let prior = if prior.is_object() { Some(decode_branch_operation(prior)?) } else { None };
-                    let Some(mut prior) = prior.filter(|op| op.signature.value().and_then(Value::as_str) == Some(signature.as_str())) else {
+                    let mut prior = decode_branch_operation(&prior)?;
+                    if prior.signature.value().and_then(Value::as_str) != Some(signature.as_str()) {
                         return Err(studio_runtime_store::StoreError::SchemaMismatch(
                             "branch request id has different content".into(),
                         ));
-                    };
-                    match prior.phase() {
-                        Some(OperationPhase::Completed) => {
+                    }
+                    match prior.phase {
+                        OperationPhase::Completed => {
                             return Ok(Some(prior));
                         }
-                        Some(OperationPhase::ProviderReady) => {}
-                        Some(OperationPhase::Failed) => {
+                        OperationPhase::ProviderReady => {}
+                        OperationPhase::Failed => {
                             prior.set_phase(OperationPhase::ProviderPending);
                             prior.provider = Field::Missing;
                             prior.result = Field::Missing;
@@ -228,7 +236,7 @@ async fn branch(
                                 params![operation_id, serde_json::to_string(&prior)?],
                             )?;
                         }
-                        Some(OperationPhase::ProviderPending | OperationPhase::RecoveryRequired) => {
+                        OperationPhase::ProviderPending | OperationPhase::RecoveryRequired => {
                             // Re-submit the same broker operation identity
                             // below. The retained broker returns its saved
                             // receipt or Unknown and never sends a duplicate.
@@ -271,7 +279,9 @@ async fn branch(
                             )?;
                             return Ok(Some(prior));
                         }
-                        _ => {
+                        OperationPhase::CapturePending
+                        | OperationPhase::CaptureRunning
+                        | OperationPhase::LocalMutation => {
                             return Err(studio_runtime_store::StoreError::SchemaMismatch(
                                 "Workspace recovery is required before retrying this branch".into(),
                             ));
@@ -305,24 +315,44 @@ async fn branch(
                     )
                     .optional()?
                 {
-                    decode_branch_operation(serde_json::from_str::<Value>(&existing)?)?
+                    decode_branch_operation(&existing)?
                 } else {
-                    let record = json!({
-                        "id":operation_id,"kind":"branch","agent":agent_id,
-                        "phase":"provider_pending","signature":signature,
-                        "rootRequestId":studio_runtime_schema::persistence::RequestIdentity::issue_root(),
-                        "source":source_stamp,"message_id":message_id,
-                        "turn_id":selected.record.extra("turnId"),
-                        "previousStatus":source.get("status"),
-                        "previousAutoWake":source.get("autoWake"),
-                        "previousWorkspaceOperation":source.get("workspaceOperation"),
-                        "created":unix_time()
-                    });
+                    let other = serde_json::Map::from_iter([
+                        ("id".into(), json!(operation_id)),
+                        ("kind".into(), json!("branch")),
+                        ("agent".into(), json!(agent_id)),
+                        (
+                            "rootRequestId".into(),
+                            json!(
+                                studio_runtime_schema::persistence::RequestIdentity::issue_root()
+                            ),
+                        ),
+                        ("source".into(), source_stamp),
+                        ("message_id".into(), json!(message_id)),
+                        ("turn_id".into(), json!(selected.record.extra("turnId"))),
+                        ("previousStatus".into(), json!(source.get("status"))),
+                        ("previousAutoWake".into(), json!(source.get("autoWake"))),
+                        (
+                            "previousWorkspaceOperation".into(),
+                            json!(source.get("workspaceOperation")),
+                        ),
+                        ("created".into(), json!(unix_time())),
+                    ]);
+                    let record = BranchOperation {
+                        signature: Field::Value(json!(signature)),
+                        phase: OperationPhase::ProviderPending,
+                        legacy_phase: Field::Missing,
+                        legacy_phase_collision: Field::Missing,
+                        legacy_record: Field::Missing,
+                        provider: Field::Missing,
+                        result: Field::Missing,
+                        other,
+                    };
                     tx.execute(
                         "INSERT INTO runtime_workspace_operations(id,record) VALUES(?1,?2)",
-                        params![operation_id, record.to_string()],
+                        params![operation_id, serde_json::to_string(&record)?],
                     )?;
-                    decode_branch_operation(record)?
+                    record
                 };
                 let mut actor = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
                     .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)?;
@@ -353,7 +383,7 @@ async fn branch(
         .filter(|_| {
             operation
                 .as_ref()
-                .is_some_and(|op| op.phase() == Some(OperationPhase::Completed))
+                .is_some_and(|op| op.phase == OperationPhase::Completed)
         })
     {
         return Ok(Json(super::generated_json::<
@@ -579,7 +609,7 @@ async fn branch(
                 [&persist_operation_id],
                 |row| row.get(0),
             )?;
-            let mut op = decode_branch_operation(serde_json::from_str::<Value>(&raw)?)?;
+            let mut op = decode_branch_operation(&raw)?;
             let current = AgentRepository::get(tx, &AgentId::from(persist_agent_id.as_str()))?
                 .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
             let current_source = CheckpointsRepository::workspace_source(&current.value());
@@ -738,12 +768,7 @@ async fn settle_failure(
                 [operation_id.as_str()],
                 |row| row.get(0),
             )?;
-            let raw_value: Value = serde_json::from_str(&raw)?;
-            let mut operation = decode_branch_operation(if raw_value.is_null() {
-                json!({})
-            } else {
-                raw_value
-            })?;
+            let mut operation = decode_branch_operation(&raw)?;
             operation.set_phase(if unknown {
                 OperationPhase::RecoveryRequired
             } else {
@@ -794,8 +819,8 @@ async fn release_provider_ready_reservation(
                 [operation_id.as_str()],
                 |row| row.get(0),
             )?;
-            let mut operation = decode_branch_operation(serde_json::from_str::<Value>(&raw)?)?;
-            if operation.phase() != Some(OperationPhase::ProviderReady)
+            let mut operation = decode_branch_operation(&raw)?;
+            if operation.phase != OperationPhase::ProviderReady
                 || BranchOperation::value(&operation.provider).is_none()
             {
                 return Err(studio_runtime_store::StoreError::SchemaMismatch(
@@ -924,18 +949,11 @@ async fn branch_needs_catalog(
             else {
                 return Ok(true);
             };
-            let operation: Value = serde_json::from_str(&raw).map_err(|_| ApiError::internal())?;
-            let operation = if operation.is_object() {
-                Some(decode_branch_operation(operation).map_err(|_| ApiError::internal())?)
-            } else {
-                None
-            };
-            let Some(operation) = operation.filter(|op| {
-                op.signature.value().and_then(Value::as_str) == Some(signature.as_str())
-            }) else {
+            let operation = decode_branch_operation(&raw).map_err(|_| ApiError::internal())?;
+            if operation.signature.value().and_then(Value::as_str) != Some(signature.as_str()) {
                 return Err(bad_request("branch request id has different content"));
-            };
-            Ok(operation.phase() != Some(OperationPhase::Completed))
+            }
+            Ok(operation.phase != OperationPhase::Completed)
         })
         .await
 }
@@ -1307,6 +1325,30 @@ inventory::submit! { crate::routes::manifest::RouteModuleRegistration { name:"br
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn branch_operation_requires_a_known_phase() {
+        assert!(decode_branch_operation(r#"{"phase":"local_mutation"}"#).is_ok());
+        assert!(decode_branch_operation("{}").is_err());
+        assert!(decode_branch_operation(r#"{"phase":{"completed":null}}"#).is_err());
+        let operation = decode_branch_operation(r#"{"phase":"local_mutation","legacyPhase":{"old":2},"legacyPhaseCollision":[{"older":3},{"new":1}]}"#).expect("migrated operation");
+        assert_eq!(
+            operation
+                .legacy_phase
+                .value()
+                .expect("phase evidence")
+                .get(),
+            r#"{"old":2}"#
+        );
+        assert_eq!(
+            operation
+                .legacy_phase_collision
+                .value()
+                .expect("collision evidence")
+                .get(),
+            r#"[{"older":3},{"new":1}]"#
+        );
+    }
     use std::sync::Mutex;
     use studio_runtime_services::account_session_runtime::SessionOutcome as ReceiptOutcome;
     use studio_runtime_services::account_session_runtime::{
@@ -1514,34 +1556,36 @@ mod tests {
         ] {
             let raw = raw.to_owned();
             store.transaction(move |tx| {
-                tx.execute("INSERT OR REPLACE INTO runtime_workspace_operations(id,record) VALUES('legacy',?1)", [raw])?;
+                tx.execute("INSERT OR REPLACE INTO runtime_workspace_operations(id,record) VALUES('branch:legacy',?1)", [raw])?;
+                studio_runtime_store::migrations::migrate_branch_phase(tx)?;
                 Ok(())
             }).await.unwrap();
             match expected {
                 Some(expected) => assert_eq!(
-                    branch_needs_catalog(&store, "legacy", signature)
+                    branch_needs_catalog(&store, "branch:legacy", signature)
                         .await
                         .unwrap(),
                     expected
                 ),
                 None => assert!(
-                    branch_needs_catalog(&store, "legacy", signature)
+                    branch_needs_catalog(&store, "branch:legacy", signature)
                         .await
                         .is_err()
                 ),
             }
         }
         store.transaction(|tx| {
-            tx.execute("INSERT OR REPLACE INTO runtime_workspace_operations(id,record) VALUES('legacy',?1)", [r#"{"agent":null,"provider":[1,null],"result":false,"vendor":{"opaque":true}}"#])?;
+            tx.execute("INSERT OR REPLACE INTO runtime_workspace_operations(id,record) VALUES('branch:legacy',?1)", [r#"{"agent":null,"provider":[1,null],"result":false,"vendor":{"opaque":true}}"#])?;
+            studio_runtime_store::migrations::migrate_branch_phase(tx)?;
             Ok(())
         }).await.unwrap();
-        settle_failure(&store, "legacy", true, "lost")
+        settle_failure(&store, "branch:legacy", true, "lost")
             .await
             .unwrap();
         let raw: String = store
             .read_async("fixture", |db| {
                 Ok::<_, studio_runtime_store::StoreError>(db.query_row(
-                    "SELECT record FROM runtime_workspace_operations WHERE id='legacy'",
+                    "SELECT record FROM runtime_workspace_operations WHERE id='branch:legacy'",
                     [],
                     |row| row.get(0),
                 )?)
