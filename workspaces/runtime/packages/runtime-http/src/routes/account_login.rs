@@ -218,7 +218,31 @@ async fn register(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<RegisterAccountBody>,
 ) -> Result<Json<crate::generated::AccountsResponse>, ApiError> {
-    run_mutation(state, move |driver| driver.register(&body.home)).await
+    let Some(driver) = state.account_driver.clone() else {
+        return Err(runtime_availability("account-driver/runtime"));
+    };
+    let (snapshot, key) = run_account_operation(&state, driver, move |driver| {
+        driver.register_with_key(&body.home)
+    })
+    .await?;
+    state
+        .model_catalog
+        .retain_public_accounts(&snapshot.accounts);
+    state
+        .model_catalog
+        .set_account_session(state.account_session.clone());
+    if let Some((home, provider)) = snapshot
+        .accounts
+        .iter()
+        .find(|row| row.id.as_str() == Some(&key))
+        .and_then(|account| Some((account.home.as_str()?.to_owned(), account.provider_kind()?)))
+    {
+        let catalog = state.model_catalog.clone();
+        tokio::spawn(async move {
+            let _ = catalog.read(&key, &home, provider, false).await;
+        });
+    }
+    accounts_response(snapshot)
 }
 
 async fn run_mutation(

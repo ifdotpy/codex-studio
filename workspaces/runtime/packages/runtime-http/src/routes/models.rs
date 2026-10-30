@@ -548,6 +548,124 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn registration_publishes_model_entities_to_subscribers() {
+        use axum::{body::Body, extract::ConnectInfo, http::Request};
+        use futures_util::StreamExt;
+        use studio_runtime_services::account_session_runtime::{
+            AccountSessionFuture, AccountSessionPort, ConnectionScope, ProviderRequest,
+            SessionReceipt,
+        };
+        use tower::ServiceExt;
+        struct GatedCatalog {
+            inner: CatalogSession,
+            gate: tokio::sync::Notify,
+        }
+        impl AccountSessionPort for GatedCatalog {
+            fn current_scope(&self, account: &str) -> Option<ConnectionScope> {
+                self.inner.current_scope(account)
+            }
+            fn provider_request<'a>(
+                &'a self,
+                request: ProviderRequest,
+            ) -> AccountSessionFuture<'a, SessionReceipt> {
+                Box::pin(async move {
+                    self.gate.notified().await;
+                    self.inner.provider_request(request).await
+                })
+            }
+        }
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = std::sync::Arc::new(
+            studio_runtime_store::RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("store"),
+        );
+        let registry = root.path().join("registry.json");
+        let registry_data = json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{},"logins":{}}).to_string();
+        tokio::fs::write(&registry, &registry_data)
+            .await
+            .expect("registry");
+        let driver = std::sync::Arc::new(
+            studio_runtime_services::account_driver::AccountDriver::open(registry).expect("driver"),
+        );
+        let policy = studio_runtime_services::account_policy::AccountPolicyState::from_startup(
+            Some(registry_data.as_bytes()),
+            [],
+        )
+        .expect("policy");
+        let home = root.path().join("profile");
+        tokio::fs::create_dir(&home).await.expect("profile");
+        tokio::fs::write(home.join("auth.json"), r#"{"OPENAI_API_KEY":"fixture"}"#)
+            .await
+            .expect("auth");
+        let port = std::sync::Arc::new(GatedCatalog {
+            inner: CatalogSession {
+                pages: std::sync::Mutex::new(vec![json!({"data":[{"model":"fixture-model"}]})]),
+                requests: std::sync::Arc::new(AtomicUsize::new(0)),
+            },
+            gate: tokio::sync::Notify::new(),
+        });
+        let mut state = crate::router::HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store),
+            Some(std::sync::Arc::new(policy)),
+        )
+        .with_account_driver(driver);
+        state.account_session = Some(port.clone());
+        state.model_catalog.set_account_session(Some(port.clone()));
+        let app = crate::router::router(state).expect("router");
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/accounts/register")
+            .header("host", "127.0.0.1:4321")
+            .header("content-type", "application/json")
+            .header("x-canvas-token", "token")
+            .header(
+                crate::schema::API_SCHEMA_HASH_HEADER,
+                crate::schema::api_schema_hash(),
+            )
+            .extension(ConnectInfo(std::net::SocketAddr::from((
+                [127, 0, 0, 1],
+                12345,
+            ))))
+            .body(Body::from(json!({"home":home}).to_string()))
+            .expect("registration");
+        assert_eq!(
+            app.clone()
+                .oneshot(request)
+                .await
+                .expect("registration response")
+                .status(),
+            StatusCode::OK
+        );
+        let request = Request::builder().uri(format!("/api/sync/stream?protocol={}&resources=%5B%7B%22kind%22%3A%22state%22%7D%5D&tokenRates=false", studio_runtime_schema::sync_protocol::SYNC_PROTOCOL_VERSION)).header("host", "127.0.0.1:4321").header("x-canvas-token", "token").extension(ConnectInfo(std::net::SocketAddr::from(([127,0,0,1],12345)))).body(Body::empty()).expect("stream request");
+        let response = app.oneshot(request).await.expect("stream response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut stream = response.into_body().into_data_stream();
+        stream.next().await.expect("session").expect("bytes");
+        stream.next().await.expect("initial").expect("bytes");
+        port.gate.notify_one();
+        let found = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while let Some(Ok(frame)) = stream.next().await {
+                if String::from_utf8_lossy(&frame).contains("fixture-model") {
+                    return true;
+                }
+            }
+            false
+        })
+        .await
+        .unwrap_or(false);
+        assert!(
+            found,
+            "registered account model must arrive over SSE without a catalog GET"
+        );
+    }
+
     fn snapshot(account: Value) -> AccountsSnapshot {
         AccountsSnapshot {
             accounts: vec![serde_json::from_value(account).expect("public account fixture")],
