@@ -92,9 +92,12 @@ pub async fn answer_async_question_in_store(
     let id_for_preparation = id.clone();
     let read = store
         .read_async("runtime-services/questions_write", move |transaction| {
-            let row = request(transaction, &id_for_preparation)?;
-            if !matches!(row.request, Request::AgentQuestion { .. }) {
+            // Any other id (a provider card, a monitor approval) belongs to another answer owner.
+            let Some(row) = approvals::get(transaction, &ApprovalId(id_for_preparation))? else {
                 return Ok::<_, QuestionsWriteError>(None);
+            };
+            if !matches!(row.request, Request::AgentQuestion { .. }) {
+                return Ok(None);
             }
             let admission = crate::message_admission::MessageIngressAdmission::read(
                 transaction,
