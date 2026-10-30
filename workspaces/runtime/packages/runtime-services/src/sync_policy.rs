@@ -15,7 +15,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use studio_runtime_schema::SYNC_ENTITY_SCOPE;
 pub use studio_runtime_schema::shared_values::{SYNC_BATCH_LIMIT, SYNC_ENTITY_PAGE_LIMIT};
 use studio_runtime_store::{
-    RuntimeStore, StoreError, StoreResult, SyncDocumentsRepository, agent_volatile, sha256_hex,
+    RuntimeStore, StoreError, StoreResult, SyncDocumentsRepository, Table, TranscriptItemId,
+    TranscriptItemRecord, agent_volatile, sha256_hex,
 };
 use thiserror::Error;
 
@@ -808,7 +809,8 @@ pub(crate) fn publish_summary_changes(
     }
     let mut events = pending.receipt_events.clone();
     for id in &pending.receipt_items {
-        let Some(item) = studio_runtime_store::system_reads::get(transaction, "runtime_items", id)?
+        let Some(item) = Table::<TranscriptItemRecord>::new(transaction)
+            .get(&TranscriptItemId::from(id.as_str()))?
         else {
             continue;
         };
@@ -819,14 +821,9 @@ pub(crate) fn publish_summary_changes(
         if let Some(event_id) = id.strip_prefix(&format!("{agent}:")) {
             events.insert(event_id.to_owned());
         }
-        for input in item
-            .get("inputs")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            if input["kind"] == "user"
-                && let Some(id) = input["id"].as_str()
+        for input in item.inputs().value().into_iter().flatten() {
+            if input.kind() == Some("user")
+                && let Some(id) = input.id()
             {
                 events.insert(id.to_owned());
             }

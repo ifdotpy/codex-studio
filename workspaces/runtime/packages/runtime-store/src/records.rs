@@ -1609,6 +1609,7 @@ impl JsonRecord for TranscriptItemRecord {
     const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
     const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::PhysicalAgent;
     const TYPED_SHAPE: bool = true;
+    const DIRECT_TYPED_DECODE: bool = true;
     fn record_key(&self) -> Option<&Self::Id> {
         Some(self.id())
     }
@@ -3146,6 +3147,16 @@ mod tests {
             )
             .expect("transcript table creates");
         let table = Table::<TranscriptItemRecord>::new(&connection);
+        connection
+            .execute(
+                "INSERT INTO runtime_items VALUES('duplicate','a',0,?1)",
+                [r#"{"id":"old","id":"duplicate"}"#],
+            )
+            .expect("duplicate-key fixture");
+        assert!(table.get(&TranscriptItemId::from("duplicate")).is_err());
+        connection
+            .execute("DELETE FROM runtime_items WHERE id='duplicate'", [])
+            .expect("remove duplicate fixture");
         let records = table
             .list_matching(
                 Some(RecordPredicate::PhysicalAgentEquals("a")),
