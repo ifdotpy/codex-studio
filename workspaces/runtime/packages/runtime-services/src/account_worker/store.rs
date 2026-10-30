@@ -41,10 +41,10 @@ const PUBLICATION_INVALIDATION: PublicationClass = PublicationClass::Invalidatio
 /// Signature of every other pending publication receipt.
 const PUBLICATION_PENDING: PublicationClass = PublicationClass::Pending;
 
-pub(super) fn save_publication(
+pub(super) fn save_publication<T: serde::Serialize>(
     tx: &studio_runtime_store::Transaction<'_>,
     operation: &str,
-    payload: Publication,
+    payload: Publication<T>,
 ) -> Result<(), WorkerError> {
     type Effect = crate::notification_dispatch::NotificationPostCommit;
     let old = Outbox::get::<Publication<Effect>>(tx, operation).map_err(|error| match error {
@@ -3531,7 +3531,7 @@ fn persist_publication_batch_in(
             save_publication(
                 tx,
                 &operation,
-                Publication {
+                Publication::<&crate::notification_dispatch::NotificationPostCommit> {
                     account: account.to_owned(),
                     sequence: batch.sequence,
                     index: batch.effects.len(),
@@ -3609,7 +3609,7 @@ fn save_publication_effect(
             sequence: batch.sequence,
             index,
             class: signature,
-            effect: Some(serde_json::value::to_raw_value(effect).map_err(StoreError::from)?),
+            effect: Some(effect),
             ..Default::default()
         },
     )?;
