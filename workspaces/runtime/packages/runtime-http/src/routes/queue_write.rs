@@ -348,7 +348,9 @@ mod tests {
     #[tokio::test]
     async fn queue_order_is_server_state_and_survives_a_restart() {
         let directory = tempfile::tempdir().expect("isolated state");
-        let before = queued_ids(&seeded_store(directory.path()).await);
+        let first = seeded_store(directory.path()).await;
+        let before = queued_ids(&first);
+        drop(first);
         assert_eq!(before, ["early", "note", "late"]);
         let reopened = RuntimeStore::open(Some(directory.path()))
             .await
