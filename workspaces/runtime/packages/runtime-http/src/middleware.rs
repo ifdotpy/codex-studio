@@ -212,7 +212,12 @@ pub(crate) async fn boundary(
             return ApiError::json_transport(StatusCode::UNSUPPORTED_MEDIA_TYPE, "JSON required")
                 .into_response();
         }
-        if has_json_schema && !bytes.is_empty() {
+        if matched_operation
+            .as_ref()
+            .is_some_and(|operation| operation.typed_body)
+        {
+            raw_body = Some(bytes.clone());
+        } else if has_json_schema && !bytes.is_empty() {
             match crate::json_body::parse_bounded(&bytes, limit) {
                 Err(_) => {
                     return ApiError::validation(vec![serde_json::Value::String(
@@ -1018,7 +1023,6 @@ mod tests {
         assert_eq!(request_limit("/api/agents"), 256 * 1024);
         assert_eq!(request_limit("/api/assets"), 28 * 1024 * 1024);
         assert_eq!(request_limit("/api/projects"), 6 * 1024 * 1024);
-        assert_eq!(request_limit("/api/voice/audio"), 6 * 1024 * 1024);
         assert_eq!(request_limit("/api/federation/v1/pull"), 256 * 1024);
         assert_eq!(request_limit("/api/unknown"), 256 * 1024);
     }

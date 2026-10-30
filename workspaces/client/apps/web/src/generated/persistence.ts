@@ -454,7 +454,7 @@ export const IdleEpisodeOutcomeValues = [
   "started",
   "dispatched",
   "failed",
-  "not_one_hour",
+  "ttl_changed",
   "lapsed",
   "small",
   "newer_request",

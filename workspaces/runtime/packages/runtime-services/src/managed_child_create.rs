@@ -902,9 +902,9 @@ pub(crate) async fn spawn_agents(
             if let Some(task) = &draft.task_id {
                 let work = studio_runtime_store::WorkItemsRepository::work_record(tx, task)?
                     .ok_or(crate::managed_host_tools::Error::Invalid("Unknown task_id in this team; no workers were created"))?;
-                let title = work.get("title").and_then(Value::as_str).unwrap_or("Assigned task");
+                let title = work.title().unwrap_or("Assigned task");
                 text.push_str(&format!("\n\n[Studio task {task}] {title}\nYou own this task. Submit the result with the work item tools."));
-                text.push_str(&studio_runtime_schema::task_results::assignment_text(work.value()));
+                text.push_str(&studio_runtime_schema::task_results::assignment_text(&work.value()));
             }
             let record = AgentRecord::from_value(draft.record.clone())
                 .map_err(|_| crate::managed_host_tools::Error::Invalid("Invalid child agent record"))?;
@@ -1378,8 +1378,7 @@ pub(crate) async fn request_review(
     environment: &dyn ManagedCreationEnvironment,
 ) -> Result<crate::managed_host_tools::DispatchedOperation, Error> {
     let actor_record = actor.record().clone();
-    if actor_record.execution_mode == Some(studio_runtime_store::AgentExecutionMode::Vm)
-    {
+    if actor_record.execution_mode == Some(studio_runtime_store::AgentExecutionMode::Vm) {
         if actor_record.extra.get("isLead").and_then(Value::as_bool) != Some(true) {
             return Err(crate::managed_host_tools::Error::Invalid(
                 "Only the lead can create a layr reviewer",

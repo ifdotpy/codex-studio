@@ -84,7 +84,7 @@ const ORGANIZATION_ID_SUFFIX_CHARS: usize = 8;
 pub(crate) fn organization(
     identity: Option<&str>,
     name: Option<&str>,
-) -> Option<serde_json::Value> {
+) -> Option<studio_runtime_schema::account_registry::Organization> {
     let (_, org, _) = tuple(identity?)?;
     let org = org?;
     let suffix: String = org
@@ -95,7 +95,10 @@ pub(crate) fn organization(
         .into_iter()
         .rev()
         .collect();
-    Some(serde_json::json!({"name": name, "idSuffix": suffix}))
+    Some(studio_runtime_schema::account_registry::Organization {
+        name: name.map(str::to_owned),
+        id_suffix: suffix,
+    })
 }
 
 pub(crate) fn organization_mismatch(

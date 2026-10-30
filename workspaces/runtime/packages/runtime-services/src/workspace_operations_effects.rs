@@ -136,19 +136,14 @@ pub async fn recover_operations(
             let mut count = 0;
             for operation in operations {
                 // Provisioning is owned by workspace_ready and has its own Git evidence protocol.
-                if operation.get("kind").and_then(Value::as_str) == Some("provision") {
+                if operation.kind == crate::workspace_operations::OperationKind::Provision {
                     continue;
                 }
-                let id = operation
-                    .get("agent")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| {
-                        StoreError::SchemaMismatch("Invalid workspace operation agent".into())
-                    })?;
+                let id = operation.agent.as_str();
                 let actor =
                     CheckpointsRepository::agent(tx, id)?.ok_or(CheckpointsError::UnknownAgent)?;
                 let writes =
-                    OperationSnapshot::from_records(&operation, &actor.record)?.recover(now);
+                    OperationSnapshot::from_checked(operation, &actor.record)?.recover(now);
                 Repository::apply_recovery(tx, &writes.operation, &writes.agent)?;
                 count += 1;
             }
@@ -165,12 +160,9 @@ pub fn inspect_retry(
 ) -> Result<crate::workspace_operations::RetryDecision, WorkspaceEffectsError> {
     let operation = Repository::operation(db, operation_id)?
         .ok_or(WorkspaceOperationError::RecoveryRequired)?;
-    let agent = operation
-        .get("agent")
-        .and_then(Value::as_str)
-        .ok_or(WorkspaceOperationError::SourceChanged)?;
+    let agent = operation.agent.as_str();
     let actor = CheckpointsRepository::agent(db, agent)?.ok_or(CheckpointsError::UnknownAgent)?;
-    Ok(OperationSnapshot::from_records(&operation, &actor.record)?.retry(signature)?)
+    Ok(OperationSnapshot::from_checked(operation, &actor.record)?.retry(signature)?)
 }
 
 /// The account worker delivers a known response using the ticket stored before dispatch.
@@ -188,6 +180,7 @@ pub async fn record_provider_response(
                 .ok_or(WorkspaceOperationError::ForeignReceipt)?;
             let expected: ProviderTicket = serde_json::from_value(
                 operation
+                    .extensions()
                     .get("providerTicket")
                     .cloned()
                     .ok_or(WorkspaceOperationError::ForeignReceipt)?,
@@ -195,7 +188,7 @@ pub async fn record_provider_response(
             .map_err(|_| WorkspaceOperationError::ForeignReceipt)?;
             let actor = CheckpointsRepository::agent(tx, &expected.agent)?
                 .ok_or(CheckpointsError::UnknownAgent)?;
-            if operation.get("agent").and_then(Value::as_str) != Some(expected.agent.as_str())
+            if operation.agent != expected.agent
                 || actor.record.get("epoch").and_then(Value::as_u64) != Some(expected.epoch)
                 || actor
                     .record
@@ -209,22 +202,30 @@ pub async fn record_provider_response(
                 return Err(WorkspaceOperationError::ForeignReceipt.into());
             }
             let signature = operation
-                .get("signature")
-                .and_then(Value::as_str)
+                .signature
+                .value()
+                .map(String::as_str)
                 .ok_or(WorkspaceOperationError::RequestChanged)?;
-            OperationSnapshot::from_records(&operation, &actor.record)?.retry(signature)?;
+            OperationSnapshot::from_checked(operation.clone(), &actor.record)?.retry(signature)?;
             let result = accept_provider_result(&expected, &receipt, &response)?;
-            if operation.get("phase").and_then(Value::as_str) == Some("provider_ready")
-                && operation.get("provider") == Some(&result)
+            if operation.phase == crate::workspace_operations::OperationPhase::ProviderReady
+                && operation.provider.value() == result.as_object()
             {
                 return Ok(result);
             }
-            if operation.get("phase").and_then(Value::as_str) != Some("provider_pending") {
+            if operation.phase != crate::workspace_operations::OperationPhase::ProviderPending {
                 return Err(WorkspaceOperationError::RecoveryRequired.into());
             }
-            operation["provider"] = result.clone();
-            operation["phase"] = Value::String("provider_ready".into());
-            operation["updated"] = serde_json::json!(checkpoints::now_seconds());
+            operation.provider = studio_runtime_schema::queue_command::Field::Value(
+                result
+                    .as_object()
+                    .expect("validated response is object")
+                    .clone(),
+            );
+            operation.phase = crate::workspace_operations::OperationPhase::ProviderReady;
+            operation
+                .set_extension("updated", serde_json::json!(checkpoints::now_seconds()))
+                .expect("known extension");
             Repository::put_operation(tx, &operation)?;
             Ok(result)
         })

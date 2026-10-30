@@ -5,10 +5,13 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Mode {
+    /// No stored choice: `CompactOnReturn` for orchestrator chats (leads), `Off` for workers.
     #[default]
+    Default,
     Off,
     Log,
     Compact,
+    CompactOnReturn,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -20,12 +23,24 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            mode: Mode::Off,
+            mode: Mode::Default,
             min_tokens: IDLE_COMPACTION_DEFAULT_MIN_TOKENS,
         }
     }
 }
 impl Settings {
+    /// The one owner of the per-chat default: replaces `Mode::Default` with the
+    /// concrete mode for a lead or a worker. An explicit mode is kept.
+    pub fn resolved(mut self, is_lead: bool) -> Self {
+        if self.mode == Mode::Default {
+            self.mode = if is_lead {
+                Mode::CompactOnReturn
+            } else {
+                Mode::Off
+            };
+        }
+        self
+    }
     pub fn valid(&self) -> bool {
         (IDLE_COMPACTION_MIN_TOKENS..=crate::shared_values::MAX_SAFE_INTEGER as u64)
             .contains(&self.min_tokens)
@@ -54,17 +69,30 @@ mod tests {
     use super::*;
     #[test]
     fn defaults_minimum_and_environment_override_match_the_claude_policy() {
-        assert_eq!(Settings::default().mode, Mode::Off);
+        assert_eq!(Settings::default().mode, Mode::Default);
+        assert_eq!(
+            Settings::default().resolved(true).mode,
+            Mode::CompactOnReturn
+        );
+        assert_eq!(Settings::default().resolved(false).mode, Mode::Off);
+        for mode in [Mode::Off, Mode::Log, Mode::Compact, Mode::CompactOnReturn] {
+            let explicit = Settings {
+                mode,
+                ..Settings::default()
+            };
+            assert_eq!(explicit.clone().resolved(true).mode, mode);
+            assert_eq!(explicit.resolved(false).mode, mode);
+        }
         assert_eq!(
             Settings::default().min_tokens,
             IDLE_COMPACTION_DEFAULT_MIN_TOKENS
         );
         for (value, expected) in [
-            ("99999", 100000),
+            ("59999", 60000),
             ("250000.5", 250001),
-            ("NaN", 200000),
-            ("inf", 200000),
-            ("invalid", 200000),
+            ("NaN", 150000),
+            ("inf", 150000),
+            ("invalid", 150000),
         ] {
             assert_eq!(
                 Settings::default()
@@ -80,7 +108,10 @@ mod tests {
         assert!(!settings.valid());
         settings.min_tokens = IDLE_COMPACTION_MIN_TOKENS;
         assert!(settings.valid());
-        assert!(serde_json::from_str::<Mode>("\"compact_on_return\"").is_err());
+        assert_eq!(
+            serde_json::from_str::<Mode>("\"compact_on_return\"").unwrap(),
+            Mode::CompactOnReturn
+        );
     }
 }
 

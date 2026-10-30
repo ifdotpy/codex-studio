@@ -7,6 +7,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
+use studio_runtime_schema::queue_command::Field;
 use studio_runtime_store::path_identity::CanonicalPath;
 use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, RuntimeStore, StoreError};
 
@@ -27,6 +28,74 @@ pub enum NativeLayrError {
 type Result<T> = std::result::Result<T, NativeLayrError>;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(300);
 const OUTPUT_BYTES: usize = 2 * 1024 * 1024;
+
+// Receipt intent and result are opaque evidence; status controls replay only.
+#[derive(Clone, Copy, Default, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ReceiptStatus {
+    Pending,
+    Completed,
+    Failed,
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+fn receipt_status<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<ReceiptStatus, D::Error> {
+    use serde::Deserialize;
+    let value = Value::deserialize(deserializer)?;
+    Ok(if value.is_string() {
+        ReceiptStatus::deserialize(value).unwrap_or_default()
+    } else {
+        ReceiptStatus::Unknown
+    })
+}
+
+// Field order matches the previously sorted JSON object encoding.
+#[derive(Default, serde::Deserialize, serde::Serialize)]
+struct OperationReceipt {
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    error: Field<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    id: Option<Value>,
+    #[serde(default)]
+    intent: Value,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    result: Field<Value>,
+    #[serde(default, deserialize_with = "receipt_status")]
+    status: ReceiptStatus,
+}
+impl OperationReceipt {
+    fn pending(id: &str, intent: &Value) -> Self {
+        Self {
+            id: Some(json!(id)),
+            intent: intent.clone(),
+            status: ReceiptStatus::Pending,
+            ..Self::default()
+        }
+    }
+    fn completed(id: &str, intent: &Value, result: &Value) -> Self {
+        let mut receipt = Self::pending(id, intent);
+        receipt.status = ReceiptStatus::Completed;
+        receipt.result = if result.is_null() {
+            Field::Null
+        } else {
+            Field::Value(result.clone())
+        };
+        receipt
+    }
+    fn failed(id: &str, intent: &Value, error: &str) -> Self {
+        let mut receipt = Self::pending(id, intent);
+        receipt.status = ReceiptStatus::Failed;
+        receipt.error = Field::Value(json!(error));
+        receipt
+    }
+    fn bytes(&self) -> Result<Vec<u8>> {
+        serde_json::to_vec(self).map_err(|e| NativeLayrError::Refused(e.to_string()))
+    }
+}
 
 fn text<'a>(record: &'a Value, key: &str) -> Result<&'a str> {
     record[key]
@@ -166,34 +235,48 @@ pub(super) fn operation_with_preflight_in_store(
     ));
     let mut retry_import = None;
     if path.exists() {
-        let receipt: Value = serde_json::from_slice(&fs::read(&path)?)
+        // Parse the complete JSON value first: duplicates retain the last key,
+        // and ignored data still observes JSON number and nesting limits.
+        let value: Value = serde_json::from_slice(&fs::read(&path)?)
             .map_err(|error| NativeLayrError::Refused(error.to_string()))?;
-        if receipt["intent"] != *intent {
+        let receipt: OperationReceipt = if value.is_object() {
+            <OperationReceipt as serde::Deserialize>::deserialize(value)
+                .map_err(|error| NativeLayrError::Refused(error.to_string()))?
+        } else {
+            OperationReceipt::default()
+        };
+        if receipt.intent != *intent {
             return Err(NativeLayrError::Refused(
                 "Request ID has different content".into(),
             ));
         }
-        match receipt["status"].as_str() {
-            Some("completed") => return Ok(receipt["result"].clone()),
+        match receipt.status {
+            ReceiptStatus::Completed => {
+                return Ok(receipt.result.value().cloned().unwrap_or(Value::Null));
+            }
             // Saves can retry directly. Failed imports discard their private partial project
             // before a fresh import. Pending and unknown effects never run again.
-            Some("failed") if intent["kind"] == "save" => {}
-            Some("failed")
+            ReceiptStatus::Failed if intent["kind"] == "save" => {}
+            ReceiptStatus::Failed
                 if intent["project"]
                     .as_str()
                     .is_some_and(|project| id == format!("import:{project}")) =>
             {
                 retry_import = intent["project"].as_str();
             }
-            Some("failed") => {
+            ReceiptStatus::Failed => {
                 return Err(NativeLayrError::Refused(
-                    receipt["error"]
-                        .as_str()
+                    receipt
+                        .error
+                        .value()
+                        .and_then(Value::as_str)
                         .unwrap_or("operation failed")
                         .into(),
                 ));
             }
-            _ => return Err(NativeLayrError::Unknown(path.display().to_string())),
+            ReceiptStatus::Pending | ReceiptStatus::Unknown => {
+                return Err(NativeLayrError::Unknown(path.display().to_string()));
+            }
         }
     }
     preflight()?;
@@ -204,12 +287,12 @@ pub(super) fn operation_with_preflight_in_store(
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let pending = json!({"id":id,"intent":intent,"status":"pending"});
+    let pending = OperationReceipt::pending(id, intent).bytes()?;
     if path.exists() {
-        crate::atomic_file::replace(&path, pending.to_string().as_bytes(), Some(0o600), true)?;
+        crate::atomic_file::replace(&path, &pending, Some(0o600), true)?;
     } else {
         let mut file = options.open(&path)?;
-        file.write_all(pending.to_string().as_bytes())?;
+        file.write_all(&pending)?;
         file.sync_all()?;
         File::open(&folder)?.sync_all()?;
     }
@@ -220,11 +303,11 @@ pub(super) fn operation_with_preflight_in_store(
         effect()
     })();
     let receipt = match &outcome {
-        Ok(result) => json!({"id":id,"intent":intent,"status":"completed","result":result}),
+        Ok(result) => OperationReceipt::completed(id, intent, result),
         Err(NativeLayrError::Unknown(_)) => return outcome,
-        Err(error) => json!({"id":id,"intent":intent,"status":"failed","error":error.to_string()}),
+        Err(error) => OperationReceipt::failed(id, intent, &error.to_string()),
     };
-    crate::atomic_file::replace(&path, receipt.to_string().as_bytes(), Some(0o600), true)?;
+    crate::atomic_file::replace(&path, &receipt.bytes()?, Some(0o600), true)?;
     outcome
 }
 
@@ -712,7 +795,13 @@ pub fn evidence(state_dir: &Path, record: &Value, revision: &str) -> Result<Valu
             "Submit the full Layr state ID".into(),
         ));
     }
-    Ok(json!({"stateId":resolved,"projectId":record["layrProjectId"],"line":record["layrLine"]}))
+    Ok(json!(
+        studio_runtime_schema::layr_evidence::EvidenceResponse {
+            state_id: json!(resolved),
+            project_id: record["layrProjectId"].clone(),
+            line: record["layrLine"].clone(),
+        }
+    ))
 }
 
 pub fn merge(
@@ -918,6 +1007,192 @@ mod review_tests {
             fs::read(partial.join("keep")).expect("held partial"),
             b"unknown import"
         );
+    }
+
+    #[test]
+    fn native_layr_receipt_encoding_preserves_opaque_json_values() {
+        for raw in [
+            "null",
+            r#"{"$serde_json::private::Number":"1"}"#,
+            r#"{"nested":[1,null,{"x":true}]}"#,
+        ] {
+            let value: Value = serde_json::from_str(raw).unwrap();
+            assert_eq!(
+                OperationReceipt::pending("id", &value).bytes().unwrap(),
+                json!({"id":"id","intent":value,"status":"pending"})
+                    .to_string()
+                    .as_bytes()
+            );
+            assert_eq!(
+                OperationReceipt::completed("id", &value, &value)
+                    .bytes()
+                    .unwrap(),
+                json!({"id":"id","intent":value,"status":"completed","result":value})
+                    .to_string()
+                    .as_bytes()
+            );
+            assert_eq!(
+                OperationReceipt::failed("id", &value, "problem")
+                    .bytes()
+                    .unwrap(),
+                json!({"id":"id","intent":value,"status":"failed","error":"problem"})
+                    .to_string()
+                    .as_bytes()
+            );
+        }
+    }
+
+    #[test]
+    fn native_layr_receipt_replay_preserves_partial_and_uncertain_evidence() {
+        use std::cell::Cell;
+        let state = tempfile::tempdir().unwrap();
+        let root = store_path(state.path());
+        let folder = settings::metadata(state.path(), &root).join("receipts");
+        fs::create_dir_all(&folder).unwrap();
+        let intent = json!({"kind":"inspect","data":[1,null]});
+        let calls = Cell::new(0);
+        let write = |id: &str, bytes: &[u8]| {
+            fs::write(
+                folder.join(format!(
+                    "{}.json",
+                    studio_runtime_store::sha256_hex(id.as_bytes())
+                )),
+                bytes,
+            )
+            .unwrap();
+        };
+        let replay = |id: &str, expected: &Value| {
+            operation_with_preflight_in_store(
+                state.path(),
+                &root,
+                id,
+                expected,
+                || {
+                    calls.set(calls.get() + 1);
+                    Ok(())
+                },
+                || {
+                    calls.set(calls.get() + 1);
+                    Ok(json!("effect"))
+                },
+            )
+        };
+        write(
+            "done",
+            br#"{"intent":{"kind":"inspect","data":[1,null]},"status":"completed"}"#,
+        );
+        assert_eq!(replay("done", &intent).unwrap(), Value::Null);
+        write("duplicate", br#"{"intent":{"kind":"wrong"},"intent":{"kind":"inspect","data":[1,null]},"status":"pending","status":"completed","result":{"opaque":[1,null]}}"#);
+        assert_eq!(
+            replay("duplicate", &intent).unwrap(),
+            json!({"opaque":[1,null]})
+        );
+        let special: Value = serde_json::from_str(
+            r#"{"kind":"inspect","data":{"$serde_json::private::Number":"1"}}"#,
+        )
+        .unwrap();
+        write("number_key", br#"{"intent":{"kind":"inspect","data":{"$serde_json::private::Number":"1"}},"status":"completed","result":{"$serde_json::private::Number":"1"}}"#);
+        let expected: Value =
+            serde_json::from_str(r#"{"$serde_json::private::Number":"1"}"#).unwrap();
+        assert_eq!(replay("number_key", &special).unwrap(), expected);
+        for (id, raw) in [
+            (
+                "pending",
+                br#"{"intent":{"kind":"inspect","data":[1,null]},"status":"pending"}"#.as_slice(),
+            ),
+            (
+                "unknown",
+                br#"{"intent":{"kind":"inspect","data":[1,null]},"status":"future"}"#,
+            ),
+            (
+                "wrong_type",
+                br#"{"intent":{"kind":"inspect","data":[1,null]},"status":true}"#,
+            ),
+            (
+                "missing",
+                br#"{"intent":{"kind":"inspect","data":[1,null]}}"#,
+            ),
+        ] {
+            write(id, raw);
+            assert!(
+                matches!(replay(id, &intent), Err(NativeLayrError::Unknown(_))),
+                "{id}"
+            );
+        }
+        write(
+            "mismatch",
+            br#"{"intent":{"kind":"wrong"},"status":"completed"}"#,
+        );
+        assert!(
+            matches!(replay("mismatch", &intent), Err(NativeLayrError::Refused(ref message)) if message == "Request ID has different content")
+        );
+        write("null", b"null");
+        assert!(matches!(
+            replay("null", &Value::Null),
+            Err(NativeLayrError::Unknown(_))
+        ));
+        write(
+            "failed",
+            br#"{"intent":{"kind":"inspect","data":[1,null]},"status":"failed","error":7}"#,
+        );
+        assert!(
+            matches!(replay("failed", &intent), Err(NativeLayrError::Refused(ref message)) if message == "operation failed")
+        );
+        for (id, raw) in [
+            ("syntax", b"{".to_vec()),
+            ("number", br#"{"ignored":1e999}"#.to_vec()),
+            (
+                "depth",
+                format!("{{\"ignored\":{}0{}}}", "[".repeat(140), "]".repeat(140)).into_bytes(),
+            ),
+        ] {
+            write(id, &raw);
+            assert!(
+                matches!(replay(id, &intent), Err(NativeLayrError::Refused(ref message)) if message != "Request ID has different content"),
+                "{id}"
+            );
+        }
+        let save = json!({"kind":"save"});
+        let object_statuses = [
+            (
+                "object_completed",
+                br#"{"intent":{"kind":"save"},"status":{"completed":null}}"#.as_slice(),
+            ),
+            (
+                "object_failed",
+                br#"{"intent":{"kind":"save"},"status":{"failed":null}}"#,
+            ),
+        ]
+        .map(|(id, raw)| {
+            write(id, raw);
+            matches!(replay(id, &save), Err(NativeLayrError::Unknown(_)))
+        });
+        assert_eq!(
+            object_statuses,
+            [true, true],
+            "object statuses must remain unknown"
+        );
+        assert_eq!(
+            calls.get(),
+            0,
+            "replayed or malformed receipts cannot run preflight or effect"
+        );
+
+        write("save", br#"{"intent":{"kind":"save"},"status":"failed"}"#);
+        assert_eq!(replay("save", &save).unwrap(), json!("effect"));
+        assert_eq!(replay("save", &save).unwrap(), json!("effect"));
+        assert_eq!(calls.get(), 2, "explicit failed save executes once");
+
+        let project = "a".repeat(64);
+        let id = format!("import:{project}");
+        let import = json!({"project":project});
+        write(
+            &id,
+            format!(r#"{{"intent":{},"status":"failed"}}"#, import).as_bytes(),
+        );
+        assert_eq!(replay(&id, &import).unwrap(), json!("effect"));
+        assert_eq!(replay(&id, &import).unwrap(), json!("effect"));
+        assert_eq!(calls.get(), 4, "explicit failed import executes once");
     }
 
     #[test]

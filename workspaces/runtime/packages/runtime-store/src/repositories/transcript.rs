@@ -78,7 +78,7 @@ pub type TranscriptStoreResult<T> = Result<T, TranscriptStoreError>;
 pub struct TranscriptItem {
     pub id: String,
     pub agent: String,
-    pub record: Value,
+    pub record: TranscriptItemRecord,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -149,7 +149,7 @@ impl TranscriptRepository {
             let mut items: Vec<Value> = records
                 .into_iter()
                 .take(TRANSCRIPT_PAGE_SIZE)
-                .map(|item| item.record)
+                .map(|item| item.record.into_value())
                 .collect();
             items.reverse();
             enrich_persisted_items(transaction, agent, actor, &mut items)?;
@@ -257,7 +257,7 @@ impl TranscriptRepository {
                     TranscriptItem {
                         id,
                         agent: agent.to_owned(),
-                        record: item.into_value(),
+                        record: item,
                     }
                 })
             })
@@ -284,7 +284,7 @@ impl TranscriptRepository {
                     TranscriptItem {
                         id,
                         agent: agent.clone(),
-                        record: item.into_value(),
+                        record: item,
                     }
                 })
             })
@@ -318,13 +318,13 @@ impl TranscriptRepository {
             .map(|records| {
                 records
                     .into_iter()
-                    .filter(|record| include_restored || visible(record.value()))
+                    .filter(|record| include_restored || visible(record))
                     .map(|record| {
                         let id = record.id().as_ref().to_owned();
                         TranscriptItem {
                             id,
                             agent: agent.to_owned(),
-                            record: record.into_value(),
+                            record,
                         }
                     })
                     .collect()
@@ -352,28 +352,61 @@ impl TranscriptRepository {
         connection: &Connection,
         item: &TranscriptItem,
     ) -> TranscriptStoreResult<Option<String>> {
-        let full = connection
-            .query_row_cached(
-                "SELECT body FROM runtime_item_fulltext WHERE id=?1",
-                [&item.id],
-                |row| row.get::<_, Option<StoredText>>(0),
-            )
-            .optional()
-            .map_err(|error| map_column_error(error, "runtime_item_fulltext", &item.id))?;
-        if let Some(Some(full)) = full {
-            return Ok(Some(full.into_string()));
+        if let Some(full) = Self::stored_full_text(connection, &item.id)? {
+            return Ok(Some(full));
         }
-        if let Some(text) = item.record.get("text") {
+        match item.record.text() {
+            studio_runtime_schema::queue_command::Field::Missing => Ok(None),
+            studio_runtime_schema::queue_command::Field::Null => {
+                Err(invalid_record("runtime_items", &item.id))
+            }
+            studio_runtime_schema::queue_command::Field::Value(text) => {
+                if item.record.extra("truncated").and_then(Value::as_bool) != Some(true)
+                    && (item.record.inputs().is_missing() || !text.is_empty())
+                {
+                    Ok(Some(text.clone()))
+                } else {
+                    Ok(None)
+                }
+            }
+        }
+    }
+
+    /// Legacy raw ingress is intentionally not narrowed to the persisted schema.
+    pub fn full_text_raw(
+        connection: &Connection,
+        id: &str,
+        record: &Value,
+    ) -> TranscriptStoreResult<Option<String>> {
+        if let Some(full) = Self::stored_full_text(connection, id)? {
+            return Ok(Some(full));
+        }
+        if let Some(text) = record.get("text") {
             let text = text
                 .as_str()
-                .ok_or_else(|| invalid_record("runtime_items", &item.id))?;
-            if item.record.get("truncated").and_then(Value::as_bool) != Some(true)
-                && (item.record.get("inputs").is_none() || !text.is_empty())
+                .ok_or_else(|| invalid_record("runtime_items", id))?;
+            if record.get("truncated").and_then(Value::as_bool) != Some(true)
+                && (record.get("inputs").is_none() || !text.is_empty())
             {
                 return Ok(Some(text.to_owned()));
             }
         }
         Ok(None)
+    }
+
+    fn stored_full_text(
+        connection: &Connection,
+        id: &str,
+    ) -> TranscriptStoreResult<Option<String>> {
+        let full = connection
+            .query_row_cached(
+                "SELECT body FROM runtime_item_fulltext WHERE id=?1",
+                [id],
+                |row| row.get::<_, Option<StoredText>>(0),
+            )
+            .optional()
+            .map_err(|error| map_column_error(error, "runtime_item_fulltext", id))?;
+        Ok(full.flatten().map(StoredText::into_string))
     }
 
     /// Persist a transcript row and keep the current search
@@ -542,20 +575,11 @@ impl TranscriptRepository {
             return Ok(Some(item));
         }
         for item in Self::items_for_agent(connection, agent)? {
-            let inputs = match item.record.get("inputs") {
-                None | Some(Value::Null) => continue,
-                Some(Value::Array(inputs)) => inputs,
-                _ => return Err(invalid_record("runtime_items", &item.id)),
+            let Some(inputs) = item.record.inputs().value() else {
+                continue;
             };
             for (index, input) in inputs.iter().enumerate() {
-                let Some(fields) = input.as_object() else {
-                    return Err(invalid_record("runtime_items", &item.id));
-                };
-                let input_id = match fields.get("id") {
-                    None | Some(Value::Null) => None,
-                    Some(Value::String(id)) => Some(id.as_str()),
-                    _ => return Err(invalid_record("runtime_items", &item.id)),
-                };
+                let input_id = input.id();
                 let display_id = input_id.map_or_else(
                     || format!("{}:{index}", item.id),
                     |id| format!("{agent}:{id}"),
@@ -625,9 +649,9 @@ fn invalid_record(table: &'static str, id: &str) -> TranscriptStoreError {
     }
 }
 
-fn visible(record: &Value) -> bool {
+fn visible(record: &TranscriptItemRecord) -> bool {
     record
-        .get("afterRestore")
+        .extra("afterRestore")
         .is_none_or(|after_restore| after_restore.is_null())
 }
 
@@ -1463,6 +1487,118 @@ mod tests {
         });
     }
 
+    #[test]
+    fn raw_writers_keep_legacy_admission_and_checked_reads_enforce_shell() {
+        let mut db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE runtime_items(id TEXT PRIMARY KEY,agent TEXT NOT NULL,record TEXT NOT NULL,created REAL NOT NULL); CREATE TABLE runtime_item_fulltext(id TEXT PRIMARY KEY,body TEXT NOT NULL)").unwrap();
+        let tx = db.transaction().unwrap();
+        let raw = json!({"id":"agent:x","role":"user","text":"body","inputs":[null]});
+        TranscriptRepository::put_item(&tx, "agent:x", "agent", &raw, 1.0, "body", false).unwrap();
+        assert!(TranscriptRepository::item(&tx, "agent", "agent:x").is_err());
+        let before: String = tx
+            .query_row(
+                "SELECT record FROM runtime_items WHERE id='agent:x'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let output = json!({"id":"agent:x","role":"output","text":"replacement"});
+        assert!(
+            TranscriptRepository::put_item(
+                &tx,
+                "agent:x",
+                "agent",
+                &output,
+                2.0,
+                "replacement",
+                false
+            )
+            .is_err()
+        );
+        assert!(
+            TranscriptRepository::put_notification_item(
+                &tx,
+                "agent:x",
+                "other",
+                &output,
+                2.0,
+                "replacement",
+                false
+            )
+            .is_err()
+        );
+        let after: String = tx
+            .query_row(
+                "SELECT record FROM runtime_items WHERE id='agent:x'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(before, after);
+        TranscriptRepository::put_notification_item(
+            &tx,
+            "agent:x",
+            "agent",
+            &output,
+            2.0,
+            "replacement",
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            TranscriptRepository::item(&tx, "agent", "agent:x")
+                .unwrap()
+                .unwrap()
+                .record
+                .role(),
+            Some("output")
+        );
+        assert!(
+            TranscriptRepository::item(&tx, "other", "agent:x")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn typed_input_resolution_preserves_visibility_and_physical_owner() {
+        let mut db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE runtime_items(id TEXT PRIMARY KEY,agent TEXT NOT NULL,record TEXT NOT NULL,created REAL NOT NULL); CREATE TABLE runtime_item_fulltext(id TEXT PRIMARY KEY,body TEXT NOT NULL)").unwrap();
+        let tx = db.transaction().unwrap();
+        let visible = json!({"id":"agent:x","role":"user","text":"parent","inputs":[{"id":"m","text":"one","future":true},{"id":null,"text":"two"}],"future":{"v":1}});
+        TranscriptRepository::put_item(&tx, "agent:x", "agent", &visible, 1.0, "parent", false)
+            .unwrap();
+        for id in ["agent:x", "agent:m", "agent:x:1"] {
+            let row = TranscriptRepository::resolve_item(&tx, "agent", id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(row.id, "agent:x");
+            assert_eq!(row.record.into_value(), visible);
+        }
+        assert!(
+            TranscriptRepository::resolve_item(&tx, "other", "agent:m")
+                .unwrap()
+                .is_none()
+        );
+        tx.execute("UPDATE runtime_items SET record=json_set(record,'$.afterRestore',json('[]')) WHERE id='agent:x'",[]).unwrap();
+        assert!(
+            TranscriptRepository::resolve_item(&tx, "agent", "agent:x")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            TranscriptRepository::resolve_item(&tx, "agent", "agent:m")
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            TranscriptRepository::items_for_agent_including_restored(&tx, "agent")
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
     fn fulltext_fixture(body: rusqlite::types::Value) -> (Connection, super::TranscriptItem) {
         let connection = Connection::open_in_memory().expect("in-memory database opens");
         connection
@@ -1479,7 +1615,10 @@ mod tests {
         let item = super::TranscriptItem {
             id: "agent:long".to_owned(),
             agent: "agent".to_owned(),
-            record: json!({"id":"agent:long","role":"assistant","text":"preview","truncated":true}),
+            record: crate::TranscriptItemRecord::from_value(
+                json!({"id":"agent:long","role":"assistant","text":"preview","truncated":true}),
+            )
+            .unwrap(),
         };
         (connection, item)
     }
@@ -1576,7 +1715,7 @@ mod tests {
         let item = super::TranscriptItem {
             id: "agent:long".to_owned(),
             agent: "agent".to_owned(),
-            record,
+            record: crate::TranscriptItemRecord::from_value(record).unwrap(),
         };
         assert_eq!(
             TranscriptRepository::full_text(&transaction, &item)

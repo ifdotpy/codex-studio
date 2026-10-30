@@ -91,10 +91,11 @@ impl TaskRecoveryEffects for TaskRecoveryStore {
                 .map_err(|_| RecoveryError::CommitFailed)?
                 .as_ref()
                 != Some(a)
-                || TaskRepository::get(tx, &TaskId::from(id))?
-                    .as_ref()
-                    .map(TaskRecord::value)
-                    != Some(t)
+            {
+                return Ok(false);
+            }
+            let stored_task = TaskRepository::get(tx, &TaskId::from(id))?;
+            if stored_task.as_ref().map(TaskRecord::value).as_ref() != Some(t)
                 || !receipts_current(tx, &expected)?
             {
                 return Ok(false);
@@ -114,35 +115,25 @@ impl TaskRecoveryEffects for TaskRecoveryStore {
                 TaskAbsenceDecision::Lost => expected.absence_decision(&current, observation.quiet),
                 hold @ TaskAbsenceDecision::Hold { .. } => hold,
             };
-            let mut updated = t.clone();
+            let mut updated = stored_task.ok_or(RecoveryError::CommitFailed)?;
             match decision {
                 TaskAbsenceDecision::Lost => {
-                    updated["status"] = json!(crate::task_settlement::LOST_TASK_STATUS);
-                    updated["finished"] = json!(current.at);
-                    updated["error"] = json!(LOST_COMMAND);
-                    updated
-                        .as_object_mut()
-                        .ok_or(RecoveryError::CommitFailed)?
-                        .remove("recoveryHold");
+                    updated.set_status(crate::task_settlement::LOST_TASK_STATUS);
+                    updated.set_finished(json!(current.at));
+                    updated.set_error(json!(LOST_COMMAND));
+                    updated.remove_recovery_hold();
                 }
                 TaskAbsenceDecision::Hold { reason } => {
-                    updated["recoveryHold"] =
-                        json!({"stage":"held","at":current.at,"reason":reason,"outcome":"unknown"});
-                    updated["error"] = json!(format!(
-                        "Task recovery held: {reason}. Outcome unknown; work was not replayed."
-                    ));
+                    updated.set_recovery_hold(json!({"stage":"held","at":current.at,"reason":reason,"outcome":"unknown"}));
+                    updated.set_error(json!(format!("Task recovery held: {reason}. Outcome unknown; work was not replayed.")));
                 }
             }
-            TaskRepository::put(
-                tx,
-                &TaskRecord::from_value(updated.clone())
-                    .map_err(|_| RecoveryError::CommitFailed)?,
-            )?;
-            if updated["status"] == crate::task_settlement::LOST_TASK_STATUS {
+            TaskRepository::put(tx, &updated)?;
+            if updated.status() == Some(crate::task_settlement::LOST_TASK_STATUS) {
                 tx.execute("UPDATE runtime_items SET record=json_set(record,'$.toolStatus','lost') WHERE id=?1 AND agent=?2 AND json_extract(record,'$.turnId')=?3",
                     rusqlite::params![id, agent, t["turnId"].as_str()])?;
             }
-            let projection = crate::sync_views::project_persisted_record("task", &updated)
+            let projection = crate::sync_views::project_persisted_record("task", &updated.value())
                 .ok_or(RecoveryError::CommitFailed)?;
             studio_runtime_store::SyncDocumentsRepository::put_entity(
                 tx, "task", id, projection, false,
@@ -311,7 +302,7 @@ impl TaskCompletionWriter for RuntimeTaskCompletionWriter {
                     != Some(agent)
                     || TaskRepository::get(tx, &TaskId::from(id))?
                         .as_ref()
-                        .map(TaskRecord::value)
+                        .map(TaskRecord::value).as_ref()
                         != Some(task)
                     || !receipts_current(tx, &expected)?
                 {
@@ -326,29 +317,19 @@ impl TaskCompletionWriter for RuntimeTaskCompletionWriter {
                 })?;
                 let written = TaskRepository::get(tx, &TaskId::from(id))?
                     .ok_or(RecoveryError::CommitFailed)?;
-                if written.value()["status"] == "running" {
+                if written.status() == Some("running") {
                     return Err(RecoveryError::CommitFailed);
                 }
                 if task.get("recoveryHold").is_some() {
-                    let mut clean = written.value().clone();
-                    clean
-                        .as_object_mut()
-                        .ok_or(RecoveryError::CommitFailed)?
-                        .remove("recoveryHold");
-                    if clean.get("error") == task.get("error")
+                    let mut clean = written;
+                    clean.remove_recovery_hold();
+                    if clean.extra("error") == task.get("error")
                         && item.get("error").is_none_or(Value::is_null)
                     {
-                        clean
-                            .as_object_mut()
-                            .ok_or(RecoveryError::CommitFailed)?
-                            .remove("error");
+                        clean.remove_error();
                     }
-                    TaskRepository::put(
-                        tx,
-                        &TaskRecord::from_value(clean.clone())
-                            .map_err(|_| RecoveryError::CommitFailed)?,
-                    )?;
-                    let projection = crate::sync_views::project_persisted_record("task", &clean)
+                    TaskRepository::put(tx, &clean)?;
+                    let projection = crate::sync_views::project_persisted_record("task", &clean.value())
                         .ok_or(RecoveryError::CommitFailed)?;
                     studio_runtime_store::SyncDocumentsRepository::put_entity(
                         tx, "task", id, projection, false,

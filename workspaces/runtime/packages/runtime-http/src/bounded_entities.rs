@@ -423,7 +423,11 @@ fn cost_summary(value: Value) -> Result<Value, StoreError> {
     Ok(serde_json::to_value(summary)?)
 }
 
-fn saved_cost(state_dir: &std::path::Path, key: &str, account: &Value) -> Value {
+fn saved_cost(
+    state_dir: &std::path::Path,
+    key: &str,
+    account: &studio_runtime_services::account_policy::PublicAccount,
+) -> Value {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0.0, |time| time.as_secs_f64());
@@ -442,7 +446,7 @@ async fn publish_costs(state: &HttpState) -> Result<(), StoreError> {
                 .accounts
                 .into_iter()
                 .filter_map(|account| {
-                    let key = account.get("id")?.as_str()?.to_owned();
+                    let key = account.id.as_str()?.to_owned();
                     Some(cost_summary(saved_cost(&root, &key, &account)).map(|value| (key, value)))
                 })
                 .collect::<Result<Vec<_>, StoreError>>()
@@ -469,7 +473,7 @@ pub(crate) async fn request_cost_refresh(state: &HttpState, key: &str) -> Result
         .await?
         .accounts
         .into_iter()
-        .find(|account| account.get("id").and_then(Value::as_str) == Some(key))
+        .find(|account| account.id.as_str() == Some(key))
         .ok_or(StoreError::RecordContract("unknown cost account"))?;
     let root = std::path::PathBuf::from(&state.state_dir);
     let key = key.to_owned();
@@ -524,7 +528,7 @@ pub(crate) async fn request_cost_refresh(state: &HttpState, key: &str) -> Result
                     Ok(snapshot) => snapshot
                         .accounts
                         .into_iter()
-                        .find(|value| value.get("id").and_then(Value::as_str) == Some(&scan_key)),
+                        .find(|value| value.id.as_str() == Some(&scan_key)),
                     Err(error) => {
                         eprintln!("Could not resolve refreshed account: {error}");
                         if let Err(error) = settle_cost_worker_failure(&state, &key).await {
@@ -542,13 +546,12 @@ pub(crate) async fn request_cost_refresh(state: &HttpState, key: &str) -> Result
                     }
                     return;
                 };
-                let outcome = if current.get("home") == account.get("home")
-                    && current.get("accountId") == account.get("accountId")
-                {
-                    outcome
-                } else {
-                    Ok(())
-                };
+                let outcome =
+                    if current.home == account.home && current.account_id == account.account_id {
+                        outcome
+                    } else {
+                        Ok(())
+                    };
                 let account = current;
                 studio_runtime_process::blocking_pool::spawn_blocking(
                     "bounded-entities/cost-result",
@@ -703,7 +706,7 @@ async fn publish_session_roots(
                 .accounts
                 .into_iter()
                 .chain(snapshot.archived_accounts)
-                .filter_map(|account| Some((account.get("id")?.as_str()?.to_owned(), account)))
+                .filter_map(|account| Some((account.id.as_str()?.to_owned(), account)))
                 .collect::<BTreeMap<_, _>>()
         })
         .unwrap_or_default();
@@ -1771,7 +1774,9 @@ mod tests {
     async fn failed_claude_refresh_preserves_the_saved_result_age() {
         let root = tempfile::tempdir().expect("isolated cost state");
         let home = root.path().join("missing-profile");
-        let account = json!({"home":home,"provider":"claude","status":"ready"});
+        let account =
+            <studio_runtime_services::account_policy::PublicAccount as serde::Deserialize>::deserialize(json!({"home":home,"provider":"claude","status":"ready"}))
+                .expect("account fixture");
         let cache =
             root.path()
                 .join("account-costs/claude")

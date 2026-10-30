@@ -320,10 +320,12 @@ pub fn vm_finder_view(state_dir: &Path, agent: &Value) -> Value {
         let directory = entry.path();
         match std::fs::read(directory.join("mount.json")) {
             Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
-                Ok(value) if value.get("projectId").and_then(Value::as_str) == Some(project_id) => {
-                    record = Some(value);
+                Ok(value) => {
+                    let saved = crate::saved_mount::SavedMount::from_value(value);
+                    if saved.project_id.as_str() == Some(project_id) {
+                        record = Some(saved);
+                    }
                 }
-                Ok(_) => {}
                 Err(error) => return finder_status_error(error.to_string()),
             },
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -331,10 +333,12 @@ pub fn vm_finder_view(state_dir: &Path, agent: &Value) -> Value {
         }
         match std::fs::read(directory.join("mount-error.json")) {
             Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
-                Ok(value) if value.get("projectId").and_then(Value::as_str) == Some(project_id) => {
-                    failure = Some(value);
+                Ok(value) => {
+                    let saved = crate::saved_mount::SavedMountFailure::from_value(value);
+                    if saved.project_id.as_str() == Some(project_id) {
+                        failure = Some(saved);
+                    }
                 }
-                Ok(_) => {}
                 Err(error) => return finder_status_error(error.to_string()),
             },
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -344,10 +348,10 @@ pub fn vm_finder_view(state_dir: &Path, agent: &Value) -> Value {
     let Some(record) = record else {
         return failure.map_or(unmounted, |failure| {
             json!({"kind":"vm","state":"failed","path":null,
-                "error":failure.get("error").cloned().unwrap_or(Value::Null)})
+                "error":failure.error})
         });
     };
-    let Some(path) = record.get("path").and_then(Value::as_str) else {
+    let Some(path) = record.path.as_deref() else {
         return finder_status_error("The saved mount record has no path".to_owned());
     };
     let mount = Path::new(path);
@@ -358,7 +362,7 @@ pub fn vm_finder_view(state_dir: &Path, agent: &Value) -> Value {
     } else {
         failure
             .as_ref()
-            .and_then(|value| value.get("error").cloned())
+            .map(|value| value.error.clone())
             .unwrap_or(Value::Null)
     };
     json!({"kind":"vm","state":state,"path":if mounted { json!(path) } else { Value::Null },"error":error})
@@ -574,6 +578,66 @@ mod tests {
             vm_finder_view(state.path(), &json!({"executionMode":"vm"})),
             json!({"kind":"vm","state":"unmounted","path":null,"error":null})
         );
+    }
+
+    #[test]
+    fn vm_finder_saved_records_keep_legacy_shapes_and_duplicate_fields() {
+        let state = tempfile::tempdir().unwrap();
+        let directory = state.path().join("layr-projects/one");
+        std::fs::create_dir_all(&directory).unwrap();
+        let agent = json!({"layrProjectId":"p"});
+        for raw in [
+            "null",
+            "[]",
+            r#"{"projectId":3}"#,
+            r#"{"projectId":"other"}"#,
+        ] {
+            std::fs::write(directory.join("mount.json"), raw).unwrap();
+            assert_eq!(vm_finder_view(state.path(), &agent)["state"], "unmounted");
+        }
+        std::fs::write(
+            directory.join("mount.json"),
+            r#"{"projectId":"other","projectId":"p","path":3}"#,
+        )
+        .unwrap();
+        let failure = vm_finder_view(state.path(), &agent);
+        assert_eq!(failure["state"], "failed");
+        assert!(failure["error"].as_str().unwrap().contains("has no path"));
+        std::fs::remove_file(directory.join("mount.json")).unwrap();
+        std::fs::write(
+            directory.join("mount-error.json"),
+            r#"{"projectId":"p","error":"old","error":{"opaque":[null,2]}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            vm_finder_view(state.path(), &agent)["error"],
+            json!({"opaque":[null,2]})
+        );
+        std::fs::write(directory.join("mount.json"), "{").unwrap();
+        assert_eq!(vm_finder_view(state.path(), &agent)["state"], "failed");
+    }
+
+    #[test]
+    fn vm_finder_uses_last_matching_saved_failure_in_directory_order() {
+        let state = tempfile::tempdir().unwrap();
+        let projects = state.path().join("layr-projects");
+        for name in ["one", "two", "three"] {
+            std::fs::create_dir_all(projects.join(name)).unwrap();
+        }
+        let directories: Vec<_> = std::fs::read_dir(&projects)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        for (index, directory) in directories.iter().enumerate() {
+            std::fs::write(
+                directory.join("mount-error.json"),
+                json!({"projectId":"p","error":index}).to_string(),
+            )
+            .unwrap();
+        }
+        let value = vm_finder_view(state.path(), &json!({"layrProjectId":"p"}));
+        assert_eq!(value["state"], "failed");
+        assert_eq!(value["error"], json!(directories.len() - 1));
     }
 
     #[test]

@@ -1,61 +1,24 @@
 {
-  "$defs": {
-    "JsonValue": {}
-  },
-  "additionalProperties": {
-    "$ref": "#/$defs/JsonValue"
-  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
   "properties": {
     "author": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Author"
+      "type": ["string", "null"]
     },
     "id": {
-      "title": "Id",
       "type": "string"
     },
     "leadId": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Leadid"
+      "type": ["string", "null"]
     },
     "status": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Status"
+      "type": ["string", "null"]
     },
     "text": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Text"
+      "type": ["string", "null"]
     }
   },
   "required": ["id"],
-  "title": "PersistedComplaintRecord",
+  "title": "ComplaintRecord",
   "type": "object"
 }

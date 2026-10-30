@@ -4,8 +4,9 @@
 use crate::schema::{SchemaRequirements, TableRequirement};
 use crate::{StoreError, StoreResult};
 use rusqlite::{Connection, OptionalExtension, params};
-use serde_json::Value;
+use serde::Deserialize;
 use std::time::Duration;
+use studio_runtime_schema::json_object::JsonObject;
 use studio_runtime_schema::shared_values::{
     CHILD_RESULT_COALESCE_DEFAULT_SECONDS, CHILD_RESULT_COALESCE_MAX_SECONDS,
     CHILD_RESULT_COALESCE_MIN_SECONDS, IDLE_SESSION_UNLOAD_DEFAULT_MINUTES,
@@ -49,6 +50,23 @@ pub const IDLE_SESSION_UNLOAD_SETTING: Setting = Setting {
     min: IDLE_SESSION_UNLOAD_MIN_MINUTES,
     max: IDLE_SESSION_UNLOAD_MAX_MINUTES,
 };
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredSettings {
+    #[serde(default = "default_child_result_coalesce")]
+    child_result_coalesce_seconds: u64,
+    #[serde(default = "default_idle_session_unload")]
+    idle_session_unload_minutes: u64,
+}
+
+fn default_child_result_coalesce() -> u64 {
+    CHILD_RESULT_COALESCE_SETTING.default
+}
+
+fn default_idle_session_unload() -> u64 {
+    IDLE_SESSION_UNLOAD_SETTING.default
+}
 
 /// How long a lead's child result waits for sibling subagents that are still
 /// queued or running, until the setting is changed.
@@ -145,14 +163,18 @@ impl OrchestrationSettingsRepository {
                 setting.field
             ))
         };
-        let record = serde_json::from_str::<Value>(&raw).map_err(|_| invalid())?;
-        match record.get(setting.field) {
-            None => Ok(setting.default),
-            Some(value) => value
-                .as_u64()
-                .filter(|value| setting.valid(*value))
-                .ok_or_else(invalid),
-        }
+        let JsonObject(record): JsonObject<StoredSettings> =
+            serde_json::from_str(&raw).map_err(|_| invalid())?;
+        let value = match setting.field {
+            field if field == CHILD_RESULT_COALESCE_SETTING.field => {
+                record.child_result_coalesce_seconds
+            }
+            field if field == IDLE_SESSION_UNLOAD_SETTING.field => {
+                record.idle_session_unload_minutes
+            }
+            _ => return Err(invalid()),
+        };
+        setting.valid(value).then_some(value).ok_or_else(invalid)
     }
 
     /// Store a validated value of `setting`, keeping the record's other fields.
@@ -176,7 +198,7 @@ impl OrchestrationSettingsRepository {
         Ok(())
     }
 
-    /// Claude idle compaction is off until the server setting enables it.
+    /// The stored Claude idle compaction setting; `Mode::Default` when none is stored.
     pub fn idle_compaction(
         connection: &Connection,
     ) -> StoreResult<studio_runtime_schema::idle_compaction::Settings> {
@@ -202,6 +224,14 @@ impl OrchestrationSettingsRepository {
             ));
         }
         Ok(settings)
+    }
+
+    /// The setting with the default mode resolved for a lead or a worker chat.
+    pub fn idle_compaction_for(
+        connection: &Connection,
+        agent: &serde_json::Value,
+    ) -> StoreResult<studio_runtime_schema::idle_compaction::Settings> {
+        Ok(Self::idle_compaction(connection)?.resolved(agent["isLead"] == true))
     }
 
     pub fn set_idle_compaction(
@@ -274,6 +304,36 @@ mod tests {
             OrchestrationSettingsRepository::child_result_coalesce(&database()).expect("reads"),
             CHILD_RESULT_COALESCE_DEFAULT
         );
+    }
+
+    #[test]
+    fn stored_field_types_and_unrelated_fields_keep_their_behavior() {
+        let connection = database();
+        for (record, expected) in [
+            (r#"{}"#, Some(CHILD_RESULT_COALESCE_SETTING.default)),
+            (r#"[]"#, None),
+            (r#"null"#, None),
+            (r#"{"idleSessionUnloadMinutes":null}"#, None),
+            (
+                r#"{"unrelated":null,"childResultCoalesceSeconds":0}"#,
+                Some(0),
+            ),
+            (r#"{"childResultCoalesceSeconds":null}"#, None),
+            (r#"{"childResultCoalesceSeconds":"1"}"#, None),
+            (r#"{"childResultCoalesceSeconds":-1}"#, None),
+            (r#"{"#, None),
+        ] {
+            connection.execute(
+                "INSERT OR REPLACE INTO runtime_orchestration_settings(id, record) VALUES ('global', ?1)",
+                [record],
+            ).expect("fixture writes");
+            assert_eq!(
+                OrchestrationSettingsRepository::value(&connection, CHILD_RESULT_COALESCE_SETTING)
+                    .ok(),
+                expected,
+                "{record}"
+            );
+        }
     }
 
     #[test]

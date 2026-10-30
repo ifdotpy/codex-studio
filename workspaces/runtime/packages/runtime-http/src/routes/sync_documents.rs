@@ -566,8 +566,11 @@ pub(crate) async fn push_drafts(
         if !validators.validate_stored("DraftPayload", &payload) {
             return Err(draft_validation_error(index, "newDocumentState", "payload"));
         }
-        validate_draft_value(&row.new_document_state.id, &payload)
-            .map_err(|_| draft_validation_error(index, "newDocumentState", "id"))?;
+        let version = studio_runtime_schema::drafts::DraftVersion::from_stored_value(
+            &row.new_document_state.id,
+            payload.clone(),
+        )
+        .map_err(|_| draft_validation_error(index, "newDocumentState", "id"))?;
         let assumed = row
             .assumed_master_state
             .flatten()
@@ -592,7 +595,7 @@ pub(crate) async fn push_drafts(
             })
             .transpose()?;
         writes.push(DraftWrite {
-            id: row.new_document_state.id,
+            version,
             payload,
             deleted: row.new_document_state.deleted.unwrap_or(false),
             assumed_payload: assumed.as_ref().map(|(payload, _)| payload.clone()),
@@ -1024,6 +1027,21 @@ mod vault_maintenance_tests {
         assert_eq!(body["documents"][0]["payload"], original);
         let canonical =
             json!({"id":"phone:chat","device":"phone","session":"chat","text":"next","updated":2});
+        let mut different_assumption = legacy.clone();
+        different_assumption["updated"] = json!(1.9);
+        let conflict_rows = json!({"rows":[{"newDocumentState":{"id":"phone:chat","payload":canonical.to_string(),"seq":0,"deleted":false},
+            "assumedMasterState":{"id":"phone:chat","payload":different_assumption.to_string(),"seq":1,"deleted":false}}]});
+        let conflict = app
+            .clone()
+            .oneshot(request("POST", "/api/sync/drafts", conflict_rows))
+            .await
+            .unwrap();
+        assert_eq!(conflict.status(), StatusCode::OK);
+        let conflict: Value =
+            serde_json::from_slice(&to_bytes(conflict.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(conflict.as_array().unwrap().len(), 1);
+        assert_eq!(conflict[0]["payload"], original);
         let rows = json!({"rows":[{"newDocumentState":{"id":"phone:chat","payload":canonical.to_string(),"seq":0,"deleted":false},
             "assumedMasterState":{"id":"phone:chat","payload":original,"seq":1,"deleted":false}}]});
         let response = app
@@ -1623,7 +1641,7 @@ mod vault_maintenance_tests {
                     "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
                     rusqlite::params![
                         "agent-1",
-                        json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent-1","rootId":"agent-1","epoch":0,"status":"idle"})
+                        json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent-1","rootId":"agent-1","epoch":0,"status":"idle"})
                             .to_string()
                     ],
                 )?;
@@ -1684,7 +1702,7 @@ mod vault_maintenance_tests {
                         "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
                         rusqlite::params![
                             id,
-                            json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":id,"epoch":0,"status":"idle"}).to_string()
+                            json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":id,"epoch":0,"status":"idle"}).to_string()
                         ],
                     )?;
                     transaction.execute(

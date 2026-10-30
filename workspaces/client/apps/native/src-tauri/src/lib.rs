@@ -344,34 +344,6 @@ mod tests {
     }
 }
 
-#[cfg(target_os = "macos")]
-fn approved_peer(
-    snapshot: &serde_json::Value,
-    params: &serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let approval = &params["approval"];
-    let origin = studio_client_core::server_keys::origin(studio_client_core::server_keys::field(
-        params, "origin",
-    )?)?;
-    let peer = snapshot["servers"]
-        .as_array()
-        .and_then(|rows| rows.iter().find(|v| v["serverId"] == approval["serverId"]))
-        .ok_or("The approved server is no longer available.")?;
-    let generation = serde_json::json!([peer["created"], peer["publicKey"]]).to_string();
-    if snapshot["protocol"] != 1
-        || snapshot["identity"]["serverId"] != approval["localServerId"]
-        || peer["kind"] != "server"
-        || peer["status"] != "paired"
-        || studio_client_core::server_keys::origin(studio_client_core::server_keys::field(
-            peer, "origin",
-        )?)? != origin
-        || approval["generation"] != generation
-    {
-        return Err("The server approval or its identity changed.".into());
-    }
-    Ok(peer.clone())
-}
-
 /// Commands of the independently verified service boundary, enabled while
 /// callers migrate. Network commands also require the configured backend identity.
 fn connected_method(method: &str) -> bool {
@@ -475,17 +447,7 @@ async fn client_request(
                 && request.params.get("approval").is_some_and(|v| !v.is_null())
             {
                 let p = &request.params;
-                let approval = &p["approval"];
-                for name in ["localServerId", "serverId", "inviteRequestId"] {
-                    let id = studio_client_core::server_keys::field(approval, name)?;
-                    if id.len() > 128
-                        || !id
-                            .bytes()
-                            .all(|v| v.is_ascii_alphanumeric() || matches!(v, b'_' | b'-'))
-                    {
-                        return Err("Invalid approved server identity.".into());
-                    }
-                }
+                let approval = studio_client_core::pair_approval::Approval::parse(p)?;
                 let read = |params: serde_json::Value| {
                     let window = window.clone();
                     let state = state.clone();
@@ -510,29 +472,12 @@ async fn client_request(
                 };
                 let before =
                     read(serde_json::json!({"path":"/api/multi-server","method":"GET"})).await?;
-                let peer = approved_peer(&before, p)?;
-                let invitation = read(serde_json::json!({"path":"/api/multi-server","method":"POST","requestId":approval["inviteRequestId"],"body":{"action":"ui_invite","serverId":approval["serverId"],"requestId":approval["inviteRequestId"]}})).await?;
-                let invitation = &invitation["invitation"];
-                if invitation["serverId"] != peer["serverId"]
-                    || invitation["publicKey"] != peer["publicKey"]
-                    || [
-                        "protocol",
-                        "inviteId",
-                        "token",
-                        "serverId",
-                        "origin",
-                        "publicKey",
-                        "tailscaleUser",
-                        "expires",
-                    ]
-                    .iter()
-                    .any(|key| invitation[*key] != p["invitation"][*key])
-                {
-                    return Err("The invitation does not match the approved server.".into());
-                }
+                let peer = studio_client_core::pair_approval::approved_peer(&before, p, &approval)?;
+                let invitation = read(serde_json::json!({"path":"/api/multi-server","method":"POST","requestId":approval.invite_request_id,"body":{"action":"ui_invite","serverId":approval.server_id,"requestId":approval.invite_request_id}})).await?;
+                studio_client_core::pair_approval::check_invitation(&invitation, p, &peer)?;
                 let after =
                     read(serde_json::json!({"path":"/api/multi-server","method":"GET"})).await?;
-                approved_peer(&after, p)?;
+                studio_client_core::pair_approval::approved_peer(&after, p, &approval)?;
             }
             let directory =
                 match std::env::var_os("CODEX_DESKTOP_PROFILE").filter(|v| !v.is_empty()) {
@@ -623,7 +568,7 @@ async fn client_request(
         );
     }
     if request.method == studio_client_core::desktop::SIGN_IN_CANCEL_METHOD {
-        return Ok(studio_client_core::desktop::dispatch(request, None, None, None).await);
+        return Ok(studio_client_core::desktop::dispatch(request, None, None).await);
     }
     if needs_gesture {
         let params = request
@@ -708,7 +653,7 @@ async fn client_request(
             return Err("Draft commands require the verified workspace identity.".into());
         }
     }
-    let response = client.request(request).await?;
+    let response: Response = client.request(request).await?.into();
     if matches!(method.as_str(), "sync.open" | "identity.get") && response.error.is_none() {
         let Some(workspace) = response
             .result

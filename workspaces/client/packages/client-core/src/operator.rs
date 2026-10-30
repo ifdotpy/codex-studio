@@ -144,11 +144,13 @@ mod tests {
 
     struct Memory(Mutex<Value>);
     impl Vault for Memory {
-        fn read(&self) -> Result<Value, String> {
-            Ok(self.0.lock().unwrap().clone())
+        fn read(&self) -> Result<crate::server_key_state::VaultState, String> {
+            Ok(crate::server_key_state::VaultState::from_value(
+                self.0.lock().unwrap().clone(),
+            ))
         }
-        fn write(&self, state: &Value) -> Result<(), String> {
-            *self.0.lock().unwrap() = state.clone();
+        fn write(&self, state: &crate::server_key_state::VaultState) -> Result<(), String> {
+            *self.0.lock().unwrap() = state.clone().into_value();
             Ok(())
         }
     }
@@ -266,7 +268,11 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(memory.read().unwrap()["servers"].get("alpha").is_none());
+        assert!(
+            memory.read().unwrap().into_value()["servers"]
+                .get("alpha")
+                .is_none()
+        );
         let list = run(profile.path(), "servers.list", &json!({}))
             .await
             .unwrap();

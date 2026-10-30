@@ -215,3 +215,53 @@ async fn an_exact_manual_delivery_hold_keeps_stall_detection_without_waking_or_s
         "detection changes no stored state"
     );
 }
+
+#[tokio::test]
+async fn partial_schedule_observations_and_session_dedup_keep_legacy_behavior() {
+    let now = 10000.0;
+    let (_root, store) = seeded(now).await;
+    store.transaction(move |tx| {
+        tx.execute("UPDATE runtime_usage_resumes SET record=?1 WHERE id='resume'", [r#"{"id":"ignored","id":"payload","status":"scheduled","dueAt":8000,"reason":4,"reason":"latest"}"#])?;
+        tx.execute("UPDATE runtime_capacity_retries SET record=?1 WHERE id='capacity'", [r#"{"id":null,"status":"scheduled","dueAt":8000.5,"attempt":3.0,"maxAttempts":7,"reason":null}"#])?;
+        tx.execute("UPDATE runtime_account_transfers SET record=?1 WHERE id='transfer'", [r#"{"id":"foreign","leadId":"transfer","status":"pending","created":8000,"updated":null,"targetAccountKey":null,"members":{"z":{"phase":"unknown","name":9},"a":{"phase":"blocked","error":"first","error":"last"},"ignored":3}}"#])?;
+        studio_runtime_services::liveness::record_session_start_failure(tx, "default", "unchanged", 1.0)?;
+        studio_runtime_services::liveness::record_session_start_failure(tx, "default", "unchanged", 9.0)?;
+        let failure: String = tx.query_row("SELECT start_failure FROM runtime_account_state WHERE account='default'", [], |r| r.get(0))?;
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&failure).unwrap()["at"], 1.0);
+        Ok::<_, studio_runtime_store::StoreError>(())
+    }).await.unwrap();
+    let before = stored_state(&store).await;
+    let findings = store
+        .read_async("test/partial-liveness", move |tx| {
+            studio_runtime_services::liveness::findings(tx, now)
+        })
+        .await
+        .unwrap();
+    let find = |id: &str| findings.iter().find(|f| f.id == id).unwrap();
+    assert!(
+        find("liveness:schedule_stalled:usage:payload")
+            .detail
+            .contains("Last reason: latest")
+    );
+    assert_eq!(
+        find("liveness:schedule_stalled:capacity:capacity").subject,
+        "Capacity retry, attempt 0 of 7"
+    );
+    let transfer = find("liveness:schedule_stalled:transfer:transfer:8000");
+    assert_eq!(transfer.subject, "Account transfer to another account");
+    assert!(transfer.detail.contains("a (blocked): last; z (unknown)"));
+    let rows = store
+        .read_async("test/partial-errors", move |tx| {
+            studio_runtime_services::studio_errors::list(tx, now)
+        })
+        .await
+        .unwrap();
+    assert!(
+        rows["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["id"] == transfer.id)
+    );
+    assert_eq!(stored_state(&store).await, before);
+}

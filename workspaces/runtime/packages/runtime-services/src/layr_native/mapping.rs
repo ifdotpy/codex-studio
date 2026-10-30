@@ -3,6 +3,8 @@ use super::*;
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use std::{collections::BTreeSet, fs, time::Duration};
 
+pub(super) mod response;
+
 type Result<T> = std::result::Result<T, NativeLayrError>;
 
 pub(super) fn valid_name(name: &str) -> bool {
@@ -206,24 +208,22 @@ const CACHE_HISTORY_RECORDS: &str = "200";
 
 pub(super) fn cached_main_start(state: &Path, main: &Path) -> Result<(String, Option<String>)> {
     let output = super::runtime::run(state, main, &["log", "--json", "-n", "1", "main"])?;
-    let head: Value = serde_json::from_str(&output).map_err(|error| {
+    let head: response::StateEntry = serde_json::from_str(&output).map_err(|error| {
         NativeLayrError::Refused(format!("Cannot inspect main caches: {error}"))
     })?;
     let warning = cache_warning_for_head(main, &head)?;
-    let id = head["id"].as_str().expect("validated state ID").to_owned();
+    let id = head.id().expect("validated state ID").to_owned();
     if warning.is_none() {
         return Ok((id, None));
     }
-    let lines: Value = serde_json::from_str(&super::runtime::run(
+    let lines: response::Lines = serde_json::from_str(&super::runtime::run(
         state,
         main,
         &["line", "list", "--json"],
     )?)
     .map_err(|error| NativeLayrError::Refused(format!("Cannot inspect main line: {error}")))?;
     let line = lines
-        .as_array()
-        .and_then(|lines| lines.iter().find(|line| line["name"] == "main"))
-        .and_then(|line| line["id"].as_str())
+        .main_id()
         .ok_or_else(|| NativeLayrError::Refused("Cannot find main line identity".into()))?;
     let output = super::runtime::run(
         state,
@@ -232,7 +232,7 @@ pub(super) fn cached_main_start(state: &Path, main: &Path) -> Result<(String, Op
     )?;
     let records = output
         .lines()
-        .map(serde_json::from_str::<Value>)
+        .map(serde_json::from_str::<response::StateEntry>)
         .collect::<std::result::Result<Vec<_>, _>>()
         .map_err(|error| {
             NativeLayrError::Refused(format!("Cannot inspect main cache history: {error}"))
@@ -248,35 +248,20 @@ pub(super) fn cached_main_start(state: &Path, main: &Path) -> Result<(String, Op
     Ok((id, warning))
 }
 
-fn has_caches(head: &Value) -> bool {
-    head.get("layers")
-        .or_else(|| head.get("caches"))
-        .and_then(Value::as_object)
-        .is_some_and(|caches| !caches.is_empty())
-}
-
-fn newest_main_cache<'a>(records: &'a [Value], line: &str) -> Option<&'a str> {
+fn newest_main_cache<'a>(records: &'a [response::StateEntry], line: &str) -> Option<&'a str> {
     records
         .iter()
-        .filter(|record| record["kind"] == "auto" && record["line"] == line && has_caches(record))
-        .max_by_key(|record| {
-            (
-                record["time"].as_i64().unwrap_or_default(),
-                record["id"].as_str().unwrap_or_default(),
-            )
-        })
-        .and_then(|record| record["id"].as_str())
+        .filter(|record| record.matches_line(line) && record.has_caches())
+        .max_by_key(|record| record.order())
+        .and_then(response::StateEntry::id)
 }
 
-fn cache_warning_for_head(main: &Path, head: &Value) -> Result<Option<String>> {
-    let id = head["id"]
-        .as_str()
-        .filter(|id| !id.is_empty())
-        .ok_or_else(|| {
-            NativeLayrError::Refused("Main cache inspection returned no state ID".into())
-        })?;
+fn cache_warning_for_head(main: &Path, head: &response::StateEntry) -> Result<Option<String>> {
+    let id = head.id().filter(|id| !id.is_empty()).ok_or_else(|| {
+        NativeLayrError::Refused("Main cache inspection returned no state ID".into())
+    })?;
     let quoted = format!("'{}'", main.to_string_lossy().replace('\'', "'\\''"));
-    Ok((!has_caches(head)).then(|| format!(
+    Ok((!head.has_caches()).then(|| format!(
         "Main head {id} has no saved cache record. Caches on another line do not warm this head. Build once in {}, keep tracked content unchanged, then run `layr -C {quoted} save --caches`. See docs/native-layr.md.", main.display(),
     )))
 }
@@ -345,27 +330,44 @@ mod tests {
 
     #[test]
     fn native_layr_cached_start_considers_only_main_lines_newest_automatic_cache() {
-        let records = vec![
+        let records: Vec<response::StateEntry> = vec![
             json!({"id":"old-main","kind":"auto","line":"main-line","time":1,"layers":{"target":"old"}}),
             json!({"id":"new-main","kind":"auto","line":"main-line","time":2,"layers":{"target":"new"}}),
             json!({"id":"other-line","kind":"auto","line":"worker-line","time":3,"layers":{"target":"other"}}),
-        ];
+        ].into_iter().map(|value| serde::Deserialize::deserialize(value).unwrap()).collect();
         assert_eq!(newest_main_cache(&records, "main-line"), Some("new-main"));
         assert_eq!(newest_main_cache(&records, "unknown-line"), None);
     }
 
     #[test]
+    fn cache_history_orders_timestamps_then_ids_and_rejects_bad_json() {
+        let input = r#"{"id":"a","kind":"auto","line":"main","time":2,"layers":{"x":"y"}}
+{"id":"b","kind":"auto","line":"main","time":2,"caches":{"x":"y"}}
+{"id":"ignored","kind":"manual","line":"main","time":9,"layers":{"x":"y"}}
+null"#;
+        let records: Vec<response::StateEntry> = input
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(newest_main_cache(&records, "main"), Some("b"));
+        assert!(serde_json::from_str::<response::StateEntry>("{").is_err());
+    }
+
+    #[test]
     fn native_layr_mapped_main_reports_missing_caches_and_accepts_saved_caches() {
         let main = Path::new("/store/projects/studio/lines/main");
-        let warning = cache_warning_for_head(main, &json!({"id":"main-state"}))
-            .expect("inspection")
-            .expect("missing cache warning");
+        let warning = cache_warning_for_head(
+            main,
+            &serde_json::from_str(r#"{"id":"main-state"}"#).unwrap(),
+        )
+        .expect("inspection")
+        .expect("missing cache warning");
         assert!(warning.contains("main-state") && warning.contains("save --caches"));
         for field in ["layers", "caches"] {
             let mut head = json!({"id":"main-state"});
             head[field] = json!({"target":"saved-target"});
             assert!(
-                cache_warning_for_head(main, &head)
+                cache_warning_for_head(main, &serde::Deserialize::deserialize(head).unwrap())
                     .expect("saved cache")
                     .is_none()
             );

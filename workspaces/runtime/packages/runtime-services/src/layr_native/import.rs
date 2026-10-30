@@ -390,13 +390,11 @@ impl Plan {
     }
 
     pub fn saved_main(state: &Path, main: &Path, destination: &Path) -> Result<Self> {
-        let lines: serde_json::Value =
+        let lines: super::mapping::response::Lines =
             serde_json::from_str(&super::run(state, main, &["line", "list", "--json"])?)
                 .map_err(|e| NativeLayrError::Refused(e.to_string()))?;
         let head = lines
-            .as_array()
-            .and_then(|lines| lines.iter().find(|line| line["name"] == "main"))
-            .and_then(|line| line["head"].as_str())
+            .main_head()
             .ok_or_else(|| NativeLayrError::Refused("Missing saved main state".into()))?;
         let project = main
             .parent()

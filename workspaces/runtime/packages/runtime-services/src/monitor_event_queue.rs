@@ -68,20 +68,20 @@ pub fn enqueue_output_with_scope_in_transaction(
     else {
         return Ok(false);
     };
-    let mut record = record.value().clone();
-    if record["status"] != "running"
-        || record["operation"]["accountKey"].as_str() != Some(scope.account)
-        || record["operation"]["agent"].as_str() != record["agent"].as_str()
-        || record["operation"]["epoch"] != record["epoch"]
+    let Some(operation) = record.operation.value() else {
+        return Ok(false);
+    };
+    if record.status() != Some(studio_runtime_schema::studio_errors::MonitorStatus::Running)
+        || operation.account_key.as_str() != scope.account
+        || Some(operation.agent.as_str()) != record.agent()
+        || record.epoch.value().map(|epoch| epoch.number()) != Some(operation.epoch.number())
         || scope
             .expected_agent
-            .is_some_and(|agent| record["agent"].as_str() != Some(agent))
+            .is_some_and(|agent| record.agent() != Some(agent))
     {
         return Ok(false);
     }
-    let agent = record["agent"]
-        .as_str()
-        .ok_or(NotificationDispatchError::invalid())?;
+    let agent = record.agent().ok_or(NotificationDispatchError::invalid())?;
     let owner_account = tx
         .query_row(
             "SELECT COALESCE(account_key,'default') FROM runtime_agents WHERE id=?1",
@@ -94,6 +94,7 @@ pub fn enqueue_output_with_scope_in_transaction(
         .as_deref()
         .is_some_and(|account| account != scope.account)
     {
+        let record = record.value();
         let operation = serde_json::from_value::<Operation>(record["operation"].clone())
             .map_err(|_| NotificationDispatchError::invalid())?;
         let original =
@@ -131,6 +132,7 @@ pub fn enqueue_output_with_scope_in_transaction(
             return Ok(false);
         }
     }
+    let mut record = record.value();
     let Some(encoded) = params["deltaBase64"].as_str() else {
         return Err(NotificationDispatchError::invalid());
     };
@@ -203,7 +205,7 @@ pub fn output_agent(
 ) -> Result<Option<String>, NotificationDispatchError> {
     Ok(Table::<MonitorRecord>::new(tx)
         .get(&process_id.to_owned())?
-        .and_then(|record| record.value()["agent"].as_str().map(str::to_owned))
+        .and_then(|record| record.agent().map(str::to_owned))
         .filter(|agent| !agent.is_empty()))
 }
 
@@ -329,7 +331,7 @@ pub async fn enqueue_probe(
             let Some(record) = MonitorsRepository::get(tx, &id)? else {
                 return Err(MonitorError::Refused("Unknown command watch"));
             };
-            let mut value = record.value().clone();
+            let mut value = record.value();
             if value.get("operation")
                 != Some(&serde_json::to_value(&operation).unwrap_or(Value::Null))
             {
@@ -404,7 +406,7 @@ pub fn enqueue_exit_in_transaction(
     struct StoredOperation {
         operation: Operation,
     }
-    let mut value = record.value().clone();
+    let mut value = record.value();
     if !serde_json::from_str::<StoredOperation>(&raw)
         .is_ok_and(|stored| stored.operation == *operation)
     {
@@ -492,7 +494,7 @@ pub async fn acknowledge(store: &RuntimeStore, delivery: &Delivery) -> Result<()
             let Some(record) = MonitorsRepository::get(tx, &delivery.id)? else {
                 return Err(MonitorError::Refused("Unknown command watch"));
             };
-            let mut value = record.value().clone();
+            let mut value = record.value();
             if value["streamAckCursor"].as_str() == Some(&delivery.cursor) {
                 return Ok(());
             }

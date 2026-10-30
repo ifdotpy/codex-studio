@@ -425,8 +425,7 @@ pub(super) async fn initial_snapshot(
     Ok(entry)
 }
 
-pub(super) async fn resource_content(state: HttpState, resource: Value) -> Option<Vec<u8>> {
-    let resource: ResourceRef = serde_json::from_value(resource).ok()?;
+pub(super) async fn resource_content(state: HttpState, resource: ResourceRef) -> Option<Vec<u8>> {
     let handler = handler(&resource).ok()?;
     let bytes = handler.content_fingerprint(state, resource).await?;
     (bytes.len() <= handler.max_bytes()).then_some(bytes)
@@ -606,7 +605,7 @@ mod tests {
                 .expect("store"),
         );
         store.transaction_with(|tx| {
-            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('lead',?1)", [json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","isLead":true,"epoch":1,"status":"idle","name":"Lead","threadId":"thread"}).to_string()])?;
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('lead',?1)", [json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","isLead":true,"epoch":1,"status":"idle","name":"Lead","threadId":"thread"}).to_string()])?;
             tx.execute("INSERT INTO runtime_rooms(id,record) VALUES('room',?1)", [json!({"id":"room","kind":"broadcast","rootId":"lead","members":["lead"],"name":"Team"}).to_string()])?;
             for i in 0..40 {
                 tx.execute("INSERT INTO runtime_chat_messages(id,room,sender,text,created,deliveries) VALUES(?1,'room','lead',?2,?3,'{}')", rusqlite::params![format!("message-{i}"), "x".repeat(10_000), i])?;
@@ -664,7 +663,7 @@ mod tests {
             .await
             .expect("install production entity publisher");
         store.transaction_with(|tx| {
-            AgentRepository::put(tx, &AgentRecord::from_value(json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","isLead":true,"epoch":1,"status":"idle","name":"Lead","threadId":"thread"}))?)?;
+            AgentRepository::put(tx, &AgentRecord::from_value(json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","isLead":true,"epoch":1,"status":"idle","name":"Lead","threadId":"thread"}))?)?;
             tx.execute("INSERT INTO runtime_work(id,record) VALUES('assignment',?1)",[json!({"id":"assignment","rootId":"lead","title":"Published assignment","status":"running","created":1,"updated":1,"version":1,"results":[{"id":"evidence","agent":"lead","text":"Existing evidence","checks":"fixture","revision":"abc","files":[],"created":1}]}).to_string()])?;
             tx.execute("INSERT INTO runtime_complaints(id,record) VALUES('message',?1)", [json!({"id":"message","leadId":"lead","recipient":"lead","status":"open","responses":[],"author":"lead","text":"Initial complaint","created":1,"version":1}).to_string()])?;
             tx.execute("INSERT INTO runtime_rooms(id,record) VALUES('broadcast:lead',?1)", [json!({"id":"broadcast:lead","kind":"broadcast","rootId":"lead","members":["lead"],"name":"Team"}).to_string()])?;
@@ -978,6 +977,35 @@ mod tests {
                 value.insert(field.clone(), field_value);
             }
             value.insert("kind".into(), json!(kind));
+            for optional_fields in [false, true] {
+                let mut sample = value.clone();
+                if !optional_fields {
+                    let required = schemas[name]["required"]
+                        .as_array()
+                        .expect("required fields");
+                    sample.retain(|field, _| required.iter().any(|item| item == field));
+                }
+                let original = Value::Object(sample);
+                assert!(
+                    studio_runtime_schema::validate("ResourceRef", &original).expect("schema"),
+                    "{kind}"
+                );
+                let typed: ResourceRef =
+                    serde_json::from_value(original.clone()).expect("generated reference");
+                use studio_runtime_services::resource_notify::ResourceIdentity;
+                let selector = crate::routes::sync_stream::SubscribedResource::new(typed.clone())
+                    .expect("resource identity");
+                assert_eq!(
+                    selector.notification_kind().expect("typed role"),
+                    original.notification_kind().expect("wire role"),
+                    "notification role for {kind}"
+                );
+                assert_eq!(
+                    serde_json::to_value(typed).expect("serialized reference"),
+                    original,
+                    "wire identity for {kind}"
+                );
+            }
             let resource: ResourceRef =
                 serde_json::from_value(Value::Object(value)).expect("generated reference");
             let matches: Vec<_> = REGISTRY

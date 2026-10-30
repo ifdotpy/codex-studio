@@ -17,6 +17,11 @@ createRoot(fixtureRoot!).render(
             "Compacted while idle, before the prompt cache expired. To turn it off, set Claude idle compaction to Off in Settings > Agent orchestration."
           }
         />
+        <IdleCompactionNotice
+          text={
+            "Compacted on return with a summary prepared while idle. To turn it off, set Claude idle compaction to Off in Settings > Agent orchestration."
+          }
+        />
       </section>
     </main>
   </MantineProvider>,

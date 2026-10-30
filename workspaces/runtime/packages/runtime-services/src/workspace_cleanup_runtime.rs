@@ -89,6 +89,30 @@ pub enum CleanupEffect {
     RemoveWorktree { identity: Value },
 }
 
+/// Wire tags whose worktrees remain visible while cleanup is unresolved.
+pub(crate) const RETAINED_WORKTREE_EFFECTS: [&str; 2] = ["remove_worktree", "save_worktree_ref"];
+
+#[cfg(test)]
+#[test]
+fn retained_worktree_effect_tags_match_cleanup_effect_serialization() {
+    for (effect, tag) in [
+        (
+            CleanupEffect::RemoveWorktree {
+                identity: Value::Null,
+            },
+            RETAINED_WORKTREE_EFFECTS[0],
+        ),
+        (
+            CleanupEffect::SaveWorktreeRef {
+                identity: Value::Null,
+            },
+            RETAINED_WORKTREE_EFFECTS[1],
+        ),
+    ] {
+        assert_eq!(json!(effect)["kind"], tag);
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum EffectFailure {
     NotSent,
@@ -1496,6 +1520,7 @@ mod tests {
 
     async fn put_agent(store: &RuntimeStore, mut record: Value) {
         record["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
+        record["accountKey"] = json!("default");
         record["id"] = json!("cleanup-agent");
         record["rootId"] = json!("cleanup-agent");
         record["epoch"] = json!(7);
@@ -1620,7 +1645,7 @@ mod tests {
             "workspaceCleanupIntent":super::queued_cleanup_intent("cleanup-agent", 7, CleanupAction::Archive)
         })).await;
         let other = AgentRecord::from_value(json!({"provider":studio_runtime_schema::ProviderKind::Codex,
-            "id":"z-unrelated", "rootId":"z-unrelated", "epoch":1, "status":"paused", "deletedAt":1,
+            "id":"z-unrelated", "rootId":"z-unrelated", "epoch":1, "status":"paused", "accountKey":"default", "deletedAt":1,
             "workspaceCleanupIntent":super::queued_cleanup_intent("z-unrelated", 1, CleanupAction::Delete)
         })).expect("unrelated record");
         store

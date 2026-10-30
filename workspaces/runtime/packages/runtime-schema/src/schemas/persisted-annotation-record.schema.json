@@ -1,38 +1,14 @@
 {
-  "$defs": {
-    "JsonValue": {}
-  },
-  "additionalProperties": {
-    "$ref": "#/$defs/JsonValue"
-  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
   "properties": {
     "agent": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Agent"
+      "type": ["string", "null"]
     },
     "created": {
-      "anyOf": [
-        {
-          "type": "number"
-        },
-        {
-          "type": "integer"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Created"
+      "type": ["number", "null"]
     },
     "id": {
-      "title": "Id",
       "type": "string"
     },
     "line": {
@@ -44,33 +20,16 @@
         {
           "type": "null"
         }
-      ],
-      "title": "Line"
+      ]
     },
     "path": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Path"
+      "type": ["string", "null"]
     },
     "text": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Text"
+      "type": ["string", "null"]
     }
   },
   "required": ["id"],
-  "title": "PersistedAnnotationRecord",
+  "title": "AnnotationRecord",
   "type": "object"
 }

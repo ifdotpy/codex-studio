@@ -1,10 +1,11 @@
 //! HTTP adaptation for project secrets and the platform-bound vault actions.
 
-use super::extractors::ApiRawJson;
+use super::extractors::ApiJson;
 use super::manifest::{OperationStatus, RouteGroup, post};
 use crate::error::ApiError;
 use crate::router::HttpState;
 use axum::{Json, extract::State, http::StatusCode};
+use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -21,6 +22,60 @@ const VAULT_JOB_CAPACITY: usize = 50;
 const VAULT_JOB_MESSAGE_CAPACITY: usize = 256;
 const INVALID_LOGIN_JSON: &str = "layr-desk aws-login returned invalid JSON";
 const OVERSIZED_PROGRESS_LINE: &str = "layr-desk emitted an oversized progress line";
+
+// Desk is a separate workspace. These partial views deliberately retain its
+// historical permissive command-output admission after full JSON parsing.
+#[derive(Deserialize)]
+struct DeskLogin {
+    #[serde(default, deserialize_with = "desk_text")]
+    page: Option<String>,
+    #[serde(default, deserialize_with = "desk_present")]
+    code: Option<Value>,
+}
+#[derive(Deserialize)]
+struct DeskDeployment {
+    #[serde(default, deserialize_with = "desk_text")]
+    site: Option<String>,
+}
+#[derive(Default, Deserialize)]
+struct DeskServiceStatus {
+    #[serde(default, deserialize_with = "desk_bool")]
+    installed: Option<bool>,
+    #[serde(default, deserialize_with = "desk_text")]
+    program: Option<String>,
+    #[serde(default, deserialize_with = "desk_text")]
+    site: Option<String>,
+    #[serde(default, deserialize_with = "desk_text")]
+    at: Option<String>,
+}
+#[derive(Deserialize)]
+struct DeskProjects {
+    projects: Vec<Value>,
+}
+#[derive(Deserialize)]
+struct DeskProject {
+    name: String,
+    unlocked: bool,
+}
+fn desk_text<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(Value::deserialize(d)?.as_str().map(str::to_owned))
+}
+fn desk_bool<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<bool>, D::Error> {
+    Ok(Value::deserialize(d)?.as_bool())
+}
+fn desk_present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Value>, D::Error> {
+    Value::deserialize(d).map(Some)
+}
+
+fn desk_service_status(raw: &str) -> Result<DeskServiceStatus, serde_json::Error> {
+    let value: Value = serde_json::from_str(raw)?;
+    Ok(
+        studio_runtime_schema::json_object::JsonObject::<DeskServiceStatus>::deserialize(&value)
+            .ok()
+            .map(|view| view.0)
+            .unwrap_or_default(),
+    )
+}
 
 // The OpenAPI resource owns the shared job-kind contract.
 use crate::generated::VaultJobProgressResourceJob as VaultJobKind;
@@ -266,7 +321,7 @@ async fn guest_call(
 
 async fn list_secrets(
     State(state): State<HttpState>,
-    ApiRawJson(body): ApiRawJson<crate::generated::ProjectSecretsListRequest>,
+    ApiJson(body): ApiJson<crate::generated::ProjectSecretsListRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let project_id = body.project_id;
     guest_call(&state, false, move |rpc| {
@@ -277,7 +332,7 @@ async fn list_secrets(
 
 async fn set_secret(
     State(state): State<HttpState>,
-    ApiRawJson(body): ApiRawJson<crate::generated::ProjectSecretSetRequest>,
+    ApiJson(body): ApiJson<crate::generated::ProjectSecretSetRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let project_id = body.project_id;
     let name = body.name;
@@ -291,7 +346,7 @@ async fn set_secret(
 
 async fn remove_secret(
     State(state): State<HttpState>,
-    ApiRawJson(body): ApiRawJson<crate::generated::ProjectSecretRemoveRequest>,
+    ApiJson(body): ApiJson<crate::generated::ProjectSecretRemoveRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let project_id = body.project_id;
     let name = body.name;
@@ -304,7 +359,7 @@ async fn remove_secret(
 
 async fn aws_login(
     State(state): State<HttpState>,
-    ApiRawJson(body): ApiRawJson<crate::generated::VaultLoginRequest>,
+    ApiJson(body): ApiJson<crate::generated::VaultLoginRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let profile = body.profile;
     let request_id = body.request_id;
@@ -333,7 +388,7 @@ async fn aws_login(
 
 async fn pull(
     State(state): State<HttpState>,
-    ApiRawJson(body): ApiRawJson<crate::generated::VaultPullRequest>,
+    ApiJson(body): ApiJson<crate::generated::VaultPullRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let project_id = body.project_id;
     let request_id = body.request_id;
@@ -398,7 +453,7 @@ async fn pull(
 
 async fn setup(
     State(state): State<HttpState>,
-    ApiRawJson(body): ApiRawJson<crate::generated::VaultSetupRequest>,
+    ApiJson(body): ApiJson<crate::generated::VaultSetupRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let project_id = body.project_id;
     let request_id = body.request_id;
@@ -448,7 +503,7 @@ async fn setup(
 
 async fn setup_facts(
     State(state): State<HttpState>,
-    ApiRawJson(body): ApiRawJson<crate::generated::VaultSetupFactsRequest>,
+    ApiJson(body): ApiJson<crate::generated::VaultSetupFactsRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let project_id = &body.project_id;
     let requested_prefix = body.prefix.as_ref().and_then(Option::as_deref);
@@ -641,11 +696,16 @@ fn login_progress(
     line: &str,
 ) -> Result<(), &'static str> {
     let value = serde_json::from_str::<Value>(line).map_err(|_| INVALID_LOGIN_JSON)?;
-    if let Some(page) = value.get("page").and_then(Value::as_str)
+    let view =
+        studio_runtime_schema::json_object::JsonObject::<DeskLogin>::deserialize(&value).ok();
+    if let Some(view) = view
+        && let Some(page) = view.0.page.as_deref()
         && page.starts_with("https://")
     {
-        let code = value
-            .get("code")
+        let code = view
+            .0
+            .code
+            .as_ref()
             .map(|code| match code {
                 Value::String(value) => value.clone(),
                 other @ Value::Null
@@ -838,7 +898,13 @@ async fn run_setup_job(job: SetupJob) {
                 .lines()
                 .rfind(|line| !line.trim().is_empty())
                 .and_then(|line| serde_json::from_str::<Value>(line.trim()).ok())
-                .and_then(|value| value.get("site").and_then(Value::as_str).map(str::to_owned));
+                .and_then(|value| {
+                    studio_runtime_schema::json_object::JsonObject::<DeskDeployment>::deserialize(
+                        &value,
+                    )
+                    .ok()
+                })
+                .and_then(|view| view.0.site);
             match site {
                 Some(site) => {
                     if let Err(error) = refresh_mac_views(&vm_state_dir, &host_command).await {
@@ -931,7 +997,7 @@ fn desk_reason(stderr: &str, stdout: &str) -> String {
 
 async fn unlock(
     State(state): State<HttpState>,
-    ApiRawJson(body): ApiRawJson<crate::generated::VaultUnlockRequest>,
+    ApiJson(body): ApiJson<crate::generated::VaultUnlockRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let project_id = body.project_id;
     let words = body.words;
@@ -1118,13 +1184,10 @@ async fn refresh_mac_views(
             &mut discard_output,
         )
         .await?;
-    let mut service = serde_json::from_str::<Value>(&service_status.stdout)
+    let mut service = desk_service_status(&service_status.stdout)
         .map_err(|_| studio_runtime_services::vault::VaultError::DeskFailed)?;
     let program = host_command.desk_program()?;
-    let current_program = service
-        .get("program")
-        .and_then(Value::as_str)
-        .map(std::path::PathBuf::from);
+    let current_program = service.program.as_deref().map(std::path::PathBuf::from);
     let canonical_program =
         studio_runtime_store::path_identity::CanonicalPath::existing_async(program.clone())
             .await
@@ -1140,8 +1203,8 @@ async fn refresh_mac_views(
         }
         None => false,
     };
-    let current = service.get("installed").and_then(Value::as_bool) == Some(true)
-        && service.get("site").and_then(Value::as_str) == Some(first_site.trim_end_matches('/'))
+    let current = service.installed == Some(true)
+        && service.site.as_deref() == Some(first_site.trim_end_matches('/'))
         && program_matches;
     if host_command.is_bundled_desk()? && !current {
         let result = host_command
@@ -1159,7 +1222,7 @@ async fn refresh_mac_views(
         if result.code != Some(0) {
             return Err(studio_runtime_services::vault::VaultError::DeskFailed);
         }
-        service = serde_json::from_str::<Value>(
+        service = desk_service_status(
             &host_command
                 .run_desk(
                     &["service".to_owned(), "status".to_owned()],
@@ -1172,12 +1235,11 @@ async fn refresh_mac_views(
         .map_err(|_| studio_runtime_services::vault::VaultError::DeskFailed)?;
     }
     let disk = service
-        .get("at")
-        .and_then(Value::as_str)
+        .at
+        .as_deref()
         .filter(|_| {
-            service.get("installed").and_then(Value::as_bool) == Some(true)
-                && service.get("site").and_then(Value::as_str)
-                    == Some(first_site.trim_end_matches('/'))
+            service.installed == Some(true)
+                && service.site.as_deref() == Some(first_site.trim_end_matches('/'))
         })
         .map(str::to_owned);
     let mut unlocked_by_site = BTreeMap::new();
@@ -1199,18 +1261,22 @@ async fn refresh_mac_views(
         }
         let status = serde_json::from_str::<Value>(&result.stdout)
             .map_err(|_| studio_runtime_services::vault::VaultError::DeskFailed)?;
-        let unlocked = status
-            .get("projects")
-            .and_then(Value::as_array)
-            .ok_or(studio_runtime_services::vault::VaultError::DeskFailed)?
-            .iter()
-            .filter_map(|project| {
-                Some((
-                    project.get("name")?.as_str()?.to_owned(),
-                    project.get("unlocked")?.as_bool()?,
-                ))
-            })
-            .collect::<BTreeMap<_, _>>();
+        let unlocked =
+            studio_runtime_schema::json_object::JsonObject::<DeskProjects>::deserialize(&status)
+                .ok()
+                .map(|view| view.0.projects)
+                .ok_or(studio_runtime_services::vault::VaultError::DeskFailed)?
+                .iter()
+                .filter_map(|project| {
+                    let project =
+                        studio_runtime_schema::json_object::JsonObject::<DeskProject>::deserialize(
+                            project,
+                        )
+                        .ok()?
+                        .0;
+                    Some((project.name, project.unlocked))
+                })
+                .collect::<BTreeMap<_, _>>();
         unlocked_by_site.insert(site.clone(), unlocked);
     }
     studio_runtime_process::blocking_pool::spawn_blocking(
@@ -1301,6 +1367,113 @@ mod tests {
     use studio_runtime_services::project_secrets::{GuestCallError, ProjectSecretsError};
     use tower::ServiceExt;
 
+    fn desk_producer_fields_match(main: &str, service: &str, setup: &str) -> bool {
+        let Some((_, login)) = main.split_once("Command::AwsLogin { profile, json } =>") else {
+            return false;
+        };
+        let Some((login, _)) = login.split_once("Command::") else {
+            return false;
+        };
+        let Some((_, status)) = main.split_once("Command::Status { site, json } =>") else {
+            return false;
+        };
+        let Some((status, _)) = status.split_once("Command::Unlock") else {
+            return false;
+        };
+        let Some((_, service)) = service.split_once("if let Action::Status = action") else {
+            return false;
+        };
+        let Some((service, _)) = service.split_once("return Ok(())") else {
+            return false;
+        };
+        let Some((_, terminal_receipt)) = setup.rsplit_once("println!(") else {
+            return false;
+        };
+        let Some((terminal_receipt, _)) = terminal_receipt.split_once(");") else {
+            return false;
+        };
+        login.contains(r#"{"page": page, "code": code}"#)
+            && status.contains(r#"{"name": name, "unlocked": unlocked}"#)
+            && status.contains(r#"{"site": site, "projects": projects}"#)
+            && ["installed", "program", "site", "at"]
+                .iter()
+                .all(|field| service.contains(&format!("\"{field}\":")))
+            && terminal_receipt.contains("\"site\": site")
+    }
+
+    #[test]
+    fn desk_partial_views_track_producer_fields_and_legacy_json() {
+        use serde::Deserialize;
+        use studio_runtime_schema::json_object::JsonObject;
+        let main = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../apps/layr-desk/crates/layr-desk/src/main.rs"
+        ));
+        let service = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../apps/layr-desk/crates/layr-desk/src/service.rs"
+        ));
+        let setup = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../apps/layr-desk/crates/layr-desk/src/setup.rs"
+        ));
+        assert!(desk_producer_fields_match(main, service, setup));
+        let changed_setup = setup.replace(
+            r#"json!({"stack": stack, "site": site, "bucket": bucket_name})"#,
+            r#"json!({"stack": stack, "removed_site": site, "bucket": bucket_name})"#,
+        );
+        assert_ne!(changed_setup, setup);
+        assert!(
+            changed_setup.contains("\"site\": site"),
+            "storage still has the old field"
+        );
+        assert!(!desk_producer_fields_match(main, service, &changed_setup));
+        for raw in [
+            "null",
+            "[]",
+            "{}",
+            r#"{"page":42,"code":null}"#,
+            r#"{"page":"https://x","code":null}"#,
+            r#"{"page":"old","page":"https://x","code":[1]}"#,
+        ] {
+            let value: Value = serde_json::from_str(raw).unwrap();
+            let view = JsonObject::<super::DeskLogin>::deserialize(&value)
+                .ok()
+                .map(|v| v.0);
+            assert_eq!(
+                view.as_ref().and_then(|v| v.page.as_deref()),
+                value.get("page").and_then(Value::as_str)
+            );
+            assert_eq!(
+                view.as_ref().and_then(|v| v.code.as_ref()),
+                value.get("code")
+            );
+        }
+        for raw in [
+            "null",
+            "[]",
+            "{}",
+            r#"{"installed":true,"site":"s","program":null,"at":7}"#,
+            r#"{"installed":false,"installed":true,"site":"s"}"#,
+        ] {
+            let value: Value = serde_json::from_str(raw).unwrap();
+            let view = super::desk_service_status(raw).unwrap();
+            assert_eq!(
+                view.installed,
+                value.get("installed").and_then(Value::as_bool)
+            );
+            assert_eq!(
+                view.site.as_deref(),
+                value.get("site").and_then(Value::as_str)
+            );
+            assert_eq!(
+                view.program.as_deref(),
+                value.get("program").and_then(Value::as_str)
+            );
+            assert_eq!(view.at.as_deref(), value.get("at").and_then(Value::as_str));
+        }
+    }
+
     #[tokio::test]
     async fn vault_job_progress_publishes_every_changed_receipt_without_persistence() {
         use axum::response::IntoResponse;
@@ -1359,7 +1532,12 @@ mod tests {
                 );
                 let view = ResourceChanges {
                     cursor: state.sync_changes.snapshot(),
-                    resources: vec![resource.clone()],
+                    resources: vec![
+                        crate::routes::sync_stream::SubscribedResource::new(
+                            serde_json::from_value(resource.clone()).expect("resource fixture"),
+                        )
+                        .expect("resource identity"),
+                    ],
                     versions: vec![state.sync_changes.snapshot().revision],
                     entity_reset: false,
                     overflow: false,
@@ -1473,7 +1651,7 @@ mod tests {
 
     fn setup_refresh_fake_script(refresh_succeeds: bool) -> String {
         let service_status = if refresh_succeeds {
-            "printf '{\"installed\":true,\"site\":\"https://desk.example\",\"at\":\"/tmp/disk\",\"program\":\"%s\"}\\n' \"$0\""
+            "printf '{\"installed\":true,\"site\":\"https://desk.example\",\"at\":\"%s.disk\",\"program\":\"%s\"}\\n' \"$0\" \"$0\""
         } else {
             "exit 92"
         };
@@ -1810,8 +1988,76 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        assert_eq!(mac, json!({"unlocked":true,"disk":"/tmp/disk/project-one"}));
+        assert_eq!(
+            mac,
+            json!({"unlocked":true,"disk":state.path().join("layr-desk.disk/project-one")})
+        );
         assert_eq!(receiver.borrow_and_update().revision, 1);
+        owner.shutdown().await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn setup_fake_status_skips_partial_rows_and_last_valid_name_wins() {
+        let state = tempfile::tempdir().unwrap();
+        vault_project(state.path());
+        let script = r#"printf '%s\n' "$1" >> "$0.calls"
+if [ "$1" = deploy ]; then
+ printf '%s\n' 'progress' '{"site":"ignored","site":"https://desk.example/"}'
+elif [ "$1" = service ]; then
+ printf '{"installed":true,"site":"https://desk.example","at":"%s.disk","program":"%s"}\n' "$0" "$0"
+ exit 7
+elif [ "$1" = status ]; then
+ printf '%s\n' '{"projects":[null,{"name":"project-one","unlocked":false},{"name":"project-one","unlocked":"bad"},{"name":"project-one","unlocked":true}]}'
+else exit 94; fi"#;
+        let (owner, client) = test_job_client().await;
+        let id = test_request_id("partial-setup");
+        reserve_job(
+            &client,
+            VaultJobKind::Setup,
+            &id,
+            json!({"requestId":id,"state":"running"}),
+        )
+        .await
+        .unwrap();
+        run_setup_job(SetupJob {
+            request_id: id.clone(),
+            prefix: "project-one".into(),
+            profile: "fixture".into(),
+            region: "eu-central-1".into(),
+            writer: "writer".into(),
+            host_command: fake_host_command(state.path(), script),
+            vm_state_dir: state.path().join("linux-vm"),
+            sync_changes: Arc::new(ChangeNotificationHub::new()),
+            job_client: client.clone(),
+        })
+        .await;
+        let job = find_job(&client, VaultJobKind::Setup, &id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(job["site"], "https://desk.example/");
+        assert_eq!(job["state"], "done");
+        let mac: Value = serde_json::from_slice(
+            &std::fs::read(
+                state
+                    .path()
+                    .join("linux-vm/layr-projects/p1/vault-mac.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            mac,
+            json!({"unlocked":true,"disk":state.path().join("layr-desk.disk/project-one")})
+        );
+        assert_eq!(
+            std::fs::read_to_string(state.path().join("layr-desk.calls"))
+                .unwrap()
+                .lines()
+                .count(),
+            3
+        );
         owner.shutdown().await.unwrap();
     }
 
@@ -1998,7 +2244,7 @@ mod tests {
         );
         let replay = super::pull(
             axum::extract::State(without_command),
-            super::ApiRawJson(crate::generated::VaultPullRequest::new(
+            super::ApiJson(crate::generated::VaultPullRequest::new(
                 "p1".into(),
                 "pull-fixture".into(),
             )),
@@ -2129,6 +2375,66 @@ mod tests {
             .unwrap();
         assert_eq!(job["state"], "failed");
         assert_eq!(job["error"], INVALID_LOGIN_JSON);
+        owner.shutdown().await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn login_fake_command_keeps_last_page_and_null_code() {
+        let root = tempfile::tempdir().unwrap();
+        let (owner, client) = test_job_client().await;
+        let id = test_request_id("partial-login");
+        reserve_job(
+            &client,
+            VaultJobKind::Login,
+            &id,
+            json!({"requestId":id,"state":"running"}),
+        )
+        .await
+        .unwrap();
+        let script = "printf '%s\\n' 'null' '{\"page\":\"https://old\",\"code\":123}' '{\"page\":\"old\",\"page\":\"https://new\",\"code\":null}'";
+        run_login_job(
+            id.clone(),
+            "fixture".into(),
+            fake_host_command(root.path(), script),
+            client.clone(),
+        )
+        .await;
+        let job = find_job(&client, VaultJobKind::Login, &id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(job["page"], "https://new");
+        assert_eq!(job["code"], "null");
+        assert_eq!(job["state"], "done");
+        owner.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn login_progress_preserves_missing_code_and_character_limit() {
+        let (owner, client) = test_job_client().await;
+        let id = test_request_id("login-code");
+        reserve_job(
+            &client,
+            VaultJobKind::Login,
+            &id,
+            json!({"requestId":id,"state":"running"}),
+        )
+        .await
+        .unwrap();
+        super::login_progress(&client, &id, r#"{"page":"https://example.test"}"#).unwrap();
+        let job = find_job(&client, VaultJobKind::Login, &id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(job["code"], "");
+        let line = json!({"page":"https://example.test", "code":"é".repeat(45)}).to_string();
+        super::login_progress(&client, &id, &line).unwrap();
+        let job = find_job(&client, VaultJobKind::Login, &id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(job["code"].as_str().unwrap().chars().count(), 40);
         owner.shutdown().await.unwrap();
     }
 

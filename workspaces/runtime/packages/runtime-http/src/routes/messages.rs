@@ -13,21 +13,6 @@ use super::manifest::{OperationStatus, RouteGroup, get, post};
 use crate::error::ApiError;
 use crate::router::HttpState;
 
-#[derive(serde::Deserialize)]
-struct ChatCreate {
-    id: String,
-    name: String,
-    members: Vec<String>,
-}
-
-#[derive(serde::Deserialize)]
-struct Connection {
-    source: String,
-    target: String,
-    #[serde(default = "default_connected")]
-    connected: bool,
-}
-
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
         get("/api/agent-chat", OperationStatus::Implemented, agent_chat),
@@ -37,12 +22,6 @@ pub(crate) fn routes() -> RouteGroup {
             "/api/messages/receipts",
             OperationStatus::Implemented,
             receipts,
-        ),
-        post("/api/chats", OperationStatus::Implemented, create_chat),
-        post(
-            "/api/connections",
-            OperationStatus::Implemented,
-            connect_chat,
         ),
         post(
             "/api/room/delete",
@@ -110,36 +89,6 @@ fn message_record(message: coordination::ValidatedMessage) -> crate::generated::
         error: None,
         status: None,
     }
-}
-
-async fn create_chat(
-    State(state): State<HttpState>,
-    ApiJson(body): ApiJson<ChatCreate>,
-) -> Result<Json<crate::generated::ChatCreated>, ApiError> {
-    let store = state.store.ok_or_else(ApiError::internal)?;
-    let value = store
-        .transaction_with_error(move |transaction| {
-            coordination::create_chat(transaction, &body.id, &body.name, &body.members)
-        })
-        .await
-        .map_err(coordination_error)?;
-    let result = super::generated_json::<crate::generated::ChatCreated>(value)?;
-    Ok(Json(result))
-}
-
-async fn connect_chat(
-    State(state): State<HttpState>,
-    ApiJson(body): ApiJson<Connection>,
-) -> Result<Json<crate::generated::ChatReceipt>, ApiError> {
-    let store = state.store.ok_or_else(ApiError::internal)?;
-    let value = store
-        .transaction_with_error(move |transaction| {
-            coordination::connect_chat(transaction, &body.source, &body.target, body.connected)
-        })
-        .await
-        .map_err(coordination_error)?;
-    let result = super::generated_json::<crate::generated::ChatReceipt>(value)?;
-    Ok(Json(result))
 }
 
 pub(super) async fn post_message(
@@ -366,10 +315,6 @@ async fn delete_room(
         .await
         .map_err(coordination_error)?;
     Ok(Json(value))
-}
-
-fn default_connected() -> bool {
-    true
 }
 
 fn coordination_error(error: CoordinationError) -> ApiError {

@@ -105,7 +105,15 @@ export interface BridgeTurnParams
   effort?: Options["effort"] | undefined;
   serviceTier?: string | undefined;
   claudeCommand?: string | undefined;
-  idleCompaction?: Pick<CacheReport, "prefix" | "requestId"> | undefined;
+  // Rust sends the mode with the cache report; its enum in runtime-schema owns the strings.
+  idleCompaction?:
+    | (Pick<CacheReport, "prefix" | "requestId"> & {
+        mode?: string | undefined;
+      })
+    | undefined;
+  // Rust sets these on ordinary input (see the idle summary return path).
+  idleCompactionMode?: string | undefined;
+  idleSummaryRosterIncluded?: boolean | undefined;
 }
 export type BridgeThreadResult = {
   thread: Thread;
@@ -506,8 +514,10 @@ export interface BridgeNotifications {
     delta: string;
   };
   "thread/idleCompaction/updated": BridgeThreadParams & {
-    turnId: string;
-    report: CacheReport;
+    turnId?: string | undefined;
+    report?: CacheReport | undefined;
+    // Set when the separate summary query finished; it carries no cache report.
+    preparedSummary?: { requestId: string } | undefined;
   };
   "thread/shellPolicy/updated": BridgeThreadParams & {
     report: ShellPolicyReport;

@@ -6,7 +6,7 @@ pub async fn peer_team_write(
     store: Arc<RuntimeStore>,
     body: Value,
     default_account: String,
-    known_accounts: Vec<Value>,
+    known_accounts: Vec<crate::account_policy::PublicAccount>,
 ) -> Result<Value, ProjectsError> {
     let action = body
         .get("action")

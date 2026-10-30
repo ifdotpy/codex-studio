@@ -154,6 +154,33 @@ fn roster_is_delivered_only_once_per_accepted_compaction_epoch() {
 }
 
 #[test]
+fn an_idle_summary_return_uses_the_current_roster_on_that_input_with_the_same_budget() {
+    let mut s = snapshot();
+    let rows = [event("return", "user", "continue".into())];
+    s.team_state = Some(
+        json!({"children":[{"id":"worker","status":"running"}],"tasks":[],"monitors":[],"pendingResults":[]}),
+    );
+    let before = compile(&s, &rows).expect("before idle");
+    s.delivered_manifests.push(before.manifest);
+    // The worker finishes during idle. Preparation reads this authoritative
+    // projection, not the roster retained in the prepared native summary.
+    s.team_state = Some(
+        json!({"children":[],"tasks":[{"id":"work","owner":"worker","status":"review"}],"monitors":[],"pendingResults":[{"id":"worker-finished","status":"pending"}]}),
+    );
+    s.idle_summary_return = true;
+    let output = text(&compile(&s, &rows).expect("return from idle"));
+    assert!(output.contains("[Studio team state after compaction]"));
+    assert!(output.contains("worker-finished"));
+    assert!(output.contains("review"));
+    assert!(!output.contains("\"status\":\"running\""));
+    assert!(output.len() <= STUDIO_INPUT_BYTES);
+    assert_eq!(
+        s.actor.epoch.1, 0,
+        "preparation must not advance the actual compaction epoch"
+    );
+}
+
+#[test]
 fn aggregate_limit_handles_many_wrappers_long_ids_and_multibyte_text() {
     let mut s = snapshot();
     s.actor.epoch.1 = 1;

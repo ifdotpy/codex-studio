@@ -109,25 +109,28 @@ fn recover_requests(tx: &Transaction<'_>) -> Result<usize, MonitorError> {
             }
             _ => continue,
         }
-        let request = match RequestRecord::from_value(value) {
-            Ok(request) => request,
-            Err(error) => {
-                eprintln!("startup request recovery skipped row id={id}: {error}");
-                continue;
-            }
+        let Some(payload_id) = value.get("id").and_then(Value::as_str).map(str::to_owned) else {
+            eprintln!("startup request recovery skipped row id={id}: record id must be a string");
+            continue;
         };
         tx.execute_batch("SAVEPOINT startup_request_recovery_row")
             .map_err(studio_runtime_store::StoreError::from)?;
         let apply = (|| {
+            let request = RequestRecord::from_value(value).map_err(|_| {
+                studio_runtime_store::StoreError::InvalidStoredObject {
+                    table: "runtime_requests",
+                    id: payload_id,
+                }
+            })?;
             Table::<RequestRecord>::new(tx).put(&request)?;
-            let view = crate::sync_views::project_persisted_record("request", request.value())
+            let view = crate::sync_views::project_persisted_record("request", &request.value())
                 .ok_or(MonitorError::Refused("Invalid request projection"))?;
             SyncDocumentsRepository::put_entity(
                 tx,
                 "request",
                 request.id(),
                 view,
-                request.value()["status"] != "pending",
+                request.status() != Some("pending"),
             )?;
             Ok::<(), MonitorError>(())
         })();
@@ -320,15 +323,12 @@ pub fn snapshot(
 ) -> Result<(MonitorSnapshot, AgentRecord), MonitorError> {
     let row = MonitorsRepository::get(transaction, id)?
         .ok_or(MonitorError::Refused("Unknown command watch"))?;
-    let agent_id = row
-        .get("agent")
-        .and_then(Value::as_str)
-        .ok_or_else(|| invalid(id, "agent"))?;
+    let agent_id = row.agent().ok_or_else(|| invalid(id, "agent"))?;
     let actor = AgentRepository::get(transaction, &AgentId::from(agent_id))?
         .ok_or(MonitorError::Refused("Unknown agent"))?;
     let actor_value =
         serde_json::to_value(&actor).map_err(studio_runtime_store::StoreError::from)?;
-    let snapshot = MonitorSnapshot::checked(row.value().clone(), actor_value)?;
+    let snapshot = MonitorSnapshot::checked_stored(&row, actor_value)?;
     Ok((snapshot, actor))
 }
 
@@ -378,11 +378,11 @@ pub async fn answer_approval(
     let data = data.clone();
     store
         .transaction_with(move |tx| {
-            let Some(request) = Table::<RequestRecord>::new(tx).get(&request_id.to_owned())? else {
+            let Some(mut request) = Table::<RequestRecord>::new(tx).get(&request_id.to_owned())?
+            else {
                 return Ok(None);
             };
-            let mut request = request.value().clone();
-            if request.get("method").and_then(Value::as_str) != Some("monitor/approve") {
+            if request.method() != Some("monitor/approve") {
                 return Ok(None);
             }
             let decision = data
@@ -392,7 +392,8 @@ pub async fn answer_approval(
                 .ok_or(MonitorError::Refused("Invalid monitor approval decision"))?;
             let accepted = decision == "accept";
             let monitor_id = request
-                .pointer("/params/monitorId")
+                .extension("params")
+                .and_then(|params| params.get("monitorId"))
                 .and_then(Value::as_str)
                 .filter(|id| !id.is_empty())
                 .ok_or(MonitorError::InvalidStored {
@@ -401,12 +402,12 @@ pub async fn answer_approval(
                 })?;
             let (snapshot, actor) = snapshot(tx, monitor_id)?;
             event_write::refuse_remote(&actor)?;
-            if request.get("agent").and_then(Value::as_str) != Some(snapshot.agent()) {
+            if request.agent() != Some(snapshot.agent()) {
                 return Err(MonitorError::Refused("Monitor approval identity changed"));
             }
-            if request["status"] == "answered" {
+            if request.status() == Some("answered") {
                 let saved = request
-                    .get("answerDecision")
+                    .extension("answerDecision")
                     .and_then(Value::as_str)
                     .or_else(|| match snapshot.record()["status"].as_str() {
                         Some("starting" | "running" | "completed" | "failed") => Some("accept"),
@@ -426,7 +427,7 @@ pub async fn answer_approval(
                     accepted,
                 }));
             }
-            if request.get("status").and_then(Value::as_str) != Some("pending")
+            if request.status() != Some("pending")
                 || snapshot.record()["status"] != "approval"
                 || snapshot.record()["epoch"].as_i64() != Some(actor.epoch)
                 || actor.auto_wake != Some(true)
@@ -448,11 +449,9 @@ pub async fn answer_approval(
                 if let Some(rule_id) = monitor.get("ruleId").and_then(Value::as_str) {
                     let rule = studio_runtime_store::RulesRepository::get(tx, rule_id)?
                         .ok_or(MonitorError::Refused("Unknown monitor rule"))?;
-                    let rule_snapshot = crate::rules_engine::RuleSnapshot::from_records(
-                        rule.value().clone(),
-                        actor.value(),
-                    )
-                    .map_err(crate::rules_tick::RulesTickError::from)?;
+                    let rule_snapshot =
+                        crate::rules_engine::RuleSnapshot::from_stored(&rule, actor.value())
+                            .map_err(crate::rules_tick::RulesTickError::from)?;
                     let check = rule_snapshot.check();
                     if check.monitor_id != monitor_id {
                         return Err(MonitorError::Refused("Monitor rule identity changed"));
@@ -486,15 +485,26 @@ pub async fn answer_approval(
             repository::put(tx, monitor)?;
             crate::agent_progress::publish_owner(tx, &actor.id.0)?;
             crate::sync_policy::publish_monitor_change(tx, Some(&snapshot), &after)?;
-            request["status"] = json!("answered");
-            request["answerDecision"] = json!(decision);
-            request["answerSignature"] = json!(event_write::request_signature(
-                &json!({"decision":decision})
-            ));
-            request["answeredBy"] = json!("user");
-            request["answeredAt"] = json!(now);
-            request["decision"] = json!(decision);
-            let request = RequestRecord::from_value(request.clone())
+            request.set_status("answered");
+            request
+                .set_extension("answerDecision", json!(decision))
+                .map_err(studio_runtime_store::StoreError::from)?;
+            request
+                .set_extension(
+                    "answerSignature",
+                    json!(event_write::request_signature(
+                        &json!({"decision":decision})
+                    )),
+                )
+                .map_err(studio_runtime_store::StoreError::from)?;
+            request
+                .set_extension("answeredBy", json!("user"))
+                .map_err(studio_runtime_store::StoreError::from)?;
+            request
+                .set_extension("answeredAt", json!(now))
+                .map_err(studio_runtime_store::StoreError::from)?;
+            request
+                .set_extension("decision", json!(decision))
                 .map_err(studio_runtime_store::StoreError::from)?;
             Table::<RequestRecord>::new(tx).put(&request)?;
             SyncDocumentsRepository::put_entity(tx, "request", &request_id, json!({}), true)?;
@@ -903,7 +913,7 @@ pub fn apply_with_rule(
             }
             Effect::ExpireApprovals => {
                 for mut request in repository::pending_approvals(tx, before.id())? {
-                    request.set("status", json!("expired"));
+                    request.set_status("expired");
                     Table::new(tx).put(&request)?;
                     SyncDocumentsRepository::put_entity(
                         tx,
@@ -1471,8 +1481,8 @@ pub async fn stored_create_result(
                 .and_then(Value::as_str)
                 .ok_or(MonitorError::Refused("Invalid monitor identity"))?;
             match MonitorsRepository::get(tx, id)? {
-                Some(previous) if policy::same_request(previous.value(), &record) => {
-                    Ok(Some(previous.value().clone()))
+                Some(previous) if policy::same_request(&previous.value(), &record) => {
+                    Ok(Some(previous.value()))
                 }
                 Some(_) => Err(MonitorError::Refused(
                     "This monitor request id has different content",
@@ -1512,12 +1522,12 @@ pub fn create_in_transaction(
         .and_then(Value::as_str)
         .ok_or(MonitorError::Refused("Invalid monitor identity"))?;
     if let Some(previous) = MonitorsRepository::get(tx, id)? {
-        if !policy::same_request(previous.value(), &record) {
+        if !policy::same_request(&previous.value(), &record) {
             return Err(MonitorError::Refused(
                 "This monitor request id has different content",
             ));
         }
-        return Ok(previous.value().clone());
+        return Ok(previous.value());
     }
     if actor.epoch != epoch || actor.auto_wake != Some(true) {
         return Err(MonitorError::Refused(
@@ -1536,7 +1546,7 @@ pub fn create_in_transaction(
             "params":{"monitorId":id,"command":record["command"],"cwd":record["cwd"]}, "status":"pending", "createdAt":now
         })).map_err(studio_runtime_store::StoreError::from)?;
         Table::new(tx).put(&approval)?;
-        let view = crate::sync_views::project_persisted_record("request", approval.value())
+        let view = crate::sync_views::project_persisted_record("request", &approval.value())
             .ok_or_else(|| invalid(id, "request"))?;
         SyncDocumentsRepository::put_entity(tx, "request", approval.id(), view, false)?;
     }
@@ -1545,47 +1555,79 @@ pub fn create_in_transaction(
     Ok(record)
 }
 
+/// Checked restart fields and the digest of the exact validated JSON request.
+#[derive(Debug)]
+pub struct RestartRequest {
+    id: String,
+    agent: String,
+    epoch: i64,
+    request_id: String,
+    account_key: String,
+    output_patterns: Vec<String>,
+    signature: String,
+}
+
+impl RestartRequest {
+    pub fn agent(&self) -> &str {
+        &self.agent
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for RestartRequest {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Wire {
+            id: String,
+            agent: String,
+            epoch: i64,
+            request_id: String,
+            account_key: String,
+            output_patterns: Vec<String>,
+        }
+        let raw = <Value as serde::Deserialize>::deserialize(deserializer)?;
+        let signature = crate::process_controls::digest(&raw);
+        let wire: Wire = serde::Deserialize::deserialize(raw).map_err(D::Error::custom)?;
+        Ok(Self {
+            id: wire.id,
+            agent: wire.agent,
+            epoch: wire.epoch,
+            request_id: wire.request_id,
+            account_key: wire.account_key,
+            output_patterns: wire.output_patterns,
+            signature,
+        })
+    }
+}
+
 /// A confirmed restart admits one replacement and requests cancellation atomically.
 /// The replacement cannot start until the source has a confirmed terminal state.
 pub fn restart_in_transaction(
     tx: &Transaction<'_>,
-    body: &Value,
+    body: &RestartRequest,
     workspace: &dyn WorkspaceAdmission,
     log_root: &str,
     now: f64,
 ) -> Result<Value, MonitorError> {
-    let id = body["id"]
-        .as_str()
-        .ok_or(MonitorError::Refused("Supply a monitor"))?;
-    let owner = body["agent"]
-        .as_str()
-        .ok_or(MonitorError::Refused("Supply an agent"))?;
-    let epoch = body["epoch"]
-        .as_i64()
-        .ok_or(MonitorError::Refused("Supply an owner epoch"))?;
-    let request_id = format!(
-        "monitor-restart:{owner}:{}",
-        body["requestId"]
-            .as_str()
-            .ok_or(MonitorError::Refused("Supply a request identity"))?
-    );
+    let id = body.id.as_str();
+    let owner = body.agent.as_str();
+    let epoch = body.epoch;
+    let request_id = format!("monitor-restart:{owner}:{}", body.request_id);
     let replacement_id =
         uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, request_id.as_bytes()).to_string();
     let actor = event_write::checked_agent(tx, owner)?;
-    if actor.epoch != epoch
-        || actor.account_key.as_str()
-            != body["accountKey"]
-    {
+    if actor.epoch != epoch || actor.account_key.as_str() != body.account_key {
         return Err(MonitorError::Refused("The monitor owner changed"));
     }
-    let signature = crate::process_controls::digest(body);
+    let signature = &body.signature;
     if let Some(previous) = MonitorsRepository::get(tx, &replacement_id)? {
-        if previous.value()["restartSignature"] != signature {
+        if previous.value()["restartSignature"] != signature.as_str() {
             return Err(MonitorError::Refused(
                 "This restart request has different content",
             ));
         }
-        return Ok(previous.value().clone());
+        return Ok(previous.value());
     }
     let (source, _) = snapshot(tx, id)?;
     let old = source.record();
@@ -1601,7 +1643,7 @@ pub fn restart_in_transaction(
             "The monitor changed or finished. Refresh its details",
         ));
     }
-    let patterns = crate::monitor_matches::patterns(body.get("outputPatterns"))?;
+    let patterns = crate::monitor_matches::patterns(Some(&json!(body.output_patterns)))?;
     if json!(patterns) == old["outputPatterns"] {
         return Err(MonitorError::Refused(
             "Use narrower output patterns before restarting",
@@ -1778,7 +1820,8 @@ mod recovery_selection_tests {
         let saved = studio_runtime_store::MonitorsRepository::get(&tx, "watch")
             .expect("read")
             .expect("owner");
-        let queue = saved.value()["streamQueue"].as_array().expect("queue");
+        let saved_value = saved.value();
+        let queue = saved_value["streamQueue"].as_array().expect("queue");
         assert_eq!(queue.len(), 2);
         assert_eq!(queue[0]["cursor"], "output:1");
         assert_eq!(queue[1]["kind"], "exit");

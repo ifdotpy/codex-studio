@@ -54,13 +54,13 @@ function readStoredQueueRequest(localStorage: Storage, key: string): unknown {
 function isQueueMutation(value: unknown): value is QueueMutation {
   if (
     !isRecord(value) ||
+    "message_id" in value ||
     typeof value.agent !== "string" ||
     typeof value.request_id !== "string" ||
     typeof value.expected_revision !== "string"
   )
     return false;
-  const hasMessageId =
-    typeof value.message_id === "string" || typeof value.id === "string";
+  const hasMessageId = typeof value.id === "string";
   if (value.action === "cancel" || value.action === "send_now")
     return hasMessageId && typeof value.expectedText === "string";
   if (value.action === "edit")
@@ -215,7 +215,7 @@ export function useMessageQueue(p: {
     } catch (error) {
       if (
         error instanceof ApiError &&
-        [400, 401, 403, 404, 409].includes(error.status)
+        [400, 401, 403, 404].includes(error.status)
       ) {
         await clearRequest(request);
       }

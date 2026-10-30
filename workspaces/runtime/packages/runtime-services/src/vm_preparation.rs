@@ -1770,7 +1770,7 @@ mod tests {
         let state = directory.path().join("state");
         fs::create_dir(&state).unwrap();
         let store = RuntimeStore::open(Some(&state)).await.unwrap();
-        let agent = AgentRecord::from_value(serde_json::json!({
+        let agent = AgentRecord::from_value(serde_json::json!({"accountKey":"default",
             "id":"vm-lead", "rootId":"vm-lead", "epoch":1, "status":"starting",
             "provider":"codex", "executionMode":"vm", "isLead":true, "autoWake":true,
             "cwd":source, "hostProjectPath":source, "projectId":"project-1",
@@ -1854,7 +1854,7 @@ mod tests {
         let store = RuntimeStore::open(Some(&state))
             .await
             .expect("open test store");
-        let agent = AgentRecord::from_value(serde_json::json!({
+        let agent = AgentRecord::from_value(serde_json::json!({"accountKey":"default",
             "id":"vm-lead", "rootId":"vm-lead", "epoch":1, "status":"starting",
             "provider":"codex", "executionMode":"vm", "isLead":true, "autoWake":true,
             "cwd":source, "hostProjectPath":source, "projectId":"project-1",

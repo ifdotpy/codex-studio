@@ -468,6 +468,11 @@ impl<T> Ports for T where
 {
 }
 
+pub(crate) struct ManagedTool<'a> {
+    pub name: &'a str,
+    pub watch_action: Option<crate::managed_status_watch::WatchAction>,
+}
+
 pub(crate) trait PostCommitPort {
     /// Execute an operation after its callback claim has committed. `None`
     /// selects the leaf's transaction-local adapter; implementations return a
@@ -476,7 +481,7 @@ pub(crate) trait PostCommitPort {
         &'a self,
         _store: std::sync::Arc<studio_runtime_store::RuntimeStore>,
         _actor: &'a Actor,
-        _tool: &'a str,
+        _tool: ManagedTool<'a>,
         _args: &'a Value,
         _request_id: &'a str,
         _now: f64,
@@ -630,7 +635,7 @@ impl PostCommitPort for UnavailablePorts {
         &'a self,
         _: std::sync::Arc<studio_runtime_store::RuntimeStore>,
         _: &'a Actor,
-        _: &'a str,
+        _: ManagedTool<'a>,
         _: &'a Value,
         _: &'a str,
         _: f64,
@@ -1094,7 +1099,7 @@ mod tests {
 
     #[test]
     fn actor_snapshot_binds_id_and_epoch() {
-        let value = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":3,"status":"running","isLead":true});
+        let value = json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":3,"status":"running","isLead":true});
         let actor = Actor::from_record(&value, "lead", 3).unwrap();
         assert_eq!(actor.id, "lead");
         assert_eq!(actor.root_id, "lead");
@@ -1144,7 +1149,7 @@ mod tests {
     #[test]
     fn remote_local_reads_are_allowed_and_cross_server_calls_name_the_dependency() {
         let actor = Actor::from_record(
-            &json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"lead","epoch":5,"status":"running","remoteOrigin":true}),
+            &json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"lead","epoch":5,"status":"running","remoteOrigin":true}),
             "worker",
             5,
         )

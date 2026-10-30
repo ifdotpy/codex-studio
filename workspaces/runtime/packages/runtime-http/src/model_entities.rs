@@ -1,5 +1,6 @@
 //! Durable per-account model catalog entities.
 
+use serde::Deserialize;
 use serde_json::{Value, json};
 use studio_runtime_providers::ProviderKind;
 use studio_runtime_schema::model_catalog::ModelCatalog;
@@ -11,6 +12,21 @@ use tokio::sync::oneshot;
 
 const MODEL_COLLECTION: &str = "model";
 const MODEL_ID_SEPARATOR: &str = ":";
+
+/// The account needed to retire an existing model entity. Other entity and
+/// provider metadata stays opaque; the full JSON value is read first so that
+/// duplicate fields retain the existing last-value behavior.
+#[derive(Deserialize)]
+struct StoredModelEnvelope<'a> {
+    #[serde(borrow)]
+    value: Option<studio_runtime_schema::json_object::JsonObject<StoredModelAccount<'a>>>,
+}
+
+#[derive(Deserialize)]
+struct StoredModelAccount<'a> {
+    #[serde(rename = "accountKey", borrow)]
+    account_key: Option<&'a str>,
+}
 
 enum ModelPublication {
     Catalog {
@@ -125,9 +141,12 @@ fn publish_catalog(
         .collect::<Result<Vec<_>, _>>()?;
     drop(statement);
     for id in existing.into_iter().filter_map(|(id, payload)| {
-        let belongs_to_account = serde_json::from_str::<Value>(&payload)
-            .ok()
-            .is_some_and(|payload| payload["value"]["accountKey"].as_str() == Some(account));
+        let belongs_to_account = serde_json::from_str::<Value>(&payload).ok().is_some_and(|payload| {
+            studio_runtime_schema::json_object::JsonObject::<StoredModelEnvelope<'_>>::deserialize(&payload)
+                .ok()
+                .and_then(|envelope| envelope.0.value)
+                .is_some_and(|model| model.0.account_key == Some(account))
+        });
         (belongs_to_account && id.starts_with(&prefix) && !next_ids.contains(&id)).then_some(id)
     }) {
         changed |= SyncDocumentsRepository::put_entity(
@@ -149,6 +168,57 @@ mod tests {
     }
     use serde_json::json;
     use studio_runtime_store::RuntimeStore;
+
+    #[tokio::test]
+    async fn cleanup_preserves_partial_and_other_account_rows() {
+        let directory = tempfile::tempdir().expect("isolated runtime state");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("store");
+        let rows = [
+            (
+                "one:remove",
+                r#"{"value":{"accountKey":"one","extra":{"x":1}}}"#,
+            ),
+            ("one:keep", r#"{"value":{"accountKey":"one"}}"#),
+            ("one:bad", "{"),
+            ("one:missing", r#"{"value":{}}"#),
+            ("one:null", r#"{"value":{"accountKey":null}}"#),
+            ("one:wrong", r#"{"value":{"accountKey":1}}"#),
+            ("one:other", r#"{"value":{"accountKey":"two"}}"#),
+            ("one:child:model", r#"{"value":{"accountKey":"one:child"}}"#),
+            ("two:prefix", r#"{"value":{"accountKey":"one"}}"#),
+            (
+                "one:duplicate",
+                r#"{"value":{"accountKey":"two","accountKey":"one"}}"#,
+            ),
+        ];
+        store.transaction_with(move |tx| {
+            for (id, payload) in rows {
+                tx.execute("INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) VALUES('model',?1,1,'fixture',?2,0)", rusqlite::params![id,payload])?;
+            }
+            Ok::<_, StoreError>(())
+        }).await.expect("seed");
+        store
+            .transaction_with(|tx| {
+                publish_catalog(
+                    tx,
+                    "one",
+                    ProviderKind::Codex,
+                    Some(&typed(json!({"data":[{"model":"keep"}]}))),
+                )
+            })
+            .await
+            .expect("publish");
+        let actual = read_model_rows(&store);
+        for (id, deleted, _) in actual {
+            assert_eq!(
+                deleted,
+                matches!(id.as_str(), "one:remove" | "one:duplicate"),
+                "{id}"
+            );
+        }
+    }
 
     #[tokio::test]
     async fn publishes_full_per_account_rows_and_tombstones_removed_models() {

@@ -2259,11 +2259,15 @@ impl HistoryRewrite {
         let first = records
             .first()
             .ok_or(RepairError::Invalid("rewrite.records"))?;
-        if first["type"] != "session_meta" || first["payload"]["id"] != thread {
+        let header = crate::analytics_history::SessionHeader::from_value(first);
+        if !header
+            .as_ref()
+            .is_some_and(|header| header.is_session() && header.exact_id(&thread))
+        {
             return Err(RepairError::Invalid("rewrite.thread"));
         }
         // Flattened ancestry and role versions need the shared history compiler.
-        if studio_runtime_store::truthy(first["payload"].get("history_base")) {
+        if studio_runtime_store::truthy(header.as_ref().and_then(|header| header.history_base())) {
             return Err(RepairError::RewriteUnavailable);
         }
         for event in &events {

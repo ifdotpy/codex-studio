@@ -236,45 +236,13 @@ impl CheckpointHistory {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum OperationKind {
-    Capture,
-    Checkpoint,
-    ClaudeRollback,
-    ClaudeSettings,
-    Restore,
-    Branch,
-    Provision,
-}
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum OperationPhase {
-    CapturePending,
-    CaptureRunning,
-    ProviderPending,
-    ProviderReady,
-    LocalMutation,
-    RecoveryRequired,
-    Completed,
-    Failed,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-struct OperationRecord {
-    id: String,
-    kind: OperationKind,
-    agent: String,
-    phase: OperationPhase,
-    signature: Option<String>,
-    source: Option<Value>,
-    provider: Option<Value>,
-    result: Option<Value>,
-}
+use studio_runtime_schema::queue_command::Field;
+pub use studio_runtime_schema::workspace_operation::{
+    OperationKind, OperationPhase, WorkspaceOperationRecord,
+};
 
 pub struct OperationSnapshot {
-    operation: OperationRecord,
-    raw: Value,
+    operation: WorkspaceOperationRecord,
     agent: Value,
 }
 #[derive(Clone, Debug, PartialEq)]
@@ -286,42 +254,46 @@ pub enum RetryDecision {
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct RecoveryWrites {
-    pub operation: Value,
+    pub operation: WorkspaceOperationRecord,
     pub agent: Value,
 }
 
 impl OperationSnapshot {
     pub fn from_records(operation: &Value, agent: &Value) -> Result<Self> {
-        let decoded: OperationRecord = decode("PersistedWorkspaceOperationRecord", operation)?;
+        let typed: WorkspaceOperationRecord =
+            decode("PersistedWorkspaceOperationRecord", operation)?;
+        Self::from_checked(typed, agent)
+    }
+    pub fn from_checked(operation: WorkspaceOperationRecord, agent: &Value) -> Result<Self> {
         let actor: CompletionIdentity = decode("WorkspaceCheckpointAgentRecord", agent)?;
-        if decoded.agent != actor.id {
+        if operation.agent != actor.id {
             return Err(WorkspaceOperationError::SourceChanged);
         }
         Ok(Self {
-            operation: decoded,
-            raw: operation.clone(),
+            operation,
             agent: agent.clone(),
         })
     }
     pub fn retry(&self, signature: &str) -> Result<RetryDecision> {
-        if self.operation.signature.as_deref() != Some(signature) {
+        if self.operation.signature.value().map(String::as_str) != Some(signature) {
             return Err(WorkspaceOperationError::RequestChanged);
         }
         if self.operation.phase == OperationPhase::Completed {
             return self
                 .operation
                 .result
-                .clone()
+                .value()
+                .cloned()
                 .map(RetryDecision::Completed)
                 .ok_or(WorkspaceOperationError::RecoveryRequired);
         }
         let source = studio_runtime_store::CheckpointsRepository::workspace_source(&self.agent);
-        if self.operation.source.as_ref() != Some(&source) {
+        if self.operation.source.value() != source.as_object() {
             return Err(WorkspaceOperationError::SourceChanged);
         }
         Ok(match self.operation.phase {
-            OperationPhase::ProviderReady => match &self.operation.provider {
-                Some(provider) => RetryDecision::ResumeLocal(provider.clone()),
+            OperationPhase::ProviderReady => match self.operation.provider.value() {
+                Some(provider) => RetryDecision::ResumeLocal(Value::Object(provider.clone())),
                 None => RetryDecision::InspectWorkspace,
             },
             OperationPhase::Failed => RetryDecision::Dispatch,
@@ -336,7 +308,7 @@ impl OperationSnapshot {
     /// Restart never resends a provider write. Capture can release its own reservation;
     /// restore and branch keep an observable hold until an explicit recovery.
     pub fn recover(&self, now: f64) -> RecoveryWrites {
-        let mut operation = self.raw.clone();
+        let mut operation = self.operation.clone();
         let mut agent = self.agent.clone();
         if matches!(
             self.operation.phase,
@@ -348,26 +320,33 @@ impl OperationSnapshot {
             self.operation.kind,
             OperationKind::Capture | OperationKind::Checkpoint
         ) {
-            operation["phase"] = json!("failed");
-            operation["updated"] = json!(now);
-            operation["error"] = json!("Server restarted before checkpoint capture finished");
+            operation.phase = OperationPhase::Failed;
+            operation
+                .set_extension("updated", json!(now))
+                .expect("known extension");
+            operation
+                .set_extension(
+                    "error",
+                    json!("Server restarted before checkpoint capture finished"),
+                )
+                .expect("known extension");
             if agent.get("workspaceReservationId") == Some(&json!(self.operation.id)) {
                 agent["workspaceOperation"] = Value::Null;
                 if let Some(object) = agent.as_object_mut() {
                     object.remove("workspaceReservationId");
                 }
-                agent["checkpointError"] = operation["error"].clone();
+                agent["checkpointError"] = operation.extensions()["error"].clone();
             }
         } else {
-            operation["restartHold"] = json!(true);
+            operation.restart_hold = Field::Value(true);
             if self.operation.kind == OperationKind::Restore
                 || self.operation.phase == OperationPhase::ProviderPending
             {
-                operation["phase"] = json!("recovery_required");
-                operation["updated"] = json!(now);
-                operation["error"] = json!(
-                    "Server restarted during a workspace operation. Inspect the workspace before retrying."
-                );
+                operation.phase = OperationPhase::RecoveryRequired;
+                operation
+                    .set_extension("updated", json!(now))
+                    .expect("known extension");
+                operation.set_extension("error", json!("Server restarted during a workspace operation. Inspect the workspace before retrying.")).expect("known extension");
             }
             agent["workspaceOperation"] = json!(if self.operation.kind == OperationKind::Restore {
                 "restore_recovery"
@@ -377,6 +356,7 @@ impl OperationSnapshot {
             agent["autoWake"] = json!(false);
             agent["status"] = json!("interrupted");
             agent["error"] = operation
+                .extensions()
                 .get("error")
                 .filter(|v| truthy(Some(v)))
                 .cloned()

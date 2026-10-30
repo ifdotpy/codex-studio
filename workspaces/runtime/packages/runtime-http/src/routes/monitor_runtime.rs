@@ -33,16 +33,13 @@ pub(crate) fn routes() -> RouteGroup {
 async fn restart(
     State(state): State<HttpState>,
     runtime: Option<Extension<Arc<MonitorRuntime>>>,
-    ApiJson(body): ApiJson<Value>,
+    ApiJson(body): ApiJson<monitor_runtime::RestartRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let runtime = runtime
         .ok_or_else(|| ApiError::dependency("provider-session/monitor-commands"))?
         .0;
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let owner = body["agent"]
-        .as_str()
-        .ok_or_else(ApiError::internal)?
-        .to_owned();
+    let owner = body.agent().to_owned();
     let actor = store
         .read_async("monitor-restart/owner", move |tx| {
             event_write::checked_agent(tx, &owner)
@@ -163,6 +160,17 @@ inventory::submit! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn http_restart_uses_checked_request() {
+        type RestartHandler<F> = fn(
+            State<HttpState>,
+            Option<Extension<Arc<MonitorRuntime>>>,
+            ApiJson<monitor_runtime::RestartRequest>,
+        ) -> F;
+        fn typed_restart<F: Future<Output = Result<Json<Value>, ApiError>>>(_: RestartHandler<F>) {}
+        typed_restart(restart);
+    }
 
     #[test]
     fn http_input_preserves_runtime_input_type_and_dimension_presence() {

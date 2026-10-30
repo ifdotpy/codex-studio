@@ -10,7 +10,7 @@
 //! format takes over the marker and records its own build; an unknown runtime, a malformed
 //! marker or another format version is refused.
 use crate::{StoreError, StoreResult};
-use serde_json::{Value, json};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::{
     fs,
     io::{self, Write},
@@ -31,6 +31,34 @@ pub struct StateOwnerClaim {
     pub backend_build: String,
 }
 
+// The marker is an object on disk; serde's derived struct also accepts arrays.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StateOwnerMarker {
+    backend_build: String,
+    format_version: i64,
+    runtime: String,
+}
+
+fn decode_marker(bytes: &[u8]) -> Result<StateOwnerMarker, serde_json::Error> {
+    struct Object;
+    impl<'de> serde::de::Visitor<'de> for Object {
+        type Value = StateOwnerMarker;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a state owner object")
+        }
+
+        fn visit_map<M: serde::de::MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
+            StateOwnerMarker::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+        }
+    }
+    let mut deserializer = serde_json::Deserializer::from_slice(bytes);
+    let marker = deserializer.deserialize_map(Object)?;
+    deserializer.end()?;
+    Ok(marker)
+}
+
 /// Record `claim` as the owner of `root`. The caller holds `runtime.lock`.
 pub(crate) fn claim(root: &Path, claim: &StateOwnerClaim) -> StoreResult<()> {
     if claim.backend_build.len() != 64
@@ -44,19 +72,20 @@ pub(crate) fn claim(root: &Path, claim: &StateOwnerClaim) -> StoreResult<()> {
     let marker = root.join(STATE_OWNER_FILE);
     match fs::read(&marker) {
         Ok(bytes) => {
-            let prior: Value = serde_json::from_slice(&bytes)
-                .map_err(|_| owner_error("the state owner marker is malformed"))?;
-            if prior.get("runtime").and_then(Value::as_str) != Some("rust")
-                || prior.get("formatVersion").and_then(Value::as_i64) != Some(STATE_FORMAT_VERSION)
-                || prior.get("backendBuild").and_then(Value::as_str).is_none()
-            {
+            let prior = decode_marker(&bytes).map_err(|error| match error.classify() {
+                serde_json::error::Category::Syntax | serde_json::error::Category::Eof => {
+                    owner_error("the state owner marker is malformed")
+                }
+                serde_json::error::Category::Data | serde_json::error::Category::Io => {
+                    owner_error("the state directory has an unknown owner or another state format")
+                }
+            })?;
+            if prior.runtime != "rust" || prior.format_version != STATE_FORMAT_VERSION {
                 return Err(owner_error(
                     "the state directory has an unknown owner or another state format",
                 ));
             }
-            if prior.get("backendBuild").and_then(Value::as_str)
-                == Some(claim.backend_build.as_str())
-            {
+            if prior.backend_build == claim.backend_build {
                 return Ok(());
             }
         }
@@ -77,21 +106,20 @@ fn write_marker(root: &Path, marker: &Path, backend_build: &str) -> io::Result<(
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(error),
     }
-    let body = format!(
-        "{}\n",
-        json!({
-            "runtime": "rust",
-            "formatVersion": STATE_FORMAT_VERSION,
-            "backendBuild": backend_build,
-        })
-    );
+    let mut body = serde_json::to_vec(&StateOwnerMarker {
+        backend_build: backend_build.to_owned(),
+        format_version: STATE_FORMAT_VERSION,
+        runtime: "rust".to_owned(),
+    })
+    .map_err(io::Error::other)?;
+    body.push(b'\n');
     let result = (|| {
         let mut file = fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .mode_private()
             .open(&temporary)?;
-        file.write_all(body.as_bytes())?;
+        file.write_all(&body)?;
         file.sync_all()?;
         fs::rename(&temporary, marker)?;
         fs::File::open(root)?.sync_all()
@@ -125,6 +153,7 @@ impl PrivateMode for fs::OpenOptions {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::{Value, json};
 
     fn build(byte: char) -> StateOwnerClaim {
         StateOwnerClaim {
@@ -155,6 +184,44 @@ mod tests {
         claim(root.path(), &build('a')).expect("test fixture");
         claim(root.path(), &build('b')).expect("test fixture");
         assert_eq!(marker(root.path())["backendBuild"], "b".repeat(64));
+    }
+
+    #[test]
+    fn marker_shape_and_open_fields_preserve_owner_fencing() {
+        let root = tempfile::tempdir().expect("test fixture");
+        let marker_path = root.path().join(STATE_OWNER_FILE);
+        let valid = json!({"runtime":"rust", "formatVersion":1,
+            "backendBuild":"a".repeat(64), "future":{"other":true}})
+        .to_string();
+        fs::write(&marker_path, &valid).expect("test fixture");
+        claim(root.path(), &build('a')).expect("same owner accepts unknown fields");
+        assert_eq!(
+            fs::read_to_string(&marker_path).expect("test fixture"),
+            valid
+        );
+        for invalid in [
+            json!(["a".repeat(64), 1, "rust"]),
+            json!({"runtime":"rust","formatVersion":1.0,"backendBuild":"a".repeat(64)}),
+            json!({"runtime":"rust","formatVersion":1,"backendBuild":null}),
+            json!({"runtime":null,"formatVersion":1,"backendBuild":"a".repeat(64)}),
+        ] {
+            let raw = invalid.to_string();
+            fs::write(&marker_path, &raw).expect("test fixture");
+            let error = claim(root.path(), &build('b')).expect_err("invalid marker");
+            assert!(
+                error
+                    .to_string()
+                    .contains("unknown owner or another state format")
+            );
+            assert_eq!(fs::read_to_string(&marker_path).expect("test fixture"), raw);
+        }
+        fs::write(&marker_path, b"{").expect("test fixture");
+        assert!(
+            claim(root.path(), &build('b'))
+                .expect_err("malformed marker")
+                .to_string()
+                .contains("state owner marker is malformed")
+        );
     }
 
     #[test]

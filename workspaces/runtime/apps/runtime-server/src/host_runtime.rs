@@ -195,7 +195,7 @@ enum VmAuthOwner<'a> {
 
 struct VmCodexAuthSource<'a> {
     account_key: &'a str,
-    account: &'a Value,
+    account: &'a studio_runtime_services::account_policy::PublicAccount,
     root_request_id: &'a str,
     owner: VmAuthOwner<'a>,
 }
@@ -205,7 +205,7 @@ struct ClaudeCredentialRequest<'a> {
     host_config: &'a Path,
     email: &'a str,
     account_key: &'a str,
-    original_account: &'a Value,
+    original_account: &'a studio_runtime_services::account_policy::PublicAccount,
     claude_bridge_dir: &'a Path,
     explicit_host_config: bool,
 }
@@ -930,19 +930,17 @@ async fn resolve_vm_launch_inputs(
     let account = snapshot
         .accounts
         .iter()
-        .find(|profile| {
-            profile.get("id").and_then(serde_json::Value::as_str) == Some(&request.account_key)
-        })
+        .find(|profile| profile.id.as_str() == Some(&request.account_key))
         .ok_or_else(|| WorkerError::PreparationRefused("account-driver/unavailable".into()))?;
-    if account.get("deleted") == Some(&serde_json::Value::Bool(true))
-        || account.get("disconnected") == Some(&serde_json::Value::Bool(true))
-        || account.get("status").and_then(serde_json::Value::as_str) != Some("ready")
+    if account.deleted.as_bool() == Some(true)
+        || account.disconnected.as_bool() == Some(true)
+        || account.status.as_str() != Some("ready")
     {
         return Err(WorkerError::PreparationRefused(
             "account-driver/unavailable".into(),
         ));
     }
-    let kind = ProviderKind::of_record(account).map_err(|_| {
+    let kind = account.provider().map_err(|_| {
         WorkerError::PreparationRefused("provider-session/unsupported-provider".into())
     })?;
     let provider = adapter(kind);
@@ -962,14 +960,12 @@ async fn resolve_vm_launch_inputs(
     let (command, environment, credential_path, credential_document, bootstrap) = if kind
         == ProviderKind::Claude
     {
-        let options = account
-            .get("claudeOptions")
-            .cloned()
-            .unwrap_or_else(|| serde_json::json!({}));
-        let options =
-            studio_runtime_services::claude_bridge::bridge_options(&options).map_err(|_| {
-                WorkerError::PreparationRefused("provider-session/claude-runtime-launch".into())
-            })?;
+        let options = studio_runtime_services::claude_bridge::bridge_options_public(
+            account.claude_options.as_ref(),
+        )
+        .map_err(|_| {
+            WorkerError::PreparationRefused("provider-session/claude-runtime-launch".into())
+        })?;
         // The host CLI path is not portable and can expose host layout.
         // The guest bridge resolves its own `claude` executable.
         let mut options = options;
@@ -1001,8 +997,8 @@ async fn resolve_vm_launch_inputs(
         let credential_path = format!("{profile_relative}/{}", provider.guest_credential_file());
         let credential_file = host_config.join(".credentials.json");
         let email = account
-            .get("email")
-            .and_then(Value::as_str)
+            .email
+            .as_str()
             .filter(|value| !value.is_empty())
             .ok_or_else(|| {
                 WorkerError::PreparationRefused("vm-credentials/account-identity".into())
@@ -1037,11 +1033,7 @@ async fn resolve_vm_launch_inputs(
             ("STUDIO_CLAUDE_OPTIONS".into(), options.to_string()),
             (
                 "STUDIO_CLAUDE_ACCOUNT".into(),
-                account
-                    .get("email")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("")
-                    .to_owned(),
+                account.email.as_str().unwrap_or("").to_owned(),
             ),
         ]);
         (
@@ -1100,7 +1092,6 @@ async fn read_vm_codex_bootstrap(
     source: VmCodexAuthSource<'_>,
     force_refresh: bool,
 ) -> Result<Value, WorkerError> {
-    use base64::Engine as _;
     let VmCodexAuthSource {
         account_key,
         account,
@@ -1113,8 +1104,8 @@ async fn read_vm_codex_bootstrap(
             "runtime-server/vm-codex-auth-file",
             move || -> Result<(Value, Option<f64>), WorkerError> {
                 let home = account
-                    .get("home")
-                    .and_then(Value::as_str)
+                    .home
+                    .as_str()
                     .map(PathBuf::from)
                     .or_else(|| {
                         std::env::var_os("HOME")
@@ -1138,74 +1129,39 @@ async fn read_vm_codex_bootstrap(
                         "provider-session/codex-auth-invalid".into(),
                     ));
                 }
-                let auth: Value = serde_json::from_slice(&bytes).map_err(|_| {
-                    WorkerError::PreparationRefused("provider-session/codex-auth-invalid".into())
+                use studio_runtime_services::account_driver::{
+                    CodexVmAuthError, CodexVmCredential, codex_vm_auth,
+                };
+                let credential = codex_vm_auth(
+                    &bytes,
+                    account
+                        .extensions
+                        .get("_credentialIdentity")
+                        .and_then(Value::as_str),
+                    account.account_id.as_str(),
+                )
+                .map_err(|error| {
+                    WorkerError::PreparationRefused(
+                        match error {
+                            CodexVmAuthError::Invalid => "provider-session/codex-auth-invalid",
+                            CodexVmAuthError::AccountChanged => {
+                                "provider-session/codex-account-changed"
+                            }
+                        }
+                        .into(),
+                    )
                 })?;
-                if let Some(key) = auth
-                    .get("OPENAI_API_KEY")
-                    .and_then(Value::as_str)
-                    .filter(|key| !key.is_empty())
-                {
-                    let expected = account.get("_credentialIdentity").and_then(Value::as_str);
-                    let observed = format!(
-                        "api:{}",
-                        data_encoding::HEXLOWER.encode(&Sha256::digest(key.as_bytes()))
-                    );
-                    if expected.is_some_and(|value| value != observed) {
-                        return Err(WorkerError::PreparationRefused(
-                            "provider-session/codex-account-changed".into(),
-                        ));
-                    }
-                    return Ok((serde_json::json!({"type":"apiKey","apiKey":key}), None));
-                }
-                let tokens = auth.get("tokens").ok_or_else(|| {
-                    WorkerError::PreparationRefused("provider-session/codex-auth-invalid".into())
-                })?;
-                let access = tokens
-                    .get("access_token")
-                    .and_then(Value::as_str)
-                    .filter(|value| !value.is_empty())
-                    .ok_or_else(|| {
-                        WorkerError::PreparationRefused(
-                            "provider-session/codex-auth-invalid".into(),
-                        )
-                    })?;
-                let mut parts = access.split('.');
-                let _header = parts.next();
-                let claims = parts
-                    .next()
-                    .and_then(|part| {
-                        base64::engine::general_purpose::URL_SAFE_NO_PAD
-                            .decode(part)
-                            .or_else(|_| base64::engine::general_purpose::URL_SAFE.decode(part))
-                            .ok()
-                    })
-                    .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-                    .ok_or_else(|| {
-                        WorkerError::PreparationRefused(
-                            "provider-session/codex-auth-invalid".into(),
-                        )
-                    })?;
-                let identity = tokens
-                    .get("account_id")
-                    .and_then(Value::as_str)
-                    .or_else(|| {
-                        claims
-                            .pointer("/https://api.openai.com/auth/chatgpt_account_id")
-                            .and_then(Value::as_str)
-                    });
-                if identity.is_none()
-                    || identity != account.get("accountId").and_then(Value::as_str)
-                {
-                    return Err(WorkerError::PreparationRefused(
-                        "provider-session/codex-account-changed".into(),
-                    ));
-                }
-                let expires = claims.get("exp").and_then(Value::as_f64).ok_or_else(|| {
-                    WorkerError::PreparationRefused("provider-session/codex-auth-invalid".into())
-                })?;
-                let payload = serde_json::json!({"type":"chatgptAuthTokens","accessToken":access,"chatgptAccountId":identity});
-                Ok((payload, Some(expires)))
+                Ok(match credential {
+                    CodexVmCredential::ApiKey(key) => (json!({"type":"apiKey","apiKey":key}), None),
+                    CodexVmCredential::ChatGpt {
+                        access_token,
+                        account_id,
+                        expires,
+                    } => (
+                        json!({"type":"chatgptAuthTokens","accessToken":access_token,"chatgptAccountId":account_id}),
+                        Some(expires),
+                    ),
+                })
             },
         )
     };
@@ -1312,16 +1268,9 @@ async fn read_vm_codex_bootstrap(
         }
         (payload, _) = read().await.map_err(|_| WorkerError::TaskFailed)??;
         let refreshed = payload
-            .pointer("/accessToken")
+            .get("accessToken")
             .and_then(Value::as_str)
-            .and_then(|token| token.split('.').nth(1))
-            .and_then(|part| {
-                base64::engine::general_purpose::URL_SAFE_NO_PAD
-                    .decode(part)
-                    .ok()
-            })
-            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-            .and_then(|claims| claims.get("exp").and_then(Value::as_f64));
+            .and_then(studio_runtime_services::account_driver::codex_vm_refresh_exp);
         if refreshed.is_none_or(|value| value <= now + CODEX_ACCESS_MIN_REMAINING_SECONDS) {
             return Err(WorkerError::PreparationPending(
                 "provider-session/account-read-refresh".into(),
@@ -1336,10 +1285,10 @@ async fn read_vm_codex_bootstrap(
         .map_err(|_| WorkerError::TaskFailed)?
         .map_err(|_| WorkerError::PreparationPending("account-driver/unavailable".into()))?;
         let still_same = current.accounts.iter().any(|row| {
-            row.get("id").and_then(Value::as_str) == Some(account_key)
-                && row.get("accountId") == account.get("accountId")
-                && row.get("provider").and_then(Value::as_str) == Some(ProviderKind::Codex.key())
-                && row.get("status").and_then(Value::as_str) == Some("ready")
+            row.id.as_str() == Some(account_key)
+                && row.account_id == account.account_id
+                && row.provider.as_str() == Some(ProviderKind::Codex.key())
+                && row.status.as_str() == Some("ready")
         });
         if !still_same {
             return Err(WorkerError::PreparationRefused(
@@ -1409,11 +1358,11 @@ async fn refresh_vm_codex_token(
     let account = snapshot
         .accounts
         .iter()
-        .find(|row| row.get("id").and_then(Value::as_str) == Some(account_key))
+        .find(|row| row.id.as_str() == Some(account_key))
         .ok_or_else(|| WorkerError::PreparationRefused("vm-auth/account-unavailable".into()))?;
-    if account.get("provider").and_then(Value::as_str) != Some(ProviderKind::Codex.key())
-        || account.get("status").and_then(Value::as_str) != Some("ready")
-        || account.get("accountId").and_then(Value::as_str) != Some(previous_account_id)
+    if account.provider.as_str() != Some(ProviderKind::Codex.key())
+        || account.status.as_str() != Some("ready")
+        || account.account_id.as_str() != Some(previous_account_id)
     {
         return Err(WorkerError::PreparationRefused(
             "vm-auth/account-changed".into(),
@@ -1461,8 +1410,8 @@ async fn refresh_vm_codex_token(
     clippy::disallowed_methods,
     reason = "runs on blocking_pool through read_vm_claude_credentials"
 )]
-fn read_vm_claude_credentials(
-    accounts: &AccountDriver,
+fn read_vm_claude_credentials<R: ProviderAuthReader>(
+    accounts: &AccountDriver<R>,
     request: ClaudeCredentialRequest<'_>,
 ) -> Result<Vec<u8>, WorkerError> {
     let ClaudeCredentialRequest {
@@ -1488,7 +1437,7 @@ fn read_vm_claude_credentials(
         .auth_pin(account_key)
         .map_err(|_| WorkerError::PreparationPending("vm-credentials/account-status".into()))?;
     let mut access = read_vm_claude_oauth(path, explicit_host_config)?;
-    let mut expiry = claude_expiry_ms(&access)?;
+    let mut expiry = access.expiry_ms;
     let mut auth_status_verified = false;
     let now_ms = unix_time_ms()?;
     if expiry <= now_ms + CLAUDE_ACCESS_REFRESH_TRIGGER_MS {
@@ -1506,7 +1455,7 @@ fn read_vm_claude_credentials(
                     .min(wait_deadline.saturating_duration_since(Instant::now())),
             );
             access = read_vm_claude_oauth(path, explicit_host_config)?;
-            expiry = claude_expiry_ms(&access)?;
+            expiry = access.expiry_ms;
         }
         verify_vm_claude_account(
             accounts,
@@ -1517,7 +1466,7 @@ fn read_vm_claude_credentials(
             false,
         )?;
         let config_dir = host_config.to_string_lossy();
-        let binary = studio_runtime_services::account_driver::claude::resolve_claude_binary(
+        let binary = studio_runtime_services::account_driver::claude::resolve_public_claude_binary(
             original_account,
         )
         .ok_or_else(|| {
@@ -1541,7 +1490,7 @@ fn read_vm_claude_credentials(
         helper_environment.insert("STUDIO_CLAUDE_ACCOUNT".into(), email.into());
         run_vm_claude_refresh_helper(&node, &helper, &helper_environment, || {
             let current = read_vm_claude_oauth(path, explicit_host_config)?;
-            Ok(claude_expiry_ms(&current)? > unix_time_ms()? + CLAUDE_ACCESS_REFRESH_WINDOW_MS)
+            Ok(current.expiry_ms > unix_time_ms()? + CLAUDE_ACCESS_REFRESH_WINDOW_MS)
         })?;
         verify_vm_claude_account(
             accounts,
@@ -1553,7 +1502,7 @@ fn read_vm_claude_credentials(
         )?;
         auth_status_verified = true;
         access = read_vm_claude_oauth(path, explicit_host_config)?;
-        expiry = claude_expiry_ms(&access)?;
+        expiry = access.expiry_ms;
     }
     // Python forces native auth metadata even when no refresh was needed
     // (codex_linux_vm_auth.py:182-185).
@@ -1573,41 +1522,102 @@ fn read_vm_claude_credentials(
     encode_vm_claude_credentials(&access)
 }
 
-fn encode_vm_claude_credentials(
-    access: &serde_json::Map<String, Value>,
-) -> Result<Vec<u8>, WorkerError> {
-    let mut allowlisted = serde_json::Map::new();
-    for name in [
-        "accessToken",
-        "expiresAt",
-        "scopes",
-        "subscriptionType",
-        "rateLimitTier",
-    ] {
-        if let Some(value) = access.get(name) {
-            allowlisted.insert(name.into(), value.clone());
-        }
+/// Checked access-only credentials; optional provider fields stay opaque.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VmClaudeCredential {
+    access_token: String,
+    expires_at: serde_json::Number,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rate_limit_tier: Option<Value>,
+    scopes: Vec<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    subscription_type: Option<Value>,
+    #[serde(skip)]
+    expiry_ms: f64,
+}
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VmClaudeCredentialFields {
+    #[serde(default)]
+    access_token: Value,
+    #[serde(default)]
+    scopes: Value,
+    #[serde(default)]
+    expires_at: Value,
+    #[serde(default, deserialize_with = "vm_claude_present")]
+    subscription_type: Option<Value>,
+    #[serde(default, deserialize_with = "vm_claude_present")]
+    rate_limit_tier: Option<Value>,
+}
+fn vm_claude_present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Value>, D::Error> {
+    <Value as serde::Deserialize>::deserialize(d).map(Some)
+}
+impl<'de> serde::Deserialize<'de> for VmClaudeCredential {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        let fields = <VmClaudeCredentialFields as serde::Deserialize>::deserialize(d)?;
+        let access_token = match fields.access_token {
+            Value::String(value) if !value.is_empty() => value,
+            Value::String(_)
+            | Value::Null
+            | Value::Bool(_)
+            | Value::Number(_)
+            | Value::Array(_)
+            | Value::Object(_) => return Err(D::Error::custom("invalid credential")),
+        };
+        let scopes = match fields.scopes {
+            Value::Array(values) if values.iter().any(|value| value == "user:inference") => values,
+            Value::Array(_)
+            | Value::Null
+            | Value::Bool(_)
+            | Value::Number(_)
+            | Value::String(_)
+            | Value::Object(_) => return Err(D::Error::custom("invalid credential")),
+        };
+        let expires_at = match fields.expires_at {
+            Value::Number(value) => value,
+            Value::Null
+            | Value::Bool(_)
+            | Value::String(_)
+            | Value::Array(_)
+            | Value::Object(_) => return Err(D::Error::custom("invalid credential")),
+        };
+        let expiry_ms = expires_at
+            .as_f64()
+            .filter(|value| value.is_finite())
+            .ok_or_else(|| D::Error::custom("invalid credential"))?;
+        Ok(Self {
+            access_token,
+            expires_at,
+            scopes,
+            subscription_type: fields.subscription_type,
+            rate_limit_tier: fields.rate_limit_tier,
+            expiry_ms,
+        })
     }
-    if allowlisted
-        .get("accessToken")
-        .and_then(Value::as_str)
-        .is_none_or(str::is_empty)
-        || !allowlisted
-            .get("scopes")
-            .and_then(Value::as_array)
-            .is_some_and(|scopes| scopes.iter().any(|scope| scope == "user:inference"))
-    {
-        return Err(WorkerError::PreparationRefused(
-            "vm-credentials/invalid".into(),
-        ));
-    }
-    serde_json::to_vec(&json!({"claudeAiOauth":allowlisted})).map_err(|_| WorkerError::TaskFailed)
+}
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VmClaudeCredentialFile {
+    claude_ai_oauth: studio_runtime_schema::json_object::JsonObject<VmClaudeCredential>,
+}
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VmClaudeGuestCredential<'a> {
+    claude_ai_oauth: &'a VmClaudeCredential,
+}
+fn encode_vm_claude_credentials(access: &VmClaudeCredential) -> Result<Vec<u8>, WorkerError> {
+    serde_json::to_vec(&VmClaudeGuestCredential {
+        claude_ai_oauth: access,
+    })
+    .map_err(|_| WorkerError::TaskFailed)
 }
 
 fn read_vm_claude_oauth(
     path: &Path,
     explicit_config_dir: bool,
-) -> Result<serde_json::Map<String, Value>, WorkerError> {
+) -> Result<VmClaudeCredential, WorkerError> {
     let max_bytes = studio_runtime_services::linux_vm_provider::MAX_GUEST_CREDENTIAL_BYTES;
     #[cfg(target_os = "macos")]
     let keychain_bytes = read_vm_claude_keychain(path, explicit_config_dir)?;
@@ -1648,25 +1658,14 @@ fn read_vm_claude_oauth(
     };
     let value: Value = serde_json::from_slice(&bytes)
         .map_err(|_| WorkerError::PreparationRefused("vm-credentials/invalid".into()))?;
-    let access = value
-        .get("claudeAiOauth")
-        .and_then(serde_json::Value::as_object)
-        .cloned()
-        .ok_or_else(|| WorkerError::PreparationRefused("vm-credentials/invalid".into()))?;
-    // Validate required fields without retaining token material in an error.
-    let _token = access
-        .get("accessToken")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| WorkerError::PreparationRefused("vm-credentials/invalid".into()))?;
-    let scopes = access
-        .get("scopes")
-        .and_then(Value::as_array)
-        .filter(|scopes| scopes.iter().any(|scope| scope == "user:inference"))
-        .ok_or_else(|| WorkerError::PreparationRefused("vm-credentials/invalid".into()))?;
-    let _ = scopes;
-    let _expiry = claude_expiry_ms(&access)?;
-    Ok(access)
+    if !value.is_object() {
+        return Err(WorkerError::PreparationRefused(
+            "vm-credentials/invalid".into(),
+        ));
+    }
+    let file: VmClaudeCredentialFile = serde::Deserialize::deserialize(&value)
+        .map_err(|_| WorkerError::PreparationRefused("vm-credentials/invalid".into()))?;
+    Ok(file.claude_ai_oauth.0)
 }
 
 #[cfg(target_os = "macos")]
@@ -1796,15 +1795,6 @@ mod vm_claude_keychain_tests {
     }
 }
 
-fn claude_expiry_ms(access: &serde_json::Map<String, Value>) -> Result<f64, WorkerError> {
-    let expiry = access
-        .get("expiresAt")
-        .and_then(serde_json::Value::as_f64)
-        .filter(|expiry| expiry.is_finite())
-        .ok_or_else(|| WorkerError::PreparationRefused("vm-credentials/invalid".into()))?;
-    Ok(expiry)
-}
-
 fn unix_time_ms() -> Result<f64, WorkerError> {
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1817,7 +1807,7 @@ fn unix_time_ms() -> Result<f64, WorkerError> {
 fn verify_vm_claude_account<R: studio_runtime_services::account_driver::ProviderAuthReader>(
     accounts: &AccountDriver<R>,
     account_key: &str,
-    original_account: &Value,
+    original_account: &studio_runtime_services::account_policy::PublicAccount,
     expected_pin: &Value,
     email: &str,
     refresh_auth_status: bool,
@@ -1838,7 +1828,7 @@ fn verify_vm_claude_account<R: studio_runtime_services::account_driver::Provider
     let current = snapshot
         .accounts
         .iter()
-        .find(|row| row.get("id").and_then(Value::as_str) == Some(account_key))
+        .find(|row| row.id.as_str() == Some(account_key))
         .ok_or_else(|| WorkerError::PreparationRefused("vm-credentials/account-identity".into()))?;
     if !accounts
         .auth_pin_matches(account_key, expected_pin)
@@ -1848,28 +1838,26 @@ fn verify_vm_claude_account<R: studio_runtime_services::account_driver::Provider
             "vm-credentials/account-changed".into(),
         ));
     }
-    for field in [
-        "provider",
-        "home",
-        "accountId",
-        "email",
-        "claudeOptions",
-        "deleted",
-        "disconnected",
-        "duplicateOf",
-        "_credentialIdentity",
-    ] {
-        if current.get(field) != original_account.get(field) {
-            return Err(WorkerError::PreparationRefused(
-                "vm-credentials/account-changed".into(),
-            ));
-        }
+    if current.provider != original_account.provider
+        || current.home != original_account.home
+        || current.account_id != original_account.account_id
+        || current.email != original_account.email
+        || current.claude_options != original_account.claude_options
+        || current.deleted != original_account.deleted
+        || current.disconnected != original_account.disconnected
+        || current.duplicate_of != original_account.duplicate_of
+        || current.extensions.get("_credentialIdentity")
+            != original_account.extensions.get("_credentialIdentity")
+    {
+        return Err(WorkerError::PreparationRefused(
+            "vm-credentials/account-changed".into(),
+        ));
     }
     let expected_account_id = format!("{CLAUDE_ACCOUNT_ID_PREFIX}{email}");
-    if current.get("status").and_then(Value::as_str) != Some("ready")
-        || current.get("provider").and_then(Value::as_str) != Some(ProviderKind::Claude.key())
-        || current.get("email").and_then(Value::as_str) != Some(email)
-        || current.get("accountId").and_then(Value::as_str) != Some(expected_account_id.as_str())
+    if current.status.as_str() != Some("ready")
+        || current.provider.as_str() != Some(ProviderKind::Claude.key())
+        || current.email.as_str() != Some(email)
+        || current.account_id.as_str() != Some(expected_account_id.as_str())
     {
         return Err(WorkerError::PreparationRefused(
             "vm-credentials/account-identity".into(),
@@ -2154,7 +2142,7 @@ impl AccountLauncher for HostLauncher {
                 spec: launch,
                 executable,
             } = adapter(kind).host_launch(HostLaunch {
-                profile: &profile,
+                profile: profile.as_ref(),
                 home,
                 isolated,
                 codex_executable: codex_executable.as_deref(),
@@ -2580,6 +2568,7 @@ mod voice_composition_tests {
                         account_key: "voice-account".into(),
                         thread_id: Some("voice-thread".into()),
                         auto_wake: None,
+                        usage_resume_enabled: None,
                         in_flight: None,
                         execution_mode: None,
                         turn_epoch: None,
@@ -2928,7 +2917,7 @@ mod voice_composition_tests {
     }
 
     #[tokio::test]
-    async fn voice_speech_http_reserves_and_replays_through_real_worker() {
+    async fn voice_speech_reserves_and_replays_through_real_worker() {
         let directory = tempfile::tempdir().unwrap();
         let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
         seed_voice_agent(&store, "speech-agent").await;
@@ -2959,35 +2948,21 @@ mod voice_composition_tests {
             None,
         );
         state.account_session = Some(session);
-        let app = router(install_host_voice_port(state, store.clone(), callbacks)).unwrap();
+        let provider = install_host_voice_port(state, store.clone(), callbacks)
+            .voice_request_port_handle()
+            .expect("voice provider");
         let before = factory.request_writes.load(Ordering::SeqCst);
         for _ in 0..2 {
-            let body = studio_runtime_http::generated::VoiceSpeechRequest {
-                agent: "speech-agent".into(),
-                session_id: voice_session.clone(),
-                record_id: "speech-record".into(),
-            };
-            let mut request = Request::builder()
-                .method("POST")
-                .uri("/api/voice/speech")
-                .header("host", "127.0.0.1:4620")
-                .header("x-canvas-token", "token")
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&body).unwrap()))
-                .unwrap();
-            request.extensions_mut().insert(ConnectInfo(
-                "127.0.0.1:32100".parse::<std::net::SocketAddr>().unwrap(),
-            ));
-            let response = app.clone().oneshot(request).await.unwrap();
-            let status = response.status();
-            let body = to_bytes(response.into_body(), 100_000).await.unwrap();
-            assert_eq!(
-                status,
-                StatusCode::OK,
-                "{}, writes={}",
-                String::from_utf8_lossy(&body),
-                factory.request_writes.load(Ordering::SeqCst)
-            );
+            studio_runtime_services::voice::provider::speech(
+                store.clone(),
+                provider.clone(),
+                "speech-agent".into(),
+                voice_session.clone(),
+                "speech-record".into(),
+                None,
+            )
+            .await
+            .expect("speech receipt");
         }
         assert_eq!(factory.request_writes.load(Ordering::SeqCst), before + 1);
         worker.shutdown().await.unwrap();
@@ -3437,6 +3412,283 @@ mod voice_composition_tests {
 }
 
 #[cfg(test)]
+mod codex_vm_auth_tests {
+    use super::*;
+    use base64::Engine as _;
+
+    #[tokio::test]
+    async fn vm_refresh_unknown_reuses_its_durable_admission() {
+        use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId, RequestTicket};
+        use studio_runtime_services::account_session_runtime::{
+            AccountSessionFuture, AccountSessionPort, ConnectionScope, ProviderRequest,
+            SessionOutcome, SessionReceipt,
+        };
+        use studio_runtime_services::provider_callbacks::{self, CallbackContext};
+        struct Worker {
+            calls: std::sync::Mutex<Vec<String>>,
+            scope: ConnectionScope,
+        }
+        impl AccountSessionPort for Worker {
+            fn ensure_session<'a>(
+                &'a self,
+                _: &'a str,
+            ) -> AccountSessionFuture<'a, ConnectionScope> {
+                let scope = self.scope.clone();
+                Box::pin(async move { Ok(scope) })
+            }
+            fn provider_request<'a>(
+                &'a self,
+                request: ProviderRequest,
+            ) -> AccountSessionFuture<'a, SessionReceipt> {
+                let id = request.admitted_request.as_ref().unwrap().id().to_owned();
+                let mut calls = self.calls.lock().unwrap();
+                let replayed = calls.contains(&id);
+                calls.push(id);
+                let scope = self.scope.clone();
+                Box::pin(async move {
+                    Ok(SessionReceipt {
+                        scope,
+                        operation: request.operation,
+                        replayed,
+                        outcome: SessionOutcome::Unknown {
+                            ticket: RequestTicket {
+                                generation: 1,
+                                id: RequestId::String("fake".into()),
+                                method: Method::AccountRead,
+                            },
+                        },
+                    })
+                })
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("profile");
+        std::fs::create_dir(&home).unwrap();
+        let token = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(r#"{"exp":1}"#);
+        std::fs::write(
+            home.join("auth.json"),
+            json!({"tokens":{"access_token":format!("x.{token}.x"),"account_id":"account"}})
+                .to_string(),
+        )
+        .unwrap();
+        let registry = root.path().join("accounts.json");
+        std::fs::write(&registry, json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{},"logins":{},"deleteReceipts":{}}).to_string()).unwrap();
+        let accounts = Arc::new(AccountDriver::open(registry).unwrap());
+        let state = tempfile::tempdir().unwrap();
+        let store = RuntimeStore::open(Some(state.path())).await.unwrap();
+        let (root_id, source) = store
+            .transaction_with(|tx| {
+                let context = CallbackContext {
+                    agent: "agent".into(),
+                    account: "fake".into(),
+                    stream_id: "stream".into(),
+                    connection: "connection".into(),
+                    generation: 1,
+                    epoch: 0,
+                    thread: "thread".into(),
+                    turn: "turn".into(),
+                };
+                let frame = Frame::Request(RequestFrame {
+                    id: RequestId::String("rpc".into()),
+                    method: Method::CurrentTimeRead,
+                    params: Some(json!({})),
+                    fields: Default::default(),
+                });
+                let root =
+                    provider_callbacks::admit_callback_request(tx, &context, &frame).unwrap();
+                let source = provider_callbacks::callback_admission(tx, &root)
+                    .unwrap()
+                    .unwrap();
+                Ok::<_, studio_runtime_store::StoreError>((root, source))
+            })
+            .await
+            .unwrap();
+        let worker = Worker {
+            calls: std::sync::Mutex::new(Vec::new()),
+            scope: ConnectionScope {
+                account: "fake".into(),
+                connection: "connection".into(),
+                generation: 1,
+            },
+        };
+        let account = <studio_runtime_services::account_policy::PublicAccount as serde::Deserialize>::deserialize(json!({"home":home,"accountId":"account"}))
+            .expect("account fixture");
+        for _ in 0..2 {
+            let result = read_vm_codex_bootstrap(
+                accounts.clone(),
+                Some(&worker),
+                &store,
+                VmCodexAuthSource {
+                    account_key: "fake",
+                    account: &account,
+                    root_request_id: &root_id,
+                    owner: VmAuthOwner::Callback { source: &source },
+                },
+                false,
+            )
+            .await;
+            assert!(
+                matches!(result, Err(WorkerError::PreparationPending(reason)) if reason.diagnostic == "provider-session/account-read-unknown")
+            );
+        }
+        let calls = worker.calls.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0], calls[1]);
+    }
+
+    #[tokio::test]
+    async fn vm_credentials_preserve_key_precedence_fences_and_legacy_claims() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("profile");
+        std::fs::create_dir(&home).unwrap();
+        let registry = root.path().join("accounts.json");
+        std::fs::write(&registry, json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{},"logins":{},"deleteReceipts":{}}).to_string()).unwrap();
+        let accounts = Arc::new(AccountDriver::open(registry).unwrap());
+        let state = tempfile::tempdir().unwrap();
+        let store = RuntimeStore::open(Some(state.path())).await.unwrap();
+        let owner = studio_runtime_store::request_results::AdmittedRequest::from_persisted_fields(
+            "fixture".into(),
+            "fixture".into(),
+            1,
+        );
+        let call = |account: Value| {
+            let account: studio_runtime_services::account_policy::PublicAccount =
+                serde_json::from_value(account).expect("account fixture");
+            let accounts = accounts.clone();
+            let store = &store;
+            let owner = &owner;
+            async move {
+                read_vm_codex_bootstrap(
+                    accounts,
+                    None,
+                    store,
+                    VmCodexAuthSource {
+                        account_key: "fake",
+                        account: &account,
+                        root_request_id: "fake",
+                        owner: VmAuthOwner::Callback { source: owner },
+                    },
+                    false,
+                )
+                .await
+            }
+        };
+        let account = json!({"home":home,"accountId":"account"});
+        std::fs::write(
+            home.join("auth.json"),
+            r#"{"OPENAI_API_KEY":"fake-key","tokens":{"access_token":false}}"#,
+        )
+        .unwrap();
+        assert_eq!(call(account.clone()).await.unwrap()["type"], "apiKey");
+        let wrong = json!({"home":home,"accountId":"account","_credentialIdentity":"api:other"});
+        assert!(
+            matches!(call(wrong).await, Err(WorkerError::PreparationRefused(reason)) if reason == "provider-session/codex-account-changed")
+        );
+        let claims = json!({"exp":4102444800.5});
+        let part = base64::engine::general_purpose::URL_SAFE.encode(claims.to_string());
+        let token = format!("header.{part}.sig");
+        std::fs::write(
+            home.join("auth.json"),
+            json!({"tokens":{"access_token":token,"account_id":"account","id_token":false}})
+                .to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            call(account.clone()).await.unwrap()["chatgptAccountId"],
+            "account"
+        );
+        let empty = json!({"home":home,"accountId":""});
+        std::fs::write(
+            home.join("auth.json"),
+            json!({"tokens":{"access_token":token,"account_id":""}}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(call(empty).await.unwrap()["chatgptAccountId"], "");
+        std::fs::write(
+            home.join("auth.json"),
+            json!({"tokens":{"access_token":token,"account_id":"wrong"}}).to_string(),
+        )
+        .unwrap();
+        assert!(
+            matches!(call(account.clone()).await, Err(WorkerError::PreparationRefused(reason)) if reason == "provider-session/codex-account-changed")
+        );
+        let standard = json!({"exp":4102444800.0,"https://api.openai.com/auth":{"chatgpt_account_id":"account"}});
+        let standard =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(standard.to_string());
+        std::fs::write(
+            home.join("auth.json"),
+            json!({"tokens":{"access_token":format!("x.{standard}.x")}}).to_string(),
+        )
+        .unwrap();
+        assert!(
+            matches!(call(account.clone()).await, Err(WorkerError::PreparationRefused(reason)) if reason == "provider-session/codex-account-changed")
+        );
+        let nested = json!({"exp":4102444800.0,"https:":{"":{"api.openai.com":{"auth":{"chatgpt_account_id":"account"}}}}});
+        let nested = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(nested.to_string());
+        std::fs::write(
+            home.join("auth.json"),
+            json!({"tokens":{"access_token":format!("x.{nested}.x")}}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            call(account.clone()).await.unwrap()["chatgptAccountId"],
+            "account"
+        );
+        let expired = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(r#"{"exp":1}"#);
+        std::fs::write(
+            home.join("auth.json"),
+            json!({"tokens":{"access_token":format!("x.{expired}.x"),"account_id":"account"}})
+                .to_string(),
+        )
+        .unwrap();
+        assert!(
+            matches!(call(account.clone()).await, Err(WorkerError::PreparationPending(reason)) if reason.diagnostic == "provider-session/account-session")
+        );
+        struct Unavailable(std::sync::atomic::AtomicUsize);
+        impl studio_runtime_services::account_session_runtime::AccountSessionPort for Unavailable {
+            fn ensure_session<'a>(
+                &'a self,
+                _: &'a str,
+            ) -> studio_runtime_services::account_session_runtime::AccountSessionFuture<
+                'a,
+                studio_runtime_services::account_session_runtime::ConnectionScope,
+            > {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Box::pin(async {
+                    Err(studio_runtime_services::account_session_runtime::AccountSessionError::Requires("fixture"))
+                })
+            }
+        }
+        let worker = Unavailable(std::sync::atomic::AtomicUsize::new(0));
+        let result = read_vm_codex_bootstrap(
+            accounts.clone(),
+            Some(&worker),
+            &store,
+            VmCodexAuthSource {
+                account_key: "fake",
+                account: &serde_json::from_value(account.clone()).expect("account fixture"),
+                root_request_id: "fake",
+                owner: VmAuthOwner::Callback { source: &owner },
+            },
+            false,
+        )
+        .await;
+        assert!(
+            matches!(result, Err(WorkerError::PreparationPending(reason)) if reason.diagnostic == "provider-session/account-session")
+        );
+        assert_eq!(worker.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+        std::fs::write(
+            home.join("auth.json"),
+            vec![b' '; studio_runtime_services::linux_vm_provider::MAX_GUEST_CREDENTIAL_BYTES + 1],
+        )
+        .unwrap();
+        assert!(
+            matches!(call(account).await, Err(WorkerError::PreparationRefused(reason)) if reason == "provider-session/codex-auth-invalid")
+        );
+    }
+}
+
+#[cfg(test)]
 mod direct_generation_tests {
     use super::*;
 
@@ -3504,11 +3756,9 @@ pub fn account_home<R: ProviderAuthReader>(
     let initial_profile = initial
         .accounts
         .iter()
-        .find(|profile| profile["id"] == key)
+        .find(|profile| profile.id.as_str() == Some(key))
         .ok_or_else(|| WorkerError::PreparationRefused("account-driver/unavailable".into()))?;
-    if studio_runtime_providers::ProviderKind::key_of(initial_profile)
-        != Some(ProviderKind::Codex.key())
-    {
+    if initial_profile.provider_kind().map(ProviderKind::key) != Some(ProviderKind::Codex.key()) {
         return Err(WorkerError::PreparationRefused(
             "provider-session/claude-runtime-launch".into(),
         ));
@@ -3528,20 +3778,23 @@ pub fn account_home<R: ProviderAuthReader>(
     let profile = snapshot
         .accounts
         .iter()
-        .find(|profile| profile["id"] == key)
+        .find(|profile| profile.id.as_str() == Some(key))
         .ok_or_else(|| WorkerError::PreparationRefused("account-driver/unavailable".into()))?;
-    if studio_runtime_providers::ProviderKind::key_of(profile) != Some(ProviderKind::Codex.key()) {
+    if profile.provider_kind().map(ProviderKind::key) != Some(ProviderKind::Codex.key()) {
         return Err(WorkerError::PreparationRefused(
             "provider-session/claude-runtime-launch".into(),
         ));
     }
-    if profile["disconnected"] == true || profile["deleted"] == true || profile["status"] != "ready"
+    if profile.disconnected.as_bool() == Some(true)
+        || profile.deleted.as_bool() == Some(true)
+        || profile.status.as_str() != Some("ready")
     {
         return Err(WorkerError::PreparationRefused(
             "account-driver/unavailable".into(),
         ));
     }
-    let home = profile["home"]
+    let home = profile
+        .home
         .as_str()
         .filter(|home| !home.is_empty())
         .ok_or_else(|| WorkerError::PreparationRefused("account-driver/profile-home".into()))?
@@ -3554,41 +3807,55 @@ pub fn account_home<R: ProviderAuthReader>(
 fn selected_account(
     accounts: &AccountDriver,
     key: &str,
-) -> Result<(ProviderKind, String, bool, serde_json::Value), WorkerError> {
+) -> Result<
+    (
+        ProviderKind,
+        String,
+        bool,
+        Option<studio_runtime_services::claude_bridge::ClaudeLaunchProfile>,
+    ),
+    WorkerError,
+> {
     let snapshot = accounts
         .snapshot()
         .map_err(|_| WorkerError::PreparationRefused("account-driver/unavailable".into()))?;
     // A sign-in account is not listed until it has an identity; its sign-in
     // request still launches its session.
-    let profile = match snapshot
+    let kind = match snapshot
         .accounts
         .iter()
-        .find(|profile| profile["id"] == key)
+        .find(|profile| profile.id.as_str() == Some(key))
     {
-        Some(profile) => profile.clone(),
-        None => accounts
-            .login_launch_record(key)
-            .ok()
-            .flatten()
-            .ok_or_else(|| WorkerError::PreparationRefused("account-driver/unavailable".into()))?,
+        Some(profile) => profile.provider().map_err(|_| {
+            WorkerError::PreparationRefused("provider-session/unsupported-provider".into())
+        })?,
+        None => {
+            let profile = accounts
+                .login_launch_record(key)
+                .ok()
+                .flatten()
+                .ok_or_else(|| {
+                    WorkerError::PreparationRefused("account-driver/unavailable".into())
+                })?;
+            ProviderKind::of_record(&profile).map_err(|_| {
+                WorkerError::PreparationRefused("provider-session/unsupported-provider".into())
+            })?
+        }
     };
-    let kind = ProviderKind::of_record(&profile).map_err(|_| {
-        WorkerError::PreparationRefused("provider-session/unsupported-provider".into())
-    })?;
     if kind == ProviderKind::Codex {
         let (home, isolated) = account_home(accounts, key)?;
-        return Ok((kind, home, isolated, profile));
+        return Ok((kind, home, isolated, None));
     }
     let profile = accounts
-        .claude_profile(key)
+        .claude_launch_profile(key)
         .map_err(|_| WorkerError::PreparationRefused("account-driver/unavailable".into()))?;
     let home = profile
-        .get("home")
-        .and_then(serde_json::Value::as_str)
+        .home
+        .as_str()
         .filter(|value| !value.is_empty())
         .ok_or_else(|| WorkerError::PreparationRefused("account-driver/profile-home".into()))?
         .to_owned();
-    Ok((kind, home, false, profile))
+    Ok((kind, home, false, Some(profile)))
 }
 
 #[doc(hidden)]
@@ -3601,7 +3868,7 @@ pub fn codex_launch(
 ) -> ProviderLaunchSpec {
     adapter(ProviderKind::Codex)
         .host_launch(HostLaunch {
-            profile: &serde_json::Value::Null,
+            profile: None,
             home,
             isolated,
             codex_executable: native_path,
@@ -3622,9 +3889,17 @@ pub fn claude_launch(
     account: &str,
     environment: BTreeMap<String, String>,
 ) -> Result<ProviderLaunchSpec, WorkerError> {
+    let profile =
+        studio_runtime_services::claude_bridge::ClaudeLaunchProfile::from_record(&profile)
+            .map_err(|_| {
+                WorkerError::PreparationRefused(
+                    studio_runtime_services::provider_adapter::CLAUDE_ACCOUNT_IDENTITY_REFUSAL
+                        .into(),
+                )
+            })?;
     adapter(ProviderKind::Claude)
         .host_launch(HostLaunch {
-            profile: &profile,
+            profile: Some(&profile),
             home: String::new(),
             isolated: false,
             codex_executable: None,
@@ -3636,6 +3911,34 @@ pub fn claude_launch(
         .map(|launch| launch.spec)
 }
 
+#[cfg(test)]
+mod launch_profile_tests {
+    #[test]
+    fn starting_codex_login_selects_without_a_launch_profile() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let home = root.path().join("login-home");
+        std::fs::create_dir_all(&home).expect("home");
+        let registry = root.path().join("registry.json");
+        let write = |status: &str| {
+            std::fs::write(&registry, serde_json::json!({
+                "version": studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,
+                "defaultAccountKey":"default", "accounts": {
+                    "default":{"provider":"codex","id":"default","home":"","label":"Default","source":"CLI","status":"signedOut"},
+                    "login-fixture":{"provider":"codex","id":"login-fixture","home":home,"label":"Login","source":"CLI","status":"pending"}
+                }, "logins":{"request":{"requestId":"request","accountKey":"login-fixture","status":status,"createdAt":1.0}},"deleteReceipts":{}
+            }).to_string()).expect("registry");
+            super::AccountDriver::open(&registry).expect("driver")
+        };
+        let driver = write("starting");
+        let (kind, selected_home, isolated, profile) =
+            super::selected_account(&driver, "login-fixture").expect("starting login");
+        assert_eq!(kind, studio_runtime_providers::ProviderKind::Codex);
+        assert_eq!(selected_home, home.to_string_lossy());
+        assert!(isolated && profile.is_none());
+        assert!(super::selected_account(&write("pending"), "login-fixture").is_err());
+    }
+}
+
 #[cfg(all(test, unix))]
 #[allow(clippy::unwrap_used)]
 mod vm_claude_refresh_tests {
@@ -3645,6 +3948,88 @@ mod vm_claude_refresh_tests {
     };
     use serde_json::{Value, json};
     use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt};
+
+    #[test]
+    fn synthetic_credential_read_and_encode_preserve_legacy_values() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("credentials.json");
+        for (raw, expected) in [
+            (
+                r#"{"claudeAiOauth":{"accessToken":" ","expiresAt":1,"scopes":[null,7,"user:inference"],"subscriptionType":null,"rateLimitTier":{"n":1.0},"refreshToken":"secret"}}"#,
+                json!({"accessToken":" ","expiresAt":1,"scopes":[null,7,"user:inference"],"subscriptionType":null,"rateLimitTier":{"n":1.0}}),
+            ),
+            (
+                r#"{"claudeAiOauth":{"accessToken":"old","accessToken":"new","expiresAt":1.0,"scopes":["user:inference"]}}"#,
+                json!({"accessToken":"new","expiresAt":1.0,"scopes":["user:inference"]}),
+            ),
+        ] {
+            fs::write(&path, raw).unwrap();
+            let access = read_vm_claude_oauth(&path, true).unwrap();
+            let bytes = encode_vm_claude_credentials(&access).unwrap();
+            assert_eq!(
+                bytes,
+                serde_json::to_vec(&json!({"claudeAiOauth":expected})).unwrap()
+            );
+            let encoded: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(encoded["claudeAiOauth"], expected);
+        }
+        for raw in [
+            r#"{"claudeAiOauth":{"accessToken":"","expiresAt":1,"scopes":["user:inference"]}}"#,
+            r#"{"claudeAiOauth":{"accessToken":"x","expiresAt":1e400,"scopes":["user:inference"]}}"#,
+            r#"{"claudeAiOauth":{"accessToken":"x","expiresAt":1,"scopes":[7]}}"#,
+        ] {
+            fs::write(&path, raw).unwrap();
+            assert!(read_vm_claude_oauth(&path, true).is_err());
+        }
+    }
+
+    #[test]
+    fn fresh_credential_still_forces_native_account_status() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        use studio_runtime_services::account_driver::{
+            AccountDriver, AuthMetadata, AuthProfile, ProviderAuthReader,
+        };
+        struct Reader(Arc<AtomicUsize>);
+        impl ProviderAuthReader for Reader {
+            fn read(&self, _: &AuthProfile) -> AuthMetadata {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                studio_runtime_services::account_driver::claude::auth_metadata_from_output(
+                    br#"{"loggedIn":true,"authMethod":"claude.ai","email":"fixture@example.invalid"}"#, true)
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let registry = root.path().join("registry.json");
+        let credentials = root.path().join("credentials.json");
+        fs::write(&registry, json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"claude-test","accounts":{"claude-test":{
+            "id":"claude-test","provider":"claude","home":root.path(),"label":"fixture","source":"test","status":"ready",
+            "email":"fixture@example.invalid","accountId":"claude:fixture@example.invalid","_credentialIdentity":"claude:fixture@example.invalid","claudeOptions":{}
+        }},"logins":{},"deleteReceipts":{}}).to_string()).unwrap();
+        fs::write(&credentials, json!({"claudeAiOauth":{"accessToken":"fake","expiresAt":4102444800000u64,"scopes":["user:inference"],"refreshToken":"private"}}).to_string()).unwrap();
+        let reads = Arc::new(AtomicUsize::new(0));
+        let accounts = AccountDriver::open_with_reader(registry, Reader(reads.clone())).unwrap();
+        let original = accounts.snapshot().unwrap().accounts.remove(0);
+        reads.store(0, Ordering::SeqCst);
+        let copied = super::read_vm_claude_credentials(
+            &accounts,
+            super::ClaudeCredentialRequest {
+                path: &credentials,
+                host_config: root.path(),
+                email: "fixture@example.invalid",
+                account_key: "claude-test",
+                original_account: &original,
+                claude_bridge_dir: root.path(),
+                explicit_host_config: true,
+            },
+        )
+        .unwrap();
+        assert!(reads.load(Ordering::SeqCst) > 0);
+        let copied: Value = serde_json::from_slice(&copied).unwrap();
+        assert_eq!(copied["claudeAiOauth"]["accessToken"], "fake");
+        assert!(copied["claudeAiOauth"].get("refreshToken").is_none());
+    }
 
     #[test]
     fn existing_refresh_helper_handshake_waits_for_a_fresh_access_token() {
@@ -3701,14 +4086,13 @@ IFS= read -r release
         run_vm_claude_refresh_helper(&node, &helper, &environment, || {
             let access = read_vm_claude_oauth(&credential_path, true)
                 .map_err(|_| WorkerError::TaskFailed)?;
-            Ok(access["expiresAt"].as_f64().unwrap()
-                > unix_time_ms().unwrap() + CLAUDE_ACCESS_REFRESH_WINDOW_MS)
+            Ok(access.expiry_ms > unix_time_ms().unwrap() + CLAUDE_ACCESS_REFRESH_WINDOW_MS)
         })
         .unwrap();
 
         let access = read_vm_claude_oauth(&credential_path, true).unwrap();
-        assert_eq!(access["accessToken"], "fresh-fake-token");
-        assert!(access["expiresAt"].as_f64().unwrap() > now_ms);
+        assert_eq!(access.access_token, "fresh-fake-token");
+        assert!(access.expiry_ms > now_ms);
     }
 
     #[test]
@@ -3809,7 +4193,9 @@ IFS= read -r release
         .unwrap();
         assert_ne!(accounts.auth_pin("claude-test").unwrap(), expected_pin);
         let mut changed_original = original;
-        changed_original["email"] = json!("other@example.invalid");
+        changed_original.email = studio_runtime_services::account_policy::PublicString::String(
+            "other@example.invalid".into(),
+        );
         assert!(matches!(
             verify_vm_claude_account(
                 &accounts,
@@ -3832,10 +4218,12 @@ IFS= read -r release
             "refreshToken": "fake-refresh-token",
             "unknownHostField": "private"
         });
-        let copied: Value = serde_json::from_slice(
-            &encode_vm_claude_credentials(access.as_object().unwrap()).unwrap(),
-        )
-        .unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("credentials.json");
+        fs::write(&path, json!({"claudeAiOauth":access}).to_string()).unwrap();
+        let access = read_vm_claude_oauth(&path, true).unwrap();
+        let copied: Value =
+            serde_json::from_slice(&encode_vm_claude_credentials(&access).unwrap()).unwrap();
         assert_eq!(
             copied,
             json!({"claudeAiOauth": {

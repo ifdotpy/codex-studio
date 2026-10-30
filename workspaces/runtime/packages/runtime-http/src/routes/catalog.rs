@@ -131,12 +131,11 @@ async fn limits_response(
             .await
             .map_err(|_| ApiError::internal())?
             .ok_or_else(|| ApiError::new(axum::http::StatusCode::NOT_FOUND, "Unknown agent"))?;
-        let agent = agent.into_value();
-        let account = agent
-            .get("accountKey")
-            .and_then(serde_json::Value::as_str)
-            .filter(|key| !key.is_empty())
-            .unwrap_or("default");
+        let account = if agent.account_key.is_empty() {
+            "default"
+        } else {
+            &agent.account_key
+        };
         if snapshot["accountKey"].as_str() != Some(account) {
             return Err(ApiError::new(
                 axum::http::StatusCode::BAD_REQUEST,
@@ -147,6 +146,7 @@ async fn limits_response(
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|_| ApiError::internal())?
             .as_secs_f64();
+        let agent = agent.into_value();
         snapshot["eligibility"] =
             studio_runtime_services::usage_resume::eligibility(&snapshot, &agent, now);
     }

@@ -349,15 +349,68 @@ mod tests {
     }
 
     #[test]
+    fn unclean_start_requires_exact_history_identity_to_settle() {
+        let mut connection = database();
+        let tx = connection.transaction().expect("transaction");
+        SchedulerRepository::claim(&tx, "agent", 4, "attempt", 10.0, 2).expect("claim");
+        SchedulerRepository::hold_unclean_starts(&tx).expect("hold");
+        let identity = crate::TurnAttemptIdentity {
+            agent_id: "agent".into(),
+            epoch: 4,
+            attempt_id: "attempt".into(),
+        };
+        assert!(
+            !SchedulerRepository::settle_unclean_start(&tx, &identity, "thread", "wrong", "turn")
+                .expect("wrong event")
+        );
+        assert!(
+            SchedulerRepository::settle_unclean_start(&tx, &identity, "thread", "first", "turn")
+                .expect("exact history")
+        );
+        tx.commit().expect("commit");
+        let status: String = connection
+            .query_row(
+                "SELECT status FROM runtime_events WHERE id='first'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("event");
+        assert_eq!(status, "delivered");
+        let agent = AgentRepository::get(&connection, &AgentId::from("agent"))
+            .expect("agent")
+            .expect("present");
+        assert_eq!(
+            agent
+                .start_attempt()
+                .expect("attempt")
+                .expect("present")
+                .submitted,
+            Some(false)
+        );
+        assert!(agent.start_outcome_hold.is_none());
+    }
+
+    #[test]
     fn unclean_startup_holds_a_reserved_start() {
         let mut connection = database();
         let transaction = connection.transaction().expect("claim transaction");
         SchedulerRepository::claim(&transaction, "agent", 4, "attempt", 10.0, 2).expect("claim");
         transaction.commit().expect("claim commits");
+        let mut agent = AgentRepository::get(&connection, &AgentId::from("agent"))
+            .unwrap()
+            .unwrap();
+        agent.in_flight = Some(true);
+        agent.auto_wake = Some(true);
+        AgentRepository::put(&connection, &agent).unwrap();
         let transaction = connection.transaction().expect("recovery transaction");
         SchedulerRepository::hold_unclean_starts(&transaction).expect("hold uncertain start");
         SchedulerRepository::recover_unsubmitted(&transaction).expect("normal recovery");
         transaction.commit().expect("recovery commits");
+        let agent = AgentRepository::get(&connection, &AgentId::from("agent"))
+            .expect("agent reads")
+            .expect("agent remains");
+        assert_eq!(agent.in_flight, Some(false));
+        assert_eq!(agent.auto_wake, Some(false));
         let statuses: Vec<String> = connection
             .prepare("SELECT status FROM runtime_events WHERE id IN ('first','tie') ORDER BY id")
             .expect("statuses")

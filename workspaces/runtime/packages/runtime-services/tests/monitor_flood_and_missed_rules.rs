@@ -183,7 +183,7 @@ fn monitor_payload_has_first_line_excerpt_and_exact_log_offset_across_streams() 
 fn once() -> (Value, Value) {
     (
         json!({"id":"once","agent":"owner","epoch":1,"name":"Once","kind":"once","status":"active","intervalSeconds":60,"nextAt":2000.0,"at":2000.0,"created":1900.0,"command":"echo should-run-only-on-time","text":"Check result"}),
-        json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"owner","rootId":"owner","epoch":1,"status":"idle","autoWake":true,"isLead":true}),
+        json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"owner","rootId":"owner","epoch":1,"status":"idle","autoWake":true,"isLead":true}),
     )
 }
 
@@ -423,7 +423,6 @@ async fn missed_once_rule_is_atomic_durable_and_owner_can_resume_or_delete() {
             .expect("read rule")
             .expect("rule")
             .value()
-            .clone()
     };
     assert_eq!(read()["status"], "active", "event failure rolls back pause");
     assert!(
@@ -460,8 +459,8 @@ async fn missed_once_rule_is_atomic_durable_and_owner_can_resume_or_delete() {
     assert_eq!(fixtures::events(&store), original);
     let resumed = managed_status_watch::rules(
         &store,
-        "owner",
-        1,
+        ("owner", 1),
+        managed_status_watch::WatchAction::Resume,
         Some(&json!({"action":"resume","id":"once"})),
         &studio_runtime_schema::persistence::RequestIdentity::issue_root(),
         3000.0,
@@ -477,8 +476,8 @@ async fn missed_once_rule_is_atomic_durable_and_owner_can_resume_or_delete() {
     assert_eq!(monitor.0.load(std::sync::atomic::Ordering::SeqCst), 1);
     let deleted = managed_status_watch::rules(
         &store,
-        "owner",
-        1,
+        ("owner", 1),
+        managed_status_watch::WatchAction::Delete,
         Some(&json!({"action":"delete","id":"once"})),
         &studio_runtime_schema::persistence::RequestIdentity::issue_root(),
         3100.0,

@@ -633,7 +633,7 @@ mod room_preparation_tests {
         connection
             .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
             .expect("volatile table");
-        connection.execute("INSERT INTO runtime_agents(id,record) VALUES('agent',?1)", [json!({"id":"agent","rootId":"agent","epoch":1,"status":"idle","provider":"codex"}).to_string()]).expect("agent");
+        connection.execute("INSERT INTO runtime_agents(id,record) VALUES('agent',?1)", [json!({"accountKey":"default","id":"agent","rootId":"agent","epoch":1,"status":"idle","provider":"codex"}).to_string()]).expect("agent");
         for sql in [
             "UPDATE runtime_agents SET record=json_set(record,'$.prompt','changed') WHERE id='agent'",
             "INSERT INTO runtime_agent_volatile(id,tail) VALUES('agent','\"changed\"')",

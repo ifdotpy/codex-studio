@@ -26,8 +26,10 @@ use studio_runtime_providers::ProviderKind;
 use process_wrap::std::CommandWrap;
 use regex::Regex;
 use rusqlite::OptionalExtension;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use studio_runtime_process::child_priority::ChildPriority;
+use studio_runtime_schema::json_object::JsonObject;
 use studio_runtime_store::{RuntimeStore, StoreError, SyncDocumentsRepository};
 use thiserror::Error;
 
@@ -473,6 +475,17 @@ fn read_cli_version(binary: &str, deadline: Instant) -> Result<String, ProviderP
     Ok(version)
 }
 
+#[derive(Deserialize)]
+struct RegistryDocument {
+    #[serde(rename = "dist-tags")]
+    dist_tags: Option<JsonObject<RegistryTags>>,
+}
+
+#[derive(Deserialize)]
+struct RegistryTags {
+    latest: Option<String>,
+}
+
 /// Unauthenticated npm registry adapter. Each exchange is bounded by its passed deadline.
 #[derive(Default)]
 pub struct NpmReleaseFetcher;
@@ -526,11 +539,9 @@ impl UpstreamFetch for NpmReleaseFetcher {
             .limit(MAX_RELEASE_BYTES as u64)
             .read_to_vec()
             .map_err(|_| ProviderPortError)?;
-        let document: Value = serde_json::from_slice(&bytes).map_err(|_| ProviderPortError)?;
-        let latest = document
-            .pointer("/dist-tags/latest")
-            .and_then(Value::as_str)
-            .map(str::to_owned);
+        let JsonObject(document): JsonObject<RegistryDocument> =
+            serde_json::from_slice(&bytes).map_err(|_| ProviderPortError)?;
+        let latest = document.dist_tags.and_then(|tags| tags.0.latest);
         Ok(UpstreamReply {
             status,
             etag,
@@ -553,23 +564,20 @@ pub enum ProviderVersionsError {
     InvalidProjection,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct CacheEntry {
     version: Option<String>,
     etag: Option<String>,
     fetched_at: Option<f64>,
+    #[serde(default, deserialize_with = "deserialize_last_attempt_at")]
     last_attempt_at: f64,
 }
 
-impl Default for CacheEntry {
-    fn default() -> Self {
-        Self {
-            version: None,
-            etag: None,
-            fetched_at: None,
-            last_attempt_at: 0.0,
-        }
-    }
+fn deserialize_last_attempt_at<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<f64, D::Error> {
+    Ok(Option::<f64>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 fn attempt_due(entry: &CacheEntry, now: f64) -> bool {
@@ -1322,6 +1330,17 @@ fn warnings_projection(providers: &[Value], upstream_enabled: bool) -> Vec<Value
     version_warnings
 }
 
+#[derive(Deserialize, Serialize)]
+struct CacheDocument<T> {
+    #[serde(skip_deserializing, default = "cache_format_version")]
+    version: u8,
+    packages: T,
+}
+
+fn cache_format_version() -> u8 {
+    1
+}
+
 fn read_cache(
     path: &Path,
 ) -> Result<std::collections::BTreeMap<String, CacheEntry>, ProviderVersionsError> {
@@ -1330,49 +1349,41 @@ fn read_cache(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Default::default()),
         Err(_) => return Ok(Default::default()),
     };
-    let Ok(value) = serde_json::from_str::<Value>(&text) else {
+    let Ok(JsonObject(document)) = serde_json::from_str::<
+        JsonObject<CacheDocument<std::collections::BTreeMap<String, JsonObject<CacheEntry>>>>,
+    >(&text) else {
         return Ok(Default::default());
     };
-    let Some(packages) = value.get("packages").and_then(Value::as_object) else {
-        return Ok(Default::default());
-    };
-    Ok(packages
-        .iter()
-        .filter_map(|(package, entry)| {
-            if !RELEASES.iter().any(|(_, known, _)| known == package) {
-                return None;
-            }
-            let version = entry
-                .get("version")
-                .and_then(Value::as_str)
-                .filter(|value| parse_key(value).is_some())
-                .map(str::to_owned);
-            let etag = entry.get("etag").and_then(Value::as_str).map(str::to_owned);
-            Some((
-                package.clone(),
-                CacheEntry {
-                    version,
-                    etag,
-                    fetched_at: entry.get("fetchedAt").and_then(Value::as_f64),
-                    last_attempt_at: entry
-                        .get("lastAttemptAt")
-                        .and_then(Value::as_f64)
-                        .unwrap_or_default(),
-                },
-            ))
-        })
-        .collect())
+    let mut packages = document
+        .packages
+        .into_iter()
+        .map(|(key, entry)| (key, entry.0))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    packages.retain(|package, entry| {
+        if !RELEASES.iter().any(|(_, known, _)| known == package) {
+            return false;
+        }
+        if entry
+            .version
+            .as_deref()
+            .is_some_and(|version| parse_key(version).is_none())
+        {
+            entry.version = None;
+        }
+        true
+    });
+    Ok(packages)
 }
 
 fn save_cache(
     path: &Path,
     cache: &std::collections::BTreeMap<String, CacheEntry>,
 ) -> Result<(), ProviderVersionsError> {
-    let packages: serde_json::Map<String, Value> = cache.iter().map(|(package, entry)| {
-        (package.clone(), json!({"version":entry.version,"etag":entry.etag,"fetchedAt":entry.fetched_at,"lastAttemptAt":entry.last_attempt_at}))
-    }).collect();
-    let bytes = serde_json::to_vec(&json!({"version":1,"packages":packages}))
-        .map_err(|_| ProviderVersionsError::CacheRead)?;
+    let bytes = serde_json::to_vec(&CacheDocument {
+        version: cache_format_version(),
+        packages: cache,
+    })
+    .map_err(|_| ProviderVersionsError::CacheRead)?;
     if bytes.len() > MAX_RELEASE_BYTES {
         return Err(ProviderVersionsError::CacheRead);
     }

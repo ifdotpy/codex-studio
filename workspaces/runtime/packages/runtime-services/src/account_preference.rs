@@ -8,6 +8,7 @@
 //! `workspaces/client/contracts/account-preference.json`; the Python server and the web
 //! client run the same cases.
 
+use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use std::sync::LazyLock;
 use studio_runtime_schema::ProviderKind;
@@ -30,32 +31,99 @@ pub struct AccountOrder {
     pub default_groups: Vec<String>,
 }
 
+// The file is a preference: malformed containers and non-string entries are
+// ignored independently, while an unsupported version discards the whole file.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AccountOrderFile {
+    version: u64,
+    #[serde(default)]
+    groups: Option<GroupMap>,
+    #[serde(default)]
+    default_account_groups: Option<GroupList>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum GroupMap {
+    Map(std::collections::BTreeMap<String, GroupValue>),
+    Other(serde::de::IgnoredAny),
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum GroupList {
+    List(Vec<GroupValue>),
+    Other(serde::de::IgnoredAny),
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum GroupValue {
+    Name(String),
+    Other(serde::de::IgnoredAny),
+}
+
+impl GroupValue {
+    fn name(self) -> Option<String> {
+        match self {
+            Self::Name(name) => Some(name),
+            Self::Other(_) => None,
+        }
+    }
+}
+
+// Serde's struct derive also accepts positional arrays. The file is an object.
+fn read_order_file<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<AccountOrderFile, D::Error> {
+    struct Object;
+    impl<'de> serde::de::Visitor<'de> for Object {
+        type Value = AccountOrderFile;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("an account order object")
+        }
+
+        fn visit_map<M: serde::de::MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
+            AccountOrderFile::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+        }
+    }
+    deserializer.deserialize_map(Object)
+}
+
 impl AccountOrder {
     /// Read the file at `path`. A missing or unreadable file, another version, and
     /// invalid names give no order: the order is a preference, and account reads
     /// must not fail because of it.
     #[must_use]
     pub fn read(path: &std::path::Path) -> Self {
-        let Some(value) = std::fs::read(path)
+        let Some(file) = std::fs::read(path)
             .ok()
-            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-            .filter(|value| {
-                value.get("version").and_then(Value::as_u64) == Some(ACCOUNT_ORDER_VERSION)
+            .and_then(|bytes| {
+                let mut deserializer = serde_json::Deserializer::from_slice(&bytes);
+                let file = read_order_file(&mut deserializer).ok()?;
+                deserializer.end().ok()?;
+                Some(file)
             })
+            .filter(|file| file.version == ACCOUNT_ORDER_VERSION)
         else {
             return Self::default();
         };
-        let groups = value
-            .get("groups")
-            .and_then(Value::as_object)
-            .map(|rows| {
-                rows.iter()
-                    .filter_map(|(key, group)| Some((key.clone(), group.as_str()?.to_owned())))
-                    .filter(|(_, group)| valid_group(group))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let default_groups = groups_of(value.get(DEFAULT_GROUPS_FIELD));
+        let groups = match file.groups {
+            Some(GroupMap::Map(rows)) => rows
+                .into_iter()
+                .filter_map(|(key, group)| Some((key, group.name()?)))
+                .filter(|(_, group)| valid_group(group))
+                .collect(),
+            Some(GroupMap::Other(_)) | None => Default::default(),
+        };
+        let default_groups = match file.default_account_groups {
+            Some(GroupList::List(items)) => {
+                items.into_iter().filter_map(GroupValue::name).collect()
+            }
+            Some(GroupList::Other(_)) | None => Vec::new(),
+        };
         Self {
             groups,
             default_groups: if validate_groups(&default_groups).is_ok() {
@@ -84,13 +152,8 @@ impl AccountOrder {
             .iter_mut()
             .chain(snapshot.archived_accounts.iter_mut())
         {
-            let group = row
-                .get("id")
-                .and_then(Value::as_str)
-                .and_then(|key| self.groups.get(key))
-                .cloned();
-            if let (Some(group), Some(object)) = (group, row.as_object_mut()) {
-                object.insert(ACCOUNT_GROUP_FIELD.to_owned(), Value::String(group));
+            if let Some(group) = row.id.as_str().and_then(|id| self.groups.get(id)) {
+                row.group = crate::account_policy::PublicString::String(group.clone());
             }
         }
         snapshot.default_account_groups = self.default_groups.clone();
@@ -164,29 +227,16 @@ pub fn group_rank(group: Option<&str>, groups: &[String]) -> usize {
         .unwrap_or(groups.len())
 }
 
-fn account_group(account: &Value) -> Option<&str> {
-    account.get(ACCOUNT_GROUP_FIELD).and_then(Value::as_str)
-}
-
-fn flag(account: &Value, field: &str) -> bool {
-    account.get(field).and_then(Value::as_bool) == Some(true)
-}
-
-fn provider(account: &Value) -> Option<ProviderKind> {
-    ProviderKind::of_record(account).ok()
-}
-
 /// Whether a new chat can start on this public account row.
 #[must_use]
-pub fn can_start(account: &Value) -> bool {
-    provider(account).is_some()
-        && !flag(account, "disconnected")
-        && !flag(account, "deleted")
-        && account
-            .get("duplicateOf")
-            .is_none_or(|value| value.is_null() || value.as_str() == Some(""))
-        && (account.get("status").and_then(Value::as_str) == Some("ready")
-            || flag(account, "canAttemptNativeProof"))
+pub fn can_start(account: &crate::account_policy::PublicAccount) -> bool {
+    account.provider_kind().is_some()
+        && account.disconnected.as_bool() != Some(true)
+        && account.deleted.as_bool() != Some(true)
+        && (!account.duplicate_of.is_present_non_null()
+            || account.duplicate_of.as_str() == Some(""))
+        && (account.status.as_str() == Some("ready")
+            || account.can_attempt_native_proof.as_bool() == Some(true))
 }
 
 /// The default account, model and effort of a new chat.
@@ -204,7 +254,7 @@ pub struct NewChatDefault {
 /// project record of the chat's folder, if any; `model` is the requested model.
 #[must_use]
 pub fn new_chat_default(
-    accounts: &[Value],
+    accounts: &[crate::account_policy::PublicAccount],
     default_account_key: &str,
     default_groups: &[String],
     project: Option<&Value>,
@@ -219,12 +269,12 @@ pub fn new_chat_default(
         .iter()
         .enumerate()
         .filter(|(_, row)| can_start(row))
-        .filter_map(|(index, row)| Some((index, row.get("id")?.as_str()?, row)))
+        .filter_map(|(index, row)| Some((index, row.id.as_str()?, row)))
         .filter(|(_, key, _)| allowed.is_empty() || allowed.iter().any(|item| item == key))
         .collect::<Vec<_>>();
     candidates.sort_by_key(|(index, key, row)| {
         (
-            group_rank(account_group(row), &groups),
+            group_rank(row.group.as_str(), &groups),
             Some(*key) != project_account,
             *key != default_account_key,
             *index,
@@ -234,17 +284,17 @@ pub fn new_chat_default(
         Some(model) => crate::provider_adapter::model_provider(model),
         None => candidates
             .iter()
-            .any(|(_, _, row)| provider(row) == Some(ProviderKind::Claude))
+            .any(|(_, _, row)| row.provider_kind() == Some(ProviderKind::Claude))
             .then_some(ProviderKind::Claude),
     };
     let chosen = candidates
         .iter()
-        .find(|(_, _, row)| wanted.is_none_or(|wanted| provider(row) == Some(wanted)))
+        .find(|(_, _, row)| wanted.is_none_or(|wanted| row.provider_kind() == Some(wanted)))
         .map(|(_, key, _)| (*key).to_owned())
         .unwrap_or_else(|| project_account.unwrap_or(default_account_key).to_owned());
     let claude = accounts.iter().any(|row| {
-        row.get("id").and_then(Value::as_str) == Some(chosen.as_str())
-            && provider(row) == Some(ProviderKind::Claude)
+        row.id.as_str() == Some(chosen.as_str())
+            && row.provider_kind() == Some(ProviderKind::Claude)
     });
     let defaults = model.is_none() && claude;
     NewChatDefault {
@@ -259,6 +309,46 @@ mod tests {
     use super::*;
 
     #[test]
+    fn account_order_file_filters_entries_and_preserves_fallbacks() {
+        let dir = tempfile::tempdir().expect("temporary order directory");
+        let path = dir.path().join(ACCOUNT_ORDER_FILE);
+        let read = |value: Value| {
+            std::fs::write(&path, serde_json::to_vec(&value).expect("encode fixture"))
+                .expect("write fixture");
+            AccountOrder::read(&path)
+        };
+        let order = read(serde_json::json!({
+            "version": 1,
+            "groups": {"a":"team", "b":false, "c":"Bad", "d":"work"},
+            "defaultAccountGroups": ["work", 2, null, "team"],
+            "future": true
+        }));
+        assert_eq!(
+            order.groups,
+            [("a".into(), "team".into()), ("d".into(), "work".into())].into()
+        );
+        assert_eq!(order.default_groups, ["work", "team"]);
+        std::fs::write(&path, order.encode()).expect("write order");
+        assert_eq!(AccountOrder::read(&path), order);
+        for value in [
+            serde_json::json!([]),
+            serde_json::json!([1, {}, []]),
+            serde_json::json!({"version": null}),
+            serde_json::json!({"version": 1.0}),
+            serde_json::json!({"version": 2, "groups":{"a":"team"}}),
+        ] {
+            assert_eq!(read(value), AccountOrder::default());
+        }
+        let order = read(serde_json::json!({"version":1,"groups":[],"defaultAccountGroups":{}}));
+        assert_eq!(order, AccountOrder::default());
+        let order = read(
+            serde_json::json!({"version":1,"groups":{"a":"team"},"defaultAccountGroups":["same","same"]}),
+        );
+        assert_eq!(order.groups.get("a").map(String::as_str), Some("team"));
+        assert!(order.default_groups.is_empty());
+    }
+
+    #[test]
     fn provider_identity_unknown_accounts_cannot_be_selected() {
         use serde_json::json;
         for provider in [
@@ -271,10 +361,15 @@ mod tests {
             if let Some(provider) = provider {
                 unknown["provider"] = provider;
             }
-            assert!(!can_start(&unknown), "{unknown}");
+            let unknown: crate::account_policy::PublicAccount =
+                serde::Deserialize::deserialize(unknown).expect("fixture");
+            assert!(!can_start(&unknown));
             let accounts = [
                 unknown,
-                json!({"id":"known","provider":"codex","status":"ready"}),
+                <crate::account_policy::PublicAccount as serde::Deserialize>::deserialize(
+                    json!({"id":"known","provider":"codex","status":"ready"}),
+                )
+                .expect("fixture"),
             ];
             assert_eq!(
                 new_chat_default(&accounts, "unknown", &[], None, Some("gpt-mini")).account_key,
@@ -283,7 +378,10 @@ mod tests {
         }
         for provider in ProviderKind::ALL {
             assert!(can_start(
-                &json!({"provider":provider.key(),"status":"ready"})
+                &<crate::account_policy::PublicAccount as serde::Deserialize>::deserialize(
+                    json!({"provider":provider.key(),"status":"ready"})
+                )
+                .expect("fixture")
             ));
         }
     }
@@ -298,10 +396,11 @@ mod tests {
         assert!(cases.len() >= 10);
         for case in cases {
             let name = case["name"].as_str().expect("name");
-            let accounts = case["accounts"].as_array().expect("accounts");
+            let accounts: Vec<crate::account_policy::PublicAccount> =
+                serde::Deserialize::deserialize(case["accounts"].clone()).expect("accounts");
             let project = case.get("project").filter(|value| !value.is_null());
             let actual = new_chat_default(
-                accounts,
+                &accounts,
                 case["defaultAccountKey"].as_str().expect("default key"),
                 &groups_of(case.get("defaultAccountGroups")),
                 project,

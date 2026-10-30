@@ -11,6 +11,27 @@ fn input_text(prepared: &turn::PreparedSubmission) -> String {
         .collect()
 }
 
+#[tokio::test]
+async fn submission_snapshot_preserves_only_unmatched_complaint_events() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
+    let resources = PreparationResources::bundled(
+        directory.path().display().to_string(),
+        crate::model_catalog::ModelCatalogService::new(),
+    )
+    .unwrap();
+    store.transaction_with_error(move |tx| -> Result<(), WorkerError> {
+        let record = json!({"id":"lead","rootId":"lead","isLead":true,"epoch":1,"status":"running","name":"lead","autoWake":true,"cwd":"/work","provider":"codex","accountKey":"default","threadId":"thread","turnId":"turn","inFlight":true,"events":0,"compactions":0});
+        AgentRepository::put(tx, &studio_runtime_store::AgentRecord::from_value(record.clone()).unwrap())?;
+        tx.execute("INSERT INTO runtime_complaints(id,record) VALUES('own',?1),('other',?2)", rusqlite::params![json!({"leadId":"lead","recipient":"user"}).to_string(), json!({"leadId":"other"}).to_string()])?;
+        let events = [("owned", r#"{"complaints":[{"complaint_id":"own"}]}"#), ("foreign", r#"{"complaints":[{"complaint_id":"other"}]}"#), ("malformed", "{}")].into_iter().map(|(id,text)| crate::scheduler::TurnEvent { id:id.into(), kind:"complaint".into(), text:text.into(), created:1.0, epoch:1, error:None, metadata:json!({}) }).collect();
+        let intent = TurnIntent { agent_id:"lead".into(), epoch:1, attempt_id:"prepare".into(), account_key:"default".into(), provider:studio_runtime_providers::ProviderKind::Codex, thread_id:Some("thread".into()), cwd:Some("/work".into()), model:None, events, radio_authorized:false };
+        let (_, events) = submission_snapshot(tx, &resources, &record, &intent)?;
+        assert_eq!(events.iter().map(|event| event.preserve_complaint).collect::<Vec<_>>(), [false, true, true]);
+        Ok(())
+    }).await.unwrap();
+}
+
 /// Exercise the store projection and receipt manifest through the actual turn
 /// compiler used by both providers, including parent and monitor-only workers.
 #[tokio::test]

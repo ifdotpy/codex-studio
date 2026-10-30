@@ -1,13 +1,8 @@
 {
-  "$defs": {
-    "JsonValue": {}
-  },
-  "additionalProperties": {
-    "$ref": "#/$defs/JsonValue"
-  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
   "properties": {
     "id": {
-      "title": "Id",
       "type": "string"
     }
   },

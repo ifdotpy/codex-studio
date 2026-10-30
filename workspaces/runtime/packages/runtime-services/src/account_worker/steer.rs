@@ -38,8 +38,7 @@ pub(super) fn claim(
     claude_steer_receipts: bool,
 ) -> Result<Option<(TurnIntent, String)>, WorkerError> {
     let owned = AgentRepository::get(tx, &AgentId::from(agent_id))?.is_some_and(|agent| {
-        agent.account_key.as_str()
-            == account
+        agent.account_key.as_str() == account
             && (agent.extra.get("provider").and_then(Value::as_str) != Some("claude")
                 || claude_steer_receipts)
     });
@@ -414,8 +413,7 @@ pub(super) async fn claim_for_wake(
                     .filter(|record| {
                         record.epoch == epoch
                             && record.status == studio_runtime_store::AgentStatus::Running
-                            && record.account_key.as_str()
-                                == read_account
+                            && record.account_key.as_str() == read_account
                     })
             else {
                 return Ok(None);
