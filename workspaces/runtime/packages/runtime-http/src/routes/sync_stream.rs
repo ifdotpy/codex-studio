@@ -33,14 +33,8 @@ use studio_runtime_services::change_notifications::{
     ChangeSnapshot, MAX_SAFE_REVISION, SYNC_FRAME_MIN_INTERVAL,
 };
 use studio_runtime_services::resource_notify::{
-<<<<<<< head
-    LiveDelta, ResourceChanges, ResourceNotifications, ResourceNotifyError,
-||||||| base
-    ResourceChanges, ResourceNotifications, ResourceNotifyError,
-=======
     LiveDelta, ResourceChanges, ResourceIdentity, ResourceKind, ResourceNotifications,
     ResourceNotifyError,
->>>>>>> ec8db553cf8c7355af2401a18b81608d
 };
 #[cfg(test)]
 use studio_runtime_services::token_rate::TokenRateHub;
@@ -1462,17 +1456,6 @@ async fn subscription_frame(state: &mut ResourceStream, update: SubscriptionChan
 /// ahead: the durable item carries the text that was dropped.
 async fn next_live_delta(
     live: &mut tokio::sync::broadcast::Receiver<LiveDelta>,
-<<<<<<< head
-    resources: &[Value],
-) -> Event {
-    use tokio::sync::broadcast::error::RecvError;
-    loop {
-        match live.recv().await {
-            Ok(delta)
-                if resources.iter().any(|resource| {
-                    resource["kind"] == "transcript" && resource["agentId"] == delta.agent_id
-||||||| base
-=======
     resources: &[SubscribedResource],
 ) -> Event {
     use tokio::sync::broadcast::error::RecvError;
@@ -1481,7 +1464,6 @@ async fn next_live_delta(
             Ok(delta)
                 if resources.iter().any(|resource| {
                     matches!(&resource.resource, ResourceRef::TranscriptResource(transcript) if transcript.agent_id == delta.agent_id)
->>>>>>> ec8db553cf8c7355af2401a18b81608d
                 }) =>
             {
                 return sse_event(
@@ -5401,16 +5383,6 @@ mod tests {
             &hub,
             &tokens,
             notifications.clone(),
-<<<<<<< head
-            vec![json!({"kind":"transcript","agentId":"a"})],
-        );
-        let other = test_stream(
-            &hub,
-            &tokens,
-            notifications.clone(),
-            vec![json!({"kind":"transcript","agentId":"b"})],
-||||||| base
-=======
             &[json!({"kind":"transcript","agentId":"a"})],
         );
         let other = test_stream(
@@ -5418,7 +5390,6 @@ mod tests {
             &tokens,
             notifications.clone(),
             &[json!({"kind":"transcript","agentId":"b"})],
->>>>>>> ec8db553cf8c7355af2401a18b81608d
         );
         notifications.publish_live(LiveDelta {
             agent_id: "a".into(),
