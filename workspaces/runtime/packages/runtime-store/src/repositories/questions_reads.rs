@@ -3,7 +3,7 @@
 use crate::StoreResult;
 use crate::records::{AgentRecord, CheckpointRecord, ComplaintRecord, RequestRecord, Table};
 use crate::schema::{SchemaRequirements, TableRequirement};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 const TABLES: &[TableRequirement] = &[
     TableRequirement {
@@ -105,6 +105,18 @@ impl QuestionsReadsRepository {
 
     pub fn complaint(connection: &Connection, id: &str) -> StoreResult<Option<ComplaintRecord>> {
         Table::<ComplaintRecord>::new(connection).get(&id.to_owned())
+    }
+
+    /// Raw stored bytes for change detection; the view reader validates the record.
+    pub fn complaint_fingerprint(connection: &Connection, id: &str) -> StoreResult<Option<String>> {
+        connection
+            .query_row(
+                "SELECT record FROM runtime_complaints WHERE id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(Into::into)
     }
 
     pub fn checkpoints(connection: &Connection) -> StoreResult<Vec<CheckpointRecord>> {

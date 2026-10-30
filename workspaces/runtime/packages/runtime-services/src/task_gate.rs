@@ -96,16 +96,20 @@ pub fn admit(
         return Ok(false);
     };
     let config = normalize(&config)?;
-    let mut results = task.value()["results"].clone();
-    let result = results
-        .as_array_mut()
+    let task_id = task.id().0.clone();
+    let result = task
+        .results_mut()
         .and_then(|v| v.last_mut())
         .ok_or(MonitorError::Refused("Missing gate submission"))?;
-    let result_id = result["id"]
-        .as_str()
+    let result_id = result
+        .get("id")
+        .and_then(Value::as_str)
         .ok_or(MonitorError::Refused("Missing result identity"))?
         .to_owned();
-    let revision = result["revision"].as_str().unwrap_or_default();
+    let revision = result
+        .get("revision")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     let cwd = &submitter.cwd;
     let mut evidence = json!({"status":"not_run","config":config,"cwd":cwd,"revision":revision,
         "exitCode":null,"output":"","log":null,"monitorId":null});
@@ -137,10 +141,8 @@ pub fn admit(
         };
         let mut monitor =
             crate::monitor_runtime::create_in_transaction(tx, &admission, workspace, now)?;
-        monitor.task_gate = Some(studio_runtime_schema::monitor_record::MonitorTaskGate {
-            task_id: task.id().0.clone(),
-            result_id,
-        });
+        monitor.task_gate =
+            Some(studio_runtime_schema::monitor_record::MonitorTaskGate { task_id, result_id });
         studio_runtime_store::monitor_runtime::put(tx, &monitor)?;
         evidence["status"] = json!("running");
         evidence["monitorId"] = json!(monitor.id);
@@ -148,13 +150,7 @@ pub fn admit(
     } else {
         evidence["error"] = json!("Acceptance gate workspace was not prepared; submit again");
     }
-    results
-        .as_array_mut()
-        .expect("validated results remain an array")
-        .last_mut()
-        .expect("validated submission remains present")["gate"] = evidence;
-    task.set("results", results)
-        .map_err(studio_runtime_store::StoreError::from)?;
+    result.insert("gate".into(), evidence);
     Ok(true)
 }
 

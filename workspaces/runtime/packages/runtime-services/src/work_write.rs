@@ -193,7 +193,7 @@ async fn run_accepted_archive(
     let intent: ArchiveIntent =
         serde_json::from_str(&encoded_intent).map_err(studio_runtime_store::StoreError::from)?;
     let task_id_for_read = task_id.clone();
-    let Some(encoded_work) = store
+    let Some(work) = store
         .read_async("runtime-services/work_write", move |connection| {
             Ok::<_, WorkWriteError>(WorkItemsRepository::work_record(
                 connection,
@@ -204,7 +204,6 @@ async fn run_accepted_archive(
     else {
         return Ok(ArchiveRun::Skipped);
     };
-    let work = encoded_work;
     if work.status() != studio_runtime_store::WorkStatus::Accepted {
         return Ok(ArchiveRun::Skipped);
     }
@@ -336,7 +335,7 @@ async fn run_accepted_archive(
         None if prior_status == WorkEffectStatus::Unknown => return Ok(ArchiveRun::Skipped),
         None => {
             let guard = ArchiveGuard {
-                work: work.value(),
+                work: work.clone(),
                 owner: owner_snapshot.clone().expect("preflight requires owner"),
                 task_id: task_id.clone(),
                 owner_id: owner_id.clone(),
@@ -392,7 +391,7 @@ async fn run_accepted_archive(
     let owner_for_settlement = owner_id.clone();
     let root_for_settlement = root_id.clone();
     let terminal_guard = verify_terminal.then(|| ArchiveGuard {
-        work: work.value(),
+        work: work.clone(),
         owner: owner_snapshot.expect("preflight requires owner"),
         task_id: task_id.clone(),
         owner_id: owner_id.clone(),
@@ -841,7 +840,7 @@ pub async fn next_archive_retry_at(
 }
 
 struct ArchiveGuard {
-    work: Value,
+    work: WorkItemRecord,
     owner: Value,
     task_id: String,
     owner_id: String,
@@ -864,8 +863,8 @@ impl ArchiveGuard {
             .map_err(|_| changed())?
             .ok_or_else(changed)?;
         if current.status() != WorkStatus::Accepted
-            || current.value()["version"] != self.work["version"]
-            || current.value()["results"] != self.work["results"]
+            || current.version() != self.work.version()
+            || current.results() != self.work.results()
             || owner.value() != self.owner
             || accepted_archive_preflight(
                 tx,
@@ -5075,7 +5074,7 @@ mod actor_tests {
             json!([{"id":"result-1","agent":"worker","text":"done","checks":"checked","revision":revision,"files":[]}]),
         );
         let saved_owner = owner.clone();
-        let saved_work = item.clone();
+        let saved_work = super::WorkItemRecord::checked(&item).expect("checked work");
         store.transaction(move |tx| {
             AgentRepository::put(tx, &AgentRecord::from_value(json!({"accountKey":"default","provider":"codex","id":"lead","rootId":"lead","epoch":1,"status":"running"}))?)?;
             AgentRepository::put(tx, &AgentRecord::from_value(owner)?)?;

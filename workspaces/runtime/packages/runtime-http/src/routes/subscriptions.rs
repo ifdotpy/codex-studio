@@ -444,6 +444,29 @@ fn same_scope(resource: &ResourceRef, changed: &ResourceRef) -> bool {
 }
 
 async fn content_fingerprint(state: HttpState, resource: ResourceRef) -> Option<Vec<u8>> {
+    if let ResourceRef::ComplaintResource(r) = &resource {
+        let id = r.complaint_id.clone();
+        return state
+            .store?
+            .read_async("runtime-http/complaint-fingerprint", move |connection| {
+                studio_runtime_store::QuestionsReadsRepository::complaint_fingerprint(
+                    connection, &id,
+                )
+            })
+            .await
+            .ok()?
+            .map(String::into_bytes);
+    }
+    if let ResourceRef::TerminalOutputResource(r) = &resource {
+        let id = r.terminal_id.clone();
+        return state
+            .store?
+            .read_async("runtime-http/terminal-fingerprint", move |connection| {
+                studio_runtime_store::TerminalsRepository::fingerprint(connection, &id)
+            })
+            .await
+            .ok()?;
+    }
     if is_view_resource(&resource) {
         return view_value(state, resource, None)
             .await
@@ -526,16 +549,7 @@ async fn content_fingerprint(state: HttpState, resource: ResourceRef) -> Option<
         ResourceRef::VoiceResource(resource) => state
             .store?
             .read_async("runtime-http/voice-resource-revision", move |connection| {
-                let cursor = studio_runtime_store::VoiceRepository::record_sequence(
-                    connection,
-                    &resource.agent_id,
-                )?;
-                let session = studio_runtime_store::VoiceRepository::latest_session(
-                    connection,
-                    &resource.agent_id,
-                )?;
-                serde_json::to_vec(&(cursor, session))
-                    .map_err(studio_runtime_store::StoreError::from)
+                studio_runtime_store::VoiceRepository::fingerprint(connection, &resource.agent_id)
             })
             .await
             .ok(),
@@ -593,6 +607,95 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::collections::BTreeSet;
+
+    #[tokio::test]
+    async fn stored_fingerprints_follow_edits_metadata_and_deletion() {
+        use std::sync::Arc;
+        use studio_runtime_store::{RuntimeStore, StoreError};
+        let directory = tempfile::tempdir().expect("state");
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("store"),
+        );
+        store.transaction(|tx| {
+            tx.execute("INSERT INTO runtime_complaints(id,record) VALUES('c',?1)", [r#"{"id":"c","leadId":"a","author":"user","text":"first","status":"open","created":1}"#])?;
+            tx.execute("INSERT INTO user_terminals(id,record,output,offset) VALUES('t',?1,'first',0)", [r#"{"id":"t","agent":"a","title":"Shell","cwd":"/","created":1,"status":"running"}"#])?;
+            tx.execute("INSERT INTO voice_sessions(id,agent,created,state,answer) VALUES('v','a',1,'active','first')", [])?;
+            Ok::<_, StoreError>(())
+        }).await.expect("fixtures");
+        let state = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            directory.path().to_string_lossy().into_owned(),
+            4620,
+            None,
+            Some(store.clone()),
+            None,
+        );
+        let complaint = ResourceRef::ComplaintResource(crate::generated::ComplaintResource {
+            complaint_id: "c".into(),
+            kind: crate::generated::ComplaintResourceKind::Complaint,
+        });
+        let terminal =
+            ResourceRef::TerminalOutputResource(crate::generated::TerminalOutputResource {
+                terminal_id: "t".into(),
+                kind: crate::generated::TerminalOutputResourceKind::TerminalOutput,
+            });
+        let voice = ResourceRef::VoiceResource(crate::generated::VoiceResource {
+            agent_id: "a".into(),
+            kind: crate::generated::VoiceResourceKind::Voice,
+        });
+        let before = [complaint.clone(), terminal.clone(), voice.clone()];
+        let mut fingerprints = Vec::new();
+        for resource in &before {
+            fingerprints.push(resource_content(state.clone(), resource.clone()).await);
+        }
+        // Raw fingerprints retain stored spelling, without decoding a view.
+        assert_eq!(fingerprints[0].as_deref(), Some(br#"{"id":"c","leadId":"a","author":"user","text":"first","status":"open","created":1}"#.as_slice()));
+        store.transaction(|tx| {
+            tx.execute("UPDATE runtime_complaints SET record=?1 WHERE id='c'", [r#"{"id":"c","leadId":"a","author":"user","text":"edited","status":"open","created":1}"#])?;
+            tx.execute("UPDATE user_terminals SET output='edited' WHERE id='t'", [])?;
+            tx.execute("UPDATE voice_sessions SET answer='edited' WHERE id='v'", [])?;
+            Ok::<_, StoreError>(())
+        }).await.expect("edit");
+        for (index, resource) in before.iter().enumerate() {
+            assert_ne!(
+                fingerprints[index],
+                resource_content(state.clone(), resource.clone()).await
+            );
+        }
+        let mut edited = Vec::new();
+        for resource in &before {
+            edited.push(resource_content(state.clone(), resource.clone()).await);
+        }
+        store.transaction(|tx| {
+            tx.execute("UPDATE runtime_complaints SET record=?1 WHERE id='c'", [r#"{"id":"c","leadId":"a","author":"user","text":"edited","status":"closed","created":1}"#])?;
+            tx.execute("UPDATE user_terminals SET record=?1 WHERE id='t'", [r#"{"id":"t","agent":"a","title":"New","cwd":"/","created":1,"status":"exited"}"#])?;
+            tx.execute("UPDATE voice_sessions SET state='ended' WHERE id='v'", [])?;
+            Ok::<_, StoreError>(())
+        }).await.expect("metadata");
+        for (index, resource) in before.iter().enumerate() {
+            let next = resource_content(state.clone(), resource.clone()).await;
+            assert_ne!(edited[index], next, "metadata {index}");
+            edited[index] = next;
+        }
+        store
+            .transaction(|tx| {
+                tx.execute("DELETE FROM runtime_complaints WHERE id='c'", [])?;
+                tx.execute("DELETE FROM user_terminals WHERE id='t'", [])?;
+                tx.execute("DELETE FROM voice_sessions WHERE id='v'", [])?;
+                Ok::<_, StoreError>(())
+            })
+            .await
+            .expect("delete");
+        for (index, resource) in before.iter().enumerate() {
+            assert_ne!(
+                edited[index],
+                resource_content(state.clone(), resource.clone()).await
+            );
+        }
+    }
 
     #[tokio::test]
     async fn room_tail_reduces_geometrically_and_keeps_history_boundary() {
