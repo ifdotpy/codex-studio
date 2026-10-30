@@ -1,6 +1,6 @@
 //! Durable move/teleport observations and conservative recovery decisions.
 //! Native import, activation and transport remain gated until their drivers exist.
-use crate::event_write::{request_signature, truthy};
+use crate::event_write::truthy;
 pub use crate::relocation::RelocationError as MoveError;
 use crate::relocation::{checked, identity, invalid, timestamp};
 use serde::Deserialize;
@@ -46,7 +46,7 @@ struct Fields {
     #[serde(default)]
     deadline: Option<f64>,
     #[serde(default, rename = "uncertainPhase")]
-    uncertain_phase: Option<Phase>,
+    _uncertain_phase: Option<Phase>,
 }
 pub struct MoveSnapshot {
     fields: Fields,
@@ -58,52 +58,6 @@ pub struct MoveDecision {
     agent: Option<Value>,
 }
 
-#[derive(Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SavedStatusRequest {
-    #[serde(default)]
-    request_id: Value,
-    #[serde(default)]
-    action: Value,
-    #[serde(default, deserialize_with = "status_payload")]
-    payload: SavedStatusPayload,
-}
-
-#[derive(Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SavedStatusPayload {
-    #[serde(default, rename = "move", deserialize_with = "present_value")]
-    move_id: Option<Value>,
-    #[serde(default, deserialize_with = "present_value")]
-    reconciliation_generation: Option<Value>,
-}
-
-fn present_value<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Option<Value>, D::Error> {
-    Value::deserialize(deserializer).map(Some)
-}
-
-fn status_payload<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<SavedStatusPayload, D::Error> {
-    let value = Value::deserialize(deserializer)?;
-    if value.is_object() {
-        SavedStatusPayload::deserialize(value).map_err(serde::de::Error::custom)
-    } else {
-        Ok(SavedStatusPayload::default())
-    }
-}
-
-impl SavedStatusRequest {
-    fn from_value(value: Value) -> Result<Self, serde_json::Error> {
-        if value.is_object() {
-            Self::deserialize(value)
-        } else {
-            Ok(Self::default())
-        }
-    }
-}
 impl MoveSnapshot {
     pub fn from_record(raw: &Value) -> Result<Self, MoveError> {
         checked::<Value>("relocation/MoveRecord", "runtime_agent_moves", raw)?;
@@ -136,12 +90,6 @@ impl MoveSnapshot {
             .fields
             .deadline
             .unwrap_or(self.fields.created + DEADLINE_SECONDS)
-    }
-    /// Bind a status observation to the exact persisted source state that requested it.
-    /// The paired driver puts this value in payload.reconciliationGeneration when
-    /// admitting the status ticket in the same transaction that reads this snapshot.
-    pub fn reconciliation_generation(&self) -> String {
-        request_signature(&self.raw)
     }
     pub fn status(&self, actor: &str, local_server: &str) -> Result<Value, MoveError> {
         if self.agent != actor {
@@ -195,60 +143,6 @@ impl MoveSnapshot {
             if bound {
                 row["executionMove"]["phase"] = json!("unknown");
                 row["error"] = json!(DEADLINE_ERROR);
-            } else {
-                updated = None;
-            }
-        }
-        Ok(Some(MoveDecision {
-            operation,
-            agent: updated,
-        }))
-    }
-    /// Release only when a bound status receipt proves that this target cannot run input.
-    pub fn release(
-        &self,
-        agent: &Value,
-        target: &Value,
-        pending: bool,
-        now: f64,
-    ) -> Result<Option<MoveDecision>, MoveError> {
-        timestamp(now)?;
-        if self.fields.side != Side::Source || self.fields.phase != Phase::Unknown {
-            return Ok(None);
-        }
-        checked::<Value>("relocation/TargetStatus", "move status receipt", target)?;
-        let phase = target
-            .get("phase")
-            .and_then(Value::as_str)
-            .ok_or(MoveError::Refused("Invalid move status receipt"))?;
-        let release = self.fields.uncertain_phase == Some(Phase::Waiting) && phase == "not_started"
-            || self.fields.uncertain_phase == Some(Phase::Exported)
-                && self.expired(now)
-                && phase != "active";
-        if !release {
-            return Ok(None);
-        }
-        let reason = if phase == "not_started" {
-            "The move stopped before any transfer"
-        } else {
-            "The move did not finish before its deadline"
-        };
-        let mut operation = self.raw.clone();
-        operation["phase"] = json!("failed");
-        operation["releasedAt"] = json!(now);
-        operation["error"] = json!(format!("{reason}. The chat stays on this server"));
-        let mut updated = self.checked_agent(Some(agent))?;
-        if let Some(row) = updated.as_mut() {
-            if row.pointer("/executionMove/id").and_then(Value::as_str) == Some(&self.fields.id) {
-                row.as_object_mut()
-                    .ok_or_else(|| invalid("runtime_agents", "record"))?
-                    .remove("executionMove");
-                row["error"] = json!(format!(
-                    "{reason}. The chat stays on this server; ask for the move again"
-                ));
-                if row["status"] == "queued" && !truthy(row.get("inFlight")) && !pending {
-                    row["status"] = json!("waiting");
-                }
             } else {
                 updated = None;
             }
@@ -314,76 +208,6 @@ pub async fn expire(store: &RuntimeStore, key: &str, now: f64) -> Result<bool, M
         .await
 }
 
-/// Reconcile a saved paired status ticket. A response alone is insufficient authority.
-pub async fn release_untransferred(
-    store: &RuntimeStore,
-    key: &str,
-    status_ticket: &str,
-    now: f64,
-) -> Result<bool, MoveError> {
-    let key = key.to_owned();
-    let status_ticket = status_ticket.to_owned();
-    store
-        .transaction_with(move |tx| {
-            let Some(row) = Repository::get(tx, &key)? else {
-                return Ok(false);
-            };
-            let snapshot = MoveSnapshot::from_record(&row)?;
-            let server = row["server"]
-                .as_str()
-                .ok_or(MoveError::Refused("Unknown move server"))?;
-            let receipt = studio_runtime_store::request_results::RequestResults::read::<
-                studio_runtime_store::multi_server_delivery::SavedRemoteReply,
-            >(
-                tx,
-                &status_ticket,
-                "server-outbox",
-                &[server],
-                &status_ticket,
-                &["move_status"],
-                (now * 1000.0) as i64,
-            )?
-            .ok_or(MoveError::Refused("Unknown move status ticket"))?
-            .reply;
-            let body: Value = serde_json::from_str(
-                receipt
-                    .body
-                    .as_deref()
-                    .ok_or(MoveError::Refused("Missing move status request"))?,
-            )
-            .map_err(studio_runtime_store::StoreError::from)?;
-            let body = SavedStatusRequest::from_value(body)
-                .map_err(studio_runtime_store::StoreError::from)?;
-            if receipt.server.as_deref() != Some(server)
-                || body.payload.reconciliation_generation.as_ref()
-                    != Some(&json!(snapshot.reconciliation_generation()))
-                || body.request_id != json!(status_ticket)
-                || body.action != "move_status"
-                || body.payload.move_id.as_ref() != Some(&json!(key))
-                || receipt.response.request_id != status_ticket
-                || receipt.response.outcome
-                    != studio_runtime_schema::persistence::RemoteOutcome::Applied
-            {
-                return Err(MoveError::Refused(
-                    "The move status ticket does not prove this move",
-                ));
-            }
-            let agent = AgentRepository::get(tx, &AgentId::from(snapshot.agent.as_str()))?
-                .ok_or(MoveError::Refused("Unknown move agent"))?;
-            let pending = Repository::pending_events(tx, &snapshot.agent)?;
-            let value: Value = serde_json::from_str(
-                receipt
-                    .response
-                    .value
-                    .as_deref()
-                    .ok_or(MoveError::Refused("Missing move status response"))?
-                    .get(),
-            )
-            .map_err(studio_runtime_store::StoreError::from)?;
-            apply(tx, snapshot.release(&agent.value(), &value, pending, now)?)
-        })
-        .await
-}
 fn apply(tx: &Transaction<'_>, decision: Option<MoveDecision>) -> Result<bool, MoveError> {
     let Some(decision) = decision else {
         return Ok(false);
@@ -488,7 +312,7 @@ mod usage_tests {
                 phase: Phase::Active,
                 created: 0.,
                 deadline: None,
-                uncertain_phase: None,
+                _uncertain_phase: None,
             },
             raw: json!({}),
             agent: "agent".into(),
@@ -525,7 +349,7 @@ mod usage_tests {
                 phase: Phase::Active,
                 created: 0.,
                 deadline: None,
-                uncertain_phase: None,
+                _uncertain_phase: None,
             },
             raw: json!({}),
             agent: "agent".into(),
@@ -553,7 +377,7 @@ mod usage_tests {
                 phase: Phase::Active,
                 created: 0.,
                 deadline: None,
-                uncertain_phase: None,
+                _uncertain_phase: None,
             },
             raw: json!({}),
             agent: "agent".into(),
