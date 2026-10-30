@@ -678,7 +678,7 @@ pub(crate) fn execute(
         ManagedHostTool::Interrupt => {
             let supplied = required_text(&call.args, "agent_id")?;
             let target = ports.resolve_target(tx, actor, supplied)?;
-            if !is_descendant(tx, actor, &target)? {
+            if !is_descendant(tx, &actor.id, &target)? {
                 return Err(Error::Invalid("You can interrupt only your descendants"));
             }
             let reason = format!(
@@ -770,7 +770,7 @@ fn remote_dependency(
             {
                 None
             } else {
-                (!is_descendant(tx, actor, target)?).then_some("multi-server-runtime/message")
+                (!is_descendant(tx, &actor.id, target)?).then_some("multi-server-runtime/message")
             }
         }
         ManagedHostTool::Status => Some("multi-server-runtime/directory"),
@@ -1046,8 +1046,13 @@ pub(crate) fn agent_ancestry(
     }
 }
 
-fn is_descendant(tx: &Transaction<'_>, actor: &Actor, target: &str) -> Result<bool, Error> {
-    match agent_ancestry(tx, &actor.id, target)? {
+/// The one descendant check: `target` is below `ancestor` in the same agent tree.
+pub(crate) fn is_descendant(
+    tx: &Transaction<'_>,
+    ancestor: &str,
+    target: &str,
+) -> Result<bool, Error> {
+    match agent_ancestry(tx, ancestor, target)? {
         AgentAncestry::Descendant => Ok(true),
         AgentAncestry::Unrelated => Ok(false),
         AgentAncestry::Cycle => Err(Error::Invalid("Invalid stored agent ancestry")),

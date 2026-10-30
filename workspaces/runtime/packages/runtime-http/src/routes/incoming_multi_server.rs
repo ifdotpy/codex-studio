@@ -665,6 +665,8 @@ async fn dispatch(
         parts.headers.insert("x-canvas-token", token);
     }
     // The rewritten request carries no signature, so it takes the ordinary route.
+    // The principal comes from the server's own trust list and rides in the extensions.
+    parts.extensions.insert(principal.principal());
     let request = Request::from_parts(parts, Body::from(bytes));
     let mut response = Box::pin(crate::middleware::boundary(State(state), request, next)).await;
     if let Ok(value) = HeaderValue::from_str(&principal.local_server) {

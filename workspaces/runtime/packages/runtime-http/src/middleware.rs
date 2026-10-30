@@ -13,6 +13,7 @@ use axum::response::{IntoResponse, Response};
 use futures_util::FutureExt;
 use studio_runtime_schema::studio_errors::EffectCertainty;
 use studio_runtime_services::federation_limits::FEDERATION_PATHS;
+use studio_runtime_services::principal::{self, Principal};
 use subtle::ConstantTimeEq;
 
 use crate::error::{
@@ -136,6 +137,17 @@ pub(crate) async fn boundary(
             "Local origin required"
         };
         return error_response(StatusCode::FORBIDDEN, message);
+    }
+    // The signed path stored its principal. Every other caller passed the token,
+    // loopback, or Tailscale Serve check above and acts as the owner.
+    let principal = request
+        .extensions()
+        .get::<Principal>()
+        .cloned()
+        .unwrap_or(Principal::Owner);
+    if api && !principal::access(&principal, principal::http_class(method.as_str())).passes_edge()
+    {
+        return error_response(StatusCode::FORBIDDEN, "This device may only read");
     }
     if api
         && method == Method::HEAD
@@ -270,6 +282,7 @@ pub(crate) async fn boundary(
         }
     }
 
+    request.extensions_mut().insert(principal);
     next.run(request).await
 }
 
