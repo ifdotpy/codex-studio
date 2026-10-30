@@ -398,12 +398,48 @@ pub(super) fn completed(
         agent["id"].as_str().unwrap_or_default(),
         params["item"]["id"].as_str().unwrap_or_default(),
     );
-    if Table::<RequestRecord>::new(tx).get(&id)?.is_some() {
+    let approval_id = studio_runtime_schema::approvals::ApprovalId(id.clone());
+    if studio_runtime_store::approvals::get(tx, &approval_id)
+        .map_err(studio_runtime_store::StoreError::from)?
+        .is_some()
+    {
         return Ok(());
     }
     if agent["isLead"] == true {
-        let record = json!({"id":id,"method":"agent/asyncQuestion","agent":agent["id"],"epoch":agent["epoch"],"turnId":params.get("turnId").filter(|v|!v.is_null() && **v != "").unwrap_or(&agent["turnId"]),"params":{"questions":questions},"status":"pending","createdAt":at});
-        put_request(tx, &record)?;
+        use studio_runtime_schema::approvals as typed;
+        let turn = params
+            .get("turnId")
+            .filter(|v| !v.is_null() && **v != "")
+            .unwrap_or(&agent["turnId"])
+            .as_str()
+            .map(|turn| typed::TurnId(turn.to_owned()));
+        let row = studio_runtime_store::approvals::create(
+            tx,
+            studio_runtime_store::approvals::NewApproval {
+                id: approval_id,
+                agent: typed::AgentId(agent["id"].as_str().unwrap_or_default().to_owned()),
+                turn,
+                epoch: agent["epoch"].as_u64(),
+                request: typed::Request::AgentQuestion {
+                    questions: studio_runtime_store::approvals::questions_from_provider(
+                        Value::Array(questions),
+                        false,
+                    )
+                    .map_err(|_| NotificationDispatchError::invalid())?,
+                },
+                delivery: None,
+                detail: typed::Detail {
+                    params: typed::ProviderObject(Default::default()),
+                    preview: None,
+                    answer_error: None,
+                    host_close_reason: None,
+                },
+                fire_at: None,
+            },
+            typed::Timestamp(at),
+        )
+        .map_err(studio_runtime_store::StoreError::from)?;
+        crate::approval_sync::publish(tx, &row)?;
     } else {
         let text = format!(
             "Questions for the orchestrator:\n[{}]",

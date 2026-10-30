@@ -198,6 +198,7 @@ async fn seed(store: &RuntimeStore, snapshot: &Value) {
                 }
                 let table_name = match table.as_str() {
                     "sync_entities" => "sync_entities".to_owned(),
+                    "approvals" => "approvals".to_owned(),
                     "sidebar_order" => "runtime_sidebar_order".to_owned(),
                     _ => format!("runtime_{table}"),
                 };
@@ -250,6 +251,7 @@ fn state(store: &RuntimeStore, tables: &Value) -> Value {
         };
         let table_name = match table.as_str() {
             "sync_entities" => "sync_entities".to_owned(),
+            "approvals" => "approvals".to_owned(),
             "sidebar_order" => "runtime_sidebar_order".to_owned(),
             _ => format!("runtime_{table}"),
         };
@@ -417,10 +419,12 @@ async fn run(store: std::sync::Arc<RuntimeStore>, case: &Value) -> Result<Value,
             ))
         }).await,
         "answer" => store.transaction_with(move |db| {
+            let question = serde_json::from_value(case["body"]["question"].clone())
+                .expect("typed approval fixture");
             radio_runtime::route_question_answer(
                 db,
                 &prepared,
-                &case["body"]["question"],
+                &question,
                 case["body"]["text"].as_str().unwrap_or("answer"),
                 None,
                 1000.0,
@@ -722,12 +726,36 @@ async fn answered_question_releases_one_continuation_and_malformed_rows_write_no
     seed(&store, &case["before"]).await;
     assert!(radio_runtime::holds_floor(&store.test_reader().expect("read"), "a").expect("floor"));
     let prepared = std::sync::Arc::new(PreparedHost::load(&store).await.expect("prepare"));
-    let question = case["body"]["question"].clone();
-    store.transaction_with(move |db|->Result<(),ProjectsError> {
-        assert_eq!(radio_runtime::route_question_answer(db,&prepared,&question,"answer",None,1000.0)?, radio_runtime::QuestionAnswerRoute::ConsumedByRadio);
-        db.execute("UPDATE runtime_requests SET record=json_set(record,'$.status','answered') WHERE id='q'",[])?;
-        Ok(())
-    }).await.expect("P04 caller commits both writes");
+    let question: studio_runtime_schema::approvals::Approval =
+        serde_json::from_value(case["body"]["question"].clone()).expect("typed approval fixture");
+    store
+        .transaction_with(move |db| -> Result<(), ProjectsError> {
+            use studio_runtime_schema::approvals::{Answer, CommandId, Principal, Timestamp};
+            assert_eq!(
+                radio_runtime::route_question_answer(
+                    db, &prepared, &question, "answer", None, 1000.0
+                )?,
+                radio_runtime::QuestionAnswerRoute::ConsumedByRadio
+            );
+            let answer = Answer::Answers { answers: vec![] };
+            studio_runtime_store::approvals::answer(
+                db,
+                &question.id,
+                answer,
+                CommandId("q".into()),
+            )
+            .map_err(studio_runtime_store::StoreError::from)?;
+            studio_runtime_store::approvals::confirm_delivery(
+                db,
+                &question.id,
+                Principal::Owner,
+                Timestamp(1000.0),
+            )
+            .map_err(studio_runtime_store::StoreError::from)?;
+            Ok(())
+        })
+        .await
+        .expect("P04 caller commits both writes");
     drop(store);
     let store = std::sync::Arc::new(
         RuntimeStore::open(Some(root.path()))

@@ -10,7 +10,13 @@ use studio_runtime_services::workspace_views::{
 };
 use studio_runtime_store::{
     AgentRecord, AnnotationRecord, CheckpointRecord, ComplaintRecord, Connection, PlanRecord,
+<<<<<<< head
     RequestRecord, RuleRecord, StoreError, TaskRecord, TranscriptRepository,
+||||||| base
+    AgentRecord, CheckpointRecord, Connection, StoreError, StoredRecord, TranscriptRepository,
+=======
+    RuleRecord, StoreError, TaskRecord, TranscriptRepository,
+>>>>>>> origin/feat/approval-entity
     WorkspaceViewsRepository,
 };
 
@@ -252,10 +258,41 @@ fn workspace_view(
         );
     }
 
+<<<<<<< head
     let requests = record_values(
         WorkspaceViewsRepository::records_for_agents::<RequestRecord>(connection, "agent", &ids)
             .map_err(ApiError::stored)?,
     )?;
+||||||| base
+    let requests = parse_records(
+        validators,
+        "RequestRecordResponse",
+        "runtime_requests",
+        WorkspaceViewsRepository::records_for_agents(connection, "runtime_requests", "agent", &ids)
+            .map_err(ApiError::stored)?,
+    )?;
+    let complaints = if root.is_some() {
+        parse_records(
+            validators,
+            "ComplaintRecordResponse",
+            "runtime_complaints",
+            WorkspaceViewsRepository::records_for_agents(
+                connection,
+                "runtime_complaints",
+                "leadId",
+                &ids,
+=======
+    let mut requests = Vec::new();
+    for id in &ids {
+        requests.extend(
+            studio_runtime_store::approvals::for_agent(
+                connection,
+                &studio_runtime_schema::approvals::AgentId(id.clone()),
+            )
+            .map_err(|error| ApiError::stored(error.into()))?,
+        );
+    }
+>>>>>>> origin/feat/approval-entity
     let complaints = if root.is_some() {
         record_values(
             WorkspaceViewsRepository::records_for_agents::<ComplaintRecord>(

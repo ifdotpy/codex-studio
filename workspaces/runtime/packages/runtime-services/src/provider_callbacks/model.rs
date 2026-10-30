@@ -33,6 +33,23 @@ impl From<rusqlite::Error> for CallbackError {
         Self::Store(error.into())
     }
 }
+impl From<studio_runtime_store::approvals::ApprovalError> for CallbackError {
+    fn from(error: studio_runtime_store::approvals::ApprovalError) -> Self {
+        use studio_runtime_store::approvals::ApprovalError as E;
+        match error {
+            E::NotFound(_) => Self::Invalid("Unknown request"),
+            E::Mismatch(_) => Self::Invalid("The answer does not fit this request"),
+            E::Conflict(_) | E::Duplicate(_) => Self::Conflict,
+            E::Closed(_) => Self::Invalid("Request is no longer pending"),
+            E::State(_) | E::MissingTurn(_) => {
+                Self::Invalid("The request is not in a state that allows this change")
+            }
+            E::Stored { id, reason } => Self::Stored(format!("approvals/{id}: {reason}")),
+            E::Sql(error) => error.into(),
+            E::Json(error) => error.into(),
+        }
+    }
+}
 impl From<serde_json::Error> for CallbackError {
     fn from(_: serde_json::Error) -> Self {
         Self::Invalid("Invalid callback object")

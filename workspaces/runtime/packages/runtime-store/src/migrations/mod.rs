@@ -38,6 +38,11 @@ mod m2026_10_29_agent_authorizations;
 mod m2026_10_29_model_choices;
 mod m2026_10_29_request_results_v2;
 mod m2026_10_30_approvals;
+<<<<<<< head
+||||||| base
+=======
+mod m2026_10_30_outbox_reopen;
+>>>>>>> origin/feat/approval-entity
 
 #[cfg(any(test, feature = "test-support"))]
 pub use m2026_10_20_agents::migrate_2026_10_20;
@@ -46,6 +51,8 @@ pub use m2026_10_20_agents::prepare_columns;
 pub use m2026_10_26_provider_identity::TITLE_FINGERPRINT_PROVIDER_2026_10_26;
 #[cfg(any(test, feature = "test-support"))]
 pub use m2026_10_26_provider_identity::migrate_canvas_2026_10_26;
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) use m2026_10_30_approvals::approval_from_record;
 
 use std::path::Path;
 
@@ -589,6 +596,20 @@ static CATALOG: &[&dyn Migration] = &[
         },
         apply: |c| m2026_10_30_approvals::apply(c.transaction),
     },
+<<<<<<< head
+||||||| base
+=======
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-outbox-card-reopen",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Callback outbox rows that keep the whole unanswered card",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_outbox_reopen::apply(c.transaction),
+    },
+>>>>>>> origin/feat/approval-entity
     &RegistryMigration,
 ];
 

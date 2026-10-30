@@ -266,7 +266,7 @@ pub async fn recover_connection(
     if !now.is_finite() || now < 0.0 {
         return Err(CallbackError::Invalid("Invalid callback clock"));
     }
-    let cards = cards::expire(store, account, connection).await?;
+    let cards = cards::expire(store, account, connection, now).await?;
     let account = account.to_owned();
     let connection = connection.to_owned();
     let state_dir = store.state_dir().to_owned();

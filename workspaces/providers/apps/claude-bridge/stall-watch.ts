@@ -91,12 +91,6 @@ export function stallLimits(env = process.env) {
     // after 2 s and SIGKILL 5 s later (ProcessTransport.close in the SDK).
     // Its native history is final only after this.
     exitWaitMs: positive(env.STUDIO_CLAUDE_STALL_EXIT_WAIT_MS) ?? 10_000,
-    // How long an approval that Claude Code asks for in bypassPermissions
-    // mode waits before Studio declines it. Claude Code resolves a permission
-    // dialog parked at a remote client to its safe no-action default after
-    // 5 minutes by default, 10 at most when finite (SDK option dialogExpiry).
-    unexpectedApprovalMs:
-      positive(env.STUDIO_CLAUDE_UNEXPECTED_APPROVAL_WAIT_MS) ?? 600_000,
   };
 }
 

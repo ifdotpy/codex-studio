@@ -61,7 +61,7 @@ async fn complete_python_answer_and_delete_corpus() {
             runtime.answer(id, &case["data"], 21.0).await.unwrap(),
             case["replay"]
         );
-        assert_eq!(stored(&store, id), case["after"]);
+        assert_outcome(&stored(&store, id), &case["after"]);
         assert_eq!(actor(&store, &context), case["afterActor"]);
         assert_writes(&before_rows, &store, &case["writes"]);
         assert_eq!(
@@ -81,7 +81,7 @@ async fn complete_python_answer_and_delete_corpus() {
         } else {
             assert_eq!(result.unwrap(), case["expected"]["result"]);
         }
-        assert_eq!(stored(&store, id), case["after"], "{id}");
+        assert_outcome(&stored(&store, id), &case["after"]);
         assert_eq!(actor(&store, &context), case["afterActor"]);
         assert_writes(&before_rows, &store, &case["writes"]);
         let frames: Vec<_> = port.calls.lock().unwrap()[before..]
@@ -204,7 +204,7 @@ async fn python_resolution_rows_match_after_completed_or_cleared_turn() {
         )
         .await
         .unwrap();
-        assert_eq!(stored(&store, "resolve-card"), case["expected"]);
+        assert_outcome(&stored(&store, "resolve-card"), &case["expected"]);
         assert_eq!(actor(&store, &context), case["expectedActor"]);
         assert_writes(&before, &store, &case["writes"]);
     }
@@ -251,7 +251,7 @@ async fn committed_reply_rechecks_card_eligibility_before_provider_handoff() {
     store
         .transaction_with::<_, studio_runtime_store::StoreError>(move |tx| {
             tx.execute(
-                "UPDATE runtime_requests SET record=json_set(record,'$.status','answered') WHERE id=?1",
+                "UPDATE approvals SET state='answered',command=NULL,answered_by='{\"kind\":\"owner\"}',at=20 WHERE id=?1",
                 [&id_for_update],
             )?;
             Ok(())
@@ -335,11 +335,11 @@ async fn tool_replay_rebuilds_the_same_reply_without_reexecuting_effect() {
 #[tokio::test]
 async fn failed_store_calls_roll_back_card_outbox_and_publication_before_handoff() {
     for (table, event, phase) in [
-        ("runtime_requests", "INSERT", "admit"),
+        ("approvals", "INSERT", "admit"),
         ("runtime_agents", "UPDATE", "admit"),
         ("runtime_tool_requests", "INSERT", "admit"),
         ("sync_entities", "INSERT", "admit"),
-        ("runtime_requests", "INSERT", "answer"),
+        ("approvals", "UPDATE", "answer"),
         ("runtime_outbox", "INSERT", "answer"),
         ("runtime_outbox", "UPDATE", "answer"),
     ] {
@@ -456,7 +456,12 @@ async fn resolved_pending_or_prepared_callbacks_ack_without_resurrecting_approva
             callback_body(&store, &owner).is_none(),
             "resolution without delivery invents no response"
         );
-        assert_eq!(stored(&store, &id)["status"], "resolved");
+        // A pending card closes. An answer in delivery is not known to have
+        // arrived, so it is unknown, never resolved.
+        assert_eq!(
+            stored(&store, &id)["status"],
+            if answered { "uncertain" } else { "resolved" }
+        );
         assert!(prepared_replies(&store, &context).await.unwrap().is_empty());
     }
 }

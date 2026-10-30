@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use serde_json::{Value, json};
 use studio_runtime_schema::shared_values::MAX_SAFE_INTEGER;
 use studio_runtime_store::{
-    AgentId, AgentRepository, Connection, QuestionsReadsRepository, RuntimeStore, StoreError,
+    AgentId, AgentRepository, Connection, RuntimeStore, StoreError,
     VoiceRecord, VoiceRepository,
 };
 use thiserror::Error;
@@ -53,11 +53,14 @@ const SESSION_STATES: &[&str] = &[
     "lost",
     "unknown",
 ];
-const APPROVAL_METHODS: &[&str] = &[
-    "monitor/approve",
-    "item/commandExecution/requestApproval",
-    "item/fileChange/requestApproval",
-];
+/// The requests a spoken approval can answer: a monitor start, a command or a file change.
+pub(super) fn is_approval_request(request: &studio_runtime_schema::approvals::Request) -> bool {
+    use studio_runtime_schema::approvals::Request;
+    matches!(
+        request,
+        Request::MonitorStart { .. } | Request::Exec { .. } | Request::Patch { .. }
+    )
+}
 
 #[derive(Debug, Error)]
 pub enum VoiceError {
@@ -385,24 +388,53 @@ pub async fn stream_records(
 
 pub async fn approvals(store: &RuntimeStore, agent_id: &str) -> Result<Value, VoiceError> {
     let agent_for_read = AgentId::from(agent_id);
+    let typed_agent = studio_runtime_schema::approvals::AgentId(agent_id.to_owned());
     let (agent, rows) = store
         .read_async("runtime-services/voice", move |connection| {
             Ok::<_, StoreError>((
                 AgentRepository::get(connection, &agent_for_read)?,
-                QuestionsReadsRepository::questions(connection)?,
+                studio_runtime_store::approvals::for_agent(connection, &typed_agent)?,
             ))
         })
         .await?;
     validate_agent(agent, agent_id)?;
     let mut requests = Vec::new();
     for row in rows {
+<<<<<<< head
         if row.agent() == Some(agent_id)
             && row.status() == Some("pending")
             && row
                 .method()
                 .is_some_and(|method| APPROVAL_METHODS.contains(&method))
+||||||| base
+    for (row, raw) in rows {
+        let row_id = row.id().to_string();
+        let value: Value =
+            serde_json::from_str(&raw).map_err(|_| invalid("runtime_requests", &row_id))?;
+        if !value.is_object() || value.get("id").and_then(Value::as_str).is_none() {
+            return Err(invalid("runtime_requests", &row_id));
+        }
+        if value.get("agent").and_then(Value::as_str) == Some(agent_id)
+            && value.get("status").and_then(Value::as_str) == Some("pending")
+            && value
+                .get("method")
+                .and_then(Value::as_str)
+                .is_some_and(|method| APPROVAL_METHODS.contains(&method))
+=======
+        if matches!(
+            row.state,
+            studio_runtime_schema::approvals::ApprovalState::Pending
+        ) && row.hidden.is_none()
+            && is_approval_request(&row.request)
+>>>>>>> origin/feat/approval-entity
         {
+<<<<<<< head
             requests.push(row.into_value());
+||||||| base
+            requests.push(value);
+=======
+            requests.push(serde_json::to_value(&row)?);
+>>>>>>> origin/feat/approval-entity
         }
     }
     Ok(json!({"requests": requests}))
@@ -576,7 +608,7 @@ pub async fn approval_speech(
             "The approval request is no longer pending",
         ))?;
     let fingerprint = approval_fingerprint(request);
-    let params = studio_runtime_store::python_json(request.get("params").unwrap_or(&Value::Null));
+    let params = studio_runtime_store::python_json(request.get("request").unwrap_or(&Value::Null));
     let text = format!("Запрос разрешения. {params}. Для подтверждения скажите «разрешаю».");
     if text.chars().count() > 4096 {
         return Err(VoiceError::InvalidRequest(
