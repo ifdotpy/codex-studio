@@ -83,7 +83,7 @@ export class BrowserServerCredentials implements ServerCredentialAdapter {
       !credential ||
       credential.origin !== server.origin ||
       credential.serverId !== server.id ||
-      credential.clientId !== server.credentialId
+      credential.id !== server.credentialId
     )
       throw new Error("The server key is unavailable. Pair this UI again.");
     return {
@@ -175,13 +175,15 @@ export class BrowserServerCredentials implements ServerCredentialAdapter {
           `Pairing failed (${response.status}). Retry the same invitation.`,
       );
     }
-    const server = pairedServer(receipt, invitation, draft.clientId);
+    // One device key signs for every server, so the row is keyed by server and device.
+    const rowId = `${draft.serverId}:${draft.clientId}`;
+    const server = pairedServer(receipt, invitation, draft.clientId, rowId);
     const { body: _body, requestId: _requestId, ...credential } = draft;
     await record("readwrite", (store) =>
       store.put({
         ...credential,
         targetPublicKey: receipt.publicKey,
-        id: draft!.clientId,
+        id: rowId,
       }),
     );
     await record("readwrite", (store) =>
@@ -224,7 +226,7 @@ export class BrowserServerCredentials implements ServerCredentialAdapter {
       !credential ||
       credential.origin !== server.origin ||
       credential.serverId !== server.id ||
-      credential.clientId !== server.credentialId
+      credential.id !== server.credentialId
     )
       throw new Error("The server key is unavailable. Pair this UI again.");
     return fetch(
@@ -291,7 +293,6 @@ function requestFrameSigningCredential(server: StudioServer) {
         if (
           !value ||
           value.serverId !== server.id ||
-          value.clientId !== server.credentialId ||
           !value.privateKey ||
           value.privateKey.type !== "private" ||
           value.privateKey.extractable
