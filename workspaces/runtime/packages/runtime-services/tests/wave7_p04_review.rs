@@ -683,7 +683,7 @@ async fn deferring_a_question_publishes_the_request_entity() {
 #[tokio::test]
 async fn deleting_an_agent_question_hides_it_and_leaves_other_ids_to_the_cards() {
     use studio_runtime_services::questions_write::{
-        QuestionsWriteError, defer_question, delete_question,
+        QuestionsWriteError, defer_question, delete_agent_question,
     };
     let (_root, store, context) = fixture().await;
     agent_question(
@@ -695,7 +695,7 @@ async fn deleting_an_agent_question_hides_it_and_leaves_other_ids_to_the_cards()
     )
     .await;
     let receipt = store
-        .transaction_with_error(|tx| delete_question(tx, "hidden-question"))
+        .transaction_with_error(|tx| delete_agent_question(tx, "hidden-question"))
         .await
         .expect("delete");
     assert_eq!(
@@ -703,12 +703,12 @@ async fn deleting_an_agent_question_hides_it_and_leaves_other_ids_to_the_cards()
         Some(json!({"id":"hidden-question","status":"deleted"}))
     );
     let again = store
-        .transaction_with_error(|tx| delete_question(tx, "hidden-question"))
+        .transaction_with_error(|tx| delete_agent_question(tx, "hidden-question"))
         .await
         .expect("delete again");
     assert_eq!(again, receipt, "a second delete is a replay");
     let other = store
-        .transaction_with_error(|tx| delete_question(tx, "not-an-agent-question"))
+        .transaction_with_error(|tx| delete_agent_question(tx, "not-an-agent-question"))
         .await
         .expect("other id");
     assert_eq!(other, None);

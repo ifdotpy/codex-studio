@@ -360,12 +360,12 @@ async fn delete_question(
     ApiJson(body): ApiJson<crate::generated::QuestionBody>,
 ) -> Result<Json<crate::generated::MutationReceipt>, ApiError> {
     let id = body.id;
+    // An agent question is a typed approval; a provider card goes through the callback runtime.
     let agent_id = id.clone();
-    // An agent question is a typed approval; any other question is a provider card.
     let agent_question = match state.store.clone() {
         Some(store) => store
             .transaction_with_error(move |transaction| {
-                questions_write::delete_question(transaction, &agent_id)
+                questions_write::delete_agent_question(transaction, &agent_id)
             })
             .await
             .map_err(api_error)?,
@@ -379,24 +379,11 @@ async fn delete_question(
             .await
             .map_err(callback_error)?
     } else {
-<<<<<<< head
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "Unknown question"));
-||||||| base
-        let store = state.store.clone().ok_or_else(ApiError::internal)?;
-        let validators = state.validators.clone();
-        write(store, move |transaction| {
-            questions_write::delete_question(transaction, &id, |record| {
-                validators.validate_table_record("runtime_requests", record)
-            })
-        })
-        .await?
-=======
         let store = state.store.clone().ok_or_else(ApiError::internal)?;
         write(store, move |transaction| {
             questions_write::delete_question(transaction, &id)
         })
         .await?
->>>>>>> origin/feat/approval-entity
     };
     if state.callback_runtime.is_some() {
         state.event_wake.notify_one();

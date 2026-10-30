@@ -157,15 +157,11 @@ pub struct QuestionAnswer {
     pub answer: Vec<String>,
 }
 
-<<<<<<< head
 impl QuestionAnswer {
     /// Stored in place of the value the user typed for a secret question.
     pub const REDACTED: &'static str = "[redacted]";
 }
 
-||||||| base
-=======
->>>>>>> origin/feat/approval-entity
 /// The answer a person or policy gives. Its kind must fit the request kind.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]

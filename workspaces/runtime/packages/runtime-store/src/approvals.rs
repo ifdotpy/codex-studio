@@ -91,34 +91,6 @@ fn invalid_row(row: &str) -> String {
 
 /// Create the table and replace the check triggers. Safe to run again.
 pub fn create_schema(tx: &Connection) -> rusqlite::Result<()> {
-<<<<<<< head
-    let mut sql = String::from(
-        "CREATE TABLE IF NOT EXISTS approvals (
-            id TEXT PRIMARY KEY, agent TEXT NOT NULL, turn TEXT, created REAL NOT NULL, epoch INTEGER,
-            kind TEXT NOT NULL, request TEXT NOT NULL, delivery TEXT, detail TEXT NOT NULL,
-            state TEXT NOT NULL,
-            answer TEXT, command TEXT, answered_by TEXT, at REAL, since REAL, reason TEXT,
-            deferral_active INTEGER, deferral_at REAL, deferral_by TEXT,
-            fire_at REAL, hidden_at REAL, hidden_by TEXT);
-         CREATE INDEX IF NOT EXISTS approvals_turn ON approvals(turn,state);
-         CREATE INDEX IF NOT EXISTS approvals_agent_open ON approvals(agent) WHERE state IN ('pending','answering');
-         CREATE INDEX IF NOT EXISTS approvals_account_open ON approvals(json_extract(delivery,'$.account')) WHERE state IN ('pending','answering');
-         CREATE INDEX IF NOT EXISTS approvals_fire_at ON approvals(fire_at) WHERE fire_at IS NOT NULL;",
-    );
-    for (name, event) in [
-        ("approvals_check_insert", "INSERT"),
-        ("approvals_check_update", "UPDATE"),
-    ] {
-        sql.push_str(&format!(
-            "DROP TRIGGER IF EXISTS {name};
-             CREATE TRIGGER {name} BEFORE {event} ON approvals WHEN {}
-             BEGIN SELECT RAISE(ABORT,'invalid approval state'); END;",
-            invalid_row("NEW")
-        ));
-    }
-    tx.execute_batch(&sql)
-||||||| base
-=======
     let sql = String::from(
         "CREATE TABLE IF NOT EXISTS approvals (
             id TEXT PRIMARY KEY, agent TEXT NOT NULL, turn TEXT, created REAL NOT NULL, epoch INTEGER,
@@ -236,7 +208,6 @@ pub fn questions_from_provider(
             is_other: q.is_other,
         })
         .collect())
->>>>>>> origin/feat/approval-entity
 }
 
 /// What a caller supplies to create an approval.

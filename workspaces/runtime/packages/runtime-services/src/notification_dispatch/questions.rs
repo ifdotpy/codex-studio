@@ -4,9 +4,6 @@ use super::snapshot::checked;
 use super::{NotificationDispatchError, stored};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use studio_runtime_schema::approvals::{
-    self, ApprovalId, Detail, ProviderObject, Request, Timestamp, TurnId,
-};
 use studio_runtime_store::CachedSql;
 use studio_runtime_store::system_reads as records;
 use studio_runtime_store::{
@@ -36,55 +33,6 @@ fn fields(value: &Value) -> Result<Vec<Value>, NotificationDispatchError> {
         }).collect::<Result<Vec<_>,_>>()?;
         Ok(json!({"id":index.to_string(),"question":q.title,"options":options,"multiSelect":q.multi_select,"isSecret":q.is_secret}))
     }).collect()
-}
-
-/// An option the agent sent: a label with optional text. Any other key is refused.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct OptionFields {
-    label: String,
-    description: Option<String>,
-    preview: Option<String>,
-}
-
-/// Types the questions that `fields` checked. The keys are the ones `fields` writes.
-fn typed_questions(
-    questions: &[Value],
-) -> Result<Vec<approvals::Question>, NotificationDispatchError> {
-    questions
-        .iter()
-        .map(|question| {
-            let options = question["options"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .map(|option| {
-                    let option: OptionFields = serde_json::from_value(option.clone())
-                        .map_err(|_| NotificationDispatchError::invalid())?;
-                    Ok(approvals::QuestionOption {
-                        label: option.label,
-                        description: option.description,
-                        preview: option.preview,
-                    })
-                })
-                .collect::<Result<Vec<_>, NotificationDispatchError>>()?;
-            Ok(approvals::Question {
-                id: question["id"]
-                    .as_str()
-                    .ok_or(NotificationDispatchError::invalid())?
-                    .to_owned(),
-                question: question["question"]
-                    .as_str()
-                    .ok_or(NotificationDispatchError::invalid())?
-                    .to_owned(),
-                header: None,
-                options,
-                is_secret: question["isSecret"] == true,
-                multi_select: Some(question["multiSelect"] == true),
-                is_other: None,
-            })
-        })
-        .collect()
 }
 
 pub(crate) fn submit_agent_complaint(
@@ -450,13 +398,7 @@ pub(super) fn completed(
         agent["id"].as_str().unwrap_or_default(),
         params["item"]["id"].as_str().unwrap_or_default(),
     );
-<<<<<<< head
-    let approval_id = ApprovalId(id.clone());
-||||||| base
-    if Table::<RequestRecord>::new(tx).get(&id)?.is_some() {
-=======
     let approval_id = studio_runtime_schema::approvals::ApprovalId(id.clone());
->>>>>>> origin/feat/approval-entity
     if studio_runtime_store::approvals::get(tx, &approval_id)
         .map_err(studio_runtime_store::StoreError::from)?
         .is_some()
@@ -464,43 +406,6 @@ pub(super) fn completed(
         return Ok(());
     }
     if agent["isLead"] == true {
-<<<<<<< head
-        let turn = params
-            .get("turnId")
-            .filter(|v| !v.is_null() && **v != "")
-            .unwrap_or(&agent["turnId"])
-            .as_str()
-            .filter(|turn| !turn.is_empty())
-            .map(|turn| TurnId(turn.to_owned()));
-        let row = studio_runtime_store::approvals::create(
-            tx,
-            studio_runtime_store::approvals::NewApproval {
-                id: approval_id,
-                agent: studio_runtime_schema::approvals::AgentId(
-                    agent["id"]
-                        .as_str()
-                        .ok_or(NotificationDispatchError::invalid())?
-                        .to_owned(),
-                ),
-                turn,
-                epoch: agent["epoch"].as_u64(),
-                request: Request::AgentQuestion {
-                    questions: typed_questions(&questions)?,
-                },
-                delivery: None,
-                detail: Detail {
-                    params: ProviderObject(Default::default()),
-                    preview: None,
-                    answer_error: None,
-                    host_close_reason: None,
-                },
-                fire_at: None,
-            },
-            Timestamp(at),
-||||||| base
-        let record = json!({"id":id,"method":"agent/asyncQuestion","agent":agent["id"],"epoch":agent["epoch"],"turnId":params.get("turnId").filter(|v|!v.is_null() && **v != "").unwrap_or(&agent["turnId"]),"params":{"questions":questions},"status":"pending","createdAt":at});
-        put_request(tx, &record)?;
-=======
         use studio_runtime_schema::approvals as typed;
         let turn = params
             .get("turnId")
@@ -532,7 +437,6 @@ pub(super) fn completed(
                 fire_at: None,
             },
             typed::Timestamp(at),
->>>>>>> origin/feat/approval-entity
         )
         .map_err(studio_runtime_store::StoreError::from)?;
         crate::approval_sync::publish(tx, &row)?;

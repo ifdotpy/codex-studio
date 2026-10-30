@@ -1,6 +1,5 @@
 //! Scheduler, answer, notification and account-worker hooks for local radio.
 use super::*;
-use studio_runtime_schema::approvals::{Approval, Request};
 
 /// One scheduler tick. Preparation happens outside the transaction; the owner
 /// publishes changes and hands off returned interrupts only after commit.
@@ -317,16 +316,6 @@ fn reconcile(
     Ok(())
 }
 
-/// The turn of an agent question, or None for any other approval or a question without a turn.
-fn agent_question_turn(question: &Approval) -> Option<&str> {
-    match (&question.request, &question.turn) {
-        (Request::AgentQuestion { .. }, Some(turn)) if !turn.as_str().is_empty() => {
-            Some(turn.as_str())
-        }
-        _ => None,
-    }
-}
-
 /// P04 calls before native send, and with accepted=true only after acceptance.
 /// It marks the question answered in this same transaction. No provider call here.
 #[derive(Debug, PartialEq, Eq)]
@@ -339,24 +328,11 @@ pub enum QuestionAnswerRoute {
 pub fn route_question_answer(
     db: &Transaction<'_>,
     prepared: &PreparedHost,
-<<<<<<< head
-    question: &Approval,
-||||||| base
-    question: &Value,
-=======
     question: &studio_runtime_schema::approvals::Approval,
->>>>>>> origin/feat/approval-entity
     text: &str,
     receipt: Option<&NativeAcceptanceReceipt>,
     now: f64,
 ) -> Result<QuestionAnswerRoute, ProjectsError> {
-<<<<<<< head
-    let Some(question_turn) = agent_question_turn(question) else {
-||||||| base
-    if question["method"] != "agent/asyncQuestion"
-        || question["turnId"].as_str().is_none_or(str::is_empty)
-    {
-=======
     if !matches!(
         question.request,
         studio_runtime_schema::approvals::Request::AgentQuestion { .. }
@@ -365,9 +341,8 @@ pub fn route_question_answer(
         .as_ref()
         .is_none_or(|turn| turn.as_str().is_empty())
     {
->>>>>>> origin/feat/approval-entity
         return Ok(QuestionAnswerRoute::OrdinaryFollowup);
-    };
+    }
     prepared.recheck(db)?;
     for mut room in rooms(db)? {
         let Some(active) = room.radio.active.as_ref() else {
@@ -381,14 +356,7 @@ pub fn route_question_answer(
         };
         let event = event(db, active)?;
         let turn = turn(&agent, active, event.as_ref());
-<<<<<<< head
-        if turn.as_deref() != Some(question_turn)
-||||||| base
-        if turn.as_deref() != question["turnId"].as_str()
-            || question["epoch"] != active.epoch
-=======
         if turn.as_deref() != question.turn.as_ref().map(|turn| turn.as_str())
->>>>>>> origin/feat/approval-entity
             || question.epoch != Some(active.epoch)
             || agent["epoch"] != active.epoch
             || agent["threadId"] != json!(active.thread_id)
@@ -407,14 +375,8 @@ pub fn route_question_answer(
         if let Some(receipt) = receipt {
             if receipt.agent_id != active.agent_id
                 || receipt.epoch != active.epoch
-<<<<<<< head
-                || receipt.turn_id != question_turn
-||||||| base
-                || Some(receipt.turn_id.as_str()) != question["turnId"].as_str()
-=======
                 || Some(receipt.turn_id.as_str())
                     != question.turn.as_ref().map(|turn| turn.as_str())
->>>>>>> origin/feat/approval-entity
                 || receipt.event_id != active.event_id
             {
                 return Ok(QuestionAnswerRoute::OrdinaryFollowup);
@@ -484,23 +446,10 @@ pub fn route_question_answer(
 pub fn record_question_answer_followup(
     db: &Transaction<'_>,
     prepared: &PreparedHost,
-<<<<<<< head
-    question: &Approval,
-||||||| base
-    question: &Value,
-=======
     question: &studio_runtime_schema::approvals::Approval,
->>>>>>> origin/feat/approval-entity
     text: &str,
     now: f64,
 ) -> Result<(), ProjectsError> {
-<<<<<<< head
-    let Some(question_turn) = agent_question_turn(question) else {
-||||||| base
-    if question["method"] != "agent/asyncQuestion"
-        || question["turnId"].as_str().is_none_or(str::is_empty)
-    {
-=======
     if !matches!(
         question.request,
         studio_runtime_schema::approvals::Request::AgentQuestion { .. }
@@ -509,9 +458,8 @@ pub fn record_question_answer_followup(
         .as_ref()
         .is_none_or(|turn| turn.as_str().is_empty())
     {
->>>>>>> origin/feat/approval-entity
         return Ok(());
-    };
+    }
     prepared.recheck(db)?;
     for mut room in rooms(db)? {
         let Some(active) = room.radio.active.as_ref() else {
@@ -524,15 +472,9 @@ pub fn record_question_answer_followup(
             continue;
         };
         let active_event = event(db, active)?;
-<<<<<<< head
-        if turn(&agent, active, active_event.as_ref()).as_deref() != Some(question_turn) {
-||||||| base
-        if turn(&agent, active, active_event.as_ref()).as_deref() != question["turnId"].as_str() {
-=======
         if turn(&agent, active, active_event.as_ref()).as_deref()
             != question.turn.as_ref().map(|turn| turn.as_str())
         {
->>>>>>> origin/feat/approval-entity
             continue;
         }
         if agent["epoch"] != active.epoch || agent["threadId"] != json!(active.thread_id) {
