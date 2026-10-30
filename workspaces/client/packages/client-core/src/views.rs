@@ -65,8 +65,6 @@ struct Subscribe<'a> {
     #[serde(default)]
     flow_control: FlowControl,
     #[serde(borrow)]
-    handle: Option<TextField<'a>>,
-    #[serde(borrow)]
     workspace: Option<TextField<'a>>,
     #[serde(borrow)]
     scope: Option<TextField<'a>>,
@@ -93,7 +91,6 @@ pub struct Views {
     store: StoreSender,
     changes: watch::Receiver<u64>,
     output: mpsc::Sender<Value>,
-    terminals: crate::terminal::Terminals,
 }
 
 impl Views {
@@ -102,7 +99,6 @@ impl Views {
         store: StoreSender,
         changes: watch::Receiver<u64>,
         output: mpsc::Sender<Value>,
-        terminals: crate::terminal::Terminals,
     ) -> Self {
         Self {
             tasks: HashMap::new(),
@@ -111,7 +107,6 @@ impl Views {
             store,
             changes,
             output,
-            terminals,
         }
     }
     pub fn command(&mut self, request: &Request) -> Response {
@@ -222,7 +217,6 @@ impl Views {
                 | "outbox"
                 | "drafts"
                 | "sse"
-                | "terminal"
                 | "microphone"
                 | "voice"
                 | "transcription"
@@ -238,7 +232,6 @@ impl Views {
         let (id, topic, params) = (id.to_owned(), topic.to_owned(), request.params.clone());
         let workspace = text(&subscription.workspace).to_owned();
         let scope = text(&subscription.scope).to_owned();
-        let handle = text(&subscription.handle);
         let flow = match subscription.flow_control {
             FlowControl::Missing | FlowControl::Enabled(false) => None,
             FlowControl::Enabled(true) if topic == "sse" => match crate::events::EventFlow::new() {
@@ -262,14 +255,6 @@ impl Views {
             self.changes.clone(),
             self.output.clone(),
         );
-        let terminal = if topic == "terminal" {
-            match self.terminals.watch(handle) {
-                Ok(value) => Some(value),
-                Err(error) => return Response::failure(request.id.clone(), "terminal", error),
-            }
-        } else {
-            None
-        };
         let microphone = if topic == "microphone" || topic == "voice" {
             let attached = if topic == "voice" {
                 crate::voice::attach(&params["session"])
@@ -315,21 +300,6 @@ impl Views {
                             }
                             Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                             Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                        }
-                    }
-                } else if let Some(mut terminal) = terminal {
-                    loop {
-                        let value = terminal.borrow_and_update().clone();
-                        if !value.is_null()
-                            && output
-                                .send(json!({"event":id,"value":value}))
-                                .await
-                                .is_err()
-                        {
-                            break;
-                        }
-                        if terminal.changed().await.is_err() {
-                            break;
                         }
                     }
                 } else if topic == "sse" {
@@ -625,13 +595,7 @@ mod flow_tests {
         let (store, _) = mpsc::channel(1);
         let (_, changes) = watch::channel(0);
         let (output, _) = mpsc::channel(16);
-        Views::new(
-            Arc::new(Err("No backend".into())),
-            store,
-            changes,
-            output,
-            crate::terminal::Terminals::default(),
-        )
+        Views::new(Arc::new(Err("No backend".into())), store, changes, output)
     }
     #[tokio::test]
     async fn credits_are_one_use_and_bound_to_connection_and_subscription_incarnation() {

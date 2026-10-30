@@ -226,6 +226,29 @@ mod tests {
         );
     }
     #[tokio::test]
+    async fn retired_terminal_commands_and_views_are_rejected() {
+        let directory = tempfile::tempdir().unwrap();
+        let client = open(directory.path());
+        let command = client
+            .request(request("terminal", "terminal.open", json!({"id":"shell"})))
+            .await
+            .unwrap();
+        assert!(
+            matches!(command.outcome, NativeOutcome::Failure(error) if error.code == "unknown_method")
+        );
+        let view = client
+            .request(request(
+                "view",
+                "view.subscribe",
+                json!({"subscription":"shell", "topic":"terminal"}),
+            ))
+            .await
+            .unwrap();
+        assert!(
+            matches!(view.outcome, NativeOutcome::Failure(error) if error.code == "invalid_subscription")
+        );
+    }
+    #[tokio::test]
     async fn reader_prioritizes_event_and_rejects_unknown_response_identity() {
         let (socket, mut peer) = tokio::net::UnixStream::pair().unwrap();
         let (events, mut seen) = tokio::sync::mpsc::unbounded_channel();
