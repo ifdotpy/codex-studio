@@ -1,15 +1,15 @@
 /** Read-only approval lifecycle witness. Run before either card is answered. */
 import fs from "node:fs";
-import {
-  RequestStatus,
-  TaskStatus,
-} from "../../../client/apps/web/src/generated/api.ts";
+import { TaskStatus } from "../../../client/apps/web/src/generated/api.ts";
 import type { components } from "../../../client/apps/web/src/generated/api.ts";
 
 type Schema = components["schemas"];
-type Request = Required<
-  Pick<Schema["RequestEntityDto"], "id" | "agent" | "method" | "status">
->;
+type Request = {
+  id: string;
+  agent: string;
+  kind: Schema["Approval"]["request"]["kind"];
+  state: Schema["Approval"]["state"]["kind"];
+};
 type Monitor = Required<
   Pick<Schema["MonitorEntityDto"], "id" | "agent" | "status">
 > &
@@ -76,8 +76,30 @@ const startedAt = new Date().toISOString();
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
-function requestStatus(value: unknown): value is Schema["RequestStatus"] {
-  return Object.values(RequestStatus).some((status) => status === value);
+// Records keyed by the generated tags: the compiler rejects a missing or extra tag.
+const REQUEST_KINDS: Record<Request["kind"], true> = {
+  exec: true,
+  patch: true,
+  permissions: true,
+  elicitation: true,
+  question: true,
+  tool_use: true,
+  agent_question: true,
+  monitor_start: true,
+  browser_open: true,
+};
+const REQUEST_STATES: Record<Request["state"], true> = {
+  pending: true,
+  answering: true,
+  answered: true,
+  unknown: true,
+  closed: true,
+};
+function requestKind(value: unknown): value is Request["kind"] {
+  return typeof value === "string" && Object.hasOwn(REQUEST_KINDS, value);
+}
+function requestState(value: unknown): value is Request["state"] {
+  return typeof value === "string" && Object.hasOwn(REQUEST_STATES, value);
 }
 function monitorStatus(value: unknown): value is Schema["TaskStatus"] {
   return Object.values(TaskStatus).some((status) => status === value);
@@ -88,15 +110,17 @@ function request(value: unknown, id: string): Request {
     !record(value) ||
     value.id !== id ||
     typeof value.agent !== "string" ||
-    typeof value.method !== "string" ||
-    !requestStatus(value.status)
+    !record(value.request) ||
+    !requestKind(value.request.kind) ||
+    !record(value.state) ||
+    !requestState(value.state.kind)
   )
     throw new Error(`Invalid request: ${id}`);
   return {
     id,
     agent: value.agent,
-    method: value.method,
-    status: value.status,
+    kind: value.request.kind,
+    state: value.state.kind,
   };
 }
 function monitor(value: unknown, id: string): Monitor {
@@ -189,8 +213,8 @@ function pending(t: (typeof targets)[number]) {
     request !== undefined &&
     monitor !== undefined &&
     request.agent === agent &&
-    request.method === "monitor/approve" &&
-    request.status === RequestStatus.pending &&
+    request.kind === "monitor_start" &&
+    request.state === "pending" &&
     monitor.agent === agent &&
     monitor.status === TaskStatus.approval
   );

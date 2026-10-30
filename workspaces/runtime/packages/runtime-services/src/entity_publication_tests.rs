@@ -875,6 +875,10 @@ async fn a_pending_approval_reaches_the_client_and_an_answered_one_leaves_it() {
     assert!(!retired);
     assert_eq!(view["state"]["kind"], "pending");
     assert_eq!(view["request"]["kind"], "agent_question");
+    create_question(&store, "published-chat:question:item-1").await;
+    let (_, asked) = client_entity(&store, "request", "published-chat:question:item-1")
+        .expect("asynchronous question published");
+    assert_eq!(asked["detail"]["params"]["itemId"], "item-1");
     answer_question(&store, "raw-card").await;
     let (retired, _) = client_entity(&store, "request", "raw-card").expect("card known");
     assert!(

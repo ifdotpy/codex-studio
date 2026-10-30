@@ -69,10 +69,13 @@ window.__waiting = () => {
     r.id === "redirect"
       ? {
           ...r,
-          params: {
-            ...r.params,
-            phase: "waiting",
-            waiting: { expiresAt: now + 600 },
+          detail: {
+            ...r.detail,
+            params: {
+              ...r.detail.params,
+              phase: "waiting",
+              waiting: { expiresAt: now + 600 },
+            },
           },
         }
       : r,

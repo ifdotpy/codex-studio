@@ -1,8 +1,6 @@
-import {
-  RadioStatus as GeneratedApiRadioStatus,
-  RequestStatus as GeneratedApiRequestStatus,
-} from "../generated/api.ts";
+import { RadioStatus as GeneratedApiRadioStatus } from "../generated/api.ts";
 import { randomUUID } from "../uuid";
+import { isPending } from "../approvals";
 import { useServerApi } from "../servers/ServerServicesContext";
 import { providerLabel } from "../generated/providerKind.ts";
 import { Button, Select, Textarea } from "@mantine/core";
@@ -186,9 +184,8 @@ export default function RadioChat({
   const requests = runtimeRequests.filter(
     (r) =>
       r.agent === radio.active?.agentId &&
-      (!r.status || r.status === GeneratedApiRequestStatus.pending) &&
-      (!(r.turnId || r.params?.turnId) ||
-        (r.turnId || r.params?.turnId) === radio.active?.turnId),
+      isPending(r) &&
+      (!r.turn || r.turn === radio.active?.turnId),
   );
   return (
     <section className="radio-chat" aria-label="Shared chat">

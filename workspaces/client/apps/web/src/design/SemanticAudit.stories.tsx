@@ -1,4 +1,5 @@
 import { AgentSource, AgentStatus } from "../generated/api";
+import { approval, question } from "../approvalFixtures";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { Button } from "@mantine/core";
 import QuestionCard from "../components/questions/QuestionCard";
@@ -104,22 +105,19 @@ export const NoticesDark: Story = {
 
 function PrimaryAudit() {
   const requests = [
-    {
+    approval({
       id: "audit-question",
       agent: "audit-lead",
-      method: "agent/asyncQuestion",
-      status: "pending" as const,
-      createdAt: 1,
-      params: {
+      request: {
+        kind: "agent_question",
         questions: [
-          {
-            id: "scope",
-            question: "Which files should I review?",
-            options: [{ label: "One file" }, { label: "All files" }],
-          },
+          question("scope", "Which files should I review?", [
+            "One file",
+            "All files",
+          ]),
         ],
       },
-    },
+    }),
   ];
   return (
     <main className="foundation-sheet">

@@ -1,10 +1,14 @@
-import { RequestStatus } from "../../generated/api";
-import type { components } from "../../generated/api";
+import {
+  approvalItemId,
+  isPending,
+  needsAnswer,
+  type Approval,
+} from "../../approvals";
 import type { Message } from "../../types";
 
-/** One synchronized question-history row, owned by the server's QuestionHistory contract. */
-export type QuestionHistoryEntry = components["schemas"]["AgentRequest"];
-type RequestDto = components["schemas"]["RequestEntityDto"];
+/** One synchronized question-history row: the typed approval of a question. */
+export type QuestionHistoryEntry = Approval;
+type RequestDto = Approval;
 
 export interface QuestionChoice {
   label: string;
@@ -219,33 +223,44 @@ export function answerParts(question: CardQuestion): {
   return { chosen, own };
 }
 
+/** The per-question answers a stored answer holds, when it holds any. */
+function storedAnswers(entry: QuestionHistoryEntry) {
+  const { state } = entry;
+  if (state.kind === "pending" || state.kind === "closed") return undefined;
+  return state.answer.kind === "answers" ? state.answer.answers : undefined;
+}
+
+/** Answers of the stored decision; the server keeps secret answers redacted. */
 function historyAnswers(
   entry: QuestionHistoryEntry,
   question: CardQuestion,
   index: number,
 ): string[] | undefined {
-  const history = entry.answerHistory || [];
+  if (question.isSecret) return undefined;
+  const history = storedAnswers(entry) || [];
   const row =
-    history.find((answer) => answer.question === question.question) ||
-    (history.length === entry.questions?.length ? history[index] : undefined);
-  if (!row) return undefined;
-  if (row.isSecret) return undefined;
-  const value = row.answer;
-  if (Array.isArray(value))
-    return value.filter(
-      (answer): answer is string => typeof answer === "string",
-    );
-  if (typeof value === "string") return [value];
-  return value == null ? undefined : [JSON.stringify(value)];
+    history.find((answer) => answer.id === question.id) ||
+    (history.length === questionsOf(entry).length ? history[index] : undefined);
+  return row?.answer;
 }
 
+function questionsOf(entry: QuestionHistoryEntry) {
+  const { request } = entry;
+  return request.kind === "question" || request.kind === "agent_question"
+    ? request.questions
+    : [];
+}
+
+/** The answer is stored but the provider may not have it. */
+const isUncertain = (entry: QuestionHistoryEntry) =>
+  entry.state.kind === "answering" || entry.state.kind === "unknown";
+
 function historyState(entry: QuestionHistoryEntry): QuestionCardState {
-  if (entry.status === "pending" || entry.status === "blocked")
-    return "waiting";
-  if (entry.status === "answered") return "answered";
-  if (entry.status === "answering" || entry.status === "uncertain")
-    return "uncertain";
-  if (entry.status === "failed") return "failed";
+  const { state } = entry;
+  if (state.kind === "pending") return "waiting";
+  if (state.kind === "answered")
+    return state.answer.kind === "answers" ? "answered" : "unanswered";
+  if (isUncertain(entry)) return "uncertain";
   return "unanswered";
 }
 
@@ -260,18 +275,16 @@ function toolState(item: Message, payload: JsonObject): QuestionCardState {
 
 /** A live request that waits for the user's answer to an agent question. */
 export const isPendingQuestionRequest = (request: RequestDto) =>
-  request.status === RequestStatus.pending &&
-  ["item/tool/requestUserInput", "agent/asyncQuestion"].includes(
-    request.method || "",
-  );
+  isPending(request) &&
+  (request.request.kind === "question" ||
+    request.request.kind === "agent_question");
 
 /** Live pending question requests, keyed by agent and provider item id. */
 export function pendingQuestionRequests(requests: RequestDto[]) {
   const result = new Map<string, string>();
   for (const request of requests) {
-    if (!isPendingQuestionRequest(request) || !request.agent) continue;
-    const params = isObject(request.params) ? request.params : {};
-    const item = text(params.itemId);
+    if (!isPendingQuestionRequest(request)) continue;
+    const item = approvalItemId(request);
     if (item) result.set(questionKey(request.agent, item), request.id);
   }
   return result;
@@ -283,8 +296,10 @@ export const questionKey = (agent: string, item: string) =>
 /** Index question history rows by the transcript item that asked them. */
 export function questionHistoryIndex(entries: QuestionHistoryEntry[]) {
   const result = new Map<string, QuestionHistoryEntry>();
-  for (const entry of entries)
-    if (entry.itemId) result.set(questionKey(entry.agent, entry.itemId), entry);
+  for (const entry of entries) {
+    const item = approvalItemId(entry);
+    if (item) result.set(questionKey(entry.agent, item), entry);
+  }
   return result;
 }
 
@@ -305,18 +320,12 @@ export function transcriptRequests(
   requests: RequestDto[],
   cards: (item: Message) => QuestionCardModel | undefined,
 ): Map<string, RequestDto | null> {
-  const pending = requests.filter(
-    (request) =>
-      !request.deferred &&
-      (!request.status || request.status === RequestStatus.pending),
-  );
+  const pending = requests.filter(needsAnswer);
   const byId = new Map(pending.map((request) => [request.id, request]));
   const byItem = new Map<string, RequestDto>(
     pending.flatMap((request) => {
-      const itemId = request.params?.itemId;
-      return request.agent && typeof itemId === "string"
-        ? [[`${request.agent}:${itemId}`, request] as const]
-        : [];
+      const itemId = approvalItemId(request);
+      return itemId ? [[`${request.agent}:${itemId}`, request] as const] : [];
     }),
   );
   const result = new Map<string, RequestDto | null>();
@@ -348,7 +357,7 @@ export function questionCard(
     let state = toolState(item, payload);
     const result = resultText(payload.result);
     let exact = false;
-    if (entry?.answerHistory?.length) {
+    if (entry && storedAnswers(entry)?.length) {
       questions.forEach((question, index) => {
         question.answers = historyAnswers(entry, question, index);
       });
@@ -371,7 +380,7 @@ export function questionCard(
         ? lookup?.pending.get(key) ||
           (entry && lookup?.pendingIds.has(entry.id) ? entry.id : undefined)
         : undefined;
-    if (entry && state !== "waiting" && !exact && entry.status === "uncertain")
+    if (entry && state !== "waiting" && !exact && isUncertain(entry))
       state = "uncertain";
     // A finished call without recognizable answers, such as a closed question.
     else if (state === "answered" && !exact) state = "closed";
@@ -390,19 +399,19 @@ export function questionCard(
   const entry = lookup.history.get(
     questionKey(agent, item.id.slice(prefix.length)),
   );
-  if (!entry || entry.method !== "agent/asyncQuestion") return undefined;
+  if (!entry || entry.request.kind !== "agent_question") return undefined;
   const pending = lookup.pendingIds.has(entry.id);
-  const questions = (entry.questions || []).map((field, index) => {
+  const questions = questionsOf(entry).map((field, index) => {
     const question: CardQuestion = {
       id: field.id,
       ...(field.header ? { header: field.header } : {}),
       question: field.question,
-      options: (field.options || []).map((option) => ({
+      options: field.options.map((option) => ({
         label: option.label,
         ...(option.description ? { description: option.description } : {}),
       })),
-      multiSelect: field.multiSelect === true,
-      isSecret: field.isSecret,
+      multiSelect: field.multi_select === true,
+      isSecret: field.is_secret,
     };
     question.answers = historyAnswers(entry, question, index);
     return question;

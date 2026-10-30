@@ -1,3 +1,4 @@
+import { approval } from "../../src/approvalFixtures.ts";
 import { desktopFixture } from "../files/desktop.fixture.ts";
 import type { JsonInput } from "../../src/types.ts";
 import type { AgentEntityDto as Agent } from "../../src/generated/api.ts";
@@ -56,12 +57,16 @@ class Boundary extends React.Component<React.PropsWithChildren> {
 window.renderCase = async (which, value) => {
   let component;
   if (which === "request") {
-    const request = {
+    const request = approval({
       id: "approval",
       agent: "lead",
-      method: "item/commandExecution/requestApproval",
-      params: { reason: "Structured operation failed" },
-    };
+      request: {
+        kind: "exec",
+        command: "",
+        cwd: "",
+        reason: "Structured operation failed",
+      },
+    });
     component = React.createElement(Requests, {
       requests: [request],
       allRequests: [request],

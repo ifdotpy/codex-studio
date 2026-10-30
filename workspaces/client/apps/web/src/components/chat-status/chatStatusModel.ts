@@ -1,4 +1,5 @@
-import { AgentSource, AgentStatus, RequestStatus } from "../../generated/api";
+import { AgentSource, AgentStatus } from "../../generated/api";
+import { isDeferred, isPending, needsAnswer } from "../../approvals";
 import type { Agent, Snapshot } from "../../types";
 import type { components } from "../../generated/api";
 import { isCommandTask } from "../backgroundTaskModel";
@@ -142,8 +143,7 @@ export function chatWaitState(
     runtime?.requests?.filter(
       (request) =>
         request.agent === agent.id &&
-        (!request.status || request.status === RequestStatus.pending) &&
-        !request.deferred &&
+        needsAnswer(request) &&
         epochMatches(request.epoch, agent.epoch),
     ).length ?? 0;
   const event = agent.parkedEvent || undefined;
@@ -323,10 +323,10 @@ export function chatIndicators(
   const requests = data.runtime?.requests;
   if (requests) {
     for (const request of requests) {
-      if (request.status && request.status !== RequestStatus.pending) continue;
-      const agent = byId.get(request.agent || "");
+      if (!isPending(request)) continue;
+      const agent = byId.get(request.agent);
       if (!agent || !epochMatches(request.epoch, agent.epoch)) continue;
-      if (request.deferred) deferred.add(agent.id);
+      if (isDeferred(request)) deferred.add(agent.id);
       else includeLead(answers, agent.id);
     }
   }

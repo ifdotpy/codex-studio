@@ -109,7 +109,7 @@ test("messages-unified-browser", async ({ page: fixturePage }) => {
   )!;
   assert.equal(
     await questionDate.getAttribute("datetime"),
-    new Date(question.createdAt! * 1000).toISOString(),
+    new Date(question.created * 1000).toISOString(),
   );
   assert.match(await questionDate.innerText(), /\d{4}/);
   assert.equal(

@@ -1,7 +1,6 @@
-import { RequestStatus } from "../../generated/api";
+import { approval, question } from "../../approvalFixtures";
 import { required } from "../componentTestFixtures.ts";
 import { describe, expect, it } from "vitest";
-import type { components } from "../../generated/api";
 import { answerList } from "./AnswerFields";
 import {
   browserOpenDetails,
@@ -9,35 +8,35 @@ import {
   requestQuestions,
 } from "./requestData";
 
-type RequestDto = components["schemas"]["RequestEntityDto"];
+const browserRequest = (
+  url: string,
+  params: Record<string, unknown>,
+  id = "request-browser",
+) => approval({ id, request: { kind: "browser_open", url }, params });
 
 describe("requestQuestions", () => {
   it("preserves the producer's question fields and option descriptions", () => {
-    const request: RequestDto = {
+    const request = approval({
       id: "request-1",
-      method: "agent/asyncQuestion",
-      params: {
+      request: {
+        kind: "agent_question",
         questions: [
           {
-            id: "0",
-            question: "Choose formats",
-            multiSelect: true,
-            isSecret: false,
+            ...question("0", "Choose formats"),
+            multi_select: true,
             options: [
-              { label: "JSON", description: "Structured output" },
-              { label: "Text" },
+              {
+                label: "JSON",
+                description: "Structured output",
+                preview: null,
+              },
+              { label: "Text", description: null, preview: null },
             ],
           },
-          {
-            id: "1",
-            question: "API key",
-            multiSelect: false,
-            isSecret: true,
-            options: [],
-          },
+          { ...question("1", "API key"), multi_select: false, is_secret: true },
         ],
       },
-    };
+    });
 
     expect(requestQuestions(request)).toEqual([
       {
@@ -63,10 +62,11 @@ describe("requestQuestions", () => {
   });
 
   it("reconstructs schema-backed single and multi-select questions", () => {
-    const request: RequestDto = {
+    const request = approval({
       id: "request-2",
-      params: {
-        requestedSchema: {
+      request: {
+        kind: "elicitation",
+        schema: {
           properties: {
             color: { title: "Favorite color", enum: ["blue", "green"] },
             tags: {
@@ -79,7 +79,8 @@ describe("requestQuestions", () => {
           },
         },
       },
-    };
+      params: { mode: "form" },
+    });
 
     expect(requestQuestions(request)).toEqual([
       {
@@ -112,63 +113,108 @@ describe("requestQuestions", () => {
       },
     ]);
   });
+
+  it("shows no fields for a link elicitation or an approval", () => {
+    expect(
+      requestQuestions(
+        approval({
+          request: { kind: "elicitation", schema: null },
+          params: { mode: "url", url: "https://example.com" },
+        }),
+      ),
+    ).toEqual([]);
+    expect(
+      requestQuestions(
+        approval({
+          request: { kind: "exec", command: "pwd", cwd: "/", reason: null },
+        }),
+      ),
+    ).toEqual([]);
+  });
 });
 
 describe("requestApprovalDetails", () => {
-  it("falls back to command and changes from the produced top-level preview", () => {
-    const request: RequestDto = {
-      id: "approval-1",
-      method: "item/commandExecution/requestApproval",
-      params: { command: null, permissions: null },
-      preview: {
-        command: ["npm", "run", "build"],
-        changes: [{ path: "src/app.ts", kind: "modify" }],
+  it("reads the command, folder and reason of an exec request", () => {
+    const request = approval({
+      request: {
+        kind: "exec",
+        command: "npm run build",
+        cwd: "/work",
+        reason: "Build the app",
       },
-    };
-
-    expect(requestApprovalDetails(request)).toEqual({
-      command: ["npm", "run", "build"],
-      permissions: [{ path: "src/app.ts", kind: "modify" }],
+    });
+    expect(requestApprovalDetails(request)).toMatchObject({
+      command: "npm run build",
+      cwd: "/work",
+      reason: "Build the app",
     });
   });
 
-  it("prefers explicit request command and permissions", () => {
-    const request: RequestDto = {
-      id: "approval-2",
-      params: {
-        command: ["git", "status"],
-        permissions: { mode: "workspace-write" },
-      },
-      preview: {
-        command: ["npm", "test"],
-        changes: { files: ["change-preview"] },
-      },
-    };
+  it("lists the files of a patch and the monitor command of a start", () => {
+    expect(
+      requestApprovalDetails(
+        approval({
+          request: {
+            kind: "patch",
+            item: "item-1",
+            files: ["src/app.ts"],
+            reason: null,
+          },
+        }),
+      ),
+    ).toMatchObject({ files: ["src/app.ts"] });
+    expect(
+      requestApprovalDetails(
+        approval({
+          request: { kind: "monitor_start", monitor: "m1", command: "tail" },
+        }),
+      ),
+    ).toMatchObject({ command: "tail" });
+  });
 
-    expect(requestApprovalDetails(request)).toEqual({
-      command: ["git", "status"],
-      permissions: { mode: "workspace-write" },
+  it("prefers the provider's permission details over the requested names", () => {
+    const names = approval({
+      request: { kind: "permissions", requested: ["network"] },
     });
+    expect(requestApprovalDetails(names).permissions).toEqual(["network"]);
+    const details = approval({
+      request: { kind: "permissions", requested: ["fileSystem"] },
+      params: { permissions: { fileSystem: { write: ["/work"] } } },
+    });
+    expect(requestApprovalDetails(details).permissions).toEqual({
+      fileSystem: { write: ["/work"] },
+    });
+  });
+
+  it("names the tool of a tool request and the link of an elicitation", () => {
+    expect(
+      requestApprovalDetails(
+        approval({ request: { kind: "tool_use", tool: "Bash", input: {} } }),
+      ).tool,
+    ).toBe("Bash");
+    expect(
+      requestApprovalDetails(
+        approval({
+          request: { kind: "elicitation", schema: null },
+          params: { mode: "url", url: "https://example.com" },
+        }),
+      ).url,
+    ).toBe("https://example.com");
   });
 });
 
 describe("custom answer permission", () => {
   it("honors native isOther and rejects stale custom enum drafts", () => {
-    const request: RequestDto = {
+    const request = approval({
       id: "native",
-      method: "item/tool/requestUserInput",
-      params: {
+      request: {
+        kind: "question",
         questions: [
-          { id: "closed", question: "Closed", options: [{ label: "One" }] },
-          {
-            id: "open",
-            question: "Open",
-            isOther: true,
-            options: [{ label: "One" }],
-          },
+          question("closed", "Closed", ["One"]),
+          { ...question("open", "Open", ["One"]), is_other: true },
         ],
       },
-    };
+    });
     const [closed, open] = requestQuestions(request);
 
     expect(required(closed).isOther).toBe(false);
@@ -184,19 +230,17 @@ describe("custom answer permission", () => {
 
 describe("browserOpenDetails", () => {
   it("reads the sign-in host, the forward port and the OAuth client", () => {
-    const request: RequestDto = {
-      id: "request-browser",
-      method: "browser/open",
-      params: {
+    const request = browserRequest(
+      "https://accounts.example.com/authorize?client_id=kube",
+      {
         bridgeId: "b1",
-        url: "https://accounts.example.com/authorize?client_id=kube",
         host: "accounts.example.com",
         redirect: { host: "localhost", port: 8000, path: "/" },
         clientId: "kube",
         scope: "openid",
         linuxUser: "studio-a-1",
       },
-    };
+    );
     expect(browserOpenDetails(request)).toEqual({
       host: "accounts.example.com",
       url: "https://accounts.example.com/authorize?client_id=kube",
@@ -209,22 +253,17 @@ describe("browserOpenDetails", () => {
   });
 
   it("reads the waiting phase, its deadline, and a sent paste", () => {
-    const request = {
-      id: "request-waiting",
-      method: "browser/open",
-      status: RequestStatus.pending,
-      params: {
-        url: "https://id.example.com/authorize?state=s",
-        host: "id.example.com",
-        redirect: { host: "127.0.0.1", port: 40645, path: "/oauth/callback" },
-        expiresAt: 1_800_000_600,
-        phase: "waiting",
-        waiting: { expiresAt: 1_800_000_900 },
-        paste: { at: 1_800_000_100 },
-        outcome: null,
-      },
-    } satisfies RequestDto;
-    expect(browserOpenDetails(request)).toMatchObject({
+    const params = {
+      host: "id.example.com",
+      redirect: { host: "127.0.0.1", port: 40645, path: "/oauth/callback" },
+      expiresAt: 1_800_000_600,
+      phase: "waiting",
+      waiting: { expiresAt: 1_800_000_900 },
+      paste: { at: 1_800_000_100 },
+      outcome: null,
+    };
+    const url = "https://id.example.com/authorize?state=s";
+    expect(browserOpenDetails(browserRequest(url, params))).toMatchObject({
       port: 40645,
       redirectPath: "/oauth/callback",
       phase: "waiting",
@@ -232,36 +271,31 @@ describe("browserOpenDetails", () => {
       waitingExpiresAt: 1_800_000_900,
       pasteSent: true,
     });
-    const before = browserOpenDetails({
-      ...request,
-      params: { ...request.params, phase: "other", paste: null },
-    });
+    const before = browserOpenDetails(
+      browserRequest(url, { ...params, phase: "other", paste: null }),
+    );
     expect(before?.phase).toBeUndefined();
     expect(before?.pasteSent).toBeUndefined();
   });
 
-  it("has no forward port for a device code page and ignores other methods", () => {
-    const device: RequestDto = {
-      id: "request-device",
-      method: "browser/open",
-      params: {
-        url: "https://device.example.com/?user_code=ABCD",
-        host: "device.example.com",
-        redirect: null,
-        userCode: "ABCD",
-      },
-    };
+  it("has no forward port for a device code page and ignores other kinds", () => {
+    const device = browserRequest(
+      "https://device.example.com/?user_code=ABCD",
+      { host: "device.example.com", redirect: null, userCode: "ABCD" },
+      "request-device",
+    );
     expect(browserOpenDetails(device)).toEqual({
       host: "device.example.com",
       url: "https://device.example.com/?user_code=ABCD",
       userCode: "ABCD",
     });
     expect(
-      browserOpenDetails({
-        id: "other",
-        method: "monitor/approve",
-        params: {},
-      }),
+      browserOpenDetails(
+        approval({
+          id: "other",
+          request: { kind: "monitor_start", monitor: "m", command: "tail" },
+        }),
+      ),
     ).toBeUndefined();
   });
 });

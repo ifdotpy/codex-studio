@@ -58,12 +58,11 @@ import {
 import type {
   Agent,
   BackgroundTask,
-  JsonInput,
   Monitor,
-  Request,
   Snapshot,
   WorkspaceTask,
 } from "../../types";
+import type { Approval } from "../../approvals";
 import { copyText } from "../../clipboard/clipboard";
 import {
   activeTask,
@@ -83,7 +82,7 @@ type BackgroundAction = <Path extends ApiPostPath>(
 type TaskDetailResponse =
   paths["/api/task"]["get"]["responses"][200]["content"]["application/json"];
 type MonitorTask = Monitor;
-type PendingRequest = Request;
+type PendingRequest = Approval;
 type ProcessResponseTarget = NonNullable<
   paths["/api/processes"]["get"]["responses"][200]["content"]["application/json"]["responseTarget"]
 >;
@@ -123,12 +122,6 @@ export const responseOwnerIdentityKey = (
 
 export function monitorTask(monitor: MonitorTask) {
   return projectTaskForRenderer(monitor, "monitor");
-}
-
-function isJsonObject(
-  value: JsonInput | null | undefined,
-): value is Record<string, JsonInput> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 export { activeTask, backgroundTasks } from "../backgroundTaskModel";
@@ -943,10 +936,7 @@ export function TaskDetail({
     }
   };
   const request = requests.find(
-    (r) =>
-      r.method === "monitor/approve" &&
-      isJsonObject(r.params) &&
-      r.params.monitorId === task.id,
+    (r) => r.request.kind === "monitor_start" && r.request.monitor === task.id,
   );
   const Icon = iconFor(task),
     age = elapsed(task, now);

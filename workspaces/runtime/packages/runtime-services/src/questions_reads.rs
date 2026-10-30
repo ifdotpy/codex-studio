@@ -75,6 +75,14 @@ pub fn async_question_id(agent: &str, item: &str) -> String {
     format!("{agent}{ASYNC_QUESTION_SEPARATOR}{item}")
 }
 
+/// The agent message item that an asynchronous question id names (inverse of
+/// `async_question_id`), or None for any other id.
+pub fn async_question_item<'a>(agent: &str, id: &'a str) -> Option<&'a str> {
+    id.strip_prefix(agent)
+        .and_then(|rest| rest.strip_prefix(ASYNC_QUESTION_SEPARATOR))
+        .filter(|item| !item.is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{QuestionsReadsError, checkpoint_list, complaint_detail};
