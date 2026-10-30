@@ -17,7 +17,7 @@ fn cancelled_receipt_requires_exact_attempt_and_negative_finished_result() {
     let decide = |receipt: Value| {
         TaskRecoverySnapshot::from_records(
             case["agent"].clone(),
-            case["task"].clone(),
+            super::task_record(&case["task"]),
             vec![],
             vec![("receipt".into(), receipt.clone())],
         )
@@ -58,7 +58,7 @@ fn cancelled_receipt_requires_exact_attempt_and_negative_finished_result() {
     assert_eq!(decide(missing_epoch), TaskRecoveryDecision::Unconfirmed);
     let snapshot = TaskRecoverySnapshot::from_records(
         case["agent"].clone(),
-        case["task"].clone(),
+        super::task_record(&case["task"]),
         vec![],
         vec![("receipt".into(), cancelled.clone())],
     )
@@ -94,7 +94,7 @@ async fn historical_negative_receipt_resolves_without_rewriting_or_native_eviden
     let receipt = case["receipt"].clone();
     let snapshot = TaskRecoverySnapshot::from_records(
         case["agent"].clone(),
-        case["task"].clone(),
+        super::task_record(&case["task"]),
         vec![],
         vec![("receipt".into(), receipt.clone())],
     )
@@ -219,7 +219,7 @@ fn exact_task_receipts_match_python_and_unknown_local_outcomes_override_native()
     for case in cases {
         let snapshot = TaskRecoverySnapshot::from_records(
             case["agent"].clone(),
-            case["task"].clone(),
+            super::task_record(&case["task"]),
             serde_json::from_value(case["aliases"].clone()).expect("valid recovery fixture"),
             vec![("receipt".into(), case["receipt"].clone())],
         )
@@ -384,7 +384,7 @@ async fn task_consumer_resolves_local_receipt_without_native_read() {
             .expect("valid recovery fixture");
         let snapshot = TaskRecoverySnapshot::from_records(
             case["agent"].clone(),
-            case["task"].clone(),
+            super::task_record(&case["task"]),
             vec![],
             vec![("receipt".into(), case["receipt"].clone())],
         )
@@ -509,7 +509,7 @@ async fn native_task_consumer_preserves_duplicate_ambiguity() {
     let case = &cases[0];
     let snapshot = TaskRecoverySnapshot::from_records(
         case["agent"].clone(),
-        case["task"].clone(),
+        super::task_record(&case["task"]),
         vec![],
         vec![],
     )
@@ -549,7 +549,7 @@ fn native_task_proofs_match_real_python_reader() {
     for case in cases {
         let snapshot = TaskRecoverySnapshot::from_records(
             case["agent"].clone(),
-            case["task"].clone(),
+            super::task_record(&case["task"]),
             vec![],
             vec![],
         )

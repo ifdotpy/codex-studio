@@ -369,7 +369,7 @@ fn project_task_records(
         .map(|task| {
             let id = task.id().as_ref().to_owned();
             validators
-                .project_entity("task", &task.into_value())
+                .project_entity("task", &studio_runtime_store::projection_value(&task))
                 .ok_or_else(|| invalid_stored("runtime_tasks", &id))
         })
         .collect()

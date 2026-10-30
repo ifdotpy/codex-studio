@@ -45,6 +45,7 @@ pub(crate) mod m2026_10_30_monitor_status;
 mod m2026_10_30_retire_graph_agents;
 mod m2026_10_30_rule_monitor_records;
 mod m2026_10_30_start_wait;
+mod m2026_10_30_task_records;
 mod m2026_10_30_unused_agent_columns;
 mod m2026_10_30_unused_start_action;
 mod m2026_10_30_vm_stream_owners;
@@ -746,6 +747,16 @@ static CATALOG: &[&dyn Migration] = &[
         },
     },
     &RegistryMigration,
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-task-records",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Task records before strict typed validation",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_task_records::apply(c.transaction),
+    },
 ];
 
 /// Operator-facing catalog; implementation and metadata have one owner.

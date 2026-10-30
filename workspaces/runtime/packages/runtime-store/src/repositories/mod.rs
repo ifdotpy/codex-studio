@@ -201,10 +201,10 @@ mod tests {
         AgentRepository::get(&db, agent.id()).expect("agent read uses declared objects");
 
         let db = database_with(&tasks::REQUIREMENTS);
-        let task = TaskRecord::from_value(json!({
+        let task: TaskRecord = serde_json::from_str(&json!({
             "id":"t", "agent":"a", "kind":"command", "status":"completed",
-            "created":0, "interactive":false, "exitCode":0
-        }))
+            "created":0, "itemId":"i", "turnId":"turn", "type":"commandExecution", "name":"commandExecution", "interactive":false, "exitCode":0
+        }).to_string())
         .expect("task JSON has a string id");
         TaskRepository::put(&db, &task).expect("task write uses declared objects");
         TaskRepository::get(&db, task.id()).expect("task read uses declared objects");

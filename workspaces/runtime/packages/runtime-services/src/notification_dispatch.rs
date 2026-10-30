@@ -946,7 +946,7 @@ pub(crate) fn put_checked_task_record(
     tx: &Transaction<'_>,
     task: &studio_runtime_store::TaskRecord,
 ) -> Result<(), NotificationDispatchError> {
-    kinds::put_checked_task(tx, task, &task.value())
+    kinds::put_checked_task(tx, task, &studio_runtime_store::projection_value(task))
 }
 
 /// Shared completion formatter for recovery; its caller owns the recovery receipt.
@@ -954,23 +954,21 @@ pub(crate) fn put_checked_task_record(
 pub fn recover_task_in_transaction(
     tx: &Transaction<'_>,
     agent: &Value,
-    previous: &Value,
+    previous: &studio_runtime_store::TaskRecord,
     item: &Value,
     at: f64,
 ) -> Result<(), NotificationDispatchError> {
     in_savepoint(tx, || {
         if !at.is_finite()
             || at < 0.0
-            || previous["agent"] != agent["id"]
-            || previous["itemId"] != item["id"]
-            || previous["type"] != item["type"]
+            || Some(previous.agent()) != agent["id"].as_str()
+            || Some(previous.item_id()) != item["id"].as_str()
+            || Some(previous.task_type().as_str()) != item["type"].as_str()
         {
             return Err(NotificationDispatchError::invalid());
         }
         use studio_runtime_store::{Table, TaskId, TaskRecord};
-        let task_id = previous["id"]
-            .as_str()
-            .ok_or(NotificationDispatchError::invalid())?;
+        let task_id = previous.id().as_ref();
         let current = Table::<TaskRecord>::new(tx).get(&TaskId::from(task_id))?;
         let stored_agent = NotificationDispatchRepository::agent_record(
             tx,
@@ -978,16 +976,16 @@ pub fn recover_task_in_transaction(
                 .as_str()
                 .ok_or(NotificationDispatchError::invalid())?,
         )?;
-        if current.as_ref().map(|record| record.value()).as_ref() != Some(previous)
-            || stored_agent.as_ref() != Some(agent)
-        {
+        if current.as_ref() != Some(previous) || stored_agent.as_ref() != Some(agent) {
             return Err(NotificationDispatchError::invalid());
         }
         let snapshot = snapshot::NotificationSnapshot::from_records(agent.clone(), current, None)?;
-        if snapshot.task().and_then(TaskRecord::status) != Some("running") {
+        if snapshot.task().map(TaskRecord::status)
+            != Some(studio_runtime_schema::task_record::TaskStatus::Running)
+        {
             return Ok(());
         }
-        let params = json!({"item":item,"turnId":previous["turnId"]});
+        let params = json!({"item":item,"turnId":previous.turn_id()});
         if let Some(task) = items::task_transition(
             snapshot.agent(),
             "item/completed",
@@ -996,7 +994,7 @@ pub fn recover_task_in_transaction(
             true,
             at,
         )? {
-            kinds::put_task(tx, &task)?;
+            kinds::put_checked_task(tx, &task, &studio_runtime_store::projection_value(&task))?;
             kinds::write_historical_item(
                 tx,
                 agent["id"]

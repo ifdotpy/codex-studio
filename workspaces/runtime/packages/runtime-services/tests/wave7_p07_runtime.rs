@@ -647,14 +647,16 @@ async fn task_writer_checks_receipts_and_scope_in_the_completion_transaction() {
         let task = json!({"id":"agent:item","agent":"agent","itemId":"item","turnId":"turn","type":"commandExecution","kind":"command","status":"running","created":1.0});
         let task_to_save = task.clone();
         store
-            .transaction(move |tx| {
-                TaskRepository::put(tx, &TaskRecord::from_value(task_to_save).expect("task"))
-            })
+            .transaction(move |tx| TaskRepository::put(tx, &super::task_record(&task_to_save)))
             .await
             .expect("save");
-        let snapshot =
-            TaskRecoverySnapshot::from_records(before.clone(), task.clone(), vec![], vec![])
-                .expect("snapshot");
+        let snapshot = TaskRecoverySnapshot::from_records(
+            before.clone(),
+            super::task_record(&task),
+            vec![],
+            vec![],
+        )
+        .expect("snapshot");
         if scenario == "changed-task" {
             store
                 .transaction(|tx| {
@@ -680,14 +682,18 @@ async fn task_writer_checks_receipts_and_scope_in_the_completion_transaction() {
         let scenario_for_writer = scenario.to_owned();
         let write = move |tx: &Transaction<'_>,
                           _: &Value,
-                          previous: &Value,
+                          previous: &TaskRecord,
                           item: &Value,
                           at: f64| {
             calls_for_writer.fetch_add(1, Ordering::SeqCst);
             let mut next = previous.clone();
-            next["status"] = item["status"].clone();
-            next["finished"] = json!(at);
-            TaskRepository::put(tx, &TaskRecord::from_value(next).expect("task"))?;
+            next.set_status(if item["status"] == "failed" {
+                studio_runtime_schema::task_record::TaskStatus::Failed
+            } else {
+                studio_runtime_schema::task_record::TaskStatus::Completed
+            });
+            next.set_finished(at);
+            TaskRepository::put(tx, &next)?;
             if scenario_for_writer == "writer-failure" {
                 return Err(studio_runtime_services::notification_dispatch::NotificationDispatchError::invalid());
             }
@@ -799,7 +805,7 @@ async fn runtime_entry_applies_history_only_after_barrier_and_rechecks_notificat
             delivery: Box::new(RootDelivery { fail: false }),
             write_message: Box::new(mock_message),
         };
-        let task_write = |_: &Transaction<'_>, _: &Value, _: &Value, _: &Value, _: f64| {
+        let task_write = |_: &Transaction<'_>, _: &Value, _: &TaskRecord, _: &Value, _: f64| {
             Err(
                 studio_runtime_services::notification_dispatch::NotificationDispatchError::invalid(
                 ),
@@ -1018,7 +1024,7 @@ async fn task_completion_rejects_changed_alias_or_operation_receipt() {
         let saved_root = root_id.clone();
         let receipt = store
             .transaction_with(move |tx| {
-                TaskRepository::put(tx, &TaskRecord::from_value(task_to_save).expect("task"))?;
+                TaskRepository::put(tx, &super::task_record(&task_to_save))?;
                 let studio_runtime_store::request_results::Admission::Fresh(admitted) =
                     studio_runtime_store::request_results::RequestResults::admit(
                         tx,
@@ -1047,7 +1053,7 @@ async fn task_completion_rejects_changed_alias_or_operation_receipt() {
             .expect("seed");
         let snapshot = TaskRecoverySnapshot::from_records(
             before,
-            task,
+            super::task_record(&task),
             vec![root_id.clone()],
             vec![(root_id.clone(), receipt)],
         )
@@ -1060,7 +1066,7 @@ async fn task_completion_rejects_changed_alias_or_operation_receipt() {
         }).await.expect("race");
         let write = |_: &Transaction<'_>,
                      _: &Value,
-                     _: &Value,
+                     _: &TaskRecord,
                      _: &Value,
                      _: f64|
          -> Result<
@@ -1198,7 +1204,7 @@ async fn corrupt_scan_rows_keep_the_sql_table_and_identity() {
                                 later_agent |= snapshot.record()["id"] == "z-agent"
                             }
                             RecoveryJob::Task(snapshot) => {
-                                later_task |= snapshot.task()["id"] == "z-agent:item"
+                                later_task |= snapshot.task().id().as_ref() == "z-agent:item"
                             }
                             RecoveryJob::Turn(_) => panic!("unexpected turn"),
                         }

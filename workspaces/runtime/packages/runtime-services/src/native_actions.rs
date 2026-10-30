@@ -1699,9 +1699,10 @@ pub fn replay_command(
     action: CommandAction<'_>,
 ) -> Result<Option<CommandReply>> {
     use studio_runtime_store::{AgentId, TaskId, TaskRepository};
-    if TaskRepository::get(connection, &TaskId::from(task_id))?
-        .is_none_or(|task| task.agent() != Some(agent_id) || task.kind() != Some("command"))
-        || AgentRepository::get(connection, &AgentId::from(agent_id))?.is_none()
+    if TaskRepository::get(connection, &TaskId::from(task_id))?.is_none_or(|task| {
+        task.agent() != agent_id
+            || task.kind() != studio_runtime_schema::task_record::TaskKind::Command
+    }) || AgentRepository::get(connection, &AgentId::from(agent_id))?.is_none()
     {
         return Err(NativeError::Changed);
     }

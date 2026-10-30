@@ -82,9 +82,9 @@ pub struct WorkspaceTaskRow {
 impl WorkspaceTaskRow {
     /// Decode a served row without another lookup; the lookahead row stays unchecked.
     pub fn decode(self, connection: &Connection) -> StoreResult<Value> {
-        Ok(Table::<TaskRecord>::new(connection)
-            .decode_stored(&self.id, &self.record)?
-            .into_value())
+        Ok(crate::projection_value(
+            &Table::<TaskRecord>::new(connection).decode_stored(&self.id, &self.record)?,
+        ))
     }
 }
 
@@ -248,7 +248,7 @@ impl WorkspaceViewsRepository {
     pub fn task(connection: &Connection, id: &str) -> StoreResult<Option<Value>> {
         Ok(Table::<TaskRecord>::new(connection)
             .get(&TaskId::from(id))?
-            .map(TaskRecord::into_value))
+            .map(|record| crate::projection_value(&record)))
     }
 
     pub fn agent(connection: &Connection, id: &str) -> StoreResult<Option<AgentRecord>> {

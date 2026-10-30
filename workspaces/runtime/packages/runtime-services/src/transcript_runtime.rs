@@ -299,12 +299,11 @@ pub(crate) fn project(
                 item["streaming"] = json!(false);
             }
             if item["toolStatus"] == "running" {
-                item["toolStatus"] = records::get(
+                item["toolStatus"] = studio_runtime_store::TaskRepository::get(
                     connection,
-                    "runtime_tasks",
-                    item["id"].as_str().unwrap_or_default(),
+                    &studio_runtime_store::TaskId::from(item["id"].as_str().unwrap_or_default()),
                 )?
-                .map(|r| r["status"].clone())
+                .map(|task| json!(task.status()))
                 .unwrap_or(json!("interrupted"));
             }
         }

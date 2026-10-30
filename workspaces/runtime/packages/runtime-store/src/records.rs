@@ -2706,8 +2706,8 @@ mod tests {
         );
     }
 
-    fn task(value: Value) -> TaskRecord {
-        TaskRecord::from_value(value).expect("runtime task has a string id")
+    fn task(value: &Value) -> TaskRecord {
+        serde_json::from_str(&value.to_string()).expect("runtime task has a string id")
     }
 
     fn work(value: Value) -> WorkItemRecord {
@@ -2853,11 +2853,11 @@ mod tests {
 
     #[test]
     fn runtime_task_and_work_item_use_distinct_exported_schemas() {
-        let runtime_task = task(json!({
+        let runtime_task = task(&json!({
             "id":"task-1", "agent":"agent-1", "kind":"command", "status":"completed",
-            "created":1.25, "interactive":true, "exitCode":7
+            "created":1.25, "itemId":"item", "turnId":"turn", "type":"commandExecution", "name":"commandExecution", "interactive":true, "exitCode":7
         }));
-        let rewritten = runtime_task.into_value();
+        let rewritten = crate::projection_value(&runtime_task);
         assert_eq!(rewritten["interactive"], json!(true));
         assert_eq!(rewritten["exitCode"].as_i64(), Some(7));
 
@@ -2871,15 +2871,18 @@ mod tests {
 
     #[test]
     fn persisted_task_and_request_records_accept_python_written_fields() {
-        let task = task(json!({
-            "id":"task-1", "reattachRecovery":{"status":"running"},
+        let task = task(&json!({
+            "id":"task-1", "agent":"agent", "created":1, "itemId":"item", "turnId":"turn", "kind":"command", "status":"running", "type":"commandExecution", "name":"commandExecution", "reattachRecovery":{"status":"running"},
             "outputPreviewOnly":true
         }));
         assert_eq!(
-            task.extra("reattachRecovery").expect("recovery metadata")["status"],
+            crate::projection_value(&task)["reattachRecovery"]["status"],
             "running"
         );
-        assert_eq!(task.extra("outputPreviewOnly"), Some(&Value::Bool(true)));
+        assert_eq!(
+            crate::projection_value(&task)["outputPreviewOnly"],
+            Value::Bool(true)
+        );
 
         let request = RequestRecord::from_value(json!({
             "id":"request-1", "connectionId":null

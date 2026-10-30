@@ -1390,7 +1390,7 @@ mod tests {
         );
         assert!(validate(
             "PersistedTaskRecord",
-            &json!({"id":"t","agent":"a","kind":"command","status":"completed","reattachRecovery":{"attempt":2},"outputPreviewOnly":true})
+            &json!({"id":"t","agent":"a","kind":"command","status":"completed","created":1,"itemId":"i","turnId":"u","type":"commandExecution","name":"commandExecution","reattachRecovery":{"attempt":2},"outputPreviewOnly":true})
         )
         .expect("persisted task schema accepts Python state extensions"));
         assert!(

@@ -972,7 +972,8 @@ async fn seed_task(store: &Arc<RuntimeStore>, case: &serde_json::Value) {
     lifecycle_transaction(store, move |tx| {
         tx.execute(
             "INSERT INTO runtime_tasks(id,record) VALUES('agent:item',?1)",
-            [case["task"].to_string()],
+            [serde_json::to_string(&super::task_record(&case["task"]))
+                .expect("serialize canonical task fixture")],
         )?;
         tx.execute(
             "INSERT INTO runtime_items(id,agent,record,created) VALUES('agent:item','agent',?1,10)",
@@ -1096,7 +1097,7 @@ async fn task_absence_consumer_matches_python_lost_and_persists_named_hold() {
             serde_json::from_value(case["observation"].clone()).expect("observation");
         let before = TaskRecoverySnapshot::from_records(
             snapshot(&store).record().clone(),
-            case["task"].clone(),
+            super::task_record(&case["task"]),
             vec![],
             vec![],
         )
@@ -1168,7 +1169,9 @@ async fn task_absence_consumer_matches_python_lost_and_persists_named_hold() {
             rows[0]["error"]
         );
         if case["absent"] == true {
-            assert_eq!(rows[0], case["after"], "{}", case["name"]);
+            let mut expected = case["after"].clone();
+            expected["name"] = case["task"]["type"].clone();
+            assert_eq!(rows[0], expected, "{}", case["name"]);
             assert_eq!(rows[1], case["item"]);
         } else {
             assert_eq!(rows[0]["status"], "running");
@@ -1204,7 +1207,7 @@ async fn task_absence_failpoints_and_stale_proofs_preserve_rows() {
             seed_task(&store, case).await;
             let before = TaskRecoverySnapshot::from_records(
                 snapshot(&store).record().clone(),
-                case["task"].clone(),
+                super::task_record(&case["task"]),
                 vec![],
                 vec![],
             )
@@ -1251,7 +1254,7 @@ async fn task_absence_failpoints_and_stale_proofs_preserve_rows() {
         seed_task(&store, case).await;
         let before = TaskRecoverySnapshot::from_records(
             snapshot(&store).record().clone(),
-            case["task"].clone(),
+            super::task_record(&case["task"]),
             vec![],
             vec![],
         )
@@ -1310,7 +1313,7 @@ async fn held_task_rechecks_current_receipts_before_later_absence_recovery() {
     seed_task(&store, &case).await;
     let before = TaskRecoverySnapshot::from_records(
         snapshot(&store).record().clone(),
-        case["task"].clone(),
+        super::task_record(&case["task"]),
         vec![],
         vec![],
     )
@@ -1352,9 +1355,13 @@ async fn held_task_rechecks_current_receipts_before_later_absence_recovery() {
             .await
             .expect("stale proof")
     );
-    let current_task =
-        TaskRecoverySnapshot::from_records(snapshot(&store).record().clone(), held, vec![], vec![])
-            .expect("held snapshot");
+    let current_task = TaskRecoverySnapshot::from_records(
+        snapshot(&store).record().clone(),
+        super::task_record(&held),
+        vec![],
+        vec![],
+    )
+    .expect("held snapshot");
     let mut reader = TaskReader {
         observation: observation.clone(),
         options: json!({}),
