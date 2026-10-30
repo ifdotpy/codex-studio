@@ -131,6 +131,9 @@ pub struct HttpState {
     pub(crate) multi_server_boundary:
         Option<Arc<studio_runtime_services::multi_server_pairing::MultiServerBoundary>>,
     pub(crate) peer_link_advert: Arc<std::sync::RwLock<Option<String>>>,
+    /// Secret that the backend gave to the peer link process. A request that carries it came
+    /// from the link, so its `X-Studio-Link-Connection` names a real QUIC connection.
+    pub(crate) peer_link_token: Option<Arc<str>>,
     pub account_driver:
         Option<std::sync::Arc<studio_runtime_services::account_driver::AccountDriver>>,
     pub provider_versions:
@@ -293,6 +296,7 @@ impl HttpState {
             credentials: Arc::default(),
             multi_server_boundary: None,
             peer_link_advert: Arc::new(std::sync::RwLock::new(None)),
+            peer_link_token: None,
             token,
             workspace_id,
             state_dir,
@@ -375,6 +379,12 @@ impl HttpState {
     /// Advertise the running QUIC link to authenticated paired-server requests.
     pub fn with_peer_link_advert(mut self, advert: Arc<std::sync::RwLock<Option<String>>>) -> Self {
         self.peer_link_advert = advert;
+        self
+    }
+
+    /// Trust the connection identity that the peer link process sends with this secret.
+    pub fn with_peer_link_token(mut self, token: &str) -> Self {
+        self.peer_link_token = Some(token.into());
         self
     }
 

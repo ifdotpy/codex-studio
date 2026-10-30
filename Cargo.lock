@@ -5334,6 +5334,7 @@ dependencies = [
 name = "studio-peer-link"
 version = "0.1.0"
 dependencies = [
+ "getrandom 0.4.3",
  "quinn",
  "rustls",
  "rustls-pki-types",

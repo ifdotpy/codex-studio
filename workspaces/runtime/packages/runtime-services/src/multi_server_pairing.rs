@@ -2,8 +2,9 @@
 //! exact response together; restart never needs to repeat a pairing effect.
 use base64::Engine;
 use futures_util::future::BoxFuture;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
@@ -19,6 +20,10 @@ use studio_runtime_schema::multi_server_protocol::ACCESS_PROTOCOL_VERSION;
 
 const PAIRING_WINDOW_SECONDS: i64 = 60;
 const MAX_PAIRING_ATTEMPTS: usize = 128;
+/// Seconds without a request after which a connection's check result is dropped. Equals the
+/// idle timeout of the QUIC link (apps/peer-link `transport`); a closed connection sends nothing.
+const CONNECTION_CHECK_IDLE: std::time::Duration = std::time::Duration::from_secs(60);
+const MAX_CONNECTION_CHECKS: usize = 256;
 
 /// Host adapter must bind observations to the requested address, use a five
 /// second deadline and cap each command/probe response at one MiB. No process
@@ -32,6 +37,12 @@ pub trait OwnerLookup: Send + Sync {
     ) -> BoxFuture<'a, Result<(OwnerObservation, Option<Value>), AccessError>>;
 }
 
+tokio::task_local! {
+    /// Identity of the QUIC connection that carried the current request, set by the HTTP
+    /// boundary only for the trusted peer link (docs/peer-link.md). Never read from a request.
+    pub static LINK_CONNECTION: String;
+}
+
 type IdentitySource =
     dyn for<'a> Fn(&'a RuntimeStore) -> BoxFuture<'a, Result<Value, AccessError>> + Send + Sync;
 
@@ -39,6 +50,8 @@ pub struct MultiServerBoundary {
     identity: Arc<IdentitySource>,
     local_server: String,
     owner: Arc<dyn OwnerLookup>,
+    /// Owner checks of live link connections: (connection, address) to result and last use.
+    connection_checks: Mutex<HashMap<(String, String), (OwnerObservation, Instant)>>,
     pairing_attempts: Mutex<VecDeque<i64>>,
 }
 
@@ -87,6 +100,7 @@ impl MultiServerBoundary {
                 Box::pin(async move { Ok(identity) })
             }),
             owner,
+            connection_checks: Mutex::new(HashMap::new()),
             pairing_attempts: Mutex::new(VecDeque::new()),
         })
     }
@@ -417,6 +431,44 @@ impl MultiServerBoundary {
             })
             .await
     }
+    /// Run the owner check, or reuse the result that this link connection already earned. The
+    /// connection comes from the trusted link (`LINK_CONNECTION`), never from the request. A
+    /// request that names a login or probes an origin is always checked.
+    async fn lookup(
+        &self,
+        address: &str,
+        logins: &[String],
+        origin: Option<&str>,
+    ) -> Result<(OwnerObservation, Option<Value>), AccessError> {
+        let key = (logins.is_empty() && origin.is_none())
+            .then(|| {
+                LINK_CONNECTION
+                    .try_with(|id| (id.clone(), address.to_owned()))
+                    .ok()
+            })
+            .flatten();
+        let now = Instant::now();
+        if let Some(key) = &key
+            && let Ok(mut checks) = self.connection_checks.lock()
+            && let Some((owner, used)) = checks.get_mut(key)
+            && now.duration_since(*used) < CONNECTION_CHECK_IDLE
+        {
+            *used = now;
+            return Ok((owner.clone(), None));
+        }
+        let (owner, probe) = self.owner.observe(address, logins, origin).await?;
+        if let Some(key) = key
+            && probe.is_none()
+            && address.parse::<std::net::IpAddr>().ok() == Some(owner.address())
+            && let Ok(mut checks) = self.connection_checks.lock()
+        {
+            checks.retain(|_, (_, used)| now.duration_since(*used) < CONNECTION_CHECK_IDLE);
+            if checks.len() < MAX_CONNECTION_CHECKS {
+                checks.insert(key, (owner.clone(), now));
+            }
+        }
+        Ok((owner, probe))
+    }
     async fn observe(
         &self,
         request: &SignedRequest,
@@ -424,8 +476,7 @@ impl MultiServerBoundary {
         logins: &[String],
     ) -> Result<(OwnerObservation, Option<Value>), AccessError> {
         let (owner, probe) = self
-            .owner
-            .observe(
+            .lookup(
                 address,
                 logins,
                 request
@@ -448,7 +499,7 @@ impl MultiServerBoundary {
         address: &str,
         logins: &[String],
     ) -> Result<Value, AccessError> {
-        let (owner, _) = self.owner.observe(address, logins, None).await?;
+        let (owner, _) = self.lookup(address, logins, None).await?;
         if address.parse::<std::net::IpAddr>().ok() != Some(owner.address()) {
             return Err(refused(
                 403,

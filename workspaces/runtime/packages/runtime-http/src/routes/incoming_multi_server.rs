@@ -10,7 +10,8 @@ use axum::response::{IntoResponse, Response};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{net::SocketAddr, sync::Arc};
 use studio_runtime_services::multi_server_auth::{self, AccessError, SignedRequest};
-use studio_runtime_services::multi_server_pairing::MultiServerBoundary;
+use studio_runtime_services::multi_server_pairing::{LINK_CONNECTION, MultiServerBoundary};
+use subtle::ConstantTimeEq;
 
 use crate::error::error_response;
 use crate::router::HttpState;
@@ -40,8 +41,26 @@ pub(crate) fn needed(headers: &HeaderMap, path: &str) -> bool {
             .iter()
             .any(|key| headers.contains_key(*key)))
 }
+/// The QUIC connection that carried the request, when the peer link vouches for it with the
+/// secret that the backend gave it. The link removes both headers from a peer's own request.
+fn link_connection(state: &HttpState, headers: &HeaderMap) -> Option<String> {
+    let token = state.peer_link_token.as_deref()?;
+    let supplied = headers.get("x-studio-link-token")?;
+    let connection = headers.get("x-studio-link-connection")?.to_str().ok()?;
+    (bool::from(supplied.as_bytes().ct_eq(token.as_bytes()))
+        && (1..=64).contains(&connection.len())
+        && connection.bytes().all(|byte| byte.is_ascii_alphanumeric()))
+    .then(|| connection.to_owned())
+}
 pub(crate) async fn serve(state: HttpState, request: Request<Body>, next: Next) -> Response {
-    let mut response = serve_inner(state, request, next).await;
+    let mut response = match link_connection(&state, request.headers()) {
+        Some(connection) => {
+            LINK_CONNECTION
+                .scope(connection, serve_inner(state, request, next))
+                .await
+        }
+        None => serve_inner(state, request, next).await,
+    };
     response.headers_mut().insert(
         "access-control-allow-origin",
         axum::http::HeaderValue::from_static("*"),

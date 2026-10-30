@@ -52,8 +52,22 @@ pairing key:
 - the server accepts only a client key of a paired server;
 - the server refuses a source address outside the Tailscale ranges before the handshake.
 
-The receiving backend then checks each request as a Serve request (below), including the
-request signature and the Tailscale whois of the source address.
+The receiving backend checks each request as a Serve request (below), including the request
+signature. The Tailscale owner check (`tailscale status` and `tailscale whois`, about 190 ms
+together) runs once for each connection, not for each request:
+
+- The link gives each accepted connection a random name and sends it as
+  `X-Studio-Link-Connection`, with the secret `X-Studio-Link-Token`. The backend generates the
+  secret at start and writes it in the link configuration (`linkToken`). The link removes both
+  headers (and every `X-Studio-Link-*` header) from the peer's own request.
+- The backend uses the name only when the secret matches. It never takes a check result from a
+  request. The first request of a connection runs the check. Later requests of the same
+  connection and source address reuse the result.
+- A request that has a `Tailscale-User-Login` or an auto-pair probe is always checked. A request
+  without the secret (Serve, HTTPS) is always checked.
+- A result is dropped after 60 seconds without a request, the idle timeout of the link. A closed
+  connection cannot send a request, and its name is never used again. A new connection is
+  checked again. A removed paired key closes its connections (see Process).
 
 ## Streams
 

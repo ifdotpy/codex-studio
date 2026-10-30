@@ -577,6 +577,12 @@ async fn run(
     let public_origin = remote_access.origin();
     #[cfg(unix)]
     let peer_link_advert = Arc::new(std::sync::RwLock::new(None));
+    #[cfg(unix)]
+    let peer_link_token = {
+        let mut secret = [0_u8; 32];
+        getrandom::fill(&mut secret).map_err(|error| std::io::Error::other(error.to_string()))?;
+        data_encoding::HEXLOWER.encode(&secret)
+    };
     let cache_root = env::var_os("XDG_CACHE_HOME")
         .or_else(|| env::var_os("CODEX_AGENTS_CACHE_DIR"))
         .or_else(|| {
@@ -727,7 +733,9 @@ async fn run(
     }
     #[cfg(unix)]
     {
-        state = state.with_peer_link_advert(Arc::clone(&peer_link_advert));
+        state = state
+            .with_peer_link_advert(Arc::clone(&peer_link_advert))
+            .with_peer_link_token(&peer_link_token);
     }
     #[cfg(unix)]
     {
@@ -968,6 +976,7 @@ async fn run(
                 origin.clone(),
                 state_root.clone().to_path_buf(),
                 Arc::clone(&peer_link_advert),
+                peer_link_token,
             )
         })
         .transpose()?;

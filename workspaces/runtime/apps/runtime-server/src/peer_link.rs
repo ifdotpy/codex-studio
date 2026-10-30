@@ -178,6 +178,7 @@ impl PeerLinkRuntime {
         public_origin: String,
         state_root: PathBuf,
         advert: Arc<RwLock<Option<String>>>,
+        link_token: String,
     ) -> Result<Self, StoreError> {
         let (changed, changes) = mpsc::channel(1);
         // Subscribe before the first snapshot so a commit between registration
@@ -193,8 +194,11 @@ impl PeerLinkRuntime {
         let task_advert = Arc::clone(&advert);
         let task = tokio::spawn(run(
             store,
-            backend_port,
-            public_origin,
+            Backend {
+                port: backend_port,
+                public_origin,
+                link_token,
+            },
             state_root,
             task_advert,
             changes,
@@ -222,15 +226,27 @@ impl Drop for PeerLinkRuntime {
     }
 }
 
+/// What the link process needs to know about this backend.
+struct Backend {
+    port: u16,
+    public_origin: String,
+    /// Secret that proves to the backend that a request came from the link.
+    link_token: String,
+}
+
 async fn run(
     store: Arc<RuntimeStore>,
-    backend_port: u16,
-    public_origin: String,
+    backend: Backend,
     state_root: PathBuf,
     advert: Arc<RwLock<Option<String>>>,
     mut changes: mpsc::Receiver<()>,
     stopped: CancellationToken,
 ) {
+    let Backend {
+        port: backend_port,
+        public_origin,
+        link_token,
+    } = backend;
     let forwarded_host = forwarded_host(&public_origin);
     let socket = state_root.join("multi-server").join("peer-link.sock");
     let mut running: Option<RunningLink> = None;
@@ -315,6 +331,7 @@ async fn run(
                 &forwarded_host,
                 backend_port,
                 peers,
+                &link_token,
                 &stopped,
             )
             .await;
@@ -517,6 +534,7 @@ async fn start_link(
     forwarded_host: &str,
     backend_port: u16,
     peers: &[String],
+    link_token: &str,
     stopped: &CancellationToken,
 ) -> Option<RunningLink> {
     if forwarded_host.is_empty() {
@@ -549,6 +567,7 @@ async fn start_link(
         let config_socket = socket.to_path_buf();
         let config_peers = peers.to_vec();
         let config_forwarded_host = forwarded_host.to_owned();
+        let config_link_token = link_token.to_owned();
         let config = studio_runtime_process::blocking_pool::spawn_blocking(
             "runtime-server/peer-link-config",
             move || {
@@ -559,6 +578,7 @@ async fn start_link(
                     backend_port,
                     &config_forwarded_host,
                     &config_socket,
+                    &config_link_token,
                 )
             },
         )
