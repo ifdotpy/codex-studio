@@ -1173,7 +1173,7 @@ mod tests {
              CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              CREATE TABLE sync_entities(collection TEXT NOT NULL,id TEXT NOT NULL,seq INTEGER NOT NULL,hash TEXT NOT NULL,payload TEXT,deleted INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(collection,id));
              CREATE TABLE sync_documents(seq INTEGER PRIMARY KEY AUTOINCREMENT,scope TEXT NOT NULL,id TEXT NOT NULL,payload TEXT NOT NULL,deleted INTEGER NOT NULL DEFAULT 0);
-             CREATE TABLE sync_versions(seq INTEGER PRIMARY KEY,scope TEXT NOT NULL,hash TEXT NOT NULL,deleted INTEGER NOT NULL,updated REAL NOT NULL);")
+             CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);")
         ).expect("coordination schema creates");
         connection
             .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
@@ -1202,7 +1202,7 @@ mod tests {
              CREATE TABLE IF NOT EXISTS runtime_event_meta(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS sync_entities(collection TEXT NOT NULL,id TEXT NOT NULL,seq INTEGER NOT NULL,hash TEXT NOT NULL,payload TEXT,deleted INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(collection,id));
              CREATE TABLE IF NOT EXISTS sync_documents(seq INTEGER PRIMARY KEY,scope TEXT NOT NULL,id TEXT NOT NULL,payload TEXT NOT NULL,deleted INTEGER NOT NULL DEFAULT 0);
-             CREATE TABLE IF NOT EXISTS sync_versions(seq INTEGER PRIMARY KEY,scope TEXT NOT NULL,hash TEXT NOT NULL,deleted INTEGER NOT NULL,updated REAL NOT NULL);")
+             CREATE TABLE IF NOT EXISTS sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT OR IGNORE INTO sync_generation VALUES(1,0);")
         ).expect("durable test schema creates");
         connection
             .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
@@ -2132,7 +2132,6 @@ mod tests {
         assert_eq!(count(&connection, "graph_edges"), 0);
         assert_eq!(count(&connection, "sync_entities"), 0);
         assert_eq!(count(&connection, "sync_documents"), 0);
-        assert_eq!(count(&connection, "sync_versions"), 0);
     }
 
     #[test]

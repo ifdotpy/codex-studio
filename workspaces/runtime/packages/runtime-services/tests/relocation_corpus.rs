@@ -184,7 +184,6 @@ fn snapshot(store: &RuntimeStore) -> Value {
         "runtime_agents",
         "runtime_tool_requests",
         "sync_entities",
-        "sync_versions",
     ] {
         let mut statement = db
             .prepare(&format!("SELECT * FROM {table} ORDER BY rowid"))

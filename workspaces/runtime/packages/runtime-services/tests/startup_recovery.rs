@@ -51,30 +51,25 @@ fn complete_rows(store: &RuntimeStore, id: &str) -> Value {
         .map(RequestRecord::into_value)
         .collect::<Vec<_>>();
     let events = fixtures::events(store);
-    let projections = [
-        "sync_entities",
-        "sync_documents",
-        "sync_versions",
-        "sync_entity_meta",
-    ]
-    .into_iter()
-    .map(|table| {
-        let mut statement = connection
-            .prepare(&format!("SELECT * FROM {table} ORDER BY rowid"))
-            .expect("projection query");
-        let columns = statement.column_count();
-        let rows = statement
-            .query_map([], |row| {
-                Ok((0..columns)
-                    .map(|i| format!("{:?}", row.get_ref(i).expect("column")))
-                    .collect::<Vec<_>>())
-            })
-            .expect("projection rows")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("projections");
-        json!({"table": table, "rows": rows})
-    })
-    .collect::<Vec<_>>();
+    let projections = ["sync_entities", "sync_documents", "sync_entity_meta"]
+        .into_iter()
+        .map(|table| {
+            let mut statement = connection
+                .prepare(&format!("SELECT * FROM {table} ORDER BY rowid"))
+                .expect("projection query");
+            let columns = statement.column_count();
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((0..columns)
+                        .map(|i| format!("{:?}", row.get_ref(i).expect("column")))
+                        .collect::<Vec<_>>())
+                })
+                .expect("projection rows")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("projections");
+            json!({"table": table, "rows": rows})
+        })
+        .collect::<Vec<_>>();
     json!({"monitor": monitor, "requests": requests, "events": events, "projections": projections})
 }
 

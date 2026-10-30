@@ -57,10 +57,6 @@ const BOOTSTRAP_TABLES: &[TableRequirement] = &[
         name: "sync_entity_meta",
         columns: &["key", "value"],
     },
-    TableRequirement {
-        name: "sync_versions",
-        columns: &["seq", "scope", "hash", "deleted", "updated"],
-    },
 ];
 const BOOTSTRAP_TRIGGERS: &[TriggerRequirement] = &[
     TriggerRequirement {
@@ -880,10 +876,10 @@ pub(crate) fn hash_payload(payload: &str) -> String {
 pub(crate) fn next_sequence(connection: &Connection) -> StoreResult<i64> {
     connection
         .query_row_cached(
-            "SELECT MAX(entity_seq,document_seq,version_seq)+1 FROM ( \
+            "SELECT MAX(entity_seq,document_seq,generation)+1 FROM ( \
              SELECT COALESCE(MAX(seq),0) AS entity_seq FROM sync_entities), \
              (SELECT COALESCE(MAX(seq),0) AS document_seq FROM sync_documents), \
-             (SELECT COALESCE(MAX(seq),0) AS version_seq FROM sync_versions)",
+             (SELECT COALESCE(MAX(value),0) AS generation FROM sync_generation WHERE id=1)",
             [],
             |row| row.get(0),
         )
@@ -901,6 +897,30 @@ inventory::submit! {
 mod tests {
     use super::SyncDocumentsRepository;
     use rusqlite::Connection;
+
+    #[test]
+    fn migrated_legacy_versions_keep_the_sequence_floor() {
+        let mut db = crate::fresh_state::test_canvas();
+        db.execute_batch("CREATE TABLE sync_versions(seq INTEGER PRIMARY KEY,scope TEXT NOT NULL UNIQUE,hash TEXT NOT NULL,deleted INTEGER NOT NULL,updated REAL NOT NULL)").unwrap();
+        db.execute("INSERT INTO sync_versions(seq,scope,hash,deleted,updated) VALUES(900,'legacy','h',0,0)", []).unwrap();
+        db.execute_batch("DROP TRIGGER IF EXISTS summary_task_delete; CREATE TRIGGER summary_task_delete AFTER DELETE ON runtime_tasks BEGIN SELECT MAX(seq) FROM sync_versions; END;").unwrap();
+        let tx = db.transaction().unwrap();
+        crate::bootstrap::prepare_sync_schema(&tx).unwrap();
+        crate::feature_schema::prepare(&tx).unwrap();
+        assert!(!crate::schema::table_exists(&tx, "sync_versions").unwrap());
+        assert!(super::next_sequence(&tx).unwrap() > 900);
+        let sql: String = tx
+            .query_row(
+                "SELECT sql FROM sqlite_schema WHERE type='trigger' AND name='summary_task_delete'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!sql.contains("sync_versions"));
+        crate::bootstrap::prepare_sync_schema(&tx).unwrap();
+        assert!(super::next_sequence(&tx).unwrap() > 900);
+        tx.rollback().unwrap();
+    }
 
     fn page_scan_fixture() -> Connection {
         let db = Connection::open_in_memory().expect("memory SQLite");
@@ -1405,7 +1425,7 @@ mod tests {
         connection.execute_batch(
             "CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,PRIMARY KEY(collection,id));
              CREATE TABLE sync_documents(seq INTEGER,scope TEXT,id TEXT,payload TEXT,deleted INTEGER);
-             CREATE TABLE sync_versions(seq INTEGER,scope TEXT,hash TEXT,deleted INTEGER,updated REAL);",
+             CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);",
         ).expect("sync fixture creates");
         let transaction = connection.transaction().expect("transaction begins");
         let value = serde_json::json!({"b":2,"a":1});
@@ -1495,7 +1515,7 @@ mod tests {
             .execute_batch(
                 "CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,PRIMARY KEY(collection,id));
                  CREATE TABLE sync_documents(seq INTEGER,scope TEXT,id TEXT,payload TEXT,deleted INTEGER);
-                 CREATE TABLE sync_versions(seq INTEGER,scope TEXT,hash TEXT,deleted INTEGER,updated REAL);
+                 CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);
                  INSERT INTO sync_documents VALUES(9,'drafts','d','{}',0);",
             )
             .expect("sync fixture creates");

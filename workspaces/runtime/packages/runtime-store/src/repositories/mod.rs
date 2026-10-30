@@ -272,9 +272,6 @@ mod tests {
                  hash TEXT NOT NULL, payload TEXT, deleted INTEGER NOT NULL DEFAULT 0,
                  PRIMARY KEY(collection,id));
              CREATE TABLE sync_entity_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-             CREATE TABLE sync_versions (
-                 seq INTEGER PRIMARY KEY, scope TEXT NOT NULL UNIQUE,
-                 hash TEXT NOT NULL, deleted INTEGER NOT NULL, updated REAL NOT NULL);
              INSERT INTO sync_identity(id) VALUES ('workspace-a');
              INSERT INTO sync_entity_meta(key,value) VALUES ('entity_tombstone_floor','0');",
         )
