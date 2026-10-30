@@ -445,6 +445,7 @@ pub fn put(
     agent: &Value,
     insert_only: bool,
 ) -> StoreResult<bool> {
+    let agent_value = agent;
     let agent = object(id, agent)?;
     let record = stored_record(agent)?;
     let sql = if insert_only {
@@ -456,6 +457,7 @@ pub fn put(
     let written = connection.execute_cached(sql, params![id, record])? == 1;
     if written || !insert_only {
         put_fields(connection, id, agent)?;
+        crate::domain::project(connection, id, agent_value)?;
     }
     Ok(written)
 }
@@ -463,6 +465,7 @@ pub fn put(
 /// Replace agent `id`, a checked agent object, when its row exists; returns
 /// whether it exists. An unchanged record is not rewritten.
 pub fn update(connection: &Connection, id: &str, agent: &Value) -> StoreResult<bool> {
+    let agent_value = agent;
     let agent = object(id, agent)?;
     let record = stored_record(agent)?;
     let written = connection.execute_cached(
@@ -476,6 +479,7 @@ pub fn update(connection: &Connection, id: &str, agent: &Value) -> StoreResult<b
             .is_some();
     if exists {
         put_fields(connection, id, agent)?;
+        crate::domain::project(connection, id, agent_value)?;
     }
     Ok(exists)
 }

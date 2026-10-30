@@ -2,6 +2,7 @@ pub mod account_registry;
 pub mod agent_columns;
 pub mod agent_volatile;
 pub mod blocking_pool;
+pub mod domain;
 mod bootstrap;
 mod cached_sql;
 pub mod entity_publication;
