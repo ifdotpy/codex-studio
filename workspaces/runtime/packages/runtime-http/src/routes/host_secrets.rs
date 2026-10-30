@@ -35,7 +35,6 @@ struct DeskLogin {
 }
 #[derive(Deserialize)]
 struct DeskDeployment {
-    #[serde(default, deserialize_with = "desk_text")]
     site: Option<String>,
 }
 #[derive(Default, Deserialize)]
@@ -902,11 +901,10 @@ async fn run_setup_job(job: SetupJob) {
                 .stdout
                 .lines()
                 .rfind(|line| !line.trim().is_empty())
-                .and_then(|line| serde_json::from_str::<Value>(line.trim()).ok())
-                .and_then(|value| {
-                    studio_runtime_schema::json_object::JsonObject::<DeskDeployment>::deserialize(
-                        &value,
-                    )
+                .and_then(|line| {
+                    serde_json::from_str::<
+                        studio_runtime_schema::json_object::JsonObject<DeskDeployment>,
+                    >(line.trim())
                     .ok()
                 })
                 .and_then(|view| view.0.site);
