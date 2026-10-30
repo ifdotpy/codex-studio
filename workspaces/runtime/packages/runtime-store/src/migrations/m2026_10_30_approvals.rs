@@ -86,6 +86,8 @@ struct Legacy {
     rpc_id: Option<LegacyRpcId>,
     preview: Option<Map<String, Value>>,
     decision: Option<String>,
+    /// Monitor approvals write the decision twice. It must equal `decision`.
+    answer_decision: Option<String>,
     answered_by: Option<String>,
     answered_at: Option<f64>,
     /// A hash of the answer. Replay is now decided by comparing answers.
@@ -254,6 +256,9 @@ fn convert(id: &str, legacy: Legacy) -> StoreResult<Approval> {
     let request = request(id, &legacy, &mut params)?;
     let created = legacy.created_at.unwrap_or(0.0);
     let when = |keys: &[Option<f64>]| Timestamp(keys.iter().find_map(|k| *k).unwrap_or(created));
+    if legacy.answer_decision.is_some() && legacy.answer_decision != legacy.decision {
+        return Err(bad(id, "answerDecision differs from decision"));
+    }
     let given = answer(id, &legacy)?;
     if let Some(answer) = &given {
         request
@@ -288,12 +293,10 @@ fn convert(id: &str, legacy: Legacy) -> StoreResult<Approval> {
             reason: CloseReason::ProviderResolved,
             at: when(&[legacy.resolved_at, legacy.answered_at]),
         },
-        ("answering" | "answered" | "deleted" | "uncertain" | "blocked", ..) => {
-            ApprovalState::Closed {
-                reason: CloseReason::Legacy,
-                at: when(&[legacy.resolved_at, legacy.answered_at, legacy.deleted_at]),
-            }
-        }
+        ("answering" | "answered" | "deleted" | "uncertain", ..) => ApprovalState::Closed {
+            reason: CloseReason::Legacy,
+            at: when(&[legacy.resolved_at, legacy.answered_at, legacy.deleted_at]),
+        },
         (other, ..) => return Err(bad(id, &format!("unknown status {other}"))),
     };
     // Live data: only agent-level kinds (questions, monitor starts, browser

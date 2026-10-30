@@ -86,6 +86,7 @@ pub fn create_schema(tx: &Transaction<'_>) -> rusqlite::Result<()> {
             fire_at REAL, hidden_at REAL, hidden_by TEXT);
          CREATE INDEX IF NOT EXISTS approvals_turn ON approvals(turn,state);
          CREATE INDEX IF NOT EXISTS approvals_agent_open ON approvals(agent) WHERE state IN ('pending','answering');
+         CREATE INDEX IF NOT EXISTS approvals_account_open ON approvals(json_extract(delivery,'$.account')) WHERE state IN ('pending','answering');
          CREATE INDEX IF NOT EXISTS approvals_fire_at ON approvals(fire_at) WHERE fire_at IS NOT NULL;",
     );
     for (name, event) in [
@@ -225,6 +226,53 @@ fn select(
     ))?;
     let rows = statement.query_map(args, |row| Ok(decode(row)))?;
     rows.map(|row| row?).collect()
+}
+
+/// Insert or replace a whole row. Writers change a row read with `get`.
+pub fn put(tx: &Transaction<'_>, row: &Approval) -> ApprovalResult<()> {
+    tx.execute("DELETE FROM approvals WHERE id=?1", [row.id.as_str()])?;
+    insert(tx, row)
+}
+
+/// Every approval, hidden ones included, oldest first.
+pub fn all(tx: &Transaction<'_>) -> ApprovalResult<Vec<Approval>> {
+    select(tx, "1", [])
+}
+
+/// Every approval of an agent, hidden ones included.
+pub fn for_agent(tx: &Transaction<'_>, agent: &AgentId) -> ApprovalResult<Vec<Approval>> {
+    select(tx, "agent=?1", [agent.as_str()])
+}
+
+/// Pending and answering approvals of a provider account.
+pub fn open_for_account(tx: &Transaction<'_>, account: &str) -> ApprovalResult<Vec<Approval>> {
+    select(
+        tx,
+        "json_extract(delivery,'$.account')=?1 AND state IN ('pending','answering')",
+        [account],
+    )
+}
+
+/// Pending and answering approvals of an agent.
+pub fn open_for_agent(tx: &Transaction<'_>, agent: &AgentId) -> ApprovalResult<Vec<Approval>> {
+    select(
+        tx,
+        "agent=?1 AND state IN ('pending','answering')",
+        [agent.as_str()],
+    )
+}
+
+/// Approvals of one kind and state, for example pending monitor starts.
+pub fn of_kind(
+    tx: &Transaction<'_>,
+    kind: RequestKind,
+    state: ApprovalStateKind,
+) -> ApprovalResult<Vec<Approval>> {
+    select(
+        tx,
+        "kind=?1 AND state=?2",
+        [kind.as_str(), ApprovalStateKind::VARIANTS[state as usize]],
+    )
 }
 
 /// Visible approvals of a turn. Hidden rows stay in the table.
@@ -949,6 +997,49 @@ mod tests {
         assert!(tx
             .execute("UPDATE approvals SET kind='exec', request='{\"kind\":\"exec\",\"command\":\"\",\"cwd\":\"\",\"reason\":null}' WHERE id='m'", [])
             .is_err());
+    }
+
+    #[test]
+    fn typed_reads_find_open_rows_by_agent_account_and_kind() {
+        let mut db = db();
+        let tx = db.transaction().unwrap();
+        let mut a = new("a", "ag", "t", exec(), None);
+        a.delivery = Some(Delivery {
+            rpc_id: studio_runtime_schema::approvals::RpcId::Number { value: 1 },
+            account: "acc".into(),
+            connection: "c".into(),
+            supervisor: None,
+        });
+        create(&tx, a, Timestamp(1.0)).unwrap();
+        create(&tx, new("b", "other", "t", exec(), None), Timestamp(2.0)).unwrap();
+        answer(
+            &tx,
+            &ApprovalId("b".into()),
+            accept(),
+            CommandId("c".into()),
+        )
+        .unwrap();
+        assert_eq!(all(&tx).unwrap().len(), 2);
+        assert_eq!(for_agent(&tx, &AgentId("ag".into())).unwrap().len(), 1);
+        assert_eq!(open_for_account(&tx, "acc").unwrap().len(), 1);
+        assert_eq!(
+            open_for_agent(&tx, &AgentId("other".into())).unwrap().len(),
+            1
+        );
+        assert_eq!(
+            of_kind(&tx, RequestKind::Exec, ApprovalStateKind::Pending)
+                .unwrap()
+                .len(),
+            1
+        );
+        let mut row = get(&tx, &ApprovalId("a".into())).unwrap().unwrap();
+        row.deferral = Some(Deferral {
+            active: true,
+            at: Timestamp(3.0),
+            by: Principal::Owner,
+        });
+        put(&tx, &row).unwrap();
+        assert_eq!(get(&tx, &ApprovalId("a".into())).unwrap().unwrap(), row);
     }
 
     #[test]
