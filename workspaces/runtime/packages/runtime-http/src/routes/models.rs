@@ -549,6 +549,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reversed_registration_reconciliation_keeps_both_catalogs() {
+        use studio_runtime_services::model_catalog::CatalogRead;
+        let root = tempfile::tempdir().expect("isolated state");
+        let registry = root.path().join("registry.json");
+        let registry_data = json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{},"logins":{}}).to_string();
+        tokio::fs::write(&registry, registry_data)
+            .await
+            .expect("registry");
+        let driver = std::sync::Arc::new(
+            studio_runtime_services::account_driver::AccountDriver::open(registry).expect("driver"),
+        );
+        let mut registered = Vec::new();
+        for name in ["first", "second"] {
+            let home = root.path().join(name);
+            tokio::fs::create_dir(&home).await.expect("profile");
+            tokio::fs::write(home.join("auth.json"), r#"{"OPENAI_API_KEY":"fixture"}"#)
+                .await
+                .expect("auth");
+            registered.push(
+                driver
+                    .register_with_key(home.to_str().expect("home"))
+                    .expect("register"),
+            );
+        }
+        let port = std::sync::Arc::new(CatalogSession {
+            pages: std::sync::Mutex::new(vec![
+                json!({"data":[{"model":"first-model"}]}),
+                json!({"data":[{"model":"second-model"}]}),
+            ]),
+            requests: std::sync::Arc::new(AtomicUsize::new(0)),
+        });
+        let mut state = crate::router::HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            None,
+            None,
+        );
+        state.account_session = Some(port);
+        for (_, key) in registered.iter().rev() {
+            super::super::account_login::start_registered_catalog(
+                &state,
+                driver.clone(),
+                key.clone(),
+            )
+            .await;
+        }
+        for (_, key) in &registered {
+            let (home, provider) = state
+                .model_catalog
+                .account_profile(key)
+                .expect("both registered accounts retained");
+            assert!(
+                matches!(
+                    state
+                        .model_catalog
+                        .read_until_ready(key, &home, provider, false)
+                        .await,
+                    CatalogRead::Ready(_)
+                ),
+                "both account catalogs remain available"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn registration_publishes_model_entities_to_subscribers() {
         use axum::{body::Body, extract::ConnectInfo, http::Request};
         use futures_util::StreamExt;
