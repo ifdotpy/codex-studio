@@ -270,4 +270,3 @@ fn p06_recovery_message_retains_buffered_text_questions_and_atomicity() {
         0
     );
 }
-

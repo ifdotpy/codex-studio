@@ -25,4 +25,3 @@ export const defaultSubscriptions = subscriptions;
 export { createSubscriptions } from "./module";
 export { createDataObserver } from "./data";
 export type * from "../resourceEvents";
-

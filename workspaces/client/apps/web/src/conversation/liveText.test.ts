@@ -47,4 +47,3 @@ describe("live text", () => {
     expect(live.has("i19")).toBe(true);
   });
 });
-

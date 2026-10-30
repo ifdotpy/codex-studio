@@ -188,4 +188,3 @@ it("retains the explicit limits refresh action", () => {
   error.props.refreshLimits();
   expect(reloadLimits).toHaveBeenCalledOnce();
 });
-

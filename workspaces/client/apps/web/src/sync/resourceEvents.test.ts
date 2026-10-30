@@ -2870,4 +2870,3 @@ describe("shared resource event transport", () => {
     expect(source.restart).toHaveBeenCalledOnce();
   });
 });
-

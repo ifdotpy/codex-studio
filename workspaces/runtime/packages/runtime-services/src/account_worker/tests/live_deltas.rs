@@ -94,4 +94,3 @@ async fn a_text_delta_is_live_before_the_stream_cadence_elapses() {
     tokio::time::resume();
     worker.shutdown().await.unwrap();
 }
-

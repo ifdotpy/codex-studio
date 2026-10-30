@@ -363,4 +363,3 @@ it("keeps queued feedback through a real in-flight send and clears it only after
   expect(feedback(entries()).owns("Failed to fetch")).toBe(false);
   expect(renderActivity(completed.pending)).toContain("Thinking");
 });
-

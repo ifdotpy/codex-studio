@@ -54,4 +54,3 @@ export function useLiveText(agentId: string | undefined) {
   }, [agentId, watchLiveDeltas]);
   return live;
 }
-

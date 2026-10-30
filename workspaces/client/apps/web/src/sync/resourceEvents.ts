@@ -2700,4 +2700,3 @@ export const {
   watchTokenRateEvents,
   watchLiveDeltas,
 } = defaultResourceEvents;
-
