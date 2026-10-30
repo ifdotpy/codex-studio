@@ -3128,10 +3128,6 @@
       "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:3"
     },
     {
-      "file": "workspaces/runtime/packages/runtime-services/src/studio_errors.rs",
-      "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:4"
-    },
-    {
       "file": "workspaces/runtime/packages/runtime-services/src/sync_views.rs",
       "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:0"
     },

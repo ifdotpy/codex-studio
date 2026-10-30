@@ -399,6 +399,17 @@ test("profile contract parity runs in the short tier", () => {
   ]);
 });
 
+test("Rust formatting is checked by the fast and comprehensive gates", () => {
+  for (const name of ["test-fast", "test-comprehensive"]) {
+    const step = gateSteps(process.cwd(), name).find(
+      (item) => item.id === "rust-fmt",
+    );
+    assert.deepEqual(step?.commands, [
+      ["cargo", ["fmt", "--all", "--", "--check"]],
+    ]);
+  }
+});
+
 test("compiler policy witnesses run after dependency preparation outside the JS lane", () => {
   for (const name of ["test-fast", "test-comprehensive", "test-fast-rest"]) {
     const steps = gateSteps(process.cwd(), name);

@@ -272,8 +272,14 @@ mod tests {
                     generation: 7,
                     cursor,
                 },
-                observed_at: 10.0 + cursor as f64,
-                provider_at: 10.0 + cursor as f64,
+                observed_at: crate::notification_dispatch::ObservationTime::new(
+                    10.0 + cursor as f64,
+                )
+                .unwrap(),
+                provider_at: crate::notification_dispatch::ObservationTime::new(
+                    10.0 + cursor as f64,
+                )
+                .unwrap(),
             },
             budget_capture_value: None,
             usage_conflict: None,
@@ -483,8 +489,8 @@ mod tests {
                 &agent(),
                 &observation.method,
                 &observation.params,
-                observation.observed_at,
-                observation.observed_at,
+                observation.observed_at.get(),
+                observation.observed_at.get(),
                 crate::analytics_capture::CaptureSource::Live,
                 studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
             )

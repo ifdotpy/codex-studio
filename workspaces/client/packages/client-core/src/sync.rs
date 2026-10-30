@@ -788,6 +788,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pull_checks_workspace_before_decoding_malformed_documents() {
+        let workspace = "a".repeat(32);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let backend = Backend::new(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
+        let expected = workspace.clone();
+        let server = tokio::spawn(async move {
+            for index in 0..3 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                crate::backend::tests::read_http(&mut stream).await;
+                let body = if index < 2 {
+                    json!({"workspaceId":expected,"unknown":{"preserve":true}})
+                } else {
+                    json!({"workspaceId":"b".repeat(32),"documents":false})
+                }
+                .to_string();
+                crate::backend::tests::reply(&mut stream, &body).await;
+            }
+        });
+        let (sender, mut receive) = mpsc::channel::<crate::delivery::StoreCommand>(8);
+        let worker = tokio::spawn(async move {
+            let mut store = crate::store::Store::open(std::path::Path::new(":memory:")).unwrap();
+            while let Some(command) = receive.recv().await {
+                command.execute(&mut store);
+            }
+        });
+        let failure = pull(&backend, &sender, &workspace, "transcript:a")
+            .await
+            .unwrap_err();
+        assert_eq!(failure.code, "workspace_changed");
+        assert_eq!(
+            failure.message,
+            "The server workspace changed during synchronization."
+        );
+        drop(sender);
+        worker.await.unwrap();
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn transcript_pull_merges_order_and_removals_and_keeps_old_value_on_error() {
         let workspace = "b".repeat(32);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
