@@ -74,7 +74,7 @@ mod tests {
     fn migration_keeps_legacy_queued_output_and_drops_unused_monitor_field() {
         let mut db = Connection::open_in_memory().unwrap();
         db.execute_batch("CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL);").unwrap();
-        let raw = r#"{"id":"m","agent":"a","epoch":1,"status":"running","requestId":"request","activityAt":1,"activityGeneration":0,"bytes":0,"command":"echo x","created":1,"cwd":"/tmp","interactive":false,"livenessCommand":"","log":"/tmp/log","stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":3600000,"wakeOn":"exit","resultRecoveredAt":9,"stallProbeStarted":2,"streamQueue":[{"cursor":"c","offset":0,"byteLength":1,"deltaBase64":"YQ==","stream":"stdout","operation":{"agent":"a","epoch":1,"accountKey":"default","connectionId":"conn"}}]}"#;
+        let raw = r#"{"id":"m","agent":"a","epoch":1,"status":"running","requestId":"request","activityAt":1,"activityGeneration":0,"bytes":0,"command":"echo x","created":1,"cwd":"/fixture","interactive":false,"livenessCommand":"","log":"/fixture/log","stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":3600000,"wakeOn":"exit","resultRecoveredAt":9,"stallProbeStarted":2,"streamQueue":[{"cursor":"c","offset":0,"byteLength":1,"deltaBase64":"YQ==","stream":"stdout","operation":{"agent":"a","epoch":1,"accountKey":"default","connectionId":"conn"}}]}"#;
         db.execute("INSERT INTO runtime_monitors VALUES('m',?1)", [raw]).unwrap();
         let tx = db.transaction().unwrap();
         super::apply(&tx).unwrap();

@@ -668,15 +668,8 @@ async fn legacy_start_absence_matches_python_writes_and_visible_wait() {
                 .remove("startRecoveryCheck");
         }
         let mut expected = case["after"].clone();
-        for field in studio_runtime_store::agent_volatile::AGENT_VOLATILE_FIELDS {
-            expected.as_object_mut().expect("record").entry(field).or_insert(serde_json::Value::Null);
-        }
-        if expected
-            .get("turnId")
-            .is_some_and(serde_json::Value::is_null)
-        {
-            expected.as_object_mut().expect("record").remove("turnId");
-        }
+        crate::normalize_agent_nulls(&mut expected);
+        crate::normalize_agent_nulls(&mut after);
         assert_eq!(after, expected, "{}", case["name"]);
         assert_eq!(
             json!(*stopped.lock().expect("stopped witness")),

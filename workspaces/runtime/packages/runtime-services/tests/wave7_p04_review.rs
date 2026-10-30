@@ -282,7 +282,10 @@ async fn late_written_settles_card_without_reviving_completed_failed_or_replaced
         delivery(&store, &reply.identity, DeliveryOutcome::Written)
             .await
             .unwrap();
-        assert_eq!(actor(&store, &context), value, "{status}");
+        let mut actual = actor(&store, &context);
+        crate::normalize_agent_nulls(&mut actual);
+        crate::normalize_agent_nulls(&mut value);
+        assert_eq!(actual, value, "{status}");
         assert_eq!(stored(&store, &id)["status"], "answered");
     }
 }
