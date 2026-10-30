@@ -236,7 +236,7 @@ pub async fn dispatch(request: Request, backend: Option<&crate::backend::Backend
     let result = async {
         if matches!(
             request.method.as_str(),
-            "desktop.saveDeclare" | "desktop.saveChunk" | "desktop.saveCancel"
+            "desktop.saveChunk" | "desktop.saveCancel"
         ) {
             return crate::file_save::command(&request.method, &request.params["value"]);
         }

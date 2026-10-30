@@ -1,7 +1,5 @@
 //! A native gesture starts a bounded transfer. Only Save As chooses a path.
-//! A transfer can be reserved at the gesture and declared once the UI has the data.
 use base64::Engine;
-use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
@@ -14,17 +12,10 @@ pub const LIMIT: usize = 64 * 1024 * 1024;
 pub const CHUNK: usize = 256 * 1024;
 const LIFETIME: Duration = Duration::from_secs(120);
 struct Transfer {
-    state: TransferState,
+    name: String,
+    size: usize,
+    bytes: Vec<u8>,
     expires: Instant,
-}
-
-enum TransferState {
-    Reserved,
-    Declared {
-        name: String,
-        size: usize,
-        bytes: Vec<u8>,
-    },
 }
 
 struct Declaration {
@@ -37,100 +28,9 @@ struct Chunk {
     bytes: Vec<u8>,
 }
 
-// A missing declaration reserves a transfer; a present malformed field does not.
-#[derive(Clone, Default, Deserialize)]
-#[serde(untagged)]
-enum Field<T> {
-    #[default]
-    #[serde(skip)]
-    Missing,
-    Valid(T),
-    Invalid(serde::de::IgnoredAny),
-}
-impl<T> Field<T> {
-    fn valid(self) -> Option<T> {
-        match self {
-            Self::Valid(value) => Some(value),
-            Self::Missing | Self::Invalid(_) => None,
-        }
-    }
-}
-#[derive(Default, Deserialize)]
-#[serde(default)]
-struct SaveInput<'a> {
-    #[serde(borrow)]
-    transfer: Field<&'a str>,
-    #[serde(borrow)]
-    name: Field<&'a str>,
-    size: Field<u64>,
-    offset: Field<u64>,
-    #[serde(borrow)]
-    base64: Field<&'a str>,
-}
-impl<'a> SaveInput<'a> {
-    fn parse(value: &'a Value) -> Self {
-        if value.is_object() {
-            Self::deserialize(value).unwrap_or_default()
-        } else {
-            Self::default()
-        }
-    }
-    fn transfer_id(&self, error: &str) -> Result<String, String> {
-        self.transfer
-            .clone()
-            .valid()
-            .map(str::to_owned)
-            .ok_or_else(|| error.into())
-    }
-    fn declaration(&self) -> Result<Declaration, String> {
-        let size = self
-            .size
-            .clone()
-            .valid()
-            .filter(|n| *n <= LIMIT as u64)
-            .and_then(|n| usize::try_from(n).ok())
-            .ok_or("Save accepts at most 64 MiB of file data.")?;
-        Ok(Declaration {
-            name: name(self.name.clone().valid())?,
-            size,
-        })
-    }
-    fn begin_declaration(&self) -> Result<Option<Declaration>, String> {
-        if matches!(self.name, Field::Missing) && matches!(self.size, Field::Missing) {
-            Ok(None)
-        } else {
-            self.declaration().map(Some)
-        }
-    }
-    fn chunk(&self) -> Result<Chunk, String> {
-        let offset = self
-            .offset
-            .clone()
-            .valid()
-            .filter(|n| *n <= LIMIT as u64)
-            .and_then(|n| usize::try_from(n).ok())
-            .ok_or("Invalid save offset.")?;
-        let encoded = self
-            .base64
-            .clone()
-            .valid()
-            .filter(|s| s.len() <= CHUNK.div_ceil(3) * 4)
-            .ok_or("The save chunk is too large.")?;
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(encoded)
-            .map_err(|_| "Invalid save bytes.")?;
-        Ok(Chunk { offset, bytes })
-    }
-}
-
-// Keep validation results until execution so missing or expired transfers and
-// reserved state retain their existing error precedence over payload errors.
+// Delay validation results until the transfer lookup, preserving error precedence.
 enum Command {
-    Begin(Result<Option<Declaration>, String>),
-    Declare {
-        id: Result<String, String>,
-        declaration: Result<Declaration, String>,
-    },
+    Begin(Result<Declaration, String>),
     Chunk {
         id: Result<String, String>,
         chunk: Result<Chunk, String>,
@@ -138,19 +38,50 @@ enum Command {
     Cancel(Result<String, String>),
 }
 
+fn transfer_id(value: &Value, error: &str) -> Result<String, String> {
+    value
+        .get("transfer")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| error.into())
+}
+fn declaration(value: &Value) -> Result<Declaration, String> {
+    let size = value
+        .get("size")
+        .and_then(Value::as_u64)
+        .filter(|n| *n <= LIMIT as u64)
+        .and_then(|n| usize::try_from(n).ok())
+        .ok_or("Save accepts at most 64 MiB of file data.")?;
+    Ok(Declaration {
+        name: name(value.get("name").and_then(Value::as_str))?,
+        size,
+    })
+}
+fn chunk(value: &Value) -> Result<Chunk, String> {
+    let offset = value
+        .get("offset")
+        .and_then(Value::as_u64)
+        .filter(|n| *n <= LIMIT as u64)
+        .and_then(|n| usize::try_from(n).ok())
+        .ok_or("Invalid save offset.")?;
+    let encoded = value
+        .get("base64")
+        .and_then(Value::as_str)
+        .filter(|s| s.len() <= CHUNK.div_ceil(3) * 4)
+        .ok_or("The save chunk is too large.")?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|_| "Invalid save bytes.")?;
+    Ok(Chunk { offset, bytes })
+}
 impl Command {
     fn parse(method: &str, value: &Value) -> Result<Self, String> {
-        let input = SaveInput::parse(value);
-        let id = || input.transfer_id("A save transfer is required.");
+        let id = || transfer_id(value, "A save transfer is required.");
         match method {
-            "desktop.saveBegin" => Ok(Self::Begin(input.begin_declaration())),
-            "desktop.saveDeclare" => Ok(Self::Declare {
-                id: id(),
-                declaration: input.declaration(),
-            }),
+            "desktop.saveBegin" => Ok(Self::Begin(declaration(value))),
             "desktop.saveChunk" => Ok(Self::Chunk {
                 id: id(),
-                chunk: input.chunk(),
+                chunk: chunk(value),
             }),
             "desktop.saveCancel" => Ok(Self::Cancel(id())),
             _ => Err("Unknown file transfer command.".into()),
@@ -188,13 +119,12 @@ impl Transfers {
     fn execute(&mut self, command: Command, now: Instant) -> Result<Value, String> {
         match command {
             Command::Begin(declared) => self.begin_typed(declared, now),
-            Command::Declare { id, declaration } => self.declare_typed(id, declaration, now),
             Command::Chunk { id, chunk } => self.chunk_typed(id, chunk, now),
             Command::Cancel(id) => self.cancel_id(&id?),
         }
     }
     pub(crate) fn cancel(&mut self, value: &Value) -> Result<Value, String> {
-        self.cancel_id(&SaveInput::parse(value).transfer_id("A transfer is required.")?)
+        self.cancel_id(&transfer_id(value, "A transfer is required.")?)
     }
 
     fn cancel_id(&mut self, id: &str) -> Result<Value, String> {
@@ -206,46 +136,29 @@ impl Transfers {
         self.items.retain(|_, v| v.expires > now);
     }
     pub(crate) fn begin(&mut self, value: &Value, now: Instant) -> Result<Value, String> {
-        self.begin_typed(SaveInput::parse(value).begin_declaration(), now)
+        self.begin_typed(declaration(value), now)
     }
     fn begin_typed(
         &mut self,
-        declared: Result<Option<Declaration>, String>,
+        declared: Result<Declaration, String>,
         now: Instant,
     ) -> Result<Value, String> {
         self.expire(now);
-        let declared = declared?;
+        let Declaration { name, size } = declared?;
         if self.items.len() >= 2 {
             return Err("Finish the current file saves first.".into());
         }
         let id = uuid()?;
-        let state = match declared {
-            None => TransferState::Reserved,
-            Some(Declaration { name, size }) => TransferState::Declared {
-                name,
-                size,
-                bytes: Vec::new(),
-            },
-        };
         self.items.insert(
             id.clone(),
             Transfer {
-                state,
+                name,
+                size,
+                bytes: Vec::new(),
                 expires: now + LIFETIME,
             },
         );
         Ok(json!({"transfer":id,"chunkBytes":CHUNK}))
-    }
-    fn declare_typed(
-        &mut self,
-        id: Result<String, String>,
-        declaration: Result<Declaration, String>,
-        now: Instant,
-    ) -> Result<Value, String> {
-        self.expire(now);
-        let transfer = self.get(&id?)?;
-        transfer.declare(declaration?)?;
-        Ok(json!({"chunkBytes":CHUNK}))
     }
     fn get(&mut self, id: &str) -> Result<&mut Transfer, String> {
         self.items
@@ -253,10 +166,9 @@ impl Transfers {
             .ok_or("The save transfer expired or is no longer available.".into())
     }
     pub(crate) fn chunk(&mut self, value: &Value, now: Instant) -> Result<Value, String> {
-        let input = SaveInput::parse(value);
         self.chunk_typed(
-            input.transfer_id("A save transfer is required."),
-            input.chunk(),
+            transfer_id(value, "A save transfer is required."),
+            chunk(value),
             now,
         )
     }
@@ -268,9 +180,6 @@ impl Transfers {
     ) -> Result<Value, String> {
         self.expire(now);
         let transfer = self.get(&id?)?;
-        if matches!(transfer.state, TransferState::Reserved) {
-            return Err("The save transfer has no file yet.".into());
-        }
         Ok(json!({"received":transfer.chunk(chunk?)?}))
     }
     pub(crate) fn take(
@@ -278,24 +187,15 @@ impl Transfers {
         value: &Value,
         now: Instant,
     ) -> Result<(String, Vec<u8>), String> {
-        self.take_id(
-            SaveInput::parse(value).transfer_id("A save transfer is required."),
-            now,
-        )
+        self.take_id(transfer_id(value, "A save transfer is required.")?, now)
     }
-    fn take_id(
-        &mut self,
-        id: Result<String, String>,
-        now: Instant,
-    ) -> Result<(String, Vec<u8>), String> {
+    fn take_id(&mut self, id: String, now: Instant) -> Result<(String, Vec<u8>), String> {
         self.expire(now);
-        let id = id?;
         let transfer = self
             .items
             .get(&id)
             .ok_or("The save transfer expired or is no longer available.")?;
-        if !matches!(&transfer.state, TransferState::Declared { size, bytes, .. } if bytes.len() == *size)
-        {
+        if transfer.bytes.len() != transfer.size {
             return Err("The file transfer is incomplete.".into());
         }
         // The get above found this entry, and no map mutation occurred afterward.
@@ -303,52 +203,20 @@ impl Transfers {
             .items
             .remove(&id)
             .expect("validated save transfer exists");
-        match transfer.state {
-            TransferState::Declared { name, bytes, .. } => Ok((name, bytes)),
-            // The completeness check above proves the state is declared.
-            TransferState::Reserved => unreachable!("validated declared transfer"),
-        }
+        Ok((transfer.name, transfer.bytes))
     }
 }
 
 impl Transfer {
-    fn declare(&mut self, Declaration { name, size }: Declaration) -> Result<(), String> {
-        match &self.state {
-            TransferState::Reserved => {
-                self.state = TransferState::Declared {
-                    name,
-                    size,
-                    bytes: Vec::new(),
-                };
-            }
-            // A lost reply may repeat the same declaration, never a different file.
-            TransferState::Declared {
-                name: existing_name,
-                size: existing_size,
-                ..
-            } if *existing_size == size && *existing_name == name => {}
-            TransferState::Declared { .. } => {
-                return Err("The save transfer already has a different file.".into());
-            }
-        }
-        Ok(())
-    }
-
     fn chunk(&mut self, chunk: Chunk) -> Result<usize, String> {
-        let TransferState::Declared {
-            size,
-            bytes: received,
-            ..
-        } = &mut self.state
-        else {
-            return Err("The save transfer has no file yet.".into());
-        };
+        let size = self.size;
+        let received = &mut self.bytes;
         if chunk.bytes.is_empty()
             || chunk.bytes.len() > CHUNK
             || chunk
                 .offset
                 .checked_add(chunk.bytes.len())
-                .is_none_or(|end| end > *size)
+                .is_none_or(|end| end > size)
         {
             return Err("Invalid save chunk size.".into());
         }
@@ -415,12 +283,6 @@ pub fn write_atomic_if(path: &Path, bytes: &[u8], active: impl Fn() -> bool) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn transfer_id(value: &Value, error: &str) -> Result<String, String> {
-        SaveInput::parse(value).transfer_id(error)
-    }
-    fn declaration(value: &Value) -> Result<Declaration, String> {
-        SaveInput::parse(value).declaration()
-    }
     fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
         write_atomic_if(path, bytes, || true)
     }
@@ -463,68 +325,13 @@ mod tests {
         assert!(pool.begin(&json!({"name":"c","size":1}), now).is_err());
     }
     #[test]
-    fn reserved_transfer_accepts_one_declaration_before_bytes() {
-        let now = Instant::now();
-        let mut pool = Transfers::default();
-        let id = pool.begin(&json!({}), now).unwrap()["transfer"].clone();
-        let chunk = json!({"transfer":id,"offset":0,"base64":"eA=="});
-        assert!(pool.chunk(&chunk, now).is_err());
-        assert!(pool.take(&json!({"transfer":id}), now).is_err());
-        let declare = json!({"transfer":id,"name":"log.txt","size":1});
-        pool.declare_typed(
-            transfer_id(&declare, "A save transfer is required."),
-            declaration(&declare),
-            now,
-        )
-        .unwrap();
-        pool.declare_typed(
-            transfer_id(&declare, "A save transfer is required."),
-            declaration(&declare),
-            now,
-        )
-        .unwrap();
-        assert!(
-            pool.declare_typed(
-                Ok(id.as_str().unwrap().into()),
-                declaration(&json!({"name":"other.txt","size":1})),
-                now
-            )
-            .is_err()
-        );
-        assert!(
-            pool.declare_typed(
-                Ok(id.as_str().unwrap().into()),
-                declaration(&json!({"name":"log.txt","size":2})),
-                now
-            )
-            .is_err()
-        );
-        pool.chunk(&chunk, now).unwrap();
-        assert_eq!(
-            pool.take(&json!({"transfer":id}), now).unwrap(),
-            ("log.txt".into(), b"x".to_vec())
-        );
-        let late = pool.begin(&json!({}), now).unwrap()["transfer"].clone();
-        assert!(
-            pool.declare_typed(
-                Ok(late.as_str().unwrap().into()),
-                declaration(&json!({"name":"a","size":1})),
-                now + LIFETIME
-            )
-            .is_err()
-        );
-        assert!(pool.begin(&json!({"name":"x"}), now).is_err());
-    }
-    #[test]
-    fn command_boundary_reserves_declares_retries_and_cancels() {
+    fn command_boundary_retries_and_cancels() {
         let now = Instant::now();
         let mut pool = Transfers::default();
         let mut run =
             |method: &str, value: Value| pool.execute(Command::parse(method, &value).unwrap(), now);
-        let id = run("desktop.saveBegin", json!({})).unwrap()["transfer"].clone();
-        let declaration = json!({"transfer":id,"name":"../x","size":1});
-        run("desktop.saveDeclare", declaration.clone()).unwrap();
-        run("desktop.saveDeclare", declaration).unwrap();
+        let id =
+            run("desktop.saveBegin", json!({"name":"../x","size":1})).unwrap()["transfer"].clone();
         let chunk = json!({"transfer":id,"offset":0,"base64":"eA=="});
         assert_eq!(
             run("desktop.saveChunk", chunk.clone()).unwrap()["received"],
@@ -541,53 +348,24 @@ mod tests {
         );
     }
     #[test]
-    fn structured_input_matches_json_integer_and_presence_rules() {
-        for spelling in [
-            "0",
-            "1",
-            "-0",
-            "1.0",
-            "1e0",
-            "-1",
-            "18446744073709551615",
-            "18446744073709551616",
-        ] {
-            let number: Value = serde_json::from_str(spelling).unwrap();
-            let value = json!({"size":number});
-            let input = SaveInput::parse(&value);
-            assert_eq!(input.size.valid(), number.as_u64(), "{spelling}");
-        }
-        assert!(
-            SaveInput::parse(&json!({}))
-                .begin_declaration()
-                .unwrap()
-                .is_none()
-        );
+    fn malformed_or_missing_fields_fail_without_changing_transfers() {
         for value in [
+            json!({}),
             json!({"name":null}),
-            json!({"size":null}),
-            json!({"name":{},"size":0}),
+            json!({"name":"x","size":-1}),
+            json!({"name":"x","size":1.0}),
         ] {
-            assert!(SaveInput::parse(&value).begin_declaration().is_err());
+            assert!(declaration(&value).is_err());
         }
-        assert!(
-            SaveInput::parse(&json!(["x", 1]))
-                .begin_declaration()
-                .unwrap()
-                .is_none()
-        );
+        assert!(declaration(&json!({"name":"x","size":1,"offset":"ignored"})).is_ok());
     }
 
     #[tokio::test]
     async fn desktop_dispatch_uses_structured_save_commands() {
         use crate::protocol::Request;
-        let begin = command("desktop.saveBegin", &json!({})).unwrap();
+        let begin = command("desktop.saveBegin", &json!({"name":"../x","size":1})).unwrap();
         let id = begin["transfer"].clone();
         for (method, value) in [
-            (
-                "desktop.saveDeclare",
-                json!({"transfer":id,"name":"../x","size":1}),
-            ),
             (
                 "desktop.saveChunk",
                 json!({"transfer":id,"offset":0,"base64":"eA=="}),
@@ -612,27 +390,12 @@ mod tests {
     fn save_command_keeps_validation_order_and_cancel_semantics() {
         let now = Instant::now();
         let mut pool = Transfers::default();
-        let id = pool.begin(&json!({}), now).unwrap()["transfer"].clone();
         assert_eq!(
-            pool.chunk(&json!({"transfer":id,"offset":"bad"}), now)
+            pool.chunk(&json!({"transfer":"missing","offset":"bad"}), now)
                 .unwrap_err(),
-            "The save transfer has no file yet."
-        );
-        assert_eq!(
-            pool.declare_typed(
-                Ok("missing".into()),
-                declaration(&json!({"size":"bad"})),
-                now
-            )
-            .unwrap_err(),
             "The save transfer expired or is no longer available."
         );
-        pool.declare_typed(
-            Ok(id.as_str().unwrap().into()),
-            declaration(&json!({"name":"x","size":1})),
-            now,
-        )
-        .unwrap();
+        let id = pool.begin(&json!({"name":"x","size":1}), now).unwrap()["transfer"].clone();
         assert_eq!(
             pool.chunk(&json!({"transfer":id,"offset":LIMIT,"base64":"eA=="}), now)
                 .unwrap_err(),
