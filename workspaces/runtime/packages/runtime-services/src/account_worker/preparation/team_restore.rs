@@ -38,23 +38,22 @@ pub(super) fn snapshot(tx: &Transaction<'_>, actor: &Value) -> Result<Option<Val
     for (_, raw) in team {
         let record: studio_runtime_store::AgentRecord =
             serde_json::from_str(&raw).map_err(|_| refusal("invalid child record".into()))?;
-        let worker = record.value();
-        if worker["id"] == id
-            || (!lead && worker["parentId"] != id)
-            || studio_runtime_store::truthy(worker.get("deletedAt"))
+        if record.id.0 == id
+            || (!lead && record.extra.get("parentId").and_then(Value::as_str) != Some(id))
+            || studio_runtime_store::truthy(record.extra.get("deletedAt"))
         {
             continue;
         }
         has_children = true;
         if matches!(
-            worker["status"].as_str(),
-            Some("completed" | "failed" | "interrupted")
-        ) || (worker["status"] == "paused"
+            record.status,
+            studio_runtime_store::AgentStatus::Completed | studio_runtime_store::AgentStatus::Failed | studio_runtime_store::AgentStatus::Interrupted
+        ) || (record.status == studio_runtime_store::AgentStatus::Paused
             && record.auto_wake != Some(true))
         {
             continue;
         }
-        children.push(json!({"id":worker["id"],"name":worker["name"],"status":worker["status"]}));
+        children.push(json!({"id":record.id,"name":record.extra.get("name"),"status":record.status}));
     }
     children.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
     let tasks = rows(tx,

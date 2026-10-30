@@ -1502,7 +1502,7 @@ async fn prepare_native_snapshot(
     let record = agent_record.value();
     let intent = TurnIntent {
         agent_id: agent_id.into(),
-        epoch: decode(record["epoch"].clone(), "agent/epoch")?,
+        epoch: agent_record.epoch,
         attempt_id: attempt_id.into(),
         account_key: agent_record.account_key.clone(),
         provider: studio_runtime_providers::ProviderKind::of_record(&record)

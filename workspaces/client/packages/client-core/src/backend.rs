@@ -2,7 +2,7 @@
 use crate::protocol::{CommandError, Request, Response};
 use base64::Engine;
 use reqwest::{Client, Url};
-use serde::{Deserialize, de::DeserializeOwned};
+use serde::Deserialize;
 use serde_json::Value;
 use std::{sync::Arc, time::Duration};
 use tokio::sync::Mutex;
@@ -39,12 +39,6 @@ struct ApiRequest {
     download: bool,
     #[serde(default)]
     http_response: bool,
-}
-
-#[derive(Default, Deserialize)]
-struct FileReadError<'a> {
-    #[serde(borrow)]
-    error: Option<&'a str>,
 }
 
 fn error(code: &str, message: impl ToString) -> CommandError {
@@ -482,47 +476,6 @@ impl Backend {
         }))
     }
 
-    pub(crate) async fn read_bounded<T: DeserializeOwned>(
-        &self,
-        path: &str,
-        limit: usize,
-    ) -> Result<T, String> {
-        if !self.authorized.load(std::sync::atomic::Ordering::Acquire) {
-            return Err("The local backend identity has not been verified.".into());
-        }
-        let mut response = self
-            .client
-            .get(self.url(path).map_err(|e| e.message)?)
-            .timeout(Duration::from_secs(15))
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
-        let status = response.status();
-        if response.content_length().is_some_and(|n| n > limit as u64) {
-            return Err("The file response exceeds the preview limit.".into());
-        }
-        let mut bytes = Vec::new();
-        while let Some(chunk) = response.chunk().await.map_err(|e| e.to_string())? {
-            if bytes.len() + chunk.len() > limit {
-                return Err("The file response exceeds the preview limit.".into());
-            }
-            bytes.extend_from_slice(&chunk);
-        }
-        if !status.is_success() {
-            let value: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-            let error: FileReadError<'_> = if value.is_object() {
-                FileReadError::deserialize(&value).unwrap_or_default()
-            } else {
-                FileReadError::default()
-            };
-            return Err(error
-                .error
-                .unwrap_or("Cannot read the selected file.")
-                .into());
-        }
-        serde_json::from_slice(&bytes).map_err(|e| e.to_string())
-    }
-
     pub async fn dispatch(&self, request: Request) -> Response {
         let result = match serde_json::from_value::<ApiRequest>(request.params) {
             Ok(params) => self.request(params).await,
@@ -546,63 +499,6 @@ pub(crate) mod tests {
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpListener,
     };
-    #[tokio::test]
-    async fn bounded_error_response_preserves_json_admission_and_limits() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let origin = format!("http://{}", listener.local_addr().unwrap());
-        let unverified = Backend::desktop_client(&origin).unwrap();
-        assert_eq!(
-            unverified
-                .read_bounded::<Value>("/api/file", 100)
-                .await
-                .unwrap_err(),
-            "The local backend identity has not been verified."
-        );
-        let server = tokio::spawn(async move {
-            for body in [
-                r#"{"error":"old","error":"last"}"#,
-                r#"{"error":null}"#,
-                r#"{"error":12}"#,
-                r#""scalar""#,
-                "not-json",
-                r#"{"error":"exceeds"}"#,
-            ] {
-                let (mut stream, _) = listener.accept().await.unwrap();
-                read_http(&mut stream).await;
-                stream.write_all(format!("HTTP/1.1 400 Bad Request\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
-            }
-        });
-        let backend = Backend::new(&origin).unwrap();
-        for expected in [
-            "last",
-            "Cannot read the selected file.",
-            "Cannot read the selected file.",
-            "Cannot read the selected file.",
-        ] {
-            assert_eq!(
-                backend
-                    .read_bounded::<Value>("/api/file", 100)
-                    .await
-                    .unwrap_err(),
-                expected
-            );
-        }
-        assert_ne!(
-            backend
-                .read_bounded::<Value>("/api/file", 100)
-                .await
-                .unwrap_err(),
-            "Cannot read the selected file."
-        );
-        assert_eq!(
-            backend
-                .read_bounded::<Value>("/api/file", 2)
-                .await
-                .unwrap_err(),
-            "The file response exceeds the preview limit."
-        );
-        server.await.unwrap();
-    }
     #[tokio::test]
     async fn native_backend_negotiates_and_decodes_brotli_json() {
         use std::io::Write;

@@ -328,7 +328,6 @@ pub fn transition(s: &Snapshot, action: Action<'_>, now: f64) -> Result<Decision
                         id,
                         text: CONTINUATION.into(),
                     }],
-                    ..Decision::default()
                 });
             }
         }

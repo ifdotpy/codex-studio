@@ -249,6 +249,18 @@ mod tests {
         );
     }
     #[tokio::test]
+    async fn retired_preview_commands_are_rejected() {
+        let directory = tempfile::tempdir().unwrap();
+        let client = open(directory.path());
+        let response = client
+            .request(request("preview", "preview.open", json!({"target":null})))
+            .await
+            .unwrap();
+        assert!(
+            matches!(response.outcome, NativeOutcome::Failure(error) if error.code == "unknown_method")
+        );
+    }
+    #[tokio::test]
     async fn reader_prioritizes_event_and_rejects_unknown_response_identity() {
         let (socket, mut peer) = tokio::net::UnixStream::pair().unwrap();
         let (events, mut seen) = tokio::sync::mpsc::unbounded_channel();

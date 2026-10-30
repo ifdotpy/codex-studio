@@ -152,19 +152,9 @@ pub struct ContinuationSnapshot {
     #[serde(default, deserialize_with = "optional_nonnull")]
     pub ancestors: Option<BoundedVec<ContinuationAgent, 64>>,
     #[serde(default, deserialize_with = "optional_nonnull")]
-    pub assets: Option<BTreeMap<String, BTreeMap<String, Value>>>,
-    #[serde(default, deserialize_with = "optional_nonnull")]
     pub claims: Option<BoundedVec<BoundedString<1, 4096>, 4096>>,
-    #[serde(default, deserialize_with = "optional_nonnull")]
-    pub complaints: Option<BTreeMap<String, WakeComplaint>>,
-    #[serde(default, deserialize_with = "optional_nonnull")]
-    pub events: Option<BoundedVec<ContinuationEvent, 4096>>,
     pub limits: Option<JsonObject<ContinuationLimitsObservation>>,
-    #[serde(default, deserialize_with = "optional_nonnull")]
-    pub metadata: Option<BTreeMap<String, Option<ContinuationMetadata>>>,
     pub record: Option<ContinuationRecord>,
-    #[serde(default, deserialize_with = "optional_nonnull")]
-    pub work: Option<BTreeMap<String, WakeWork>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -227,14 +217,6 @@ pub struct CapacityContinuation {
         skip_serializing_if = "Option::is_none"
     )]
     pub waits: Option<SafeInteger>,
-    #[serde(flatten)]
-    pub extra: BTreeMap<String, Value>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ComplaintResponse {
-    pub author: BoundedString<1, 4096>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
@@ -311,24 +293,6 @@ pub struct ContinuationAttempt {
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ContinuationEvent {
-    pub agent: BoundedString<1, 4096>,
-    pub created: BoundedNumber,
-    pub epoch: SafeInteger,
-    pub error: Option<BoundedString<0, 1048576>>,
-    pub id: BoundedString<1, 4096>,
-    pub kind: BoundedString<1, 4096>,
-    #[serde(deserialize_with = "crate::string_enum::deserialize")]
-    pub status: ContinuationEventStatus,
-    pub text: BoundedString<0, 1048576>,
-    #[serde(rename = "turn_id")]
-    pub turn_id: Option<BoundedString<1, 4096>>,
-    #[serde(flatten)]
-    pub extra: BTreeMap<String, Value>,
-}
-
-#[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ContinuationLimitsObservation {
     #[serde(rename = "_syncEntities")]
@@ -344,19 +308,6 @@ pub struct ContinuationLimitsObservation {
     pub read_at: Option<FiniteNumber>,
     #[serde(default, deserialize_with = "optional_nonnull")]
     pub stale: Option<bool>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ContinuationMetadata {
-    #[serde(default, deserialize_with = "optional_nonnull")]
-    pub assets: Option<BoundedVec<BoundedString<1, 4096>, 64>>,
-    #[serde(default, deserialize_with = "optional_nonnull")]
-    pub earlier_progress_updates: Option<SafeInteger>,
-    #[serde(default, deserialize_with = "optional_nonnull")]
-    pub preserve_progress: Option<bool>,
-    #[serde(flatten)]
-    pub extra: BTreeMap<String, Value>,
 }
 
 #[derive(Deserialize)]
@@ -479,43 +430,6 @@ pub struct UsageLimitsData {
     pub extra: BTreeMap<String, Value>,
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WakeComplaint {
-    pub id: BoundedString<1, 4096>,
-    pub lead_id: BoundedString<1, 4096>,
-    pub recipient: String,
-    #[serde(default, deserialize_with = "optional_nonnull")]
-    pub responses: Option<BoundedVec<ComplaintResponse, 4096>>,
-    pub source_type: Option<String>,
-    pub status: String,
-    #[serde(flatten)]
-    pub extra: BTreeMap<String, Value>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WakeWork {
-    #[serde(default, deserialize_with = "optional_nonnull")]
-    pub decisions: Option<BoundedVec<WorkDecision, 4096>>,
-    pub id: BoundedString<1, 4096>,
-    #[serde(default, deserialize_with = "optional_nonnull")]
-    pub results: Option<BoundedVec<WorkResult, 4096>>,
-    pub root_id: BoundedString<1, 4096>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkDecision {
-    pub result_id: BoundedString<1, 4096>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkResult {
-    pub id: BoundedString<1, 4096>,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AuthWaitReceiptCause {
     #[serde(rename = "claude_auth_probe")]
@@ -572,24 +486,6 @@ pub enum CapacityContinuationStatus {
     Exhausted,
     #[serde(rename = "failed")]
     Failed,
-}
-
-#[derive(Deserialize)]
-pub enum ContinuationEventStatus {
-    #[serde(rename = "pending")]
-    Pending,
-    #[serde(rename = "reserved")]
-    Reserved,
-    #[serde(rename = "dispatching")]
-    Dispatching,
-    #[serde(rename = "uncertain")]
-    Uncertain,
-    #[serde(rename = "delivered")]
-    Delivered,
-    #[serde(rename = "stored_only")]
-    StoredOnly,
-    #[serde(rename = "cancelled")]
-    Cancelled,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, Deserialize)]
@@ -656,7 +552,7 @@ mod tests {
         let text = include_str!("schemas/persisted-continuation-snapshot.schema.json");
         assert_eq!(
             data_encoding::HEXLOWER.encode(&Sha256::digest(text.as_bytes())),
-            "ea22a78712088363b0d45b94d80f3d8b62bc350c3f026842f7e27a2fda33b842",
+            "a7017d756fa23351e3bc19f9a411158bee12d199f538e0a717860ab4d5e93923",
             "schema changed: review continuation_snapshot typed owner"
         );
         let schema: Value = serde_json::from_str(text).expect("schema");
@@ -696,9 +592,6 @@ mod tests {
                 json!({"id":"x","accountKey":"x","threadId":"x","epoch":0,"turnId":"x","status":"scheduled","cause":"serverOverloaded","cwd":"","settings":{},"attempt":0,"maxAttempts":0}),
                 |v| serde_json::from_value::<CapacityContinuation>(v).is_ok(),
             ),
-            ("ComplaintResponse", json!({"author":"x"}), |v| {
-                serde_json::from_value::<ComplaintResponse>(v).is_ok()
-            }),
             (
                 "ContinuationAgent",
                 json!({"id":"x","rootId":"x","epoch":0,"status":"x","provider":"codex"}),
@@ -710,18 +603,10 @@ mod tests {
                 |v| serde_json::from_value::<ContinuationAttempt>(v).is_ok(),
             ),
             (
-                "ContinuationEvent",
-                json!({"id":"x","agent":"x","epoch":0,"kind":"x","text":"","status":"pending","created":0}),
-                |v| serde_json::from_value::<ContinuationEvent>(v).is_ok(),
-            ),
-            (
                 "ContinuationLimitsObservation",
                 json!({"accountKey":""}),
                 |v| serde_json::from_value::<JsonObject<ContinuationLimitsObservation>>(v).is_ok(),
             ),
-            ("ContinuationMetadata", json!({}), |v| {
-                serde_json::from_value::<ContinuationMetadata>(v).is_ok()
-            }),
             ("RateLimitBucket", json!({}), |v| {
                 serde_json::from_value::<RateLimitBucket>(v).is_ok()
             }),
@@ -751,20 +636,6 @@ mod tests {
             ),
             ("UsageLimitsData", json!({}), |v| {
                 serde_json::from_value::<UsageLimitsData>(v).is_ok()
-            }),
-            (
-                "WakeComplaint",
-                json!({"id":"x","leadId":"x","recipient":"","status":""}),
-                |v| serde_json::from_value::<WakeComplaint>(v).is_ok(),
-            ),
-            ("WakeWork", json!({"id":"x","rootId":"x"}), |v| {
-                serde_json::from_value::<WakeWork>(v).is_ok()
-            }),
-            ("WorkDecision", json!({"resultId":"x"}), |v| {
-                serde_json::from_value::<WorkDecision>(v).is_ok()
-            }),
-            ("WorkResult", json!({"id":"x"}), |v| {
-                serde_json::from_value::<WorkResult>(v).is_ok()
             }),
         ];
         let mut enum_objects_accepted = Vec::new();
