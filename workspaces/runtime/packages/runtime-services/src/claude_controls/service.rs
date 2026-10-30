@@ -2,10 +2,7 @@
 use super::*;
 use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 use studio_runtime_providers::Method;
-use studio_runtime_schema::{
-    claude_controls::{ClaudeSettings, ControlId},
-    queue_command::Field,
-};
+use studio_runtime_schema::{claude_controls::ClaudeSettings, queue_command::Field};
 pub type ControlFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
 /// Implementations bind calls to one retained account/connection/generation.
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -35,29 +32,8 @@ impl ControlBinding {
     }
 }
 /// Provider methods and their parameters stay associated until the retained wire boundary.
-/// Mutations carry their durable transport request identity; rollback also carries
-/// the original request and turn identities used by the bridge's proof.
+/// Mutations carry their durable transport request identity.
 ///
-/// ```compile_fail
-/// use studio_runtime_services::claude_controls::service::ControlInvocation;
-/// let call = ControlInvocation::Rollback { thread_id: "thread".into(), restore_files: true };
-/// ```
-/// ```compile_fail
-/// use studio_runtime_services::claude_controls::service::ControlInvocation;
-/// let turn_id = serde_json::from_str("\"turn\"").unwrap();
-/// let call = ControlInvocation::Rollback { thread_id: "thread".into(), turn_id, restore_files: true, transport_request_id: "transport".into() };
-/// ```
-/// ```compile_fail
-/// use studio_runtime_services::claude_controls::service::ControlInvocation;
-/// let request_id = serde_json::from_str("\"request\"").unwrap();
-/// let call = ControlInvocation::Rollback { thread_id: "thread".into(), request_id, restore_files: true, transport_request_id: "transport".into() };
-/// ```
-/// ```compile_fail
-/// use studio_runtime_services::claude_controls::service::ControlInvocation;
-/// let request_id = serde_json::from_str("\"request\"").unwrap();
-/// let turn_id = serde_json::from_str("\"turn\"").unwrap();
-/// let call = ControlInvocation::Rollback { thread_id: "thread".into(), request_id, turn_id, restore_files: true };
-/// ```
 /// ```compile_fail
 /// use studio_runtime_services::claude_controls::service::ControlInvocation;
 /// let call = ControlInvocation::Settings { thread_id: "thread".into(), settings: Default::default() };
@@ -65,9 +41,6 @@ impl ControlBinding {
 #[derive(Clone, Debug)]
 pub enum ControlInvocation {
     State {
-        thread_id: String,
-    },
-    Queue {
         thread_id: String,
     },
     RepairReport {
@@ -80,13 +53,6 @@ pub enum ControlInvocation {
         thread_id: String,
         settings: ClaudeSettings,
         request_id: String,
-    },
-    Rollback {
-        thread_id: String,
-        request_id: ControlId,
-        turn_id: ControlId,
-        restore_files: bool,
-        transport_request_id: String,
     },
     StopTask {
         thread_id: String,
@@ -103,11 +69,9 @@ impl ControlInvocation {
     pub fn method(&self) -> Method {
         match self {
             Self::State { .. } => Method::ClaudeState,
-            Self::Queue { .. } => Method::ThreadQueueList,
             Self::RepairReport { .. } => Method::ClaudeRepairReport,
             Self::Commands { .. } => Method::ClaudeCommands,
             Self::Settings { .. } => Method::ClaudeSettings,
-            Self::Rollback { .. } => Method::ThreadRollback,
             Self::StopTask { .. } => Method::ClaudeStopTask,
             Self::FileBackups { .. } => Method::ClaudeFileBackups,
         }
@@ -117,37 +81,21 @@ impl ControlInvocation {
             Self::Settings { request_id, .. }
             | Self::StopTask { request_id, .. }
             | Self::FileBackups { request_id, .. } => Some(request_id),
-            Self::Rollback {
-                transport_request_id,
-                ..
-            } => Some(transport_request_id),
-            Self::State { .. }
-            | Self::Queue { .. }
-            | Self::RepairReport { .. }
-            | Self::Commands { .. } => None,
+            Self::State { .. } | Self::RepairReport { .. } | Self::Commands { .. } => None,
         }
     }
     /// Serialize exactly the established provider body for signing and transport.
     pub fn params(&self) -> Value {
         match self {
-            Self::State { thread_id }
-            | Self::Queue { thread_id }
-            | Self::RepairReport { thread_id } => json!({"threadId":thread_id}),
+            Self::State { thread_id } | Self::RepairReport { thread_id } => {
+                json!({"threadId":thread_id})
+            }
             Self::Commands { cwd } => json!({"cwd":cwd}),
             Self::Settings {
                 thread_id,
                 settings,
                 ..
             } => json!({"threadId":thread_id,"settings":settings}),
-            Self::Rollback {
-                thread_id,
-                request_id,
-                turn_id,
-                restore_files,
-                ..
-            } => {
-                json!({"threadId":thread_id,"requestId":request_id,"turnId":turn_id,"restoreFiles":restore_files})
-            }
             Self::StopTask {
                 thread_id, task_id, ..
             } => json!({"threadId":thread_id,"taskId":task_id}),
@@ -177,37 +125,13 @@ pub struct NativeTurn {
     pub id: Field<String>,
     #[serde(default, skip_serializing_if = "Field::is_missing")]
     pub status: Field<String>,
-    #[serde(default, skip_serializing_if = "Field::is_missing")]
-    pub can_restore_files: Field<bool>,
     #[serde(flatten)]
     pub extra: serde_json::Map<String, Value>,
 }
-#[derive(Clone, Debug, serde::Deserialize)]
-pub struct NativeQueue {
-    #[serde(default)]
-    pub data: Field<Vec<Value>>,
-    #[serde(default)]
-    pub items: Field<Vec<Value>>,
-}
-impl NativeQueue {
-    pub fn busy(&self) -> bool {
-        let selected = if self.data.is_missing() {
-            &self.items
-        } else {
-            &self.data
-        };
-        selected.value().is_some_and(|items| !items.is_empty())
-    }
-}
-
-/// A settings mutation and a rollback require different idle proofs.
+/// The idle proof a settings mutation needs.
 #[derive(Clone, Debug)]
 pub enum NativeProof {
     Settings(NativeState),
-    Rollback {
-        state: NativeState,
-        queue: NativeQueue,
-    },
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -216,28 +140,15 @@ pub struct SettingsReply {
     #[serde(flatten)]
     pub extra: serde_json::Map<String, Value>,
 }
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RollbackReply {
-    pub thread_id: String,
-    pub native_id: String,
-    #[serde(default, skip_serializing_if = "Field::is_missing")]
-    pub files_restored: Field<bool>,
-    #[serde(flatten)]
-    pub extra: serde_json::Map<String, Value>,
-}
-
 /// The only provider replies that can settle a control mutation.
 #[derive(Debug)]
 pub enum MutationReply {
     Settings(SettingsReply),
-    Rollback(RollbackReply),
 }
 impl MutationReply {
     pub fn into_value(self) -> Result<Value> {
         match self {
             Self::Settings(reply) => serde_json::to_value(reply),
-            Self::Rollback(reply) => serde_json::to_value(reply),
         }
         .map_err(|_| ControlError::Unknown)
     }
@@ -248,11 +159,9 @@ impl MutationReply {
 #[derive(Debug)]
 pub enum ControlReply {
     State(NativeState),
-    Queue(NativeQueue),
     RepairReport(Value),
     Commands(Value),
     Settings(SettingsReply),
-    Rollback(RollbackReply),
     StopTask(Value),
     FileBackups(Value),
 }
@@ -262,16 +171,10 @@ impl ControlReply {
             ControlInvocation::State { .. } => {
                 Self::State(serde_json::from_value(value).map_err(|_| ControlError::Unknown)?)
             }
-            ControlInvocation::Queue { .. } => {
-                Self::Queue(serde_json::from_value(value).map_err(|_| ControlError::Unknown)?)
-            }
             ControlInvocation::RepairReport { .. } => Self::RepairReport(value),
             ControlInvocation::Commands { .. } => Self::Commands(value),
             ControlInvocation::Settings { .. } => {
                 Self::Settings(serde_json::from_value(value).map_err(|_| ControlError::Unknown)?)
-            }
-            ControlInvocation::Rollback { .. } => {
-                Self::Rollback(serde_json::from_value(value).map_err(|_| ControlError::Unknown)?)
             }
             ControlInvocation::StopTask { .. } => Self::StopTask(value),
             ControlInvocation::FileBackups { .. } => Self::FileBackups(value),
@@ -423,39 +326,11 @@ impl Controls {
                     .await?
                 {
                     ControlReply::State(state) => state,
-                    ControlReply::Queue(_)
-                    | ControlReply::RepairReport(_)
+                    ControlReply::RepairReport(_)
                     | ControlReply::Commands(_)
                     | ControlReply::Settings(_)
-                    | ControlReply::Rollback(_)
                     | ControlReply::StopTask(_)
                     | ControlReply::FileBackups(_) => return Err(ControlError::Unknown),
-                };
-                let queue = if matches!(request, ControlRequest::Rollback { .. }) {
-                    Some(
-                        match self
-                            .bound_call(
-                                binding,
-                                &scope,
-                                ControlInvocation::Queue {
-                                    thread_id: thread.clone(),
-                                },
-                                20,
-                            )
-                            .await?
-                        {
-                            ControlReply::Queue(queue) => queue,
-                            ControlReply::State(_)
-                            | ControlReply::RepairReport(_)
-                            | ControlReply::Commands(_)
-                            | ControlReply::Settings(_)
-                            | ControlReply::Rollback(_)
-                            | ControlReply::StopTask(_)
-                            | ControlReply::FileBackups(_) => return Err(ControlError::Unknown),
-                        },
-                    )
-                } else {
-                    None
                 };
                 *uncertain = true;
                 *snapshot = match self
@@ -463,13 +338,7 @@ impl Controls {
                     .submitted(
                         snapshot.clone(),
                         request.clone(),
-                        match queue {
-                            Some(queue) => NativeProof::Rollback {
-                                state: native,
-                                queue,
-                            },
-                            None => NativeProof::Settings(native),
-                        },
+                        NativeProof::Settings(native),
                     )
                     .await
                 {
@@ -484,75 +353,31 @@ impl Controls {
                         return Err(error);
                     }
                 };
-                let call = match request {
-                    ControlRequest::Settings { settings, .. } => ControlInvocation::Settings {
-                        thread_id: thread,
-                        settings: settings.clone(),
-                        request_id: transport_request.clone(),
-                    },
-                    ControlRequest::Rollback {
-                        request_id,
-                        turn_id,
-                        restore_files,
-                        ..
-                    } => ControlInvocation::Rollback {
-                        thread_id: thread,
-                        request_id: request_id.clone(),
-                        turn_id: turn_id.clone(),
-                        restore_files: *restore_files,
-                        transport_request_id: transport_request.clone(),
-                    },
+                let ControlRequest::Settings { settings, .. } = request;
+                let call = ControlInvocation::Settings {
+                    thread_id: thread,
+                    settings: settings.clone(),
+                    request_id: transport_request.clone(),
                 };
-                match self
-                    .bound_call(
-                        binding,
-                        &scope,
-                        call,
-                        if request.restore_files() {
-                            FILE_RESTORE_TIMEOUT_SECONDS
-                        } else {
-                            25
-                        },
-                    )
-                    .await
-                {
+                match self.bound_call(binding, &scope, call, 25).await {
                     Err(error @ (ControlError::NotSent | ControlError::Request)) => {
-                        // A provider rejection can follow a partial file restore.
-                        // Only an explicit not-sent receipt proves no file effect.
-                        if !request.restore_files() || matches!(error, ControlError::NotSent) {
-                            *uncertain = false;
-                        } else {
-                            return Err(ControlError::Unknown);
-                        }
+                        *uncertain = false;
                         return Err(error);
                     }
-                    Ok(ControlReply::Settings(result))
-                        if matches!(request, ControlRequest::Settings { .. }) =>
-                    {
-                        MutationReply::Settings(result)
-                    }
-                    Ok(ControlReply::Rollback(result))
-                        if matches!(request, ControlRequest::Rollback { .. }) =>
-                    {
-                        MutationReply::Rollback(result)
-                    }
+                    Ok(ControlReply::Settings(result)) => MutationReply::Settings(result),
                     Ok(_) => return Err(ControlError::Unknown),
                     Err(error) => return Err(error),
                 }
             } else {
-                match request {
-                    ControlRequest::Settings { settings, .. } => {
-                        MutationReply::Settings(SettingsReply {
-                            settings: serde_json::to_value(settings)
-                                .map_err(|_| ControlError::Unknown)?
-                                .as_object()
-                                .cloned()
-                                .ok_or(ControlError::Unknown)?,
-                            extra: Default::default(),
-                        })
-                    }
-                    ControlRequest::Rollback { .. } => return Err(ControlError::Busy),
-                }
+                let ControlRequest::Settings { settings, .. } = request;
+                MutationReply::Settings(SettingsReply {
+                    settings: serde_json::to_value(settings)
+                        .map_err(|_| ControlError::Unknown)?
+                        .as_object()
+                        .cloned()
+                        .ok_or(ControlError::Unknown)?,
+                    extra: Default::default(),
+                })
             };
             *uncertain = true;
             *snapshot = self
@@ -574,10 +399,7 @@ impl Controls {
         }
         let mut scope = scope.clone();
         // Idle reads must be fresh and must not consume the mutation's receipt identity.
-        if matches!(
-            call,
-            ControlInvocation::State { .. } | ControlInvocation::Queue { .. }
-        ) {
+        if matches!(call, ControlInvocation::State { .. }) {
             scope.request_id = None;
         }
         let result = tokio::time::timeout(
@@ -653,11 +475,9 @@ impl Controls {
                         ControlReply::State(state) => {
                             serde_json::to_value(state).map_err(|_| ControlError::Unknown)?
                         }
-                        ControlReply::Queue(_)
-                        | ControlReply::RepairReport(_)
+                        ControlReply::RepairReport(_)
                         | ControlReply::Commands(_)
                         | ControlReply::Settings(_)
-                        | ControlReply::Rollback(_)
                         | ControlReply::StopTask(_)
                         | ControlReply::FileBackups(_) => return Err(ControlError::Unknown),
                     }
@@ -686,10 +506,8 @@ impl Controls {
                 {
                     ControlReply::Commands(result) => Ok(result),
                     ControlReply::State(_)
-                    | ControlReply::Queue(_)
                     | ControlReply::RepairReport(_)
                     | ControlReply::Settings(_)
-                    | ControlReply::Rollback(_)
                     | ControlReply::StopTask(_)
                     | ControlReply::FileBackups(_) => Err(ControlError::Unknown),
                 }
@@ -720,11 +538,9 @@ impl Controls {
                 {
                     ControlReply::StopTask(result) => Ok(result),
                     ControlReply::State(_)
-                    | ControlReply::Queue(_)
                     | ControlReply::RepairReport(_)
                     | ControlReply::Commands(_)
                     | ControlReply::Settings(_)
-                    | ControlReply::Rollback(_)
                     | ControlReply::FileBackups(_) => Err(ControlError::Unknown),
                 }
             }

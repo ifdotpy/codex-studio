@@ -10462,22 +10462,6 @@ export interface components {
       /** @enum {string} */
       status: "none" | "needs_repair" | "repaired";
     };
-    /** ClaudeRollbackResponse */
-    ClaudeRollbackResponse: {
-      fileResult?:
-        | {
-            [key: string]: unknown;
-          }
-        | undefined;
-      /** @default false */
-      filesRestored?: boolean | undefined;
-      /** Nativeid */
-      nativeId: string;
-      /** Removedturns */
-      removedTurns: number;
-      /** Threadid */
-      threadId: string;
-    };
     /** ClaudeSessionCommandRequest */
     ClaudeSessionCommandRequest: {
       /**
@@ -10491,15 +10475,6 @@ export interface components {
       id: string;
       /** Request Id */
       request_id: string;
-    };
-    ClaudeSessionRollbackRequest: {
-      /** @constant */
-      action: "rollback";
-      id: string;
-      request_id: string;
-      /** @default false */
-      restore_files?: boolean | undefined;
-      turn_id: string;
     };
     /** ClaudeSessionSettings */
     ClaudeSessionSettings: {
@@ -30970,7 +30945,6 @@ export interface operations {
       content: {
         "application/json":
           | components["schemas"]["ClaudeSessionCommandRequest"]
-          | components["schemas"]["ClaudeSessionRollbackRequest"]
           | components["schemas"]["ClaudeSessionSettingsRequest"]
           | components["schemas"]["ClaudeSessionStateRequest"]
           | components["schemas"]["ClaudeSessionStopTaskRequest"];
@@ -30998,7 +30972,6 @@ export interface operations {
         content: {
           "application/json":
             | components["schemas"]["ClaudeDeliveryResponse"]
-            | components["schemas"]["ClaudeRollbackResponse"]
             | components["schemas"]["ClaudeSessionStateResponse"]
             | components["schemas"]["ClaudeSettingsResponse"]
             | components["schemas"]["ClaudeStopTaskResponse"]

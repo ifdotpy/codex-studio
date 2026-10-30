@@ -4,13 +4,11 @@ pub mod store;
 use crate::event_write::{request_signature, truthy};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+pub use studio_runtime_schema::claude_controls::{ControlError, ControlOutcome};
+pub(crate) use studio_runtime_schema::claude_permissions::PERMISSION_MODES;
 use studio_runtime_schema::workspace_operation::{
     OperationKind, OperationPhase, WorkspaceOperationRecord,
 };
-/// Seconds for a dry-run, a history fork, and the SDK file restore.
-pub(crate) const FILE_RESTORE_TIMEOUT_SECONDS: u64 = 90;
-pub use studio_runtime_schema::claude_controls::{ControlError, ControlOutcome};
-pub(crate) use studio_runtime_schema::claude_permissions::PERMISSION_MODES;
 pub type Result<T> = std::result::Result<T, ControlError>;
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -57,7 +55,6 @@ struct OperationExtensions {
 fn operation_kind(request: &ControlRequest) -> OperationKind {
     match request {
         ControlRequest::Settings { .. } => OperationKind::ClaudeSettings,
-        ControlRequest::Rollback { .. } => OperationKind::ClaudeRollback,
     }
 }
 // Claude admission validates a stricter schema and replay compares the complete
@@ -78,20 +75,14 @@ pub use studio_runtime_schema::claude_controls::ClaudeControlCommand as ControlR
 pub struct Writes {
     pub agent: Value,
     pub operation: Value,
-    pub removed: Vec<String>,
     pub result: Value,
 }
 fn signature(request: &ControlRequest) -> String {
-    let (settings, turn) = match request {
-        ControlRequest::Settings { settings, .. } => (json!(settings), Value::Null),
-        ControlRequest::Rollback { turn_id, .. } => (Value::Null, json!(turn_id)),
-    };
-    let mut value = json!({"agent":request.id(),"action":request.action_name(),"settings":settings,"turn":turn});
-    // Preserve signatures for existing context-only receipts.
-    if request.restore_files() {
-        value["restoreFiles"] = json!(true);
-    }
-    request_signature(&value)
+    let ControlRequest::Settings { settings, .. } = request;
+    // The null turn keeps the signatures of existing receipts.
+    request_signature(
+        &json!({"agent":request.id(),"action":request.action_name(),"settings":settings,"turn":Value::Null}),
+    )
 }
 impl ControlSnapshot {
     fn replay(&self, request: &ControlRequest) -> Result<Option<Result<Value>>> {
@@ -213,7 +204,7 @@ impl ControlSnapshot {
                     .get("autoCompactWindow")
                     .filter(|value| !value.is_null())
     }
-    pub fn reserve(&self, request: &ControlRequest, pending: bool, now: f64) -> Result<Writes> {
+    pub fn reserve(&self, request: &ControlRequest, now: f64) -> Result<Writes> {
         if request.id() != self.agent.id || truthy(self.raw.get("accountTransferId")) {
             return Err(ControlError::Changed);
         }
@@ -235,7 +226,6 @@ impl ControlSnapshot {
                     agent: self.raw.clone(),
                     result: saved.get("result").cloned().unwrap_or(Value::Null),
                     operation: saved,
-                    removed: vec![],
                 });
             }
             if op.phase != OperationPhase::Failed {
@@ -247,7 +237,6 @@ impl ControlSnapshot {
                 return Ok(Writes {
                     agent: self.raw.clone(),
                     operation: saved,
-                    removed: vec![],
                     result: Value::Null,
                 });
             }
@@ -262,26 +251,13 @@ impl ControlSnapshot {
         {
             return Err(ControlError::Busy);
         }
-        if matches!(request, ControlRequest::Rollback { .. })
-            && (pending || self.agent.thread_id.is_none())
-        {
-            return Err(ControlError::Busy);
-        }
-        let turn = match request {
-            ControlRequest::Settings { .. } => None,
-            ControlRequest::Rollback { turn_id, .. } => Some(turn_id),
-        };
-        let mut operation = json!({"id":request.operation_id(),"requestId":request.request_id(),"kind":format!("claude_{}",request.action_name()),"agent":request.id(),"turnId":turn,"signature":signature(request),"source":self.source(),"phase":"provider_pending","created":now});
-        if request.restore_files() {
-            operation["restoreFiles"] = json!(true);
-        }
+        let operation = json!({"id":request.operation_id(),"requestId":request.request_id(),"kind":format!("claude_{}",request.action_name()),"agent":request.id(),"turnId":Value::Null,"signature":signature(request),"source":self.source(),"phase":"provider_pending","created":now});
         let mut agent = self.raw.clone();
         agent["workspaceOperation"] = json!("branch");
         agent["workspaceReservationId"] = json!(request.operation_id());
         Ok(Writes {
             agent,
             operation,
-            removed: vec![],
             result: Value::Null,
         })
     }
@@ -296,15 +272,8 @@ impl ControlSnapshot {
         if truthy(op.get("submitted")) {
             return Err(ControlError::Unknown);
         }
-        let (native, queue) = match (request, proof) {
-            (ControlRequest::Settings { .. }, service::NativeProof::Settings(state)) => {
-                (state, None)
-            }
-            (ControlRequest::Rollback { .. }, service::NativeProof::Rollback { state, queue }) => {
-                (state, Some(queue))
-            }
-            _ => return Err(ControlError::Request),
-        };
+        let (ControlRequest::Settings { .. }, service::NativeProof::Settings(native)) =
+            (request, proof);
         if !self.live_permissions(request)
             && (native.tasks.value().is_some_and(|tasks| !tasks.is_empty())
                 || native.turns.iter().any(|turn| {
@@ -314,39 +283,6 @@ impl ControlSnapshot {
                 }))
         {
             return Err(ControlError::Busy);
-        }
-        if let ControlRequest::Rollback {
-            turn_id,
-            restore_files,
-            ..
-        } = request
-        {
-            if queue.is_some_and(service::NativeQueue::busy) {
-                return Err(ControlError::Busy);
-            }
-            let index = native
-                .turns
-                .iter()
-                .position(|turn| turn.id.value().is_some_and(|id| id == turn_id.as_str()))
-                .ok_or(ControlError::Request)?;
-            if *restore_files && native.turns[index].can_restore_files.value() != Some(&true) {
-                return Err(ControlError::Request);
-            }
-            let removed: Vec<&str> = native.turns[index..]
-                .iter()
-                .map(|turn| {
-                    turn.id
-                        .value()
-                        .map(String::as_str)
-                        .ok_or(ControlError::Request)
-                })
-                .collect::<Result<_>>()?;
-            op["removedTurns"] = json!(removed);
-            op["retainedTurn"] = if index > 0 {
-                json!(native.turns[index - 1].id.value())
-            } else {
-                Value::Null
-            };
         }
         op["submitted"] = json!(true);
         op["updated"] = json!(now);
@@ -367,24 +303,15 @@ impl ControlSnapshot {
         {
             return Err(ControlError::Unknown);
         }
-        match (request, &result) {
-            (
-                ControlRequest::Settings { settings, .. },
-                service::MutationReply::Settings(reply),
-            ) => {
-                let expected = serde_json::to_value(settings).map_err(|_| ControlError::Unknown)?;
-                let expected = expected.as_object().ok_or(ControlError::Unknown)?;
-                if studio_runtime_schema::claude_controls::CLAUDE_SETTINGS_WIRE_FIELDS
-                    .iter()
-                    .any(|key| expected.get(*key) != reply.settings.get(*key))
-                {
-                    return Err(ControlError::Unknown);
-                }
-            }
-            (ControlRequest::Rollback { .. }, service::MutationReply::Rollback(reply))
-                if self.agent.thread_id.as_deref() == Some(reply.thread_id.as_str())
-                    && !reply.native_id.is_empty() => {}
-            _ => return Err(ControlError::Unknown),
+        let (ControlRequest::Settings { settings, .. }, service::MutationReply::Settings(reply)) =
+            (request, &result);
+        let expected = serde_json::to_value(settings).map_err(|_| ControlError::Unknown)?;
+        let expected = expected.as_object().ok_or(ControlError::Unknown)?;
+        if studio_runtime_schema::claude_controls::CLAUDE_SETTINGS_WIRE_FIELDS
+            .iter()
+            .any(|key| expected.get(*key) != reply.settings.get(*key))
+        {
+            return Err(ControlError::Unknown);
         }
         op["provider"] = result.into_value()?;
         op["phase"] = json!("provider_ready");
@@ -399,47 +326,18 @@ impl ControlSnapshot {
             .filter(|v| v.is_object())
             .cloned()
             .ok_or(ControlError::Unknown)?;
-        if request.restore_files()
-            && result.get("filesRestored").and_then(Value::as_bool) != Some(true)
-        {
-            return Err(ControlError::Unknown);
-        }
         let mut agent = self.raw.clone();
-        let mut removed = vec![];
-        match request {
-            ControlRequest::Settings { settings, .. } => {
-                agent["claudeOptions"] = json!(settings);
-                if let Some(mode) = settings.permission_mode {
-                    agent["yoloMode"] = json!(mode == studio_runtime_schema::claude_permissions::PermissionMode::BypassPermissions);
-                }
-                if agent["workspaceOperation"] == "branch_recovery" {
-                    agent["status"] = json!("paused");
-                    agent["error"] = Value::Null;
-                }
-            }
-            ControlRequest::Rollback { .. } => {
-                removed = serde_json::from_value(
-                    op.get("removedTurns")
-                        .cloned()
-                        .ok_or(ControlError::Unknown)?,
-                )
-                .map_err(|_| ControlError::Unknown)?;
-                for (k, v) in [
-                    ("status", json!("paused")),
-                    ("autoWake", json!(false)),
-                    ("inFlight", json!(false)),
-                    ("turnId", Value::Null),
-                    (
-                        "lastCompletedTurn",
-                        op.get("retainedTurn").cloned().unwrap_or(Value::Null),
-                    ),
-                    ("activity", Value::Null),
-                    ("activeTools", json!([])),
-                    ("error", Value::Null),
-                ] {
-                    agent[k] = v;
-                }
-            }
+        let ControlRequest::Settings { settings, .. } = request;
+        agent["claudeOptions"] = json!(settings);
+        if let Some(mode) = settings.permission_mode {
+            agent["yoloMode"] = json!(
+                mode
+                    == studio_runtime_schema::claude_permissions::PermissionMode::BypassPermissions
+            );
+        }
+        if agent["workspaceOperation"] == "branch_recovery" {
+            agent["status"] = json!("paused");
+            agent["error"] = Value::Null;
         }
         agent["workspaceOperation"] = Value::Null;
         agent
@@ -453,7 +351,6 @@ impl ControlSnapshot {
         Ok(Writes {
             agent,
             operation: op,
-            removed,
             result,
         })
     }
@@ -530,14 +427,6 @@ mod tests {
             (
                 json!({"action":"settings","id":"agent","request_id":"one","settings":{"autoCompactWindow":null}}),
                 "7ef66fdf13bb4634469324e10d82fe6dba891d3c3819f6445d6e1b862ec561df",
-            ),
-            (
-                json!({"action":"rollback","id":"agent","request_id":"one","turn_id":"two"}),
-                "f9423f5bbdf873e88cb062b928111349ea9e03326f9b5a8aeb94cc1436f3cc83",
-            ),
-            (
-                json!({"action":"rollback","id":"agent","request_id":"one","turn_id":"two","restore_files":true}),
-                "4c00d37fbf8e7852d7003ed42f4e448d6d5d04f7b2e50afa97cc9df11a17cb49",
             ),
         ] {
             let request: ControlRequest = serde_json::from_value(body).expect("command");

@@ -1,4 +1,4 @@
-//! HTTP, retained account adapter and durable restore settlement in one caller test.
+//! HTTP, retained account adapter and durable control settlement in one caller test.
 #![allow(clippy::unwrap_used, clippy::disallowed_methods)]
 use axum::{
     body::{Body, to_bytes},
@@ -8,10 +8,7 @@ use axum::{
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, Mutex},
 };
 use studio_runtime_http::{HttpState, router};
 use studio_runtime_process::{
@@ -32,18 +29,9 @@ use tower::ServiceExt;
 
 #[derive(Default)]
 pub(crate) struct Native {
-    full: AtomicBool,
     pub(crate) calls: Mutex<Vec<Value>>,
     pub(crate) repair_report: Mutex<Option<Value>>,
     ready: Notify,
-    restore_mode: Mutex<RestoreMode>,
-}
-#[derive(Default, Clone, Copy, PartialEq, Eq)]
-enum RestoreMode {
-    #[default]
-    Normal,
-    Partial,
-    WrongId,
 }
 impl Native {
     fn response(&self, request: &Value) -> Value {
@@ -56,31 +44,13 @@ impl Native {
             "claude/state" => {
                 json!({"tasks":[],"turns":[{"id":"one","status":"completed","canRestoreFiles":true},{"id":"two","status":"completed","canRestoreFiles":true}]})
             }
-            "thread/queue/list" => json!({"data":[]}),
             "claude/settings" => json!({"settings":p["settings"]}),
             "claude/stopTask" => json!({"stopped":true}),
-            "thread/rollback" => {
-                let id = p["requestId"].as_str().unwrap();
-                let mode = *self.restore_mode.lock().unwrap();
-                if self.full.load(Ordering::SeqCst) || mode != RestoreMode::Normal {
-                    let mut error = json!({"code":-32000,"message":"The before-restore backup limit is reached."});
-                    if mode != RestoreMode::Partial {
-                        error["data"] = json!({"fileRestoreOutcome":"not_applied","requestId":if mode == RestoreMode::WrongId {"foreign"} else {id},"turnId":p["turnId"]});
-                    } else {
-                        error["message"] = json!("Claude restored only one file.");
-                    }
-                    return json!({"id":request["id"],"error":error});
-                }
-                json!({"threadId":"thread","nativeId":"rewound","filesRestored":true})
-            }
             "claude/fileBackups" => {
                 let release = p["settledRequestIds"]
                     .as_array()
                     .is_some_and(|ids| !ids.is_empty());
-                if release {
-                    self.full.store(false, Ordering::SeqCst);
-                }
-                json!({"count":if self.full.load(Ordering::SeqCst) {100} else {1},"bytes":500,"maxCount":100,"maxBytes":1073741824,"released":if release {1} else {0}})
+                json!({"count":1,"bytes":500,"maxCount":100,"maxBytes":1073741824,"released":if release {1} else {0}})
             }
             method => panic!("unexpected provider method {method}"),
         };
@@ -282,9 +252,6 @@ pub(crate) async fn fixture() -> (
     state.account_session = Some(Arc::new(Broker(Arc::new(worker.claude_session().unwrap()))));
     (root, store, router(state).unwrap(), worker, native)
 }
-fn rewind(id: &str) -> Value {
-    json!({"id":"agent","action":"rollback","turn_id":"two","request_id":id,"restore_files":true})
-}
 fn agent(store: &RuntimeStore) -> Value {
     AgentRepository::get(&store.test_reader().unwrap(), &AgentId("agent".into()))
         .unwrap()
@@ -338,14 +305,6 @@ async fn claude_control_session_reads_and_stop_keep_dispatch() {
 
 #[tokio::test]
 async fn claude_control_settings_ingress_and_exact_receipt_replay() {
-    use studio_runtime_http::generated::ClaudeSessionApiClaudeSessionPostRequest as SessionRequest;
-    use studio_runtime_schema::claude_controls::ClaudeControlCommand;
-
-    let rollback: SessionRequest = serde_json::from_value(rewind("discriminator")).unwrap();
-    assert!(matches!(
-        rollback,
-        SessionRequest::ClaudeSessionRollbackRequest(ClaudeControlCommand::Rollback { .. })
-    ));
     let (_root, store, app, mut worker, native) = fixture().await;
     for body in [
         json!({"id":"agent","action":"settings","settings":{}}),
@@ -354,7 +313,8 @@ async fn claude_control_settings_ingress_and_exact_receipt_replay() {
         json!({"id":"agent","action":"settings","request_id":"invalid","settings":{"thinking":null}}),
         json!({"id":"agent","action":"settings","request_id":"invalid","settings":{"permissionMode":null}}),
         json!({"id":"agent","action":"settings","request_id":"invalid","settings":{},"turn_id":"two"}),
-        json!({"id":"agent","action":"rollback","request_id":"invalid","turn_id":"two","settings":{}}),
+        // The rollback action no longer exists.
+        json!({"id":"agent","action":"rollback","request_id":"invalid","turn_id":"two"}),
     ] {
         let result = post(&app, "/api/claude/session", body).await;
         assert_eq!(result.0, 400, "{result:?}");
@@ -391,58 +351,8 @@ async fn claude_control_settings_ingress_and_exact_receipt_replay() {
 }
 
 #[tokio::test]
-async fn quota_reason_crosses_retained_adapter_and_http_release_allows_same_request_retry() {
-    let (_root, store, app, mut worker, native) = fixture().await;
-    let completed_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
-    let completed = post(&app, "/api/claude/session", rewind(&completed_id)).await;
-    assert_eq!(
-        completed.0,
-        200,
-        "{completed:?}; agent={:?}; calls={:?}",
-        agent(&store),
-        native.calls.lock().unwrap()
-    );
-    // An unresolved restore in another workspace must never appear in this chat's release proof.
-    let other_cwd = _root.path().join("other");
-    std::fs::create_dir(&other_cwd).unwrap();
-    let completed_operation = format!("claude-control:{completed_id}");
-    store.transaction(move |tx| {
-        tx.execute("INSERT INTO runtime_agents(id,record) SELECT 'other',json_set(record,'$.id','other','$.rootId','other','$.cwd',?1,'$.threadId','other-thread') FROM runtime_agents WHERE id='agent'", [other_cwd.to_string_lossy().as_ref()])?;
-        tx.execute("INSERT INTO runtime_workspace_operations(id,record) SELECT 'claude-control:unresolved',json_set(record,'$.id','claude-control:unresolved','$.agent','other','$.requestId','unresolved','$.phase','recovery_required','$.source.threadId','other-thread','$.source.cwd',?1) FROM runtime_workspace_operations WHERE id=?2",rusqlite::params![other_cwd.to_string_lossy().as_ref(), completed_operation])?;
-        Ok(())
-    }).await.unwrap();
-    native.full.store(true, Ordering::SeqCst);
-    let quota_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
-    let rejected = post(&app, "/api/claude/session", rewind(&quota_id)).await;
-    assert_eq!(rejected.0, 400, "{rejected:?}");
-    assert!(
-        rejected.1.to_string().contains("backup limit"),
-        "{rejected:?}; agent={:?}; calls={:?}",
-        agent(&store),
-        native.calls.lock().unwrap()
-    );
-    assert!(agent(&store)["workspaceReservationId"].is_null());
-    assert!(agent(&store)["workspaceOperation"].is_null());
-    let cwd = _root.path().join("cwd");
-    store
-        .transaction(move |tx| {
-            tx.execute(
-                "INSERT INTO runtime_monitors VALUES('retry-blocker',?1)",
-                [json!({"id":"retry-blocker","cwd":cwd,"status":"running"}).to_string()],
-            )?;
-            Ok(())
-        })
-        .await
-        .unwrap();
-    let replay = post(&app, "/api/claude/session", rewind(&quota_id)).await;
-    assert_eq!(replay, rejected, "replay must bypass fresh idle checks");
-    store
-        .transaction(|tx| {
-            tx.execute("DELETE FROM runtime_monitors WHERE id='retry-blocker'", [])?;
-            Ok(())
-        })
-        .await
-        .unwrap();
+async fn claude_file_backups_usage_is_read_through_http() {
+    let (_root, _store, app, mut worker, _native) = fixture().await;
     let usage = post(
         &app,
         "/api/claude/file-backups",
@@ -450,54 +360,6 @@ async fn quota_reason_crosses_retained_adapter_and_http_release_allows_same_requ
     )
     .await;
     assert_eq!(usage.0, 200, "{usage:?}");
-    assert_eq!(usage.1["count"], 100);
-    let release = post(
-        &app,
-        "/api/claude/file-backups",
-        json!({"id":"agent","release":true,"request_id":studio_runtime_schema::persistence::RequestIdentity::issue_root()}),
-    )
-    .await;
-    assert_eq!(release.0, 200, "{release:?}");
-    assert_eq!(release.1["released"], 1);
-    let calls = native.calls.lock().unwrap().clone();
-    let proof = calls
-        .iter()
-        .find(|r| {
-            r["method"] == "claude/fileBackups" && r["params"]["settledRequestIds"].is_array()
-        })
-        .unwrap();
-    assert_eq!(proof["params"]["settledRequestIds"], json!([completed_id]));
-    let retry = post(&app, "/api/claude/session", rewind(&quota_id)).await;
-    assert_eq!(retry, rejected);
-    let fresh = studio_runtime_schema::persistence::RequestIdentity::issue_root();
-    let retry = post(&app, "/api/claude/session", rewind(&fresh)).await;
-    assert_eq!(retry.0, 200, "{retry:?}");
-    assert_eq!(retry.1["filesRestored"], true);
+    assert_eq!(usage.1["count"], 1);
     worker.shutdown().await.unwrap();
-}
-#[tokio::test]
-async fn generic_and_wrong_identity_rejections_keep_recovery_reservations_through_http() {
-    for mode in [RestoreMode::Partial, RestoreMode::WrongId] {
-        let (_root, store, app, mut worker, _native) = fixture().await;
-        *_native.restore_mode.lock().unwrap() = mode;
-        let id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
-        let result = post(&app, "/api/claude/session", rewind(&id)).await;
-        assert_eq!(result.0, 409, "{result:?}");
-        assert!(
-            result
-                .1
-                .to_string()
-                .contains(if mode == RestoreMode::Partial {
-                    "only one file"
-                } else {
-                    "backup limit"
-                }),
-            "{result:?}; agent={:?}; calls={:?}",
-            agent(&store),
-            _native.calls.lock().unwrap()
-        );
-        assert_eq!(agent(&store)["workspaceOperation"], "branch_recovery");
-        assert!(!agent(&store)["workspaceReservationId"].is_null());
-        worker.shutdown().await.unwrap();
-    }
 }

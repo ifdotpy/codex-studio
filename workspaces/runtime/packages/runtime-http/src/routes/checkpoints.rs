@@ -14,6 +14,8 @@ use studio_runtime_schema::{
     workspace_operation::{OperationPhase, WorkspaceOperationRecord},
 };
 use studio_runtime_services::checkpoints::{self, CheckpointsError};
+use studio_runtime_services::edit_turn;
+use studio_runtime_services::provider_adapter::{ProviderKind, ThreadRequest, adapter};
 use studio_runtime_store::StoreError;
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, CheckpointsRepository, TranscriptRepository,
@@ -167,6 +169,8 @@ async fn restore_owned(
         .and_then(Value::as_str)
         .ok_or_else(ApiError::internal)?
         .to_owned();
+    let provider = ProviderKind::of_record(&snapshot.agent.record)
+        .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "Unknown provider"))?;
     let validation_cwd = cwd.clone();
     let validation_tree = target_tree.clone();
     studio_runtime_process::blocking_pool::spawn_blocking(
@@ -272,56 +276,9 @@ async fn restore_owned(
             return Err(ApiError::dependency("provider-session/account-session"));
         }
     };
-    let method = if checkpoint
-        .record
-        .get("turnId")
-        .and_then(Value::as_str)
-        .is_some()
-    {
-        studio_runtime_providers::Method::ThreadFork
-    } else {
-        studio_runtime_providers::Method::ThreadStart
-    };
-    // Python `new_thread_params` always supplies config and serviceTier, and
-    // omits `model` when the saved model is unset. A null model is observably
-    // different to providers (and to the fake provider's documented fallback).
-    let mut params = json!({
-        "cwd":cwd,
-        "serviceTier": if snapshot.agent.record.get("fastMode").and_then(Value::as_bool) == Some(true) { "priority" } else { "default" },
-        "config": snapshot.agent.record.get("threadConfig").cloned().unwrap_or_else(|| json!({})),
-    });
-    if let Some(model) = snapshot
-        .agent
-        .record
-        .get("model")
-        .and_then(Value::as_str)
-        .filter(|model| !model.is_empty())
-    {
-        params["model"] = json!(model);
-    }
-    if method == studio_runtime_providers::Method::ThreadFork {
-        params["threadId"] = checkpoint
-            .record
-            .get("threadId")
-            .cloned()
-            .unwrap_or(Value::Null);
-        params["lastTurnId"] = checkpoint
-            .record
-            .get("turnId")
-            .cloned()
-            .unwrap_or(Value::Null);
-        params["config"] = snapshot
-            .agent
-            .record
-            .get("threadConfig")
-            .cloned()
-            .unwrap_or_else(|| json!({}));
-        for key in ["approvalPolicy", "sandbox"] {
-            if let Some(value) = snapshot.agent.record.get(key) {
-                params[key] = value.clone();
-            }
-        }
-    }
+    // The adapter of the agent's provider builds the new thread request.
+    let ThreadRequest { method, params } =
+        adapter(provider).edit_thread_request(&snapshot.agent.record, &checkpoint.record);
     let provider_operation = format!("{operation_id}:provider");
     let receipt = {
         let port = port.clone();
@@ -521,36 +478,44 @@ async fn restore_owned(
                 "Workspace recovery is required before retrying restore",
             ));
         }
-        if let Err(error) = checkpoints::capture_before_restore(
-            store.clone(),
-            agent_id.clone(),
-            operation_id.clone(),
-            expected_tree.clone(),
-        )
-        .await
-        {
-            settle_restore_failure(&store, &operation_id, &agent_id, true, &error.to_string())
-                .await?;
-            return Err(map_error(error));
-        }
+        // The snapshot of the current files always comes first (edit(turn), step 2).
+        let snapshot_store = store.clone();
+        let snapshot_agent = agent_id.clone();
+        let snapshot_operation = operation_id.clone();
+        let snapshot_expected = expected_tree.clone();
         let restore_store = store.clone();
         let restore_cwd = cwd.clone();
         let restore_expected = expected_tree.clone();
         let restore_target = target_tree.clone();
-        let restore = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-http/routes/checkpoints/restore-files",
-            move || {
-                checkpoints::restore_files(
-                    &restore_store,
-                    &restore_cwd,
-                    &restore_expected,
-                    &restore_target,
+        if let Err(error) = edit_turn::snapshot_then_restore(
+            || async move {
+                checkpoints::capture_before_restore(
+                    snapshot_store,
+                    snapshot_agent,
+                    snapshot_operation,
+                    snapshot_expected,
                 )
+                .await
+                .map(|_| ())
+            },
+            || async move {
+                studio_runtime_process::blocking_pool::spawn_blocking(
+                    "runtime-http/routes/checkpoints/restore-files",
+                    move || {
+                        checkpoints::restore_files(
+                            &restore_store,
+                            &restore_cwd,
+                            &restore_expected,
+                            &restore_target,
+                        )
+                    },
+                )
+                .await
+                .map_err(|_| CheckpointsError::Worker)?
             },
         )
         .await
-        .map_err(|_| ApiError::internal())?;
-        if let Err(error) = restore {
+        {
             settle_restore_failure(&store, &operation_id, &agent_id, true, &error.to_string())
                 .await?;
             return Err(map_error(error));
@@ -673,44 +638,17 @@ async fn restore_owned(
             )
             .map_err(|error| ApiError::stored(error.into()))?;
             let visible_ids = checkpoint_history_ids(tx, &final_checkpoint)?;
-            let mut statement = tx
-                .prepare(
-                    "SELECT id,record,created FROM runtime_items WHERE agent=?1 ORDER BY rowid",
-                )
-                .map_err(|error| ApiError::stored(error.into()))?;
-            let rows = statement
-                .query_map([&final_agent_id], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, f64>(2)?,
-                    ))
-                })
-                .map_err(|error| ApiError::stored(error.into()))?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|error| ApiError::stored(error.into()))?;
-            drop(statement);
-            for (item_id, raw, _created) in rows {
-                let mut item: Value =
-                    serde_json::from_str(&raw).map_err(|_| ApiError::internal())?;
-                let visible = visible_ids.contains(&item_id);
-                let was_visible = item.get("afterRestore").is_none();
-                if visible == was_visible {
-                    continue;
-                }
-                if visible {
-                    if let Some(object) = item.as_object_mut() {
-                        object.remove("afterRestore");
-                    }
-                } else {
-                    item["afterRestore"] = final_checkpoint["id"].clone();
-                }
-                tx.execute(
-                    "UPDATE runtime_items SET record=?1 WHERE id=?2 AND agent=?3",
-                    rusqlite::params![item.to_string(), item_id, final_agent_id],
-                )
-                .map_err(|error| ApiError::stored(error.into()))?;
-            }
+            // Items after the turn are hidden, never deleted.
+            edit_turn::set_item_visibility(
+                tx,
+                &final_agent_id,
+                &visible_ids,
+                &final_checkpoint["id"],
+            )
+            .map_err(|error| match error {
+                edit_turn::EditTurnError::Store(error) => ApiError::stored(error.into()),
+                edit_turn::EditTurnError::Record(_) => ApiError::internal(),
+            })?;
             let label = final_checkpoint
                 .get("label")
                 .and_then(Value::as_str)

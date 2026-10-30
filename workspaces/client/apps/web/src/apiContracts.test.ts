@@ -306,18 +306,11 @@ function generatedFacadeRequestAssertions() {
     settings: { permissionMode: null },
   });
   post("/api/claude/session", {
+    // @ts-expect-error the Claude-only rollback action no longer exists
     action: "rollback",
     id: "agent",
     request_id: "one",
     turn_id: "turn",
-    // @ts-expect-error rollback arguments cannot carry settings
-    settings: {},
-  });
-  // @ts-expect-error rollback requires its target turn
-  post("/api/claude/session", {
-    action: "rollback",
-    id: "agent",
-    request_id: "one",
   });
   post("/api/claude/session", {
     action: "stop_task",

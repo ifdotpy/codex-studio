@@ -18,7 +18,7 @@ import { randomUUID, createHash } from "node:crypto";
 import { query, getSessionMessages } from "@anthropic-ai/claude-agent-sdk";
 import { inputGroups, sdkInputMessages } from "../input-messages.ts";
 import { readHistoryIndex, verifiedHistoryIndex } from "../history-index.ts";
-import { forkAtTurn, rollbackSession } from "../controls.ts";
+import { forkAtTurn } from "../controls.ts";
 import { forkSession } from "@anthropic-ai/claude-agent-sdk";
 import { InputQueue } from "../features.ts";
 import {
@@ -227,22 +227,11 @@ try {
     );
     assert(branch.turns[0]?.items[0]);
     assert.equal(branch.turns[0].items[0].nativeIds!.length, 2);
-    await rollbackSession(
-      session,
-      {
-        requestId: randomUUID(),
-        turnId: session.turns[1].id,
-      },
-      deps,
-    );
-    assert.equal(session.turns.length, 1);
-    assert(session.turns[0]?.items[0]);
     console.log(
       JSON.stringify({
         order: serviceFirst ? "service/human" : "human/service",
         visibleMessages: visible.length,
         forkParts: branch.turns[0].items[0].nativeIds!.length,
-        rollbackParts: session.turns[0].items[0].nativeIds!.length,
         recovery: "delivered/absent verified",
       }),
     );

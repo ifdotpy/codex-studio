@@ -128,14 +128,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             .remove(name)
             .ok_or("missing queue payload schema")?;
     }
-    // Claude mutations deserialize through their validated tagged command owner.
+    // Claude settings deserialize through their validated tagged command owner.
     for (name, owner) in [
         (
             "ClaudeSessionSettingsRequest",
-            "studio_runtime_schema::claude_controls::ClaudeControlCommand",
-        ),
-        (
-            "ClaudeSessionRollbackRequest",
             "studio_runtime_schema::claude_controls::ClaudeControlCommand",
         ),
         (
@@ -154,7 +150,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     for name in [
         "ClaudeSessionSettingsRequestAction",
-        "ClaudeSessionRollbackRequestAction",
         "ClaudeSettingsPermissionMode",
     ] {
         analysis

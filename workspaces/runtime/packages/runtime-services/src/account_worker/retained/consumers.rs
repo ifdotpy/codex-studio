@@ -79,31 +79,6 @@ impl ClaudeSessionPort for ClaudePort {
                     request
                 ]))
             );
-            let rewind = match &call.invocation {
-                ControlInvocation::Rollback {
-                    request_id,
-                    turn_id,
-                    restore_files: true,
-                    ..
-                } => Some((request_id.as_str().to_owned(), turn_id.as_str().to_owned())),
-                ControlInvocation::State { .. }
-                | ControlInvocation::Queue { .. }
-                | ControlInvocation::RepairReport { .. }
-                | ControlInvocation::Commands { .. }
-                | ControlInvocation::Settings { .. }
-                | ControlInvocation::Rollback {
-                    restore_files: false,
-                    ..
-                }
-                | ControlInvocation::StopTask { .. }
-                | ControlInvocation::FileBackups { .. } => None,
-            };
-            let restoring_files = rewind.is_some();
-            let timeout_seconds = if restoring_files {
-                crate::claude_controls::FILE_RESTORE_TIMEOUT_SECONDS
-            } else {
-                20
-            };
             let receipt = self
                 .port
                 .request(SessionRequest {
@@ -121,9 +96,8 @@ impl ClaudeSessionPort for ClaudePort {
                     deleted_actor_session: None,
                     method: call.identity.method,
                     params,
-                    deadline: (tokio::time::Instant::now()
-                        + std::time::Duration::from_secs(timeout_seconds))
-                    .into_std(),
+                    deadline: (tokio::time::Instant::now() + std::time::Duration::from_secs(20))
+                        .into_std(),
                 })
                 .await
                 .map_err(|e| match e {
@@ -142,24 +116,6 @@ impl ClaudeSessionPort for ClaudePort {
                     identity: call.identity,
                     result,
                 }),
-                RequestResult::Rejected(error) if restoring_files => {
-                    let reason = error
-                        .get("message")
-                        .and_then(Value::as_str)
-                        .unwrap_or("The bridge rejected the file restore");
-                    let reason = reason.chars().take(MAX_CONTROL_ERROR_CHARACTERS).collect();
-                    let data = &error["data"];
-                    if data["fileRestoreOutcome"] == "not_applied"
-                        && rewind.as_ref().is_some_and(|(request, turn)| {
-                            data.get("requestId").and_then(Value::as_str) == Some(request.as_str())
-                                && data.get("turnId").and_then(Value::as_str) == Some(turn.as_str())
-                        })
-                    {
-                        Err(ControlError::RewindNotApplied(reason))
-                    } else {
-                        Err(ControlError::RewindRejected(reason))
-                    }
-                }
                 RequestResult::Rejected(error)
                     if matches!(call.invocation, ControlInvocation::Settings { .. })
                         && error

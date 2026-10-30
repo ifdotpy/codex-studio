@@ -897,7 +897,7 @@ async fn a_claude_control_write_reaches_the_client() {
             let operation = json!({"id":"control-op","requestId":"control-request",
                 "kind":"claude_rollback","agent":CHAT,"signature":"a".repeat(64),"source":{},
                 "phase":"recovery_required","created":1.0});
-            studio_runtime_store::ClaudeControlRepository::apply(tx, &agent, &operation, &[])
+            studio_runtime_store::ClaudeControlRepository::apply(tx, &agent, &operation)
         })
         .await
         .expect("the control write commits");

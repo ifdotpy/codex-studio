@@ -83,6 +83,14 @@ pub trait ProviderAdapter: Send + Sync + 'static {
         self.kind().capabilities()
     }
 
+    /// The provider request that gives `edit(turn)` its new thread: a fork from the
+    /// turn of `checkpoint`, or a new thread when the checkpoint has no turn.
+    /// Each adapter owns this call, so a provider can change its request without
+    /// a branch in the caller. Both peers take `thread/fork` today.
+    fn edit_thread_request(&self, agent: &Value, checkpoint: &Value) -> ThreadRequest {
+        fork_from_checkpoint(agent, checkpoint)
+    }
+
     /// Provider-specific parts of `thread/start` and `thread/resume` params.
     fn shape_thread_params(
         &self,
@@ -143,6 +151,54 @@ pub trait ProviderAdapter: Send + Sync + 'static {
 
     /// Hold reason of a start whose account identity changed under the session.
     fn account_changed_message(&self) -> &'static str;
+}
+
+/// A native thread request: the method and its params.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ThreadRequest {
+    pub method: Method,
+    pub params: Value,
+}
+
+/// `thread/fork` from the checkpoint's turn. The params keep the fields that every
+/// thread of the agent carries: folder, service tier, model, config and, for a fork,
+/// the approval policy and sandbox. `model` is omitted when the agent has none,
+/// because a null model differs from a missing one.
+fn fork_from_checkpoint(agent: &Value, checkpoint: &Value) -> ThreadRequest {
+    let fork = checkpoint.get("turnId").is_some_and(Value::is_string);
+    let config = agent
+        .get("threadConfig")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let mut params = json!({
+        "cwd": agent.get("cwd").cloned().unwrap_or(Value::Null),
+        "serviceTier": if agent.get("fastMode").and_then(Value::as_bool) == Some(true) { "priority" } else { "default" },
+        "config": config,
+    });
+    if let Some(model) = agent
+        .get("model")
+        .and_then(Value::as_str)
+        .filter(|model| !model.is_empty())
+    {
+        params["model"] = json!(model);
+    }
+    if !fork {
+        return ThreadRequest {
+            method: Method::ThreadStart,
+            params,
+        };
+    }
+    params["threadId"] = checkpoint.get("threadId").cloned().unwrap_or(Value::Null);
+    params["lastTurnId"] = checkpoint.get("turnId").cloned().unwrap_or(Value::Null);
+    for key in ["approvalPolicy", "sandbox"] {
+        if let Some(value) = agent.get(key) {
+            params[key] = value.clone();
+        }
+    }
+    ThreadRequest {
+        method: Method::ThreadFork,
+        params,
+    }
 }
 
 /// The agent's provider keeps a native rollout history. An unknown provider
@@ -709,21 +765,56 @@ mod tests {
         use super::ProviderCapability::{
             Approvals, Compaction, Effort, Fork, ModelChange, Rewind, Steer,
         };
+        for kind in ProviderKind::ALL {
+            assert_eq!(
+                adapter(kind).supported_controls(),
+                [
+                    Steer,
+                    Rewind,
+                    Fork,
+                    ModelChange,
+                    Effort,
+                    Compaction,
+                    Approvals
+                ],
+                "{kind}"
+            );
+        }
+    }
+
+    #[test]
+    fn both_adapters_fork_the_thread_from_the_turn_of_the_checkpoint() {
+        use super::Method;
+        let agent = json!({
+            "cwd": "/work", "model": "m", "fastMode": true,
+            "threadConfig": {"k": 1}, "approvalPolicy": "never", "sandbox": "read-only"
+        });
+        let checkpoint = json!({"threadId": "t1", "turnId": "u2"});
+        for kind in ProviderKind::ALL {
+            let request = adapter(kind).edit_thread_request(&agent, &checkpoint);
+            assert_eq!(request.method, Method::ThreadFork, "{kind}");
+            assert_eq!(
+                request.params,
+                json!({
+                    "cwd": "/work", "serviceTier": "priority", "model": "m",
+                    "config": {"k": 1}, "threadId": "t1", "lastTurnId": "u2",
+                    "approvalPolicy": "never", "sandbox": "read-only"
+                }),
+                "{kind}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_checkpoint_without_a_turn_starts_a_new_thread() {
+        use super::Method;
+        let agent = json!({"cwd": "/work", "model": ""});
+        let request =
+            adapter(ProviderKind::Codex).edit_thread_request(&agent, &json!({"turnId": null}));
+        assert_eq!(request.method, Method::ThreadStart);
         assert_eq!(
-            adapter(ProviderKind::Codex).supported_controls(),
-            [Steer, Fork, ModelChange, Effort, Compaction, Approvals]
-        );
-        assert_eq!(
-            adapter(ProviderKind::Claude).supported_controls(),
-            [
-                Steer,
-                Rewind,
-                Fork,
-                ModelChange,
-                Effort,
-                Compaction,
-                Approvals
-            ]
+            request.params,
+            json!({"cwd": "/work", "serviceTier": "default", "config": {}})
         );
     }
 

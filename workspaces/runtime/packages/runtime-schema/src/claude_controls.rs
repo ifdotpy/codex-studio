@@ -1,11 +1,11 @@
-//! Claude settings and rollback command contract shared by HTTP and services.
+//! Claude settings command contract shared by HTTP and services.
 
 use crate::{claude_permissions::PermissionMode, queue_command::Field};
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
 
-/// Maximum UTF-8 byte length of a Claude control agent, request, or turn identity.
+/// Maximum UTF-8 byte length of a Claude control agent or request identity.
 pub const CONTROL_ID_MAX_BYTES: usize = 1024;
 /// Schema upper bound in Unicode code points. Each code point uses at least one
 /// UTF-8 byte; serde enforces the stronger byte bound on every ingress path.
@@ -141,11 +141,6 @@ pub struct ClaudeSettings {
 }
 
 /// A validated mutation has exactly the arguments required by its action.
-///
-/// ```compile_fail
-/// use studio_runtime_schema::claude_controls::ClaudeControlCommand;
-/// let command = ClaudeControlCommand::Rollback { settings: Default::default() };
-/// ```
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ClaudeControlCommand {
@@ -154,37 +149,21 @@ pub enum ClaudeControlCommand {
         request_id: ControlId,
         settings: ClaudeSettings,
     },
-    Rollback {
-        id: ControlId,
-        request_id: ControlId,
-        turn_id: ControlId,
-        #[serde(default)]
-        restore_files: bool,
-    },
 }
 impl ClaudeControlCommand {
     pub fn id(&self) -> &str {
         match self {
-            Self::Settings { id, .. } | Self::Rollback { id, .. } => id.as_str(),
+            Self::Settings { id, .. } => id.as_str(),
         }
     }
     pub fn request_id(&self) -> &str {
         match self {
-            Self::Settings { request_id, .. } | Self::Rollback { request_id, .. } => {
-                request_id.as_str()
-            }
+            Self::Settings { request_id, .. } => request_id.as_str(),
         }
     }
     pub fn action_name(&self) -> &'static str {
         match self {
             Self::Settings { .. } => "settings",
-            Self::Rollback { .. } => "rollback",
-        }
-    }
-    pub fn restore_files(&self) -> bool {
-        match self {
-            Self::Settings { .. } => false,
-            Self::Rollback { restore_files, .. } => *restore_files,
         }
     }
     pub fn operation_id(&self) -> String {
@@ -199,20 +178,23 @@ pub(crate) fn schemas() -> Vec<(&'static str, Value)> {
         .into_generator()
         .into_root_schema_for::<ClaudeControlCommand>()
         .to_value();
-    let mut variants = schema["oneOf"]
-        .as_array()
-        .expect("tagged command variants")
-        .clone()
-        .into_iter();
-    let mut settings_request = variants.next().expect("settings variant");
-    let rollback_request = variants.next().expect("rollback variant");
+    // One tagged variant may be emitted as a root object instead of a `oneOf`.
+    let mut settings_request = match schema["oneOf"].as_array() {
+        Some(variants) => variants.first().expect("settings variant").clone(),
+        None => {
+            let mut root = schema.clone();
+            for key in ["$schema", "title", "description"] {
+                root.as_object_mut().expect("command schema").remove(key);
+            }
+            root
+        }
+    };
     let settings = settings_request["properties"]["settings"].clone();
     settings_request["properties"]["settings"] =
         json!({"$ref":"#/components/schemas/ClaudeSettings"});
     vec![
         ("ClaudeSettings", settings),
         ("ClaudeSessionSettingsRequest", settings_request),
-        ("ClaudeSessionRollbackRequest", rollback_request),
     ]
 }
 
@@ -292,42 +274,32 @@ mod tests {
 
     #[test]
     fn claude_control_command_ingress_contract() {
-        for action in ["settings", "rollback"] {
-            let base = match action {
-                "settings" => {
-                    json!({"action":action,"id":"agent","request_id":"request","settings":{}})
-                }
-                "rollback" => {
-                    json!({"action":action,"id":"agent","request_id":"request","turn_id":"turn"})
-                }
-                _ => unreachable!(),
-            };
-            check(base.clone(), true);
-            for field in ["id", "request_id"] {
-                let mut absent = base.clone();
-                absent.as_object_mut().expect("object").remove(field);
-                check(absent, false);
-                for invalid in [
-                    Value::Null,
-                    json!(""),
-                    json!(7),
-                    json!(false),
-                    json!([]),
-                    json!({}),
-                    json!("x".repeat(1025)),
-                ] {
-                    let mut wire = base.clone();
-                    wire[field] = invalid;
-                    check(wire, false);
-                }
+        let base = json!({"action":"settings","id":"agent","request_id":"request","settings":{}});
+        check(base.clone(), true);
+        for field in ["id", "request_id"] {
+            let mut absent = base.clone();
+            absent.as_object_mut().expect("object").remove(field);
+            check(absent, false);
+            for invalid in [
+                Value::Null,
+                json!(""),
+                json!(7),
+                json!(false),
+                json!([]),
+                json!({}),
+                json!("x".repeat(1025)),
+            ] {
                 let mut wire = base.clone();
-                wire[field] = json!("x".repeat(1024));
-                check(wire, true);
+                wire[field] = invalid;
+                check(wire, false);
             }
-            let mut unknown = base;
-            unknown["extra"] = json!(true);
-            check(unknown, false);
+            let mut wire = base.clone();
+            wire[field] = json!("x".repeat(1024));
+            check(wire, true);
         }
+        let mut unknown = base;
+        unknown["extra"] = json!(true);
+        check(unknown, false);
         for (settings, expected) in [
             (json!({"thinking":null}), false),
             (json!({"thinking":false}), true),
@@ -354,40 +326,18 @@ mod tests {
                 true,
             );
         }
-        for invalid in [Value::Null, json!(""), json!(1)] {
+        for extra in ["restore_files", "turn_id"] {
             check(
-                json!({"action":"rollback","id":"agent","request_id":"request","turn_id":invalid}),
-                false,
-            );
-            check(
-                json!({"action":"rollback","id":"agent","request_id":"request","turn_id":"turn","restore_files":invalid}),
+                json!({"action":"settings","id":"agent","request_id":"request","settings":{},extra:false}),
                 false,
             );
         }
-        for restore in [false, true] {
-            check(
-                json!({"action":"rollback","id":"agent","request_id":"request","turn_id":"turn","restore_files":restore}),
-                true,
-            );
-        }
-        check(
-            json!({"action":"rollback","id":"agent","request_id":"request","turn_id":"turn","settings":{}}),
-            false,
-        );
-        check(
-            json!({"action":"settings","id":"agent","request_id":"request","settings":{},"restore_files":false}),
-            false,
-        );
-        check(
-            json!({"action":"settings","id":"agent","request_id":"request","settings":{},"turn_id":"turn"}),
-            false,
-        );
-        check(
-            json!({"action":"rollback","id":"agent","request_id":"request"}),
-            false,
-        );
         check(
             json!({"action":"settings","id":"agent","request_id":"request"}),
+            false,
+        );
+        check(
+            json!({"action":"rollback","id":"agent","request_id":"request","turn_id":"turn"}),
             false,
         );
         for wire in [
