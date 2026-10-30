@@ -15,6 +15,7 @@ pub(crate) const AGENT_SUMMARY_ATTENTION_FIELDS: [&str; 3] =
 
 /// Maximum last-answer text retained in an agent sync view. Unit: Unicode scalar values.
 pub(crate) const AGENT_SYNC_LAST_ANSWER_CHARS: usize = 4_000;
+pub(crate) const SYNC_TEXT_CHARS: usize = 12_000;
 
 const AGENT_SHORT_STRING_OBJECTS: &[&str] = &[
     "activity",
@@ -122,7 +123,7 @@ fn bound_sync_value(value: &Value, field: &str, agent_short_strings: bool) -> Va
                     "error" | "tail" | "description" | "command" | "query" => 2_000,
                     "lastAnswer" => AGENT_SYNC_LAST_ANSWER_CHARS,
                     "text" => 4_000,
-                    _ => 12_000,
+                    _ => SYNC_TEXT_CHARS,
                 }
             };
             Value::String(text.chars().take(limit).collect())
