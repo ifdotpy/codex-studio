@@ -15,6 +15,7 @@ import {
   type PairReceipt,
 } from "./pairing";
 import type { StudioServer } from "./registry";
+import { retarget, routesFor, sendRouted } from "./routes";
 import { ACCESS_PROTOCOL_VERSION } from "../generated/multiServerProtocol";
 type Credential = {
   inviteId?: string;
@@ -189,10 +190,15 @@ export class BrowserServerCredentials implements ServerCredentialAdapter {
       !isServerMethod(request.method)
     )
       throw new Error("The request does not belong to this server.");
+    // The route is verified before any key signs for it.
+    const routes = routesFor(server);
+    const origin = await routes.resolve();
+    const route = async (signed: Request) =>
+      sendRouted(routes, await retarget(signed, origin));
     if (isRemoteServerView && serverViewId === server.id) {
       const { clientId, privateKey } =
         await requestFrameSigningCredential(server);
-      return fetch(
+      return route(
         await signedRequest(
           request,
           server.id,
@@ -213,7 +219,7 @@ export class BrowserServerCredentials implements ServerCredentialAdapter {
       credential.clientId !== server.credentialId
     )
       throw new Error("The server key is unavailable. Pair this UI again.");
-    return fetch(
+    return route(
       await signedRequest(
         request,
         server.id,

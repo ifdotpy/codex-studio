@@ -23579,6 +23579,8 @@ export interface components {
     };
     /** SyncSessionEvent */
     SyncSessionEvent: {
+      /** Routes */
+      routes: string[];
       sessionId: string;
     };
     /** SyncStudioErrorEntityPayload */

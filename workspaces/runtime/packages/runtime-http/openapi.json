@@ -52775,6 +52775,13 @@
       "SyncSessionEvent": {
         "additionalProperties": false,
         "properties": {
+          "routes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Routes",
+            "type": "array"
+          },
           "sessionId": {
             "maxLength": 36,
             "minLength": 36,
@@ -52782,7 +52789,8 @@
           }
         },
         "required": [
-          "sessionId"
+          "sessionId",
+          "routes"
         ],
         "title": "SyncSessionEvent",
         "type": "object"
