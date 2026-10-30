@@ -186,7 +186,7 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                 }
                 // Pure computations never wait behind database writes: the UI
                 // calls several of them synchronously.
-                Ok(request) if pure(&request.method) => Work::Immediate(compute(&request)),
+                Ok(request) if request.method == "markdown.parse" => Work::Immediate(compute(&request)),
                 Ok(request) if request.method.starts_with("speech.") => Work::Speech(request),
                 Ok(request) if request.method.starts_with("media.") => Work::Media(request),
                 Ok(request) if request.method.starts_with("voice.") => Work::Voice(request),
@@ -328,9 +328,6 @@ fn claim_audio_from(
     lease.is_some()
 }
 
-fn pure(method: &str) -> bool {
-    method == "markdown.parse"
-}
 fn compute(request: &Request) -> Response {
     if request.id.is_empty() || request.id.len() > 128 {
         return Response::failure(
