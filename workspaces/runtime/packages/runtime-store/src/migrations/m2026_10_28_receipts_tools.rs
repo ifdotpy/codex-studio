@@ -103,6 +103,24 @@ impl ReceiptFamilyMigration for Family {
                 break;
             }
             budget.rows += secondary.0;
+            let request = match source {
+                "runtime_tool_request_aliases" => decoded["request"].as_str().unwrap_or_default(),
+                _ => row.id.as_str(),
+            };
+            if is_retired_saved_receipt(tx, request)? {
+                let mut count = MigrationCheckpoint::begin(
+                    tx,
+                    ID,
+                    RETIRED_SAVED_RECEIPTS,
+                    checkpoint.cutover_ms,
+                )?;
+                count.cursor += 1;
+                count.status = MigrationStatus::Complete;
+                count.save(tx, ID, RETIRED_SAVED_RECEIPTS, checkpoint.cutover_ms)?;
+                delete_source(tx, source, row.rowid)?;
+                next.cursor = row.rowid;
+                continue;
+            }
             match source {
                 "runtime_tool_request_aliases" => {
                     let alias = decoded;
@@ -156,7 +174,12 @@ impl ReceiptFamilyMigration for Family {
                         )?;
                         let result = if let Some(reference) = task.pointer("/_payloadBlobs/result")
                         {
-                            Some(load_blob(tx, source, &row, reference)?)
+                            if blob_missing(tx, reference) {
+                                discard_lost_reply(tx, source, &row, checkpoint.cutover_ms)?;
+                                None
+                            } else {
+                                Some(load_blob(tx, source, &row, reference)?)
+                            }
                         } else {
                             task.get("result").filter(|v| !v.is_null()).cloned()
                         };
@@ -481,6 +504,23 @@ fn migrate_location_c(
     delete_source(tx, SOURCE, row.rowid)
 }
 
+/// Counts rows of retired saved-receipt tool requests that the migration dropped.
+const RETIRED_SAVED_RECEIPTS: &str = "dropped-retired:saved-receipt-tool-request";
+
+/// The retired Python backend copied old saved receipts into tool requests without a tool
+/// name or signature (`migrationSource: saved_receipt`). They belong to turns that ended
+/// before 2026-10; no provider call can name them again, and nothing can classify them.
+fn is_retired_saved_receipt(tx: &Transaction<'_>, id: &str) -> Result<bool> {
+    Ok(tx
+        .query_row(
+            "SELECT 1 FROM runtime_tool_requests WHERE id=?1 AND json_valid(record) AND json_extract(record,'$.migrationSource')='saved_receipt' AND json_type(record,'$.tool')='null' AND json_type(record,'$.signature')='null'",
+            [id],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()?
+        .is_some())
+}
+
 /// The retired Python backend saved remote spawn replies as `remote-worker:<link>`
 /// without a request row. Its only reader was deleted in 027f3cfea, so no code reads them.
 fn is_retired_remote_spawn(tx: &Transaction<'_>, id: &str) -> Result<bool> {
@@ -578,12 +618,28 @@ fn save_result(
         let refs = refs
             .as_object()
             .ok_or_else(|| unclassifiable(source, &row.id, &row.signature))?;
+        if refs.values().any(|reference| blob_missing(tx, reference)) {
+            return discard_lost_reply(tx, source, row, cutover);
+        }
         for (field, reference) in refs {
             result[field] = load_blob(tx, source, row, reference)?;
         }
     }
     if !studio_runtime_schema::validate("PersistedToolResult", &result).unwrap_or(false) {
         return Err(unclassifiable(source, &row.id, &row.signature));
+    }
+    // An action family (for example manual management) already imported its own reply
+    // under this request id; that owner keeps the id and the tool copy is redundant.
+    let owned: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM request_results WHERE id=?1 AND json_extract(result,'$.reply.contentItems') IS NULL)",
+        [&row.id],
+        |r| r.get(0),
+    )?;
+    if owned {
+        let mut count = MigrationCheckpoint::begin(tx, ID, OWNED_REPLY_REPORT, cutover)?;
+        count.cursor += 1;
+        count.status = MigrationStatus::Complete;
+        return count.save(tx, ID, OWNED_REPLY_REPORT, cutover);
     }
     import_result(
         tx,
@@ -596,6 +652,47 @@ fn save_result(
         },
         cutover,
     )
+}
+
+/// Counts tool replies whose request id already holds another family's reply.
+const OWNED_REPLY_REPORT: &str = "skipped-owned:tool-reply";
+
+/// Counts completed tool replies whose payload blob file no longer exists.
+const LOST_REPLY_REPORT: &str = "deleted-completed-c:tool-reply-blob-missing";
+
+/// True when a well-formed blob reference names a file that does not exist.
+fn blob_missing(tx: &Transaction<'_>, reference: &Value) -> bool {
+    let Some(digest) = reference["sha256"].as_str().filter(|d| {
+        d.len() == 64
+            && d.bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    }) else {
+        return false;
+    };
+    let Some(root) = tx.path().and_then(|p| std::path::Path::new(p).parent()) else {
+        return false;
+    };
+    let path = root
+        .join("blobs")
+        .join(&digest[..2])
+        .join(&digest[2..4])
+        .join(digest);
+    matches!(std::fs::symlink_metadata(path), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+}
+
+/// A completed reply without its exact bytes is dropped like other completed rows without a
+/// reply: the cutover fence keeps its identity from fresh admission.
+fn discard_lost_reply(
+    tx: &Transaction<'_>,
+    source: &str,
+    row: &SourceReceipt,
+    cutover: i64,
+) -> Result<()> {
+    validate_completed_discard(source, &row.id, cutover)?;
+    let mut count = MigrationCheckpoint::begin(tx, ID, LOST_REPLY_REPORT, cutover)?;
+    count.cursor += 1;
+    count.status = MigrationStatus::Complete;
+    count.save(tx, ID, LOST_REPLY_REPORT, cutover)
 }
 
 fn load_blob(
@@ -863,6 +960,49 @@ mod tests {
     }
 
     #[test]
+    fn receipts_tools_drops_retired_saved_receipt_requests() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&mut db);
+        let id = "thread:exec-1";
+        let task = json!({"id":id,"agent":"agent","callId":"exec-1","tool":null,"signature":null,"created":0,"updated":0,"stage":"unknown","outcome":"unknown","migrationSource":"saved_receipt","result":null});
+        db.execute(
+            "INSERT INTO runtime_tool_requests VALUES(?1,?2)",
+            params![id, task.to_string()],
+        )
+        .expect("request");
+        db.execute(
+            "INSERT INTO runtime_tool_request_aliases VALUES('agent','exec-1',?1)",
+            [id],
+        )
+        .expect("alias");
+        db.execute("INSERT INTO runtime_tool_results VALUES(?1,'{}')", [id])
+            .expect("result");
+        let tx = db.transaction().expect("transaction");
+        for source in SOURCES {
+            let mut checkpoint =
+                MigrationCheckpoint::begin(&tx, ID, source, CUTOVER).expect("checkpoint");
+            while checkpoint.status != MigrationStatus::Complete {
+                checkpoint = Family
+                    .move_batch(&tx, source, &checkpoint)
+                    .expect("retired request is dropped");
+            }
+            assert_eq!(
+                tx.query_row(&format!("SELECT count(*) FROM {source}"), [], |r| r
+                    .get::<_, i64>(0))
+                    .expect("rows"),
+                0
+            );
+        }
+        assert_eq!(
+            MigrationCheckpoint::load(&tx, ID, RETIRED_SAVED_RECEIPTS)
+                .expect("report")
+                .expect("count")
+                .cursor,
+            3
+        );
+    }
+
+    #[test]
     fn receipts_tools_discards_retired_remote_spawn_replies() {
         let mut db = Connection::open_in_memory().expect("database");
         fixture(&mut db);
@@ -934,17 +1074,76 @@ mod tests {
     }
 
     #[test]
-    fn receipts_tools_missing_or_corrupt_blob_stops_with_source_identity() {
-        for corrupt in [false, true] {
+    fn receipts_tools_reply_already_owned_by_an_action_is_skipped() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&mut db);
+        insert(&db, "owned", "completed", "applied");
+        let tx = db.transaction().expect("transaction");
+        import_result(
+            &tx,
+            "owned",
+            "action signature",
+            &ResultEnvelope {
+                actor: Some("agent".into()),
+                reply: json!({"outcome":"not_applied","value":{"status":"skipped"}}),
+                references: Vec::new(),
+            },
+            CUTOVER,
+        )
+        .expect("action reply");
+        tx.commit().expect("commit");
+        migrate(&mut db);
+        let tx = db.transaction().expect("transaction");
+        let saved: String = tx
+            .query_row(
+                "SELECT result FROM request_results WHERE id='owned'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("owner reply");
+        assert!(saved.contains("not_applied"));
+        assert_eq!(
+            MigrationCheckpoint::load(&tx, ID, OWNED_REPLY_REPORT)
+                .expect("report")
+                .expect("count")
+                .cursor,
+            1
+        );
+    }
+
+    #[test]
+    fn receipts_tools_missing_blob_drops_reply_and_counts() {
+        let root = tempfile::tempdir().expect("directory");
+        let mut db = Connection::open(root.path().join("canvas.sqlite3")).expect("database");
+        fixture(&mut db);
+        blob_task(&db, root.path(), false);
+        migrate(&mut db);
+        let tx = db.transaction().expect("transaction");
+        assert_eq!(
+            tx.query_row("SELECT count(*) FROM request_results", [], |r| r
+                .get::<_, i64>(0))
+                .expect("no preview reply"),
+            0
+        );
+        assert_eq!(
+            MigrationCheckpoint::load(&tx, ID, LOST_REPLY_REPORT)
+                .expect("report")
+                .expect("count")
+                .cursor,
+            1
+        );
+    }
+
+    #[test]
+    fn receipts_tools_corrupt_blob_stops_with_source_identity() {
+        {
             let root = tempfile::tempdir().expect("directory");
             let mut db = Connection::open(root.path().join("canvas.sqlite3")).expect("database");
             fixture(&mut db);
-            let path = blob_task(&db, root.path(), corrupt);
-            if corrupt {
-                let mut bytes = std::fs::read(&path).expect("bytes");
-                bytes[0] = b'!';
-                std::fs::write(&path, bytes).expect("corrupt blob");
-            }
+            let path = blob_task(&db, root.path(), true);
+            let mut bytes = std::fs::read(&path).expect("bytes");
+            bytes[0] = b'!';
+            std::fs::write(&path, bytes).expect("corrupt blob");
             let tx = db.transaction().expect("transaction");
             let checkpoint =
                 MigrationCheckpoint::begin(&tx, ID, SOURCES[2], CUTOVER).expect("checkpoint");

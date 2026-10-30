@@ -1148,11 +1148,16 @@ fn agent_owners(
     if value["nativeRelease"].is_object() {
         let mut release = value["nativeRelease"].clone();
         let _ = row.json::<LegacyReleaseProbe>(table)?.native_release.phase;
-        let operation = format!("{}:unsubscribe", string(&release, "id", table, row)?);
-        let account = release["accountKey"].as_str().unwrap_or("default");
-        release["admittedRequest"] = match retained(tx, table, row, account, &operation, cutover)? {
-            Some((_, token)) => json!(token),
-            None => Value::Null,
+        // The retired Python backend saved releases without an id; no request can match one.
+        release["admittedRequest"] = if release.get("id").is_none() {
+            Value::Null
+        } else {
+            let operation = format!("{}:unsubscribe", string(&release, "id", table, row)?);
+            let account = release["accountKey"].as_str().unwrap_or("default");
+            match retained(tx, table, row, account, &operation, cutover)? {
+                Some((_, token)) => json!(token),
+                None => Value::Null,
+            }
         };
         if release["authorization"].is_object() {
             let mut auth = release["authorization"].clone();
@@ -1880,6 +1885,29 @@ mod tests {
             .expect("count query")
             .expect("count");
         assert_eq!(count.cursor, 2);
+    }
+    #[test]
+    fn receipts_actions_python_release_without_id_has_no_admitted_request() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&db);
+        let release = json!({"phase":"released","threadId":"t","accountKey":"a","connectionId":"c","at":1.0,"submittedAt":1.0,"releasedAt":1.0,"nativeStatus":"unsubscribed","error":null,"resetPending":false,"closedAt":2.0});
+        db.execute(
+            "INSERT INTO runtime_agents VALUES('agent',?1)",
+            [json!({"id":"agent","epoch":0,"nativeRelease":release}).to_string()],
+        )
+        .expect("agent");
+        batch(&mut db, "runtime_agents").expect("migrate agents");
+        let record: Value = serde_json::from_str(
+            &db.query_row(
+                "SELECT record FROM runtime_agents WHERE id='agent'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .expect("record"),
+        )
+        .expect("json");
+        assert_eq!(record["nativeRelease"]["admittedRequest"], Value::Null);
+        assert_eq!(record["nativeRelease"]["phase"], "released");
     }
     #[test]
     fn receipts_actions_unchanged_agent_keeps_transcript_revision() {
