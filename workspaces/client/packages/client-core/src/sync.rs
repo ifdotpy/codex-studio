@@ -567,47 +567,9 @@ fn projection_error_with_limit(payload: &str, limit: usize) -> Option<CommandErr
     })
 }
 
-async fn apply_entities(
-    backend: &Backend,
-    sender: &StoreSender,
-    workspace: &str,
-    values: &[Value],
-) -> Result<Value, CommandError> {
-    let current = identity(backend).await?;
-    let workspace = if workspace.is_empty() {
-        current["workspaceId"].as_str().unwrap_or("")
-    } else {
-        if current["workspaceId"] != workspace {
-            return Err(error(
-                "workspace_changed",
-                "The server workspace changed during synchronization.",
-            ));
-        }
-        workspace
-    };
-    if !crate::projections::valid_workspace(workspace) {
-        return Err(error("invalid_workspace", "Invalid workspace identity."));
-    }
-    let changes = Vec::<EntityChange>::deserialize(Value::Array(values.to_vec()))
-        .map_err(|e| error("storage_error", e))?;
-    crate::delivery::apply_entities(sender, workspace, changes, false, None, None)
-        .await
-        .map_err(|e| error("storage_error", e))
-}
-
 pub async fn dispatch(backend: &Backend, sender: &StoreSender, request: Request) -> Response {
     let result = match request.method.as_str() {
         "sync.open" => open(backend, sender).await,
-        "sync.applyEntities" => match (
-            request.params["workspace"].as_str().unwrap_or(""),
-            request.params["documents"].as_array(),
-        ) {
-            (w, Some(d)) => apply_entities(backend, sender, w, d).await,
-            (_, None) => Err(error(
-                "invalid_params",
-                "Workspace and entity documents are required.",
-            )),
-        },
         _ => Err(error("unknown_method", "Unknown synchronization command.")),
     };
     match result {
@@ -628,21 +590,30 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
     use tokio::{io::AsyncWriteExt, net::TcpListener, sync::mpsc};
+    async fn apply_test(sender: &StoreSender, workspace: &str, documents: Value) -> Response {
+        let changes = serde_json::from_value(documents).unwrap();
+        match crate::delivery::apply_entities(sender, workspace, changes, false, None, None).await {
+            Ok(value) => Response::success("apply".into(), value),
+            Err(error) => Response::failure("apply".into(), "storage_error", error),
+        }
+    }
     #[tokio::test]
-    async fn retired_pull_command_is_rejected_without_network() {
+    async fn retired_sync_commands_are_rejected_without_network() {
         let backend = Backend::new("http://127.0.0.1:1").unwrap();
         let (sender, _receiver) = mpsc::channel(1);
-        let response = dispatch(
-            &backend,
-            &sender,
-            Request {
-                id: "retired".into(),
-                method: "sync.pull".into(),
-                params: Value::Null,
-            },
-        )
-        .await;
-        assert_eq!(response.error.unwrap().code, "unknown_method");
+        for method in ["sync.pull", "sync.applyEntities"] {
+            let response = dispatch(
+                &backend,
+                &sender,
+                Request {
+                    id: "retired".into(),
+                    method: method.into(),
+                    params: Value::Null,
+                },
+            )
+            .await;
+            assert_eq!(response.error.unwrap().code, "unknown_method");
+        }
     }
     #[test]
     fn entity_pull_consumed_fields_track_openapi_owner() {
@@ -777,18 +748,6 @@ mod tests {
     #[tokio::test]
     async fn entity_batches_with_out_of_order_sequences_remain_visible() {
         let workspace = "b".repeat(32);
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let backend = Backend::new(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
-        let server_workspace = workspace.clone();
-        let server = tokio::spawn(async move {
-            for _ in 0..2 {
-                let (mut stream, _) = listener.accept().await.unwrap();
-                let (headers, _) = crate::backend::tests::read_http(&mut stream).await;
-                assert!(headers.starts_with("GET /api/sync/identity"));
-                let body = json!({"workspaceId":server_workspace,"chatState":true}).to_string();
-                stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).as_bytes()).await.unwrap();
-            }
-        });
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("client.sqlite3");
         let (sender, mut receive) = mpsc::channel::<crate::delivery::StoreCommand>(32);
@@ -801,11 +760,12 @@ mod tests {
         });
         let mut previous = 0;
         for (id, seq, count) in [("A", 11, 1), ("B", 10, 2)] {
-            let response = dispatch(&backend, &sender, Request {
-                id: format!("apply-{id}"), method: "sync.applyEntities".into(),
-                params: json!({"workspace":workspace,"documents":[{"op":"upsert","collection":"task","id":id,"seq":seq,"value":{"id":id}}]}),
-            }).await;
-            assert_eq!(response.id, format!("apply-{id}"));
+            let response = apply_test(
+                &sender,
+                &workspace,
+                json!([{"op":"upsert","collection":"task","id":id,"seq":seq,"value":{"id":id}}]),
+            )
+            .await;
             assert!(response.error.is_none(), "{:?}", response.error);
             let doc = response.result.unwrap();
             let snapshot: Value = serde_json::from_str(doc["payload"].as_str().unwrap()).unwrap();
@@ -818,7 +778,6 @@ mod tests {
         }
         drop(sender);
         worker.await.unwrap();
-        server.await.unwrap();
         let mut store = crate::store::Store::open(&path).unwrap();
         let doc = store
             .dispatch(Request {
@@ -1247,18 +1206,6 @@ mod tests {
     #[tokio::test]
     async fn entity_v4_batch_applies_structured_upserts_and_deletes_once() {
         let workspace = "b".repeat(32);
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let backend = Backend::new(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
-        let server_workspace = workspace.clone();
-        let server = tokio::spawn(async move {
-            for _ in 0..3 {
-                let (mut stream, _) = listener.accept().await.unwrap();
-                let (headers, _) = crate::backend::tests::read_http(&mut stream).await;
-                assert!(headers.starts_with("GET /api/sync/identity"));
-                let body = json!({"workspaceId":server_workspace,"chatState":true}).to_string();
-                stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).as_bytes()).await.unwrap();
-            }
-        });
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("client.sqlite3");
         let (sender, mut receive) = mpsc::channel::<crate::delivery::StoreCommand>(32);
@@ -1289,14 +1236,9 @@ mod tests {
             }
             drop(directory);
         });
-        let apply = |documents: Value| Request {
-            id: "apply".into(),
-            method: "sync.applyEntities".into(),
-            params: json!({"workspace":workspace,"documents":documents}),
-        };
         let task = json!({"op":"upsert","collection":"task","id":"one","seq":10,"value":{"id":"one","status":"running"}});
         let other = json!({"op":"upsert","collection":"task","id":"two","seq":11,"value":{"id":"two","status":"running"}});
-        let first = dispatch(&backend, &sender, apply(json!([task, other]))).await;
+        let first = apply_test(&sender, &workspace, json!([task, other])).await;
         assert!(first.error.is_none(), "{:?}", first.error);
         let snapshot: Value =
             serde_json::from_str(first.result.unwrap()["payload"].as_str().unwrap()).unwrap();
@@ -1307,13 +1249,13 @@ mod tests {
             1,
             "one storage command applies and materializes the entire batch"
         );
-        let removed = dispatch(
-            &backend,
+        let removed = apply_test(
             &sender,
-            apply(json!([
+            &workspace,
+            json!([
                 {"op":"delete","collection":"task","id":"one","seq":12},
                 {"op":"delete","collection":"task","id":"two","seq":13}
-            ])),
+            ]),
         )
         .await;
         assert!(removed.error.is_none(), "{:?}", removed.error);
@@ -1322,7 +1264,7 @@ mod tests {
         assert!(snapshot["runtime"]["tasks"].as_array().unwrap().is_empty());
         assert_eq!(state_puts.load(Ordering::SeqCst), 2);
         assert_eq!(commands.load(Ordering::SeqCst), 2);
-        let stale = dispatch(&backend, &sender, apply(json!([task]))).await;
+        let stale = apply_test(&sender, &workspace, json!([task])).await;
         assert_eq!(stale.result, Some(removed));
         assert_eq!(commands.load(Ordering::SeqCst), 3);
         assert_eq!(state_puts.load(Ordering::SeqCst), 2);
@@ -1339,7 +1281,6 @@ mod tests {
         );
         drop(sender);
         worker.await.unwrap();
-        server.await.unwrap();
     }
 
     #[tokio::test]
