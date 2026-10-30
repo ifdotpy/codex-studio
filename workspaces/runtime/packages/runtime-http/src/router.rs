@@ -1557,6 +1557,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn uncalled_context_repair_and_audit_routes_are_not_exposed() {
+        let (state, _directory) = state();
+        let app = router(state).expect("router starts");
+        for (method, path) in [
+            ("POST", "/api/context-repair"),
+            ("GET", "/api/multi-server/audit"),
+        ] {
+            let request = Request::builder()
+                .method(method)
+                .uri(path)
+                .header("host", "127.0.0.1:4620")
+                .header("x-canvas-token", "token")
+                .header("content-type", "application/json")
+                .extension(ConnectInfo(SocketAddr::new(
+                    IpAddr::V4(Ipv4Addr::LOCALHOST),
+                    12345,
+                )))
+                .body(Body::from("{}"))
+                .expect("request builds");
+            assert_eq!(
+                app.clone()
+                    .oneshot(request)
+                    .await
+                    .expect("response")
+                    .status(),
+                StatusCode::NOT_FOUND,
+                "{path}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn unknown_encoded_voice_path_keeps_request_identity() {
         let (state, _directory) = state();
         let app = router(state).expect("router starts");

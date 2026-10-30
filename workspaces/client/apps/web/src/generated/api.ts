@@ -790,23 +790,6 @@ export interface paths {
     patch?: never | undefined;
     trace?: never | undefined;
   };
-  "/api/context-repair": {
-    parameters: {
-      query?: never | undefined;
-      header?: never | undefined;
-      path?: never | undefined;
-      cookie?: never | undefined;
-    };
-    get?: never | undefined;
-    put?: never | undefined;
-    /** Context Repair */
-    post: operations["context_repair_api_context_repair_post"];
-    delete?: never | undefined;
-    options?: never | undefined;
-    head?: never | undefined;
-    patch?: never | undefined;
-    trace?: never | undefined;
-  };
   "/api/conversation": {
     parameters: {
       query?: never | undefined;
@@ -1306,23 +1289,6 @@ export interface paths {
     put?: never | undefined;
     /** Manage */
     post: operations["manage_api_multi_server_post"];
-    delete?: never | undefined;
-    options?: never | undefined;
-    head?: never | undefined;
-    patch?: never | undefined;
-    trace?: never | undefined;
-  };
-  "/api/multi-server/audit": {
-    parameters: {
-      query?: never | undefined;
-      header?: never | undefined;
-      path?: never | undefined;
-      cookie?: never | undefined;
-    };
-    /** Audit */
-    get: operations["audit_api_multi_server_audit_get"];
-    put?: never | undefined;
-    post?: never | undefined;
     delete?: never | undefined;
     options?: never | undefined;
     head?: never | undefined;
@@ -2660,11 +2626,6 @@ export interface components {
       created: number;
       /** Sequence */
       sequence: number;
-    };
-    /** AccessAuditResponse */
-    AccessAuditResponse: {
-      /** Records */
-      records: components["schemas"]["AccessAudit"][];
     };
     /** AccessClient */
     AccessClient: {
@@ -11348,13 +11309,6 @@ export interface components {
       updated?: number | undefined;
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
-    };
-    /** ContextRepairResponse */
-    ContextRepairResponse: {
-      /** Id */
-      id: string;
-      /** @default null */
-      repair?: components["schemas"]["JsonValue"] | null | undefined;
     };
     /** ContextRepairSnapshotRecordResponse */
     ContextRepairSnapshotRecordResponse: {
@@ -31323,71 +31277,6 @@ export interface operations {
       503: components["responses"]["ApiError503"];
     };
   };
-  context_repair_api_context_repair_post: {
-    parameters: {
-      query?: never | undefined;
-      header?: never | undefined;
-      path?: never | undefined;
-      cookie?: never | undefined;
-    };
-    requestBody: {
-      content: {
-        "application/json": components["schemas"]["IdRequest"];
-      };
-    };
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
-          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
-          "Cache-Control": components["headers"]["CacheControl"];
-          "Content-Encoding": components["headers"]["ContentEncoding"];
-          "Content-Length": components["headers"]["ContentLength"];
-          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
-          "Content-Type": components["headers"]["ContentType"];
-          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
-          "Server-Timing": components["headers"]["ServerTiming"];
-          Vary: components["headers"]["Vary"];
-          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
-          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
-          "X-Studio-Server": components["headers"]["StudioServer"];
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ContextRepairResponse"];
-        };
-      };
-      /** @description Bad Request */
-      400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
-      401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
-      403: components["responses"]["ApiError403"];
-      /** @description Not Found */
-      404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
-      408: components["responses"]["ApiError408"];
-      /** @description Conflict */
-      409: components["responses"]["ApiError409"];
-      /** @description Gone */
-      410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
-      413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
-      415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
-      426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
-      429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
-      500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
-      502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
-      503: components["responses"]["ApiError503"];
-    };
-  };
   conversation_settings_api_conversation_post: {
     parameters: {
       query?: never | undefined;
@@ -33388,125 +33277,6 @@ export interface operations {
         };
       };
       415: components["responses"]["ApiError415"];
-      /** @description Too Many Requests */
-      429: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Bad Gateway */
-      502: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Service Unavailable */
-      503: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Gateway Timeout */
-      504: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-    };
-  };
-  audit_api_multi_server_audit_get: {
-    parameters: {
-      query?: never | undefined;
-      header?: never | undefined;
-      path?: never | undefined;
-      cookie?: never | undefined;
-    };
-    requestBody?: never | undefined;
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["AccessAuditResponse"];
-        };
-      };
-      /** @description Bad Request */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Unauthorized */
-      401: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Forbidden */
-      403: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Not Found */
-      404: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Conflict */
-      409: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Gone */
-      410: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Content Too Large */
-      413: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
       /** @description Too Many Requests */
       429: {
         headers: {

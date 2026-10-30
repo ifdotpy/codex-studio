@@ -34,7 +34,6 @@ pub mod startup;
 pub mod store;
 pub mod stream_log;
 pub mod sync;
-pub mod terminal;
 mod tls;
 pub mod views;
 pub mod voice;

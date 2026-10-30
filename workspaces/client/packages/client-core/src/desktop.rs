@@ -68,7 +68,7 @@ fn purpose(method: &str) -> Option<u32> {
         "desktop.openExternal"
         | crate::desktop::SIGN_IN_OPEN_METHOD
         | crate::desktop::SIGN_IN_PREPARE_METHOD => EXTERNAL_LINK_PURPOSE,
-        "desktop.saveBegin" | "desktop.savePreview" | "desktop.saveTerminal" => 5,
+        "desktop.saveBegin" | "desktop.savePreview" => 5,
         "desktop.fileAction" => 6,
         "desktop.requestMicrophone" | "desktop.reserveMicrophone" => 7,
         "desktop.prepareTranscription" => 8,
@@ -293,11 +293,6 @@ pub async fn dispatch(
         }
         #[cfg(target_os = "macos")]
         {
-            if request.method == "desktop.saveTerminal" {
-                let backend = backend.ok_or("The native backend is unavailable.")?;
-                let (name, bytes) = crate::terminal::history(backend, &value).await?;
-                return save_snapshot(name, bytes).await;
-            }
             if request.method == "desktop.savePreview" {
                 let (name, bytes) = previews
                     .ok_or("The preview service is unavailable.")?
@@ -827,7 +822,6 @@ mod tests {
             "desktop.showVaultKeys",
             "desktop.saveBegin",
             "desktop.savePreview",
-            "desktop.saveTerminal",
             "desktop.fileAction",
         ] {
             let reply = dispatch(

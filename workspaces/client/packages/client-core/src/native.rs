@@ -97,7 +97,6 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
         let startup = Arc::new(tokio::sync::Mutex::new(None::<serde_json::Value>));
         let active = Arc::new(AtomicBool::new(false));
         let previews = crate::file_preview::Previews::default();
-        let terminals = crate::terminal::Terminals::default();
         let mut background = tokio::task::JoinSet::new();
         let (events, mut event_receiver) = tokio::sync::mpsc::channel::<serde_json::Value>(64);
         let mut views = crate::views::Views::new(
@@ -105,7 +104,6 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
             store_sender.clone(),
             changed,
             events,
-            terminals.clone(),
         );
         let event_writer = writer.clone();
         background.spawn(async move {
@@ -202,10 +200,6 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                     ) =>
                 {
                     Work::RichDocument(request)
-                }
-                Ok(request) if request.method.starts_with("terminal.") => {
-                    let id = request.id.clone();
-                    Work::Stored(id, terminals.queue(backend.as_ref(), request))
                 }
                 Ok(request) if request.method.starts_with("preview.") => Work::Preview(request),
                 Ok(request) if request.method.starts_with("speech.") => Work::Speech(request),
