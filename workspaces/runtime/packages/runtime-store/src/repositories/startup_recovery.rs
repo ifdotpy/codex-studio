@@ -34,31 +34,39 @@ fn nonfalsy(column: &str) -> String {
 }
 
 /// SQL predicate: an agent record carries a workspace cleanup intent object.
-fn cleanup_intent_predicate() -> String {
+fn cleanup_intent_predicate(_exact: bool) -> String {
     "has_workspace_cleanup_intent=1".to_owned()
 }
 
 /// SQL predicate: a deleted agent that may still hold an active turn, the
 /// rows whose deletion settlement a restart must finish.
-fn deleted_unsettled_predicate() -> String {
+/// `exact` adds the reservation flag from the owner turn row, which an index
+/// predicate cannot read.
+fn deleted_unsettled_predicate(exact: bool) -> String {
     let statuses = ACTIVE_AGENT_STATUSES
         .iter()
         .map(|status| format!("'{status}'"))
         .collect::<Vec<_>>()
         .join(",");
+    let reservation = if exact {
+        "EXISTS(SELECT 1 FROM turns t WHERE t.chat=runtime_agents.id AND t.attempt_active_at_reservation=1)"
+    } else {
+        "0"
+    };
     format!(
-        "{} AND ({} OR {} OR {} OR status IN ({statuses}))",
+        "{} AND ({} OR {} OR status IN ({statuses}) OR {})",
         nonfalsy("deleted_at"),
         nonfalsy("in_flight"),
         nonfalsy("turn_id"),
-        nonfalsy("start_attempt_active_at_reservation"),
+        reservation,
     )
 }
 
 /// One owner for an agent partial index and the query that must match it.
 struct AgentSelection {
     index: &'static str,
-    predicate: fn() -> String,
+    /// The index predicate for `false`, the query predicate for `true`.
+    predicate: fn(bool) -> String,
 }
 const CLEANUP_INTENTS: AgentSelection = AgentSelection {
     index: CLEANUP_INTENT_INDEX,
@@ -76,7 +84,7 @@ impl AgentSelection {
             create_sql: format!(
                 "CREATE INDEX IF NOT EXISTS {} ON runtime_agents(id) WHERE {}",
                 self.index,
-                (self.predicate)()
+                (self.predicate)(false)
             ),
         }
     }
@@ -86,7 +94,7 @@ impl AgentSelection {
         }
         let mut statement = connection.prepare_cached(&format!(
             "SELECT id,record FROM runtime_agents WHERE {} ORDER BY id",
-            (self.predicate)()
+            (self.predicate)(true)
         ))?;
         let rows = statement
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
@@ -479,7 +487,7 @@ mod tests {
             let plan = connection
                 .prepare(&format!(
                     "EXPLAIN QUERY PLAN SELECT id,record FROM runtime_agents WHERE {} ORDER BY id",
-                    (selection.predicate)()
+                    (selection.predicate)(false)
                 ))
                 .expect("plan prepares")
                 .query_map([], |row| row.get::<_, String>(3))
