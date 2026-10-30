@@ -633,12 +633,19 @@ mod tests {
             Some(store.clone()),
             None,
         );
-        let complaint: ResourceRef =
-            serde_json::from_value(json!({"kind":"complaint","complaintId":"c"})).unwrap();
-        let terminal: ResourceRef =
-            serde_json::from_value(json!({"kind":"terminal-output","terminalId":"t"})).unwrap();
-        let voice: ResourceRef =
-            serde_json::from_value(json!({"kind":"voice","agentId":"a"})).unwrap();
+        let complaint = ResourceRef::ComplaintResource(crate::generated::ComplaintResource {
+            complaint_id: "c".into(),
+            kind: crate::generated::ComplaintResourceKind::Complaint,
+        });
+        let terminal =
+            ResourceRef::TerminalOutputResource(crate::generated::TerminalOutputResource {
+                terminal_id: "t".into(),
+                kind: crate::generated::TerminalOutputResourceKind::TerminalOutput,
+            });
+        let voice = ResourceRef::VoiceResource(crate::generated::VoiceResource {
+            agent_id: "a".into(),
+            kind: crate::generated::VoiceResourceKind::Voice,
+        });
         let before = [complaint.clone(), terminal.clone(), voice.clone()];
         let mut fingerprints = Vec::new();
         for resource in &before {
