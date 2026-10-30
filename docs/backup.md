@@ -9,7 +9,7 @@ It is off until the owner turns it on. `analytics.sqlite3` is not part of it.
 ## How it works
 
 - A **generation** is one base snapshot (a copy of the database file) and the WAL frames
-  written after it. Its id is `<start time>-<random>`, so the ids sort by age.
+  of the WAL file from its start. Its id is `<start time>-<random>`, so the ids sort by age.
 - The writer actor runs each Canvas checkpoint (about every 15 s while commits arrive, and at
   shutdown). Around it, `wal_backup::before_checkpoint` copies every new committed WAL frame to
   a segment file in `<state>/backup/outbox/<generation>/`. This is local file I/O. It holds no
@@ -23,17 +23,25 @@ It is off until the owner turns it on. `analytics.sqlite3` is not part of it.
   chunk only when the offset is the end of what it holds, and always answers the length it
   holds. A lost answer or a repeated request therefore writes nothing twice.
 - The receiver stores files in `<state>/backup-received/<source server>/<generation>/`:
-  `snapshot.sqlite3` and `w<WAL index>-<start>-<end>-<checksum>-<pages>.seg` segments.
+  `snapshot.zstblocks` and `w<WAL index>-<start>-<end>-<checksum>-<pages>.seg` segments.
   The name is the source position: the WAL byte range, the WAL checksum chain at its end, and
   the database size in pages after the last commit.
-- While the snapshot is copied the checkpoint is skipped, so the database file cannot change.
-  The WAL grows meanwhile. Commits stay durable only in the WAL until the copy ends.
-  `end_snapshot` checks that the file did not change.
+- **Snapshot.** A separate read connection holds a read mark while the database file is
+  copied, in 4 MiB blocks, each compressed with zstd (level 3) and sent as it is made. The
+  normal 15 s checkpoints keep running. A passive checkpoint copies only the frames up to the
+  read mark into the file and still syncs the WAL, so commits stay durable as before. The WAL
+  cannot restart while the read mark is held, so it grows during the copy. The generation
+  starts with one write (the user version rewritten with its own value), so the read mark is
+  after the last checkpointed frame. Restore applies every WAL frame of the generation over the
+  copy, so a page that a checkpoint wrote during the copy ends with its newest content.
+- The snapshot file is `snapshot.zstblocks`: for each block a 4 byte big-endian length and one
+  zstd frame.
 
 ### A new generation starts when
 
 - the backup is turned on, or no generation exists;
-- the database file changed during the snapshot copy;
+- the server stops or restarts during the snapshot copy (the read mark is lost), or the
+  upload of the snapshot fails after the retries of each request (5 tries, 5 s apart);
 - the WAL restarted without the hook (a checkpoint outside the hook, or a restore);
 - the outbox is larger than 4 GiB (`BACKUP_OUTBOX_MAX_BYTES`), for example when the target is
   away for a long time;
@@ -63,7 +71,7 @@ Run these steps on the server that holds the copy (or copy the generation folder
 server that you restore on). Stop the Studio backend that owns the target state directory
 first.
 
-1. Find the newest generation folder with a `snapshot.sqlite3`:
+1. Find the newest generation folder with a `snapshot.zstblocks`:
    `ls <state>/backup-received/<source server id>/`.
 2. Rebuild and check it:
 
@@ -71,7 +79,7 @@ first.
    studio-runtime-server backup restore --from <generation folder> --to /path/restored.sqlite3
    ```
 
-   The command copies the snapshot and applies the segments in order. It refuses a gap or a
+   The command decompresses the snapshot and applies the segments in order. It refuses a gap or a
    segment whose WAL checksum differs from its name. It then runs `PRAGMA integrity_check`
    (must be `ok`) and compares `PRAGMA page_count` with the source position of the last
    segment. Run it into a scratch path as a **restore check**, for example after the first snapshot. It needs
@@ -87,23 +95,17 @@ first.
 The copy lags the source by the commits after the last checkpoint, normally less than 15 s
 plus the time to send them.
 
-## Without the command
-
-The generation folder works with plain SQLite tools. Copy `snapshot.sqlite3` to
-`restored.sqlite3`. For each WAL index in order, write the segments of that index (sorted by
-name) with `cat` to `restored.sqlite3-wal`, then run
-`sqlite3 restored.sqlite3 'PRAGMA wal_checkpoint(TRUNCATE)'`. Repeat for the next index.
-Finish with `PRAGMA integrity_check`.
-
 ## Limits
 
 - One target server. Restore is by hand.
-- The base snapshot is sent in one piece. About 29 GB at the measured link speed of 8.7 MiB/s
-  (docs/peer-link.md, 512 KiB requests; 128 KiB requests are slower) takes more than one hour.
-  The checkpoints wait for that time, so the WAL grows and commits are flushed to disk only by
-  the OS. A crash of the server process loses nothing. A power loss can lose more than 15 s.
-- A server restart during the snapshot ends the generation (the shutdown checkpoint changes the
-  database file). The next start sends a new snapshot.
+- The snapshot of the live database (about 29 GB) is sent serially in 128 KiB requests. The
+  time is not measured yet (compression and the link speed decide it; the link measured
+  8.7 MiB/s with 512 KiB requests, docs/peer-link.md). During the copy the WAL grows by the
+  write rate times the copy time, and the outbox holds a second copy of those frames. At
+  4 GiB of outbox the generation breaks and starts again.
+- A server restart during the snapshot ends the generation.
+- Segments with the snapshot of a failed upload are not resumed; the next pass starts a new
+  generation.
 - `backup.put` requests are limited by the 256 KiB paired-server request limit.
 
 ## Write transaction alert

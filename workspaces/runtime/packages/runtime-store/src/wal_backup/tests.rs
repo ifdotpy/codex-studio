@@ -54,7 +54,7 @@ impl Source {
     fn receive(&self, snapshot: &Path) -> PathBuf {
         let folder = self.dir.path().join("received");
         fs::create_dir_all(&folder).unwrap();
-        fs::copy(snapshot, folder.join(SNAPSHOT_FILE)).unwrap();
+        write_snapshot_file(snapshot, &folder.join(SNAPSHOT_FILE)).unwrap();
         for segment in self.backup.segments() {
             fs::copy(&segment.path, folder.join(&segment.name)).unwrap();
         }
@@ -63,10 +63,16 @@ impl Source {
 
     /// Begin a generation and take the snapshot the way the shipper does.
     fn start(&self) -> PathBuf {
-        self.backup.begin_generation().unwrap();
+        let snapshot = self.begin();
+        assert!(self.backup.end_snapshot());
+        snapshot
+    }
+
+    /// Begin a generation and copy the database file; the read mark is still held.
+    fn begin(&self) -> PathBuf {
+        self.backup.begin_generation(&self.writer).unwrap();
         let snapshot = self.dir.path().join("snapshot-copy");
         fs::copy(self.backup.database_path(), &snapshot).unwrap();
-        assert!(self.backup.end_snapshot());
         snapshot
     }
 }
@@ -174,20 +180,66 @@ fn a_restart_outside_the_hook_breaks_the_generation() {
     assert!(source.backup.status().broken.is_some());
 }
 
+// The checkpoints keep running while the snapshot is copied, so the copy holds pages that
+// a checkpoint wrote during the copy; the WAL from its start fixes them.
 #[test]
-fn the_checkpoint_waits_during_the_snapshot_and_a_changed_file_is_refused() {
+fn checkpoints_run_during_the_snapshot_and_the_copy_restores() {
     let source = Source::new();
+    source.insert(20);
+    // A complete checkpoint first: the WAL is empty of unflushed frames when the snapshot begins.
+    assert!(source.flush());
+    source.begin();
+    assert!(source.backup.status().snapshot_running);
+    source.insert(30);
+    assert!(source.flush(), "the checkpoint is not deferred");
+    let snapshot = source.dir.path().join("snapshot-late");
+    fs::copy(source.backup.database_path(), &snapshot).unwrap();
+    source.insert(10);
+    assert!(source.flush());
+    assert!(source.backup.end_snapshot());
+    assert_eq!(source.backup.status().broken, None);
     source.insert(5);
-    source.backup.begin_generation().unwrap();
-    source.insert(5);
-    assert!(
-        !source.flush(),
-        "no checkpoint while the snapshot is copied"
-    );
-    // A checkpoint outside the hook changes the database file.
-    checkpoint(&source.writer, CheckpointMode::Passive).unwrap();
-    assert!(!source.backup.end_snapshot());
+    assert!(source.backup.before_checkpoint(CheckpointMode::Passive));
+    let received = source.receive(&snapshot);
+    let out = source.dir.path().join("restored.sqlite3");
+    restore(&received, &out).unwrap();
+    let count: i64 = Connection::open(&out)
+        .unwrap()
+        .query_row("SELECT count(*) FROM items", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(count, source.count());
+    assert_eq!(count, 65);
+}
+
+#[test]
+fn a_shutdown_checkpoint_or_a_restart_during_the_snapshot_breaks_the_generation() {
+    let source = Source::new();
+    source.begin();
+    assert!(source.backup.before_checkpoint(CheckpointMode::Truncate));
     assert!(source.backup.status().broken.is_some());
+    assert!(!source.backup.status().snapshot_running);
+    assert!(!source.backup.end_snapshot());
+
+    let other = Source::new();
+    other.begin();
+    let reopened = WalBackup::open(other.dir.path()).unwrap();
+    assert!(reopened.status().broken.is_some());
+}
+
+#[test]
+fn the_snapshot_file_round_trips_through_zstd_blocks() {
+    let dir = tempfile::tempdir().unwrap();
+    let raw = dir.path().join("raw");
+    let bytes: Vec<u8> = (0..BACKUP_SNAPSHOT_BLOCK_BYTES * 2 + 77)
+        .map(|index| (index / 3) as u8)
+        .collect();
+    fs::write(&raw, &bytes).unwrap();
+    let packed = dir.path().join("packed");
+    write_snapshot_file(&raw, &packed).unwrap();
+    assert!(fs::metadata(&packed).unwrap().len() < bytes.len() as u64);
+    let out = dir.path().join("out");
+    decode_snapshot(&packed, &out).unwrap();
+    assert_eq!(fs::read(out).unwrap(), bytes);
 }
 
 #[test]

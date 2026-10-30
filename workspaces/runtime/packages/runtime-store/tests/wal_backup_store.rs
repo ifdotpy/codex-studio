@@ -3,7 +3,7 @@ use std::fs;
 use std::time::Duration;
 
 use studio_runtime_store::RuntimeStore;
-use studio_runtime_store::wal_backup::{SNAPSHOT_FILE, restore};
+use studio_runtime_store::wal_backup::{SNAPSHOT_FILE, restore, write_snapshot_file};
 
 async fn insert(store: &RuntimeStore, rows: i64) {
     store
@@ -47,9 +47,9 @@ async fn checkpoints_ship_the_wal_and_the_generation_restores() {
     let backup = store.install_wal_backup().expect("backup");
     let received = state.path().join("received").join(&generation);
     fs::create_dir_all(&received).expect("receiver folder");
-    fs::copy(
-        state.path().join("canvas.sqlite3"),
-        received.join(SNAPSHOT_FILE),
+    write_snapshot_file(
+        &state.path().join("canvas.sqlite3"),
+        &received.join(SNAPSHOT_FILE),
     )
     .expect("snapshot copy");
     assert!(backup.end_snapshot());

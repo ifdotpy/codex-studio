@@ -8,7 +8,8 @@
 //! lost an answer, or a replayed request, continues at the right offset and nothing is written
 //! twice.
 //!
-//! Settings are in `<state>/backup/settings.json`: off by default.
+//! The snapshot is sent as zstd blocks. Settings are in `<state>/backup/settings.json`:
+//! off by default.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -24,10 +25,11 @@ use tokio::sync::watch;
 use studio_runtime_schema::persistence::{RemoteOutcome, RequestIdentity};
 use studio_runtime_schema::shared_values::{
     BACKUP_CHUNK_BYTES, BACKUP_DEFAULT_RETAIN_GENERATIONS, BACKUP_MAX_RETAIN_GENERATIONS,
-    BACKUP_RETRY_SECONDS,
+    BACKUP_PUT_ATTEMPTS, BACKUP_PUT_RETRY_SECONDS, BACKUP_RETRY_SECONDS,
+    BACKUP_SNAPSHOT_BLOCK_BYTES,
 };
 use studio_runtime_store::RuntimeStore;
-use studio_runtime_store::wal_backup::{SNAPSHOT_FILE, parse_segment_name};
+use studio_runtime_store::wal_backup::{SNAPSHOT_FILE, encode_snapshot_block, parse_segment_name};
 
 use crate::atomic_file;
 use crate::multi_server_orchestration::{HttpsPairedTransport, PairedTransport};
@@ -40,6 +42,12 @@ const SETTINGS_FILE: &str = "backup/settings.json";
 const RECEIVED_DIR: &str = "backup-received";
 /// Seconds that one `backup.put` request waits.
 const PUT_REQUEST: Duration = Duration::from_secs(60);
+/// Wait between two tries of one `backup.put`; short in tests.
+const PUT_RETRY_DELAY: Duration = if cfg!(test) {
+    Duration::from_millis(10)
+} else {
+    Duration::from_secs(BACKUP_PUT_RETRY_SECONDS)
+};
 const INVALID_RECEIPT: &str = "The paired server returned an invalid receipt";
 
 /// The owner's backup settings.
@@ -341,18 +349,20 @@ impl Sender {
             .generation
             .ok_or_else(|| error("no generation"))?;
         if !backup.status().snapshot_sent {
-            // The database file cannot change meanwhile (the shipper holds the checkpoints),
-            // so a failed copy continues at the offset that the paired server holds.
-            self.send_file(
-                &target,
-                &generation,
-                SNAPSHOT_NAME,
-                backup.database_path(),
-                &settings,
-            )
-            .await?;
+            // The read connection of the shipper keeps the copy consistent. A copy that
+            // fails after the retries of each request starts again as a new generation,
+            // because the compressed bytes sent so far cannot be made again.
+            if let Err(stop) = self
+                .send_snapshot(&target, &generation, backup.database_path(), &settings)
+                .await
+            {
+                if !matches!(stop, Stop::Shutdown) {
+                    backup.break_generation("the snapshot upload failed");
+                }
+                return Err(stop);
+            }
             if !backup.end_snapshot() {
-                return Err(error("the database file changed during the snapshot"));
+                return Err(error("the generation broke during the snapshot"));
             }
         }
         for segment in backup.segments() {
@@ -369,6 +379,94 @@ impl Sender {
         }
         backup.set_error(None);
         Ok(())
+    }
+
+    /// Send the database file as compressed blocks (`wal_backup::encode_snapshot_block`).
+    async fn send_snapshot(
+        &self,
+        target: &str,
+        generation: &str,
+        path: &Path,
+        settings: &Settings,
+    ) -> Result<(), Stop> {
+        let mut file = std::fs::File::open(path).map_err(error)?;
+        let size = file.metadata().map_err(error)?.len();
+        if size == 0 {
+            return Err(error("the database file is empty"));
+        }
+        let (mut read, mut sent) = (0_u64, 0_u64);
+        while read < size {
+            self.check_stop()?;
+            let (returned, raw_len, block) = studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-services/peer_backup",
+                move || -> std::io::Result<_> {
+                    use std::io::Read;
+                    let mut raw = vec![0_u8; BACKUP_SNAPSHOT_BLOCK_BYTES];
+                    let mut filled = 0;
+                    while filled < raw.len() {
+                        match file.read(&mut raw[filled..])? {
+                            0 => break,
+                            count => filled += count,
+                        }
+                    }
+                    Ok((file, filled as u64, encode_snapshot_block(&raw[..filled])?))
+                },
+            )
+            .await
+            .map_err(error)?
+            .map_err(error)?;
+            file = returned;
+            read += raw_len;
+            // A file that ends early (it never shrinks) would loop; stop at its real end.
+            let last = read >= size || raw_len == 0;
+            let pieces = block.chunks(BACKUP_CHUNK_BYTES).count();
+            for (index, piece) in block.chunks(BACKUP_CHUNK_BYTES).enumerate() {
+                let reply = self
+                    .put_chunk(
+                        target,
+                        generation,
+                        SNAPSHOT_NAME,
+                        sent,
+                        piece,
+                        last && index + 1 == pieces,
+                        settings,
+                    )
+                    .await?;
+                if reply.received != sent + piece.len() as u64 {
+                    return Err(error(
+                        "the paired server holds another length of the snapshot",
+                    ));
+                }
+                sent += piece.len() as u64;
+            }
+            if raw_len == 0 {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn put_chunk(
+        &self,
+        target: &str,
+        generation: &str,
+        name: &str,
+        offset: u64,
+        chunk: &[u8],
+        end: bool,
+        settings: &Settings,
+    ) -> Result<Reply, Stop> {
+        self.put(
+            target,
+            json!({
+                "generation": generation, "file": name, "offset": offset,
+                "data": base64::engine::general_purpose::STANDARD.encode(chunk),
+                "sha256": data_encoding::HEXLOWER.encode(&Sha256::digest(chunk)),
+                "end": end, "retain": settings.retain_generations,
+            }),
+        )
+        .await
     }
 
     async fn send_file(
@@ -395,16 +493,8 @@ impl Sender {
                 .map_err(error)?;
             let chunk = &buffer[..wanted];
             let end = offset + wanted as u64 == size;
-            let reply: Reply = self
-                .put(
-                    target,
-                    json!({
-                        "generation": generation, "file": name, "offset": offset,
-                        "data": base64::engine::general_purpose::STANDARD.encode(chunk),
-                        "sha256": data_encoding::HEXLOWER.encode(&Sha256::digest(chunk)),
-                        "end": end, "retain": settings.retain_generations,
-                    }),
-                )
+            let reply = self
+                .put_chunk(target, generation, name, offset, chunk, end, settings)
                 .await?;
             if reply.no_snapshot {
                 return Err(Stop::Rebuild);
@@ -420,7 +510,24 @@ impl Sender {
         }
     }
 
+    /// One `backup.put`, tried again after a transport failure. A chunk lands at its
+    /// offset, so a try after a lost answer changes nothing.
     async fn put(&self, target: &str, payload: Value) -> Result<Reply, Stop> {
+        let mut attempt = 1;
+        loop {
+            match self.put_once(target, &payload).await {
+                Err(Stop::Error(message)) if attempt < BACKUP_PUT_ATTEMPTS => {
+                    eprintln!("backup put failed, trying again: {message}");
+                    attempt += 1;
+                    tokio::time::sleep(PUT_RETRY_DELAY).await;
+                    self.check_stop()?;
+                }
+                result => return result,
+            }
+        }
+    }
+
+    async fn put_once(&self, target: &str, payload: &Value) -> Result<Reply, Stop> {
         let key = RequestIdentity::issue_root();
         let envelope =
             json!({"requestId": key, "operation": [], "action": ACTION, "payload": payload});
@@ -438,7 +545,7 @@ impl Sender {
                 .and_then(|value| serde_json::from_str(value.get()).ok())
                 .ok_or_else(|| error(INVALID_RECEIPT)),
             RemoteOutcome::NotApplied => {
-                Err(error(receipt.error.unwrap_or_else(|| {
+                Err(Stop::Error(receipt.error.unwrap_or_else(|| {
                     "The paired server refused the backup".to_owned()
                 })))
             }

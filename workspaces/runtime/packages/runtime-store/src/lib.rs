@@ -1669,10 +1669,11 @@ impl RuntimeStore {
 
     /// Start a backup generation on the writer actor, the only thread that checkpoints.
     /// The caller copies the database file, then calls [`wal_backup::WalBackup::end_snapshot`].
+    /// Checkpoints go on meanwhile.
     pub async fn begin_backup_generation(&self) -> StoreResult<String> {
         let backup = self.install_wal_backup()?;
         self.writer
-            .call(move |_| Ok::<_, rusqlite::Error>(backup.begin_generation()))
+            .call(move |writer| Ok::<_, rusqlite::Error>(backup.begin_generation(writer)))
             .await
             .map_err(StoreError::writer_actor_control)?
             .map_err(StoreError::from)

@@ -130,6 +130,14 @@ pub const BACKUP_OUTBOX_MAX_BYTES: u64 = 4294967296;
 /// Raw bytes in one `backup.put` request, in bytes. Base64 and the signed envelope must
 /// stay under the paired-server request limit of 262144 bytes.
 pub const BACKUP_CHUNK_BYTES: usize = 131072;
+/// Raw bytes of the database file in one block of the compressed snapshot, in bytes.
+pub const BACKUP_SNAPSHOT_BLOCK_BYTES: usize = 4194304;
+/// zstd compression level of the snapshot blocks.
+pub const BACKUP_SNAPSHOT_ZSTD_LEVEL: i32 = 3;
+/// Tries of one `backup.put` request after a transport failure, in tries.
+pub const BACKUP_PUT_ATTEMPTS: u32 = 5;
+/// Wait between two tries of one `backup.put` request, in seconds.
+pub const BACKUP_PUT_RETRY_SECONDS: u64 = 5;
 /// Generations that the paired server keeps by default, in generations.
 pub const BACKUP_DEFAULT_RETAIN_GENERATIONS: u64 = 2;
 /// Most generations that the owner may ask the paired server to keep, in generations.

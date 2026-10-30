@@ -11,8 +11,11 @@
 //!   (local file I/O, no SQL transaction, no network). A WAL longer than
 //!   `BACKUP_WAL_READ_MAX_BYTES` is copied over several pauses; the checkpoint waits until
 //!   the outbox has caught up, so a checkpoint never restarts a WAL with unshipped frames.
-//! - While the base snapshot is copied, the checkpoint is skipped, so the database file does
-//!   not change. [`WalBackup::end_snapshot`] checks that it did not.
+//! - The base snapshot is a copy of the database file taken while a separate read connection
+//!   holds a read mark. The normal checkpoints keep running: they copy only the frames up to
+//!   that mark into the file and still sync, and the WAL cannot restart. Every WAL frame from
+//!   the start of the WAL is also shipped, and restore applies them over the copy, so a page
+//!   that a checkpoint changed during the copy ends with its newest content.
 //! - A WAL restart that the shipper did not expect (a checkpoint outside the hook) breaks
 //!   the chain. The generation is then marked broken and the owner starts a new one.
 //!
@@ -28,15 +31,20 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use studio_runtime_schema::shared_values::{BACKUP_OUTBOX_MAX_BYTES, BACKUP_WAL_READ_MAX_BYTES};
+use studio_runtime_schema::shared_values::{
+    BACKUP_OUTBOX_MAX_BYTES, BACKUP_SNAPSHOT_BLOCK_BYTES, BACKUP_SNAPSHOT_ZSTD_LEVEL,
+    BACKUP_WAL_READ_MAX_BYTES,
+};
 
 use crate::sqlite_durability::CheckpointMode;
 
 const WAL_HEADER_BYTES: usize = 32;
 const FRAME_HEADER_BYTES: usize = 24;
 const WAL_VERSION: u32 = 3_007_000;
-/// File name of the base snapshot in a generation folder on the receiving server.
-pub const SNAPSHOT_FILE: &str = "snapshot.sqlite3";
+/// File name of the base snapshot in a generation folder on the receiving server: blocks of
+/// `BACKUP_SNAPSHOT_BLOCK_BYTES` of the database file, each as a 4 byte big-endian length
+/// and a zstd frame (see [`encode_snapshot_block`]).
+pub const SNAPSHOT_FILE: &str = "snapshot.zstblocks";
 const SEGMENT_SUFFIX: &str = ".seg";
 
 /// Position in one WAL file: everything before `offset` is in the outbox.
@@ -49,12 +57,6 @@ struct WalPosition {
     pages: u32,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-struct FileMark {
-    len: u64,
-    modified_ns: u128,
-}
-
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 struct State {
     generation: Option<String>,
@@ -62,8 +64,8 @@ struct State {
     /// Every frame of the WAL was shipped and the last checkpoint finished the WAL, so
     /// the next write restarts it. A new salt is then expected.
     clean: bool,
-    /// The database file as it was when the snapshot copy began; set until `end_snapshot`.
-    snapshot_mark: Option<FileMark>,
+    /// The snapshot copy runs: a read connection holds the read mark until `end_snapshot`.
+    snapshot_running: bool,
     snapshot_sent: bool,
     broken: Option<String>,
     last_error: Option<String>,
@@ -94,6 +96,8 @@ pub struct WalBackup {
     wal: PathBuf,
     folder: PathBuf,
     state: Mutex<State>,
+    /// The read connection that holds the read mark while the snapshot is copied.
+    reader: Mutex<Option<rusqlite::Connection>>,
     wake: tokio::sync::Notify,
 }
 
@@ -102,16 +106,22 @@ impl WalBackup {
     pub fn open(state_dir: &Path) -> io::Result<Arc<Self>> {
         let folder = state_dir.join("backup");
         fs::create_dir_all(&folder)?;
-        let state = match fs::read(folder.join("state.json")) {
+        let mut state: State = match fs::read(folder.join("state.json")) {
             Ok(bytes) => serde_json::from_slice(&bytes).map_err(io::Error::other)?,
             Err(error) if error.kind() == io::ErrorKind::NotFound => State::default(),
             Err(error) => return Err(error),
         };
+        // The read mark does not survive a restart, so the copy cannot be completed.
+        if state.snapshot_running {
+            state.snapshot_running = false;
+            state.broken = Some("the server stopped during the snapshot".into());
+        }
         Ok(Arc::new(Self {
             db: state_dir.join("canvas.sqlite3"),
             wal: state_dir.join("canvas.sqlite3-wal"),
             folder,
             state: Mutex::new(state),
+            reader: Mutex::new(None),
             wake: tokio::sync::Notify::new(),
         }))
     }
@@ -161,7 +171,7 @@ impl WalBackup {
             .map(|generation| self.segments_of(generation))
             .unwrap_or_default();
         BackupStatus {
-            snapshot_running: state.snapshot_mark.is_some(),
+            snapshot_running: state.snapshot_running,
             snapshot_sent: state.snapshot_sent,
             pending_bytes: segments.iter().map(|segment| segment.len).sum(),
             pending_segments: segments.len(),
@@ -212,11 +222,13 @@ impl WalBackup {
         let _ = fs::remove_file(&segment.path);
     }
 
-    /// Start a new generation: drop the old outbox, copy the WAL so far, and pause the
-    /// checkpoints until [`Self::end_snapshot`]. Run it on the writer actor, which is the
-    /// only thread that checkpoints.
-    pub fn begin_generation(&self) -> io::Result<String> {
+    /// Start a new generation: drop the old outbox, take a read mark on a separate
+    /// connection, and copy the WAL so far. Run it on the writer actor with the writer
+    /// connection, so no commit and no checkpoint happens meanwhile. The caller copies the
+    /// database file and then calls [`Self::end_snapshot`].
+    pub fn begin_generation(&self, writer: &rusqlite::Connection) -> io::Result<String> {
         let mut state = self.lock();
+        self.release_reader();
         if let Some(old) = state.generation.take() {
             let _ = fs::remove_dir_all(self.outbox(&old));
         }
@@ -225,44 +237,67 @@ impl WalBackup {
             .map_or(0, |elapsed| elapsed.as_secs());
         let id = format!("{seconds:012}-{}", uuid::Uuid::new_v4().simple());
         fs::create_dir_all(self.outbox(&id))?;
+        // Rewriting the user version with its own value adds one WAL frame. The read mark
+        // then lies after the last checkpointed frame, so checkpoints go on copying the
+        // frames before it while the reader lives.
+        let version: i64 = writer
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .map_err(io::Error::other)?;
+        writer
+            .execute_batch(&format!("PRAGMA user_version = {version}"))
+            .map_err(io::Error::other)?;
+        let reader = rusqlite::Connection::open_with_flags(
+            &self.db,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(io::Error::other)?;
+        reader
+            .execute_batch("BEGIN; SELECT count(*) FROM sqlite_master;")
+            .map_err(io::Error::other)?;
+        *self.reader.lock().unwrap_or_else(PoisonError::into_inner) = Some(reader);
         *state = State {
             generation: Some(id.clone()),
-            snapshot_mark: Some(file_mark(&self.db)?),
+            snapshot_running: true,
+            // Frames in the WAL now belong to this generation. A WAL restart is expected
+            // only after a checkpoint that finished the WAL.
+            clean: true,
             ..State::default()
         };
-        // Frames in the WAL now belong to this generation. Reading them cannot start a
-        // restart, so a WAL that restarts later is expected only after a clean checkpoint.
-        state.clean = true;
         self.ship(&mut state, None)?;
         self.save(&state)?;
         Ok(id)
     }
 
-    /// The snapshot copy reached the paired server. Returns whether the database file did
-    /// not change meanwhile; if it did, the generation is broken.
+    fn release_reader(&self) {
+        // Dropping the connection ends its read transaction.
+        drop(
+            self.reader
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take(),
+        );
+    }
+
+    /// The snapshot copy reached the paired server: release the read mark. Returns whether
+    /// the copy was running, that is, whether the generation is still valid.
     pub fn end_snapshot(&self) -> bool {
         let mut state = self.lock();
-        let Some(mark) = state.snapshot_mark else {
+        self.release_reader();
+        if !state.snapshot_running || state.broken.is_some() {
             return false;
-        };
-        if file_mark(&self.db).ok() == Some(mark) {
-            state.snapshot_mark = None;
-            state.snapshot_sent = true;
-            let _ = self.save(&state);
-            true
-        } else {
-            self.mark_broken(
-                &mut state,
-                "the database file changed during the snapshot".into(),
-            );
-            false
         }
+        state.snapshot_running = false;
+        state.snapshot_sent = true;
+        let _ = self.save(&state);
+        true
     }
 
     /// Stop the generation and drop its outbox: the owner turned the backup off, or the
     /// paired server lost the snapshot. A new generation starts when the backup runs again.
     pub fn break_generation(&self, reason: &str) {
         let mut state = self.lock();
+        self.release_reader();
+        state.snapshot_running = false;
         if let Some(generation) = state.generation.clone() {
             let _ = fs::remove_dir_all(self.outbox(&generation));
         }
@@ -274,6 +309,13 @@ impl WalBackup {
     pub fn before_checkpoint(&self, mode: CheckpointMode) -> bool {
         let mut state = self.lock();
         if state.generation.is_none() || state.broken.is_some() {
+            return true;
+        }
+        if state.snapshot_running && mode == CheckpointMode::Truncate {
+            // The shutdown checkpoint waits for readers, so the copy cannot go on.
+            self.release_reader();
+            state.snapshot_running = false;
+            self.mark_broken(&mut state, "shutdown checkpoint during the snapshot".into());
             return true;
         }
         let limit = match mode {
@@ -290,13 +332,6 @@ impl WalBackup {
         // The WAL may get frames again; only a finished checkpoint makes it clean.
         state.clean = false;
         let _ = self.save(&state);
-        if state.snapshot_mark.is_some() {
-            if mode == CheckpointMode::Truncate {
-                self.mark_broken(&mut state, "shutdown checkpoint during the snapshot".into());
-                return true;
-            }
-            return false;
-        }
         allowed
     }
 
@@ -404,18 +439,6 @@ fn fresh_position(header: &WalHeader) -> WalPosition {
         checksum: header.checksum,
         pages: 0,
     }
-}
-
-fn file_mark(path: &Path) -> io::Result<FileMark> {
-    let metadata = fs::metadata(path)?;
-    let modified = metadata
-        .modified()?
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    Ok(FileMark {
-        len: metadata.len(),
-        modified_ns: modified.as_nanos(),
-    })
 }
 
 fn open_if_present(path: &Path) -> io::Result<Option<File>> {
@@ -578,6 +601,63 @@ impl<'a, R: Read> FrameReader<'a, R> {
     }
 }
 
+/// Encode one block of the database file as the snapshot file stores it.
+pub fn encode_snapshot_block(raw: &[u8]) -> io::Result<Vec<u8>> {
+    let mut frame = Vec::with_capacity(zstd_safe::compress_bound(raw.len()));
+    zstd_safe::compress(&mut frame, raw, BACKUP_SNAPSHOT_ZSTD_LEVEL)
+        .map_err(|code| io::Error::other(format!("zstd: {}", zstd_safe::get_error_name(code))))?;
+    let length = u32::try_from(frame.len()).map_err(io::Error::other)?;
+    let mut block = Vec::with_capacity(frame.len() + 4);
+    block.extend_from_slice(&length.to_be_bytes());
+    block.extend_from_slice(&frame);
+    Ok(block)
+}
+
+/// Write the snapshot file of `db` as the sender does: for tests and local checks.
+pub fn write_snapshot_file(db: &Path, out: &Path) -> io::Result<()> {
+    let mut source = File::open(db)?;
+    let mut target = File::create(out)?;
+    let mut raw = vec![0_u8; BACKUP_SNAPSHOT_BLOCK_BYTES];
+    loop {
+        let mut filled = 0;
+        while filled < raw.len() {
+            match source.read(&mut raw[filled..])? {
+                0 => break,
+                read => filled += read,
+            }
+        }
+        if filled == 0 {
+            return Ok(());
+        }
+        target.write_all(&encode_snapshot_block(&raw[..filled])?)?;
+    }
+}
+
+/// Rebuild the database file from a snapshot file.
+fn decode_snapshot(snapshot: &Path, out: &Path) -> io::Result<()> {
+    let mut source = io::BufReader::new(File::open(snapshot)?);
+    let mut target = File::create(out)?;
+    let mut length = [0_u8; 4];
+    loop {
+        match source.read_exact(&mut length) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(()),
+            Err(error) => return Err(error),
+        }
+        let length = u32::from_be_bytes(length) as usize;
+        if length > zstd_safe::compress_bound(BACKUP_SNAPSHOT_BLOCK_BYTES) {
+            return Err(io::Error::other("a snapshot block is too long"));
+        }
+        let mut frame = vec![0_u8; length];
+        source.read_exact(&mut frame)?;
+        let mut raw = Vec::with_capacity(BACKUP_SNAPSHOT_BLOCK_BYTES);
+        zstd_safe::decompress(&mut raw, &frame).map_err(|code| {
+            io::Error::other(format!("zstd: {}", zstd_safe::get_error_name(code)))
+        })?;
+        target.write_all(&raw)?;
+    }
+}
+
 /// What [`restore`] rebuilt and checked.
 #[derive(Debug, Eq, PartialEq)]
 pub struct Restored {
@@ -606,7 +686,8 @@ pub fn restore(generation: &Path, out: &Path) -> Result<Restored, String> {
     if out.exists() {
         return Err(format!("{} exists", out.display()));
     }
-    fs::copy(generation.join(SNAPSHOT_FILE), out).map_err(|e| fail("copy the snapshot", &e))?;
+    decode_snapshot(&generation.join(SNAPSHOT_FILE), out)
+        .map_err(|e| fail("decode the snapshot", &e))?;
     let wal = PathBuf::from(format!("{}-wal", out.display()));
     let mut wal_files = 0;
     let mut position = None;

@@ -230,9 +230,9 @@ async fn a_server_backs_up_to_a_paired_server_and_the_copy_restores() {
     }
     .write(source_dir.path())
     .unwrap();
-    // The answer to the third request is lost; the snapshot copy continues at its offset.
-    assert!(matches!(sender.pass().await, Err(Stop::Error(_))));
+    // The answer to the third request is lost; the request is sent again at its offset.
     sender.pass().await.unwrap();
+    assert_eq!(source.wal_backup().unwrap().status().broken, None);
     insert(&source, 25).await;
     source.checkpoint_wal_passive().await.unwrap();
     insert(&source, 5).await;
