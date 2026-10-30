@@ -45,6 +45,8 @@ pub mod stored_text_compaction;
 pub mod stored_text_dictionary;
 pub mod supervisor_journal;
 pub mod vm_work_intent;
+pub mod wal_backup;
+mod write_alert;
 pub use schema::{
     python_float_json, python_json, python_json_compact, python_json_utf8,
     python_json_with_separators, sha256_hex, truthy,
@@ -977,6 +979,9 @@ pub struct RuntimeStore {
     /// Flush policy of both databases; commits request, the server's
     /// maintenance owner runs [`RuntimeStore::checkpoint_wal_if_due`].
     wal_flush: Arc<sqlite_durability::WalFlushSchedule>,
+    write_alert: Arc<write_alert::WriteAlert>,
+    /// The WAL backup shipper; set once when the owner turns the backup on.
+    wal_backup: std::sync::OnceLock<Arc<wal_backup::WalBackup>>,
     /// The projection that each writer transaction runs before commit; see [`entity_publication`].
     entity_publisher: Arc<std::sync::OnceLock<Arc<dyn EntityPublisher>>>,
 }
@@ -1409,6 +1414,8 @@ impl RuntimeStore {
             last_entity_projection_state: Mutex::new(None),
             entity_projection_maintenance_lock: tokio::sync::Mutex::new(()),
             wal_flush: Arc::new(sqlite_durability::WalFlushSchedule::default()),
+            write_alert: Arc::new(write_alert::WriteAlert::default()),
+            wal_backup: std::sync::OnceLock::new(),
             entity_publisher: Arc::new(std::sync::OnceLock::new()),
         };
         let recovery_time = SystemTime::now()
@@ -1645,6 +1652,42 @@ impl RuntimeStore {
         Ok(())
     }
 
+    /// Turn the WAL backup on: from now on each Canvas checkpoint copies the new WAL
+    /// frames into the backup outbox (`wal_backup`). Repeated calls return the same shipper.
+    pub fn install_wal_backup(&self) -> StoreResult<Arc<wal_backup::WalBackup>> {
+        if let Some(backup) = self.wal_backup.get() {
+            return Ok(Arc::clone(backup));
+        }
+        let backup = wal_backup::WalBackup::open(&self.root).map_err(StoreError::from)?;
+        Ok(Arc::clone(self.wal_backup.get_or_init(|| backup)))
+    }
+
+    /// The WAL backup shipper, when the backup was ever turned on in this process.
+    pub fn wal_backup(&self) -> Option<Arc<wal_backup::WalBackup>> {
+        self.wal_backup.get().cloned()
+    }
+
+    /// Start a backup generation on the writer actor, the only thread that checkpoints.
+    /// The caller copies the database file, then calls [`wal_backup::WalBackup::end_snapshot`].
+    pub async fn begin_backup_generation(&self) -> StoreResult<String> {
+        let backup = self.install_wal_backup()?;
+        self.writer
+            .call(move |_| Ok::<_, rusqlite::Error>(backup.begin_generation()))
+            .await
+            .map_err(StoreError::writer_actor_control)?
+            .map_err(StoreError::from)
+    }
+
+    /// Count of Canvas write transactions that reached `SQLITE_WRITE_TRANSACTION_ALERT_MS`.
+    pub fn write_alerts(&self) -> u64 {
+        self.write_alert.count()
+    }
+
+    /// Replace the alert duration; for tests with an injected slow transaction.
+    pub fn set_write_alert_threshold(&self, threshold: Duration) {
+        self.write_alert.set_threshold(threshold);
+    }
+
     /// Checkpoint both WAL files without waiting on active readers or truncating them.
     /// In WAL with `synchronous=NORMAL` this is the flush that makes commits durable.
     pub async fn checkpoint_wal_passive(&self) -> StoreResult<()> {
@@ -1654,15 +1697,26 @@ impl RuntimeStore {
 
     async fn checkpoint_both(&self, mode: sqlite_durability::CheckpointMode) -> StoreResult<()> {
         let canvas_wal_path = self.root.join("canvas.sqlite3-wal");
+        let backup = self.wal_backup.get().cloned();
         self.writer
             .call(move |writer| {
-                Self::checkpoint_connection(
+                // The backup copies the WAL first; it may defer the checkpoint (docs/backup.md).
+                if backup
+                    .as_ref()
+                    .is_some_and(|backup| !backup.before_checkpoint(mode))
+                {
+                    return Ok(());
+                }
+                let outcome = Self::checkpoint_connection(
                     writer,
                     StoreDatabaseKind::Canvas,
                     &canvas_wal_path,
                     mode,
-                )
-                .map(drop)
+                )?;
+                if let Some(backup) = &backup {
+                    backup.after_checkpoint(outcome.is_complete());
+                }
+                Ok(())
             })
             .await
             .map_err(StoreError::writer_actor_control)?;
@@ -1986,10 +2040,14 @@ impl RuntimeStore {
                     }
                 }
             };
+        let write_alert = Arc::clone(&self.write_alert);
         let operation = move |writer: &mut Connection| {
-            timed_writer_job(submitted, &job_timing, Instant::now, || {
+            let started = Instant::now();
+            let outcome = timed_writer_job(submitted, &job_timing, Instant::now, || {
                 transaction_job(writer)
-            })
+            });
+            write_alert.observe(origin, started.elapsed());
+            outcome
         };
         let abandoned_notifiers = Arc::clone(&self.commit_notifiers);
         let abandoned_checkpoint = Arc::clone(&self.wal_flush);

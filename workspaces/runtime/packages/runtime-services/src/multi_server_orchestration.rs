@@ -790,6 +790,33 @@ impl RuntimeOrchestrationEffects {
         }
     }
 
+    /// `backup.put`: one chunk of a backup file from a paired server (docs/backup.md).
+    async fn peer_backup(
+        &self,
+        principal: &str,
+        envelope: &Value,
+    ) -> Result<ExchangeOutcome, AccessError> {
+        let root = self.store.root().to_path_buf();
+        let (principal, payload) = (principal.to_owned(), envelope["payload"].clone());
+        let result = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/peer_backup",
+            move || crate::peer_backup::receive(&root, &principal, &payload),
+        )
+        .await
+        .map_err(|_| refused(503, "backup_unavailable", "The backup write could not run"))?;
+        match result {
+            Ok(value) => applied(&value),
+            Err(crate::peer_backup::ReceiveError::Refused(message)) => {
+                Ok(ExchangeOutcome::NotApplied(message))
+            }
+            Err(crate::peer_backup::ReceiveError::Failed(_)) => Err(refused(
+                503,
+                "backup_unavailable",
+                "The backup write could not run",
+            )),
+        }
+    }
+
     async fn stop_worker(
         &self,
         principal: &str,
@@ -1758,6 +1785,7 @@ impl OrchestrationEffects for RuntimeOrchestrationEffects {
             || action == "projects"
             || action == crate::peer_projects::CHANGED_ACTION
             || crate::peer_updates::ACTIONS.contains(&action)
+            || action == crate::peer_backup::ACTION
             || (action == "stop" && self.lifecycle_ports.is_some())
     }
 
@@ -1939,6 +1967,9 @@ impl RuntimeOrchestrationEffects {
         }
         if crate::peer_updates::ACTIONS.contains(&action) {
             return self.peer_update(principal, envelope).await;
+        }
+        if action == crate::peer_backup::ACTION {
+            return self.peer_backup(principal, envelope).await;
         }
         if GIT_CHANNEL_ACTIONS.contains(&action) {
             return self.git_channel(envelope).await;
@@ -2663,6 +2694,8 @@ const PEER_REPLAY_SAFE_ACTIONS: &[ServerOperationKind] = &[
     ServerOperationKind::UpdateExport,
     ServerOperationKind::UpdateChunk,
     ServerOperationKind::UpdateRelease,
+    // A chunk lands at its offset, so the same chunk again changes nothing (docs/backup.md).
+    ServerOperationKind::BackupPut,
 ];
 
 /// Worker calls that a remote worker sends to its home server (Python

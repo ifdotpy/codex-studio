@@ -134,6 +134,7 @@ pub mod organization_effects;
 pub mod panels;
 pub mod payload_blobs;
 pub mod payload_store;
+pub mod peer_backup;
 pub mod peer_conversion;
 pub mod peer_projects;
 pub mod peer_update_pull;
