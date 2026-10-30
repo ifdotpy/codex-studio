@@ -222,29 +222,25 @@ fn wake_candidate(
     let raw: rusqlite::types::Value = row.get(2)?;
     let mode = match raw {
         rusqlite::types::Value::Null => Some(None),
-        rusqlite::types::Value::Text(value) => {
-            serde_json::from_value::<WorkspaceMode>(Value::String(value))
-                .ok()
-                .map(Some)
-        }
+        rusqlite::types::Value::Text(value) => serde::Deserialize::deserialize(
+            serde::de::value::StrDeserializer::<serde_json::Error>::new(&value),
+        )
+        .ok()
+        .map(Some),
         rusqlite::types::Value::Integer(_)
         | rusqlite::types::Value::Real(_)
         | rusqlite::types::Value::Blob(_) => None,
     };
-    let workspace_mode = match mode {
-        Some(mode) => Ok(mode),
-        None => {
-            // The actual agent reader owns the located diagnostic, including
-            // its safe shape facts. It runs only for a malformed projection.
-            let error = match AgentRepository::get(connection, &AgentId::from(agent_id.as_str())) {
-                Err(error) => error,
-                Ok(_) => StoreError::RecordContract(
-                    "workspaceMode projection disagrees with its generated owner",
-                ),
-            };
-            Err(std::sync::Arc::new(error))
-        }
-    };
+    let workspace_mode = mode.ok_or_else(|| {
+        // The agent reader owns the located diagnostic for malformed projections.
+        let error = match AgentRepository::get(connection, &AgentId::from(agent_id.as_str())) {
+            Err(error) => error,
+            Ok(_) => StoreError::RecordContract(
+                "workspaceMode projection disagrees with its generated owner",
+            ),
+        };
+        std::sync::Arc::new(error)
+    });
     Ok(WakeCandidate {
         agent_id,
         epoch,
@@ -1977,7 +1973,7 @@ mod account_wake_index_tests {
             "queued-retry",
             json!({
                 "provider":"codex", "epoch":1, "status":"queued", "autoWake":true,
-                "capacityRetry":{"id":"retry", "status":"due"}
+                "capacityRetry":{"id":"retry", "status":"due"}, "workspaceMode":"layr-native"
             }),
         );
         connection
@@ -1993,6 +1989,10 @@ mod account_wake_index_tests {
         assert_eq!(agents.len(), 1);
         assert_eq!(agents[0].agent_id, "queued-retry");
         assert_eq!(agents[0].epoch, 1);
+        assert_eq!(
+            agents[0].workspace_mode.as_ref().unwrap(),
+            &Some(super::WorkspaceMode::LayrNative)
+        );
     }
 
     #[test]
