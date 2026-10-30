@@ -51,8 +51,8 @@ fn wire_rows(rows: &[DraftRow]) -> Vec<WireRow<'_>> {
 struct PullPage {
     #[serde(default, deserialize_with = "optional_field")]
     workspace_id: Option<String>,
-    #[serde(default, deserialize_with = "optional_object")]
-    checkpoint: Option<PullCheckpoint>,
+    #[serde(default, deserialize_with = "optional_field")]
+    checkpoint: Option<studio_client_domain::json_object::JsonObject<PullCheckpoint>>,
     #[serde(default, deserialize_with = "optional_field")]
     documents: Option<Vec<Value>>,
 }
@@ -81,22 +81,13 @@ where
     D: serde::Deserializer<'de>,
     T: serde::de::DeserializeOwned,
 {
-    let value = <Value as serde::Deserialize>::deserialize(deserializer)?;
-    Ok(T::deserialize(value).ok())
-}
-fn optional_object<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: serde::de::DeserializeOwned,
-{
-    let value = <Value as serde::Deserialize>::deserialize(deserializer)?;
     Ok(
-        studio_client_domain::json_object::JsonObject::<T>::deserialize(value)
-            .ok()
-            .map(|value| value.0),
+        match Option::<sync::LenientField<T>>::deserialize(deserializer)? {
+            Some(sync::LenientField::Value(value)) => Some(value),
+            _ => None,
+        },
     )
 }
-
 impl PullPage {
     fn checked(self, workspace: &str, after: u64) -> Result<(u64, Vec<Value>), String> {
         if self.workspace_id.as_deref() != Some(workspace) {
@@ -104,7 +95,7 @@ impl PullPage {
         }
         let checkpoint = self
             .checkpoint
-            .and_then(|value| value.seq)
+            .and_then(|value| value.0.seq)
             .filter(|v| *v >= after && *v <= 9_007_199_254_740_991)
             .ok_or("Invalid server draft checkpoint.")?;
         let documents = self
@@ -318,6 +309,9 @@ mod tests {
             json!([]),
             json!({}),
             json!({"workspaceId":workspace,"checkpoint":null}),
+            json!({"workspaceId":workspace,"checkpoint":[1],"documents":[]}),
+            json!({"workspaceId":workspace,"checkpoint":{"seq":"1"},"documents":[]}),
+            json!({"workspaceId":workspace,"checkpoint":{"seq":1},"documents":true}),
             json!({"workspaceId":workspace,"checkpoint":{"seq":1.0},"documents":[]}),
             json!({"workspaceId":workspace,"checkpoint":{"seq":1},"documents":[null]}),
             json!({"workspaceId":workspace,"checkpoint":{"seq":2},"documents":[null,{"id":"x","future":[1]}]}),
