@@ -1,9 +1,8 @@
 //! Typed persisted rules, including open extension fields.
-use crate::queue_command::Field;
 use crate::stored_record::StoredJsonInteger;
 use serde::{Deserialize, Serialize};
 use serde_json::{Number, Value};
-use std::{borrow::Cow, collections::BTreeMap};
+use std::borrow::Cow;
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(transparent)]
@@ -43,55 +42,30 @@ impl<const MIN: i64, const MAX: u64> schemars::JsonSchema for RuleInteger<MIN, M
         schemars::json_schema!({"type":"integer","minimum":MIN,"maximum":MAX})
     }
 }
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[serde(transparent)]
-pub struct RuleText<const MAX: usize>(String);
-impl<const MAX: usize> RuleText<MAX> {
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-impl<'de, const MAX: usize> Deserialize<'de> for RuleText<MAX> {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let s = String::deserialize(d)?;
-        if s.chars().count() <= MAX {
-            Ok(Self(s))
-        } else {
-            Err(serde::de::Error::custom("rule text too long"))
-        }
-    }
-}
-impl<const MAX: usize> schemars::JsonSchema for RuleText<MAX> {
-    fn inline_schema() -> bool {
-        true
-    }
-    fn schema_name() -> Cow<'static, str> {
-        format!("RuleText{MAX}").into()
-    }
-    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        schemars::json_schema!({"type":"string","maxLength":MAX})
-    }
-}
+pub use crate::bounded_integer::BoundedInteger as StrictRuleInteger;
+pub type RuleText<const MAX: usize> = crate::bounded_text::BoundedText<0, MAX>;
 fn present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
     d: D,
 ) -> Result<Option<T>, D::Error> {
     T::deserialize(d).map(Some)
 }
-fn present_launch<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Field<LaunchIntent>, D::Error> {
-    Field::<crate::json_object::JsonObject<LaunchIntent>>::deserialize(d).map(|v| match v {
-        Field::Missing => Field::Missing,
-        Field::Null => Field::Null,
-        Field::Value(value) => Field::Value(value.0),
-    })
-}
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 pub enum RuleKind {
     Interval,
     Once,
-    File,
+    File {
+        path: String,
+    },
     Event,
-    LowWorkers,
+    LowWorkers {
+        minimum_workers: StrictRuleInteger<1, 255>,
+        duration_minutes: StrictRuleInteger<1, 525600>,
+    },
 }
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -100,7 +74,7 @@ pub enum RuleStatus {
     Paused,
     Completed,
 }
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum OwnerHold {
     FailedInputHeld,
@@ -118,16 +92,24 @@ pub struct LaunchIntent {
     #[schemars(required, schema_with = "nullable_string_schema")]
     pub account_key: Option<String>,
     pub agent_id: String,
-    pub check_number: RuleInteger<0, 9007199254740991>,
+    pub check_number: StrictRuleInteger<0, 9007199254740991>,
     pub command: RuleText<12000>,
-    pub epoch: RuleInteger<0, 9007199254740991>,
+    pub epoch: StrictRuleInteger<0, 9007199254740991>,
     pub liveness: bool,
     pub monitor_id: String,
     pub rule_id: String,
     #[serde(deserialize_with = "Option::<String>::deserialize")]
     #[schemars(required, schema_with = "nullable_string_schema")]
     pub thread_id: Option<String>,
-    pub timeout_ms: RuleInteger<1000, 86400000>,
+    pub timeout_ms: StrictRuleInteger<1000, 86400000>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RestartCheck {
+    pub epoch: u64,
+    pub checks: u64,
+    pub monitor_id: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -138,15 +120,9 @@ pub struct RuleRecord {
         deserialize_with = "present",
         skip_serializing_if = "Option::is_none"
     )]
-    #[schemars(with = "RuleInteger<0, 9007199254740991>")]
-    pub active_workers: Option<RuleInteger<0, 9007199254740991>>,
-    #[serde(
-        default,
-        deserialize_with = "present",
-        skip_serializing_if = "Option::is_none"
-    )]
-    #[schemars(with = "String")]
-    pub agent: Option<String>,
+    #[schemars(with = "StrictRuleInteger<0, 9007199254740991>")]
+    pub active_workers: Option<StrictRuleInteger<0, 9007199254740991>>,
+    pub agent: String,
     #[serde(
         default,
         deserialize_with = "present",
@@ -161,51 +137,13 @@ pub struct RuleRecord {
     )]
     #[schemars(with = "Number")]
     pub at: Option<Number>,
-    #[serde(
-        default,
-        deserialize_with = "present",
-        skip_serializing_if = "Option::is_none"
-    )]
-    #[schemars(with = "RuleInteger<0, 9007199254740991>")]
-    pub checks: Option<RuleInteger<0, 9007199254740991>>,
-    #[serde(
-        default,
-        deserialize_with = "present",
-        skip_serializing_if = "Option::is_none"
-    )]
-    #[schemars(with = "RuleText<12000>")]
-    pub command: Option<RuleText<12000>>,
-    #[serde(
-        default,
-        deserialize_with = "present",
-        skip_serializing_if = "Option::is_none"
-    )]
-    #[schemars(with = "Number")]
-    pub created: Option<Number>,
-    #[serde(
-        default,
-        deserialize_with = "present",
-        skip_serializing_if = "Option::is_none"
-    )]
-    #[schemars(with = "RuleInteger<1, 525600>")]
-    pub duration_minutes: Option<RuleInteger<1, 525600>>,
-    #[serde(
-        default,
-        deserialize_with = "present",
-        skip_serializing_if = "Option::is_none"
-    )]
-    #[schemars(with = "RuleInteger<0, 9007199254740991>")]
-    pub epoch: Option<RuleInteger<0, 9007199254740991>>,
-    #[serde(default, skip_serializing_if = "Field::is_missing")]
-    #[schemars(with = "Option<String>")]
-    pub error: Field<String>,
-    #[serde(
-        default,
-        deserialize_with = "present",
-        skip_serializing_if = "Option::is_none"
-    )]
-    #[schemars(with = "String")]
-    pub event: Option<String>,
+    pub checks: StrictRuleInteger<0, 9007199254740991>,
+    pub command: RuleText<12000>,
+    pub created: Number,
+    pub epoch: StrictRuleInteger<0, 9007199254740991>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    pub event: String,
     #[serde(
         default,
         deserialize_with = "present",
@@ -220,44 +158,14 @@ pub struct RuleRecord {
     )]
     #[schemars(with = "Number")]
     pub file_activity_at: Option<Number>,
-    #[serde(
-        default,
-        deserialize_with = "present",
-        skip_serializing_if = "Option::is_none"
-    )]
-    #[schemars(with = "RuleInteger<0, 9007199254740991>")]
-    pub file_generation: Option<RuleInteger<0, 9007199254740991>>,
-    #[serde(default, skip_serializing_if = "Field::is_missing")]
-    #[schemars(
-        with = "Option<(RuleInteger<-9223372036854775808, 9223372036854775807>, RuleInteger<0, 18446744073709551615>, RuleInteger<0, 18446744073709551615>)>"
-    )]
-    pub fingerprint: Field<(
-        RuleInteger<-9223372036854775808, 9223372036854775807>,
-        RuleInteger<0, 18446744073709551615>,
-        RuleInteger<0, 18446744073709551615>,
-    )>,
+    pub file_generation: StrictRuleInteger<0, 9007199254740991>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<(i64, u64, u64)>,
     pub id: String,
-    #[serde(
-        default,
-        deserialize_with = "present",
-        skip_serializing_if = "Option::is_none"
-    )]
-    #[schemars(with = "bool")]
-    pub in_flight: Option<bool>,
-    #[serde(
-        default,
-        deserialize_with = "present",
-        skip_serializing_if = "Option::is_none"
-    )]
-    #[schemars(with = "RuleInteger<10, 31536000>")]
-    pub interval_seconds: Option<RuleInteger<10, 31536000>>,
-    #[serde(
-        default,
-        deserialize_with = "present",
-        skip_serializing_if = "Option::is_none"
-    )]
-    #[schemars(with = "RuleKind")]
-    pub kind: Option<RuleKind>,
+    pub in_flight: bool,
+    pub interval_seconds: StrictRuleInteger<10, 31536000>,
+    #[serde(flatten)]
+    pub kind: RuleKind,
     #[serde(
         default,
         deserialize_with = "present",
@@ -272,9 +180,8 @@ pub struct RuleRecord {
     )]
     #[schemars(with = "String")]
     pub last_event: Option<String>,
-    #[serde(default, skip_serializing_if = "Field::is_missing")]
-    #[schemars(with = "Option<StoredJsonInteger>")]
-    pub last_exit_code: Field<StoredJsonInteger>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_exit_code: Option<i64>,
     #[serde(
         default,
         deserialize_with = "present",
@@ -289,12 +196,10 @@ pub struct RuleRecord {
     )]
     #[schemars(with = "RuleText<12000>")]
     pub last_output: Option<RuleText<12000>>,
-    #[serde(default, skip_serializing_if = "Field::is_missing")]
-    #[schemars(with = "Option<String>")]
-    pub last_stall_error: Field<String>,
-    #[serde(default, skip_serializing_if = "Field::is_missing")]
-    #[schemars(with = "Option<StoredJsonInteger>")]
-    pub last_stall_exit_code: Field<StoredJsonInteger>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_stall_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_stall_exit_code: Option<i64>,
     #[serde(
         default,
         deserialize_with = "present",
@@ -302,53 +207,17 @@ pub struct RuleRecord {
     )]
     #[schemars(with = "Number")]
     pub last_stall_finished: Option<Number>,
-    #[serde(
-        default,
-        deserialize_with = "present_launch",
-        skip_serializing_if = "Field::is_missing"
-    )]
-    #[schemars(with = "Option<LaunchIntent>")]
-    pub launch_intent: Field<LaunchIntent>,
-    #[serde(
-        default,
-        deserialize_with = "present",
-        skip_serializing_if = "Option::is_none"
-    )]
-    #[schemars(with = "RuleText<12000>")]
-    pub liveness_command: Option<RuleText<12000>>,
-    #[serde(default, skip_serializing_if = "Field::is_missing")]
-    #[schemars(with = "Option<Number>")]
-    pub low_since: Field<Number>,
-    #[serde(
-        default,
-        deserialize_with = "present",
-        skip_serializing_if = "Option::is_none"
-    )]
-    #[schemars(with = "RuleInteger<1, 255>")]
-    pub minimum_workers: Option<RuleInteger<1, 255>>,
-    #[serde(
-        default,
-        deserialize_with = "present",
-        skip_serializing_if = "Option::is_none"
-    )]
-    #[schemars(with = "RuleText<120>")]
-    pub name: Option<RuleText<120>>,
-    #[serde(
-        default,
-        deserialize_with = "present",
-        skip_serializing_if = "Option::is_none"
-    )]
-    #[schemars(with = "Number")]
-    pub next_at: Option<Number>,
-    #[serde(default, skip_serializing_if = "Field::is_missing")]
-    #[schemars(with = "Option<OwnerHold>")]
-    pub owner_hold: Field<OwnerHold>,
-    #[serde(default, skip_serializing_if = "Field::is_missing")]
-    #[schemars(with = "Option<String>")]
-    pub path: Field<String>,
-    #[serde(default, skip_serializing_if = "Field::is_missing")]
-    #[schemars(with = "Option<BTreeMap<String, Value>>")]
-    pub restart_check: Field<BTreeMap<String, Value>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch_intent: Option<LaunchIntent>,
+    pub liveness_command: RuleText<12000>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub low_since: Option<Number>,
+    pub name: RuleText<120>,
+    pub next_at: Number,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_hold: Option<OwnerHold>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restart_check: Option<RestartCheck>,
     #[serde(
         default,
         deserialize_with = "present",
@@ -377,56 +246,15 @@ pub struct RuleRecord {
     )]
     #[schemars(with = "String")]
     pub stall_text: Option<String>,
-    #[serde(
-        default,
-        deserialize_with = "present",
-        skip_serializing_if = "Option::is_none"
-    )]
-    #[schemars(with = "RuleInteger<0, 31536000>")]
-    pub stall_timeout_seconds: Option<RuleInteger<0, 31536000>>,
-    #[serde(
-        default,
-        deserialize_with = "present",
-        skip_serializing_if = "Option::is_none"
-    )]
-    #[schemars(with = "RuleInteger<-1, 9007199254740991>")]
-    pub stall_wake_generation: Option<RuleInteger<-1, 9007199254740991>>,
-    #[serde(
-        default,
-        deserialize_with = "present",
-        skip_serializing_if = "Option::is_none"
-    )]
-    #[schemars(with = "RuleStatus")]
-    pub status: Option<RuleStatus>,
-    #[serde(
-        default,
-        deserialize_with = "present",
-        skip_serializing_if = "Option::is_none"
-    )]
-    #[schemars(with = "String")]
-    pub text: Option<String>,
-    #[serde(
-        default,
-        deserialize_with = "present",
-        skip_serializing_if = "Option::is_none"
-    )]
-    #[schemars(with = "RuleInteger<0, 9007199254740991>")]
-    pub wakes: Option<RuleInteger<0, 9007199254740991>>,
-    #[serde(flatten)]
-    pub extra: BTreeMap<String, Value>,
+    pub stall_timeout_seconds: StrictRuleInteger<0, 31536000>,
+    pub stall_wake_generation: StrictRuleInteger<-1, 9007199254740991>,
+    pub status: RuleStatus,
+    pub text: String,
+    pub wakes: StrictRuleInteger<0, 9007199254740991>,
 }
 impl RuleRecord {
-    pub fn from_value(value: Value) -> Result<Self, serde_json::Error> {
-        serde_json::from_value(value)
-    }
     pub fn id(&self) -> &String {
         &self.id
-    }
-    pub fn value(&self) -> Value {
-        serde_json::to_value(self).expect("rule fields are JSON serializable")
-    }
-    pub fn into_value(self) -> Value {
-        self.value()
     }
 }
 pub(crate) fn schema() -> Value {
@@ -445,63 +273,38 @@ pub(crate) fn check_schema_parity() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
-    fn typed_rule_matches_stored_schema_on_each_field_and_bounds() {
-        check_schema_parity().unwrap();
-        let schema: Value =
-            serde_json::from_slice(include_bytes!("schemas/persisted-rule-record.schema.json"))
-                .unwrap();
-        let fields = schema["properties"].as_object().unwrap();
-        let candidates = vec![
-            json!(null),
-            json!(true),
-            json!(false),
-            json!(""),
-            json!("active"),
-            json!("interval"),
-            json!("archived"),
-            json!(0),
-            json!(-1),
-            json!(1),
-            json!(10.0),
-            json!(1.5),
-            json!(9007199254740991u64),
-            json!(9007199254740992u64),
-            json!(9223372036854775808u64),
-            json!(u64::MAX),
-            json!(18446744073709551616.0),
-            json!([]),
-            json!([0, 1, 2]),
-            json!([9223372036854775808.0, 1, 2]),
-            json!([0, 18446744073709551616.0, 2]),
-            json!({}),
-        ];
-        for field in fields.keys() {
-            for candidate in &candidates {
-                let mut value = json!({"id":"r"});
-                value[field] = candidate.clone();
-                let schema_valid = crate::validate("PersistedRuleRecord", &value).unwrap();
-                let decoded = serde_json::from_value::<RuleRecord>(value.clone());
-                assert_eq!(decoded.is_ok(), schema_valid, "field {field}: {candidate}");
-                if let Ok(decoded) = decoded {
-                    assert_eq!(decoded.value(), value, "field {field}");
-                }
-            }
-        }
+    fn rule_kind_requires_its_specific_fields() {
+        assert!(serde_json::from_str::<RuleKind>(r#"{"kind":"file"}"#).is_err());
+        assert!(
+            serde_json::from_str::<RuleKind>(r#"{"kind":"low_workers","minimumWorkers":1}"#)
+                .is_err()
+        );
+        assert!(serde_json::from_str::<RuleKind>(r#"{"kind":"file","path":"fixture-file"}"#).is_ok());
+        assert!(
+            serde_json::from_str::<RuleKind>(
+                r#"{"kind":"low_workers","minimumWorkers":1,"durationMinutes":5}"#
+            )
+            .is_ok()
+        );
     }
-
     #[test]
-    fn launch_requires_nullable_fields_and_preserves_null() {
-        let mut launch = json!({"ruleId":"r","checkNumber":1.0,"agentId":"a","epoch":2,"accountKey":null,"threadId":null,"monitorId":"m","command":"run","timeoutMs":1000,"liveness":false});
-        let value = json!({"id":"r","launchIntent":launch});
-        let record: RuleRecord = serde_json::from_value(value.clone()).unwrap();
-        assert_eq!(record.value(), value);
-        assert!(crate::validate("PersistedRuleRecord", &value).unwrap());
-        launch.as_object_mut().unwrap().remove("threadId");
-        let missing = json!({"id":"r","launchIntent":launch});
-        assert!(serde_json::from_value::<RuleRecord>(missing.clone()).is_err());
-        assert!(!crate::validate("PersistedRuleRecord", &missing).unwrap());
+    fn strict_rule_requires_owner_and_discards_extensions() {
+        assert!(serde_json::from_str::<RuleRecord>(r#"{"id":"r"}"#).is_err());
+        let raw = r#"{"id":"r","agent":"a","epoch":1,"name":"n","kind":"interval","status":"active","intervalSeconds":60,"nextAt":1,"created":1,"command":"","text":"","checks":0,"wakes":0,"inFlight":false,"fileGeneration":0,"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"livenessCommand":"","event":"","unknown":true}"#;
+        let record = serde_json::from_str::<RuleRecord>(raw).expect("rule with extension");
+        assert!(!serde_json::to_string(&record).unwrap().contains("unknown"));
+        let valid = r#"{"id":"r","agent":"a","epoch":1,"name":"n","kind":"file","path":"fixture-file","status":"active","intervalSeconds":60,"nextAt":1,"created":1,"command":"","text":"","checks":0,"wakes":0,"inFlight":false,"fileGeneration":0,"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"livenessCommand":"","event":""}"#;
+        serde_json::from_str::<RuleRecord>(valid).expect("valid file rule");
+    }
+    #[test]
+    fn stored_rule_schema_matches_type() { check_schema_parity().unwrap(); }
+    #[test]
+    fn launch_intent_requires_nullable_identity_fields() {
+        let raw = r#"{"ruleId":"r","checkNumber":1,"agentId":"a","epoch":2,"accountKey":null,"threadId":null,"monitorId":"m","command":"run","timeoutMs":1000,"liveness":false}"#;
+        let intent: LaunchIntent = serde_json::from_str(raw).unwrap();
+        assert_eq!((intent.account_key, intent.thread_id), (None, None));
+        assert!(serde_json::from_str::<LaunchIntent>(&raw.replace(",\"threadId\":null", "")).is_err());
     }
 }

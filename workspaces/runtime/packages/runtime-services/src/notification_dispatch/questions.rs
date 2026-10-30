@@ -50,11 +50,8 @@ pub(crate) fn submit_agent_complaint(
         .ok_or_else(|| stored("runtime_agents", agent_id))?;
     let lead = AgentRepository::get(tx, &AgentId::from(lead_id))?
         .ok_or_else(|| stored("runtime_agents", lead_id))?;
-    if !lead
-        .extra
-        .get("isLead")
-        .is_some_and(|value| value == &Value::Bool(true))
-        || studio_runtime_store::truthy(lead.extra.get("deletedAt"))
+    if lead.is_lead != Some(true)
+        || lead.is_deleted()
     {
         return Err(NotificationDispatchError::invalid());
     }
@@ -159,11 +156,8 @@ pub(crate) fn agent_complaint_action(
         .ok_or_else(|| stored("runtime_agents", actor_id))?;
     let root = AgentRepository::get(tx, &AgentId::from(root_id))?
         .ok_or_else(|| stored("runtime_agents", root_id))?;
-    if root.extra.get("isLead") != Some(&Value::Bool(true))
-        || root
-            .extra
-            .get("deletedAt")
-            .is_some_and(|deleted_at| !deleted_at.is_null())
+    if root.is_lead != Some(true)
+        || root.deleted_at.is_some()
     {
         return Err(NotificationDispatchError::invalid());
     }
@@ -273,7 +267,7 @@ pub(crate) fn agent_complaint_action(
             if author != "user" && author != actor_id {
                 let reporter = AgentRepository::get(tx, &AgentId::from(author))?
                     .ok_or_else(|| stored("runtime_agents", author))?;
-                if !studio_runtime_store::truthy(reporter.extra.get("deletedAt")) {
+                if !reporter.is_deleted() {
                     let event = json!({"complaint_id":id,"lead":actor_id,"response":response});
                     crate::event_write::enqueue_event(
                         tx,

@@ -542,7 +542,7 @@ impl NativeActionPreparationRun {
             .guest
             .clone()
             .ok_or(NativeError::Unavailable("workspace-state/vm-workspace"))?;
-        if agent.extra.get("isLead").and_then(Value::as_bool) == Some(true) {
+        if agent.is_lead == Some(true) {
             studio_runtime_services::vm_preparation::prepare_lead(
                 self.store.as_ref(),
                 guest,

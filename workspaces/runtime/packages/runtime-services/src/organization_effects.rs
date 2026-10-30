@@ -20,9 +20,9 @@ pub fn apply(tx: &Transaction<'_>, body: &Value) -> Result<Value, EventWriteErro
         return apply_read_state(tx, agent, read);
     }
     if body.get("project_folder").is_some() {
-        if agent.extra.get("isLead").and_then(Value::as_bool) != Some(true)
+        if agent.is_lead != Some(true)
             || body.get("project_path").and_then(Value::as_str)
-                != agent.extra.get("cwd").and_then(Value::as_str)
+                != agent.cwd.as_deref()
         {
             return Err(EventWriteError::InvalidRequest(
                 "Select a chat in this project",
@@ -37,10 +37,7 @@ pub fn apply(tx: &Transaction<'_>, body: &Value) -> Result<Value, EventWriteErro
             let folder_id = folder
                 .as_str()
                 .ok_or(EventWriteError::InvalidRequest("Select a project folder"))?;
-            let path = agent
-                .extra
-                .get("cwd")
-                .and_then(Value::as_str)
+            let path = agent.cwd.as_deref()
                 .unwrap_or_default();
             let project = tx
                 .query_row(

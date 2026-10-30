@@ -78,13 +78,15 @@ pub(super) fn apply(
         else {
             return Ok(Some(DispatchOutcome::Written));
         };
+        let delta = <crate::monitor_event_queue::OutputDelta as serde::Deserialize>::deserialize(p)
+            .map_err(|_| NotificationDispatchError::invalid())?;
         crate::monitor_event_queue::enqueue_output_in_transaction(
             tx,
             process_id,
             account,
             identity.generation,
             identity.cursor,
-            p,
+            &delta,
         )?;
         return Ok(Some(DispatchOutcome::Written));
     }

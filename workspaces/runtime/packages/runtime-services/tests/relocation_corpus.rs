@@ -173,80 +173,6 @@ fn full() -> bool {
     std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some()
 }
 
-use studio_runtime_services::multi_server_transport::{
-    AccessError, OrchestrationDriver, PairedTransport, RuntimeOrchestrationEffects,
-};
-struct Peer(Value);
-impl PairedTransport for Peer {
-    fn exchange<'a>(
-        &'a self,
-        _: &'a str,
-        envelope: &'a Value,
-        _: std::time::Duration,
-    ) -> futures_util::future::BoxFuture<
-        'a,
-        Result<studio_runtime_store::multi_server_delivery::RemoteReply, AccessError>,
-    > {
-        Box::pin(async move {
-            Ok(serde_json::from_str(
-                &json!({"requestId":envelope["requestId"],"outcome":"applied","value":self.0})
-                    .to_string(),
-            )
-            .expect("fixture reply"))
-        })
-    }
-}
-#[tokio::test]
-async fn move_release_uses_settled_status_delivery() {
-    let fixture = Fixture::new();
-    let case = fixture.data["cases"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|case| case["name"] == "release-waiting-not-started")
-        .unwrap();
-    let (_, store) = fixture.store("settled-move-status").await;
-    fixture.seed(&store, case).await;
-    store.transaction(|tx| {tx.execute("INSERT INTO runtime_access_clients(id,record) VALUES('peer',?1)",[json!({"id":"peer","clientId":"client","kind":"server","label":"Peer","created":1,"publicKey":"fixture-key","status":"paired"}).to_string()])?;Ok(())}).await.unwrap();
-    let store = Arc::new(store);
-    let driver = OrchestrationDriver::new(
-        store.clone(),
-        Arc::new(Peer(case["targetReceipt"].clone())),
-        Arc::new(RuntimeOrchestrationEffects::new(store.clone())),
-    );
-    let key = text(&case["operation"], "id");
-    let generation = agent_move::MoveSnapshot::from_record(&case["operation"])
-        .unwrap()
-        .reconciliation_generation();
-    let root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
-    let now = chrono::Utc::now().timestamp();
-    driver
-        .exchange(
-            "peer",
-            "move_status",
-            &json!({"move":key,"reconciliationGeneration":generation}),
-            &root,
-            now,
-        )
-        .await
-        .expect("settled status");
-    assert_eq!(
-        store
-            .test_reader()
-            .unwrap()
-            .query_row("SELECT count(*) FROM runtime_server_outbox", [], |row| row
-                .get::<_, i64>(
-                0
-            ))
-            .unwrap(),
-        0
-    );
-    assert!(
-        agent_move::release_untransferred(&store, key, &root, now as f64)
-            .await
-            .expect("release settled status")
-    );
-}
 fn snapshot(store: &RuntimeStore) -> Value {
     let db = store.test_reader().expect("read state");
     let mut result = serde_json::Map::new();
@@ -305,31 +231,6 @@ async fn apply_move_case(
             })
             .await
     }
-}
-
-async fn save_status_ticket(
-    store: &Arc<RuntimeStore>,
-    move_id: &str,
-    ticket: &str,
-    generation: Value,
-    target_receipt: &Value,
-) {
-    store.transaction(|tx| {tx.execute("INSERT OR IGNORE INTO runtime_access_clients(id,record) VALUES('peer',?1)",[json!({"id":"peer","clientId":"client","kind":"server","label":"Peer","created":1,"publicKey":"fixture-key","status":"paired"}).to_string()])?;Ok(())}).await.expect("peer");
-    let driver = OrchestrationDriver::new(
-        store.clone(),
-        Arc::new(Peer(target_receipt.clone())),
-        Arc::new(RuntimeOrchestrationEffects::new(store.clone())),
-    );
-    driver
-        .exchange(
-            "peer",
-            "move_status",
-            &json!({"move":move_id,"reconciliationGeneration":generation}),
-            ticket,
-            chrono::Utc::now().timestamp(),
-        )
-        .await
-        .expect("settle status ticket");
 }
 
 async fn complete_location(
@@ -413,14 +314,17 @@ async fn python_location_and_move_corpus_through_consumers() {
     let fixture = Fixture::new();
     let now = fixture.data["now"].as_f64().expect("clock");
     let local = text(&fixture.data, "local");
-    for case in fixture.data["cases"].as_array().expect("cases") {
+    for case in fixture.data["cases"]
+        .as_array()
+        .expect("cases")
+        .iter()
+        .filter(|case| text(case, "family") != "release")
+    {
         // Full matrix remains opt-in; fast witnesses cover each semantic family.
         if !full()
             && ![
                 "add-changed-location",
                 "remove-location",
-                "release-waiting-not-started",
-                "hold-exported-active",
                 "expire-importing",
                 "cache-first-observation",
                 "cache-boolean-not-integer",
@@ -562,28 +466,6 @@ async fn python_location_and_move_corpus_through_consumers() {
                 assert_eq!(replay["outcome"], case["expected"]["record"]["outcome"]);
                 assert_eq!(snapshot(&store), committed);
                 continue;
-            }
-            "release" => {
-                let operation = &case["operation"];
-                let key = text(operation, "id");
-                let ticket = studio_runtime_schema::persistence::RequestIdentity::issue_root();
-                let generation = agent_move::MoveSnapshot::from_record(operation)
-                    .expect("checked source")
-                    .reconciliation_generation();
-                save_status_ticket(
-                    &store,
-                    key,
-                    &ticket,
-                    json!(generation),
-                    &case["targetReceipt"],
-                )
-                .await;
-                assert_eq!(
-                    agent_move::release_untransferred(&store, key, &ticket, now)
-                        .await
-                        .expect("reconcile"),
-                    case["changed"].as_bool().expect("changed")
-                );
             }
             "expire" => {
                 assert_eq!(
@@ -1264,187 +1146,4 @@ async fn move_expiry_and_cache_failpoints_reopen_without_partial_effects() {
             assert_eq!(snapshot(&store), before);
         }
     }
-}
-
-#[tokio::test]
-async fn move_status_saved_body_preserves_admission_and_identity_fences() {
-    let fixture = Fixture::new();
-    let case = fixture.data["cases"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|case| case["name"] == "release-waiting-not-started")
-        .unwrap();
-    let key = text(&case["operation"], "id");
-    let generation = agent_move::MoveSnapshot::from_record(&case["operation"])
-        .unwrap()
-        .reconciliation_generation();
-    for variant in [
-        "malformed",
-        "scalar",
-        "null-payload",
-        "missing-move",
-        "wrong-move",
-        "number-generation",
-        "wrong-request",
-        "wrong-action",
-        "duplicate",
-    ] {
-        let (_, store) = fixture.store(variant).await;
-        fixture.seed(&store, case).await;
-        let store = Arc::new(store);
-        let ticket = studio_runtime_schema::persistence::RequestIdentity::issue_root();
-        save_status_ticket(
-            &store,
-            key,
-            &ticket,
-            json!(generation),
-            &case["targetReceipt"],
-        )
-        .await;
-        let mut body = json!({"requestId":ticket,"action":"move_status","payload":{"move":key,"reconciliationGeneration":generation}});
-        match variant {
-            "scalar" => body = json!(42),
-            "null-payload" => body["payload"] = Value::Null,
-            "missing-move" => {
-                body["payload"].as_object_mut().unwrap().remove("move");
-            }
-            "wrong-move" => body["payload"]["move"] = json!("foreign"),
-            "number-generation" => body["payload"]["reconciliationGeneration"] = json!(1.0),
-            "wrong-request" => body["requestId"] = json!("foreign"),
-            "wrong-action" => body["action"] = json!("other"),
-            _ => {}
-        }
-        let raw = if variant == "malformed" {
-            "{".to_owned()
-        } else if variant == "duplicate" {
-            format!(
-                "{{\"requestId\":\"wrong\",\"requestId\":{},\"action\":\"wrong\",\"action\":\"move_status\",\"payload\":{{\"move\":null,\"move\":{},\"reconciliationGeneration\":null,\"reconciliationGeneration\":{}}}}}",
-                json!(ticket),
-                json!(key),
-                json!(generation)
-            )
-        } else {
-            body.to_string()
-        };
-        let ticket_for_write = ticket.clone();
-        store.transaction(move |tx| {
-            assert_eq!(tx.execute("UPDATE request_results SET result=json_set(result,'$.reply.body',?1) WHERE json_extract(result,'$.reply.response.requestId')=?2", params![raw,ticket_for_write])?, 1);
-            Ok(())
-        }).await.unwrap();
-        let before = snapshot(&store);
-        let result = agent_move::release_untransferred(
-            &store,
-            key,
-            &ticket,
-            fixture.data["now"].as_f64().unwrap(),
-        )
-        .await;
-        if variant == "duplicate" {
-            assert!(result.unwrap());
-        } else {
-            assert!(result.is_err(), "{variant}");
-            assert_eq!(snapshot(&store), before, "{variant} must not mutate state");
-        }
-    }
-}
-
-#[tokio::test]
-async fn move_status_ticket_rejects_stale_generation_and_replay() {
-    let fixture = Fixture::new();
-    let case = fixture.data["cases"]
-        .as_array()
-        .expect("cases")
-        .iter()
-        .find(|case| case["name"] == "release-waiting-not-started")
-        .expect("release case");
-    let (path, store) = fixture.store("status-generation").await;
-    fixture.seed(&store, case).await;
-    let store = Arc::new(store);
-    let now = fixture.data["now"].as_f64().expect("clock");
-    let key = text(&case["operation"], "id");
-    let old_generation = agent_move::MoveSnapshot::from_record(&case["operation"])
-        .expect("Python-written source")
-        .reconciliation_generation();
-    let old_ticket = studio_runtime_schema::persistence::RequestIdentity::issue_root();
-    save_status_ticket(
-        &store,
-        key,
-        &old_ticket,
-        json!(old_generation),
-        &case["targetReceipt"],
-    )
-    .await;
-    // A newer source status arrived after this target observation. Both states
-    // could release on not_started, so only generation binding refuses the old proof.
-    let mut current = case["operation"].clone();
-    current["uncertainPhase"] = json!("exported");
-    let current_for_write = current.clone();
-    store
-        .transaction(move |tx| AgentMoveRepository::save(tx, &current_for_write))
-        .await
-        .expect("advance source status");
-    let before = snapshot(&store);
-    assert!(
-        agent_move::release_untransferred(&store, key, &old_ticket, now)
-            .await
-            .is_err()
-    );
-    assert_eq!(snapshot(&store), before);
-    drop(store);
-    let store = Arc::new(
-        RuntimeStore::open(Some(&path))
-            .await
-            .expect("restart preserves source generation"),
-    );
-    assert!(
-        agent_move::release_untransferred(&store, key, &old_ticket, now)
-            .await
-            .is_err()
-    );
-    assert_eq!(snapshot(&store), before);
-    let generation = agent_move::MoveSnapshot::from_record(&current)
-        .expect("current snapshot")
-        .reconciliation_generation();
-    assert_ne!(generation, old_generation);
-    for malformed in [Value::Null, json!(true), json!(0), json!({})].into_iter() {
-        let ticket = studio_runtime_schema::persistence::RequestIdentity::issue_root();
-        save_status_ticket(&store, key, &ticket, malformed, &case["targetReceipt"]).await;
-        let before = snapshot(&store);
-        assert!(
-            agent_move::release_untransferred(&store, key, &ticket, now)
-                .await
-                .is_err()
-        );
-        assert_eq!(snapshot(&store), before);
-    }
-    let current_ticket = studio_runtime_schema::persistence::RequestIdentity::issue_root();
-    save_status_ticket(
-        &store,
-        key,
-        &current_ticket,
-        json!(generation),
-        &case["targetReceipt"],
-    )
-    .await;
-    assert!(
-        agent_move::release_untransferred(&store, key, &current_ticket, now)
-            .await
-            .expect("fresh proof releases")
-    );
-    let committed = snapshot(&store);
-    drop(store);
-    let store = RuntimeStore::open(Some(&path))
-        .await
-        .expect("restart after release");
-    assert!(
-        agent_move::release_untransferred(&store, key, &current_ticket, now + 1.0)
-            .await
-            .is_err()
-    );
-    assert_eq!(
-        snapshot(&store),
-        committed,
-        "replayed proof cannot write twice"
-    );
 }

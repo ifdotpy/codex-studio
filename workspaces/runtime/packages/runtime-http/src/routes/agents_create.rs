@@ -157,15 +157,15 @@ pub(super) fn prepare_parent_workspace(
 > {
     let id = actor.id.0.clone();
     let epoch = actor.epoch;
-    let cwd = actor.extra.get("cwd").and_then(Value::as_str).ok_or(
+    let cwd = actor.cwd.as_deref().ok_or(
         studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError::Invalid(
             "Select a project directory",
         ),
     )?;
     // Admission validates the parent's existing workspace. The requested
     // child mode is independently validated and provisioned by creation.
-    let mode = parent_workspace_mode(actor);
-    if matches!(mode, "layr" | "linux") {
+    let mode = actor.workspace_mode;
+    if mode == Some(studio_runtime_schema::records::WorkspaceMode::Layr) {
         let project_id = actor
                 .extra
                 .get("layrProjectId")
@@ -195,7 +195,7 @@ pub(super) fn prepare_parent_workspace(
             line: line.to_owned(),
         }));
     }
-    if !matches!(mode, "shared" | "worktree" | "layr-native") {
+    if mode == Some(studio_runtime_schema::records::WorkspaceMode::Image) {
         return Err(
             studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError::Invalid(
                 "Unknown workspace mode",
@@ -210,14 +210,6 @@ pub(super) fn prepare_parent_workspace(
         epoch,
         cwd: cwd.to_owned(),
     }))
-}
-
-fn parent_workspace_mode(actor: &studio_runtime_store::AgentRecord) -> &str {
-    actor
-        .extra
-        .get("workspaceMode")
-        .and_then(Value::as_str)
-        .unwrap_or("shared")
 }
 
 #[cfg(test)]
@@ -426,7 +418,7 @@ impl studio_runtime_services::monitor_runtime::WorkspaceAdmission for VmManagedW
         let extra = &actor.extra;
         if actor.id.0 != self.id
             || actor.epoch != self.epoch
-            || extra.get("cwd").and_then(Value::as_str) != Some(self.cwd.as_str())
+            || actor.cwd.as_deref() != Some(self.cwd.as_str())
             || actor.execution_mode != Some(studio_runtime_store::AgentExecutionMode::Vm)
             || extra.get("layrReady").and_then(Value::as_bool) != Some(true)
             || extra.get("layrProjectId").and_then(Value::as_str) != Some(self.project_id.as_str())
@@ -450,7 +442,7 @@ impl studio_runtime_services::monitor_runtime::WorkspaceAdmission for HostManage
     ) -> Result<(), studio_runtime_services::monitor_policy::MonitorError> {
         if actor.id.0 != self.id
             || actor.epoch != self.epoch
-            || actor.extra.get("cwd").and_then(Value::as_str) != Some(self.cwd.as_str())
+            || actor.cwd.as_deref() != Some(self.cwd.as_str())
         {
             return Err(
                 studio_runtime_services::monitor_policy::MonitorError::Refused(

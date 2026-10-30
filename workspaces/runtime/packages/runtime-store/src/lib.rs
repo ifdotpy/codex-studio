@@ -95,7 +95,7 @@ use sqlite_actor::{ActorResponseDisposition, SqliteActor};
 
 pub use path::{NATIVE_LAYR_DIRECTORY, resolve_state_dir};
 pub use records::{
-    ActiveExecutionView, AgentExecutionMode, AgentId, AgentRecord, AgentRepository, AgentStatus,
+    ActiveExecutionView, AgentExecutionMode, AgentId, AgentRecord, AgentRepository, AgentSandbox, AgentStatus,
     AnnotationRecord, ChatMessage, ChatMessageId, CheckpointRecord, ComplaintRecord,
     CredentialCopy, EventMetadataRecord, ExecutionRunRecord, GraphAgentRecord, InterruptOutcome,
     JsonRecord, LegacyWorkReply, MessageRepository, MonitorRecord, NativeRelease,
@@ -106,7 +106,7 @@ pub use records::{
     TaskRecord, TaskRepository, TerminalRecord, TitleJob, ToolResultRecord, TranscriptAssetId,
     TranscriptAssetRecord, TranscriptItemId, TranscriptItemRecord, UnknownAgentStatus,
     UsageResumeRecord, VmAuthBootstrap, VmLaunch, WorkItemRecord, WorkStatus,
-    WorkspaceOperationRecord, decode_agent_value,
+    WorkspaceOperationRecord, decode_agent_record,
 };
 pub use repositories::agent_indexed_reads::{AgentIndexedReads, RESERVED_TURN_INPUT};
 pub use repositories::agent_move::{AgentMoveRepository, MoveRecord};
@@ -492,7 +492,6 @@ fn fire_commit_observers(notifiers: &Mutex<CommitNotifiers>) {
 }
 
 fn fire_analytics_commit_observers(notifiers: &Mutex<CommitNotifiers>, roots: ChangedRoots) {
-    fire_commit_observers(notifiers);
     let observers = notifiers
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1562,15 +1561,6 @@ impl RuntimeStore {
     /// already installed; the first one stays.
     pub fn install_entity_publisher(&self, publisher: Arc<dyn EntityPublisher>) -> bool {
         self.entity_publisher.set(publisher).is_ok()
-    }
-
-    /// Observe committed analytics source writes. Callbacks must only enqueue work.
-    pub fn add_analytics_commit_observer(&self, observer: impl Fn() + Send + Sync + 'static) {
-        self.analytics_commit_notifiers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .observers
-            .push(Arc::new(observer));
     }
 
     /// Observe analytics commits with the roots whose usage generation changed.

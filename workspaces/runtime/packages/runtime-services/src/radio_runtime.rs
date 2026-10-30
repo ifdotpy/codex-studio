@@ -296,8 +296,8 @@ pub async fn create_with(
                 for (draft, id) in drafts.iter_mut().zip(&ids) {
                     if draft.id != *id
                         || draft.root_id != *id
-                        || draft.extra.get("cwd").and_then(Value::as_str) != Some(path.as_str())
-                        || draft.extra.get("isLead").and_then(Value::as_bool) != Some(true)
+                        || draft.cwd.as_deref() != Some(path.as_str())
+                        || draft.is_lead != Some(true)
                     {
                         return Err(ProjectsError::Invalid(
                             "prepared shared participant identity changed",

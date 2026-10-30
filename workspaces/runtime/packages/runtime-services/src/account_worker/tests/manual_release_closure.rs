@@ -8,8 +8,8 @@ async fn completed_worker(state: &State, peer: &Peer) -> AccountHandle {
         store.transaction(move |tx| {
             let mut agent = AgentRepository::get(tx, &AgentId::from(id.as_str()))?.unwrap();
             agent.status = AgentStatus::Completed;
-            agent.extra.insert("isLead".into(), json!(false));
-            agent.extra.insert("parentId".into(), json!("lead"));
+            agent.is_lead = Some(false);
+            agent.parent_id = Some(("lead").to_string());
             tx.execute("UPDATE runtime_events SET status='delivered' WHERE agent=?1 AND status='pending'", [&id])?;
             AgentRepository::put(tx, &agent)
         }).await?;

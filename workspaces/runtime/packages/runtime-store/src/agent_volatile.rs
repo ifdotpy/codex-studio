@@ -11,10 +11,8 @@
 //!
 //! Readers see one agent object: [`merge`] adds the stored fields to a decoded
 //! record. Writers store through [`put`] and [`update`]: the record without these
-//! fields is written only when it changed, and every field present in the
-//! agent replaces its column. A field absent from a written agent keeps its
-//! stored value, so a writer that read the record without merging cannot erase
-//! it. No writer removes one of these fields; it stores JSON null instead.
+//! fields is written only when it changed. Writers provide a complete agent;
+//! each volatile field replaces its column, and a missing or null field clears it.
 
 use std::sync::LazyLock;
 
@@ -76,14 +74,13 @@ static SELECT_SQL: LazyLock<String> = LazyLock::new(|| {
     )
 });
 
-/// Upsert of the present fields: a NULL parameter keeps the stored column, and
-/// an unchanged row is not written, so its triggers do not fire.
+/// Complete upsert; an unchanged row is not written, so its triggers do not fire.
 static UPSERT_SQL: LazyLock<String> = LazyLock::new(|| {
     let placeholders = (2..=AGENT_VOLATILE_FIELDS.len() + 1)
         .map(|index| format!("?{index}"))
         .collect::<Vec<_>>()
         .join(",");
-    let next = |field: &str| format!("COALESCE(excluded.\"{field}\",\"{field}\")");
+    let next = |field: &str| format!("excluded.\"{field}\"");
     let set = AGENT_VOLATILE_FIELDS
         .iter()
         .map(|field| format!("\"{field}\"={}", next(field)))
@@ -267,6 +264,38 @@ pub fn merge(connection: &Connection, id: &str, record: &mut Value) -> StoreResu
     Ok(())
 }
 
+/// Read the volatile columns into the same typed agent record as its stored row.
+pub(crate) fn merge_agent(connection: &Connection, id: &str, agent: &mut crate::AgentRecord) -> StoreResult<()> {
+    #[cfg(any(test, feature = "test-support"))]
+    publication_work::record(id, publication_work::Operation::VolatileLoad);
+    let mut statement = connection.prepare_cached(&SELECT_SQL)?;
+    let mut rows = statement.query([id])?;
+    if let Some(row) = rows.next()? {
+        merge_agent_row(row, id, agent)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn merge_agent_row(row: &rusqlite::Row<'_>, id: &str, agent: &mut crate::AgentRecord) -> StoreResult<()> {
+    fn field<T: serde::de::DeserializeOwned>(row: &rusqlite::Row<'_>, index: usize, id: &str, target: &mut Option<T>) -> StoreResult<()> {
+        *target = row.get::<_, Option<String>>(index)?
+            .map(|encoded| serde_json::from_str(&encoded).map_err(|_| invalid(id)))
+            .transpose()?.flatten();
+        Ok(())
+    }
+    agent.events = row.get::<_, Option<String>>(0)?
+        .map(|encoded| crate::records::deserialize_optional_safe_counter(&mut serde_json::Deserializer::from_str(&encoded)).map_err(|_| invalid(id)))
+        .transpose()?.flatten();
+    field(row, 1, id, &mut agent.last_event)?;
+    field(row, 2, id, &mut agent.activity)?;
+    field(row, 3, id, &mut agent.active_tools)?;
+    field(row, 4, id, &mut agent.tail)?;
+    field(row, 5, id, &mut agent.last_answer)?;
+    field(row, 6, id, &mut agent.context_usage)?;
+    field(row, 7, id, &mut agent.tokens_used)?;
+    field(row, 8, id, &mut agent.token_usage_accounting)
+}
+
 /// SQL for the JSON text of volatile `field` of the `runtime_agents` row that
 /// `agents` (the table name or an alias) names, as [`merge`] reads it.
 pub fn field_sql(agents: &str, field: &str) -> String {
@@ -367,7 +396,7 @@ pub(crate) fn merge_row(
 ) -> StoreResult<()> {
     for (index, field) in AGENT_VOLATILE_FIELDS.iter().enumerate() {
         match row.get_ref(index)? {
-            ValueRef::Null => {}
+            ValueRef::Null => { fields.remove(*field); }
             ValueRef::Text(text) => {
                 let value = serde_json::from_slice(text).map_err(|_| invalid(id))?;
                 fields.insert((*field).to_owned(), value);
@@ -407,22 +436,18 @@ fn stored_record(agent: &Map<String, Value>) -> StoreResult<String> {
     Ok(serde_json::to_string(&StoredRecord(agent))?)
 }
 
-/// Store the volatile fields present in `agent` for agent `id`.
+/// Store all volatile fields of the complete agent for agent `id`.
 fn put_fields(connection: &Connection, id: &str, agent: &Map<String, Value>) -> StoreResult<()> {
     let mut values: [Option<String>; AGENT_VOLATILE_FIELDS.len()] = Default::default();
-    let mut present = false;
     for (slot, field) in values.iter_mut().zip(AGENT_VOLATILE_FIELDS) {
-        if let Some(value) = agent.get(field) {
+        if let Some(value) = agent.get(field).filter(|value| !value.is_null()) {
             *slot = Some(serde_json::to_string(value)?);
-            present = true;
         }
     }
-    if present {
-        connection.execute_cached(
-            &UPSERT_SQL,
-            params_from_iter(std::iter::once(Some(id.to_owned())).chain(values)),
-        )?;
-    }
+    connection.execute_cached(
+        &UPSERT_SQL,
+        params_from_iter(std::iter::once(Some(id.to_owned())).chain(values)),
+    )?;
     Ok(())
 }
 
@@ -586,17 +611,20 @@ mod tests {
                     .iter()
                     .all(|field| record.get(field).is_none())
             );
-            let has_fields = AGENT_VOLATILE_FIELDS
-                .iter()
-                .any(|field| agent.get(field).is_some());
-            assert_eq!(volatile.is_some(), has_fields, "{id} volatile row");
+            assert!(volatile.is_some(), "{id} volatile row");
             let typed = AgentRepository::get(&connection, &AgentId::from(id))
                 .expect("typed read")
                 .expect("agent exists");
-            assert_eq!(&typed.value(), agent);
+            let mut normalized = agent.clone();
+            for field in AGENT_VOLATILE_FIELDS {
+                if normalized.get(field).is_some_and(Value::is_null) {
+                    normalized.as_object_mut().unwrap().remove(field);
+                }
+            }
+            assert_eq!(typed.value(), normalized);
             assert_eq!(
                 system_reads::get(&connection, "runtime_agents", id).expect("checked read"),
-                Some(agent.clone())
+                Some(normalized)
             );
         }
         drop(connection);
@@ -614,8 +642,7 @@ mod tests {
     }
 
     /// A write that changes only volatile fields leaves `runtime_agents`
-    /// untouched; an absent field keeps its value; an unchanged write writes
-    /// nothing.
+    /// untouched and an unchanged complete write writes nothing.
     #[test]
     fn volatile_only_writes_leave_the_indexed_record_alone() -> crate::StoreResult<()> {
         let mut connection = crate::fresh_state::test_canvas();
@@ -646,11 +673,8 @@ mod tests {
             revision_before + 1,
             "the transcript revision advances"
         );
-        let mut partial = agent.clone();
-        let object = partial.as_object_mut().expect("object");
-        object.remove("lastAnswer");
         let before = tx.total_changes();
-        assert!(update(tx, "a", &partial)?);
+        assert!(update(tx, "a", &agent)?);
         assert_eq!(
             tx.total_changes(),
             before,
@@ -658,6 +682,11 @@ mod tests {
         );
         let mut read = Value::Object(stored_record_object(tx, "a"));
         merge(tx, "a", &mut read)?;
+        for field in AGENT_VOLATILE_FIELDS {
+            if agent.get(field).is_some_and(Value::is_null) {
+                agent.as_object_mut().unwrap().remove(field);
+            }
+        }
         assert_eq!(read, agent);
         transaction.commit().expect("writes commit");
         Ok(())

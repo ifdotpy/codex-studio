@@ -65,14 +65,14 @@ pub fn checkpoint_list(
             .iter()
             .find(|agent| agent.id().as_ref() == agent_id)
             .ok_or(QuestionsReadsError::UnknownAgent)?;
-        if deleted_value(caller.extra.get("deletedAt")) {
+        if caller.is_deleted() {
             return Err(QuestionsReadsError::DeletedAgent);
         }
         vec![agent_id.to_owned()]
     } else {
         agents
             .iter()
-            .filter(|agent| !deleted_value(agent.extra.get("deletedAt")))
+            .filter(|agent| !agent.is_deleted())
             .map(|agent| agent.id().as_ref().to_owned())
             .collect()
     };
@@ -94,9 +94,7 @@ pub fn checkpoint_list(
 }
 
 fn deleted_value(value: Option<&Value>) -> bool {
-    value
-        .and_then(Value::as_f64)
-        .is_some_and(|number| number != 0.0)
+    value.and_then(Value::as_f64).is_some_and(|number| number != 0.0)
 }
 
 fn string_member<'a>(record: &'a Map<String, Value>, name: &str) -> Option<&'a str> {

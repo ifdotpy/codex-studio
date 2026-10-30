@@ -174,7 +174,7 @@ pub async fn tick_batch(
         let rule = row.rule;
         // Most stored rules are paused or completed. Skip them before the owner
         // record, which can hold hundreds of kilobytes, is read and decoded.
-        if !tick_can_change(&rule)? {
+        if !tick_can_change(&rule) {
             continue;
         }
         let sampled = store
@@ -266,7 +266,7 @@ pub async fn recover_batch(
                     return Ok(None);
                 };
                 let owner = owner(tx, sampled.owner_id())?;
-                if !sampled.current(&rule.value(), &owner.value()) {
+                if !sampled.current(&rule, &owner.value()) {
                     return Ok(None);
                 }
                 if let Some(check) = &intent_for_tx
@@ -362,9 +362,7 @@ pub async fn settle_submission(
                     if snapshot.launch_allowed(&check_for_tx) {
                         let mut decision = snapshot.recover(now)?;
                         if let Some(record) = &mut decision.record {
-                            record["error"] = serde_json::json!(
-                                "Monitor submission outcome unknown; check was not repeated."
-                            );
+                            record.error = Some("Monitor submission outcome unknown; check was not repeated.".into());
                         }
                         apply(tx, &owner(tx, snapshot.owner_id())?, &decision, now)?;
                     }
@@ -422,12 +420,8 @@ pub fn finish_in_transaction(
     };
     let snapshot = load_snapshot(transaction, rule)?;
     let mut decision = snapshot.finish_check(check, result, now)?;
-    if let Some(record) = decision
-        .record
-        .as_mut()
-        .and_then(serde_json::Value::as_object_mut)
-    {
-        record.remove("launchIntent");
+    if let Some(record) = &mut decision.record {
+        record.launch_intent = None;
     }
     apply(
         transaction,
@@ -463,7 +457,7 @@ pub fn event_in_transaction(
     };
     let mut checks = Vec::new();
     for row in rows {
-        if row.rule.agent.as_deref() != Some(agent.id().as_ref()) {
+        if row.rule.agent != agent.id().as_ref() {
             continue;
         }
         let snapshot = RuleSnapshot::from_stored(&row.rule, agent.value())?;
@@ -485,14 +479,7 @@ fn load_snapshot(
     connection: &studio_runtime_store::Connection,
     rule: RuleRecord,
 ) -> Result<RuleSnapshot, RulesTickError> {
-    let agent_id = rule
-        .agent
-        .as_deref()
-        .ok_or_else(|| StoreError::InvalidStoredRecord {
-            object: "rules",
-            id: rule.id().clone(),
-        })?;
-    let owner = owner(connection, agent_id)?.value();
+    let owner = owner(connection, &rule.agent)?.value();
     Ok(RuleSnapshot::from_stored(&rule, owner)?)
 }
 /// Decide one sampled rule against current rows: `None` when the sample is stale.
@@ -507,7 +494,7 @@ fn decide(
         return Ok(None);
     };
     let owner = owner(connection, sampled.owner_id())?;
-    if !sampled.current(&rule.value(), &owner.value()) {
+    if !sampled.current(&rule, &owner.value()) {
         return Ok(None);
     }
     let activity = if sampled.is_low_workers() {
@@ -558,9 +545,15 @@ fn apply(
     // Validate before any write; RuntimeStore rolls back rule, wake and canonical views together.
     let mut record = record.clone();
     if let Some(check) = &decision.check {
-        record["launchIntent"] = serde_json::to_value(check).map_err(|_| RuleError::Schema)?;
+        record.launch_intent = Some(studio_runtime_schema::rule_record::LaunchIntent {
+            rule_id: check.rule_id.clone(), agent_id: check.agent_id.clone(), monitor_id: check.monitor_id.clone(),
+            check_number: i64::try_from(check.check_number).map_err(|_| RuleError::Schema)?.try_into().map_err(|_| RuleError::Schema)?,
+            epoch: i64::try_from(check.epoch).map_err(|_| RuleError::Schema)?.try_into().map_err(|_| RuleError::Schema)?,
+            timeout_ms: i64::try_from(check.timeout_ms).map_err(|_| RuleError::Schema)?.try_into().map_err(|_| RuleError::Schema)?,
+            command: check.command.clone().try_into().map_err(|_| RuleError::Schema)?,
+            account_key: check.account_key.clone(), thread_id: check.thread_id.clone(), liveness: check.liveness,
+        });
     }
-    let record = RuleRecord::from_value(record).map_err(StoreError::from)?;
     RulesRepository::put(transaction, &record)?;
     if let Some(wake) = &decision.wake {
         enqueue_recovery_event(
@@ -582,21 +575,17 @@ impl crate::monitor_runtime::RuleFinish for MonitorRuleFinish {
     fn finish(
         &self,
         tx: &Transaction<'_>,
-        before: &serde_json::Value,
-        after: &serde_json::Value,
+        before: &studio_runtime_store::MonitorRecord,
+        after: &studio_runtime_store::MonitorRecord,
         now: f64,
     ) -> Result<(), crate::monitor_policy::MonitorError> {
         use crate::monitor_policy::MonitorError;
-        use serde_json::Value;
+        use studio_runtime_schema::studio_errors::MonitorStatus;
         // Replayed terminal receipts have already committed the rule alongside it.
-        if matches!(
-            before["status"].as_str(),
-            Some("completed" | "failed" | "cancelled")
-        ) {
+        if matches!(before.status, MonitorStatus::Completed | MonitorStatus::Failed | MonitorStatus::Cancelled) {
             return Ok(());
         }
-        let rule_id = before["ruleId"]
-            .as_str()
+        let rule_id = before.rule_id.as_deref()
             .ok_or(MonitorError::Refused("Missing monitor rule identity"))?;
         // Python's rule_finished is a no-op after the rule row has been deleted.
         // Commit the monitor so its durable result receipt can be acknowledged.
@@ -605,13 +594,11 @@ impl crate::monitor_runtime::RuleFinish for MonitorRuleFinish {
         };
         let snapshot = load_snapshot(tx, rule)?;
         let check = launch_intent(&snapshot)?.unwrap_or_else(|| snapshot.check());
-        if before["id"].as_str() != Some(&check.monitor_id)
-            || before["agent"].as_str() != Some(&check.agent_id)
-            || before["epoch"].as_u64() != Some(check.epoch)
-            || before["command"].as_str() != Some(&check.command)
-            || before
-                .pointer("/operation/accountKey")
-                .and_then(Value::as_str)
+        if before.id != check.monitor_id
+            || before.agent.as_str() != check.agent_id
+            || u64::try_from(before.epoch.get()).ok() != Some(check.epoch)
+            || before.command.as_str() != check.command
+            || before.operation.as_ref().map(|operation| operation.account_key.as_str())
                 .is_some_and(|account| account != check.account_key.as_deref().unwrap_or("default"))
         {
             return Err(MonitorError::Refused("Monitor rule identity changed"));
@@ -620,14 +607,14 @@ impl crate::monitor_runtime::RuleFinish for MonitorRuleFinish {
             tx,
             &check,
             CheckResult {
-                code: after["exitCode"].as_i64(),
-                error: if after["status"] == "cancelled" {
+                code: after.exit_code,
+                error: if after.status == MonitorStatus::Cancelled {
                     Some("Monitor cancelled")
                 } else {
-                    after["error"].as_str()
+                    after.error.as_ref().map(|error| error.as_str())
                 },
-                cancelled: after["status"] == "cancelled",
-                output: after["tail"].as_str().unwrap_or_default(),
+                cancelled: after.status == MonitorStatus::Cancelled,
+                output: after.tail.as_str(),
             },
             now,
         )? {

@@ -2,6 +2,7 @@
 //! The account worker must serialize this port with stop and validate its connection
 //! ticket immediately before I/O. Unknown submissions are retained, never repeated.
 
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::hash::{Hash, Hasher};
 use studio_runtime_store::RuntimeStore;
@@ -328,9 +329,8 @@ pub async fn cancel_checked(
                 })?;
                 if !crate::process_controls::matches(&process, expected)
                     || process["capabilities"]["stop"] != true
-                    || snapshot.record()["status"] != expected["_raw"]["status"]
-                    || snapshot.record()["reattachedConnectionId"]
-                        != expected["_raw"]["reattachedConnectionId"]
+                    || studio_runtime_schema::studio_errors::MonitorStatus::deserialize(&expected["_raw"]["status"]).ok() != Some(snapshot.record().status)
+                    || snapshot.record().reattached_connection_id.as_deref() != expected["_raw"]["reattachedConnectionId"].as_str()
                 {
                     return Err(MonitorError::Refused(
                         "The process owner changed. Refresh the process list",
@@ -380,9 +380,9 @@ pub async fn cancel_checked(
         let response_error = store
             .transaction_with(move |tx| {
                 let (current, actor) = monitor_runtime::snapshot(tx, &id_for_settlement)?;
-                if current.operation() == Some(&operation_for_settlement)
-                    && current.record()["status"] == "running"
-                    && current.record()["cancelRequested"] == true
+                if current.operation().is_some_and(|saved| saved.same_identity(&operation_for_settlement))
+                    && current.record().status == studio_runtime_schema::studio_errors::MonitorStatus::Running
+                    && current.record().cancel_requested == Some(true)
                 {
                     let mut decision = if retry_reason == Some(NotSentReason::MonitorMissing) {
                         monitor_policy::finish(
@@ -399,10 +399,7 @@ pub async fn cancel_checked(
                             response: Value::Null,
                         }
                     };
-                    let previous_attempts = current
-                        .record()
-                        .pointer("/cancelDispatch/attempts")
-                        .and_then(Value::as_u64)
+                    let previous_attempts = current.record().cancel_dispatch.as_ref().and_then(|dispatch| dispatch.attempts)
                         .unwrap_or(0);
                     let attempts = if retry_reason == Some(NotSentReason::Transient) {
                         previous_attempts.saturating_add(1)
@@ -411,33 +408,31 @@ pub async fn cancel_checked(
                     };
                     let retry_at = (retry_reason == Some(NotSentReason::Transient))
                         .then(|| now + cancel_retry_delay(attempts));
-                    let mut dispatch = json!({"status":status,"updatedAt":now,"attempts":attempts});
+                    let mut dispatch = studio_runtime_schema::monitor_record::MonitorCancelDispatch { status: match status { "written" => studio_runtime_schema::monitor_record::MonitorCancelStatus::Written, "done" => studio_runtime_schema::monitor_record::MonitorCancelStatus::Done, "unknown" => studio_runtime_schema::monitor_record::MonitorCancelStatus::Unknown, _ => studio_runtime_schema::monitor_record::MonitorCancelStatus::Pending }, updated_at: Some(now), attempts: Some(attempts), next_attempt_at: None, error: None };
                     let mut response_error = None;
                     if let Some(retry_at) = retry_at {
-                        dispatch["nextAttemptAt"] = json!(retry_at);
+                        dispatch.next_attempt_at = Some(retry_at);
                     }
                     if let Some(error) = &error {
                         let error = error.chars().take(12000).collect::<String>();
-                        dispatch["error"] = json!(error);
-                        response_error = Some(error);
+                        dispatch.error = Some(error.clone());
+                        response_error = Some(error.clone());
                         if status == "unknown" {
-                            decision.record["error"] = dispatch["error"].clone();
+                            decision.record.error = Some(error.try_into().map_err(|_| MonitorError::Refused("Invalid monitor error"))?);
                         }
                     }
-                    decision.record["cancelDispatch"] = dispatch;
+                    decision.record.cancel_dispatch = Some(dispatch);
                     // We still hold this monitor's native sequence. Only a
                     // proved not-sent stop can withdraw an expired policy intent.
                     if retry_reason == Some(NotSentReason::Transient)
-                        && current.record()["shellPressureCleanup"].is_object()
+                        && current.record().shell_pressure_cleanup.is_some()
                         && !crate::shell_policy::monitor_cleanup_allowed(tx, &actor.value(), current.record(), crate::idle_compaction::wall_now())?
                     {
-                        let report = json!({"id":format!("monitor:{}:{}:cleanup_skipped",current.id(),current.record()["shellPressureCleanup"]["generation"]),"kind":"cleanup_skipped","message":format!("Cleanup checks changed before the stop. Studio left monitor {} running.",current.id())});
+                        let report = json!({"id":format!("monitor:{}:{}:cleanup_skipped",current.id(),current.record().shell_pressure_cleanup.as_ref().expect("checked cleanup").generation),"kind":"cleanup_skipped","message":format!("Cleanup checks changed before the stop. Studio left monitor {} running.",current.id())});
                         crate::shell_policy::observe(tx, &actor.value(), &report, now).map_err(|_| MonitorError::Refused("Could not record the shell cleanup outcome"))?;
-                        decision.record["cancelRequested"] = json!(false);
-                        if let Some(record) = decision.record.as_object_mut() {
-                            record.remove("cancelDispatch");
-                            record.remove("shellPressureCleanup");
-                        }
+                        decision.record.cancel_requested = Some(false);
+                        decision.record.cancel_dispatch = None;
+                        decision.record.shell_pressure_cleanup = None;
                     }
                     monitor_runtime::apply(tx, &current, &actor, &decision, now)?;
                     Ok::<_, MonitorError>(response_error)
@@ -519,61 +514,29 @@ pub fn reserve_cancel(
     let mut decision = monitor_policy::cancel(&snapshot, owner, now)?;
     // An explicit owner stop is independent of the automatic pressure policy.
     // Its permission check above must pass before removing the extra guard.
-    if owner.is_some() && decision.record["shellPressureCleanup"].is_object() {
-        decision
-            .record
-            .as_object_mut()
-            .expect("checked monitor object")
-            .remove("shellPressureCleanup");
-    }
-    let dispatch_status = snapshot
-        .record()
-        .pointer("/cancelDispatch/status")
-        .and_then(Value::as_str);
+    use studio_runtime_schema::{monitor_record::{MonitorCancelDispatch, MonitorCancelStatus}, studio_errors::MonitorStatus};
+    if owner.is_some() { decision.record.shell_pressure_cleanup = None; }
+    let dispatch = snapshot.record().cancel_dispatch.as_ref();
     let needs_dispatch = decision.effects.contains(&Effect::Terminate)
-        || (snapshot.record()["status"] == "running"
-            && snapshot.record()["cancelRequested"] == true
-            && (dispatch_status.is_none()
-                || (dispatch_status == Some("pending")
-                    && snapshot
-                        .record()
-                        .pointer("/cancelDispatch/nextAttemptAt")
-                        .and_then(Value::as_f64)
-                        .is_none_or(|retry_at| retry_at <= now))));
+        || (snapshot.record().status == MonitorStatus::Running
+            && snapshot.record().cancel_requested == Some(true)
+            && dispatch.is_none_or(|dispatch| dispatch.status == MonitorCancelStatus::Pending && dispatch.next_attempt_at.is_none_or(|retry_at| retry_at <= now)));
+    let previous_attempts = dispatch.and_then(|dispatch| dispatch.attempts).unwrap_or(0);
     if needs_dispatch {
-        let previous_attempts = snapshot
-            .record()
-            .pointer("/cancelDispatch/attempts")
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
-        decision.record["cancelDispatch"] = json!({
-            "status":"pending",
-            "attempts":previous_attempts,
-        });
-        if !decision.effects.contains(&Effect::Terminate) {
-            decision.effects.push(Effect::Terminate);
-        }
+        decision.record.cancel_dispatch = Some(MonitorCancelDispatch { status: MonitorCancelStatus::Pending, attempts: Some(previous_attempts), updated_at: None, next_attempt_at: None, error: None });
+        if !decision.effects.contains(&Effect::Terminate) { decision.effects.push(Effect::Terminate); }
     }
     let operation = if decision.effects.contains(&Effect::Terminate) {
-        if let Some(operation) = snapshot.operation().cloned() {
-            Some(operation)
-        } else {
+        if let Some(operation) = snapshot.operation().cloned() { Some(operation) } else {
             let error = "Cancel requested. Process termination was not confirmed: monitor operation metadata is unavailable";
-            decision.record["cancelDispatch"] = json!({
-                "status":"unknown",
-                "attempts":snapshot.record().pointer("/cancelDispatch/attempts").and_then(Value::as_u64).unwrap_or(0),
-                "error":error,
-            });
-            decision.record["error"] = json!(error);
+            decision.record.cancel_dispatch = Some(MonitorCancelDispatch { status: MonitorCancelStatus::Unknown, attempts: Some(previous_attempts), updated_at: None, next_attempt_at: None, error: Some(error.into()) });
+            decision.record.error = Some(error.to_owned().try_into().map_err(|_| MonitorError::Refused("Invalid monitor error"))?);
             decision.response["error"] = json!(error);
             None
         }
-    } else {
-        None
-    };
-    if operation.is_some() && decision.record.get("cancelRootRequestId").is_none() {
-        decision.record["cancelRootRequestId"] =
-            json!(studio_runtime_schema::persistence::RequestIdentity::issue_root());
+    } else { None };
+    if operation.is_some() && decision.record.cancel_root_request_id.is_none() {
+        decision.record.cancel_root_request_id = Some(studio_runtime_schema::persistence::RequestIdentity::issue_root());
     }
     monitor_runtime::apply(tx, &snapshot, &actor, &decision, now)?;
     Ok::<_, MonitorError>((decision.response, operation))

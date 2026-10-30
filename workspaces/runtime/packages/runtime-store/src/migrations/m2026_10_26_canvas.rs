@@ -125,6 +125,11 @@ pub(crate) fn feature_columns(transaction: &Transaction<'_>) -> StoreResult<()> 
 /// Status of a retired Claude auth probe wait in `runtime_usage_resumes`.
 const RETIRED_AUTH_PROBE_WAIT: &str = "auth_probe_wait";
 
+pub(super) fn remove_auth_probe_receipts(transaction: &Transaction<'_>) -> Result<(), StoreError> {
+    transaction.execute("DELETE FROM runtime_usage_resumes WHERE json_extract(record, '$.cause') = 'claude_auth_probe'", [])?;
+    Ok(())
+}
+
 /// One-time move of the retired Claude auth probe waits into the account auth
 /// gate's held state: the row is removed, and its still waiting agent becomes
 /// a held turn that `account_auth_gate` releases after an account change. Its
@@ -218,4 +223,36 @@ pub(super) fn unix_now() -> f64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0.0, |elapsed| elapsed.as_secs_f64())
+}
+
+#[cfg(test)]
+mod auth_probe_receipt_tests {
+    use super::*;
+
+    #[test]
+    fn removes_retired_auth_probe_receipts_in_all_statuses() {
+        let mut db = match std::env::var_os("CONTINUATION_MIGRATION_TEST_DB") {
+            Some(path) => rusqlite::Connection::open(path).unwrap(),
+            None => rusqlite::Connection::open_in_memory().unwrap(),
+        };
+        db.execute_batch("CREATE TABLE IF NOT EXISTS runtime_usage_resumes(id TEXT PRIMARY KEY, agent TEXT NOT NULL, record TEXT NOT NULL)").unwrap();
+        let tx = db.transaction().unwrap();
+        for (id, cause, status) in [
+            ("621-completed", "claude_auth_probe", "completed"),
+            ("621-cancelled", "claude_auth_probe", "cancelled"),
+            ("621-waiting", "claude_auth_probe", "auth_probe_wait"),
+            ("621-other", "auth", "cancelled"),
+        ] {
+            tx.execute("INSERT INTO runtime_usage_resumes(id, agent, record) VALUES (?1, 'test', json_object('cause', ?2, 'status', ?3))", (id, cause, status)).unwrap();
+        }
+        remove_auth_probe_receipts(&tx).unwrap();
+        let ids = tx
+            .prepare("SELECT id FROM runtime_usage_resumes WHERE id LIKE '621-%' ORDER BY id")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(ids, ["621-other"]);
+    }
 }

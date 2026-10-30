@@ -10,11 +10,6 @@ use super::manifest::{Operation, RouteGroup};
 
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) enum RegistrationError {
-    #[allow(
-        dead_code,
-        reason = "authority decoding failures are propagated during startup"
-    )]
-    InvalidAuthority,
     UndocumentedOperation {
         method: &'static str,
         path: &'static str,
@@ -30,7 +25,6 @@ pub(crate) enum RegistrationError {
 impl fmt::Display for RegistrationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidAuthority => formatter.write_str("committed OpenAPI authority is invalid"),
             Self::UndocumentedOperation { method, path } => write!(
                 formatter,
                 "registered operation {method} {path} is absent from OpenAPI"

@@ -213,14 +213,7 @@ impl Views {
         let topic = text(&subscription.topic);
         if !matches!(
             topic,
-            "projection"
-                | "outbox"
-                | "drafts"
-                | "sse"
-                | "microphone"
-                | "voice"
-                | "transcription"
-                | "navigation"
+            "projection" | "outbox" | "drafts" | "sse" | "microphone" | "voice" | "transcription"
         ) {
             return Response::failure(
                 request.id.clone(),
@@ -281,12 +274,8 @@ impl Views {
                             break;
                         }
                     }
-                } else if topic == "transcription" || topic == "navigation" {
-                    let mut events = if topic == "transcription" {
-                        crate::speech::progress().subscribe()
-                    } else {
-                        crate::notifications::navigation().subscribe()
-                    };
+                } else if topic == "transcription" {
+                    let mut events = crate::speech::progress().subscribe();
                     loop {
                         match events.recv().await {
                             Ok(value) => {

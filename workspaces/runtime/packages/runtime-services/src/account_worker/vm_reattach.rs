@@ -74,7 +74,7 @@ fn binding(
         text(&attempt["id"]),
         text(&attempt["threadId"]),
         text(&attempt["turnId"]),
-        fields.get("cwd").and_then(text),
+        record.cwd.as_deref().filter(|cwd| !cwd.is_empty()).map(str::to_owned),
     ) else {
         return Ok(None);
     };
@@ -83,9 +83,7 @@ fn binding(
         || attempt["submitted"] != true
         || record.thread_id.as_deref() != Some(thread.as_str())
         || record.turn_id.as_deref() != Some(turn.as_str())
-        || fields
-            .get("nativeResponseTurn")
-            .is_some_and(|value| !value.is_null() && value.as_str() != Some(turn.as_str()))
+        || record.native_response_turn.as_deref().is_some_and(|value| value != turn)
         || !std::path::Path::new(&cwd).is_absolute()
     {
         return Ok(None);

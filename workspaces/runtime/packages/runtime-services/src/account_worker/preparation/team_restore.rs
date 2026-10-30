@@ -39,8 +39,8 @@ pub(super) fn snapshot(tx: &Transaction<'_>, actor: &Value) -> Result<Option<Val
         let record: studio_runtime_store::AgentRecord =
             serde_json::from_str(&raw).map_err(|_| refusal("invalid child record".into()))?;
         if record.id.0 == id
-            || (!lead && record.extra.get("parentId").and_then(Value::as_str) != Some(id))
-            || studio_runtime_store::truthy(record.extra.get("deletedAt"))
+            || (!lead && record.parent_id.as_deref() != Some(id))
+            || record.is_deleted()
         {
             continue;
         }
@@ -53,7 +53,7 @@ pub(super) fn snapshot(tx: &Transaction<'_>, actor: &Value) -> Result<Option<Val
         {
             continue;
         }
-        children.push(json!({"id":record.id,"name":record.extra.get("name"),"status":record.status}));
+        children.push(json!({"id":record.id,"name":record.name,"status":record.status}));
     }
     children.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
     let tasks = rows(tx,

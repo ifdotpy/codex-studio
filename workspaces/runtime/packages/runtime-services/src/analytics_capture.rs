@@ -180,21 +180,6 @@ impl PreparedCapture {
             usage_unknown: false,
         })
     }
-    pub fn model_payload(
-        agent: &Value,
-        params: &Value,
-        at: f64,
-        recorded_at: f64,
-        ledger_since: studio_runtime_schema::usage::ledger::LedgerEpoch,
-    ) -> Result<Self, CaptureError> {
-        Self::model_payload_shared(
-            Arc::new(agent.clone()),
-            params,
-            at,
-            recorded_at,
-            ledger_since,
-        )
-    }
     pub(crate) fn model_payload_shared(
         agent: Arc<Value>,
         params: &Value,

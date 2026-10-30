@@ -71,10 +71,6 @@ impl ApiError {
         }
     }
 
-    #[allow(
-        dead_code,
-        reason = "reserved for JSON transport rejections from route extractors"
-    )]
     pub(crate) fn json_transport(status: StatusCode, message: &str) -> Self {
         let mut error = Self::new(status, message);
         error.content_type = Some("application/json; charset=utf-8");

@@ -217,13 +217,15 @@ mod tests {
         assert!(
             matches!(retired.outcome, NativeOutcome::Failure(error) if error.code == "unknown_method")
         );
-        let uuid = client
-            .request(request("uuid", "system.uuid", Value::Null))
+        let markdown = client
+            .request(request(
+                "markdown",
+                "markdown.parse",
+                json!({"text":"# Hello"}),
+            ))
             .await
             .unwrap();
-        assert!(
-            matches!(uuid.outcome, NativeOutcome::Success(Value::String(value)) if value.len() == 36)
-        );
+        assert!(matches!(markdown.outcome, NativeOutcome::Success(value) if value.is_array()));
     }
     #[tokio::test]
     async fn retired_terminal_commands_and_views_are_rejected() {
@@ -259,6 +261,130 @@ mod tests {
         assert!(
             matches!(response.outcome, NativeOutcome::Failure(error) if error.code == "unknown_method")
         );
+    }
+    #[tokio::test]
+    async fn retired_document_commands_are_rejected() {
+        let directory = tempfile::tempdir().unwrap();
+        let client = open(directory.path());
+        for method in ["document.render", "document.diagram"] {
+            let response = client
+                .request(request("document", method, json!({"source":"test"})))
+                .await
+                .unwrap();
+            assert!(
+                matches!(response.outcome, NativeOutcome::Failure(error) if error.code == "unknown_method")
+            );
+        }
+    }
+    #[tokio::test]
+    async fn retired_platform_commands_are_rejected() {
+        let directory = tempfile::tempdir().unwrap();
+        let client = open(directory.path());
+        for method in [
+            "text.sentences",
+            "locale.language_name",
+            "url.parse",
+            "url.query_parse",
+            "url.query_encode",
+        ] {
+            let response = client
+                .request(request("retired", method, Value::Null))
+                .await
+                .unwrap();
+            assert!(
+                matches!(response.outcome, NativeOutcome::Failure(error) if error.code == "unknown_method")
+            );
+        }
+    }
+    #[tokio::test]
+    async fn retired_native_notification_route_is_rejected() {
+        let directory = tempfile::tempdir().unwrap();
+        let client = open(directory.path());
+        let response = client
+            .request(request(
+                "notification",
+                "notifications.show",
+                json!({"value":{}}),
+            ))
+            .await
+            .unwrap();
+        assert!(
+            matches!(response.outcome, NativeOutcome::Failure(error) if error.code == "unknown_method")
+        );
+    }
+    #[tokio::test]
+    async fn retired_system_commands_are_rejected() {
+        let directory = tempfile::tempdir().unwrap();
+        let client = open(directory.path());
+        for method in [
+            "system.start",
+            "system.info",
+            "system.uuid",
+            "sync.pull",
+            "sync.applyEntities",
+        ] {
+            let response = client
+                .request(request("retired", method, Value::Null))
+                .await
+                .unwrap();
+            assert!(
+                matches!(response.outcome, NativeOutcome::Failure(error) if error.code == "unknown_method")
+            );
+        }
+    }
+    #[tokio::test]
+    async fn retired_navigation_view_is_rejected() {
+        let directory = tempfile::tempdir().unwrap();
+        let client = open(directory.path());
+        let response = client
+            .request(request(
+                "navigation",
+                "view.subscribe",
+                json!({"subscription":"nav","topic":"navigation"}),
+            ))
+            .await
+            .unwrap();
+        assert!(
+            matches!(response.outcome, NativeOutcome::Failure(error) if error.code == "invalid_subscription")
+        );
+    }
+    #[tokio::test]
+    async fn sync_open_reaches_identity_backend() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let (headers, _) = crate::backend::tests::read_http(&mut stream).await;
+            assert!(headers.starts_with("GET /api/sync/identity"));
+            let body = json!({"workspaceId":"a".repeat(32),"chatState":true}).to_string();
+            stream
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+        });
+        let directory = tempfile::tempdir().unwrap();
+        let client = Client::open(
+            ConnectionConfig {
+                state_directory: directory.path().into(),
+                backend_origin: origin,
+            },
+            |_| {},
+        )
+        .unwrap();
+        let response = client
+            .request(request("sync", "sync.open", json!({})))
+            .await
+            .unwrap();
+        assert!(
+            matches!(response.outcome, NativeOutcome::Success(value) if value["workspaceId"] == "a".repeat(32))
+        );
+        server.await.unwrap();
     }
     #[tokio::test]
     async fn reader_prioritizes_event_and_rejects_unknown_response_identity() {
