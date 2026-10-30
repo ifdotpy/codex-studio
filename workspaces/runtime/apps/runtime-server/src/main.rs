@@ -1429,7 +1429,7 @@ async fn run(
         if let Some(task) = peer_update_task {
             shutdown_join("peer update task", task).await??;
         }
-        shutdown_join("backup task", backup_task).await?;
+        shutdown_join("backup task", backup_task).await??;
         if let Some(task) = peer_projects_task {
             shutdown_join("peer projects task", task).await??;
         }
