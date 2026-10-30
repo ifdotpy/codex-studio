@@ -1018,6 +1018,8 @@ fn assert_records(store: &RuntimeStore, case: &Value) {
                 }
             }
         }
+        crate::normalize_agent_nulls(&mut actual);
+        crate::normalize_agent_nulls(&mut expected);
         assert_eq!(actual, expected, "{} {table}", case["name"]);
     }
     let mut expected_sync = case["expected"]["syncEntities"]
@@ -1059,6 +1061,7 @@ fn assert_records(store: &RuntimeStore, case: &Value) {
             if payload["value"].get("accountKey").is_none() {
                 payload["value"]["accountKey"] = json!("default");
             }
+            crate::normalize_agent_nulls(&mut payload);
             row[2] = json!(payload.to_string());
         }
         *row = json!([row[0], row[1], row[2], row[3]]);
@@ -1469,6 +1472,8 @@ async fn production_interrupt_is_durable_post_commit_and_retry_coalesces_after_r
                         use_current_ticket_shape(row);
                     }
                 }
+                crate::normalize_agent_nulls(&mut actual_rows);
+                crate::normalize_agent_nulls(&mut expected);
                 assert_eq!(actual_rows, expected, "Python effect corpus rows: {table}");
             }
         }
@@ -1529,10 +1534,10 @@ async fn production_child_notification_matches_python_corpus() {
                     use_current_ticket_shape(row);
                 }
             }
-            assert_eq!(
-                actual["tables"][table], expected,
-                "Python event corpus: {table}"
-            );
+            let mut actual_row = actual["tables"][table].clone();
+            crate::normalize_agent_nulls(&mut actual_row);
+            crate::normalize_agent_nulls(&mut expected);
+            assert_eq!(actual_row, expected, "Python event corpus: {table}");
         }
     }
     assert_conversation_detail_sources(&actual);
@@ -1565,6 +1570,7 @@ async fn production_child_notification_matches_python_corpus() {
             if payload["value"].get("accountKey").is_none() {
                 payload["value"]["accountKey"] = json!("default");
             }
+            crate::normalize_agent_nulls(&mut payload);
             row[2] = json!(payload.to_string());
         }
     }

@@ -2105,7 +2105,7 @@ async fn exec_event_owner_checks_accept_the_receipt_form_like_python() {
             record.cwd = Some(std::env::current_dir().unwrap().display().to_string());
             record.extra.insert("concurrency".into(), json!(32));
             if let Some(deleted_at) = lead.deleted_at {
-                record.deleted_at = Some((deleted_at) as f64);
+                record.deleted_at = Some(deleted_at);
             }
             store
                 .transaction_with(move |tx| AgentRepository::put(tx, &record))

@@ -125,3 +125,5 @@ pub(crate) use callback_fixtures::frozen as recovery_fixtures;
 
 #[path = "test_support/agent_views.rs"]
 pub(crate) mod agent_view_fixtures;
+
+pub(crate) use callback_fixtures::normalize_agent_nulls;

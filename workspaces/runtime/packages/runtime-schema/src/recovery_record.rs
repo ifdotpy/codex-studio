@@ -70,6 +70,9 @@ impl<'de> Deserialize<'de> for NonnegativeNumber {
         }
     }
 }
+fn nonnegative_integer_if_present<'de, D: Deserializer<'de>>(d: D) -> Result<Option<NonnegativeInteger>, D::Error> {
+    NonnegativeInteger::deserialize(d).map(Some)
+}
 fn nonempty<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
     let s = String::deserialize(d)?;
     if s.is_empty() {
@@ -173,6 +176,7 @@ pub struct RecoveryAgentRecord {
     pub disconnect_recovery: Option<Box<RecoveryFields>>,
     pub epoch: SafeInteger,
     pub error: Option<Value>,
+    #[serde(default, deserialize_with = "nonnegative_integer_if_present")]
     pub events: Option<NonnegativeInteger>,
     pub execution_outcome: Option<String>,
     #[serde(deserialize_with = "nonempty")]

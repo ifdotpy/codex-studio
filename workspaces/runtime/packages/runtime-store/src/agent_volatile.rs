@@ -396,7 +396,7 @@ pub(crate) fn merge_row(
 ) -> StoreResult<()> {
     for (index, field) in AGENT_VOLATILE_FIELDS.iter().enumerate() {
         match row.get_ref(index)? {
-            ValueRef::Null => { fields.insert((*field).to_owned(), Value::Null); }
+            ValueRef::Null => { fields.remove(*field); }
             ValueRef::Text(text) => {
                 let value = serde_json::from_slice(text).map_err(|_| invalid(id))?;
                 fields.insert((*field).to_owned(), value);
@@ -617,7 +617,9 @@ mod tests {
                 .expect("agent exists");
             let mut normalized = agent.clone();
             for field in AGENT_VOLATILE_FIELDS {
-                normalized.as_object_mut().unwrap().entry(field).or_insert(Value::Null);
+                if normalized.get(field).is_some_and(Value::is_null) {
+                    normalized.as_object_mut().unwrap().remove(field);
+                }
             }
             assert_eq!(typed.value(), normalized);
             assert_eq!(
@@ -680,6 +682,11 @@ mod tests {
         );
         let mut read = Value::Object(stored_record_object(tx, "a"));
         merge(tx, "a", &mut read)?;
+        for field in AGENT_VOLATILE_FIELDS {
+            if agent.get(field).is_some_and(Value::is_null) {
+                agent.as_object_mut().unwrap().remove(field);
+            }
+        }
         assert_eq!(read, agent);
         transaction.commit().expect("writes commit");
         Ok(())

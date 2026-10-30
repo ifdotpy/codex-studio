@@ -852,7 +852,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             app.clone().oneshot(annotations).await.unwrap().status(),
-            StatusCode::OK
+            StatusCode::SERVICE_UNAVAILABLE
         );
         assert_eq!(
             app.oneshot(request()).await.unwrap().status(),

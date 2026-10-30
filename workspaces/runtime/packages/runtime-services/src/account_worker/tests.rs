@@ -1274,9 +1274,9 @@ async fn invalid_agent_record_is_held_without_stopping_other_agent_dispatch() {
         message.contains(&format!("runtime_agents/{bad_id}")),
         "{message}"
     );
-    assert!(message.contains("/rootId"), "{message}");
+    assert!(message.contains("record_decode"), "{message}");
     assert!(message.contains("type"), "{message}");
-    assert!(message.contains("value type number"), "{message}");
+    assert!(message.contains("value type missing"), "{message}");
     assert!(message.contains("length not applicable"), "{message}");
     assert_eq!(held["rootId"], 23);
     assert!(

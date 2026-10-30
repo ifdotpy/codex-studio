@@ -65,7 +65,7 @@ fn normalize_agent_records(value: &mut Value) {
                 fields
                     .entry("accountKey")
                     .or_insert_with(|| json!("default"));
-                for key in ["threadId", "turnId"] {
+                for key in ["threadId", "turnId", "parentId", "events", "lastEvent", "activity", "activeTools", "tail", "lastAnswer", "contextUsage", "tokensUsed", "tokenUsageAccounting"] {
                     if fields.get(key).is_some_and(Value::is_null) {
                         fields.remove(key);
                     }
@@ -83,10 +83,8 @@ async fn seed(store: &RuntimeStore, agent: &Value) {
     store
         .transaction(move |tx| {
             tx.execute("DELETE FROM runtime_events", [])?;
-            tx.execute(
-                "UPDATE runtime_agents SET record=?1 WHERE id='agent'",
-                [agent.to_string()],
-            )?;
+            let record = studio_runtime_store::AgentRecord::from_value(agent)?;
+            AgentRepository::put(tx, &record)?;
             Ok(())
         })
         .await
@@ -1114,8 +1112,14 @@ async fn corrupt_scan_rows_keep_the_sql_table_and_identity() {
         let root = fixture();
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         let mut owner = corpus()["connection"][0]["before"].clone();
-        owner["events"] = if bad == "agent" { json!(-1) } else { json!(0) };
+        owner["events"] = json!(0);
         seed(&store, &owner).await;
+        if bad == "agent" {
+            store.transaction(|tx| {
+                tx.execute("UPDATE runtime_agent_volatile SET events='-1' WHERE id='agent'", [])?;
+                Ok(())
+            }).await.expect("inject corrupt counter");
+        }
         let mut task = json!({"id":"agent:item","agent":"agent","itemId":"item","turnId":"turn","type":"dynamicToolCall","kind":"tool","status":"running","created":1.0});
         if bad == "task" {
             task["created"] = json!(-1);
