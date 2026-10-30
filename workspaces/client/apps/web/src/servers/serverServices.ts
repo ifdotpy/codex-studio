@@ -23,7 +23,7 @@ import { createDraftStorage } from "../sync/draftStorage";
 import { useNativeDrafts } from "../native/useNativeDrafts";
 import { createOutbox } from "../sync/send";
 import { createSyncClient } from "../sync/client";
-import { nativeProjectionStore } from "../sync/nativeProjections";
+import { frontendIsLocal } from "../sync/localFrontend";
 import { createServerSubscriptions } from "../sync/subscriptions/server";
 import { createTranscriptCache } from "../sync/transcriptCache";
 import { createTokenRateCache } from "../usage/tokenRate";
@@ -92,8 +92,7 @@ export function createServerServices(server: StudioServer) {
       resources,
       sequences,
       transcripts,
-      projectionStore: () =>
-        localNativeClient() ? nativeProjectionStore : undefined,
+      cacheProjections: () => !frontendIsLocal(transport.owner.id),
       databaseSuffix:
         transport.owner.id === "local"
           ? ""

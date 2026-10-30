@@ -16,12 +16,7 @@ test("legacy transcript rows refetch online and stay hidden offline", async ({
     configFile: false,
     optimizeDeps: {
       noDiscovery: true,
-      include: [
-        "rxdb",
-        "rxdb/plugins/storage-dexie",
-        "rxdb/plugins/leader-election",
-        "rxdb/plugins/replication",
-      ],
+      include: [],
     },
     root: fileURLToPath(new URL("../../", import.meta.url)),
     server: { host: "127.0.0.1", port: 0 },

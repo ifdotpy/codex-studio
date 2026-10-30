@@ -1,5 +1,5 @@
 import { WorkStatus } from "../../generated/api";
-import type { DeepReadonly } from "rxdb";
+import type { DeepReadonly } from "../../types";
 import type { SyncEntityPayload as MutableSyncEntityPayload } from "../../generated/api";
 import type { ReviewTask, WorkList } from "./contracts.ts";
 export type { ReviewTask, WorkList } from "./contracts.ts";

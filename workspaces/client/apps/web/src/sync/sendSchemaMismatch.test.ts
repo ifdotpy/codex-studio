@@ -74,7 +74,7 @@ it("keeps a locally schema-blocked deliver queued with the same id, then sends o
       created: 1,
     }),
   };
-  // Partial RxDB document fixture: delivery only reads id/getLatest/incrementalModify.
+  // Partial document fixture: delivery only reads id/getLatest/incrementalModify.
   const partialDoc = {
     id: "stable-id",
     getLatest: () => record,

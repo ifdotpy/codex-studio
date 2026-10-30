@@ -1,5 +1,5 @@
 import { syncDatabase, type createSyncClient } from "../client";
-import type { DeepReadonly } from "rxdb";
+import type { DeepReadonly } from "../../types";
 import type { SyncEntityPayload as MutableSyncEntityPayload } from "../../generated/api";
 import { SUBSCRIPTION_ENTITY_SCOPES } from "../../generated/subscriptionEntities";
 import type { ResourceData, ResourceRef } from "./contracts";

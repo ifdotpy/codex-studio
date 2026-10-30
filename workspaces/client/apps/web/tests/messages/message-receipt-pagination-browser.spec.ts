@@ -403,7 +403,7 @@ async function runMessageReceiptScenario(
       cacheDir: join(temporary, "vite"),
       optimizeDeps: {
         noDiscovery: true,
-        include: [...FIXTURE_OPTIMIZE_DEPS.include, "rxdb", "rxjs"],
+        include: [...FIXTURE_OPTIMIZE_DEPS.include, "rxjs"],
       },
       server: {
         host: "127.0.0.1",

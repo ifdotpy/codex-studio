@@ -116,7 +116,6 @@ const generatedApiSchema = readFileSync(
 export const FIXTURE_OPTIMIZE_DEPS = {
   noDiscovery: true,
   include: [
-    "dexie",
     "react",
     "react/jsx-runtime",
     "react/jsx-dev-runtime",

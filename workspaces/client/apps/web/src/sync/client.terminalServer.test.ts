@@ -9,7 +9,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
-import type { RxDatabase } from "rxdb";
 import { ReplaySubject, filter, firstValueFrom, timeout } from "rxjs";
 import type { ResourceVersion } from "./resourceEvents";
 import { createDataObserver } from "./subscriptions/data";
@@ -18,28 +17,7 @@ import { SYNC_TERMINAL_STREAM_MAX_CHARS } from "../generated/sharedValues";
 import type { ResourceChangeEvent } from "./subscriptions/events";
 
 const mocks = vi.hoisted(() => ({
-  databases: [] as RxDatabase[],
   syncGet: vi.fn(),
-}));
-vi.mock("rxdb", async (original) => {
-  const rxdb = await original<typeof import("rxdb")>();
-  return {
-    ...rxdb,
-    createRxDatabase: async (
-      options: Parameters<typeof rxdb.createRxDatabase>[0],
-    ) => {
-      const db = await rxdb.createRxDatabase({
-        ...options,
-        multiInstance: false,
-      });
-      mocks.databases.push(db);
-      return db;
-    },
-  };
-});
-vi.mock("rxdb/plugins/storage-dexie", async () => ({
-  getRxStorageDexie: (await import("rxdb/plugins/storage-memory"))
-    .getRxStorageMemory,
 }));
 vi.mock("../api", () => ({
   ApiError: class extends Error {},
@@ -118,7 +96,6 @@ afterAll(async () => {
       }
     }
   } finally {
-    await Promise.all(mocks.databases.map((db) => db.remove()));
     if (directory) await rm(directory, { recursive: true, force: true });
     vi.unstubAllGlobals();
   }
@@ -164,7 +141,7 @@ async function* resourceFrames(
   }
 }
 
-it("streams terminal intervals through RxDB and the screen consumer with zero output GETs", async () => {
+it("streams terminal intervals through the projection store and the screen consumer with zero output GETs", async () => {
   vi.stubGlobal("window", {
     addEventListener: vi.fn(),
     removeEventListener: vi.fn(),

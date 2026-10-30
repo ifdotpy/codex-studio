@@ -3828,10 +3828,6 @@
       "fingerprint": "dd1d8d394612269617aceac79f1f00410d3ce10200c6ef7cd57c309815151a73:0"
     },
     {
-      "file": "workspaces/client/apps/web/src/sync/entityCacheStorage.test.ts",
-      "fingerprint": "bf0b6d16f3c25f33e3fd0ccd18db74085a2d5ca02d3f48067a9e0bae1aa4d696:0"
-    },
-    {
       "file": "workspaces/client/apps/web/src/sync/entityProjectionObserver.test.ts",
       "fingerprint": "07681657de419f1cb9016ce24b9d71325f4ec541af10e2378cd4765b855b4308:0"
     },

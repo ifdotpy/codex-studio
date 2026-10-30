@@ -24,13 +24,7 @@ test("sync required browser", async ({ page: runnerPage }) => {
     root: fileURLToPath(new URL("../../../web", import.meta.url)),
     optimizeDeps: {
       ...FIXTURE_OPTIMIZE_DEPS,
-      include: [
-        ...FIXTURE_OPTIMIZE_DEPS.include,
-        "rxdb",
-        "rxdb/plugins/storage-dexie",
-        "rxdb/plugins/leader-election",
-        "rxdb/plugins/replication",
-      ],
+      include: [...FIXTURE_OPTIMIZE_DEPS.include],
     },
     server: { host: "127.0.0.1", port: 0 },
   });
@@ -211,13 +205,7 @@ test("draft bootstrap retries pause and recover on explicit activity", async ({
     root: fileURLToPath(new URL("../../../web", import.meta.url)),
     optimizeDeps: {
       ...FIXTURE_OPTIMIZE_DEPS,
-      include: [
-        ...FIXTURE_OPTIMIZE_DEPS.include,
-        "rxdb",
-        "rxdb/plugins/storage-dexie",
-        "rxdb/plugins/leader-election",
-        "rxdb/plugins/replication",
-      ],
+      include: [...FIXTURE_OPTIMIZE_DEPS.include],
     },
     server: { host: "127.0.0.1", port: 0 },
   });

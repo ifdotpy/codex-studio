@@ -641,7 +641,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     const key = resourceKey(resource);
     if (force) resourceValues.set(key, version);
     else if (!rememberResourceVersion(resource, version)) return;
-    // Draft data is admitted to RxDB in stream order. Hint coalescing may drop
+    // Draft data is admitted to the draft store in stream order. Hint coalescing may drop
     // intermediate versions, which would turn a complete interval into a gap.
     if (resource.kind === "drafts" && version.reason === "change") {
       for (const listener of subscribers.get(key) ?? []) listener(version);
