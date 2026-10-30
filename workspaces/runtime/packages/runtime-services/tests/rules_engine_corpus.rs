@@ -10,11 +10,22 @@ fn oracle() -> Vec<Value> {
 }
 
 fn monitor_record(value: &Value) -> studio_runtime_store::MonitorRecord {
-    let mut complete = json!({"id":"monitor","agent":"owner","epoch":0,"status":"running","requestId":"request","created":0,"activityAt":0,"activityGeneration":0,"bytes":0,"command":"","cwd":std::env::temp_dir(),"interactive":false,"livenessCommand":"","log":std::env::temp_dir().join("watch.log"),"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":3600000,"wakeOn":"exit"});
-    complete.as_object_mut().expect("valid fixture").extend(value.as_object().expect("valid fixture").clone());
-    serde_json::from_value(complete).expect("valid fixture")
+    let mut record: studio_runtime_store::MonitorRecord = serde_json::from_str(r#"{"id":"monitor","agent":"owner","epoch":0,"status":"running","requestId":"request","created":0,"activityAt":0,"activityGeneration":0,"bytes":0,"command":"","cwd":"","interactive":false,"livenessCommand":"","log":"watch.log","stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":3600000,"wakeOn":"exit"}"#).expect("monitor fixture");
+    assert_eq!(value.as_object().expect("monitor fixture").len(), 4);
+    assert_eq!(value["status"], "running");
+    record.id = value["id"].as_str().expect("id").to_owned();
+    record.agent = value["agent"].as_str().expect("agent").to_owned();
+    record.cancel_requested = Some(value["cancelRequested"].as_bool().expect("cancel requested"));
+    record
 }
-fn rule_record(value: &Value) -> studio_runtime_store::RuleRecord { serde_json::from_value(value.clone()).expect("valid fixture") }
+fn rule_record(value: &Value) -> studio_runtime_store::RuleRecord {
+    #[derive(serde::Deserialize)]
+    struct Seed { rule: studio_runtime_store::RuleRecord }
+    let mut rule = serde_json::from_str::<Seed>(include_str!("rules_engine/seed.json")).expect("rule seed").rule;
+    rule.command = value["command"].as_str().expect("command").to_owned().try_into().expect("valid command");
+    rule.next_at = value["nextAt"].as_number().expect("next time").clone();
+    rule
+}
 
 #[test]
 fn python_written_records_and_real_rules_functions_match() {
@@ -212,7 +223,7 @@ fn sampled_configuration_and_exact_completion_identity_are_checked() {
         .expect("reserve");
     let check = decision.check.expect("command check");
     let active = decision.record.expect("in-flight record");
-    let snapshot = crate::rule_snapshot(active.value(), due["owner"].clone())
+    let snapshot = studio_runtime_services::rules_engine::RuleSnapshot::from_stored(&active, due["owner"].clone())
         .expect("checked reservation");
     let mut foreign = check.clone();
     foreign.monitor_id = "foreign".to_owned();
@@ -233,7 +244,7 @@ fn sampled_configuration_and_exact_completion_identity_are_checked() {
             .is_none()
     );
     let stopped =
-        crate::rule_snapshot(active.value(), find("interval-stopped-epoch")["owner"].clone())
+        studio_runtime_services::rules_engine::RuleSnapshot::from_stored(&active, find("interval-stopped-epoch")["owner"].clone())
             .expect("new owner epoch");
     assert!(
         stopped
@@ -264,7 +275,7 @@ fn sampled_configuration_and_exact_completion_identity_are_checked() {
         )
         .expect("finish");
     let snapshot =
-        crate::rule_snapshot(finished.record.expect("finished").value(), due["owner"].clone())
+        studio_runtime_services::rules_engine::RuleSnapshot::from_stored(&finished.record.expect("finished"), due["owner"].clone())
             .expect("checked finished record");
     assert!(
         snapshot

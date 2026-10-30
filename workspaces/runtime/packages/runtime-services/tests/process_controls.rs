@@ -7,11 +7,6 @@ use studio_runtime_store::{RuntimeStore, StoreError};
 fn corpus() -> Value {
     serde_json::from_str(include_str!("fixtures/process-controls.json")).unwrap()
 }
-fn parse_request_fixture(
-    value: &Value,
-) -> studio_runtime_schema::process_controls::ProcessControlRequest {
-    serde_json::from_value(value.clone()).unwrap()
-}
 #[tokio::test]
 async fn leaf_listing_does_not_decode_unrelated_agents() {
     let root = tempfile::tempdir().unwrap();
@@ -78,9 +73,11 @@ fn python_process_identities_and_capabilities_match() {
 fn python_output_state_survives_chunk_boundaries_and_restarts() {
     let corpus = corpus();
     let fixture = &corpus["output"];
-    let mut initial = json!({"agent":"owner","status":"running","requestId":"request","created":0,"activityAt":0,"activityGeneration":0,"bytes":0,"command":"","cwd":std::env::temp_dir(),"interactive":false,"livenessCommand":"","log":std::env::temp_dir().join("watch.log"),"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":3600000,"wakeOn":"exit"});
-    initial.as_object_mut().unwrap().extend(fixture["initial"].as_object().unwrap().clone());
-    let mut record: studio_runtime_store::MonitorRecord = serde_json::from_value(initial).unwrap();
+    let mut record: studio_runtime_store::MonitorRecord = serde_json::from_str(r#"{"id":"monitor","agent":"owner","epoch":0,"status":"running","requestId":"request","created":0,"activityAt":0,"activityGeneration":0,"bytes":0,"command":"","cwd":"","interactive":false,"livenessCommand":"","log":"watch.log","stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":3600000,"wakeOn":"exit"}"#).unwrap();
+    let initial = &fixture["initial"];
+    record.id = initial["id"].as_str().unwrap().to_owned();
+    record.epoch = initial["epoch"].as_i64().unwrap().try_into().unwrap();
+    record.output_patterns = Some(initial["outputPatterns"].as_array().unwrap().iter().map(|item| item.as_str().unwrap().to_owned()).collect());
     for step in fixture["steps"].as_array().unwrap() {
         let bytes: Vec<u8> = step["bytes"]
             .as_array()
@@ -142,7 +139,7 @@ fn invalid_matchers_are_rejected_before_admission() {
     for value in [vec![], vec![String::new()], vec!["x".into(), "x".into()], vec!["x".repeat(257)]] {
         assert!(monitor_matches::patterns(Some(&value)).is_err(), "{value:?}");
     }
-    assert!(serde_json::from_value::<Vec<String>>(json!([true])).is_err());
+    assert!(serde_json::from_str::<Vec<String>>("[true]").is_err());
 }
 #[tokio::test]
 async fn action_receipt_replays_without_dispatch_and_rejects_identity_reuse() {
@@ -170,14 +167,17 @@ async fn action_receipt_replays_without_dispatch_and_rejects_identity_reuse() {
         .await
         .unwrap();
     let process = fixture["expected"].clone();
-    let request = json!({"action":"stop_selected","requestId":"request","agent":"owner","accountKey":"acct","epoch":3,"process":{"key":process["key"],"generation":process["generation"],"agent":"owner","accountKey":"acct","epoch":3}});
+    let mut request: studio_runtime_schema::process_controls::ProcessControlRequest = serde_json::from_str(r#"{"action":"stop_selected","requestId":"request","agent":"owner","accountKey":"acct","epoch":3,"process":{"key":"key","generation":"generation","agent":"owner","accountKey":"acct","epoch":3}}"#).unwrap();
+    let studio_runtime_schema::process_controls::ProcessControlRequest::StopSelected { process: target, .. } = &mut request else { unreachable!() };
+    target.key = process["key"].as_str().unwrap().to_owned().try_into().unwrap();
+    target.generation = process["generation"].as_str().unwrap().to_owned().try_into().unwrap();
     let connections =
         process_controls::Connections::from([("owner".into(), "connection-7".into())]);
     let r = request.clone();
     let c = connections.clone();
     let result = store
         .transaction_with(move |tx| {
-            process_controls::claim(tx, &parse_request_fixture(&r), &c, 1.0)
+            process_controls::claim(tx, &r, &c, 1.0)
         })
         .await
         .unwrap();
@@ -186,7 +186,7 @@ async fn action_receipt_replays_without_dispatch_and_rejects_identity_reuse() {
     let c = connections.clone();
     let replay = store
         .transaction_with(move |tx| {
-            process_controls::claim(tx, &parse_request_fixture(&r), &c, 2.0)
+            process_controls::claim(tx, &r, &c, 2.0)
         })
         .await
         .unwrap();
@@ -194,12 +194,13 @@ async fn action_receipt_replays_without_dispatch_and_rejects_identity_reuse() {
         matches!(replay,process_controls::Claim::Replay(ref result) if result.status == studio_runtime_schema::process_controls::ProcessActionStatus::Uncertain)
     );
     let mut r = request.clone();
-    r["epoch"] = json!(4);
+    let studio_runtime_schema::process_controls::ProcessControlRequest::StopSelected { scope, .. } = &mut r else { unreachable!() };
+    scope.epoch = 4;
     assert!(
         store
             .transaction_with(move |tx| process_controls::claim(
                 tx,
-                &parse_request_fixture(&r),
+                &r,
                 &connections,
                 3.0
             ))

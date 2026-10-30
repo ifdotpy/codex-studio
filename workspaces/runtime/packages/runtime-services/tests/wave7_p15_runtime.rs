@@ -193,7 +193,10 @@ async fn oversized_provider_delta_is_persisted_in_order_and_replayed_exactly() {
     fixtures::seed(&store, &case).await;
     let mut bytes = vec![b'a'; studio_runtime_services::monitor_policy::CHUNK_BYTES];
     bytes.push(b'z');
-    let params = json!({"processId":id, "stream":"stderr", "deltaBase64":base64::engine::general_purpose::STANDARD.encode(&bytes)});
+    let params = monitor_event_queue::OutputDelta {
+        stream: Some(studio_runtime_schema::monitor_record::MonitorStream::Stderr),
+        delta_base64: base64::engine::general_purpose::STANDARD.encode(&bytes),
+    };
     let enqueue_id = id.clone();
     store
         .transaction_with(move |tx| {
@@ -203,7 +206,7 @@ async fn oversized_provider_delta_is_persisted_in_order_and_replayed_exactly() {
                 &account,
                 7,
                 11,
-                &serde_json::from_value(params.clone()).unwrap()
+                &params
             )?);
             Ok::<_, studio_runtime_services::notification_dispatch::NotificationDispatchError>(())
         })
@@ -261,14 +264,8 @@ async fn account_worker_monitor_output_is_durable_ordered_and_exactly_acknowledg
         .expect("account");
     let id_for_enqueue = id.to_owned();
     let account_for_enqueue = account.to_owned();
-    let first = json!({
-        "processId": id,
-        "deltaBase64": base64::engine::general_purpose::STANDARD.encode(b"one")
-    });
-    let second = json!({
-        "processId": id,
-        "deltaBase64": base64::engine::general_purpose::STANDARD.encode(b"two")
-    });
+    let first = monitor_event_queue::OutputDelta { delta_base64: base64::engine::general_purpose::STANDARD.encode(b"one"), stream: None };
+    let second = monitor_event_queue::OutputDelta { delta_base64: base64::engine::general_purpose::STANDARD.encode(b"two"), stream: None };
     store
         .transaction_with(move |tx| {
             monitor_event_queue::enqueue_output_in_transaction(
@@ -277,7 +274,7 @@ async fn account_worker_monitor_output_is_durable_ordered_and_exactly_acknowledg
                 &account_for_enqueue,
                 7,
                 11,
-                &serde_json::from_value(first.clone()).unwrap(),
+                &first,
             )?;
             monitor_event_queue::enqueue_output_in_transaction(
                 tx,
@@ -285,7 +282,7 @@ async fn account_worker_monitor_output_is_durable_ordered_and_exactly_acknowledg
                 &account_for_enqueue,
                 7,
                 12,
-                &serde_json::from_value(second.clone()).unwrap(),
+                &second,
             )?;
             Ok::<_, studio_runtime_services::notification_dispatch::NotificationDispatchError>(())
         })
@@ -1148,13 +1145,13 @@ async fn quarantined_delivery_does_not_stop_other_monitors_or_timer() {
     healthy_case["before"]["log"] = json!("unused-until-output");
     let store = Arc::new(fixtures::store(root.path(), "bad-delivery").await);
     fixtures::seed(&store, &bad_case).await;
-    let healthy_case_for_seed = healthy_case.clone();
+    let bad_id = bad_case["before"]["id"].as_str().expect("monitor id").to_owned();
+    let mut healthy = MonitorsRepository::get(&store.test_reader().expect("read"), &bad_id)
+        .expect("get").expect("monitor");
+    healthy.id = "healthy-monitor".to_owned();
+    healthy.log = "unused-until-output".to_owned();
     store
-        .transaction(move |tx| {
-            Table::new(tx).put(&serde_json::from_value::<MonitorRecord>(
-                healthy_case_for_seed["before"].clone(),
-            )?)
-        })
+        .transaction(move |tx| Table::new(tx).put(&healthy))
         .await
         .expect("seed second monitor");
 
@@ -1191,13 +1188,11 @@ async fn quarantined_delivery_does_not_stop_other_monitors_or_timer() {
             .join("monitor-logs")
             .join("healthy-monitor.log")
     );
-    let healthy_case_for_log = healthy_case.clone();
+    let mut healthy = MonitorsRepository::get(&store.test_reader().expect("read"), "healthy-monitor")
+        .expect("get").expect("monitor");
+    healthy.log = healthy_case["before"]["log"].as_str().expect("log").to_owned();
     store
-        .transaction(move |tx| {
-            Table::new(tx).put(&serde_json::from_value::<MonitorRecord>(
-                healthy_case_for_log["before"].clone(),
-            )?)
-        })
+        .transaction(move |tx| Table::new(tx).put(&healthy))
         .await
         .expect("set healthy log path");
     port.deliveries
@@ -1251,10 +1246,11 @@ async fn http_input_retry_after_ack_replays_one_logical_input() {
     input_schema(&store).await;
     fixtures::seed(&store, &case).await;
     let id = case["before"]["id"].as_str().expect("monitor id");
-    let mut monitor = record(&store, id);
-    monitor["interactive"] = json!(true);
+    let mut monitor = MonitorsRepository::get(&store.test_reader().expect("read"), id)
+        .expect("get").expect("monitor");
+    monitor.interactive = true;
     store
-        .transaction(move |tx| Table::new(tx).put(&serde_json::from_value::<MonitorRecord>(monitor.clone())?))
+        .transaction(move |tx| Table::new(tx).put(&monitor))
         .await
         .expect("mark seeded watch interactive");
 
@@ -1579,11 +1575,12 @@ async fn committed_managed_start_is_dispatched_after_admission() {
         .expect("server startup recovery");
     fixtures::seed(&store, &case).await;
     let id = case["before"]["id"].as_str().expect("monitor id");
-    let mut monitor = record(&store, id);
-    monitor["status"] = json!("starting");
-    monitor["operation"] = Value::Null;
+    let mut monitor = MonitorsRepository::get(&store.test_reader().expect("read"), id)
+        .expect("get").expect("monitor");
+    monitor.status = studio_runtime_schema::studio_errors::MonitorStatus::Starting;
+    monitor.operation = None;
     store
-        .transaction(move |tx| Table::new(tx).put(&serde_json::from_value::<MonitorRecord>(monitor.clone())?))
+        .transaction(move |tx| Table::new(tx).put(&monitor))
         .await
         .expect("persist admitted monitor start");
 
@@ -1608,13 +1605,10 @@ async fn output_queue_enforces_capacity_and_preserves_terminal_reserve_atomicall
     let account = case["before"]["operation"]["accountKey"]
         .as_str()
         .expect("account");
-    let chunk = json!({
-        "processId":id,
-        "deltaBase64":base64::engine::general_purpose::STANDARD.encode(b"x")
-    });
+    let chunk = base64::engine::general_purpose::STANDARD.encode(b"x");
     let enqueue_id = id.to_owned();
     let enqueue_account = account.to_owned();
-    let enqueue_chunk = chunk.clone();
+    let enqueue_chunk = monitor_event_queue::OutputDelta { delta_base64: chunk.clone(), stream: None };
     store
         .transaction_with(move |tx| {
             for cursor in 0..126 {
@@ -1624,7 +1618,7 @@ async fn output_queue_enforces_capacity_and_preserves_terminal_reserve_atomicall
                     &enqueue_account,
                     7,
                     cursor,
-                    &serde_json::from_value(enqueue_chunk.clone()).unwrap(),
+                    &enqueue_chunk,
                 )?;
             }
             Ok::<_, studio_runtime_services::notification_dispatch::NotificationDispatchError>(())
@@ -1634,7 +1628,7 @@ async fn output_queue_enforces_capacity_and_preserves_terminal_reserve_atomicall
     let before = record(&store, id);
     let rejected_id = id.to_owned();
     let rejected_account = account.to_owned();
-    let rejected_chunk = chunk.clone();
+    let rejected_chunk = monitor_event_queue::OutputDelta { delta_base64: chunk, stream: None };
     let rejected_identity =
         studio_runtime_services::notification_dispatch::ProviderDeliveryIdentity {
             provider_handle: format!("account:{account}"),
@@ -1646,7 +1640,7 @@ async fn output_queue_enforces_capacity_and_preserves_terminal_reserve_atomicall
         .transaction_with::<_, studio_runtime_services::notification_dispatch::NotificationDispatchError>(move |tx| {
             studio_runtime_services::account_worker::put_notification(tx,&rejected_identity,studio_runtime_services::notification_dispatch::NotificationSettlement {signature:"same-notification".into(),outcome:studio_runtime_services::notification_dispatch::DispatchOutcome::Written})?;
             monitor_event_queue::enqueue_output_in_transaction(
-                tx, &rejected_id, &rejected_account, 7, 126, &serde_json::from_value(rejected_chunk.clone()).unwrap(),
+                tx, &rejected_id, &rejected_account, 7, 126, &rejected_chunk,
             )?;
             Ok(())
         })
@@ -1695,13 +1689,10 @@ async fn output_queue_enforces_byte_limit_and_keeps_room_for_terminal_receipts()
         .expect("account");
     // P15 admits 960 KiB of output and reserves 64 KiB for terminal events.
     let bytes = vec![b'x'; 32 * 1024];
-    let chunk = json!({
-        "processId":id,
-        "deltaBase64":base64::engine::general_purpose::STANDARD.encode(&bytes)
-    });
+    let chunk = base64::engine::general_purpose::STANDARD.encode(&bytes);
     let enqueue_id = id.to_owned();
     let enqueue_account = account.to_owned();
-    let enqueue_chunk = chunk.clone();
+    let enqueue_chunk = monitor_event_queue::OutputDelta { delta_base64: chunk.clone(), stream: None };
     store
         .transaction_with(move |tx| {
             for cursor in 0..30 {
@@ -1711,7 +1702,7 @@ async fn output_queue_enforces_byte_limit_and_keeps_room_for_terminal_receipts()
                     &enqueue_account,
                     7,
                     cursor,
-                    &serde_json::from_value(enqueue_chunk.clone()).unwrap(),
+                    &enqueue_chunk,
                 )?;
             }
             Ok::<_, studio_runtime_services::notification_dispatch::NotificationDispatchError>(())
@@ -1724,7 +1715,7 @@ async fn output_queue_enforces_byte_limit_and_keeps_room_for_terminal_receipts()
     );
     let rejected_id = id.to_owned();
     let rejected_account = account.to_owned();
-    let rejected_chunk = chunk.clone();
+    let rejected_chunk = monitor_event_queue::OutputDelta { delta_base64: chunk, stream: None };
     let error = store
         .transaction_with(move |tx| {
             monitor_event_queue::enqueue_output_in_transaction(
@@ -1733,7 +1724,7 @@ async fn output_queue_enforces_byte_limit_and_keeps_room_for_terminal_receipts()
                 &rejected_account,
                 7,
                 30,
-                &serde_json::from_value(rejected_chunk.clone()).unwrap(),
+                &rejected_chunk,
             )
         })
         .await
@@ -1776,14 +1767,9 @@ async fn bounded_probes_preserve_room_for_the_largest_exit_receipt() {
     let id_for_queue_reset = id.to_owned();
     store
         .transaction_with(move |tx| {
-            let mut value = MonitorsRepository::get(tx, &id_for_queue_reset)?
-                .expect("monitor")
-                .value();
-            value["streamQueue"] = json!([]);
-            Table::<MonitorRecord>::new(tx).put(
-                &serde_json::from_value::<MonitorRecord>(value)
-                    .map_err(studio_runtime_store::StoreError::from)?,
-            )
+            let mut record = MonitorsRepository::get(tx, &id_for_queue_reset)?.expect("monitor");
+            record.stream_queue = Some(vec![]);
+            Table::<MonitorRecord>::new(tx).put(&record)
         })
         .await
         .expect("initialize bounded stream queue");

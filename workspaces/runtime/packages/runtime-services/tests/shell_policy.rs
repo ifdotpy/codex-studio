@@ -1,6 +1,5 @@
 //! Fake clocks and pressure sources exercise durable monitor admission and I/O.
 #![allow(clippy::unwrap_used)]
-use crate::TestJson;
 use crate::monitor_fixtures as fixtures;
 use serde_json::{Value, json};
 use std::sync::{
@@ -43,7 +42,7 @@ async fn maintain(
     now: f64,
     pressure: &dyn PressureSource,
     settings: Settings,
-) -> Value {
+) -> studio_runtime_store::MonitorRecord {
     let id = id.to_owned();
     let critical = pressure.critical();
     store
@@ -65,7 +64,7 @@ async fn maintain(
                 now,
             )?;
             monitor_runtime::apply(tx, &before, &actor, &decision, now)?;
-            Ok::<_, MonitorError>(decision.record.value())
+            Ok::<_, MonitorError>(decision.record)
         })
         .await
         .unwrap()
@@ -104,17 +103,17 @@ async fn pressure_requires_thirty_idle_minutes_and_preserves_active_turns() {
             ..Settings::default()
         };
         assert_ne!(
-            maintain(&store, &id, 1800.0, &source, settings.clone()).await["cancelRequested"],
-            true
+            maintain(&store, &id, 1800.0, &source, settings.clone()).await.cancel_requested,
+            Some(true)
         );
         source.0.store(true, Ordering::SeqCst);
         assert_ne!(
-            maintain(&store, &id, 1799.999, &source, settings.clone()).await["cancelRequested"],
-            true
+            maintain(&store, &id, 1799.999, &source, settings.clone()).await.cancel_requested,
+            Some(true)
         );
         let record = maintain(&store, &id, 1800.0, &source, settings).await;
         assert_eq!(
-            record["cancelRequested"] == true,
+            record.cancel_requested == Some(true),
             blocker == "none",
             "{blocker}"
         );
@@ -185,8 +184,8 @@ impl MonitorNative for Native {
         Box::pin(async move {
             let conn = self.store.test_reader().unwrap();
             let monitor = MonitorsRepository::get(&conn, &self.id).unwrap().unwrap();
-            assert_eq!(monitor.value()["cancelRequested"], true);
-            assert!(monitor.value()["shellPressureCleanup"].is_object());
+            assert_eq!(monitor.cancel_requested, Some(true));
+            assert!(monitor.shell_pressure_cleanup.is_some());
             let notices: i64 = conn
                 .query_row("SELECT count(*) FROM runtime_items", [], |r| r.get(0))
                 .unwrap();
@@ -269,11 +268,11 @@ async fn new_output_or_an_expired_decision_blocks_pressure_termination() {
         .unwrap()
         .unwrap()
         .value();
-    assert!(policy::monitor_cleanup_allowed(&conn, &actor, &serde_json::from_value::<studio_runtime_store::MonitorRecord>(monitor.clone()).unwrap(), 1801.0).unwrap());
-    assert!(!policy::monitor_cleanup_allowed(&conn, &actor, &serde_json::from_value::<studio_runtime_store::MonitorRecord>(monitor.clone()).unwrap(), 1803.0).unwrap());
+    assert!(policy::monitor_cleanup_allowed(&conn, &actor, &monitor, 1801.0).unwrap());
+    assert!(!policy::monitor_cleanup_allowed(&conn, &actor, &monitor, 1803.0).unwrap());
     let mut output = monitor;
-    output["activityGeneration"] = json!(1);
-    assert!(!policy::monitor_cleanup_allowed(&conn, &actor, &serde_json::from_value::<studio_runtime_store::MonitorRecord>(output).unwrap(), 1801.0).unwrap());
+    output.activity_generation = 1_i64.try_into().unwrap();
+    assert!(!policy::monitor_cleanup_allowed(&conn, &actor, &output, 1801.0).unwrap());
 }
 
 struct NotSent;
@@ -302,8 +301,8 @@ async fn a_proved_not_sent_expired_cleanup_withdraws_its_cancel_intent() {
         .unwrap();
     let conn = store.test_reader().unwrap();
     let monitor = MonitorsRepository::get(&conn, &id).unwrap().unwrap();
-    assert_eq!(monitor.value()["cancelRequested"], false);
-    assert!(monitor.value().get("shellPressureCleanup").is_none());
+    assert_eq!(monitor.cancel_requested, Some(false));
+    assert!(monitor.shell_pressure_cleanup.is_none());
     assert_eq!(
         fixtures::events(&store)[0]["text"]["shellPolicy"]["kind"],
         "cleanup_skipped"
