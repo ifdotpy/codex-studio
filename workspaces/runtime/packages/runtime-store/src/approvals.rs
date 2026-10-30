@@ -7,7 +7,7 @@
 //! approval and marks an answering one unknown.
 use std::collections::HashSet;
 
-use rusqlite::{OptionalExtension, Row, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Row, params};
 use strum::VariantNames;
 use studio_runtime_schema::approvals::{
     AgentId, Answer, AnswerMismatch, Approval, ApprovalId, ApprovalState, ApprovalStateKind,
@@ -39,6 +39,21 @@ pub enum ApprovalError {
     Sql(#[from] rusqlite::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+}
+
+/// Domain errors (conflict, mismatch, closed) become an invalid stored object
+/// here. Callers that report them to a user match `ApprovalError` first.
+impl From<ApprovalError> for crate::StoreError {
+    fn from(error: ApprovalError) -> Self {
+        match error {
+            ApprovalError::Sql(error) => error.into(),
+            ApprovalError::Json(error) => error.into(),
+            other => crate::StoreError::InvalidStoredObject {
+                table: TABLE,
+                id: other.to_string(),
+            },
+        }
+    }
 }
 
 pub type ApprovalResult<T> = Result<T, ApprovalError>;
@@ -75,8 +90,8 @@ fn invalid_row(row: &str) -> String {
 }
 
 /// Create the table and replace the check triggers. Safe to run again.
-pub fn create_schema(tx: &Transaction<'_>) -> rusqlite::Result<()> {
-    let mut sql = String::from(
+pub fn create_schema(tx: &Connection) -> rusqlite::Result<()> {
+    let sql = String::from(
         "CREATE TABLE IF NOT EXISTS approvals (
             id TEXT PRIMARY KEY, agent TEXT NOT NULL, turn TEXT, created REAL NOT NULL, epoch INTEGER,
             kind TEXT NOT NULL, request TEXT NOT NULL, delivery TEXT, detail TEXT NOT NULL,
@@ -89,18 +104,110 @@ pub fn create_schema(tx: &Transaction<'_>) -> rusqlite::Result<()> {
          CREATE INDEX IF NOT EXISTS approvals_account_open ON approvals(json_extract(delivery,'$.account')) WHERE state IN ('pending','answering');
          CREATE INDEX IF NOT EXISTS approvals_fire_at ON approvals(fire_at) WHERE fire_at IS NOT NULL;",
     );
+    tx.execute_batch(&sql)?;
+    // Replace a trigger only when its text changed, so reopening a database
+    // leaves the schema (and its change counter) as it was.
     for (name, event) in [
         ("approvals_check_insert", "INSERT"),
         ("approvals_check_update", "UPDATE"),
     ] {
-        sql.push_str(&format!(
-            "DROP TRIGGER IF EXISTS {name};
-             CREATE TRIGGER {name} BEFORE {event} ON approvals WHEN {}
-             BEGIN SELECT RAISE(ABORT,'invalid approval state'); END;",
+        let wanted = format!(
+            "CREATE TRIGGER {name} BEFORE {event} ON approvals WHEN {}\n             BEGIN SELECT RAISE(ABORT,'invalid approval state'); END",
             invalid_row("NEW")
-        ));
+        );
+        let current: Option<String> = tx
+            .query_row(
+                "SELECT sql FROM sqlite_schema WHERE type='trigger' AND name=?1",
+                [name],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if current.as_deref() != Some(wanted.as_str()) {
+            tx.execute_batch(&format!("DROP TRIGGER IF EXISTS {name}; {wanted};"))?;
+        }
     }
-    tx.execute_batch(&sql)
+    Ok(())
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProviderOption {
+    label: String,
+    description: Option<String>,
+    preview: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProviderQuestion {
+    id: Option<String>,
+    question: Option<String>,
+    header: Option<String>,
+    options: Option<Vec<ProviderOption>>,
+    is_secret: Option<bool>,
+    multi_select: Option<bool>,
+    is_other: Option<bool>,
+}
+
+/// Decodes the `questions` list of a provider request. A question without an id
+/// gets its index. With `strict`, a key Studio does not know is an error (the
+/// migration). Otherwise unknown keys are dropped, so a new provider field never
+/// loses the user's question.
+pub fn questions_from_provider(
+    mut list: serde_json::Value,
+    strict: bool,
+) -> Result<Vec<studio_runtime_schema::approvals::Question>, serde_json::Error> {
+    use studio_runtime_schema::approvals::{Question, QuestionOption};
+    if !strict {
+        const QUESTION_KEYS: [&str; 7] = [
+            "id",
+            "question",
+            "header",
+            "options",
+            "isSecret",
+            "multiSelect",
+            "isOther",
+        ];
+        const OPTION_KEYS: [&str; 3] = ["label", "description", "preview"];
+        for question in list.as_array_mut().into_iter().flatten() {
+            if let Some(object) = question.as_object_mut() {
+                object.retain(|key, _| QUESTION_KEYS.contains(&key.as_str()));
+                for option in object
+                    .get_mut("options")
+                    .and_then(serde_json::Value::as_array_mut)
+                    .into_iter()
+                    .flatten()
+                {
+                    if let Some(option) = option.as_object_mut() {
+                        option.retain(|key, _| OPTION_KEYS.contains(&key.as_str()));
+                    }
+                }
+            }
+        }
+    }
+    let list: Vec<ProviderQuestion> = serde_json::from_value(list)?;
+    Ok(list
+        .into_iter()
+        .enumerate()
+        .map(|(index, q)| Question {
+            id: q.id.unwrap_or_else(|| index.to_string()),
+            question: q.question.unwrap_or_default(),
+            header: q.header,
+            options: q
+                .options
+                .unwrap_or_default()
+                .into_iter()
+                .map(|o| QuestionOption {
+                    label: o.label,
+                    description: o.description,
+                    preview: o.preview,
+                })
+                .collect(),
+            is_secret: q.is_secret.unwrap_or(false),
+            multi_select: q.multi_select,
+            is_other: q.is_other,
+        })
+        .collect())
 }
 
 /// What a caller supplies to create an approval.
@@ -206,7 +313,7 @@ fn decode(row: &Row<'_>) -> ApprovalResult<Approval> {
     })
 }
 
-pub fn get(tx: &Transaction<'_>, id: &ApprovalId) -> ApprovalResult<Option<Approval>> {
+pub fn get(tx: &Connection, id: &ApprovalId) -> ApprovalResult<Option<Approval>> {
     tx.query_row(
         &format!("SELECT {COLUMNS} FROM approvals WHERE id=?1"),
         [id.as_str()],
@@ -217,7 +324,7 @@ pub fn get(tx: &Transaction<'_>, id: &ApprovalId) -> ApprovalResult<Option<Appro
 }
 
 fn select(
-    tx: &Transaction<'_>,
+    tx: &Connection,
     filter: &str,
     args: impl rusqlite::Params,
 ) -> ApprovalResult<Vec<Approval>> {
@@ -229,23 +336,23 @@ fn select(
 }
 
 /// Insert or replace a whole row. Writers change a row read with `get`.
-pub fn put(tx: &Transaction<'_>, row: &Approval) -> ApprovalResult<()> {
+pub fn put(tx: &Connection, row: &Approval) -> ApprovalResult<()> {
     tx.execute("DELETE FROM approvals WHERE id=?1", [row.id.as_str()])?;
     insert(tx, row)
 }
 
 /// Every approval, hidden ones included, oldest first.
-pub fn all(tx: &Transaction<'_>) -> ApprovalResult<Vec<Approval>> {
+pub fn all(tx: &Connection) -> ApprovalResult<Vec<Approval>> {
     select(tx, "1", [])
 }
 
 /// Every approval of an agent, hidden ones included.
-pub fn for_agent(tx: &Transaction<'_>, agent: &AgentId) -> ApprovalResult<Vec<Approval>> {
+pub fn for_agent(tx: &Connection, agent: &AgentId) -> ApprovalResult<Vec<Approval>> {
     select(tx, "agent=?1", [agent.as_str()])
 }
 
 /// Pending and answering approvals of a provider account.
-pub fn open_for_account(tx: &Transaction<'_>, account: &str) -> ApprovalResult<Vec<Approval>> {
+pub fn open_for_account(tx: &Connection, account: &str) -> ApprovalResult<Vec<Approval>> {
     select(
         tx,
         "json_extract(delivery,'$.account')=?1 AND state IN ('pending','answering')",
@@ -254,7 +361,7 @@ pub fn open_for_account(tx: &Transaction<'_>, account: &str) -> ApprovalResult<V
 }
 
 /// Pending and answering approvals of an agent.
-pub fn open_for_agent(tx: &Transaction<'_>, agent: &AgentId) -> ApprovalResult<Vec<Approval>> {
+pub fn open_for_agent(tx: &Connection, agent: &AgentId) -> ApprovalResult<Vec<Approval>> {
     select(
         tx,
         "agent=?1 AND state IN ('pending','answering')",
@@ -264,7 +371,7 @@ pub fn open_for_agent(tx: &Transaction<'_>, agent: &AgentId) -> ApprovalResult<V
 
 /// Approvals of one kind and state, for example pending monitor starts.
 pub fn of_kind(
-    tx: &Transaction<'_>,
+    tx: &Connection,
     kind: RequestKind,
     state: ApprovalStateKind,
 ) -> ApprovalResult<Vec<Approval>> {
@@ -276,11 +383,11 @@ pub fn of_kind(
 }
 
 /// Visible approvals of a turn. Hidden rows stay in the table.
-pub fn for_turn(tx: &Transaction<'_>, turn: &TurnId) -> ApprovalResult<Vec<Approval>> {
+pub fn for_turn(tx: &Connection, turn: &TurnId) -> ApprovalResult<Vec<Approval>> {
     select(tx, "turn=?1 AND hidden_at IS NULL", [turn.as_str()])
 }
 
-pub(crate) fn insert(tx: &Transaction<'_>, row: &Approval) -> ApprovalResult<()> {
+pub(crate) fn insert(tx: &Connection, row: &Approval) -> ApprovalResult<()> {
     let (answer, command, by, at, since, reason) = columns(&row.state)?;
     tx.execute(
         "INSERT INTO approvals(id,agent,turn,created,kind,request,state,answer,command,answered_by,at,since,reason,fire_at,hidden_at,epoch,delivery,detail,deferral_active,deferral_at,deferral_by,hidden_by)
@@ -361,7 +468,7 @@ fn columns(state: &ApprovalState) -> ApprovalResult<Columns> {
 }
 
 /// Write a new state. The timer ends with the pending state.
-fn set_state(tx: &Transaction<'_>, id: &ApprovalId, state: &ApprovalState) -> ApprovalResult<()> {
+fn set_state(tx: &Connection, id: &ApprovalId, state: &ApprovalState) -> ApprovalResult<()> {
     let (answer, command, by, at, since, reason) = columns(state)?;
     tx.execute(
         "UPDATE approvals SET state=?2,answer=?3,command=?4,answered_by=?5,at=?6,since=?7,reason=?8,
@@ -380,7 +487,7 @@ fn check_turn(new: &NewApproval) -> ApprovalResult<()> {
 }
 
 /// Create a pending approval. The same id with the same request returns the stored row.
-pub fn create(tx: &Transaction<'_>, new: NewApproval, now: Timestamp) -> ApprovalResult<Approval> {
+pub fn create(tx: &Connection, new: NewApproval, now: Timestamp) -> ApprovalResult<Approval> {
     check_turn(&new)?;
     if let Some(existing) = get(tx, &new.id)? {
         return if existing.request == new.request {
@@ -409,7 +516,7 @@ pub fn create(tx: &Transaction<'_>, new: NewApproval, now: Timestamp) -> Approva
 
 /// A policy answer (full access mode) is a row created as `Answered` by `Policy`.
 pub fn create_policy_answered(
-    tx: &Transaction<'_>,
+    tx: &Connection,
     new: NewApproval,
     answer: Answer,
     now: Timestamp,
@@ -451,7 +558,7 @@ pub enum AnswerOutcome {
 
 /// The command `answer(approval, answer)`.
 pub fn answer(
-    tx: &Transaction<'_>,
+    tx: &Connection,
     id: &ApprovalId,
     answer: Answer,
     command: CommandId,
@@ -480,7 +587,7 @@ pub fn answer(
 
 /// The provider confirmed the delivery of the stored answer.
 pub fn confirm_delivery(
-    tx: &Transaction<'_>,
+    tx: &Connection,
     id: &ApprovalId,
     by: Principal,
     at: Timestamp,
@@ -502,7 +609,7 @@ pub fn confirm_delivery(
 
 /// Delivery of an answer was lost.
 pub fn delivery_lost(
-    tx: &Transaction<'_>,
+    tx: &Connection,
     id: &ApprovalId,
     since: Timestamp,
 ) -> ApprovalResult<Approval> {
@@ -520,7 +627,7 @@ pub fn delivery_lost(
 
 /// Pending becomes Closed. Answering becomes Unknown. Other states stay.
 fn settle_open(
-    tx: &Transaction<'_>,
+    tx: &Connection,
     open: Vec<Approval>,
     reason: CloseReason,
     now: Timestamp,
@@ -540,7 +647,7 @@ fn settle_open(
 }
 
 /// The turn ended.
-pub fn turn_ended(tx: &Transaction<'_>, turn: &TurnId, now: Timestamp) -> ApprovalResult<usize> {
+pub fn turn_ended(tx: &Connection, turn: &TurnId, now: Timestamp) -> ApprovalResult<usize> {
     let open = select(
         tx,
         "turn=?1 AND state IN ('pending','answering')",
@@ -550,11 +657,7 @@ pub fn turn_ended(tx: &Transaction<'_>, turn: &TurnId, now: Timestamp) -> Approv
 }
 
 /// The provider session of an agent is gone.
-pub fn session_lost(
-    tx: &Transaction<'_>,
-    agent: &AgentId,
-    now: Timestamp,
-) -> ApprovalResult<usize> {
+pub fn session_lost(tx: &Connection, agent: &AgentId, now: Timestamp) -> ApprovalResult<usize> {
     let open = select(
         tx,
         "agent=?1 AND state IN ('pending','answering')",
@@ -567,7 +670,7 @@ pub fn session_lost(
 /// the supervisor keeps its open approvals (attached again, no expiry). The
 /// others lose their session.
 pub fn reconcile_after_restart(
-    tx: &Transaction<'_>,
+    tx: &Connection,
     live: &HashSet<AgentId>,
     now: Timestamp,
 ) -> ApprovalResult<usize> {
@@ -576,6 +679,22 @@ pub fn reconcile_after_restart(
         .filter(|row| !live.contains(&row.agent))
         .collect::<Vec<_>>();
     settle_open(tx, open, CloseReason::SessionLost, now)
+}
+
+/// Close one pending approval, for example when the monitor it asks about stops.
+/// Other states stay: an answer is never replaced by a close.
+pub fn close(
+    tx: &Connection,
+    id: &ApprovalId,
+    reason: CloseReason,
+    now: Timestamp,
+) -> ApprovalResult<bool> {
+    let row = get(tx, id)?.ok_or_else(|| ApprovalError::NotFound(id.0.clone()))?;
+    if row.state != ApprovalState::Pending {
+        return Ok(false);
+    }
+    set_state(tx, id, &ApprovalState::Closed { reason, at: now })?;
+    Ok(true)
 }
 
 /// A pending approval whose timer fired and that must be declined.
@@ -589,7 +708,7 @@ pub struct Expiry {
 
 /// Close every pending approval whose `fire_at` has passed. The timer is the
 /// row itself, so this works the same after a restart.
-pub fn expire_due(tx: &Transaction<'_>, now: Timestamp) -> ApprovalResult<Vec<Expiry>> {
+pub fn expire_due(tx: &Connection, now: Timestamp) -> ApprovalResult<Vec<Expiry>> {
     let due = select(
         tx,
         "state='pending' AND fire_at IS NOT NULL AND fire_at<=?1",
@@ -621,11 +740,7 @@ pub fn expire_due(tx: &Transaction<'_>, now: Timestamp) -> ApprovalResult<Vec<Ex
 }
 
 /// History stays. A hidden row is not shown in the default list.
-pub fn set_hidden(
-    tx: &Transaction<'_>,
-    id: &ApprovalId,
-    hidden: Option<Hidden>,
-) -> ApprovalResult<()> {
+pub fn set_hidden(tx: &Connection, id: &ApprovalId, hidden: Option<Hidden>) -> ApprovalResult<()> {
     let changed = tx.execute(
         "UPDATE approvals SET hidden_at=?2,hidden_by=?3 WHERE id=?1",
         params![
@@ -646,7 +761,6 @@ pub fn set_hidden(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rusqlite::Connection;
     use studio_runtime_schema::approvals::{ProviderObject, Question, QuestionAnswer};
 
     fn db() -> Connection {
@@ -704,7 +818,7 @@ mod tests {
             decision: Decision::Accept,
         }
     }
-    fn state(tx: &Transaction<'_>, id: &str) -> ApprovalState {
+    fn state(tx: &Connection, id: &str) -> ApprovalState {
         get(tx, &ApprovalId(id.into())).unwrap().unwrap().state
     }
 

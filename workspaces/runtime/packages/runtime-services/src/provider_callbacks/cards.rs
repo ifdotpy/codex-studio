@@ -750,6 +750,7 @@ pub async fn prepare_delete(
                 | crate::questions_write::QuestionsWriteError::InvalidStoredObject { .. }
                 | crate::questions_write::QuestionsWriteError::Event(_)
                 | crate::questions_write::QuestionsWriteError::Store(_)
+                | crate::questions_write::QuestionsWriteError::Approval(_)
                 | crate::questions_write::QuestionsWriteError::Json(_)
                 | crate::questions_write::QuestionsWriteError::Clock
                 | crate::questions_write::QuestionsWriteError::Coordination(_)
