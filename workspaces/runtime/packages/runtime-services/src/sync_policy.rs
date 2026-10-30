@@ -2622,6 +2622,7 @@ mod tests {
         let typed: studio_runtime_store::MonitorRecord = serde_json::from_str(&raw).unwrap();
         let old = crate::sync_views::project_persisted_record("monitor", &record).unwrap();
         let new = super::project_monitor_record(&typed).unwrap();
+        assert_eq!(serde_json::to_string(&new).unwrap(), old.to_string());
         assert_eq!(new.command, old["command"]);
         assert_eq!(new.tail, old["tail"]);
         assert_eq!(new.error.as_deref(), old["error"].as_str());
