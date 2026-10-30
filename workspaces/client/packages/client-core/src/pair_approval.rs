@@ -1,6 +1,7 @@
 //! Checks the approved server snapshot and invitation before native pairing.
 use serde::Deserialize;
 use serde_json::{Value, json};
+use studio_client_domain::json_object::optional_field;
 
 pub struct Approval {
     pub local_server_id: String,
@@ -11,11 +12,11 @@ pub struct Approval {
 #[derive(Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ApprovalWire {
-    #[serde(default, deserialize_with = "optional_text")]
+    #[serde(default, deserialize_with = "optional_field")]
     local_server_id: Option<String>,
-    #[serde(default, deserialize_with = "optional_text")]
+    #[serde(default, deserialize_with = "optional_field")]
     server_id: Option<String>,
-    #[serde(default, deserialize_with = "optional_text")]
+    #[serde(default, deserialize_with = "optional_field")]
     invite_request_id: Option<String>,
     #[serde(default)]
     generation: Value,
@@ -46,11 +47,11 @@ impl Approval {
 #[derive(Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Peer {
-    #[serde(default, deserialize_with = "optional_text")]
+    #[serde(default, deserialize_with = "optional_field")]
     server_id: Option<String>,
-    #[serde(default, deserialize_with = "optional_text")]
+    #[serde(default, deserialize_with = "optional_field")]
     kind: Option<String>,
-    #[serde(default, deserialize_with = "optional_text")]
+    #[serde(default, deserialize_with = "optional_field")]
     status: Option<String>,
     #[serde(default)]
     origin: Value,
@@ -87,11 +88,8 @@ struct Snapshot {
 #[derive(Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SnapshotIdentity {
-    #[serde(default, deserialize_with = "optional_text")]
+    #[serde(default, deserialize_with = "optional_field")]
     server_id: Option<String>,
-}
-fn optional_text<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
-    Ok(Value::deserialize(d)?.as_str().map(str::to_owned))
 }
 fn object<T: for<'de> Deserialize<'de> + Default>(value: &Value) -> T {
     if value.is_object() {
@@ -205,6 +203,17 @@ mod tests {
             Approval::parse(&params).err().unwrap(),
             "Missing or invalid inviteRequestId."
         );
+    }
+
+    #[test]
+    fn approval_rejects_non_text_identities_in_the_original_order() {
+        for value in [json!(null), json!(false), json!(1), json!([]), json!({})] {
+            let params = json!({"approval":{"localServerId":value,"serverId":"remote","inviteRequestId":"invite"}});
+            assert_eq!(
+                Approval::parse(&params).err().unwrap(),
+                "Missing or invalid localServerId."
+            );
+        }
     }
 
     #[test]

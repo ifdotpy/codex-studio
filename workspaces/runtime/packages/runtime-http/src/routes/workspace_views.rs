@@ -396,8 +396,7 @@ async fn task_detail(
             let agent = WorkspaceViewsRepository::agent(connection, agent_id)
                 .map_err(map_store_error)?
                 .ok_or_else(|| invalid_stored("runtime_agents", agent_id))?;
-            let agent = agent.value();
-            if deleted(&agent) {
+            if agent.deleted_at.is_some() {
                 return Err(invalid_request());
             }
             Ok(task)

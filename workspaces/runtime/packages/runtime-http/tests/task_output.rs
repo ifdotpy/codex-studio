@@ -64,6 +64,15 @@ async fn authorized_task_output_read_and_projection() {
     let (status, detail) = get(&app, "/api/task?id=task", LOCAL_ORIGIN).await;
     assert_eq!(status, 200, "{detail}");
     assert_eq!(detail["outputFile"], "out.txt");
+    store.transaction(|tx| {
+        tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.deletedAt',0) WHERE id='owner'", [])?;
+        Ok(())
+    }).await.unwrap();
+    assert!(get(&app, "/api/task?id=task", LOCAL_ORIGIN).await.0 >= 400);
+    store.transaction(|tx| {
+        tx.execute("UPDATE runtime_agents SET record=json_remove(record,'$.deletedAt') WHERE id='owner'", [])?;
+        Ok(())
+    }).await.unwrap();
     assert!(
         get(&app, "/api/task/output?id=task&agent=another", LOCAL_ORIGIN)
             .await
