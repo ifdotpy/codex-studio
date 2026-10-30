@@ -138,16 +138,37 @@ pub(crate) async fn boundary(
         };
         return error_response(StatusCode::FORBIDDEN, message);
     }
-    // The signed path stored its principal. Every other caller passed the token,
+    // The signed path stored its principal. A federation request names its peer in a
+    // header; the handler verifies the signature. Every other caller passed the token,
     // loopback, or Tailscale Serve check above and acts as the owner.
-    let principal = request
-        .extensions()
-        .get::<Principal>()
-        .cloned()
-        .unwrap_or(Principal::Owner);
-    if api && !principal::access(&principal, principal::http_class(method.as_str())).passes_edge()
-    {
-        return error_response(StatusCode::FORBIDDEN, "This device may only read");
+    let principal = match request.extensions().get::<Principal>() {
+        Some(principal) => principal.clone(),
+        None if write && is_federation_path(&path) => Principal::Federated {
+            peer: headers
+                .get("x-studio-federation-state")
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_owned(),
+        },
+        None => Principal::Owner,
+    };
+    if api {
+        let class = matched_operation
+            .as_ref()
+            .and_then(|operation| operation.key.split_once(' '))
+            .map_or_else(
+                || crate::route_class::class_of(method.as_str(), ""),
+                |(operation_method, template)| {
+                    crate::route_class::class_of(operation_method, template)
+                },
+            )
+            .unwrap_or(principal::CommandClass::OwnerOnly);
+        if !principal::access(&principal, class).passes_edge() {
+            return error_response(
+                StatusCode::FORBIDDEN,
+                "This caller may not run this command",
+            );
+        }
     }
     if api
         && method == Method::HEAD

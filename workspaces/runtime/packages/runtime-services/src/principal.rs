@@ -92,7 +92,9 @@ pub fn access(principal: &Principal, class: CommandClass) -> Access {
     use CommandClass::{ChatControl, Federation, Host, OwnerOnly, Read, Spawn};
     use Principal::{Agent, Device, Federated, Owner, Peer, Policy};
     match (principal, class) {
-        (Owner, _) | (_, Read) => Allow,
+        (_, Read) => Allow,
+        (Owner, Federation) => Deny,
+        (Owner, _) => Allow,
         (
             Device {
                 grant: Grant::Full, ..
@@ -123,16 +125,6 @@ pub fn access(principal: &Principal, class: CommandClass) -> Access {
     }
 }
 
-/// Edge class of an HTTP request. The edge tells only a read from a write; the finer
-/// classes need the rows and are checked by the handler.
-pub fn http_class(method: &str) -> CommandClass {
-    if matches!(method, "GET" | "HEAD" | "OPTIONS") {
-        CommandClass::Read
-    } else {
-        CommandClass::ChatControl
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,7 +142,7 @@ mod tests {
         use CommandClass::{ChatControl, Federation, Host, OwnerOnly, Read, Spawn};
         let rows: Vec<(Principal, [Access; 6])> = vec![
             //                                  Read, Chat, Spawn, Host, OwnerOnly, Federation
-            (Principal::Owner, [Allow, Allow, Allow, Allow, Allow, Allow]),
+            (Principal::Owner, [Allow, Allow, Allow, Allow, Allow, Deny]),
             (
                 device(Grant::Full),
                 [Allow, Allow, Allow, Allow, Deny, Deny],
@@ -209,11 +201,5 @@ mod tests {
             Grant::from_record(&serde_json::json!({"grant":"bogus"})),
             Grant::Full
         );
-    }
-
-    #[test]
-    fn edge_class_separates_reads_from_writes() {
-        assert_eq!(http_class("GET"), CommandClass::Read);
-        assert_eq!(http_class("POST"), CommandClass::ChatControl);
     }
 }

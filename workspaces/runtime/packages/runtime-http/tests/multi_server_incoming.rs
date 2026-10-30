@@ -1396,7 +1396,7 @@ async fn a_signed_observe_device_reads_but_cannot_send() {
         "GET",
         "/api/ui-summary",
         b"",
-        "observerreadnonce00000000000001",
+        "observerreadnonce000000000000001",
     )
     .await
     .expect("observer read answers");
@@ -1406,7 +1406,7 @@ async fn a_signed_observe_device_reads_but_cannot_send() {
         "POST",
         "/api/sync/preferences",
         body,
-        "observerwritenonce0000000000002",
+        "observerwritenonce00000000000002",
     )
     .await
     .expect("observer write answers");
@@ -1416,9 +1416,20 @@ async fn a_signed_observe_device_reads_but_cannot_send() {
         "POST",
         "/api/sync/preferences",
         body,
-        "fullwritenonce0000000000000003",
+        "fullwritenonce000000000000000003",
     )
     .await
     .expect("full write answers");
     assert_eq!(write.status(), StatusCode::OK);
+    // Owner-only routes (pairing, grants, revoke, settings) refuse even a full device.
+    let owner_only = send(
+        &full,
+        "POST",
+        "/api/rules",
+        body,
+        "fullownerrouteno0000000000000004",
+    )
+    .await
+    .expect("owner-only answers");
+    assert_eq!(owner_only.status(), StatusCode::FORBIDDEN);
 }
