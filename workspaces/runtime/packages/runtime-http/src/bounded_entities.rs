@@ -364,12 +364,13 @@ async fn replace(
     write_entities(store, collection, rows, None).await
 }
 
+const AGENT_ROOTS_SQL: &str =
+    "SELECT rowid, COALESCE(root_id,id) FROM runtime_agents INDEXED BY runtime_agent_root_v2";
+
 async fn read_agent_roots(store: &Arc<RuntimeStore>) -> Result<BTreeMap<i64, String>, StoreError> {
     store
         .read_async("bounded-entities/agent-roots", |tx| {
-            let mut statement = tx.prepare(
-                "SELECT rowid, COALESCE(json_extract(record,'$.rootId'),id) FROM runtime_agents",
-            )?;
+            let mut statement = tx.prepare(AGENT_ROOTS_SQL)?;
             Ok(statement
                 .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
                 .collect::<rusqlite::Result<_>>()?)
@@ -382,10 +383,22 @@ async fn changed_agent_roots(
     previous: &mut BTreeMap<i64, String>,
     rows: Vec<i64>,
 ) -> Result<BTreeSet<String>, StoreError> {
-    let current = store.read_async("bounded-entities/changed-agent-roots", move |tx| {
-        let mut statement = tx.prepare("SELECT COALESCE(json_extract(record,'$.rootId'),id) FROM runtime_agents WHERE rowid=?1")?;
-        rows.into_iter().map(|rowid| Ok((rowid, statement.query_row([rowid], |row| row.get::<_, String>(0)).optional()?))).collect::<Result<Vec<_>, StoreError>>()
-    }).await?;
+    let current = store
+        .read_async("bounded-entities/changed-agent-roots", move |tx| {
+            let mut statement =
+                tx.prepare("SELECT COALESCE(root_id,id) FROM runtime_agents WHERE rowid=?1")?;
+            rows.into_iter()
+                .map(|rowid| {
+                    Ok((
+                        rowid,
+                        statement
+                            .query_row([rowid], |row| row.get::<_, String>(0))
+                            .optional()?,
+                    ))
+                })
+                .collect::<Result<Vec<_>, StoreError>>()
+        })
+        .await?;
     let mut roots = BTreeSet::new();
     for (rowid, root) in current {
         if let Some(old) = previous.remove(&rowid) {
@@ -771,6 +784,30 @@ async fn publish_desktop(state: &HttpState) -> Result<(), StoreError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn root_scan_does_not_decode_json_in_sql() {
+        assert!(!AGENT_ROOTS_SQL.contains("json_"));
+        let db = rusqlite::Connection::open_in_memory().expect("database");
+        db.execute_batch(
+            "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, root_id TEXT);\
+             CREATE INDEX runtime_agent_root_v2 ON runtime_agents(root_id);\
+             INSERT INTO runtime_agents VALUES('lead','lead'),('child','lead'),('legacy',NULL);",
+        )
+        .expect("agents");
+        let mut statement = db.prepare(AGENT_ROOTS_SQL).expect("root query");
+        let roots = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })
+            .expect("root rows")
+            .collect::<rusqlite::Result<BTreeMap<_, _>>>()
+            .expect("root identities");
+        assert_eq!(
+            roots,
+            BTreeMap::from([(1, "lead".into()), (2, "lead".into()), (3, "legacy".into())])
+        );
+    }
 
     static COST_READ_WITNESSES: std::sync::LazyLock<
         std::sync::Mutex<
