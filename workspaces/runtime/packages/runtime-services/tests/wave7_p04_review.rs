@@ -87,8 +87,7 @@ async fn resolved_before_admission_or_before_deletion_survives_restart() {
                 store
                     .test_reader()
                     .unwrap()
-                    .query_row("SELECT count(*) FROM runtime_requests", [], |r| r
-                        .get::<_, i64>(0))
+                    .query_row("SELECT count(*) FROM approvals", [], |r| r.get::<_, i64>(0))
                     .unwrap(),
                 0
             );
@@ -248,7 +247,8 @@ async fn send_acceptance_and_resolution_are_serialized_without_holding_a_store_t
     let (submitted, resolved) = tokio::join!(submit, resolve);
     assert_eq!(submitted.unwrap(), Some(()));
     assert_eq!(resolved.unwrap(), 1);
-    assert_eq!(stored(&store, &id)["status"], "resolved");
+    // The answer was in delivery: not known to have arrived, never "resolved".
+    assert_eq!(stored(&store, &id)["status"], "uncertain");
 }
 
 #[tokio::test]
@@ -525,7 +525,7 @@ async fn python_failures_null_decisions_and_race_winners_are_preserved() {
             runtime.answer(id, &json!({"answers":{}}), 20.0).await
         };
         assert!(result.is_err());
-        assert_eq!(stored(&store, id), case["after"]);
+        assert_outcome(&stored(&store, id), &case["after"]);
         assert_eq!(actor(&store, &context), case["afterActor"]);
         assert_writes(&before, &store, &case["writes"]);
     }
@@ -543,7 +543,7 @@ async fn python_failures_null_decisions_and_race_winners_are_preserved() {
         } else {
             assert_eq!(result.unwrap(), case["expected"]["result"]);
         }
-        assert_eq!(stored(&store, id), case["after"]);
+        assert_outcome(&stored(&store, id), &case["after"]);
         assert_eq!(actor(&store, &context), case["afterActor"]);
         assert_writes(&before, &store, &case["writes"]);
     }
@@ -575,14 +575,17 @@ async fn python_failures_null_decisions_and_race_winners_are_preserved() {
                     .await
                     .is_err()
             );
-            assert_eq!(stored(&store, id), case["winner"]["after"]);
+            // The answer was in delivery: the provider's resolution leaves it unknown.
+            let mut resolved = case["winner"]["after"].clone();
+            resolved["status"] = json!("uncertain");
+            assert_outcome(&stored(&store, id), &resolved);
         } else {
             put_actor(&store, &case["winner"]["afterActor"]).await;
             delivery(&store, &reply.identity, DeliveryOutcome::Written)
                 .await
                 .unwrap();
             assert_eq!(actor(&store, &context), case["winner"]["afterActor"]);
-            assert_eq!(stored(&store, id), case["pythonAfter"]["after"]);
+            assert_outcome(&stored(&store, id), &case["pythonAfter"]["after"]);
             assert_eq!(case["pythonAfter"]["afterActor"]["status"], "running");
         }
     }

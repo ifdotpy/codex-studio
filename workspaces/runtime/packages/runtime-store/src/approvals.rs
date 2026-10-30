@@ -243,6 +243,13 @@ fn select(
     rows.map(|row| row?).collect()
 }
 
+/// Convert one legacy `runtime_requests` record into an approval. Tests seed
+/// their fixtures with it.
+#[cfg(any(test, feature = "test-support"))]
+pub fn from_legacy_record(id: &str, record: &serde_json::Value) -> crate::StoreResult<Approval> {
+    crate::migrations::approval_from_record(id, &record.to_string())
+}
+
 /// Insert or replace a whole row. Writers change a row read with `get`.
 pub fn put(tx: &Connection, row: &Approval) -> ApprovalResult<()> {
     tx.execute("DELETE FROM approvals WHERE id=?1", [row.id.as_str()])?;
@@ -533,6 +540,26 @@ pub fn delivery_lost(
     Ok(row)
 }
 
+/// The provider connection refused the reply before it left, so the answer
+/// never reached the provider. Answering becomes Pending again, with the expiry
+/// timer the approval had before the answer.
+pub fn reopen(
+    tx: &Connection,
+    id: &ApprovalId,
+    fire_at: Option<Timestamp>,
+) -> ApprovalResult<Approval> {
+    let row = get(tx, id)?.ok_or_else(|| ApprovalError::NotFound(id.0.clone()))?;
+    if !matches!(row.state, ApprovalState::Answering { .. }) {
+        return Err(ApprovalError::State(id.0.clone()));
+    }
+    set_state(tx, id, &ApprovalState::Pending)?;
+    tx.execute(
+        "UPDATE approvals SET fire_at=?2 WHERE id=?1",
+        params![id.as_str(), fire_at.map(|t| t.0)],
+    )?;
+    get(tx, id)?.ok_or_else(|| ApprovalError::NotFound(id.0.clone()))
+}
+
 /// Pending becomes Closed. Answering becomes Unknown. Other states stay.
 fn settle_open(
     tx: &Connection,
@@ -612,6 +639,16 @@ pub struct Expiry {
     pub agent: AgentId,
     /// The effect the caller delivers to the provider.
     pub effect: Answer,
+}
+
+/// Whether the timer of a pending approval has fired. A read: the tick asks
+/// this before it takes a write transaction.
+pub fn any_due(tx: &Connection, now: Timestamp) -> ApprovalResult<bool> {
+    Ok(tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM approvals WHERE state='pending' AND fire_at IS NOT NULL AND fire_at<=?1)",
+        [now.0],
+        |row| row.get(0),
+    )?)
 }
 
 /// Close every pending approval whose `fire_at` has passed. The timer is the
@@ -1138,5 +1175,28 @@ mod tests {
         db.execute_batch("DROP TRIGGER approvals_check_insert; INSERT INTO approvals(id,agent,turn,created,kind,request,detail,state) VALUES ('x','a','t',1,'exec','{\"kind\":\"nope\"}','{}','pending');").unwrap();
         let tx = db.transaction().unwrap();
         assert!(get(&tx, &ApprovalId("x".into())).is_err());
+    }
+    #[test]
+    fn a_refused_reply_reopens_the_answering_approval_with_its_timer() {
+        let mut db = db();
+        let tx = db.transaction().unwrap();
+        let id = ApprovalId("a".into());
+        create(
+            &tx,
+            new("a", "ag", "t", exec(), Some(100.0)),
+            Timestamp(1.0),
+        )
+        .unwrap();
+        answer(&tx, &id, accept(), CommandId("c".into())).unwrap();
+        assert_eq!(get(&tx, &id).unwrap().unwrap().fire_at, None);
+        let row = reopen(&tx, &id, Some(Timestamp(100.0))).unwrap();
+        assert_eq!(row.state, ApprovalState::Pending);
+        assert_eq!(row.fire_at, Some(Timestamp(100.0)));
+        assert!(matches!(
+            reopen(&tx, &id, None),
+            Err(ApprovalError::State(_))
+        ));
+        let expired = expire_due(&tx, Timestamp(101.0)).unwrap();
+        assert_eq!(expired.len(), 1, "the restored timer fires");
     }
 }

@@ -367,6 +367,14 @@ fn convert(id: &str, legacy: Legacy) -> StoreResult<Approval> {
     })
 }
 
+/// Convert one legacy record. Tests seed their fixtures with it.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn approval_from_record(id: &str, record: &str) -> StoreResult<Approval> {
+    let legacy: Legacy = serde_json::from_str(record)
+        .map_err(|error| bad(id, &format!("cannot place a field: {error}")))?;
+    convert(id, legacy)
+}
+
 pub(super) fn apply(tx: &Transaction<'_>) -> StoreResult<()> {
     approvals::create_schema(tx)?;
     if !crate::schema::table_exists(tx, "runtime_requests")? {

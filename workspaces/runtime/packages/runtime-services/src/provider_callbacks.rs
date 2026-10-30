@@ -5,6 +5,8 @@
 //! HTTP monitor input has no caller identity; its retry contract remains an
 //! open owner decision and the HTTP entry point refuses it by name.
 mod cards;
+#[cfg(any(test, feature = "test-support"))]
+pub mod legacy_view;
 pub(crate) mod model;
 mod projection;
 mod recovery;
@@ -15,9 +17,10 @@ pub use crate::managed_child_create::{
 };
 pub(crate) use cards::answer_signature;
 pub use cards::{
-    AnswerAuthority, NATIVE_REQUEST_METHODS, NativeAdmission, admit_native, answer, answer_value,
-    expire, expire_ended_generations, interactive as is_native_request,
-    pending_native_delete_context, prepare_delete, prepare_user_answer, resolve,
+    AnswerAuthority, CLAUDE_FULL_ACCESS_APPROVAL_SECONDS, NATIVE_REQUEST_METHODS, NativeAdmission,
+    admit_native, answer, expire, expire_due, expire_ended_generations,
+    interactive as is_native_request, pending_native_delete_context, prepare_delete,
+    prepare_user_answer, provider_answer, resolve, split_request,
 };
 pub use model::{
     CallbackContext, CallbackDecision, CallbackError, CallbackSnapshot, Reply, ReplyIdentity,
@@ -30,7 +33,7 @@ pub use recovery::{
 };
 use serde_json::{Value, json};
 pub use storage::{
-    CallbackBody, CallbackOwner, CallbackResponse, DeliveryOutcome, FrameAdmission,
+    CallbackBody, CallbackOwner, CallbackResponse, DeliveryOutcome, FrameAdmission, Reopen,
     admit_callback_request, begin_frame, callback_admission, callback_origin_key, delivery,
     pending_callback_count, prepared_replies, record_frame_outcome, reserve_credential_refresh,
     response_frame, save_frame_response, settle_response, submission_ready,

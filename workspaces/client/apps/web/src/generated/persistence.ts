@@ -136,7 +136,6 @@ export const RequestCardStatusValues = [
   "answering",
   "answered",
   "uncertain",
-  "blocked",
   "resolved",
   "expired",
   "deleted",
