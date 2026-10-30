@@ -128,6 +128,10 @@ impl ReceiptFamilyMigration for Family {
                     )?;
                     delete_source(tx, source, row.rowid)?;
                 }
+                "runtime_tool_results" if is_retired_remote_spawn(tx, &row.id)? => {
+                    validate_completed_discard(source, &row.id, checkpoint.cutover_ms)?;
+                    delete_source(tx, source, row.rowid)?;
+                }
                 "runtime_tool_results" => {
                     let task = task(tx, source, &row, &row.id)?;
                     let result = decoded;
@@ -475,6 +479,22 @@ fn migrate_location_c(
     count.status = MigrationStatus::Complete;
     count.save(tx, ID, report, cutover)?;
     delete_source(tx, SOURCE, row.rowid)
+}
+
+/// The retired Python backend saved remote spawn replies as `remote-worker:<link>`
+/// without a request row. Its only reader was deleted in 027f3cfea, so no code reads them.
+fn is_retired_remote_spawn(tx: &Transaction<'_>, id: &str) -> Result<bool> {
+    if !id.starts_with("remote-worker:") {
+        return Ok(false);
+    }
+    let request: Option<i64> = tx
+        .query_row(
+            "SELECT 1 FROM runtime_tool_requests WHERE id=?1",
+            [id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(request.is_none())
 }
 
 fn task(tx: &Transaction<'_>, source: &str, row: &SourceReceipt, id: &str) -> Result<Value> {
@@ -840,6 +860,35 @@ mod tests {
                 0
             );
         }
+    }
+
+    #[test]
+    fn receipts_tools_discards_retired_remote_spawn_replies() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&mut db);
+        db.execute(
+            "INSERT INTO runtime_tool_results VALUES('remote-worker:9d030f9d-01d5-586f-a785-11a33fb55bae','{\"success\":true}')",
+            [],
+        )
+        .expect("retired reply");
+        let tx = db.transaction().expect("transaction");
+        let source = SOURCES[1];
+        let mut checkpoint =
+            MigrationCheckpoint::begin(&tx, ID, source, CUTOVER).expect("checkpoint");
+        while checkpoint.status != MigrationStatus::Complete {
+            checkpoint = Family
+                .move_batch(&tx, source, &checkpoint)
+                .expect("retired reply is discarded");
+        }
+        assert_eq!(
+            tx.query_row(
+                "SELECT count(*) FROM runtime_tool_results WHERE id LIKE 'remote-worker:%'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .expect("source rows"),
+            0
+        );
     }
 
     fn blob_task(db: &Connection, root: &std::path::Path, write: bool) -> std::path::PathBuf {
