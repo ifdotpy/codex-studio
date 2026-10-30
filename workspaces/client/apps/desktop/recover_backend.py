@@ -15,7 +15,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from desktop_process import startup_backend_birth, startup_backend_facts, recovery_interpreter_facts, STARTUP_STATE_FILES
+from desktop_process import startup_backend_birth, startup_backend_facts, recovery_interpreter_facts, STARTUP_STATE_FILES, LSOF_TIMEOUT_SECONDS
 
 
 # Supervisor protocol version that the Rust backend uses to start providers. Owner:
@@ -97,7 +97,7 @@ def verify_listener(pid, config):
     try:
         listeners = subprocess.check_output(
             ["/usr/sbin/lsof", "-nP", f"-iTCP:{config['port']}", "-sTCP:LISTEN", "-t"],
-            text=True, stderr=subprocess.DEVNULL, timeout=2,
+            text=True, stderr=subprocess.DEVNULL, timeout=LSOF_TIMEOUT_SECONDS,
         ).split()
     except (OSError, subprocess.SubprocessError) as error:
         raise RuntimeError("Cannot verify the backend listener before fallback.") from error
@@ -135,7 +135,7 @@ def listener_pids(port):
     """Exact owners of a configured port. An empty result proves no listener, not an absent backend."""
     result = subprocess.run(
         ["/usr/sbin/lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"],
-        text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=2, check=False,
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=LSOF_TIMEOUT_SECONDS, check=False,
     )
     if result.returncode == 1 and not result.stdout.strip():
         return []
