@@ -456,7 +456,7 @@ fn build(tx: &Transaction<'_>, now: f64) -> Result<(Vec<StudioError>, Baseline),
             },
         };
         groups
-            .entry((key, kind_code(kind)?))
+            .entry((key, kind.as_str().to_owned()))
             .or_insert_with(|| MonitorGroup {
                 rule,
                 failures: Vec::new(),
@@ -1104,16 +1104,6 @@ struct MonitorGroup {
     failures: Vec<MonitorFailure>,
 }
 
-/// The serialized code of `kind`, owned by the schema enum.
-fn kind_code(kind: Kind) -> Result<String, StoreError> {
-    match serde_json::to_value(kind)? {
-        Value::String(code) => Ok(code),
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::Array(_) | Value::Object(_) => {
-            Err(StoreError::SchemaMismatch("studio error kind".into()))
-        }
-    }
-}
-
 /// Unix seconds of the start of the latest successful run of `rule` that
 /// started at or after `since`.
 fn last_rule_success(
@@ -1184,6 +1174,22 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn monitor_group_kind_codes_match_serialized_wire_values() {
+        let (_, kinds) = studio_runtime_schema::persistence::ENUM_CONTRACTS
+            .iter()
+            .find(|(name, _)| *name == "IncidentKind")
+            .expect("incident kind contract");
+        for wire in *kinds {
+            let kind: Kind = wire.parse().expect("known kind");
+            assert_eq!(
+                serde_json::to_string(&kind).unwrap(),
+                format!("\"{}\"", kind.as_str())
+            );
+            assert_eq!(kind.as_str(), *wire);
+        }
+    }
 
     #[tokio::test]
     async fn a_success_retires_the_published_failure_group_without_a_timer() {
