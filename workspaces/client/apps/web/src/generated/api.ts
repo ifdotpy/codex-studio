@@ -24230,6 +24230,22 @@ export interface components {
      * @enum {string}
      */
     TerminalState: "running" | "exited" | "closed";
+    /** TextBlobRef */
+    TextBlobRef: {
+      /** Hash */
+      hash: string;
+      /** Size */
+      size: number;
+    };
+    /** TextBlobResponse */
+    TextBlobResponse: {
+      /** Hash */
+      hash: string;
+      /** Size */
+      size: number;
+      /** Text */
+      text: string;
+    };
     /**
      * TokenRateRecord
      * @description One active or completed agent turn's volatile token-rate snapshot.
@@ -24537,22 +24553,6 @@ export interface components {
       wireReceivedAt?: number | undefined;
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
-    };
-    /** TextBlobRef */
-    TextBlobRef: {
-      /** Hash */
-      hash: string;
-      /** Size */
-      size: number;
-    };
-    /** TextBlobResponse */
-    TextBlobResponse: {
-      /** Hash */
-      hash: string;
-      /** Size */
-      size: number;
-      /** Text */
-      text: string;
     };
     /** TranscriptAgent */
     TranscriptAgent: {

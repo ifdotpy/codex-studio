@@ -1252,7 +1252,7 @@ mod tests {
 
     use crate::text_blobs;
     use rusqlite::trace::{TraceEvent, TraceEventCodes};
-    use rusqlite::{Connection, Transaction, params};
+    use rusqlite::Connection;
     use serde_json::Value;
     use serde_json::json;
 

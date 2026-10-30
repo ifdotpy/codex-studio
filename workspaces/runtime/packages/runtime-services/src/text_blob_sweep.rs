@@ -1,5 +1,5 @@
 //! Background work for text blobs ([`studio_runtime_store::text_blobs`]): move
-//! final item text from `runtime_item_fulltext` to blobs, then collect blobs
+//! final item text from the full-text table to blobs, then collect blobs
 //! that no item points at. File I/O runs on the blocking pool, never inside a
 //! SQLite transaction; a transaction only reads or writes rows.
 
