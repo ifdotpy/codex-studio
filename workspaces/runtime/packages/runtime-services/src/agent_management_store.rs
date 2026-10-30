@@ -494,6 +494,7 @@ fn execute_decision(
                 .map_err(studio_runtime_store::StoreError::from)?;
             if current.thread_id != expected.thread_id
                 || current.account_key != expected.account_key
+                || current.deleted_at != expected.deleted_at
             {
                 return Err(ManagementError::Invalid(
                     "Lifecycle adapter changed stop identity",
@@ -505,7 +506,6 @@ fn execute_decision(
                 "epoch",
                 "autoWake",
                 "status",
-                "deletedAt",
                 "connectionId",
                 "connectionGeneration",
                 "provider",
@@ -1001,7 +1001,7 @@ mod archive_finished_tests {
             .await
             .expect("read active")
             .expect("active");
-        assert!(!active.extra.contains_key("deletedAt"));
+        assert!(active.deleted_at.is_none());
         assert!(
             archive_finished(
                 Arc::clone(&store),

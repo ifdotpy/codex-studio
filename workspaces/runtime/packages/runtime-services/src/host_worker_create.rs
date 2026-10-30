@@ -375,7 +375,7 @@ pub fn recheck(
             return Err(CreateError::IdentityChanged);
         }
     }
-    let cwd = required_string(&drafts[0], "cwd")?;
+    let cwd = drafts[0].cwd.as_deref().filter(|cwd| !cwd.is_empty()).ok_or(CreateError::InvalidCreation("cwd"))?;
     if let Some((_, project)) = ProjectsRepository::get(transaction, cwd)?
         && project
             .get("accountKey")
@@ -386,9 +386,9 @@ pub fn recheck(
         return Err(CreateError::IdentityChanged);
     }
     if drafts[0].id == drafts[1].id
-        || field(&drafts[0], "cwd") != field(&drafts[1], "cwd")
-        || field(&drafts[0], "isLead").and_then(Value::as_bool) != Some(true)
-        || field(&drafts[1], "isLead").and_then(Value::as_bool) != Some(true)
+        || drafts[0].cwd != drafts[1].cwd
+        || drafts[0].is_lead != Some(true)
+        || drafts[1].is_lead != Some(true)
     {
         return Err(CreateError::IdentityChanged);
     }
@@ -411,15 +411,14 @@ pub fn recheck_worker(
         return Err(CreateError::IdentityChanged);
     }
     recheck_parent_epoch(transaction, draft, parent_epoch)?;
-    let parent_id = field(draft, "parentId")
-        .and_then(Value::as_str)
+    let parent_id = draft.parent_id.as_deref()
         .ok_or(CreateError::IdentityChanged)?;
     let parent =
         studio_runtime_store::AgentRepository::get(transaction, &AgentId::from(parent_id))?
             .ok_or(CreateError::IdentityChanged)?;
     let frozen_cwd = field(draft, "_p02ParentCwd");
     let frozen_account = field(draft, "_p02ParentAccountKey");
-    if field(&parent, "cwd") != frozen_cwd
+    if parent.cwd.as_deref() != frozen_cwd.and_then(Value::as_str)
         || Some(parent.account_key.as_str()) != frozen_account.and_then(Value::as_str)
         || field(&parent, "projectId").and_then(Value::as_str)
             != field(draft, "_p02ParentProjectId").and_then(Value::as_str)
@@ -470,7 +469,7 @@ fn recheck_parent_epoch(
     draft: &AgentRecord,
     expected_epoch: i64,
 ) -> Result<(), CreateError> {
-    let Some(parent_id) = field(draft, "parentId").and_then(Value::as_str) else {
+    let Some(parent_id) = draft.parent_id.as_deref() else {
         return Err(CreateError::IdentityChanged);
     };
     let Some(parent) =
@@ -480,7 +479,7 @@ fn recheck_parent_epoch(
     };
     if expected_epoch < 0
         || parent.epoch != expected_epoch
-        || field(&parent, "deletedAt").is_some_and(|value| !value.is_null())
+        || parent.deleted_at.is_some()
         || parent.auto_wake == Some(false)
         || parent.root_id != draft.root_id
     {
@@ -488,8 +487,8 @@ fn recheck_parent_epoch(
     }
     let root = studio_runtime_store::AgentRepository::get(transaction, &draft.root_id)?
         .ok_or(CreateError::IdentityChanged)?;
-    if field(&root, "isLead").and_then(Value::as_bool) != Some(true)
-        || field(&root, "deletedAt").is_some_and(|value| !value.is_null())
+    if root.is_lead != Some(true)
+        || root.deleted_at.is_some()
         || root.auto_wake == Some(false)
         || field(&root, "concurrency").and_then(Value::as_i64) == Some(0)
     {
@@ -510,13 +509,13 @@ fn recheck_parent_epoch(
 
 fn recheck_record(transaction: &Transaction<'_>, draft: &AgentRecord) -> Result<(), CreateError> {
     validate_agent(draft)?;
-    if let Some(parent_id) = field(draft, "parentId").and_then(Value::as_str) {
+    if let Some(parent_id) = draft.parent_id.as_deref() {
         let Some(parent) =
             studio_runtime_store::AgentRepository::get(transaction, &AgentId::from(parent_id))?
         else {
             return Err(CreateError::IdentityChanged);
         };
-        if field(&parent, "deletedAt").is_some_and(|value| !value.is_null())
+        if parent.deleted_at.is_some()
             || parent.auto_wake == Some(false)
             || parent.root_id != draft.root_id
         {
@@ -560,9 +559,10 @@ fn validate_agent(record: &AgentRecord) -> Result<(), CreateError> {
             id: record.id.0.clone(),
         });
     }
-    for field in ["provider", "cwd", "workspaceMode", "model"] {
-        required_string(record, field)?;
-    }
+    required_string(record, "provider")?;
+    record.cwd.as_deref().filter(|value| !value.is_empty()).ok_or(CreateError::InvalidCreation("cwd"))?;
+    record.workspace_mode.ok_or(CreateError::InvalidCreation("workspaceMode"))?;
+    record.model.as_deref().filter(|value| !value.is_empty()).ok_or(CreateError::InvalidCreation("model"))?;
     if record.epoch < 0 {
         return Err(CreateError::InvalidStoredObject {
             table: "runtime_agents",
@@ -814,8 +814,8 @@ mod tests {
             Some(false)
         );
         assert_eq!(
-            field(&fixture.draft, "workspaceMode").and_then(Value::as_str),
-            Some("shared")
+            fixture.draft.workspace_mode,
+            Some(studio_runtime_schema::records::WorkspaceMode::Shared)
         );
         assert_eq!(field(&fixture.draft, "workerBaseRef"), Some(&Value::Null));
         assert_eq!(
@@ -864,7 +864,7 @@ mod tests {
         )
         .expect("review uses its validated target directory");
         assert_eq!(
-            field(&draft, "cwd").and_then(Value::as_str),
+            draft.cwd.as_deref(),
             canonical_target.to_str()
         );
         assert_eq!(
@@ -1008,7 +1008,7 @@ mod tests {
         let value = "\u{1c}edge\u{1c}";
         let fixture = worker_draft_fixture(value, value);
         assert_eq!(
-            field(&fixture.draft, "name").and_then(Value::as_str),
+            fixture.draft.name.as_deref(),
             Some(value)
         );
         assert_eq!(
@@ -1051,20 +1051,20 @@ mod tests {
             assert_eq!(draft.root_id.0, id);
             assert_eq!(draft.epoch, 0);
             assert_eq!(draft.status, AgentStatus::Idle);
-            assert_eq!(field(draft, "parentId"), Some(&Value::Null));
+            assert!(draft.parent_id.is_none());
             assert_eq!(
                 Some(draft.account_key.as_str()),
                 Some(if id == IDS[0] { "one" } else { "two" })
             );
             assert_eq!(
-                field(draft, "cwd").and_then(Value::as_str),
+                draft.cwd.as_deref(),
                 CanonicalPath::existing(directory.path())
                     .expect("canonical temporary directory")
                     .to_str()
             );
             assert_eq!(field(draft, "workerBaseRef"), Some(&Value::Null));
             assert_eq!(
-                field(draft, "model").and_then(Value::as_str),
+                draft.model.as_deref(),
                 Some(if id == IDS[0] {
                     "model-one"
                 } else {
@@ -1138,8 +1138,7 @@ mod tests {
             &Catalog,
         )
         .expect("checked drafts");
-        let path = field(&drafts[0], "cwd")
-            .and_then(Value::as_str)
+        let path = drafts[0].cwd.as_deref()
             .expect("draft cwd");
         database
             .execute(

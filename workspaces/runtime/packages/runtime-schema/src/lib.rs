@@ -51,6 +51,7 @@ pub mod rule_record;
 pub mod shared_values;
 pub mod shell_policy;
 mod stored_record;
+pub use stored_record::AgentCounter;
 pub mod tool_result;
 pub use stored_record::StoredJsonInteger;
 pub mod string_enum;

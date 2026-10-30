@@ -247,6 +247,7 @@ impl EventWriteRepository {
             }
             if let Some(agent) = &agent {
                 value.insert("epoch".to_owned(), Value::from(agent.epoch));
+                let fields = agent.value();
                 for key in [
                     "error",
                     "nativeFailureHold",
@@ -268,7 +269,7 @@ impl EventWriteRepository {
                     "tail",
                     "contextUsage",
                 ] {
-                    if let Some(field) = agent.extra.get(key) {
+                    if let Some(field) = fields.get(key) {
                         value.insert(key.to_owned(), field.clone());
                     } else {
                         value.remove(key);

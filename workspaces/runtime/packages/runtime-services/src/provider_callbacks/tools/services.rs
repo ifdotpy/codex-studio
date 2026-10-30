@@ -505,10 +505,7 @@ impl crate::managed_host_tools::ReviewPort for ProductionPorts {
             studio_runtime_store::ContextRepairRepository::agent(tx, &actor.record().root_id.0)?
                 .ok_or(crate::managed_host_tools::Error::Stale)?;
         let directory = actor
-            .record()
-            .extra
-            .get("cwd")
-            .and_then(Value::as_str)
+            .record().cwd.as_deref()
             .ok_or(crate::managed_host_tools::Error::Unavailable(
                 "agent-create/worker-driver",
             ))?;

@@ -185,7 +185,7 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
     }
     let agent_account = agent_record.account_key.as_str();
     let common_identity = agent_account == call.scope.account
-        && !studio_runtime_store::truthy(agent_record.extra.get("deletedAt"))
+        && !agent_record.is_deleted()
         && agent_record.extra.get("deleted") != Some(&json!(true));
     let actor_identity = common_identity && agent_record.epoch == actor.epoch;
     if call.method == Method::ClaudeShellPolicy {
@@ -216,7 +216,7 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
     {
         return Ok(false);
     }
-    let deleted_voice_stop = authorize_deleted_voice_stop(tx, call, actor, &agent_record.extra)?;
+    let deleted_voice_stop = authorize_deleted_voice_stop(tx, call, actor, &agent_record)?;
     let repair_fork = if call.method == Method::ThreadFork {
         let repair = agent_record
             .extra
@@ -300,7 +300,7 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
         })
         && call.params.get("cwd").is_some_and(|cwd| {
             cwd.as_str().is_some_and(|cwd| {
-                agent_record.extra.get("cwd").and_then(Value::as_str) == Some(cwd)
+                agent_record.cwd.as_deref() == Some(cwd)
             })
         })
         && if let Some(monitor_id) = config_monitor_id {
@@ -458,7 +458,7 @@ fn authorize_retained_monitor_control(
         .all(|field| attempt.get(*field) == record["operation"].get(*field));
     Ok(current.epoch == actor.epoch
         && current.auto_wake == Some(true)
-        && !studio_runtime_store::truthy(current.extra.get("deletedAt"))
+        && !current.is_deleted()
         && current.extra.get("deleted") != Some(&json!(true))
         && record["interactive"] == true
         && record["cancelRequested"] != true
@@ -480,7 +480,7 @@ fn authorize_recovered_monitor_cancel(
 ) -> Result<bool, WorkerError> {
     let inactive = current.epoch != actor.epoch
         || current.auto_wake != Some(true)
-        || studio_runtime_store::truthy(current.extra.get("deletedAt"))
+        || current.is_deleted()
         || current.extra.get("deleted") == Some(&json!(true));
     if call.method != Method::CommandExecTerminate || !inactive {
         return Ok(false);
@@ -527,7 +527,7 @@ fn authorize_deleted_voice_stop(
     tx: &rusqlite::Transaction<'_>,
     call: &Call,
     actor: &RequestActor,
-    agent_extra: &std::collections::BTreeMap<String, Value>,
+    agent: &studio_runtime_store::AgentRecord,
 ) -> Result<bool, WorkerError> {
     let Some(session_id) = call.deleted_actor_session.as_deref() else {
         return Ok(false);
@@ -535,8 +535,7 @@ fn authorize_deleted_voice_stop(
     let Some(thread_id) = call.params.get("threadId").and_then(Value::as_str) else {
         return Ok(false);
     };
-    let deleted = studio_runtime_store::truthy(agent_extra.get("deletedAt"))
-        || agent_extra.get("deleted") == Some(&json!(true));
+    let deleted = agent.is_deleted() || agent.extra.get("deleted") == Some(&json!(true));
     if session_id.is_empty()
         || call.method != Method::ThreadRealtimeStop
         || call.operation != format!("voice:delete-stop:{session_id}")
@@ -546,11 +545,7 @@ fn authorize_deleted_voice_stop(
             .is_none_or(|params| params.len() != 1)
         || !deleted
         || actor.epoch < 0
-        || agent_extra
-            .get("accountKey")
-            .and_then(Value::as_str)
-            .unwrap_or("default")
-            != call.scope.account
+        || agent.account_key != call.scope.account
     {
         return Ok(false);
     }

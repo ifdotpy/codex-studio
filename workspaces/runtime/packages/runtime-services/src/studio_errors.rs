@@ -241,7 +241,7 @@ fn event_source(tx: &Transaction<'_>, id: &str) -> Result<EventSource, StoreErro
 
 fn read_owner(tx: &Transaction<'_>, id: &str) -> Result<SourceOwner, StoreError> {
     match studio_runtime_store::AgentRepository::get(tx, &studio_runtime_store::AgentId::from(id)) {
-        Ok(Some(record)) if studio_runtime_store::truthy(record.extra.get("deletedAt")) => {
+        Ok(Some(record)) if record.is_deleted() => {
             Ok(SourceOwner::Deleted)
         }
         Ok(Some(record)) => Ok(SourceOwner::Live(std::sync::Arc::new(record))),
@@ -252,10 +252,7 @@ fn read_owner(tx: &Transaction<'_>, id: &str) -> Result<SourceOwner, StoreError>
 }
 
 fn owner_name(record: &studio_runtime_store::AgentRecord) -> String {
-    record
-        .extra
-        .get("name")
-        .and_then(Value::as_str)
+    record.name.as_deref()
         .unwrap_or("Agent")
         .to_owned()
 }
@@ -633,10 +630,9 @@ fn build(tx: &Transaction<'_>, now: f64) -> Result<(Vec<StudioError>, Baseline),
             })
             .map(str::to_owned);
         let at = record
-            .extra
-            .get("activity")
-            .and_then(|value| value.get("at"))
-            .and_then(Value::as_f64)
+            .activity
+            .as_ref()
+            .and_then(|activity| activity.at)
             .or_else(|| record.extra.get("created").and_then(Value::as_f64))
             .unwrap_or(0.0);
         push(

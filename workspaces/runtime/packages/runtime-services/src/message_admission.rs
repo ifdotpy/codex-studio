@@ -225,10 +225,7 @@ impl MessageAdmission for MessageIngressAdmission {
 }
 
 fn cwd(agent: &AgentRecord) -> Result<&str, CoordinationError> {
-    agent
-        .extra
-        .get("cwd")
-        .and_then(Value::as_str)
+    agent.cwd.as_deref()
         .ok_or_else(|| CoordinationError::InvalidStored {
             object: "runtime_agents",
             id: agent.id.0.clone(),

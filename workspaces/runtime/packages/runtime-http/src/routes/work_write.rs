@@ -1392,7 +1392,7 @@ mod managed_work_port_tests {
             .transaction(move |tx| {
                 let mut worker =
                     AgentRepository::get(tx, &"worker".into())?.expect("worker fixture exists");
-                worker.extra.insert("cwd".into(), json!(cwd));
+                worker.cwd = Some(cwd);
                 worker.extra.insert("yoloMode".into(), json!(true));
                 AgentRepository::put(tx, &worker)?;
                 Ok(())
@@ -1567,7 +1567,7 @@ mod managed_work_port_tests {
             .transaction(move |tx| {
                 let mut lead =
                     AgentRepository::get(tx, &"lead".into())?.expect("lead fixture exists");
-                lead.extra.insert("cwd".into(), json!(cwd));
+                lead.cwd = Some(cwd);
                 lead.extra.insert("yoloMode".into(), json!(true));
                 AgentRepository::put(tx, &lead)?;
                 Ok(())

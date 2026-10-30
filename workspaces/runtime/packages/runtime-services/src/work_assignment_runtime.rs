@@ -32,7 +32,7 @@ pub fn assign_in_transaction(
 
     let current_actor = event_write::checked_agent(tx, &actor.id.0)?;
     if current_actor.id != current_actor.root_id
-        || !event_write::truthy(current_actor.extra.get("isLead"))
+        || current_actor.is_lead != Some(true)
         || current_actor.extra.get("role").and_then(Value::as_str) == Some("reviewer")
         || current_actor.epoch != actor.epoch
         || current_actor.auto_wake != Some(true)
@@ -44,7 +44,7 @@ pub fn assign_in_transaction(
 
     let child = event_write::checked_agent(tx, owner_id)?;
     if child.root_id != current_actor.root_id
-        || child.extra.get("parentId").and_then(Value::as_str) != Some(current_actor.id.0.as_str())
+        || child.parent_id.as_deref() != Some(current_actor.id.0.as_str())
     {
         return Err(EventWriteError::InvalidRequest("Worker belongs to another team").into());
     }

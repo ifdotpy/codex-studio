@@ -882,7 +882,7 @@ fn next_epoch(agent: &Agent) -> Result<i64, ManagementError> {
 }
 fn workspace_dependency(agent: &Agent) -> Result<(), ManagementError> {
     if agent.record.get("executionMode").and_then(Value::as_str) == Some("vm")
-        || ["worktreeReady", "worktreeCleanup", "cleanedWorktree"]
+        || ["worktreeReady", "cleanedWorktree"]
             .iter()
             .any(|key| agent.flag(key))
     {

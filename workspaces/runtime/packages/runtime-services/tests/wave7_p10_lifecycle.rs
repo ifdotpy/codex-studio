@@ -749,7 +749,7 @@ impl InterruptFixture {
                         tx,
                         &studio_runtime_store::AgentId::from(id.as_str()),
                     )? {
-                        if agent.extra.get("deletedAt").is_none_or(Value::is_null) {
+                        if agent.deleted_at.is_none() {
                             continue;
                         }
                         let attempt = agent.extra.get("startAttempt").unwrap_or(&Value::Null);
@@ -771,8 +771,8 @@ impl InterruptFixture {
                         }
                         agent.in_flight = Some(false);
                         agent.turn_id = None;
-                        agent.extra.insert("activity".to_owned(), Value::Null);
-                        agent.extra.insert("activeTools".to_owned(), json!([]));
+                        agent.activity = None;
+                        agent.active_tools = Some(Vec::new());
                         if let Some(attempt) = agent.extra.get_mut("startAttempt")
                             && attempt.get("activeAtReservation") == Some(&json!(true))
                         {

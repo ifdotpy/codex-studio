@@ -138,12 +138,24 @@ pub fn actor(store: &RuntimeStore, context: &CallbackContext) -> Value {
     .unwrap()
     .unwrap()
 }
+pub fn normalized_actor(value: &Value) -> Value {
+    let mut record = value.clone();
+    for field in studio_runtime_store::agent_volatile::AGENT_VOLATILE_FIELDS {
+        let default = template()["agents"][0].get(field).cloned().unwrap_or(Value::Null);
+        record.as_object_mut().unwrap().entry(field).or_insert(default);
+    }
+    record
+}
 pub async fn put_actor(store: &RuntimeStore, value: &Value) {
     let id = value["id"].as_str().unwrap().to_owned();
     let record = value.to_string();
     store
         .transaction_with::<_, studio_runtime_store::StoreError>(move |tx| {
-            let record: Value = serde_json::from_str(&record).expect("actor JSON");
+            let mut record: Value = serde_json::from_str(&record).expect("actor JSON");
+            let previous = studio_runtime_store::agent_volatile::merged_record(tx, &id)?.expect("actor exists");
+            for field in studio_runtime_store::agent_volatile::AGENT_VOLATILE_FIELDS {
+                record.as_object_mut().unwrap().entry(field).or_insert_with(|| previous.get(field).cloned().unwrap_or(Value::Null));
+            }
             studio_runtime_store::agent_volatile::update(tx, &id, &record)?;
             Ok(())
         })
@@ -253,6 +265,23 @@ pub fn logical_changes(before: &Value, after: &Value) -> Value {
 pub fn assert_writes(before: &Value, store: &RuntimeStore, expected: &Value) {
     let mut actual = logical_changes(before, &logical_snapshot(store));
     let mut expected = expected.clone();
+    if let Some(change) = expected.get_mut("runtime_agents") {
+        for kind in ["removed", "added"] {
+            for row in change[kind].as_array_mut().unwrap() {
+                row[1] = normalized_actor(&row[1]);
+            }
+        }
+    }
+    if let Some(change) = expected.get_mut("sync_entities") {
+        for row in change["added"].as_array_mut().unwrap() {
+            if row[0] == "agent" {
+                let value = row[2]["value"].as_object_mut().unwrap();
+                for field in ["activity", "lastAnswer", "lastEvent"] {
+                    value.entry(field).or_insert(Value::Null);
+                }
+            }
+        }
+    }
     crate::removed_budget_fields::strip(&mut actual);
     crate::removed_budget_fields::strip(&mut expected);
     for root in [&mut actual, &mut expected] {

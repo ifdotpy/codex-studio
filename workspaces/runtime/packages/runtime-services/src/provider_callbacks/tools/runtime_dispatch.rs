@@ -1038,7 +1038,7 @@ pub(crate) fn authorize_monitor_input_in_transaction(
         || monitor_epoch != Some(caller.record().epoch)
         || owner.epoch != caller.record().epoch
         || owner.auto_wake != Some(true)
-        || studio_runtime_store::truthy(owner.extra.get("deletedAt"))
+        || owner.is_deleted()
     {
         return Err(Error::Invalid(
             "You can input only to your own active monitor",

@@ -106,7 +106,7 @@ pub fn admit(
         .ok_or(MonitorError::Refused("Missing result identity"))?
         .to_owned();
     let revision = result["revision"].as_str().unwrap_or_default();
-    let cwd = submitter.extra.get("cwd").cloned().unwrap_or(Value::Null);
+    let cwd = &submitter.cwd;
     let mut evidence = json!({"status":"not_run","config":config,"cwd":cwd,"revision":revision,
         "exitCode":null,"output":"","log":null,"monitorId":null});
     // Never execute a command against an unverified revision. Resubmit with a full Git commit.

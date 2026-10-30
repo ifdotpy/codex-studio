@@ -78,12 +78,6 @@ fn nonempty<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
         Ok(s)
     }
 }
-fn optional_nonnull<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
-    d: D,
-) -> Result<Option<T>, D::Error> {
-    T::deserialize(d).map(Some)
-}
-
 fn nullable_string_enum<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
     d: D,
 ) -> Result<Option<T>, D::Error> {
@@ -179,7 +173,6 @@ pub struct RecoveryAgentRecord {
     pub disconnect_recovery: Option<Box<RecoveryFields>>,
     pub epoch: SafeInteger,
     pub error: Option<Value>,
-    #[serde(default, deserialize_with = "optional_nonnull")]
     pub events: Option<NonnegativeInteger>,
     pub execution_outcome: Option<String>,
     #[serde(deserialize_with = "nonempty")]

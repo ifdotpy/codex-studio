@@ -977,7 +977,7 @@ async fn voice_delivery_prepares_workspace_admission() {
                     }),
                 );
                 if operation == "unrelated" {
-                    other.extra.insert("cwd".into(), json!(root));
+                    other.cwd = Some(root.to_string_lossy().into_owned());
                 }
                 studio_runtime_store::AgentRepository::put(tx, &other)
             })
@@ -1078,11 +1078,11 @@ async fn late_operation_paths_use_the_prepared_canonical_relation() {
             root.clone()
         } else {
             let alias = root.join("workspace-alias");
-            std::os::unix::fs::symlink(other.extra["cwd"].as_str().expect("cwd"), &alias)
+            std::os::unix::fs::symlink(other.cwd.as_deref().expect("cwd"), &alias)
                 .expect("workspace alias");
             alias
         };
-        other.extra.insert("cwd".into(), json!(path));
+        other.cwd = Some(path.to_string_lossy().into_owned());
         if scenario != "unknown_alias" {
             store
                 .transaction({

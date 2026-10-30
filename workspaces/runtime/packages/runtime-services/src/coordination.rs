@@ -1508,7 +1508,7 @@ mod tests {
         .expect("fixture operation succeeds")
         .expect("fixture operation succeeds");
         lead.status = studio_runtime_store::AgentStatus::Completed;
-        lead.extra.insert("workspaceMode".into(), json!("image"));
+        lead.workspace_mode = Some(studio_runtime_schema::records::WorkspaceMode::Image);
         lead.extra
             .insert("legacyWorkspaceFinished".into(), json!(true));
         lead.auto_wake = Some(false);

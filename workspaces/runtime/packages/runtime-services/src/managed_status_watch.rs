@@ -24,7 +24,7 @@ use studio_runtime_store::outbox::{Outbox, OutboxError, OutboxRow};
 use studio_runtime_store::request_results::RequestResultError;
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, AgentStatus, MonitorRecord, RecordOrder,
-    RecordPredicate, RuleRecord, RulesRepository, RuntimeStore, StoreError, Table, truthy,
+    RecordPredicate, RuleRecord, RulesRepository, RuntimeStore, StoreError, Table,
 };
 use thiserror::Error;
 
@@ -512,7 +512,7 @@ fn checked_actor(
     let actor =
         AgentRepository::get(connection, &AgentId::from(actor_id))?.ok_or(StatusError::Stale)?;
     if u64::try_from(actor.epoch).ok() != Some(expected_epoch)
-        || truthy(actor.extra.get("deletedAt"))
+        || actor.is_deleted()
     {
         return Err(StatusError::Stale);
     }
@@ -677,19 +677,15 @@ fn status_path_inputs(
 fn agent_status_record(agent: &AgentRecord) -> Value {
     let mut record = json!({
         "id": agent.id.0,
-        "name": agent.extra.get("name").cloned().unwrap_or(Value::Null),
+        "name": agent.name,
         "status": agent.status.as_str(),
         "inFlight": agent.in_flight,
-        "parentId": agent.extra.get("parentId").cloned().unwrap_or(Value::Null),
+        "parentId": agent.parent_id,
         "kind": "agent",
         "error": clip_value(agent.extra.get("error")),
     });
-    if agent.status == AgentStatus::Parked && truthy(agent.extra.get("parkedEvent")) {
-        record["waitsForEvent"] = agent
-            .extra
-            .get("parkedEvent")
-            .cloned()
-            .unwrap_or(Value::Null);
+    if agent.status == AgentStatus::Parked && agent.parked_event.as_deref().is_some_and(|event| !event.is_empty()) {
+        record["waitsForEvent"] = json!(agent.parked_event);
     }
     record
 }
@@ -1034,7 +1030,7 @@ pub async fn rules(
                 let (rules, agents) = RulesRepository::list(connection)?;
                 let live = agents
                     .into_iter()
-                    .map(|agent| (agent.id.0, !truthy(agent.extra.get("deletedAt"))))
+                    .map(|agent| { let live = !agent.is_deleted(); (agent.id.0, live) })
                     .collect::<BTreeMap<_, _>>();
                 let visible = rules
                     .into_iter()
@@ -1442,7 +1438,7 @@ fn check_save(
             text: text_value,
         },
         now,
-        actor.extra.get("isLead") == Some(&Value::Bool(true)),
+        actor.is_lead == Some(true),
         crate::rules::RuleSaveOrder::Managed,
     )
     .map_err(rule_save_error)
@@ -1577,10 +1573,7 @@ fn active_rule_monitors(
 }
 
 fn cwd(agent: &AgentRecord) -> Result<&str, RulesServiceError> {
-    agent
-        .extra
-        .get("cwd")
-        .and_then(Value::as_str)
+    agent.cwd.as_deref()
         .ok_or(RulesServiceError::Invalid("workspace path"))
 }
 

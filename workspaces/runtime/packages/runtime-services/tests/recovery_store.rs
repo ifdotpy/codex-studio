@@ -509,10 +509,8 @@ fn frozen_cases(corpus: Corpus) -> Vec<serde_json::Value> {
 async fn seed_agent(store: &Arc<RuntimeStore>, agent: &serde_json::Value) {
     let agent = agent.clone();
     lifecycle_transaction(store, move |tx| {
-        tx.execute(
-            "UPDATE runtime_agents SET record=?1 WHERE id='agent'",
-            [agent.to_string()],
-        )?;
+        let agent = studio_runtime_store::AgentRecord::from_value(agent)?;
+        AgentRepository::put(tx, &agent)?;
         tx.execute(
             "UPDATE runtime_events SET status='uncertain',error='unknown' WHERE id='event'",
             [],
@@ -670,6 +668,9 @@ async fn legacy_start_absence_matches_python_writes_and_visible_wait() {
                 .remove("startRecoveryCheck");
         }
         let mut expected = case["after"].clone();
+        for field in studio_runtime_store::agent_volatile::AGENT_VOLATILE_FIELDS {
+            expected.as_object_mut().expect("record").entry(field).or_insert(serde_json::Value::Null);
+        }
         if expected
             .get("turnId")
             .is_some_and(serde_json::Value::is_null)
@@ -1101,7 +1102,7 @@ async fn task_absence_consumer_matches_python_lost_and_persists_named_hold() {
         let observation: RecoveryObservation =
             serde_json::from_value(case["observation"].clone()).expect("observation");
         let before = TaskRecoverySnapshot::from_records(
-            case["agent"].clone(),
+            snapshot(&store).record().clone(),
             case["task"].clone(),
             vec![],
             vec![],
@@ -1209,7 +1210,7 @@ async fn task_absence_failpoints_and_stale_proofs_preserve_rows() {
             let store = open_store(root.path()).await;
             seed_task(&store, case).await;
             let before = TaskRecoverySnapshot::from_records(
-                case["agent"].clone(),
+                snapshot(&store).record().clone(),
                 case["task"].clone(),
                 vec![],
                 vec![],
@@ -1256,7 +1257,7 @@ async fn task_absence_failpoints_and_stale_proofs_preserve_rows() {
         let store = open_store(root.path()).await;
         seed_task(&store, case).await;
         let before = TaskRecoverySnapshot::from_records(
-            case["agent"].clone(),
+            snapshot(&store).record().clone(),
             case["task"].clone(),
             vec![],
             vec![],
@@ -1315,7 +1316,7 @@ async fn held_task_rechecks_current_receipts_before_later_absence_recovery() {
     let store = open_store(root.path()).await;
     seed_task(&store, &case).await;
     let before = TaskRecoverySnapshot::from_records(
-        case["agent"].clone(),
+        snapshot(&store).record().clone(),
         case["task"].clone(),
         vec![],
         vec![],

@@ -116,7 +116,7 @@ async fn set_lead(state: &State, lead: bool) {
                 .transaction_with(move |tx| {
                     let mut agent = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
                         .expect("test agent exists");
-                    agent.extra.insert("isLead".into(), json!(lead));
+                    agent.is_lead = Some(lead);
                     AgentRepository::put(tx, &agent)
                 })
                 .await?;
@@ -931,7 +931,7 @@ async fn delete_agent(state: &State) {
                 .transaction_with(move |tx| {
                     let mut agent = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
                         .expect("test agent exists");
-                    agent.extra.insert("deletedAt".into(), json!(1.0));
+                    agent.deleted_at = Some((1.0) as f64);
                     AgentRepository::put(tx, &agent)
                 })
                 .await?;

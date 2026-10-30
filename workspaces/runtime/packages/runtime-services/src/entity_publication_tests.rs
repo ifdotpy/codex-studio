@@ -824,7 +824,7 @@ async fn a_publication_before_a_later_write_in_the_same_transaction_is_redone() 
         .transaction_with(|tx| {
             let mut agent = AgentRepository::get(tx, &CHAT.into())?.expect("chat");
             crate::agents_create::publish_agent(tx, &agent.value())?;
-            agent.extra.insert("name".into(), json!("Written after"));
+            agent.name = Some("Written after".into());
             AgentRepository::put(tx, &agent)?;
             Ok::<_, StoreError>(())
         })
@@ -857,10 +857,10 @@ async fn synced_agent_values_recompute_the_view_and_create_a_missing_entity() {
     store
         .transaction_with(|tx| {
             let mut agent = AgentRepository::get(tx, &"sync-worker".into())?.expect("worker");
+            agent.status = studio_runtime_store::AgentStatus::Completed;
+            agent.last_answer = Some("The work is done.".into());
             for (key, value) in [
-                ("status", json!("completed")),
                 ("lastCompletedTurn", json!("turn-1")),
-                ("lastAnswer", json!("The work is done.")),
             ] {
                 agent.extra.insert(key.into(), value);
             }

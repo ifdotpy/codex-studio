@@ -318,11 +318,11 @@ impl SchedulerRepository {
             || !continuation_allowed(agent)
             || agent.start_outcome_hold.is_some()
             || agent.turn_id.is_some()
+            || agent.native_safety_buffering.is_some()
             || [
                 "capacityRetry",
                 "usageResume",
                 "manualRecoveryDeliveryHold",
-                "nativeSafetyBuffering",
                 "restartRecovery",
                 "disconnectRecovery",
                 "remoteWorker",
@@ -411,13 +411,13 @@ impl SchedulerRepository {
             || original.epoch != agent.epoch
             || !same_native_scope(&original, agent)
             || original.execution_mode != agent.execution_mode
+            || original.is_lead != agent.is_lead
+            || original.workspace_mode != agent.workspace_mode
+            || original.cwd != agent.cwd
+            || original.parent_id != agent.parent_id
             || [
                 "provider",
-                "parentId",
-                "isLead",
                 "role",
-                "workspaceMode",
-                "cwd",
                 "realCwd",
             ]
             .iter()
@@ -849,10 +849,7 @@ impl SchedulerRepository {
         let Some(mut agent) = load_agent(transaction, agent_id)? else {
             return Ok(None);
         };
-        if agent
-            .extra
-            .get("deletedAt")
-            .is_some_and(|value| !value.is_null())
+        if agent.deleted_at.is_some()
         {
             return Ok(None);
         }
@@ -1143,10 +1140,7 @@ impl SchedulerRepository {
         let Some(mut agent) = AgentRepository::get(transaction, &AgentId::from(agent_id))? else {
             return Err(invalid_agent(agent_id));
         };
-        if agent
-            .extra
-            .get("deletedAt")
-            .is_some_and(|value| !value.is_null())
+        if agent.deleted_at.is_some()
         {
             return Err(invalid_agent(agent_id));
         }

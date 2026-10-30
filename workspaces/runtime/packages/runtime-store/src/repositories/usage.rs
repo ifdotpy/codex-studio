@@ -160,11 +160,8 @@ pub fn cancel_capacity_retry(
         if !validate_retry(embedded, retry_id) {
             return Err(invalid("runtime_agents", agent_id));
         }
-        if agent.extra.get("isLead") != Some(&Value::Bool(true))
-            && agent
-                .extra
-                .get("parentId")
-                .and_then(Value::as_str)
+        if agent.is_lead != Some(true)
+            && agent.parent_id.as_deref()
                 .is_some()
         {
             return Err(UsageRepositoryError::EventDriverRequired);

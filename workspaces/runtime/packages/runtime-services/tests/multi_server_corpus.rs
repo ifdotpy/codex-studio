@@ -441,12 +441,10 @@ async fn received_remote_event_replays_cached_receipt_after_restart_without_dupl
             "provider".into(),
             json!(studio_runtime_schema::ProviderKind::Codex),
         )]),
+        ..AgentRecord::test_defaults()
     };
     parent.auto_wake = Some(true);
-    parent.extra.insert(
-        "cwd".into(),
-        json!(std::env::current_dir().unwrap().display().to_string()),
-    );
+    parent.cwd = Some(std::env::current_dir().unwrap().display().to_string());
     parent.extra.insert("concurrency".into(), json!(32));
     parent.extra.insert("moveImportPending".into(), json!(true));
     let link = json!({"id":"test-link","side":"home","server":"peer-server","home":"local-server","parent":"test-parent","parentEpoch":3,"workers":[]});
@@ -685,12 +683,10 @@ async fn moved_worker_send_reaches_a_local_descendant_once() {
             "provider".into(),
             json!(studio_runtime_schema::ProviderKind::Codex),
         )]),
+        ..AgentRecord::test_defaults()
     };
     parent.auto_wake = Some(true);
-    parent.extra.insert(
-        "cwd".into(),
-        json!(std::env::current_dir().unwrap().display().to_string()),
-    );
+    parent.cwd = Some(std::env::current_dir().unwrap().display().to_string());
     parent.extra.insert("concurrency".into(), json!(32));
     let mut worker = AgentRecord {
         in_flight: None,
@@ -717,12 +713,10 @@ async fn moved_worker_send_reaches_a_local_descendant_once() {
             "provider".into(),
             json!(studio_runtime_schema::ProviderKind::Codex),
         )]),
+        ..AgentRecord::test_defaults()
     };
     worker.auto_wake = Some(true);
-    worker.extra.insert(
-        "cwd".into(),
-        json!(std::env::current_dir().unwrap().display().to_string()),
-    );
+    worker.cwd = Some(std::env::current_dir().unwrap().display().to_string());
     worker.extra.insert("movedTo".into(), json!("server-two"));
     worker.extra.insert(
         "remoteWorker".into(),
@@ -753,15 +747,11 @@ async fn moved_worker_send_reaches_a_local_descendant_once() {
             "provider".into(),
             json!(studio_runtime_schema::ProviderKind::Codex),
         )]),
+        ..AgentRecord::test_defaults()
     };
     child.auto_wake = Some(true);
-    child.extra.insert(
-        "cwd".into(),
-        json!(std::env::current_dir().unwrap().display().to_string()),
-    );
-    child
-        .extra
-        .insert("parentId".into(), json!("remote-worker"));
+    child.cwd = Some(std::env::current_dir().unwrap().display().to_string());
+    child.parent_id = Some(("remote-worker").to_string());
     let link = json!({"id":"move-link","side":"home","server":"peer-server","parent":"move-parent","parentEpoch":3,"workers":["remote-worker"]});
     store
         .transaction_with(move |tx| {
@@ -851,6 +841,7 @@ async fn remote_worker_call_refuses_stopped_parent_without_writes() {
             "provider".into(),
             json!(studio_runtime_schema::ProviderKind::Codex),
         )]),
+        ..AgentRecord::test_defaults()
     };
     parent.auto_wake = Some(false);
     let mut worker = AgentRecord {
@@ -878,6 +869,7 @@ async fn remote_worker_call_refuses_stopped_parent_without_writes() {
             "provider".into(),
             json!(studio_runtime_schema::ProviderKind::Codex),
         )]),
+        ..AgentRecord::test_defaults()
     };
     worker.auto_wake = Some(true);
     worker.extra.insert("movedTo".into(), json!("server-two"));
@@ -958,9 +950,10 @@ async fn remote_stop_receiver_replays_exact_request_and_rejects_superseded_contr
             "provider".into(),
             json!(studio_runtime_schema::ProviderKind::Codex),
         )]),
+        ..AgentRecord::test_defaults()
     };
     parent.auto_wake = Some(true);
-    parent.extra.insert("cwd".into(), json!("/fixture"));
+    parent.cwd = Some("/fixture".into());
     let mut worker = AgentRecord {
         in_flight: None,
         account_key: "default".into(),
@@ -986,13 +979,12 @@ async fn remote_stop_receiver_replays_exact_request_and_rejects_superseded_contr
             "provider".into(),
             json!(studio_runtime_schema::ProviderKind::Codex),
         )]),
+        ..AgentRecord::test_defaults()
     };
     worker.auto_wake = Some(true);
     worker.extra.insert("movedTo".into(), json!("server-two"));
-    worker
-        .extra
-        .insert("parentId".into(), json!("remote-parent"));
-    worker.extra.insert("cwd".into(), json!("/fixture"));
+    worker.parent_id = Some(("remote-parent").to_string());
+    worker.cwd = Some("/fixture".into());
     worker.extra.insert(
         "remoteWorker".into(),
         json!({"server":"home-server","link":"remote-link"}),
@@ -1177,9 +1169,10 @@ async fn stopping_remote_proxy_persists_and_replays_the_same_signed_intent() {
             "provider".into(),
             json!(studio_runtime_schema::ProviderKind::Codex),
         )]),
+        ..AgentRecord::test_defaults()
     };
     proxy.auto_wake = Some(true);
-    proxy.extra.insert("cwd".into(), json!("/fixture"));
+    proxy.cwd = Some("/fixture".into());
     proxy.extra.insert(
         "remoteWorker".into(),
         json!({"server":"peer-server","link":"remote-stop-link"}),
@@ -1313,6 +1306,7 @@ async fn child_result_requires_link_membership_and_updates_proxy() {
             "provider".into(),
             json!(studio_runtime_schema::ProviderKind::Codex),
         )]),
+        ..AgentRecord::test_defaults()
     };
     parent.auto_wake = Some(true);
     let mut child = AgentRecord {
@@ -1340,8 +1334,9 @@ async fn child_result_requires_link_membership_and_updates_proxy() {
             "provider".into(),
             json!(studio_runtime_schema::ProviderKind::Codex),
         )]),
+        ..AgentRecord::test_defaults()
     };
-    child.extra.insert("lastAnswer".into(), json!("old"));
+    child.last_answer = Some("old".into());
     store.transaction(move |tx| {
         tx.execute("INSERT INTO runtime_server_links(id,record) VALUES('result-link',?1)", [json!({"side":"home","server":"peer-server","parent":"result-parent","parentEpoch":3,"workers":["result-child"]}).to_string()])?;
         AgentRepository::put(tx, &parent)?;
@@ -1359,11 +1354,17 @@ async fn child_result_requires_link_membership_and_updates_proxy() {
     let proxy = AgentRepository::get(&connection, &AgentId::from("result-child"))
         .unwrap()
         .unwrap();
-    assert_eq!(proxy.extra.get("lastAnswer"), Some(&json!("done")));
+    assert_eq!(proxy.last_answer.as_deref(), Some("done"));
     assert_eq!(
         proxy.extra.get("lastCompletedTurn"),
         Some(&json!("child-result-1"))
     );
+    drop(connection);
+    let structured = json!({"requestId":"child-result-structured","action":"event","payload":{"link":"result-link","parentEpoch":3,"kind":"child_result","text":json!({"agent_id":"result-child","result":{"ok":true}}).to_string()}});
+    effects.execute("peer-server", &structured).await.expect("structured child result");
+    let connection = store.test_reader().expect("stored structured result");
+    let proxy = AgentRepository::get(&connection, &AgentId::from("result-child")).unwrap().unwrap();
+    assert_eq!(proxy.last_answer.as_deref(), Some(r#"{"ok":true}"#));
     drop(connection);
     store.transaction(|tx| {
         tx.execute("UPDATE runtime_server_links SET record=?1 WHERE id='result-link'", [json!({"side":"home","server":"peer-server","parent":"result-parent","parentEpoch":3,"workers":[]}).to_string()])?;
@@ -2098,15 +2099,13 @@ async fn exec_event_owner_checks_accept_the_receipt_form_like_python() {
                     "provider".into(),
                     json!(studio_runtime_schema::ProviderKind::Codex),
                 )]),
-            };
+                ..AgentRecord::test_defaults()
+    };
             record.auto_wake = Some(true);
-            record.extra.insert(
-                "cwd".into(),
-                json!(std::env::current_dir().unwrap().display().to_string()),
-            );
+            record.cwd = Some(std::env::current_dir().unwrap().display().to_string());
             record.extra.insert("concurrency".into(), json!(32));
             if let Some(deleted_at) = lead.deleted_at {
-                record.extra.insert("deletedAt".into(), json!(deleted_at));
+                record.deleted_at = Some((deleted_at) as f64);
             }
             store
                 .transaction_with(move |tx| AgentRepository::put(tx, &record))

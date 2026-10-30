@@ -2565,6 +2565,7 @@ mod voice_composition_tests {
                         root_id: id,
                         epoch: 3,
                         status: AgentStatus::Idle,
+                        is_lead: Some(true),
                         account_key: "voice-account".into(),
                         thread_id: Some("voice-thread".into()),
                         auto_wake: None,
@@ -2574,7 +2575,6 @@ mod voice_composition_tests {
                         turn_epoch: None,
                         turn_id: None,
                         extra: [
-                            ("isLead".into(), Value::Bool(true)),
                             (
                                 "provider".into(),
                                 serde_json::to_value(studio_runtime_schema::ProviderKind::Codex)
@@ -2582,6 +2582,7 @@ mod voice_composition_tests {
                             ),
                         ]
                         .into(),
+                        ..AgentRecord::test_defaults()
                     },
                 )?;
                 Ok(())

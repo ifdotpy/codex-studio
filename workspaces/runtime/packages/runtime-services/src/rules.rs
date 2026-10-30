@@ -2,7 +2,6 @@
 
 use std::collections::BTreeMap;
 
-use serde_json::Value;
 use studio_runtime_store::{AgentRecord, RuleRecord};
 use thiserror::Error;
 
@@ -69,12 +68,7 @@ pub fn visible_rules(
     let mut deleted_agents = BTreeMap::new();
     for agent in agents {
         let id = agent.id().0.clone();
-        let deleted = match agent.extra.get("deletedAt") {
-            None | Some(Value::Null) => false,
-            Some(Value::Number(value)) => value.as_f64().is_some_and(|number| number != 0.0),
-            _ => return Err(invalid_object("agents", id)),
-        };
-        deleted_agents.insert(id, deleted);
+        deleted_agents.insert(id, agent.is_deleted());
     }
 
     let mut visible = Vec::with_capacity(rules.len());

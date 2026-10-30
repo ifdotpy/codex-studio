@@ -431,7 +431,7 @@ pub async fn answer_approval(
                 || snapshot.record()["status"] != "approval"
                 || snapshot.record()["epoch"].as_i64() != Some(actor.epoch)
                 || actor.auto_wake != Some(true)
-                || event_write::truthy(actor.extra.get("deletedAt"))
+                || actor.is_deleted()
             {
                 return Err(MonitorError::Refused("Command watch was stopped"));
             }
@@ -1029,7 +1029,7 @@ fn exit_event(
         .epoch
         .or_else(|| owner.operation.map(|operation| operation.epoch));
     let can_wake =
-        monitor_epoch == Some(actor.epoch) && !event_write::truthy(actor.extra.get("deletedAt"));
+        monitor_epoch == Some(actor.epoch) && !actor.is_deleted();
     if repository::exit_event(tx, &event_id)?.is_some() {
         return Ok(());
     }

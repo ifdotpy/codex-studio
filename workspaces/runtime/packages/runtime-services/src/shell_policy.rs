@@ -717,55 +717,50 @@ mod receipt_tests {
 
     #[test]
     fn shell_projection_agrees_with_persisted_agent_owner_on_valid_fields() {
-        use studio_runtime_schema::{
-            json_object::JsonObject, records::agent_projection::AgentProjection,
-        };
         let value = json!({"id":"a","rootId":"r","epoch":3,"status":"idle","accountKey":"default","threadId":"t","turnId":"","autoWake":true,"inFlight":false,"executionMode":"host","deletedAt":null,"accountTransferId":"transfer","remoteWorker":false,"remoteAnchor":null});
-        let JsonObject(owner) = JsonObject::<AgentProjection>::deserialize(value.clone()).unwrap();
+        let owner = studio_runtime_store::AgentRecord::from_value(value.clone()).unwrap();
         let partial = ShellPolicyAgent::deserialize(value).unwrap();
-        assert_eq!(partial.id.as_deref(), Some(owner.id.as_str()));
-        assert_eq!(partial.root_id.as_deref(), Some(owner.root_id.as_str()));
-        assert_eq!(partial.epoch, Some(owner.epoch.as_i64()));
+        assert_eq!(partial.id.as_deref(), Some(owner.id.0.as_str()));
+        assert_eq!(partial.root_id.as_deref(), Some(owner.root_id.0.as_str()));
+        assert_eq!(partial.epoch, Some(owner.epoch));
         assert_eq!(partial.status.as_deref(), Some(owner.status.as_str()));
         assert_eq!(
             partial.account_key.as_deref(),
-            owner.account_key.value().map(String::as_str)
+            Some(owner.account_key.as_str())
         );
         assert_eq!(
             partial.turn_id.as_deref(),
-            owner.turn_id.value().map(String::as_str)
+            owner.turn_id.as_deref()
         );
         assert_eq!(
             partial.execution_mode.as_deref(),
-            owner.execution_mode.value().map(String::as_str)
+            Some("host")
         );
+        assert_eq!(owner.execution_mode, Some(studio_runtime_store::AgentExecutionMode::Host));
         assert_eq!(
             partial.auto_wake,
-            owner.auto_wake.value().copied().unwrap_or(false)
+            owner.auto_wake.unwrap_or(false)
         );
         assert_eq!(
             partial.in_flight,
-            owner.in_flight.value().copied().unwrap_or(false)
+            owner.in_flight.unwrap_or(false)
         );
         assert_eq!(
             partial.thread_id.as_ref().and_then(Value::as_str),
-            owner.thread_id.value().map(String::as_str)
+            owner.thread_id.as_deref()
         );
         assert_eq!(
             partial.account_transfer_id,
-            owner.extensions.get("accountTransferId").cloned()
+            owner.extra.get("accountTransferId").cloned()
         );
         assert_eq!(
             partial.remote_worker,
-            owner.extensions.get("remoteWorker").cloned()
+            owner.extra.get("remoteWorker").cloned()
         );
         assert!(partial.remote_anchor.is_none());
         assert!(partial.deleted_at.is_none());
-        assert!(matches!(
-            owner.deleted_at,
-            studio_runtime_schema::queue_command::Field::Null
-        ));
-        assert_eq!(owner.extensions.get("remoteAnchor"), Some(&Value::Null));
+        assert!(owner.deleted_at.is_none());
+        assert_eq!(owner.extra.get("remoteAnchor"), Some(&Value::Null));
     }
 
     #[tokio::test]

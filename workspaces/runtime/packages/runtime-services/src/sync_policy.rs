@@ -595,7 +595,7 @@ impl CheckedAgentRow {
         Ok(Self {
             rowid,
             id: id.to_owned(),
-            value: studio_runtime_store::decode_agent_value(connection, id, raw)?,
+            value: studio_runtime_store::decode_agent_record(connection, id, raw)?.into_value(),
         })
     }
 }
@@ -3308,7 +3308,7 @@ mod tests {
                     &studio_runtime_store::AgentId::from("agent"),
                 )?
                 .expect("fixture agent exists");
-                deleted_agent.extra.insert("deletedAt".to_owned(), json!(3));
+                deleted_agent.deleted_at = Some((3) as f64);
                 studio_runtime_store::AgentRepository::put(transaction, &deleted_agent)?;
                 let rooms = crate::sync_entity_context::RoomDirectory::load(transaction)?;
                 maintain_entity_projections_with_server_id(
@@ -3582,9 +3582,7 @@ mod tests {
                     &studio_runtime_store::AgentId::from("deleting"),
                 )?
                 .expect("agent exists");
-                deleting_agent
-                    .extra
-                    .insert("deletedAt".to_owned(), json!(1));
+                deleting_agent.deleted_at = Some((1) as f64);
                 studio_runtime_store::AgentRepository::put(transaction, &deleting_agent)?;
                 maintain_task_window_after_write(
                     transaction,

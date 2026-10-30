@@ -2357,8 +2357,8 @@ async fn automatic_recovery_case(restart: bool, child: bool, stopped: bool) {
                 parent.thread_id = None;
                 AgentRepository::put(tx, &parent)?;
                 agent.root_id = AgentId::from("parent");
-                agent.extra.insert("parentId".into(), json!("parent"));
-                agent.extra.insert("isLead".into(), json!(false));
+                agent.parent_id = Some(("parent").to_string());
+                agent.is_lead = Some(false);
                 agent.extra.insert("role".into(), json!("implementer"));
             }
             agent.status = studio_runtime_store::AgentStatus::Running;
@@ -4509,7 +4509,7 @@ async fn manual_recovery_owner_to_callback_keeps_unknown_and_exact_replay() {
         .store
         .transaction(move |tx| {
             let mut lead = AgentRepository::get(tx, &AgentId::from("lead-00000000"))?.unwrap();
-            lead.extra.insert("cwd".into(), json!(cwd));
+            lead.cwd = Some(cwd.to_string_lossy().into_owned());
             AgentRepository::put(tx, &lead)
         })
         .await

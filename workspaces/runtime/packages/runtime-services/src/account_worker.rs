@@ -2980,7 +2980,7 @@ impl Worker {
                         ]
                         .iter()
                         .any(|key| fields.get(*key).is_some_and(|value| !value.is_null()))
-                        || fields.get("cwd").and_then(Value::as_str) != Some(request.cwd.as_str())
+                        || row.cwd.as_deref() != Some(request.cwd.as_str())
                         || guest_home != request.guest_home
                         || row.thread_id.as_deref() != intent.thread_id.as_deref()
                         || attempt["id"] != intent.attempt_id
@@ -3061,7 +3061,7 @@ impl Worker {
                         )? {
                             return Ok(None);
                         }
-                        let cwd = record.extra.get("cwd").and_then(Value::as_str);
+                        let cwd = record.cwd.as_deref();
                         if cwd.is_some_and(|value| !value.starts_with('/')) {
                             return Ok(None);
                         }

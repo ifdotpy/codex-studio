@@ -703,11 +703,7 @@ impl RetainedMonitorPort {
             .ok_or(MonitorError::Refused("Monitor epoch is invalid"))?;
         if u64::try_from(actor.epoch).ok() != Some(epoch)
             || actor.auto_wake != Some(true)
-            || actor
-                .extra
-                .get("deletedAt")
-                .and_then(Value::as_f64)
-                .is_some_and(|deleted| deleted != 0.0)
+            || actor.is_deleted()
         {
             return Err(MonitorError::Refused(
                 studio_runtime_schema::shared_values::MONITOR_OWNER_STOPPED_ERROR,
@@ -886,10 +882,7 @@ impl RetainedMonitorPort {
                     ));
                 }
                 let cwd =
-                    actor
-                        .extra
-                        .get("cwd")
-                        .and_then(Value::as_str)
+                    actor.cwd.as_deref()
                         .ok_or(MonitorError::Refused(
                             "Rule working directory is unavailable",
                         ))?;
@@ -995,10 +988,7 @@ impl RetainedMonitorPort {
         if monitor.status() != Some(studio_runtime_schema::studio_errors::MonitorStatus::Starting) {
             return Ok(CheckSubmission::Accepted);
         }
-        let cwd = actor
-            .extra
-            .get("cwd")
-            .and_then(Value::as_str)
+        let cwd = actor.cwd.as_deref()
             .filter(|cwd| Path::new(cwd).is_absolute())
             .ok_or_else(|| "Rule working directory is unavailable".to_owned())?;
         let scope = self
@@ -1503,7 +1493,7 @@ impl studio_runtime_services::monitor_runtime::WorkspaceAdmission for PreparedRu
         actor: &studio_runtime_store::AgentRecord,
     ) -> Result<(), MonitorError> {
         if actor.id().as_ref() == self.agent_id
-            && actor.extra.get("cwd").and_then(Value::as_str) == Some(self.cwd)
+            && actor.cwd.as_deref() == Some(self.cwd)
             && Path::new(self.cwd).is_absolute()
         {
             Ok(())
@@ -1873,10 +1863,7 @@ async fn run_probe(
     if !probe_liveness_approved(&actor) {
         return Err("Liveness command not run because monitor approval is required.".into());
     }
-    let cwd = actor
-        .extra
-        .get("cwd")
-        .and_then(Value::as_str)
+    let cwd = actor.cwd.as_deref()
         .filter(|cwd| Path::new(cwd).is_absolute())
         .ok_or_else(|| "Thread working directory is unavailable".to_owned())?;
     let config_operation = format!("monitor-config:{id}:{generation}");
@@ -2061,7 +2048,7 @@ fn monitor_account<'a>(
 // a boolean false overrides the policy only for an already-running probe.
 fn rule_liveness_approved(actor: &studio_runtime_store::AgentRecord) -> bool {
     actor.extra.get("yoloMode") == Some(&Value::Bool(true))
-        || actor.extra.get("approvalPolicy").and_then(Value::as_str) == Some("never")
+        || actor.approval_policy.as_deref() == Some("never")
 }
 
 fn probe_liveness_approved(actor: &studio_runtime_store::AgentRecord) -> bool {
@@ -2070,10 +2057,7 @@ fn probe_liveness_approved(actor: &studio_runtime_store::AgentRecord) -> bool {
         .get("yoloMode")
         .and_then(Value::as_bool)
         .or_else(|| {
-            actor
-                .extra
-                .get("approvalPolicy")
-                .and_then(Value::as_str)
+            actor.approval_policy.as_deref()
                 .map(|value| value == "never")
         })
         == Some(true)
@@ -2091,10 +2075,7 @@ fn apply_turn_permissions(
         params["sandboxPolicy"] = policy.clone();
         return Ok(());
     }
-    let sandbox = actor
-        .extra
-        .get("sandbox")
-        .filter(|value| studio_runtime_store::truthy(Some(value)));
+    let sandbox = actor.sandbox.as_ref();
     if sandbox.is_none() {
         return Err("Thread sandbox is unknown; refusing liveness command".into());
     }
@@ -2107,7 +2088,7 @@ fn apply_turn_permissions(
     {
         params["permissionProfile"] = json!(profile);
     } else {
-        params["sandboxPolicy"] = sandbox.cloned().unwrap_or(Value::Null);
+        params["sandboxPolicy"] = json!(sandbox);
     }
     Ok(())
 }

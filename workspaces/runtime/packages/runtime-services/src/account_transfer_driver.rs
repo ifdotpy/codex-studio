@@ -243,7 +243,7 @@ pub async fn request(
             drop_orphan_summary_in(tx, &lead)?;
             let actor = crate::event_write::checked_agent(tx, &lead)
                 .map_err(|_| TransferError::Refused("Unknown managed agent"))?;
-            if actor.extra.get("isLead") != Some(&Value::Bool(true)) {
+            if actor.is_lead != Some(true) {
                 return Err(TransferError::Refused(
                     "Choose the orchestrator to transfer its team",
                 ));
@@ -1219,7 +1219,7 @@ mod request_tests {
             lead.root_id = AgentId::from("legacy-root");
             AgentRepository::put(tx, &lead)?;
             let mut child = AgentRepository::get(tx, &AgentId::from("child"))?.expect("child");
-            child.extra.insert("deletedAt".into(), json!(0));
+            child.deleted_at = Some((0) as f64);
             AgentRepository::put(tx, &child)?;
             for value in [
                 json!({"id":"nested", "rootId":"lead", "parentId":"child", "provider":"codex"}),
@@ -1388,7 +1388,7 @@ mod request_tests {
         run_async(store.transaction(|tx| {
             let mut deleted =
                 AgentRepository::get(tx, &AgentId::from("fixture-1"))?.expect("fixture member");
-            deleted.extra.insert("deletedAt".into(), json!(1.0));
+            deleted.deleted_at = Some((1.0) as f64);
             AgentRepository::put(tx, &deleted)
         }))
         .expect("deleted own-team records do not consume the snapshot boundary");
@@ -1398,7 +1398,7 @@ mod request_tests {
         run_async(store.transaction(|tx| {
             let mut restored =
                 AgentRepository::get(tx, &AgentId::from("fixture-1"))?.expect("fixture member");
-            restored.extra.insert("deletedAt".into(), json!(0));
+            restored.deleted_at = Some((0) as f64);
             AgentRepository::put(tx, &restored)
         }))
         .expect("restore a member beyond the active transfer boundary");

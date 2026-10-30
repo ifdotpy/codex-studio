@@ -964,7 +964,7 @@ async fn workspace_with_vm_action(
             })?;
             // Python's `codex_runtime.py:6405-6413` calls VM preparation from
             // `prepare_locked` before connecting the provider for every VM turn.
-            let prepared = if record.extra.get("isLead").and_then(Value::as_bool) == Some(true) {
+            let prepared = if record.is_lead == Some(true) {
                 crate::vm_preparation::prepare_lead(
                     &store,
                     Arc::clone(&guest),
@@ -1016,10 +1016,7 @@ async fn workspace_with_vm_action(
                 .filter(|value| !value.is_empty())
                 .ok_or_else(|| refusal("workspace-readiness/vm-host-project-required".into()))?
         } else {
-            ready
-                .extra
-                .get("cwd")
-                .and_then(Value::as_str)
+            ready.cwd.as_deref()
                 .filter(|value| value.starts_with('/'))
                 .ok_or_else(|| refusal("workspace-state/vm-cwd".into()))?
         };
@@ -1380,7 +1377,7 @@ fn validate_monitor_actor(record: &studio_runtime_store::AgentRecord, epoch: u64
         return Err(refusal("This legacy workspace is finished".into()));
     }
     if u64::try_from(record.epoch).ok() != Some(epoch)
-        || record.extra.get("deletedAt").is_some_and(|value| !value.is_null())
+        || record.deleted_at.is_some()
         || record.auto_wake != Some(true)
     {
         return Err(refusal("monitor-preparation/actor-changed".into()));
@@ -2437,7 +2434,7 @@ mod daybreak_tests {
         assert!(validate_monitor_actor(&record, 7).is_ok());
         assert!(validate_monitor_actor(&record, 8).is_err());
         let mut deleted = record;
-        deleted.extra.insert("deletedAt".into(), json!(1));
+        deleted.deleted_at = Some((1) as f64);
         assert!(validate_monitor_actor(&deleted, 7).is_err());
     }
 

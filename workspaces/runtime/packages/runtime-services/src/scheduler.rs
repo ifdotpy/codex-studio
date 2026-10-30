@@ -603,7 +603,7 @@ pub(crate) fn settle_terminal_in_transaction(
     )?;
     if result {
         if agent.as_ref().is_some_and(|record| {
-            record.extra.get("workspaceMode").and_then(Value::as_str) == Some("layr-native")
+            record.workspace_mode == Some(studio_runtime_schema::records::WorkspaceMode::LayrNative)
                 && record.extra.get("layrReady").and_then(Value::as_bool) == Some(true)
         }) {
             crate::layr_native::stage_turn_save(transaction, &identity.agent_id, turn_id)?;
@@ -805,7 +805,6 @@ pub(crate) fn claim_selected_event_in_transaction(
     if let Some(reason) = claimed.refusal_reason {
         return Err(SchedulerError::PolicyRefused(reason));
     }
-    let field = |key| claimed.agent.extra.get(key).and_then(Value::as_str);
     let intent = TurnIntent {
         agent_id: agent_id.to_owned(),
         epoch,
@@ -816,8 +815,8 @@ pub(crate) fn claim_selected_event_in_transaction(
         )
         .map_err(|_| StoreError::RecordContract("agent provider"))?,
         thread_id: claimed.agent.thread_id.clone(),
-        cwd: field("cwd").map(str::to_owned),
-        model: field("model").map(str::to_owned),
+        cwd: claimed.agent.cwd.clone(),
+        model: claimed.agent.model.clone(),
         events: claimed
             .events
             .iter()
@@ -867,7 +866,6 @@ fn claim_intent_selected(
     if let Some(reason) = claimed.refusal_reason {
         return Err(SchedulerError::PolicyRefused(reason));
     }
-    let field = |key| claimed.agent.extra.get(key).and_then(Value::as_str);
     let intent = TurnIntent {
         agent_id: agent_id.to_owned(),
         epoch,
@@ -878,8 +876,8 @@ fn claim_intent_selected(
         )
         .map_err(|_| StoreError::RecordContract("agent provider"))?,
         thread_id: claimed.agent.thread_id.clone(),
-        cwd: field("cwd").map(str::to_owned),
-        model: field("model").map(str::to_owned),
+        cwd: claimed.agent.cwd.clone(),
+        model: claimed.agent.model.clone(),
         events: claimed
             .events
             .iter()
@@ -1086,6 +1084,13 @@ mod child_turn_parent_tests {
     use serde_json::json;
 
     const TURN: &str = "turn-1";
+
+    #[tokio::test]
+    async fn claim_intent_keeps_typed_cwd_and_model() {
+        let (_directory, _store, intent) = seeded("codex").await;
+        assert_eq!(intent.cwd.as_deref(), Some("/work"));
+        assert_eq!(intent.model.as_deref(), Some("model"));
+    }
 
     async fn seeded(provider: &str) -> (tempfile::TempDir, RuntimeStore, TurnIntent) {
         let directory = tempfile::tempdir().expect("temporary state directory");

@@ -1058,10 +1058,6 @@ fn apply_effect_result(
                 "identity": identity.get("lifecycleIdentity"),
                 "bytes": bytes
             });
-            agent
-                .as_object_mut()
-                .ok_or(WorkspaceCleanupError::InvalidRecord)?
-                .remove("worktreeCleanup");
         }
         CompletedEffect::SaveNativeTurn { state_id } => {
             agent["layrStateId"] = json!(state_id);
