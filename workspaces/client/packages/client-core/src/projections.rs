@@ -1,7 +1,7 @@
 //! Durable server projections. Sequence numbers include deletion tombstones.
 use crate::protocol::{Request, Response};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::IgnoredAny};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap};
 use studio_client_domain::{
@@ -575,7 +575,7 @@ pub(crate) fn check_document(scope: &str, document: Document) -> Result<CheckedD
         return Err("Invalid projection document.".into());
     }
     if !document.deleted {
-        serde_json::from_str::<Value>(&document.payload).map_err(|e| e.to_string())?;
+        serde_json::from_str::<IgnoredAny>(&document.payload).map_err(|e| e.to_string())?;
     }
     Ok(CheckedDocument(document))
 }
@@ -727,8 +727,7 @@ fn execute(connection: &Connection, request: &Request) -> Result<Value, String> 
                 Document::deserialize(&request.params["document"]).map_err(|e| e.to_string())?;
             let document = check_document(scope, document)?;
             write_document(connection, workspace, &document)?;
-            Ok(serde_json::to_value(get(connection, workspace, scope)?)
-                .map_err(|e| e.to_string())?)
+            serde_json::to_value(get(connection, workspace, scope)?).map_err(|e| e.to_string())
         }
         _ => Err("Unknown projection command.".into()),
     }
@@ -1278,6 +1277,18 @@ mod tests {
         let mut wrong = put(13, false, "{}");
         wrong.params["document"]["id"] = json!("transcript:other");
         assert!(store.dispatch(wrong).error.is_some());
+        assert!(
+            store
+                .dispatch(put(14, false, "{\"unused\":1e400}"))
+                .error
+                .is_none()
+        );
+        assert!(
+            store
+                .dispatch(put(15, false, "{\"unused\":"))
+                .error
+                .is_some()
+        );
     }
 
     fn rows(store: &mut crate::store::Store, method: &str, params: Value) -> Response {
