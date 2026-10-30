@@ -721,7 +721,7 @@ impl RuleMonitor for DurableMonitor<'_> {
                 .store
                 .transaction(move |tx| {
                     Ok(tx.execute(
-                        "INSERT OR IGNORE INTO runtime_monitors(id,record,monitor_status) VALUES(?1,?2,COALESCE(CASE WHEN json_valid(?2) THEN json_extract(?2,'$.status') END,'lost'))",
+                        "INSERT OR IGNORE INTO runtime_monitors(id,record) VALUES(?1,?2)",
                         rusqlite::params![monitor_id, record.to_string()],
                     )?)
                 })

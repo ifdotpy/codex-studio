@@ -3027,7 +3027,7 @@ mod tests {
                               created: i64| {
             connection
                     .execute(
-                        "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES(?1,?2,COALESCE(CASE WHEN json_valid(?2) THEN json_extract(?2,'$.status') END,'lost'))",
+                        "INSERT INTO runtime_monitors(id,record) VALUES(?1,?2)",
                         rusqlite::params![
                             id,
                             json!({"id":id,"agent":agent,"epoch":0,"status":status,"created":created,"requestId":format!("request-{id}"),"activityAt":created,"activityGeneration":0,"bytes":0,"command":"","cwd":std::env::temp_dir(),"interactive":false,"livenessCommand":"","log":std::env::temp_dir().join("watch.log"),"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":3600000,"wakeOn":"exit"})
@@ -3186,7 +3186,7 @@ mod tests {
             let agent = if index == 50 { "deleted" } else { "active" };
             connection
                 .execute(
-                    "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES(?1,?2,COALESCE(CASE WHEN json_valid(?2) THEN json_extract(?2,'$.status') END,'lost'))",
+                    "INSERT INTO runtime_monitors(id,record) VALUES(?1,?2)",
                     rusqlite::params![
                         id,
                         json!({"id":id,"agent":agent,"epoch":0,"status":"completed","created":10,"requestId":format!("request-{id}"),"activityAt":10,"activityGeneration":0,"bytes":0,"command":"","cwd":std::env::temp_dir(),"interactive":false,"livenessCommand":"","log":std::env::temp_dir().join("watch.log"),"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":3600000,"wakeOn":"exit"})

@@ -1084,7 +1084,7 @@ async fn definite_not_sent_releases_and_retries_the_same_request_after_fresh_idl
     store
         .transaction(move |tx| {
             tx.execute(
-                "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES('busy',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
+                "INSERT INTO runtime_monitors(id,record) VALUES('busy',?1)",
                 [monitor.to_string()],
             )?;
             Ok(())
@@ -1173,7 +1173,7 @@ async fn quota_preparation_refusal_releases_and_retries_after_fresh_idle_proof()
     store
         .transaction(move |tx| {
             tx.execute(
-                "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES('busy',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
+                "INSERT INTO runtime_monitors(id,record) VALUES('busy',?1)",
                 [monitor.to_string()],
             )?;
             Ok(())

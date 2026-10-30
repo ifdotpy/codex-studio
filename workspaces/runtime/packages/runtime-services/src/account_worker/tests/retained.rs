@@ -2970,7 +2970,7 @@ async fn config_read_fixture(state: &State, port: &RetainedSessionPort) -> Sessi
             store
                 .transaction_with::<_, StoreError>(move |tx| {
                     tx.execute(
-                        "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES('config-watch',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
+                        "INSERT INTO runtime_monitors(id,record) VALUES('config-watch',?1)",
                         [json!({"id":"config-watch","agent":agent,"epoch":epoch,
                     "cwd":saved_cwd,"status":"starting","command":"true"})
                         .to_string()],
@@ -3184,7 +3184,7 @@ async fn tool_monitor_on_a_non_default_account_reaches_its_provider() {
                         ),
                     ] {
                         tx.execute(
-                            "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES(?1,?2,COALESCE(CASE WHEN json_valid(?2) THEN json_extract(?2,'$.status') END,'lost'))",
+                            "INSERT INTO runtime_monitors(id,record) VALUES(?1,?2)",
                             (record["id"].as_str().unwrap(), record.to_string()),
                         )?;
                     }
@@ -3282,7 +3282,7 @@ async fn transferred_monitor_cancel_uses_the_original_command_and_settles_its_ex
     state.bridge.run(move |store| async move {
         let log=crate::monitor_output::log_root(store.root()).join("transfer-watch.log");
         store.transaction_with(move |tx| {
-            tx.execute("INSERT INTO runtime_monitors(id,record,monitor_status) VALUES ('transfer-watch',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
+            tx.execute("INSERT INTO runtime_monitors(id,record) VALUES ('transfer-watch',?1)",
                 [crate::monitor_policy::complete_test_monitor(json!({"id":"transfer-watch","agent":actor,"epoch":epoch,"status":"running",
                     "cwd":seed_cwd,"command":"true","interactive":true,"log":log,"operation":saved_operation})).to_string()])?;
             Ok(())
@@ -4679,7 +4679,7 @@ async fn malformed_monitor_keeps_proof_without_blocking_other_agent(case: Malfor
         let mut other=AgentRepository::get(tx,&AgentId::from(actor.as_str()))?.unwrap().value();
         other["id"]=json!("other-ack-agent");other["threadId"]=json!("other-ack-thread");
         AgentRepository::put(tx,&studio_runtime_store::AgentRecord::from_value(other)?)?;
-        tx.execute("INSERT INTO runtime_monitors(id,record,monitor_status) VALUES('held-proof',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",[json!({"id":"held-proof","agent":actor,"epoch":epoch,"cwd":cwd,"command":"true","status":"running","operation":{"agent":actor,"epoch":epoch,"accountKey":scope.account,"connectionId":scope.connection,"providerGeneration":scope.generation,"rootRequestId":root}}).to_string()])?;
+        tx.execute("INSERT INTO runtime_monitors(id,record) VALUES('held-proof',?1)",[json!({"id":"held-proof","agent":actor,"epoch":epoch,"cwd":cwd,"command":"true","status":"running","operation":{"agent":actor,"epoch":epoch,"accountKey":scope.account,"connectionId":scope.connection,"providerGeneration":scope.generation,"rootRequestId":root}}).to_string()])?;
         Ok(())
     }).await.unwrap();
     let sender = port.clone();

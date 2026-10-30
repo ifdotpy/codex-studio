@@ -439,7 +439,7 @@ async fn quota_reason_crosses_retained_adapter_and_http_release_allows_same_requ
     store
         .transaction(move |tx| {
             tx.execute(
-                "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES('retry-blocker',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
+                "INSERT INTO runtime_monitors(id,record) VALUES('retry-blocker',?1)",
                 [json!({"id":"retry-blocker","cwd":cwd,"status":"running"}).to_string()],
             )?;
             Ok(())

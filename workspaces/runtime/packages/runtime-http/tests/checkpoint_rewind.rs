@@ -210,7 +210,7 @@ async fn checkpoint_rewind_preview_and_restore_enforce_idle_and_preserve_before_
     store
         .transaction(move |tx| {
             tx.execute(
-                "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES('monitor',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
+                "INSERT INTO runtime_monitors(id,record) VALUES('monitor',?1)",
                 [monitor.to_string()],
             )?;
             Ok(())
@@ -338,7 +338,7 @@ async fn overlapping_monitor_and_child_reservation_block_restore() {
         let child = child.clone();
         store.transaction(move |tx| {
             if kind == "monitor" {
-                tx.execute("INSERT INTO runtime_monitors(id,record,monitor_status) VALUES('child',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",[json!({"id":"child","cwd":child,"status":"running"}).to_string()])?;
+                tx.execute("INSERT INTO runtime_monitors(id,record) VALUES('child',?1)",[json!({"id":"child","cwd":child,"status":"running"}).to_string()])?;
             } else {
                 let agent=json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"child","rootId":"worker","epoch":1,"status":"paused","cwd":child,"inFlight":kind=="agent","workspaceOperation":if kind=="reservation" {json!("restore")} else {Value::Null}});
                 AgentRepository::put(tx,&AgentRecord::from_value(agent).unwrap())?;
