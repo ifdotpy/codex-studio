@@ -223,7 +223,7 @@ pub fn sync_unload_deadlines(
     deadlines: &BTreeMap<String, f64>,
     now: f64,
 ) -> Result<(), StoreError> {
-    let mut statement = connection.prepare("SELECT id,record FROM runtime_agents WHERE json_extract(record,'$.provider')='claude' AND coalesce(json_extract(record,'$.accountKey'),'default')=?1 AND json_type(record,'$.idleCompactionEpisode')='object'")?;
+    let mut statement = connection.prepare("SELECT id,record FROM runtime_agents INDEXED BY runtime_idle_compaction_deadline WHERE idle_episode_type='object' AND provider='claude' AND account_key=?1 AND coalesce(json_extract(record,'$.accountKey'),'default')=?1")?;
     let records = statement
         .query_map([account], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -610,6 +610,84 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unload_deadline_scan_skips_json_for_non_claude_agents() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch(studio_runtime_store::agent_columns::agent_table_sql())
+            .unwrap();
+        db.execute_batch("CREATE INDEX runtime_idle_compaction_deadline ON runtime_agents(idle_episode_type,idle_episode_fire_at,id,idle_episode_id) WHERE idle_episode_type='object'").unwrap();
+        for n in 0..20 {
+            let id = format!("codex-{n}");
+            let raw = json!({"id":id,"rootId":id,"provider":"codex","epoch":1,"status":"idle","accountKey":"default"});
+            db.execute(
+                "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
+                rusqlite::params![id, raw.to_string()],
+            )
+            .unwrap();
+        }
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&calls);
+        db.create_scalar_function(
+            "json_extract",
+            2,
+            rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC
+                | rusqlite::functions::FunctionFlags::SQLITE_INNOCUOUS,
+            move |_| {
+                counted.fetch_add(1, Ordering::Relaxed);
+                Ok(None::<i64>)
+            },
+        )
+        .unwrap();
+        sync_unload_deadlines(&db, "default", &BTreeMap::new(), 0.0).unwrap();
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn unload_deadline_sync_updates_only_matching_account_and_only_on_change() {
+        let db = studio_runtime_store::test_canvas();
+        let (_, episode, mut agent, _) = fixture();
+        agent["rootId"] = json!("agent");
+        agent["idleCompactionEpisode"] = json!(episode);
+        AgentRepository::put(
+            &db,
+            &studio_runtime_store::AgentRecord::from_value(agent.clone()).unwrap(),
+        )
+        .unwrap();
+        agent["id"] = json!("other");
+        agent["rootId"] = json!("other");
+        agent["accountKey"] = json!("other-account");
+        agent["idleCompactionEpisode"]["id"] = json!("other-episode");
+        AgentRepository::put(
+            &db,
+            &studio_runtime_store::AgentRecord::from_value(agent).unwrap(),
+        )
+        .unwrap();
+        let other_before = AgentRepository::get_raw(&db, &AgentId::from("other")).unwrap();
+        let deadlines = BTreeMap::from([("thread".to_owned(), 1200.0)]);
+        sync_unload_deadlines(&db, "default", &deadlines, 10.0).unwrap();
+        let saved = AgentRepository::get(&db, &AgentId::from("agent"))
+            .unwrap()
+            .unwrap()
+            .value();
+        assert_eq!(saved["idleCompactionEpisode"]["unloadAt"], 1200.0);
+        assert!(saved["idleCompactionEpisode"]["fireAt"].as_f64().unwrap() <= 1200.0);
+        assert_eq!(
+            AgentRepository::get_raw(&db, &AgentId::from("other")).unwrap(),
+            other_before
+        );
+        let unchanged = AgentRepository::get_raw(&db, &AgentId::from("agent")).unwrap();
+        sync_unload_deadlines(&db, "default", &deadlines, 10.0).unwrap();
+        assert_eq!(
+            AgentRepository::get_raw(&db, &AgentId::from("agent")).unwrap(),
+            unchanged
+        );
+    }
+
     #[test]
     fn receipt_domain_idle_repeat_keeps_fired_episode_through_disabled_observation() {
         let db = studio_runtime_store::test_canvas();

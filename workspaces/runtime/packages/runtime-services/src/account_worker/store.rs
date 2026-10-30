@@ -4089,7 +4089,7 @@ pub(super) fn pending_preparations(
 ) -> Result<Vec<(String, i64)>, WorkerError> {
     // Python persists deferred preparation on startAttempt.prepareError and
     // clears it when preparation resumes (codex_runtime.py:7316, 7502-7505).
-    let mut query = db.prepare("SELECT id FROM runtime_agents WHERE COALESCE(json_extract(record,'$.accountKey'),'default')=?1 AND json_extract(record,'$.autoWake')=1 AND (json_type(record,'$.startAttempt.prepareError')='text' OR (json_type(record,'$.startAttempt') IS NULL AND json_type(record,'$.lastWorkspaceWait.attemptId')='text')) AND json_extract(record,'$.deletedAt') IS NULL ORDER BY id")?;
+    let mut query = db.prepare("SELECT id FROM runtime_agents WHERE account_key=?1 AND auto_wake=1 AND deleted_at IS NULL AND COALESCE(json_extract(record,'$.accountKey'),'default')=?1 AND json_extract(record,'$.autoWake')=1 AND (json_type(record,'$.startAttempt.prepareError')='text' OR (json_type(record,'$.startAttempt') IS NULL AND json_type(record,'$.lastWorkspaceWait.attemptId')='text')) ORDER BY id")?;
     let ids = query
         .query_map([account], |row| row.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?;
@@ -4100,6 +4100,104 @@ pub(super) fn pending_preparations(
             Ok((id, row.epoch))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod pending_preparation_scan_tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    #[test]
+    fn pending_scan_skips_json_for_agents_with_autowake_disabled() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch(studio_runtime_store::agent_columns::agent_table_sql())
+            .unwrap();
+        for n in 0..20 {
+            let id = format!("disabled-{n}");
+            let raw = serde_json::json!({"id":id,"rootId":id,"provider":"codex","epoch":1,"status":"idle","accountKey":"default","autoWake":false});
+            db.execute(
+                "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
+                rusqlite::params![id, raw.to_string()],
+            )
+            .unwrap();
+        }
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&calls);
+        db.create_scalar_function(
+            "json_extract",
+            2,
+            rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC
+                | rusqlite::functions::FunctionFlags::SQLITE_INNOCUOUS,
+            move |_| {
+                counted.fetch_add(1, Ordering::Relaxed);
+                Ok(None::<i64>)
+            },
+        )
+        .unwrap();
+        assert!(
+            super::pending_preparations(&db, "default")
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn pending_scan_preserves_account_and_legacy_wait_selection() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch(studio_runtime_store::agent_columns::agent_table_sql())
+            .unwrap();
+        db.execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
+            .unwrap();
+        for (id, account, auto_wake, extra) in [
+            (
+                "a",
+                "default",
+                true,
+                serde_json::json!({"startAttempt":{"prepareError":"waiting"}}),
+            ),
+            (
+                "b",
+                "default",
+                true,
+                serde_json::json!({"lastWorkspaceWait":{"attemptId":"old"}}),
+            ),
+            (
+                "c",
+                "default",
+                true,
+                serde_json::json!({"startAttempt":null,"lastWorkspaceWait":{"attemptId":"old"}}),
+            ),
+            (
+                "d",
+                "other",
+                true,
+                serde_json::json!({"startAttempt":{"prepareError":"waiting"}}),
+            ),
+            (
+                "e",
+                "default",
+                false,
+                serde_json::json!({"startAttempt":{"prepareError":"waiting"}}),
+            ),
+        ] {
+            let mut row = serde_json::json!({"id":id,"rootId":id,"provider":"codex","epoch":2,"status":"idle","accountKey":account,"autoWake":auto_wake});
+            row.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            db.execute(
+                "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
+                rusqlite::params![id, row.to_string()],
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            super::pending_preparations(&db, "default").unwrap(),
+            vec![("a".into(), 2), ("b".into(), 2)]
+        );
+    }
 }
 
 /// A failed turn whose error proves the account's credentials rejected ends
