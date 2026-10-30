@@ -584,7 +584,7 @@ static CATALOG: &[&dyn Migration] = &[
             id: "2026-10-30-text-blobs",
             introduced: OCTOBER_30,
             target: MigrationTarget::Canvas,
-            supported_source: "Full text of cut items in runtime_item_fulltext",
+            supported_source: "State without runtime_item_blobs",
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| m2026_10_30_text_blobs::apply(c.transaction),

@@ -1,48 +1,69 @@
-//! Owner of large item text kept outside SQLite.
+//! Owner of large text kept outside SQLite, and of the sweep that collects it.
 //!
-//! A transcript item whose text is longer than [`TEXT_BLOB_MIN_CHARS`] keeps
-//! a preview in its record. The full text is one file,
-//! `<state>/blobs/text/<hash>`: a stored-format-1 zstd frame
-//! ([`crate::stored_text`]) named by the SHA-256 of the exact text. The row
-//! `runtime_item_blobs(id, hash, size)` points the item at it.
+//! One content-addressed tree holds large text: `<state>/blobs/<aa>/<bb>/<sha256>`,
+//! the layout of `payload_blobs` in `runtime-services`, which writes every file
+//! durably (temporary file, fsync, rename, directory fsync). The name is the
+//! SHA-256 of the stored bytes. A text blob is one stored-format-1 zstd frame
+//! ([`crate::stored_text`]); a payload blob is plain JSON. [`read`] accepts both.
 //!
-//! Write order: write the file, fsync it and its directory, then write the
-//! row in the same transaction. A crash in between leaves an unreferenced file
-//! and never a row without a file. [`sweep`] deletes unreferenced files that
-//! are older than [`TEXT_BLOB_SWEEP_DELAY`]. It runs in a writer transaction, so
-//! no writer sits between its file write and its row insert while it deletes.
+//! Item text. A writer transaction only writes rows: it puts the full text of a
+//! long item into `runtime_item_fulltext` (an in-place update, so a streaming
+//! item costs no file) and clears the item's blob row. Once an item is not
+//! streaming, a background pass ([`pending`]) writes the text as a blob
+//! outside any transaction, then a short transaction ([`commit`]) points the
+//! item at it, only if the blob file exists and the text did not change. The
+//! row `runtime_item_blobs(id, hash, size)` is that pointer; readers prefer it.
+//! A crash between the file write and the commit leaves an unreferenced blob.
 //!
-//! The directory lies next to the database file, so every function takes the
-//! connection and needs a file database.
+//! Sweep. Only text blobs (first byte [`STORED_TEXT_FORMAT_ZSTD`]) older than
+//! [`TEXT_BLOB_SWEEP_DELAY`] are candidates. [`quarantine`] reads the pointers,
+//! then moves unreferenced candidates to `<state>/blobs/trash`. A writer
+//! transaction ([`referenced_among`]) then re-reads the pointers; because
+//! [`commit`] runs in a writer transaction and checks that its file exists,
+//! either the pointer is seen here or the commit sees the file missing.
+//! [`release`] restores referenced files and deletes the rest. Payload blobs
+//! are never collected here: their references live in the JSON of many owners
+//! and have no index.
 
 use std::collections::HashSet;
 use std::fs::{self, File};
-use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use sha2::{Digest, Sha256};
 
 use crate::cached_sql::CachedSql;
-use crate::{StoreError, StoreResult, stored_text};
+use crate::stored_text::{self, STORED_TEXT_FORMAT_ZSTD};
+use crate::{StoreError, StoreResult};
 
 /// Item text longer than this many characters goes to a blob. Unit: characters.
-/// It is also the length of the preview that stays in the item record.
+/// It is also the length of the preview that stays in the item record. The
+/// inline threshold of the design (about 8 KB compressed) is a follow-up.
 pub const TEXT_BLOB_MIN_CHARS: usize = 20_000;
 
-/// An unreferenced blob younger than this is never deleted. It covers the
-/// time between a blob write and its row commit, and a stream that rewrites a
-/// growing item. Unit: seconds.
+/// An unreferenced text blob younger than this is never collected. Unit: seconds.
 pub const TEXT_BLOB_SWEEP_DELAY: Duration = Duration::from_secs(60 * 60);
 
-/// Address of one blob: the SHA-256 of the exact text and its length.
+/// Name of the quarantine directory inside `<state>/blobs`.
+const TRASH_DIRECTORY: &str = "trash";
+
+/// Address of one blob: the SHA-256 of the stored bytes, and the text length.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TextBlobRef {
-    /// Lowercase hexadecimal SHA-256 of the UTF-8 text.
+    /// Lowercase hexadecimal SHA-256 of the stored bytes.
     pub hash: String,
-    /// Length of the UTF-8 text. Unit: bytes.
+    /// Length of the decoded UTF-8 text. Unit: bytes.
     pub size: u64,
+}
+
+/// Text that a pass moved to a blob, ready for [`commit`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MovedText {
+    pub id: String,
+    /// [`digest`] of the text that was written.
+    pub digest: String,
+    pub blob: TextBlobRef,
 }
 
 fn unavailable(message: &str) -> StoreError {
@@ -56,19 +77,27 @@ fn invalid(hash: &str) -> StoreError {
     }
 }
 
-fn directory(connection: &Connection) -> StoreResult<PathBuf> {
+fn blobs_root(connection: &Connection) -> StoreResult<PathBuf> {
     let database = connection
         .path()
         .filter(|path| !path.is_empty())
         .ok_or_else(|| unavailable("text blobs need a file database"))?;
-    let parent = std::path::Path::new(database)
+    Path::new(database)
         .parent()
-        .ok_or_else(|| unavailable("database has no directory"))?;
-    Ok(parent.join("blobs").join("text"))
+        .map(|parent| parent.join("blobs"))
+        .ok_or_else(|| unavailable("database has no directory"))
 }
 
-fn hash_of(text: &str) -> String {
-    data_encoding::HEXLOWER.encode(&Sha256::digest(text.as_bytes()))
+/// Path of the blob `sha256` under the blobs directory `blobs_root`.
+pub fn layout(blobs_root: &Path, sha256: &str) -> PathBuf {
+    blobs_root
+        .join(&sha256[..2])
+        .join(&sha256[2..4])
+        .join(sha256)
+}
+
+fn hex(bytes: &[u8]) -> String {
+    data_encoding::HEXLOWER.encode(&Sha256::digest(bytes))
 }
 
 fn valid_hash(hash: &str) -> bool {
@@ -78,48 +107,42 @@ fn valid_hash(hash: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-/// Write `text` durably and return its address. Writing the same text again
-/// refreshes the age of the file so a sweep keeps it.
-pub fn put(connection: &Connection, text: &str) -> StoreResult<TextBlobRef> {
-    let dir = directory(connection)?;
-    fs::create_dir_all(&dir)?;
-    let reference = TextBlobRef {
-        hash: hash_of(text),
-        size: text.len() as u64,
-    };
-    let target = dir.join(&reference.hash);
-    if target.is_file() {
-        File::options()
-            .write(true)
-            .open(&target)?
-            .set_modified(SystemTime::now())?;
-        return Ok(reference);
-    }
-    let mut temporary = tempfile::NamedTempFile::new_in(&dir)?;
-    temporary.write_all(&stored_text::encode(text))?;
-    temporary.as_file().sync_all()?;
-    temporary.persist(&target).map_err(|error| error.error)?;
-    #[cfg(unix)]
-    {
-        File::open(&dir)?.sync_all()?;
-        if let Some(parent) = dir.parent() {
-            File::open(parent)?.sync_all()?;
-        }
-    }
-    Ok(reference)
+/// SHA-256 of the exact text. A commit compares it to detect a changed text.
+pub fn digest(text: &str) -> String {
+    hex(text.as_bytes())
 }
 
-/// Read a blob by hash and check it against its name.
+/// The stored bytes of `text` and their address. Write the bytes with
+/// `payload_blobs::write_blobs`, which makes them durable.
+pub fn encode_blob(text: &str) -> (TextBlobRef, Vec<u8>) {
+    let bytes = stored_text::encode(text);
+    (
+        TextBlobRef {
+            hash: hex(&bytes),
+            size: text.len() as u64,
+        },
+        bytes,
+    )
+}
+
+/// Read a blob by hash, check it against its name and decode it.
 pub fn read(connection: &Connection, hash: &str) -> StoreResult<String> {
     if !valid_hash(hash) {
         return Err(invalid(hash));
     }
-    let bytes = fs::read(directory(connection)?.join(hash))?;
-    let text = stored_text::decode_blob(&bytes).map_err(|_| invalid(hash))?;
-    if hash_of(&text) != hash {
+    let path = layout(&blobs_root(connection)?, hash);
+    if !fs::symlink_metadata(&path)?.is_file() {
         return Err(invalid(hash));
     }
-    Ok(text)
+    let bytes = fs::read(&path)?;
+    if hex(&bytes) != hash {
+        return Err(invalid(hash));
+    }
+    if bytes.first() == Some(&STORED_TEXT_FORMAT_ZSTD) {
+        stored_text::decode_blob(&bytes).map_err(|_| invalid(hash))
+    } else {
+        String::from_utf8(bytes).map_err(|_| invalid(hash))
+    }
 }
 
 /// True when the reference table exists. Production schemas always have it;
@@ -151,22 +174,8 @@ pub fn reference(connection: &Connection, id: &str) -> rusqlite::Result<Option<T
         .optional()
 }
 
-/// Point item `id` at `blob`. Call it after [`put`] returned.
-pub fn set_reference(
-    connection: &Connection,
-    id: &str,
-    blob: &TextBlobRef,
-) -> rusqlite::Result<()> {
-    connection
-        .execute_cached(
-            "INSERT INTO runtime_item_blobs(id,hash,size) VALUES(?1,?2,?3) \
-             ON CONFLICT(id) DO UPDATE SET hash=excluded.hash,size=excluded.size",
-            params![id, blob.hash, blob.size as i64],
-        )
-        .map(drop)
-}
-
-/// Stop pointing item `id` at a blob.
+/// Stop pointing item `id` at a blob. A writer calls it whenever it writes the
+/// item's full text, so a pointer never outlives the text it was made from.
 pub fn clear_reference(connection: &Connection, id: &str) -> rusqlite::Result<()> {
     if !has_table(connection)? {
         return Ok(());
@@ -176,60 +185,60 @@ pub fn clear_reference(connection: &Connection, id: &str) -> rusqlite::Result<()
         .map(drop)
 }
 
-/// Delete blobs that no row references and that are older than
-/// [`TEXT_BLOB_SWEEP_DELAY`] at `now`. Call it inside a writer transaction.
-/// Returns the number of deleted files.
-pub fn sweep(connection: &Connection, now: SystemTime) -> StoreResult<usize> {
-    let dir = directory(connection)?;
-    if !dir.is_dir() {
-        return Ok(0);
-    }
-    let referenced: HashSet<String> = connection
-        .prepare("SELECT hash FROM runtime_item_blobs")?
-        .query_map([], |row| row.get(0))?
-        .collect::<Result<_, _>>()?;
-    let mut deleted = 0;
-    for entry in fs::read_dir(&dir)? {
-        let entry = entry?;
-        if entry
-            .file_name()
-            .to_str()
-            .is_some_and(|name| referenced.contains(name))
-        {
-            continue;
-        }
-        let metadata = entry.metadata()?;
-        let age = now
-            .duration_since(metadata.modified()?)
-            .unwrap_or(Duration::ZERO);
-        if metadata.is_file() && age >= TEXT_BLOB_SWEEP_DELAY {
-            fs::remove_file(entry.path())?;
-            deleted += 1;
-        }
-    }
-    Ok(deleted)
-}
-
-/// Move every `runtime_item_fulltext` row to a blob and point its item at it.
-/// The table keeps its rows. Returns the number of rows moved.
-pub fn move_fulltext(connection: &Connection) -> StoreResult<usize> {
+/// Up to `limit` full texts that are final and not yet in a blob: items that
+/// are not streaming, in `runtime_item_fulltext` order.
+pub fn pending(connection: &Connection, limit: usize) -> StoreResult<Vec<(String, String)>> {
     let ids: Vec<String> = connection
         .prepare(
-            "SELECT id FROM runtime_item_fulltext \
-             WHERE id NOT IN (SELECT id FROM runtime_item_blobs)",
+            "SELECT f.id FROM runtime_item_fulltext f \
+             LEFT JOIN runtime_items i ON i.id=f.id \
+             WHERE f.id NOT IN (SELECT id FROM runtime_item_blobs) \
+             AND COALESCE(json_extract(i.record,'$.streaming'),0)=0 \
+             ORDER BY f.rowid LIMIT ?1",
         )?
-        .query_map([], |row| row.get(0))?
+        .query_map([limit as i64], |row| row.get(0))?
         .collect::<Result<_, _>>()?;
-    for id in &ids {
-        let body: stored_text::StoredText = connection.query_row(
-            "SELECT body FROM runtime_item_fulltext WHERE id=?1",
-            [id],
-            |row| row.get(0),
+    ids.into_iter()
+        .map(|id| {
+            let body: stored_text::StoredText = connection.query_row(
+                "SELECT body FROM runtime_item_fulltext WHERE id=?1",
+                [&id],
+                |row| row.get(0),
+            )?;
+            Ok((id, body.0))
+        })
+        .collect()
+}
+
+/// Point each item at its blob. Runs in a writer transaction and writes only
+/// rows. A text is skipped, to be retried by a later pass, when its blob file
+/// is missing or the item's full text is no longer the text that was written.
+/// Returns the number of pointers set.
+pub fn commit(transaction: &Transaction<'_>, moved: &[MovedText]) -> StoreResult<usize> {
+    let root = blobs_root(transaction)?;
+    let mut set = 0;
+    for text in moved {
+        if !valid_hash(&text.blob.hash) || !layout(&root, &text.blob.hash).is_file() {
+            continue;
+        }
+        let current: Option<stored_text::StoredText> = transaction
+            .query_row(
+                "SELECT body FROM runtime_item_fulltext WHERE id=?1",
+                [&text.id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if current.is_none_or(|body| digest(&body.0) != text.digest) {
+            continue;
+        }
+        transaction.execute_cached(
+            "INSERT INTO runtime_item_blobs(id,hash,size) VALUES(?1,?2,?3) \
+             ON CONFLICT(id) DO UPDATE SET hash=excluded.hash,size=excluded.size",
+            params![text.id, text.blob.hash, text.blob.size as i64],
         )?;
-        let blob = put(connection, &body.0)?;
-        set_reference(connection, id, &blob)?;
+        set += 1;
     }
-    Ok(ids.len())
+    Ok(set)
 }
 
 /// Ids of `runtime_item_fulltext` rows that lack a readable blob with the
@@ -257,4 +266,110 @@ pub fn fulltext_without_blob(connection: &Connection) -> StoreResult<Vec<String>
         }
     }
     Ok(missing)
+}
+
+/// Step 1 of the sweep, with no transaction open. Hashes of the pointers
+/// (read them from a read transaction with [`pointed_hashes`]) protect their
+/// blobs. Moves old unreferenced text blobs to the trash directory and returns
+/// their hashes, together with any hash already in the trash from a crashed
+/// sweep.
+pub fn quarantine(
+    blobs_root: &Path,
+    pointed: &HashSet<String>,
+    now: SystemTime,
+) -> StoreResult<Vec<String>> {
+    let trash = blobs_root.join(TRASH_DIRECTORY);
+    fs::create_dir_all(&trash)?;
+    let mut names = Vec::new();
+    for entry in fs::read_dir(&trash)? {
+        if let Some(name) = entry?.file_name().to_str().filter(|n| valid_hash(n)) {
+            names.push(name.to_owned());
+        }
+    }
+    for first in fs::read_dir(blobs_root)? {
+        let first = first?;
+        if first.file_name().len() != 2 || !first.file_type()?.is_dir() {
+            continue;
+        }
+        for second in fs::read_dir(first.path())? {
+            let second = second?;
+            if !second.file_type()?.is_dir() {
+                continue;
+            }
+            for file in fs::read_dir(second.path())? {
+                let file = file?;
+                let Some(name) = file.file_name().to_str().map(str::to_owned) else {
+                    continue;
+                };
+                let metadata = file.metadata()?;
+                let age = now
+                    .duration_since(metadata.modified()?)
+                    .unwrap_or(Duration::ZERO);
+                if !valid_hash(&name)
+                    || !metadata.is_file()
+                    || age < TEXT_BLOB_SWEEP_DELAY
+                    || pointed.contains(&name)
+                    || !is_text_blob(&file.path())?
+                {
+                    continue;
+                }
+                fs::rename(file.path(), trash.join(&name))?;
+                names.push(name);
+            }
+        }
+    }
+    Ok(names)
+}
+
+fn is_text_blob(path: &Path) -> std::io::Result<bool> {
+    use std::io::Read;
+    let mut first = [0_u8; 1];
+    let read = File::open(path)?.read(&mut first)?;
+    Ok(read == 1 && first[0] == STORED_TEXT_FORMAT_ZSTD)
+}
+
+/// Hashes of every pointer. Call it in a read transaction.
+pub fn pointed_hashes(connection: &Connection) -> StoreResult<HashSet<String>> {
+    Ok(connection
+        .prepare("SELECT hash FROM runtime_item_blobs")?
+        .query_map([], |row| row.get(0))?
+        .collect::<Result<_, _>>()?)
+}
+
+/// Step 2 of the sweep. Call it in a writer transaction, which serializes it
+/// with [`commit`]. Returns the hashes among `names` that a pointer names now.
+pub fn referenced_among(
+    transaction: &Transaction<'_>,
+    names: &[String],
+) -> StoreResult<HashSet<String>> {
+    let pointed = pointed_hashes(transaction)?;
+    Ok(names
+        .iter()
+        .filter(|name| pointed.contains(*name))
+        .cloned()
+        .collect())
+}
+
+/// Step 3 of the sweep, with no transaction open. Puts the referenced files
+/// back and deletes the others. Returns the number of deleted files.
+pub fn release(
+    blobs_root: &Path,
+    referenced: &HashSet<String>,
+    names: &[String],
+) -> StoreResult<usize> {
+    let trash = blobs_root.join(TRASH_DIRECTORY);
+    let mut deleted = 0;
+    for name in names {
+        if referenced.contains(name) {
+            let target = layout(blobs_root, name);
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::rename(trash.join(name), target)?;
+        } else {
+            fs::remove_file(trash.join(name))?;
+            deleted += 1;
+        }
+    }
+    Ok(deleted)
 }

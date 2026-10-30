@@ -525,10 +525,25 @@ fn tool_result(
             });
             return Ok(());
         };
+        let unresolved = result.clone();
         result = crate::payload_blobs::resolve_record(state_root, &result)
             .map_err(|_| TranscriptError::Store)?;
+        apply_tool_result(result, item, now, projected)?;
+        mark_full_output(item, &unresolved);
+        return Ok(());
     }
     apply_tool_result(result, item, now, projected)
+}
+
+/// A cut tool result keeps its full content in a payload blob. Offer it to the
+/// client by hash, like the full text of a cut item.
+fn mark_full_output(item: &mut Value, unresolved: &Value) {
+    if item["truncated"] == true
+        && let Some(blob) = unresolved.pointer("/_payloadBlobs/contentItems")
+        && let (Some(hash), Some(size)) = (blob["sha256"].as_str(), blob["size"].as_u64())
+    {
+        item["fullTextBlob"] = json!({"hash": hash, "size": size});
+    }
 }
 
 fn apply_tool_result(
@@ -594,6 +609,7 @@ fn project_tool_results(
                 now,
                 pending["projected"].as_bool().unwrap_or(false),
             )?;
+            mark_full_output(item, &pending["result"]);
         }
     }
     Ok(())
