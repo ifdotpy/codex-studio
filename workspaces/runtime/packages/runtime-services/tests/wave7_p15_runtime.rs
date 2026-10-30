@@ -141,20 +141,30 @@ fn running(cases: &[Value]) -> Value {
 fn runtime(store: &Arc<RuntimeStore>, port: &Arc<Port>) -> MonitorRuntime {
     MonitorRuntime::new(store.clone(), port.clone(), Arc::new(Notify::new()))
 }
-fn delivery(case: &Value, cursor: &str, event: MonitorEvent) -> Delivery {
+fn delivery(store: &RuntimeStore, case: &Value, cursor: &str, event: MonitorEvent) -> Delivery {
     Delivery {
         id: case["before"]["id"].as_str().expect("id").into(),
-        operation: serde_json::from_value(case["before"]["operation"].clone()).expect("operation"),
+        operation: record(store, case["before"]["id"].as_str().expect("id"))
+            .operation
+            .expect("operation"),
         cursor: cursor.into(),
         event,
     }
 }
 
-#[derive(serde::Deserialize)]
 struct RuleCase {
-    name: String,
     owner: AgentRecord,
     rule: RuleRecord,
+    now: f64,
+    event: Option<RuleEventFixture>,
+}
+#[derive(serde::Deserialize)]
+struct RuleCaseRaw<'a> {
+    name: String,
+    #[serde(borrow)]
+    owner: &'a serde_json::value::RawValue,
+    #[serde(borrow)]
+    rule: &'a serde_json::value::RawValue,
     now: f64,
     event: Option<RuleEventFixture>,
 }
@@ -165,14 +175,19 @@ struct RuleEventFixture {
     key: String,
 }
 fn rule_case(name: &str) -> RuleCase {
-    serde_json::from_str::<Vec<RuleCase>>(
-        &include_str!("rules_engine/expected.json")
-            .replace("\"owner\": {", "\"owner\": {\"provider\":\"codex\","),
-    )
-    .expect("frozen rule cases")
-    .into_iter()
-    .find(|case| case.name == name)
-    .unwrap_or_else(|| panic!("rule case {name}"))
+    let json = include_str!("rules_engine/expected.json")
+        .replace("\"owner\": {", "\"owner\": {\"provider\":\"codex\",");
+    let cases: Vec<RuleCaseRaw<'_>> = serde_json::from_str(&json).expect("frozen rule cases");
+    let case = cases
+        .into_iter()
+        .find(|case| case.name == name)
+        .unwrap_or_else(|| panic!("rule case {name}"));
+    RuleCase {
+        owner: serde_json::from_str(case.owner.get()).expect("rule owner"),
+        rule: serde_json::from_str(case.rule.get()).expect("rule"),
+        now: case.now,
+        event: case.event,
+    }
 }
 fn due_rule_case() -> RuleCase {
     rule_case("interval-boundary--1")
@@ -327,8 +342,7 @@ async fn account_worker_monitor_output_is_durable_ordered_and_exactly_acknowledg
     monitor_event_queue::acknowledge(&store, &second_delivery)
         .await
         .expect("idempotent exact ACK");
-    let operation =
-        serde_json::from_value(case["before"]["operation"].clone()).expect("monitor operation");
+    let operation = record(&store, id).operation.expect("operation");
     monitor_event_queue::enqueue_exit(&store, id, &operation, "result:monitor", Some(0), None, 9.0)
         .await
         .expect("enqueue definitive result behind output");
@@ -419,15 +433,8 @@ async fn transient_rule_submit_failure_reconciles_the_saved_launch_identity() {
             |row| row.get(0),
         )
         .expect("saved launch intent");
-    #[derive(serde::Deserialize)]
-    struct Reserved {
-        #[serde(flatten)]
-        check: studio_runtime_services::rules_engine::RuleCheck,
-        #[serde(flatten)]
-        extra: std::collections::BTreeMap<String, Value>,
-    }
-    let reserved: Reserved = serde_json::from_str(&reserved_json).expect("typed launch intent");
-    assert!(reserved.extra.is_empty());
+    let reserved: studio_runtime_schema::rule_record::LaunchIntent =
+        serde_json::from_str(&reserved_json).expect("typed launch intent");
     assert!(runtime.last_tick_error().is_some());
 
     *port
@@ -441,7 +448,16 @@ async fn transient_rule_submit_failure_reconciles_the_saved_launch_identity() {
     assert!(runtime.last_tick_error().is_none());
     let launches = port.rule_checks.lock().expect("rule checks");
     assert_eq!(launches.len(), 1);
-    assert_eq!(launches[0], reserved.check);
+    assert_eq!(launches[0].rule_id, reserved.rule_id);
+    assert_eq!(launches[0].check_number, reserved.check_number.get() as u64);
+    assert_eq!(launches[0].agent_id, reserved.agent_id);
+    assert_eq!(launches[0].epoch, reserved.epoch.get() as u64);
+    assert_eq!(launches[0].account_key, reserved.account_key);
+    assert_eq!(launches[0].thread_id, reserved.thread_id);
+    assert_eq!(launches[0].monitor_id, reserved.monitor_id);
+    assert_eq!(launches[0].command, reserved.command.as_str());
+    assert_eq!(launches[0].timeout_ms, reserved.timeout_ms.get() as u64);
+    assert_eq!(launches[0].liveness, reserved.liveness);
 }
 
 #[tokio::test]
@@ -545,9 +561,7 @@ async fn durable_results_win_over_stalls_across_every_write_failure_and_restart(
                 key: id.into(),
                 code: Some(0),
                 error: None,
-                operation: Some(
-                    serde_json::from_value(case["before"]["operation"].clone()).expect("operation"),
-                ),
+                operation: Some(record(&store, id).operation.expect("operation")),
                 finished: 2000.0,
             };
             monitor_receipts::persist(store.root(), &receipt).expect("native receipt before DB");
@@ -649,6 +663,7 @@ async fn output_cursor_and_exit_replay_after_lost_ack_are_exactly_once() {
     fixtures::seed(&store, &case).await;
     let port = Arc::new(Port::default());
     let output = delivery(
+        &store,
         &case,
         "out:0",
         MonitorEvent::Output {
@@ -680,6 +695,7 @@ async fn output_cursor_and_exit_replay_after_lost_ack_are_exactly_once() {
     assert!(error.fatal_for_tick());
     runtime.tick(1999.0).await.expect("output replay");
     port.deliveries.lock().expect("queue").push_back(delivery(
+        &store,
         &case,
         "exit",
         MonitorEvent::Exit {
@@ -909,6 +925,7 @@ async fn foreign_exit_cannot_poison_the_first_result_journal() {
     fixtures::seed(&store, &case).await;
     let runtime = runtime(&store, &Arc::new(Port::default()));
     let exit = delivery(
+        &store,
         &case,
         "exit",
         MonitorEvent::Exit {
@@ -924,6 +941,7 @@ async fn foreign_exit_cannot_poison_the_first_result_journal() {
         Err(studio_runtime_services::monitor_policy::MonitorError::InvalidDeliveryIdentity(_))
     ));
     let mut foreign_input = delivery(
+        &store,
         &case,
         "input:foreign",
         MonitorEvent::Input {
@@ -1162,11 +1180,19 @@ async fn permanent_cancel_refusal_settles_and_is_not_retried() {
                 record.error.as_ref().map(|error| error.as_str()),
                 Some("injected not sent")
             );
-            let view = studio_runtime_services::sync_views::project_persisted_record(
-                "monitor",
-                &json!(record),
-            )
-            .expect("monitor DTO projection");
+            let raw: String = store
+                .test_reader()
+                .expect("read")
+                .query_row(
+                    "SELECT record FROM runtime_monitors WHERE id=?1",
+                    [id],
+                    |row| row.get(0),
+                )
+                .expect("stored monitor");
+            let raw = serde_json::from_str(&raw).expect("stored monitor JSON");
+            let view =
+                studio_runtime_services::sync_views::project_persisted_record("monitor", &raw)
+                    .expect("monitor DTO projection");
             assert_eq!(view["error"], "injected not sent");
         }
         runtime
@@ -1201,6 +1227,7 @@ async fn cancellation_racing_exit_settles_without_native_terminate() {
         .lock()
         .expect("deliveries")
         .push_back(delivery(
+            &store,
             &case,
             "exit-races-cancel",
             MonitorEvent::Exit {
@@ -1252,6 +1279,7 @@ async fn quarantined_delivery_does_not_stop_other_monitors_or_timer() {
 
     let port = Arc::new(Port::default());
     let mut foreign = delivery(
+        &store,
         &bad_case,
         "foreign-exit",
         MonitorEvent::Exit {
@@ -1266,6 +1294,7 @@ async fn quarantined_delivery_does_not_stop_other_monitors_or_timer() {
         .expect("deliveries")
         .push_back(foreign);
     let mut healthy_output = delivery(
+        &store,
         &healthy_case,
         "healthy-output",
         MonitorEvent::Output {
@@ -1649,8 +1678,7 @@ async fn http_input_receipts_survive_restart_and_refuse_uncertain_or_changed_con
             );
         }
         if matches!(boundary, "unknown" | "written-unknown") {
-            let operation =
-                serde_json::from_value(case["before"]["operation"].clone()).expect("operation");
+            let operation = record(&store, id).operation.expect("operation");
             monitor_runtime::settle_input(
                 &store,
                 id,
@@ -1779,7 +1807,7 @@ async fn output_queue_enforces_capacity_and_preserves_terminal_reserve_atomicall
         "failed queue append rolls back its journal settlement"
     );
 
-    let operation = serde_json::from_value(case["before"]["operation"].clone()).expect("operation");
+    let operation = record(&store, id).operation.expect("operation");
     monitor_event_queue::enqueue_probe(
         &store,
         id,
@@ -1863,7 +1891,7 @@ async fn output_queue_enforces_byte_limit_and_keeps_room_for_terminal_receipts()
         error,
         studio_runtime_services::notification_dispatch::NotificationDispatchError::StreamCapacity
     ));
-    let operation = serde_json::from_value(case["before"]["operation"].clone()).expect("operation");
+    let operation = record(&store, id).operation.expect("operation");
     assert!(
         monitor_event_queue::enqueue_probe(
             &store,
@@ -2007,6 +2035,7 @@ async fn cancellation_recovery_runs_after_a_full_delivery_batch() {
             .lock()
             .expect("deliveries")
             .push_back(delivery(
+                &store,
                 &case,
                 &format!("out:{offset}"),
                 MonitorEvent::Output {
