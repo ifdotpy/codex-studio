@@ -119,7 +119,7 @@ fn git_changes(cwd: &str) -> Result<Value, ApiError> {
 struct ReportedChangePayload {
     diff: String,
     #[serde(rename = "turnId")]
-    turn_id: Option<Value>,
+    turn_id: Option<Box<serde_json::value::RawValue>>,
 }
 
 fn reported_changes(connection: &Connection, agent: &str) -> Result<Value, ApiError> {
@@ -142,16 +142,10 @@ fn reported_changes(connection: &Connection, agent: &str) -> Result<Value, ApiEr
         ));
     }
     let raw = text.or_else(|| item.record.text().value().cloned());
-    let payload: Value = serde_json::from_str(raw.as_deref().unwrap_or_default())
-        .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "The recorded changes are invalid"))?;
-    if !payload.is_object() {
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "The recorded changes are invalid",
-        ));
-    }
-    let payload: ReportedChangePayload = serde::Deserialize::deserialize(payload)
-        .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "The recorded changes are invalid"))?;
+    let studio_runtime_schema::json_object::JsonObject(payload): studio_runtime_schema::json_object::JsonObject<ReportedChangePayload> =
+        serde_json::from_str(raw.as_deref().unwrap_or_default()).map_err(|_| {
+            ApiError::new(StatusCode::BAD_REQUEST, "The recorded changes are invalid")
+        })?;
     let files = reported_change_files(&payload.diff);
     let truncated = payload.diff.chars().count() > 300_000;
     let diff = payload.diff.chars().take(300_000).collect::<String>();
@@ -604,8 +598,8 @@ mod tests {
             (
                 r#"{"diff":"first","diff":"second","turnId":null}"#,
                 json!({}),
-                StatusCode::OK,
-                json!({"diff":"second","turnId":null}),
+                StatusCode::BAD_REQUEST,
+                json!({"error":"The recorded changes are invalid"}),
             ),
             (
                 r#"{"diff":9}"#,
@@ -622,8 +616,8 @@ mod tests {
             (
                 r#"{"diff":"ok","extra":1e400}"#,
                 json!({}),
-                StatusCode::BAD_REQUEST,
-                json!({"error":"The recorded changes are invalid"}),
+                StatusCode::OK,
+                json!({"diff":"ok"}),
             ),
             (
                 r#"["diff"]"#,
@@ -695,8 +689,11 @@ mod tests {
         ] {
             let value: Value = serde_json::from_str(raw).unwrap();
             let expected = value.get("turnId").cloned().unwrap_or(Value::Null);
-            let payload: super::ReportedChangePayload = serde_json::from_value(value).unwrap();
-            assert_eq!(payload.turn_id.unwrap_or(Value::Null), expected);
+            let payload: super::ReportedChangePayload = serde_json::from_str(raw).unwrap();
+            let actual = payload
+                .turn_id
+                .map_or(Value::Null, |raw| serde_json::from_str(raw.get()).unwrap());
+            assert_eq!(actual, expected);
         }
         assert!(
             serde_json::from_str::<Value>(&format!(

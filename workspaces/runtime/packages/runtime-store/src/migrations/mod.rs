@@ -40,6 +40,7 @@ mod m2026_10_29_request_results_v2;
 mod m2026_10_30_agent_volatile;
 mod m2026_10_30_rule_monitor_records;
 mod m2026_10_30_unused_agent_columns;
+mod m2026_10_30_unused_start_action;
 
 #[cfg(any(test, feature = "test-support"))]
 pub use m2026_10_20_agents::migrate_2026_10_20;
@@ -286,6 +287,16 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| m2026_10_30_unused_agent_columns::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-unused-start-action",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Agent records with an unread stored start action",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_unused_start_action::apply(c.transaction),
     },
     &SqlMigration {
         definition: MigrationDefinition {

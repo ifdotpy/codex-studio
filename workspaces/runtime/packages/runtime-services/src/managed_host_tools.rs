@@ -990,24 +990,14 @@ pub(crate) fn agent_ancestry(
     sender: &str,
     target: &str,
 ) -> Result<AgentAncestry, Error> {
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct ParentEdge {
-        root_id: String,
-        parent_id: Option<String>,
-    }
-
-    fn edge(tx: &Transaction<'_>, id: &str) -> Result<Option<ParentEdge>, Error> {
-        studio_runtime_store::system_reads::get(tx, "runtime_agents", id)?
-            .map(|value| {
-                serde_json::from_value(value).map_err(|_| {
-                    Error::Store(studio_runtime_store::system_reads::invalid(
-                        "runtime_agents",
-                        id,
-                    ))
-                })
-            })
-            .transpose()
+    fn edge(
+        tx: &Transaction<'_>,
+        id: &str,
+    ) -> Result<Option<studio_runtime_store::AgentRecord>, Error> {
+        Ok(studio_runtime_store::AgentRepository::get(
+            tx,
+            &studio_runtime_store::AgentId::from(id),
+        )?)
     }
 
     if !is_agent_target(target) {

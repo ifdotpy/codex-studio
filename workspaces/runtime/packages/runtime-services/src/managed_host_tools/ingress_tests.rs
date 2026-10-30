@@ -4016,7 +4016,7 @@ async fn ancestry_reads_only_the_checked_parent_chain() {
             if let rusqlite::trace::TraceEvent::Stmt(statement, _) = event
                 && statement
                     .sql()
-                    .starts_with("SELECT record FROM runtime_agents WHERE id=")
+                    .starts_with("SELECT record FROM \"runtime_agents\" WHERE id =")
             {
                 ANCESTRY_READS.with(|count| count.set(count.get() + 1));
             }

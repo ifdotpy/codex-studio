@@ -1165,19 +1165,18 @@ impl MonitorRuntime {
                 "runtime-services/monitor_runtime_wiring",
                 move |connection| {
                     let (caller_id, id) = (read_caller.as_str(), read_id.as_str());
-                    let caller = studio_runtime_store::system_reads::get(
+                    let caller = studio_runtime_store::AgentRepository::get(
                         connection,
-                        "runtime_agents",
-                        caller_id,
+                        &studio_runtime_store::AgentId::from(caller_id),
                     )?
                     .ok_or(
                         studio_runtime_store::StoreError::RecordContract(
                             "Monitor input caller is no longer active",
                         ),
                     )?;
-                    if caller.get("epoch").and_then(Value::as_i64) != Some(caller_epoch)
-                        || caller.get("autoWake") != Some(&Value::Bool(true))
-                        || studio_runtime_store::truthy(caller.get("deletedAt"))
+                    if caller.epoch != caller_epoch
+                        || caller.auto_wake != Some(true)
+                        || caller.is_deleted()
                     {
                         return Err(studio_runtime_store::StoreError::RecordContract(
                             "Monitor input caller is no longer active",
@@ -2213,6 +2212,31 @@ mod tests {
             })
             .await
             .expect("persist active owner fixture");
+    }
+
+    #[tokio::test]
+    async fn input_checks_typed_owner_before_monitor() {
+        let (_root, store, port) = fixture().await;
+        insert_active_owner(&store).await;
+        let runtime = MonitorRuntime::new(store, port, Arc::new(Notify::new()));
+        let input = crate::monitor_policy::Input {
+            text: "hello".into(),
+            rows: None,
+            cols: None,
+            close_stdin: false,
+        };
+        for (epoch, expected) in [
+            (1, "Monitor input caller is no longer active"),
+            (0, "Unknown monitor in this caller's scope"),
+        ] {
+            let error = runtime
+                .input_for_owner("owner", epoch, "missing", "ticket", &input, 0.0)
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(error, MonitorError::Store(studio_runtime_store::StoreError::RecordContract(message)) if message == expected)
+            );
+        }
     }
 
     #[tokio::test]

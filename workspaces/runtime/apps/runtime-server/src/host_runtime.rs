@@ -26,6 +26,7 @@ use studio_runtime_process::{
     provider_seam::{OpenOptions, ProviderTaskFactory, SessionClock, Shutdown},
     provider_task::SupervisorProviderTaskFactory,
 };
+use studio_runtime_schema::json_object::JsonObject;
 use studio_runtime_services::{
     account_driver::{AccountDriver, AccountStatus, ProviderAuthReader},
     account_worker::{WorkerError, preparation::PreparationResources},
@@ -1592,14 +1593,7 @@ fn read_vm_claude_oauth(
             bytes
         }
     };
-    let value: Value = serde_json::from_slice(&bytes)
-        .map_err(|_| WorkerError::PreparationRefused("vm-credentials/invalid".into()))?;
-    if !value.is_object() {
-        return Err(WorkerError::PreparationRefused(
-            "vm-credentials/invalid".into(),
-        ));
-    }
-    let file: VmClaudeCredentialFile = serde::Deserialize::deserialize(&value)
+    let JsonObject(file): JsonObject<VmClaudeCredentialFile> = serde_json::from_slice(&bytes)
         .map_err(|_| WorkerError::PreparationRefused("vm-credentials/invalid".into()))?;
     Ok(file.claude_ai_oauth.0)
 }
@@ -1814,6 +1808,11 @@ fn find_vm_node() -> Option<PathBuf> {
     is_executable(&homebrew_node).then_some(homebrew_node)
 }
 
+#[derive(serde::Deserialize)]
+struct RefreshReady {
+    ready: bool,
+}
+
 /// Invoke the bridge.mjs launcher in authentication-refresh mode, matching
 /// `codex_linux_vm_auth.py:122-156`. It emits one bounded readiness line; the
 /// caller releases its held query only after the on-disk access token is
@@ -1905,17 +1904,9 @@ fn run_vm_claude_refresh_helper(
             }
         }
     };
-    let ready: Value = match serde_json::from_str(ready_line.trim()) {
-        Ok(ready) => ready,
-        Err(_) => {
-            stop_vm_claude_refresh_child(&mut *child)?;
-            drop(ready_reader);
-            return Err(WorkerError::PreparationPending(
-                "vm-credentials/refresh-readiness-failed".into(),
-            ));
-        }
-    };
-    if ready != json!({"ready":true}) || ready_line.len() > CLAUDE_REFRESH_READINESS_LINE_LIMIT {
+    let ready = serde_json::from_str::<JsonObject<RefreshReady>>(ready_line.trim())
+        .is_ok_and(|ready| ready.0.ready);
+    if !ready || ready_line.len() > CLAUDE_REFRESH_READINESS_LINE_LIMIT {
         stop_vm_claude_refresh_child(&mut *child)?;
         drop(ready_reader);
         return Err(WorkerError::PreparationPending(
@@ -3847,7 +3838,7 @@ mod vm_claude_refresh_tests {
                 json!({"accessToken":" ","expiresAt":1,"scopes":[null,7,"user:inference"],"subscriptionType":null,"rateLimitTier":{"n":1.0}}),
             ),
             (
-                r#"{"claudeAiOauth":{"accessToken":"old","accessToken":"new","expiresAt":1.0,"scopes":["user:inference"]}}"#,
+                r#"{"claudeAiOauth":{"accessToken":"new","expiresAt":1.0,"scopes":["user:inference"]}}"#,
                 json!({"accessToken":"new","expiresAt":1.0,"scopes":["user:inference"]}),
             ),
         ] {
@@ -3862,6 +3853,8 @@ mod vm_claude_refresh_tests {
             assert_eq!(encoded["claudeAiOauth"], expected);
         }
         for raw in [
+            r#"{"claudeAiOauth":{"accessToken":"old","accessToken":"new","expiresAt":1,"scopes":["user:inference"]}}"#,
+            "[]",
             r#"{"claudeAiOauth":{"accessToken":"","expiresAt":1,"scopes":["user:inference"]}}"#,
             r#"{"claudeAiOauth":{"accessToken":"x","expiresAt":1e400,"scopes":["user:inference"]}}"#,
             r#"{"claudeAiOauth":{"accessToken":"x","expiresAt":1,"scopes":[7]}}"#,
@@ -3981,6 +3974,8 @@ IFS= read -r release
         let access = read_vm_claude_oauth(&credential_path, true).unwrap();
         assert_eq!(access.access_token, "fresh-fake-token");
         assert!(access.expiry_ms > now_ms);
+        fs::write(&node, "#!/bin/sh\nprintf '{\"ready\":false}\\n'\n").unwrap();
+        assert!(run_vm_claude_refresh_helper(&node, &helper, &environment, || Ok(true)).is_err());
     }
 
     #[test]

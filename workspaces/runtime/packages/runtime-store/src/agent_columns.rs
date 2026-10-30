@@ -101,7 +101,7 @@ const PROVIDER_COLUMN: AgentColumn =
 
 /// The indexed agent fields; see the module documentation. Changing this list
 /// changes the table and needs a new dated migration.
-pub const AGENT_COLUMNS: [AgentColumn; 41] = [
+pub const AGENT_COLUMNS: [AgentColumn; 40] = [
     column("root_id", "TEXT", "record->>'$.rootId'", ""),
     column("parent_id", "TEXT", "record->>'$.parentId'", ""),
     column("status", "TEXT", "record->>'$.status'", ""),
@@ -144,12 +144,6 @@ pub const AGENT_COLUMNS: [AgentColumn; 41] = [
         "native_tool_refresh_id",
         "TEXT",
         "record->>'$.nativeToolRefreshId'",
-        "",
-    ),
-    column(
-        "start_attempt_action",
-        "TEXT",
-        "record->>'$.startAttempt.action'",
         "",
     ),
     column(
@@ -615,7 +609,9 @@ mod tests {
                 // dependent partial index that must be dropped before its column.
                 let old_table = table_sql("runtime_agents_capacity_fixture").replace(
                     "record TEXT NOT NULL",
-                    "capacity_retry_id TEXT GENERATED ALWAYS AS \
+                    "start_attempt_action TEXT GENERATED ALWAYS AS \
+                 (record->>'$.startAttempt.action') STORED,\
+                 capacity_retry_id TEXT GENERATED ALWAYS AS \
                  (record->>'$.capacityRetry.id') STORED,\
                  start_attempt_capacity_retry_id TEXT GENERATED ALWAYS AS \
                  (record->>'$.startAttempt.capacityRetryId') STORED,record TEXT NOT NULL",
@@ -693,6 +689,7 @@ mod tests {
             "capacity_retry_id",
             "capacity_retry_status",
             "capacity_retry_due_at",
+            "start_attempt_action",
         ] {
             let exists: bool = connection.query_row(
                 "SELECT EXISTS(SELECT 1 FROM pragma_table_xinfo('runtime_agents') WHERE name=?1)",

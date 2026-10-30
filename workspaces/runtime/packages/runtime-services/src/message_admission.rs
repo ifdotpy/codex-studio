@@ -135,23 +135,20 @@ impl MessageAdmission for PreparedAdmission {
             }
             unsupported_operation |= !matches!(operation, "checkpoint" | "capture");
             let mut blocker = json!({"agentId":id,"operation":operation});
-            if let Some(id) = other
+            let record = other
                 .extra
                 .get("workspaceReservationId")
                 .and_then(Value::as_str)
-                && let Some(record) =
-                    studio_runtime_store::system_reads::get(tx, "runtime_workspace_operations", id)?
-            {
-                for key in ["phase", "created", "turnId"] {
-                    blocker[key] = record.get(key).cloned().unwrap_or(Value::Null);
-                }
-                blocker["operationId"] = record["id"].clone();
-            }
-            if !matches!(operation, "checkpoint" | "capture")
-                && blocker.get("operationId").is_none()
-                && let Some(record) = other_operation(tx, &id)?
-            {
-                blocker["phase"] = serde_json::json!(record.phase);
+                .map(|id| studio_runtime_store::workspace_operations::WorkspaceOperationsRepository::operation(tx, id))
+                .transpose()?
+                .flatten();
+            let record = if record.is_none() && !matches!(operation, "checkpoint" | "capture") {
+                other_operation(tx, &id)?
+            } else {
+                record
+            };
+            if let Some(record) = record {
+                blocker["phase"] = json!(record.phase);
                 for key in ["created", "turnId"] {
                     blocker[key] = record.extensions().get(key).cloned().unwrap_or(Value::Null);
                 }
@@ -260,13 +257,15 @@ fn provision_destination(
         return Ok(None);
     };
     let Some(record) =
-        studio_runtime_store::system_reads::get(tx, "runtime_workspace_operations", id)?
+        studio_runtime_store::workspace_operations::WorkspaceOperationsRepository::operation(
+            tx, id,
+        )?
     else {
         return Ok(None);
     };
-    let owned = record.get("kind").and_then(Value::as_str) == Some("provision")
-        && record.get("agent").and_then(Value::as_str) == Some(agent.id.0.as_str());
-    let destination = record.get("cwd").and_then(Value::as_str);
+    let owned = record.kind == studio_runtime_schema::workspace_operation::OperationKind::Provision
+        && record.agent == agent.id.0;
+    let destination = record.extensions().get("cwd").and_then(Value::as_str);
     Ok(destination.filter(|_| owned).map(std::path::PathBuf::from))
 }
 
