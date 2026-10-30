@@ -739,39 +739,6 @@ pub(crate) fn record_capture_errors(
     Ok(())
 }
 
-/// Retain the legacy process-scoped receipt tables while volatile token-rate
-/// publication is owned by `TokenRateHub`.
-pub async fn start_token_rate_process(
-    store: &RuntimeStore,
-    process_id: String,
-) -> Result<(), CaptureError> {
-    if process_id.is_empty() || process_id.len() > 128 {
-        return Err(CaptureError::Invalid("/processId"));
-    }
-    store.analytics_transaction(move |tx, _| {
-        tx.execute_batch(
-            "CREATE TABLE IF NOT EXISTS token_rate_receipt_process (id INTEGER PRIMARY KEY CHECK(id=1),process_id TEXT NOT NULL);\
-             CREATE TABLE IF NOT EXISTS token_rate_publication_receipts (process_id TEXT NOT NULL,provider TEXT NOT NULL,generation INTEGER NOT NULL,cursor INTEGER NOT NULL,effects INTEGER NOT NULL,PRIMARY KEY(process_id,provider));",
-        )?;
-        let current: Option<String> = tx
-            .query_row_cached(
-                "SELECT process_id FROM token_rate_receipt_process WHERE id=1",
-                [],
-                |row| row.get(0),
-            )
-            .optional()?;
-        if current.as_deref() != Some(process_id.as_str()) {
-            tx.execute_cached("DELETE FROM token_rate_publication_receipts", [])?;
-            tx.execute_cached(
-                "INSERT INTO token_rate_receipt_process(id,process_id) VALUES (1,?1) ON CONFLICT(id) DO UPDATE SET process_id=excluded.process_id",
-                [process_id.as_str()],
-            )?;
-        }
-        Ok(())
-    })
-    .await
-}
-
 /// Preserve the lossy queue's overflow count in analytics coverage metadata.
 /// Python's Runtime.schedule_analytics_captures records queueOverflow instead
 /// of failing the already committed provider notification.
