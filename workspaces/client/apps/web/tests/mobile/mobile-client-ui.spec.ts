@@ -16,7 +16,6 @@ import {
 } from "../playwright.ts";
 // Isolated server and headless browser. No model requests or user state.
 import assert from "node:assert/strict";
-import { fixtureStateDirectory } from "../fixtures/rust-ui-fixture.ts";
 import { mkdtemp, mkdir, writeFile, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -513,6 +512,20 @@ async function setupMobile320Composer(testBrowser: Browser) {
       // Inherited exclusions (for example "*") would bypass that proxy.
       NO_PROXY: "127.0.0.1,localhost",
       no_proxy: "127.0.0.1,localhost",
+      FIXTURE_PRICING_ARTIFACT: JSON.stringify({
+        version: 1,
+        fetchedAtEpoch: Date.now() / 1000,
+        catalog: {
+          providers: {
+            openai: {
+              models: { "gpt-5.6-sol": { cost: { input: 1, output: 1 } } },
+            },
+            anthropic: {
+              models: { "claude-test": { cost: { input: 1, output: 1 } } },
+            },
+          },
+        },
+      } satisfies PricingArtifact),
       FIXTURE_AGENT_STEPS: JSON.stringify({
         "Release lead": [
           {
@@ -548,28 +561,6 @@ async function setupMobile320Composer(testBrowser: Browser) {
       timeoutMs: 90000,
       diagnostics: () => log,
     });
-    // The real SSE cost projection needs a pricing artifact. The former GET
-    // stub cannot supply a sessionCost entity to the current client. The
-    // server refuses a non-empty fresh state directory, so write it here.
-    const pricing = join(fixtureStateDirectory(state), "model-pricing");
-    await mkdir(pricing, { recursive: true });
-    await writeFile(
-      join(pricing, "models-dev-v1.json"),
-      JSON.stringify({
-        version: 1,
-        fetchedAtEpoch: Date.now() / 1000,
-        catalog: {
-          providers: {
-            openai: {
-              models: { "gpt-5.6-sol": { cost: { input: 1, output: 1 } } },
-            },
-            anthropic: {
-              models: { "claude-test": { cost: { input: 1, output: 1 } } },
-            },
-          },
-        },
-      } satisfies PricingArtifact),
-    );
     const page = await testBrowser.newPage({
       viewport: { width: 390, height: 844 },
       isMobile: true,
