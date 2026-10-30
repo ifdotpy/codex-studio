@@ -841,10 +841,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_declined_card_is_answered_and_tells_the_chat() {
+    async fn a_declined_card_leaves_the_client_and_tells_the_chat() {
         let (_dir, store, id) = store_with_browser_request().await;
+        let shown = id.clone();
         store
             .transaction_with(move |tx| {
+                // The pending card is shown to the client.
+                let (row, _) = crate::browser_cards::load(tx, &shown).expect("card").expect("card");
+                crate::approval_sync::publish(tx, &row)?;
                 // The decline tells the chat, so the chat exists.
                 tx.execute(
                     "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
@@ -875,6 +879,19 @@ mod tests {
         .expect("browser card is handled");
         let (row, _) = fixture::read(&store, &id);
         assert!(matches!(row.state, ApprovalState::Answered { .. }));
+        let live = |store: &studio_runtime_store::RuntimeStore| {
+            let id = id.clone();
+            store
+                .test_read_transaction(move |tx| {
+                    Ok(tx.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM sync_entities WHERE collection='request' AND id=?1 AND deleted=0)",
+                        [id],
+                        |row| row.get::<_, bool>(0),
+                    )?)
+                })
+                .expect("request entity reads")
+        };
+        assert!(!live(&store), "a declined card leaves the client");
         let events: i64 = store
             .test_reader()
             .expect("read")

@@ -82,6 +82,30 @@ fn request(store: &studio_runtime_store::RuntimeStore, bridge: &str) -> Option<(
     super::fixture::read_optional(store, &card_id(bridge))
 }
 
+/// The client entity of a card: `None` when it was never published, else whether it is
+/// retired and its value.
+fn request_entity(
+    store: &studio_runtime_store::RuntimeStore,
+    bridge: &str,
+) -> Option<(bool, Value)> {
+    use rusqlite::OptionalExtension;
+    store
+        .test_read_transaction(|tx| {
+            Ok(tx
+                .query_row(
+                    "SELECT deleted,payload FROM sync_entities WHERE collection='request' AND id=?1",
+                    [card_id(bridge)],
+                    |row| Ok((row.get::<_, bool>(0)?, row.get::<_, String>(1)?)),
+                )
+                .optional()?)
+        })
+        .expect("request entity reads")
+        .map(|(deleted, payload)| {
+            let payload: Value = serde_json::from_str(&payload).expect("entity JSON");
+            (deleted, payload["value"].clone())
+        })
+}
+
 /// Change a stored card, as an answer or startup recovery does.
 async fn edit(
     store: &studio_runtime_store::RuntimeStore,
@@ -126,6 +150,11 @@ async fn a_card_is_stored_while_pending_and_closes_with_its_request() {
     assert_eq!(card.user_code.as_deref(), Some("ABCD-EFGH"));
     assert_eq!(card.expires_at, Some(Timestamp(601.0)));
     assert_eq!(card.phase, BrowserPhase::Link);
+    let (retired, entity) = request_entity(&store, &device).expect("the pending card is published");
+    assert!(!retired);
+    assert_eq!(entity["id"], card_id(&device));
+    assert_eq!(entity["request"]["kind"], "browser_open");
+    assert_eq!(entity["state"]["kind"], "pending");
     poll_once(&store, &source, 1, 0, None)
         .await
         .expect("test step");
@@ -135,6 +164,8 @@ async fn a_card_is_stored_while_pending_and_closes_with_its_request() {
         ApprovalState::Closed { reason: CloseReason::Expired, .. }
     ));
     assert_eq!(row.detail.host_close_reason.as_deref(), Some("closed"));
+    let (retired, _) = request_entity(&store, &device).expect("the closed card stays known");
+    assert!(retired, "a closed card leaves the client");
 }
 
 #[tokio::test]

@@ -133,7 +133,8 @@ pub(crate) fn load(
     }))
 }
 
-/// Store a changed card and publish its client view in the same transaction.
+/// Store a changed card and publish its client view in the same transaction. The renderer
+/// shows a card only while it is pending; a closed card loses its entity.
 pub(crate) fn save(
     tx: &Transaction<'_>,
     mut row: Approval,
@@ -141,24 +142,8 @@ pub(crate) fn save(
 ) -> Result<(), BrowserCardError> {
     row.request = Request::BrowserOpen(card);
     approvals::put(tx, &row)?;
-    publish_request(tx, row.id.as_str())?;
+    crate::approval_sync::publish(tx, &row)?;
     Ok(())
-}
-
-/// Publish the client view of a stored card in the writer's transaction. The renderer shows
-/// a card only through its `request` entity: a pending card has one, and a closed card loses it.
-pub(crate) fn publish_request(
-    tx: &Transaction<'_>,
-    id: &str,
-) -> Result<(), studio_runtime_store::StoreError> {
-    let changes = crate::sync_policy::EntityChanges {
-        requests: BTreeSet::from([id.to_owned()]),
-        ..Default::default()
-    };
-    let server_id = RuntimeStore::transaction_local_server_id(tx)?;
-    crate::sync_policy::publish_entity_changes(tx, &changes, server_id.as_deref(), &|_, _, _, _| {
-        true
-    })
 }
 
 fn optional_text<T: ToString>(value: Option<T>) -> String {
@@ -439,7 +424,7 @@ pub async fn apply(
                                     },
                                     Timestamp(now),
                                 )?;
-                                publish_request(tx, row.id.as_str())?;
+                                crate::approval_sync::publish(tx, &row)?;
                             }
                             None => applied.refused = Some("The card is invalid".into()),
                         }
