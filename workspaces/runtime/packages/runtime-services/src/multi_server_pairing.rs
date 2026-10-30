@@ -66,9 +66,14 @@ impl DispatchPrincipal {
     pub fn principal(&self) -> crate::principal::Principal {
         use crate::principal::Principal;
         if self.kind == "server" {
-            Principal::Peer { server: self.client_id.clone() }
+            Principal::Peer {
+                server: self.client_id.clone(),
+            }
         } else {
-            Principal::Device { id: self.client_id.clone(), grant: self.grant }
+            Principal::Device {
+                id: self.client_id.clone(),
+                grant: self.grant,
+            }
         }
     }
 }

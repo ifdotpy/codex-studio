@@ -117,7 +117,6 @@ pub mod multi_server_auth;
 pub mod multi_server_discovery;
 pub mod multi_server_orchestration;
 pub mod multi_server_pairing;
-pub mod principal;
 pub(crate) mod multi_server_tools;
 /// Shared signed server-to-server transport API. Production callers use the
 /// durable HTTPS adapter; tests and transport alternatives implement
@@ -141,6 +140,7 @@ pub mod peer_update_pull;
 pub mod peer_updates;
 pub mod portable_history;
 pub mod pricing;
+pub mod principal;
 pub mod process_controls;
 pub mod project_deletion;
 pub mod project_locations;

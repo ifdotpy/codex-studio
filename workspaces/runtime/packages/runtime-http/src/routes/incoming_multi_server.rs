@@ -168,8 +168,7 @@ async fn serve_inner(state: HttpState, request: Request<Body>, next: Next) -> Re
             Err(e) => failure(e),
         };
     }
-    let supported = SIGNED_BOUNDARY
-        .contains(&(request.method().as_str(), request.uri().path()))
+    let supported = SIGNED_BOUNDARY.contains(&(request.method().as_str(), request.uri().path()))
         && request.uri().path() != multi_server_auth::IDENTITY_PATH;
     if !supported {
         return dispatch(state, request, boundary, peer_link_advert, next).await;

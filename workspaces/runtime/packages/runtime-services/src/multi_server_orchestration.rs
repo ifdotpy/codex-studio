@@ -1187,9 +1187,14 @@ impl RuntimeOrchestrationEffects {
                             })?;
                         if target.root_id != worker.root_id
                             || target.id == worker.id
-                            || !crate::managed_host_tools::is_descendant(tx, &worker_id, target_id).map_err(|_| {
-                                refused(503, "invalid_record", "A stored agent record is invalid")
-                            })?
+                            || !crate::managed_host_tools::is_descendant(tx, &worker_id, target_id)
+                                .map_err(|_| {
+                                    refused(
+                                        503,
+                                        "invalid_record",
+                                        "A stored agent record is invalid",
+                                    )
+                                })?
                             || target.auto_wake != Some(true)
                         {
                             return Err(refused(
