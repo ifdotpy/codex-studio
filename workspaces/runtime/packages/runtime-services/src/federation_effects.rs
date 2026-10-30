@@ -124,6 +124,20 @@ fn consume_nonce(
     Ok(())
 }
 
+/// The caller of a federation request as a principal. Call it only after the signature
+/// check passed: the peer id is then the verified key holder, not a header claim.
+fn verified_peer(peer_id: &str) -> Result<crate::principal::Principal> {
+    use crate::principal::{CommandClass, Principal, access};
+    let principal = Principal::Federated {
+        peer: peer_id.to_owned(),
+    };
+    if access(&principal, CommandClass::Federation).passes_edge() {
+        Ok(principal)
+    } else {
+        Err(Error::Forbidden("federation is not permitted"))
+    }
+}
+
 /// Consumer entry point for the HTTP adapter. Refuses before writing if origin observation is absent.
 pub async fn handle(
     store: Arc<RuntimeStore>,
@@ -162,6 +176,7 @@ pub async fn handle(
             && observed.to_lowercase()!=expected.to_lowercase() { return Err(Error::Forbidden("origin identity mismatch")); }
         transport::validate_federation_nonce(&nonce,timestamp,now as i64)?;
         transport::verify_signature(&state.peer.public_key,&transport::federation_signing_bytes("POST",action.path(),timestamp,&nonce,&raw),&signature)?;
+        let _principal = verified_peer(&peer_id)?;
         match action {
             FederationAction::Pair => return Err(Error::Invalid("action")),
             FederationAction::Message=>core::validate("MessageRequest",&body,"body")?,
@@ -231,6 +246,7 @@ async fn handle_pair(
         ),
         request.signature,
     )?;
+    let _principal = verified_peer(request.peer_id)?;
     let whois_status = if let Some(observed_user) = &observed {
         if body
             .tailscale_user

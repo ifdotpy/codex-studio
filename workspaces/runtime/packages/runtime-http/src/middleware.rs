@@ -138,20 +138,11 @@ pub(crate) async fn boundary(
         };
         return error_response(StatusCode::FORBIDDEN, message);
     }
-    // The signed path stored its principal. A federation request names its peer in a
-    // header; the handler verifies the signature. Every other caller passed the token,
-    // loopback, or Tailscale Serve check above and acts as the owner.
-    let principal = match request.extensions().get::<Principal>() {
-        Some(principal) => principal.clone(),
-        None if write && is_federation_path(&path) => Principal::Federated {
-            peer: headers
-                .get("x-studio-federation-state")
-                .and_then(|value| value.to_str().ok())
-                .unwrap_or_default()
-                .to_owned(),
-        },
-        None => Principal::Owner,
-    };
+    // The signed path stored its principal. Every other caller passed the token,
+    // loopback, or Tailscale Serve check above and acts as the owner. A federation
+    // request gets no principal here: its handler verifies the signature and only then
+    // builds `Federated`, never from a header.
+    let mut principal = None;
     if api {
         let class = matched_operation
             .as_ref()
@@ -163,11 +154,14 @@ pub(crate) async fn boundary(
                 },
             )
             .unwrap_or(principal::CommandClass::OwnerOnly);
-        if !principal::access(&principal, class).passes_edge() {
-            return error_response(
-                StatusCode::FORBIDDEN,
-                "This caller may not run this command",
-            );
+        match edge_check(request.extensions().get::<Principal>(), class) {
+            Ok(checked) => principal = checked,
+            Err(()) => {
+                return error_response(
+                    StatusCode::FORBIDDEN,
+                    "This caller may not run this command",
+                );
+            }
         }
     }
     if api
@@ -303,8 +297,27 @@ pub(crate) async fn boundary(
         }
     }
 
-    request.extensions_mut().insert(principal);
+    if let Some(principal) = principal {
+        request.extensions_mut().insert(principal);
+    }
     next.run(request).await
+}
+
+/// The edge decision for a caller and a route class. `Ok(None)` defers a federation
+/// route to its handler, which verifies the signature before it builds `Federated`.
+pub(crate) fn edge_check(
+    signed: Option<&Principal>,
+    class: principal::CommandClass,
+) -> Result<Option<Principal>, ()> {
+    if class == principal::CommandClass::Federation && signed.is_none() {
+        return Ok(None);
+    }
+    let caller = signed.cloned().unwrap_or(Principal::Owner);
+    if principal::access(&caller, class).passes_edge() {
+        Ok(Some(caller))
+    } else {
+        Err(())
+    }
 }
 
 /// Capture value-free HTTP timing under Axum's matched route template. This
