@@ -88,8 +88,11 @@ impl Fixture {
             studio_runtime_store::path_identity::resolve(root.path()).expect("canonical fixture");
         let home = cwd.join("home");
         std::fs::create_dir_all(&home).expect("profile");
-        std::fs::write(home.join("auth.json"), json!({"OPENAI_API_KEY":"k"}).to_string())
-            .expect("auth");
+        std::fs::write(
+            home.join("auth.json"),
+            json!({"OPENAI_API_KEY":"k"}).to_string(),
+        )
+        .expect("auth");
         let registry = json!({
             "version": studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,
             "defaultAccountKey": ACCOUNT,
@@ -132,22 +135,21 @@ impl Fixture {
         tokio::time::advance(age).await;
     }
 
-    async fn spawn_decision(
-        &self,
-        model: &str,
-    ) -> Result<(), ManagedCreationEnvironmentError> {
+    async fn spawn_decision(&self, model: &str) -> Result<(), ManagedCreationEnvironmentError> {
         self.environment.wait_for_catalog(ACCOUNT).await?;
         let active = HashMap::new();
-        let (key, identity) = self.environment.select_worker_account(WorkerAccountRequest {
-            parent_account_key: ACCOUNT,
-            requested_account_key: Some(ACCOUNT),
-            default_account_key: None,
-            model,
-            excluded_account_keys: &[],
-            project_account_keys: None,
-            project_account_groups: None,
-            active_agents: &active,
-        })?;
+        let (key, identity) = self
+            .environment
+            .select_worker_account(WorkerAccountRequest {
+                parent_account_key: ACCOUNT,
+                requested_account_key: Some(ACCOUNT),
+                default_account_key: None,
+                model,
+                excluded_account_keys: &[],
+                project_account_keys: None,
+                project_account_groups: None,
+                active_agents: &active,
+            })?;
         // A review resolves its reviewer model through the same catalog owner.
         self.environment
             .catalog()
