@@ -113,6 +113,20 @@ test.each(["headers", "body"])(
   },
 );
 
+test("a starting or migrating server is waited for, not called incompatible", async () => {
+  virtualTimeouts();
+  const fetch = vi.fn(async () =>
+    fetch.mock.calls.length < 3
+      ? new Response("migrating", { status: 503 })
+      : Response.json(record),
+  );
+  vi.stubGlobal("fetch", fetch);
+  const pending = identity("http://backend.invalid", state, timing);
+  await vi.advanceTimersByTimeAsync(2 * timing.retryDelayMs);
+  assert.deepEqual(await pending, record);
+  assert.equal(fetch.mock.calls.length, 3);
+});
+
 test("a server that never responds reaches a bounded failure", async () => {
   virtualTimeouts();
   vi.stubGlobal("fetch", async (_url: unknown, { signal }: RequestInit) =>
