@@ -168,7 +168,6 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                 Network(Request),
                 Action(Request),
                 Desktop(Request),
-                RichDocument(Request),
                 Startup(Request),
                 Delivery(Request),
                 Sync(Request),
@@ -191,14 +190,6 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                 // Pure computations never wait behind database writes: the UI
                 // calls several of them synchronously.
                 Ok(request) if pure(&request.method) => Work::Immediate(compute(&request)),
-                Ok(request)
-                    if matches!(
-                        request.method.as_str(),
-                        "document.render" | "document.diagram"
-                    ) =>
-                {
-                    Work::RichDocument(request)
-                }
                 Ok(request) if request.method.starts_with("speech.") => Work::Speech(request),
                 Ok(request) if request.method.starts_with("media.") => Work::Media(request),
                 Ok(request) if request.method == "notifications.show" => Work::Notify(request),
@@ -259,7 +250,6 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                             Err(error) => Response::failure(request.id, "backend_startup", error),
                         }
                     }
-                    Work::RichDocument(request) => crate::rich_document::dispatch(request).await,
                     Work::Desktop(request) => {
                         crate::desktop::dispatch(
                             request,
