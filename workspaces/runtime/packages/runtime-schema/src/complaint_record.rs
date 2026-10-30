@@ -29,11 +29,11 @@ pub enum ComplaintSource {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ComplaintResponse {
-    pub id: String,
-    pub author: String,
-    pub text: String,
-    pub status: crate::complaints::ComplaintResponseStatus,
     pub at: f64,
+    pub author: String,
+    pub id: String,
+    pub status: crate::complaints::ComplaintResponseStatus,
+    pub text: String,
 }
 
 fn required_nullable<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
@@ -66,24 +66,24 @@ pub struct ComplaintRecord {
     #[serde(deserialize_with = "required_nullable")]
     #[schemars(required, schema_with = "nullable_string")]
     pub text: Option<String>,
-    pub recipient: ComplaintRecipient,
-    #[serde(deserialize_with = "required_nullable")]
-    #[schemars(required, schema_with = "nullable_integer")]
-    pub version: Option<i64>,
     #[serde(deserialize_with = "required_nullable")]
     #[schemars(required, schema_with = "nullable_number")]
     pub created: Option<f64>,
     #[serde(deserialize_with = "required_nullable")]
     #[schemars(required, schema_with = "nullable_number")]
-    pub updated: Option<f64>,
-    #[serde(deserialize_with = "required_nullable")]
-    #[schemars(required, schema_with = "nullable_number")]
     pub read_at: Option<f64>,
+    pub recipient: ComplaintRecipient,
     pub responses: Vec<ComplaintResponse>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_type: Option<ComplaintSource>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    #[serde(deserialize_with = "required_nullable")]
+    #[schemars(required, schema_with = "nullable_number")]
+    pub updated: Option<f64>,
+    #[serde(deserialize_with = "required_nullable")]
+    #[schemars(required, schema_with = "nullable_integer")]
+    pub version: Option<i64>,
 }
 
 impl ComplaintRecord {
@@ -136,6 +136,22 @@ mod tests {
         assert!(serde_json::from_str::<ComplaintRecord>(raw).is_ok());
         assert!(serde_json::from_str::<ComplaintRecord>(r#"{"id":"c"}"#).is_err());
         assert!(serde_json::from_str::<ComplaintRecord>(&raw.replace("open", "unknown")).is_err());
+    }
+
+    #[test]
+    fn complaint_receipt_serialization_keeps_historical_field_order() {
+        let raw = r#"{"id":"c","leadId":"l","author":"user","text":"hello","recipient":"lead","version":1,"status":"open","created":1.0,"updated":1.0,"readAt":null,"responses":[]}"#;
+        let record: ComplaintRecord = serde_json::from_str(raw).unwrap();
+        assert_eq!(
+            serde_json::to_string(&record).unwrap(),
+            r#"{"id":"c","author":"user","leadId":"l","status":"open","text":"hello","created":1.0,"readAt":null,"recipient":"lead","responses":[],"updated":1.0,"version":1}"#
+        );
+        let raw = r#"{"id":"c","leadId":"l","author":"user","text":"hello","recipient":"lead","version":1,"status":"open","created":1.0,"updated":1.0,"readAt":null,"responses":[{"id":"r","author":"a","text":"done","status":"resolved","at":2.0}]}"#;
+        let record: ComplaintRecord = serde_json::from_str(raw).unwrap();
+        assert_eq!(
+            serde_json::to_string(&record).unwrap(),
+            r#"{"id":"c","author":"user","leadId":"l","status":"open","text":"hello","created":1.0,"readAt":null,"recipient":"lead","responses":[{"at":2.0,"author":"a","id":"r","status":"resolved","text":"done"}],"updated":1.0,"version":1}"#
+        );
     }
 
     #[test]

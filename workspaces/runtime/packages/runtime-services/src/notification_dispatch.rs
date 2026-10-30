@@ -383,7 +383,7 @@ pub(crate) fn submit_user_message(
     request_id: &str,
     text: &str,
     now: f64,
-) -> Result<Value, NotificationDispatchError> {
+) -> Result<studio_runtime_store::ComplaintRecord, NotificationDispatchError> {
     questions::submit_user_message(tx, lead, request_id, text, now)
 }
 

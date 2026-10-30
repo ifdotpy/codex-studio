@@ -24,7 +24,7 @@
           "type": "string"
         }
       },
-      "required": ["id", "author", "text", "status", "at"],
+      "required": ["at", "author", "id", "status", "text"],
       "type": "object"
     },
     "ComplaintResponseStatus": {
@@ -99,12 +99,12 @@
     "leadId",
     "status",
     "text",
-    "recipient",
-    "version",
     "created",
-    "updated",
     "readAt",
-    "responses"
+    "recipient",
+    "responses",
+    "updated",
+    "version"
   ],
   "title": "ComplaintRecord",
   "type": "object"
