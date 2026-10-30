@@ -252,13 +252,7 @@ pub(crate) fn agent_view_context(
     let mut assigned = Vec::with_capacity(rows.len());
     for (work_id, raw) in rows {
         let assignment = crate::agent_progress::Assignment::decode(&work_id, &raw)?;
-        let work = assignment.value();
-        for result in work
-            .get("results")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
+        for result in assignment.results().into_iter().flatten() {
             if result.get("agent").and_then(Value::as_str) != Some(id) {
                 continue;
             }
