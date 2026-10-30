@@ -53,27 +53,39 @@ pub async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, CallbackContext
     };
     (root, store, context)
 }
+/// Seed a card written as a legacy record. It becomes a typed approval.
 pub async fn card(store: &RuntimeStore, value: &Value) {
-    let id = value["id"].as_str().unwrap().to_owned();
-    let record = value.to_string();
+    let value = value.clone();
     store
         .transaction_with::<_, studio_runtime_store::StoreError>(move |tx| {
-            studio_runtime_store::QuestionsWriteRepository::put_request(tx, &id, &record)
+            studio_runtime_services::provider_callbacks::legacy_view::insert(tx, &value)
         })
         .await
         .unwrap();
 }
+/// The approval as the legacy record showed it.
 pub fn stored(store: &RuntimeStore, id: &str) -> Value {
-    let raw: String = store
-        .test_reader()
-        .unwrap()
-        .query_row(
-            "SELECT record FROM runtime_requests WHERE id=?1",
-            [id],
-            |r| r.get(0),
-        )
-        .unwrap();
-    serde_json::from_str(&raw).unwrap()
+    studio_runtime_services::provider_callbacks::legacy_view::stored(
+        &store.test_reader().unwrap(),
+        id,
+    )
+    .unwrap()
+}
+/// The typed card keeps the outcome of the frozen record: status and decision.
+/// The frozen record also holds Python-only fields (answer hash, redacted
+/// history text, answer time) that the typed row does not have.
+pub fn assert_outcome(actual: &Value, expected: &Value) {
+    assert_eq!(actual["status"], expected["status"], "{}", expected["id"]);
+    if matches!(
+        expected["decision"].as_str(),
+        Some("accept" | "decline" | "cancel" | "answer")
+    ) {
+        assert_eq!(
+            actual["decision"], expected["decision"],
+            "{}",
+            expected["id"]
+        );
+    }
 }
 #[derive(Default)]
 pub struct Port {
@@ -250,9 +262,34 @@ pub fn logical_changes(before: &Value, after: &Value) -> Value {
     }
     Value::Object(result)
 }
+/// Cards are typed rows now. Their frozen legacy writes (the request record and
+/// its sync view) have no counterpart; `assert_outcome` checks the card.
+fn drop_card_writes(changes: &mut Value) {
+    let Some(map) = changes.as_object_mut() else {
+        return;
+    };
+    map.remove("runtime_requests");
+    map.remove("approvals");
+    let mut empty = false;
+    if let Some(sync) = map.get_mut("sync_entities") {
+        for key in ["removed", "added"] {
+            if let Some(rows) = sync[key].as_array_mut() {
+                rows.retain(|row| row[0] != "request");
+            }
+        }
+        empty = ["removed", "added"]
+            .iter()
+            .all(|key| sync[*key].as_array().is_some_and(Vec::is_empty));
+    }
+    if empty {
+        map.remove("sync_entities");
+    }
+}
 pub fn assert_writes(before: &Value, store: &RuntimeStore, expected: &Value) {
     let mut actual = logical_changes(before, &logical_snapshot(store));
     let mut expected = expected.clone();
+    drop_card_writes(&mut actual);
+    drop_card_writes(&mut expected);
     crate::removed_budget_fields::strip(&mut actual);
     crate::removed_budget_fields::strip(&mut expected);
     for root in [&mut actual, &mut expected] {

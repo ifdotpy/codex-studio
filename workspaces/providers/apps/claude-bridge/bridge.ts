@@ -223,7 +223,6 @@ import {
 import { createCatalogCache, loadCatalog } from "./catalog-cache.ts";
 import {
   declaredTimeoutMs,
-  durationText,
   watchStalls,
   stallLimits,
   stallMessage,
@@ -520,7 +519,6 @@ const request = <M extends BridgeServerMethod>(
   method: M,
   params: BridgeServerParams<M>,
   signal?: AbortSignal,
-  onSent?: (id: string) => void,
 ): Promise<BridgeServerResult<M>> =>
   new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(new Error("Claude request cancelled"));
@@ -550,7 +548,6 @@ const request = <M extends BridgeServerMethod>(
     });
     signal?.addEventListener("abort", abort, { once: true });
     send({ id, method, params });
-    onSent?.(id);
   });
 const persist = sessionStore.persist;
 // A full disk must not end a running turn: the session stays in memory and the
@@ -972,73 +969,34 @@ async function permissions(
   }
   // Claude Code asks even in bypassPermissions mode for ask rules, removals on
   // critical paths and tools that need the user. Such an agent runs without
-  // approvals, so nobody watches for this one: decline it when it stays
-  // unanswered, instead of blocking the turn and every later message.
+  // approvals, so nobody watches for this one. Studio's server owns the wait:
+  // it declines the request when it stays unanswered, and the decline arrives
+  // here as the answer.
   const unexpected = queries.get(s.id)?.permissionMode === "bypassPermissions";
   // The SDK marks the reason render-unsafe: it can carry ANSI escapes.
   const why =
     typeof options.decisionReason === "string"
       ? stripVTControlCharacters(options.decisionReason).trim() || null
       : null;
-  const waiting = new AbortController();
-  const cancel = () => waiting.abort();
-  options.signal?.addEventListener("abort", cancel, { once: true });
-  if (options.signal?.aborted) cancel();
-  let requestId,
-    expired = false;
-  const timer = unexpected
-    ? setTimeout(() => {
-        expired = true;
-        waiting.abort();
-      }, limits.unexpectedApprovalMs)
-    : null;
-  let result;
-  try {
-    result = await request(
-      "item/commandExecution/requestApproval",
-      {
-        threadId: s.id,
-        turnId: turn.id,
-        itemId: options.toolUseID,
-        command:
-          name === "Bash"
-            ? (input.command as string)
-            : JSON.stringify({ tool: name, input }),
-        cwd: s.cwd,
-        reason:
-          "Claude requests permission to use " +
-          name +
-          (unexpected ? " although this agent runs without approvals" : "") +
-          (why ? ": " + why : ""),
-      },
-      waiting.signal,
-      (id) => (requestId = id),
-    );
-  } catch (error) {
-    if (!expired) throw error;
-    // Close Studio's card the way Codex does after a turn transition. A
-    // resolved request never counts as an approval.
-    emit("serverRequest/resolved", { threadId: s.id, requestId });
-    const message =
-      "Nobody answered the approval for this " +
-      name +
-      " call in " +
-      durationText(limits.unexpectedApprovalMs) +
-      ", so Studio declined it. The command did not run.";
-    const owner = queries.get(s.id)?.turn;
-    if (owner)
-      finishItem(s, owner, {
-        id: "approval-expired:" + options.toolUseID,
-        type: "agentMessage",
-        phase: "commentary",
-        studioNotice: true,
-        text: message,
-      });
-    return { behavior: "deny", message };
-  } finally {
-    clearTimeout(timer!);
-    options.signal?.removeEventListener("abort", cancel);
-  }
+  const result = await request(
+    "item/commandExecution/requestApproval",
+    {
+      threadId: s.id,
+      turnId: turn.id,
+      itemId: options.toolUseID,
+      command:
+        name === "Bash"
+          ? (input.command as string)
+          : JSON.stringify({ tool: name, input }),
+      cwd: s.cwd,
+      reason:
+        "Claude requests permission to use " +
+        name +
+        (unexpected ? " although this agent runs without approvals" : "") +
+        (why ? ": " + why : ""),
+    },
+    options.signal,
+  );
   return ["accept", "acceptForSession"].includes(result.decision)
     ? { behavior: "allow", updatedInput: input }
     : { behavior: "deny", message: "The user declined this action." };
