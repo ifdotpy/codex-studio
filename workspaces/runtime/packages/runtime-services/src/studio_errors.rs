@@ -926,12 +926,17 @@ fn may_change(tx: &Transaction<'_>, sources: &StudioErrorSources) -> Result<bool
         if is_published(tx, &format!("monitor:{id}"))? {
             return Ok(true);
         }
-        let candidate =
-            studio_runtime_store::MonitorsRepository::studio_error_candidate(tx, id, since)?;
+        let candidate = studio_runtime_store::MonitorsRepository::studio_error_candidate(tx, id)?;
         if let Some(raw) = candidate {
             match serde_json::from_str::<studio_runtime_store::MonitorRecord>(&raw) {
-                Err(_) => return Ok(true),
-                Ok(record) if monitor_kind(&record).is_some() => return Ok(true),
+                Err(_) if malformed_monitor_may_be_candidate(&raw, since) => return Ok(true),
+                Err(_) => {}
+                Ok(record)
+                    if (record.created.seconds() == 0.0 || record.created.seconds() >= since)
+                        && monitor_kind(&record).is_some() =>
+                {
+                    return Ok(true);
+                }
                 Ok(_) => {}
             }
         }
@@ -962,6 +967,45 @@ fn may_change(tx: &Transaction<'_>, sources: &StudioErrorSources) -> Result<bool
         }
     }
     Ok(false)
+}
+
+/// Preserve the SQL candidate superset for malformed typed records. Duplicate
+/// fields or invalid JSON stay candidates so diagnostics remain visible.
+fn malformed_monitor_may_be_candidate(raw: &str, since: f64) -> bool {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Fields {
+        status: Option<MonitorStatus>,
+        created: Option<Value>,
+        exit_code: Option<Value>,
+    }
+    let Ok(fields) = serde_json::from_str::<Fields>(raw) else {
+        return true;
+    };
+    let created = fields
+        .created
+        .as_ref()
+        .and_then(Value::as_f64)
+        .filter(|value| *value >= 0.0)
+        .unwrap_or(0.0);
+    if created != 0.0 && created < since {
+        return false;
+    }
+    match fields.status {
+        Some(MonitorStatus::Lost) => true,
+        Some(MonitorStatus::Failed) => !fields
+            .exit_code
+            .as_ref()
+            .is_some_and(|value| value.as_i64().is_some() || value.as_u64().is_some()),
+        Some(
+            MonitorStatus::Approval
+            | MonitorStatus::Starting
+            | MonitorStatus::Running
+            | MonitorStatus::Completed
+            | MonitorStatus::Cancelled,
+        ) => false,
+        None => true,
+    }
 }
 
 /// Whether a write of agent `id` can change the list: through its own error
