@@ -20,7 +20,7 @@ fn monitor_fixture(fields: Value) -> Value {
         "activityGeneration":0,"bytes":0,"command":"","created":1.0,"cwd":"/",
         "interactive":false,"livenessCommand":"","log":std::env::temp_dir().join("test.log"),"stallTimeoutSeconds":0,
         "stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":1000,"wakeOn":"exit"});
-    monitor.as_object_mut().unwrap().extend(fields.as_object().unwrap().clone());
+    monitor.as_object_mut().expect("valid fixture").extend(fields.as_object().expect("valid fixture").clone());
     monitor
 }
 

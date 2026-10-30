@@ -66,14 +66,14 @@ fn corpus() -> RadioCorpus {
         for side in ["before", "after"] {
             if let Some(rows) = case[side]["rules"].as_array_mut() {
                 for row in rows {
-                    let saved: Value = serde_json::from_str(row["record"].as_str().unwrap()).unwrap();
+                    let saved: Value = serde_json::from_str(row["record"].as_str().expect("valid fixture")).expect("valid fixture");
                     let mut rule = json!({"epoch":1,"name":"watch","kind":"interval","status":"active",
                         "intervalSeconds":60,"nextAt":1,"created":1,"command":"","text":"",
                         "checks":0,"wakes":0,"fileGeneration":0,"stallTimeoutSeconds":0,
                         "stallWakeGeneration":-1,"livenessCommand":"","event":""});
-                    rule.as_object_mut().unwrap().extend(saved.as_object().unwrap().clone());
-                    let typed: studio_runtime_store::RuleRecord = serde_json::from_value(rule).unwrap();
-                    row["record"] = json!(serde_json::to_string(&typed).unwrap());
+                    rule.as_object_mut().expect("valid fixture").extend(saved.as_object().expect("valid fixture").clone());
+                    let typed: studio_runtime_store::RuleRecord = serde_json::from_value(rule).expect("valid fixture");
+                    row["record"] = json!(serde_json::to_string(&typed).expect("valid fixture"));
                 }
             }
         }

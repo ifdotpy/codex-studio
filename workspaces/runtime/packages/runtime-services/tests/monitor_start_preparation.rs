@@ -42,7 +42,7 @@ async fn fixture() -> (tempfile::TempDir, RuntimeStore, PreparedStart) {
     let store = fixtures::store(root.path(), "start").await;
     fixtures::seed(&store, &case).await;
     let prepared = PreparedStart {
-        monitor: serde_json::from_value(case["before"].clone()).unwrap(),
+        monitor: serde_json::from_value(case["before"].clone()).expect("valid fixture"),
         actor: case["actor"].clone(),
         operation,
         params: json!({"processId":case["before"]["id"], "cwd":case["before"]["cwd"],

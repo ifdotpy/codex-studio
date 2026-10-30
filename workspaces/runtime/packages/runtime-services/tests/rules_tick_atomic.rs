@@ -667,7 +667,7 @@ impl RuleMonitor for DurableMonitor<'_> {
             let row = rows.next().expect("row").map(|row| row.get::<_, String>(0).expect("record"));
             match row {
                 None => CheckReconciliation::NotSubmitted,
-                Some(row) if serde_json::from_str::<Value>(&row).unwrap()["check"] == serde_json::to_value(check).expect("check JSON") => CheckReconciliation::Submitted,
+                Some(row) if serde_json::from_str::<Value>(&row).expect("valid fixture")["check"] == serde_json::to_value(check).expect("check JSON") => CheckReconciliation::Submitted,
                 Some(_) => CheckReconciliation::Unknown,
             }
         })

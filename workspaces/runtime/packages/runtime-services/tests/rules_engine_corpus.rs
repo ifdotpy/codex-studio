@@ -11,10 +11,10 @@ fn oracle() -> Vec<Value> {
 
 fn monitor_record(value: &Value) -> studio_runtime_store::MonitorRecord {
     let mut complete = json!({"id":"monitor","agent":"owner","epoch":0,"status":"running","requestId":"request","created":0,"activityAt":0,"activityGeneration":0,"bytes":0,"command":"","cwd":std::env::temp_dir(),"interactive":false,"livenessCommand":"","log":std::env::temp_dir().join("watch.log"),"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":3600000,"wakeOn":"exit"});
-    complete.as_object_mut().unwrap().extend(value.as_object().unwrap().clone());
-    serde_json::from_value(complete).unwrap()
+    complete.as_object_mut().expect("valid fixture").extend(value.as_object().expect("valid fixture").clone());
+    serde_json::from_value(complete).expect("valid fixture")
 }
-fn rule_record(value: &Value) -> studio_runtime_store::RuleRecord { serde_json::from_value(value.clone()).unwrap() }
+fn rule_record(value: &Value) -> studio_runtime_store::RuleRecord { serde_json::from_value(value.clone()).expect("valid fixture") }
 
 #[test]
 fn python_written_records_and_real_rules_functions_match() {
@@ -23,7 +23,7 @@ fn python_written_records_and_real_rules_functions_match() {
         let name = case["name"].as_str().expect("case name");
         let mut migrated = case["rule"].clone();
         for (field, value) in [("checks", json!(0)), ("wakes", json!(0)), ("inFlight", json!(false)), ("fileGeneration", json!(0)), ("stallTimeoutSeconds", json!(1800)), ("stallWakeGeneration", json!(-1)), ("livenessCommand", json!("")), ("event", json!(""))] {
-            migrated.as_object_mut().unwrap().entry(field).or_insert(value);
+            migrated.as_object_mut().expect("valid fixture").entry(field).or_insert(value);
         }
         let snapshot = crate::rule_snapshot(migrated, case["owner"].clone())
             .unwrap_or_else(|error| panic!("{name}: constructor: {error}"));
