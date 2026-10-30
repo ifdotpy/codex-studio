@@ -2789,6 +2789,39 @@ fn check_project_reservation(
 
 /// Persist a peer-delivery intent in the caller's owning transaction. The
 /// caller sends it only after that transaction commits.
+/// A QUIC connection to the paired server with this public key (PEM) opened again.
+/// Its waiting deliveries become due now, so the pump sends them without a backoff
+/// wait. Returns the number of changed deliveries. `now` is in Unix seconds.
+pub fn release_peer(
+    tx: &Transaction<'_>,
+    public_key: &str,
+    now: i64,
+) -> Result<usize, AccessError> {
+    let server: Option<String> = tx
+        .query_row(
+            "SELECT id FROM runtime_access_clients \
+             WHERE json_extract(record,'$.kind')='server' \
+               AND json_extract(record,'$.status')='paired' \
+               AND json_extract(record,'$.publicKey')=?1",
+            [public_key],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(server) = server else {
+        return Ok(0);
+    };
+    let waiting = tx.execute(
+        "UPDATE runtime_server_outbox SET next_at=?2 WHERE server=?1 AND state=?3 AND next_at>?2",
+        params![server, now, ServerDeliveryState::Queued],
+    )?;
+    let shared = studio_runtime_store::remote_outbox::RemoteOutbox::release_target(
+        tx,
+        &server,
+        now.saturating_mul(1000),
+    )?;
+    Ok(waiting + shared)
+}
+
 pub fn enqueue_in_transaction(
     transaction: &Transaction<'_>,
     server: &str,
@@ -4007,6 +4040,47 @@ mod tests {
             decide_delivery(Some(&running), "same-content", None, false, "input", 200),
             Ok(DeliveryDecision::Return(ExchangeOutcome::Unknown))
         ));
+    }
+
+    #[test]
+    fn restored_connection_makes_only_that_peers_waiting_deliveries_due_now() {
+        let mut db = rusqlite::Connection::open_in_memory().expect("database");
+        db.execute_batch(
+            "CREATE TABLE runtime_access_clients(id TEXT PRIMARY KEY, record TEXT NOT NULL);
+             CREATE TABLE runtime_server_outbox(server TEXT,body TEXT,state TEXT,next_at REAL);",
+        )
+        .expect("tables");
+        studio_runtime_store::receipt_schema::create(&db).expect("shared outbox");
+        db.execute(
+            "INSERT INTO runtime_access_clients VALUES('peer',?1)",
+            [
+                serde_json::json!({"kind":"server","status":"paired","publicKey":"PEM-A"})
+                    .to_string(),
+            ],
+        )
+        .expect("paired peer");
+        for server in ["peer", "other"] {
+            db.execute(
+                "INSERT INTO runtime_server_outbox VALUES(?1,'{}','queued',9999999999)",
+                [server],
+            )
+            .expect("waiting delivery");
+        }
+        let tx = db.transaction().expect("transaction");
+        assert_eq!(super::release_peer(&tx, "PEM-A", 100).expect("release"), 1);
+        assert_eq!(
+            super::release_peer(&tx, "PEM-B", 100).expect("unknown key"),
+            0
+        );
+        tx.commit().expect("commit");
+        let due: Vec<String> = db
+            .prepare("SELECT server FROM runtime_server_outbox WHERE next_at<=100")
+            .expect("query")
+            .query_map([], |row| row.get(0))
+            .expect("rows")
+            .collect::<Result<_, _>>()
+            .expect("servers");
+        assert_eq!(due, ["peer"]);
     }
 
     #[test]

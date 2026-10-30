@@ -958,6 +958,33 @@ async fn run(
     // Start the peer child only after listener bind and all fallible router
     // construction have succeeded. The pre-created advert is already shared
     // with HttpState, so routes observe the child's later published address.
+    // A new QUIC connection to a paired server makes its waiting deliveries due at once.
+    #[cfg(unix)]
+    let peer_reached: peer_link::PeerReached = {
+        let store = Arc::clone(&store);
+        let wake = Arc::clone(&orchestration_wake);
+        Arc::new(move |public_key: String| {
+            let store = Arc::clone(&store);
+            let wake = Arc::clone(&wake);
+            tokio::spawn(async move {
+                let now = epoch_seconds() as i64;
+                match store
+                    .transaction_with(move |tx| {
+                        studio_runtime_services::multi_server_orchestration::release_peer(
+                            tx,
+                            &public_key,
+                            now,
+                        )
+                    })
+                    .await
+                {
+                    Ok(0) => {}
+                    Ok(_) => wake.notify_one(),
+                    Err(error) => eprintln!("peer-link outbox release failed: {error}"),
+                }
+            });
+        })
+    };
     #[cfg(unix)]
     let mut peer_link_runtime = public_origin
         .as_ref()
@@ -968,6 +995,7 @@ async fn run(
                 origin.clone(),
                 state_root.clone().to_path_buf(),
                 Arc::clone(&peer_link_advert),
+                Arc::clone(&peer_reached),
             )
         })
         .transpose()?;

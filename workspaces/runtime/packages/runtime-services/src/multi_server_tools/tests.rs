@@ -174,11 +174,40 @@ impl MultiServerToolPort for ResumeFetching {
                 &json!({"worker":args["agent_id"],"branch":args["branch"],"destination":super::resolve(field(args,"destination"))}),
             );
             let input = self.input.clone();
-            self.store.transaction_with(move|tx|->Result<(),Step>{
-                let token=task_admission(tx,&key_owned,&actor_id)?.derive_result("server-fetch",&[],&signature);
-                tx.execute("INSERT INTO runtime_server_fetch(id,server,signature,state,result,admission) VALUES(?1,?2,?3,?4,?5,?6)",params![key_owned,PEER,signature,ServerFetchState::Fetching,input.as_ref().map(serde_json::to_string).transpose().map_err(StoreError::from)?,serde_json::to_string(&token).map_err(StoreError::from)?])?;
-                Ok(())
-            }).await.map_err(|error|match error {Step::Store(error)=>Error::Store(error),Step::Refused(message)|Step::Failed(message)=>Error::StoredAt(message)})?;
+            self.store
+                .transaction_with(move |tx| -> Result<(), Step> {
+                    let token = task_admission(tx, &key_owned, &actor_id)?.derive_result(
+                        "server-fetch",
+                        &[],
+                        &signature,
+                    );
+                    RemoteOutbox::put(
+                        tx,
+                        RemoteEffect::ServerFetch,
+                        PEER,
+                        &key_owned,
+                        &signature,
+                        OutboxStatus::Submitted,
+                        None,
+                        FetchEntry {
+                            state: ServerFetchState::Fetching,
+                            export: input
+                                .as_ref()
+                                .map(serde_json::to_string)
+                                .transpose()
+                                .map_err(StoreError::from)?,
+                            admission: token,
+                        },
+                        0,
+                    )
+                    .map_err(StoreError::from)?;
+                    Ok(())
+                })
+                .await
+                .map_err(|error| match error {
+                    Step::Store(error) => Error::Store(error),
+                    Step::Refused(message) | Step::Failed(message) => Error::StoredAt(message),
+                })?;
             let first = self.tools.fetch(actor, args, key, PEER).await;
             if self.input.is_none() {
                 return settle(first);

@@ -34,7 +34,7 @@ pub use repositories::process_actions::{
     ProcessActionKind, ProcessActionPhase, ProcessActionRecord,
 };
 pub use repositories::terminals;
-pub use repositories::{outbox, request_results};
+pub use repositories::{outbox, remote_outbox, request_results};
 mod schema;
 mod sqlite_actor;
 pub mod sqlite_durability;
