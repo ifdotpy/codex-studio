@@ -637,19 +637,10 @@ pub fn settle_provider_call(
         Err(error) if malformed_monitor_owner(&error) => return Ok(false),
         Err(error) => return Err(error.into()),
     };
-    let Some(_record) = record else {
+    let Some(record) = record else {
         return Ok(true);
     };
-    #[derive(Deserialize)]
-    struct StoredOperation {
-        operation: Operation,
-    }
-    let Some((_, raw)) =
-        Table::<studio_runtime_store::MonitorRecord>::new(tx).get_with_raw(&id.to_owned())?
-    else {
-        return Ok(false);
-    };
-    let Ok(StoredOperation { operation }) = serde_json::from_str(&raw) else {
+    let Some(operation) = record.operation else {
         return Ok(false);
     };
     let Some(actor) = &call.actor else {
