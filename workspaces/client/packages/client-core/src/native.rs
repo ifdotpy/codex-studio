@@ -475,6 +475,79 @@ mod audio_ownership_tests {
     }
 
     #[test]
+    fn native_transport_preserves_replay_identity_and_missing_params() {
+        use std::io::{Read, Write};
+        let directory = tempfile::tempdir().unwrap();
+        let (mut host, core) = UnixStream::pair().unwrap();
+        host.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let config = ConnectionConfig {
+            state_directory: directory.path().to_owned(),
+            backend_origin: "http://127.0.0.1:9".into(),
+        };
+        let worker = thread::spawn(move || serve(core, config));
+        let call = |host: &mut UnixStream, input: &str| -> Response {
+            let bytes = input.as_bytes();
+            for (flag, part) in protocol::fragments(bytes).unwrap() {
+                host.write_all(&((part.len() + 1) as u32).to_le_bytes())
+                    .unwrap();
+                host.write_all(&[flag]).unwrap();
+                host.write_all(part).unwrap();
+            }
+            let mut assembler = protocol::Assembler::default();
+            loop {
+                let mut header = [0; 4];
+                host.read_exact(&mut header).unwrap();
+                let mut frame = vec![0; u32::from_le_bytes(header) as usize];
+                host.read_exact(&mut frame).unwrap();
+                if let Some(bytes) = assembler.push(&frame).unwrap() {
+                    return serde_json::from_slice(&bytes).unwrap();
+                }
+            }
+        };
+        let first = call(
+            &mut host,
+            r#"{"id":"same","method":"preferences.import","params":{"version":1,"entries":{"z":"Привет","a":"🦀"}}}"#,
+        );
+        assert!(first.error.is_none());
+        let retry = call(
+            &mut host,
+            r#"{"method":"preferences.import","id":"same","params":{"entries":{"a":"🦀","z":"Привет"},"version":1}}"#,
+        );
+        assert_eq!(first.result, retry.result);
+        let changed = call(
+            &mut host,
+            r#"{"id":"same","method":"preferences.import","params":{"version":1,"entries":{"z":"changed","a":"🦀"}}}"#,
+        );
+        assert_eq!(changed.error.unwrap().code, "identity_conflict");
+        let missing = call(
+            &mut host,
+            r#"{"id":"missing","method":"preferences.import"}"#,
+        );
+        let null = call(
+            &mut host,
+            r#"{"id":"null","method":"preferences.import","params":null}"#,
+        );
+        assert_eq!(missing.error.unwrap().message, null.error.unwrap().message);
+        drop(host);
+        worker.join().unwrap().unwrap();
+        let db =
+            rusqlite::Connection::open(directory.path().join("studio-client.sqlite3")).unwrap();
+        let (method, params): (String, String) = db
+            .query_row(
+                "SELECT method, params FROM client_receipts WHERE request_id='same'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(method, "preferences.import");
+        assert_eq!(
+            params.as_bytes(),
+            r#"{"entries":{"a":"🦀","z":"Привет"},"version":1}"#.as_bytes()
+        );
+    }
+
+    #[test]
     fn all_audio_entry_points_claim_the_same_owner() {
         for method in [
             "media.captureStart",
