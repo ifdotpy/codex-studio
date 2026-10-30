@@ -311,6 +311,11 @@ async fn retry_attempt_owner_preserves_nullable_identity_and_frozen_receipt() {
                 "UPDATE runtime_execution_attempts SET record=?1 WHERE id='attempt'",
                 [&raw],
             )?;
+            assert!(ClaudeRetryRepository::load(tx, "agent", "attempt").is_err());
+            tx.execute(
+                "UPDATE runtime_execution_attempts SET record=?1 WHERE id='attempt'",
+                [&serialized],
+            )?;
             let saved = ClaudeRetryRepository::load(tx, "agent", "attempt")?.unwrap();
             assert_eq!(saved.attempt.id(), "attempt");
             assert_eq!(saved.attempt.events().unwrap(), ["one", "two"]);
@@ -354,7 +359,7 @@ async fn retry_metadata_admission_and_frozen_assets_keep_legacy_evidence() {
         (
             "duplicate",
             Some(r#"{"assets":null,"assets":["last"],"future":1,"future":2}"#),
-            Some(json!({"assets":["last"],"future":2})),
+            None,
         ),
         ("malformed", Some("{"), None),
     ] {
@@ -379,9 +384,8 @@ async fn retry_metadata_admission_and_frozen_assets_keep_legacy_evidence() {
                     }
                 }
                 match (name, ClaudeRetryRepository::load(tx, "agent", "attempt")) {
-                    ("malformed", Err(StoreError::Json(_))) => {}
                     (
-                        "null" | "assets-null",
+                        "null" | "assets-null" | "duplicate" | "malformed",
                         Err(StoreError::InvalidStoredRecord { object, id }),
                     ) => {
                         assert_eq!(object, "claude retry");
