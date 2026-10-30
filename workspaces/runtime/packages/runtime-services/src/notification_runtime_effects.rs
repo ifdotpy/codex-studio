@@ -149,6 +149,9 @@ pub trait NotificationPostCommitSink: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<(), NotificationDispatchError>> + Send + 'a>> {
         Box::pin(async { Ok(()) })
     }
+
+    /// A committed model text delta, for streams that have its chat open. Best effort.
+    fn live_delta(&self, _delta: crate::resource_notify::LiveDelta) {}
 }
 
 pub struct UnavailablePostCommitSink;
@@ -177,6 +180,10 @@ impl NotificationPostCommitSink for RuntimeNotificationPostCommitSink {
         effect: &'a NotificationPostCommit,
     ) -> Pin<Box<dyn Future<Output = Result<(), NotificationDispatchError>> + Send + 'a>> {
         Box::pin(async move { self.publish_effect(effect).await })
+    }
+
+    fn live_delta(&self, delta: crate::resource_notify::LiveDelta) {
+        self.resources.publish_live(delta);
     }
 
     fn invalidate_state<'a>(
@@ -359,3 +366,4 @@ mod tests {
         );
     }
 }
+

@@ -5,6 +5,7 @@ use super::{
     NotificationDispatchError, NotificationHourMetrics, NotificationObservation,
     NotificationPostCommit, NotificationPublicationBatch, NotificationStreamMetrics,
 };
+use crate::resource_notify::LiveDelta;
 use std::ops::{Deref, DerefMut};
 use std::{
     collections::{HashMap, HashSet},
@@ -42,6 +43,23 @@ pub(super) struct StreamKey {
     pub method: String,
 }
 
+impl StreamKey {
+    /// Id of the transcript item that this stream fills.
+    pub(super) fn transcript_id(&self) -> String {
+        format!("{}:{}", self.agent_id, self.item)
+    }
+}
+
+/// Memory-only state. It never counts when buffers are compared, as a saved buffer lacks it.
+#[derive(Clone, Debug, Default)]
+struct Transient<T>(T);
+
+impl<T> PartialEq for Transient<T> {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct Entry {
     key: StreamKey,
@@ -52,6 +70,10 @@ struct Entry {
     #[serde(default)]
     characters: u64,
     params: Value,
+    /// Item text length (Unicode scalars) before the next live delta; `None` until the first delta
+    /// after this entry opened or was recovered. Memory only.
+    #[serde(skip)]
+    live_offset: Transient<Option<u64>>,
 }
 
 /// The unflushed batch; stream identity and base remain on current metadata.
@@ -205,6 +227,9 @@ pub struct NotificationStreamBuffer {
     post_commit_analytics_count: usize,
     #[serde(skip)]
     post_commit_analytics_bytes: usize,
+    /// Text deltas staged since the last `take_live`. They leave only after the commit.
+    #[serde(skip)]
+    live: Transient<Vec<LiveDelta>>,
 }
 
 #[derive(Deserialize)]
@@ -729,10 +754,13 @@ impl NotificationStreamBuffer {
         key: StreamKey,
         delta: &str,
         params: &Value,
+        stored_chars: u64,
     ) -> EnqueueResult {
         if self.indexes.closed.contains(&key) {
             return EnqueueResult::Closed;
         }
+        let live = (key.method == "item/agentMessage/delta")
+            .then(|| (key.agent_id.clone(), key.transcript_id()));
         let index = if let Some(index) = self.indexes.entries.get(&key).copied() {
             index
         } else {
@@ -744,6 +772,7 @@ impl NotificationStreamBuffer {
                 count: 0,
                 characters: 0,
                 params: params.clone(),
+                live_offset: Transient(None),
             }));
             let index = self.entries.len() - 1;
             Arc::make_mut(&mut self.indexes).entries.insert(key, index);
@@ -758,6 +787,12 @@ impl NotificationStreamBuffer {
                 params.remove("delta");
             }
         }
+        // The stored item text, then the text this entry still holds unflushed.
+        let offset = entry
+            .live_offset
+            .0
+            .unwrap_or_else(|| stored_chars.saturating_add(entry.pending.chars().count() as u64));
+        entry.live_offset.0 = Some(offset.saturating_add(delta.chars().count() as u64));
         entry.count += 1;
         entry.characters = entry
             .characters
@@ -775,6 +810,14 @@ impl NotificationStreamBuffer {
             return EnqueueResult::FlushRequired;
         }
         entry.pending.push_str(delta);
+        if let Some((agent_id, item_id)) = live {
+            self.live.0.push(LiveDelta {
+                agent_id,
+                item_id,
+                offset,
+                text: delta.to_owned(),
+            });
+        }
         if entry.key.method == "item/commandExecution/outputDelta" {
             entry.pending = super::suffix(&entry.pending, TOOL_OUTPUT_CHARS);
         }
@@ -784,6 +827,28 @@ impl NotificationStreamBuffer {
             .saturating_sub(pending_before)
             .saturating_add(pending_after);
         EnqueueResult::Buffered
+    }
+
+    /// Whether the next live delta of `key` needs the stored item length (see `enqueue_delta`).
+    pub(super) fn live_unseeded(&self, key: &StreamKey) -> bool {
+        self.indexes
+            .entries
+            .get(key)
+            .is_none_or(|index| self.entries[*index].live_offset.0.is_none())
+    }
+
+    /// What a process restart leaves of a saved buffer: no memory-only state.
+    #[cfg(test)]
+    pub(super) fn forget_memory_state(&mut self) {
+        for entry in &mut self.entries {
+            entry.live_offset.0 = None;
+        }
+        self.live.0.clear();
+    }
+
+    /// The text deltas buffered since the last call; publish them after the commit.
+    pub(crate) fn take_live(&mut self) -> Vec<LiveDelta> {
+        std::mem::take(&mut self.live.0)
     }
 
     pub(super) fn selected(&self, terminal: Option<&StreamKey>) -> Vec<StreamKey> {
@@ -1008,7 +1073,7 @@ mod tests {
                 method: "item/agentMessage/delta".into(),
             };
             assert!(matches!(
-                streams.enqueue_delta(key.clone(), "x", &Value::Null),
+                streams.enqueue_delta(key.clone(), "x", &Value::Null, 0),
                 EnqueueResult::Buffered
             ));
             streams.close(&key);
@@ -1017,7 +1082,7 @@ mod tests {
             assert_eq!(streams.closed.len(), retained);
             assert_eq!(streams.indexes.closed.len(), retained);
             assert!(matches!(
-                streams.enqueue_delta(key.clone(), "late", &Value::Null),
+                streams.enqueue_delta(key.clone(), "late", &Value::Null, 0),
                 EnqueueResult::Closed
             ));
             if index == MAX_CLOSED_STREAMS {
@@ -1039,7 +1104,7 @@ mod tests {
             method: "item/agentMessage/delta".into(),
         };
         assert!(matches!(
-            streams.enqueue_delta(key, "still alive", &Value::Null),
+            streams.enqueue_delta(key, "still alive", &Value::Null, 0),
             EnqueueResult::Buffered
         ));
     }
@@ -1062,7 +1127,7 @@ mod tests {
         for turn in 0..1_000 {
             for item in 0..3 {
                 let key = turn_key(turn, item);
-                streams.enqueue_delta(key.clone(), "x", &Value::Null);
+                streams.enqueue_delta(key.clone(), "x", &Value::Null, 0);
                 streams.close(&key);
             }
             assert_eq!(streams.closed.len(), 3);
@@ -1076,18 +1141,18 @@ mod tests {
     fn closing_keeps_the_other_open_streams_addressable() {
         let mut streams = NotificationStreamBuffer::default();
         for item in 0..3 {
-            streams.enqueue_delta(turn_key(0, item), "a", &Value::Null);
+            streams.enqueue_delta(turn_key(0, item), "a", &Value::Null, 0);
         }
         streams.close(&turn_key(0, 0));
         streams.discard(&turn_key(0, 1));
         assert!(matches!(
-            streams.enqueue_delta(turn_key(0, 2), "b", &Value::Null),
+            streams.enqueue_delta(turn_key(0, 2), "b", &Value::Null, 0),
             EnqueueResult::Buffered
         ));
         assert_eq!(streams.entries.len(), 1);
         assert_eq!(streams.entries[0].pending, "ab");
         assert!(matches!(
-            streams.enqueue_delta(turn_key(0, 0), "late", &Value::Null),
+            streams.enqueue_delta(turn_key(0, 0), "late", &Value::Null, 0),
             EnqueueResult::Closed
         ));
     }
@@ -1113,11 +1178,11 @@ mod tests {
             json!({"threadId":"thread","turnId":"turn","itemId":"second","delta":"other"});
         let mut original = NotificationStreamBuffer::default();
         assert!(matches!(
-            original.enqueue_delta(first.clone(), "old", &first_params),
+            original.enqueue_delta(first.clone(), "old", &first_params, 0),
             EnqueueResult::Buffered
         ));
         assert!(matches!(
-            original.enqueue_delta(second.clone(), "other", &second_params),
+            original.enqueue_delta(second.clone(), "other", &second_params, 0),
             EnqueueResult::Buffered
         ));
 
@@ -1127,7 +1192,7 @@ mod tests {
         let next_params =
             json!({"threadId":"thread","turnId":"turn","itemId":"first","delta":"new"});
         assert!(matches!(
-            staged.enqueue_delta(first, "new", &next_params),
+            staged.enqueue_delta(first, "new", &next_params, 0),
             EnqueueResult::Buffered
         ));
 
@@ -1154,7 +1219,7 @@ mod tests {
             json!({"threadId":"thread","turnId":"turn","itemId":"answer","delta":"pending"});
         let mut streams = NotificationStreamBuffer::default();
         assert!(matches!(
-            streams.enqueue_delta(key.clone(), "pending", &params),
+            streams.enqueue_delta(key.clone(), "pending", &params, 0),
             EnqueueResult::Buffered
         ));
 
@@ -1167,7 +1232,7 @@ mod tests {
         assert_eq!(flushed.1, 1);
         assert!(!streams.has_pending(&key));
         assert!(matches!(
-            streams.enqueue_delta(key, "late", &params),
+            streams.enqueue_delta(key, "late", &params, 0),
             EnqueueResult::Closed
         ));
     }
@@ -1193,11 +1258,11 @@ mod tests {
             ..NotificationStreamBuffer::default()
         };
         assert!(matches!(
-            streams.enqueue_delta(host_key.clone(), "host", &Value::Null),
+            streams.enqueue_delta(host_key.clone(), "host", &Value::Null, 0),
             EnqueueResult::Buffered
         ));
         assert!(matches!(
-            streams.enqueue_delta(vm_key.clone(), "vm", &Value::Null),
+            streams.enqueue_delta(vm_key.clone(), "vm", &Value::Null, 0),
             EnqueueResult::Buffered
         ));
         assert_eq!(streams.selected(None).len(), 2);
@@ -1205,7 +1270,7 @@ mod tests {
         streams.flush(&vm_key, "").expect("VM flush");
         assert!(streams.preserve_base(&vm_key, "VM base".into()));
         assert!(matches!(
-            streams.enqueue_delta(vm_key.clone(), "pending", &Value::Null),
+            streams.enqueue_delta(vm_key.clone(), "pending", &Value::Null, 0),
             EnqueueResult::Buffered
         ));
         let before = streams.clone();
@@ -1250,13 +1315,13 @@ mod tests {
         let params = serde_json::json!({"threadId":"thread","turnId":"turn","itemId":"answer"});
         let mut streams = NotificationStreamBuffer::default();
         assert!(matches!(
-            streams.enqueue_delta(key.clone(), "first", &params),
+            streams.enqueue_delta(key.clone(), "first", &params, 0),
             EnqueueResult::Buffered
         ));
         streams.flush(&key, "").expect("initial flush");
         assert!(streams.preserve_base(&key, "authoritative".into()));
         assert!(matches!(
-            streams.enqueue_delta(key.clone(), "pending", &params),
+            streams.enqueue_delta(key.clone(), "pending", &params, 0),
             EnqueueResult::Buffered
         ));
         let (metadata, pending) = streams.persisted_parts().expect("persist typed state");
@@ -1290,17 +1355,17 @@ mod tests {
         let params = json!({"threadId":"thread","turnId":"turn","itemId":"a"});
         let mut streams = NotificationStreamBuffer::default();
         assert!(matches!(
-            streams.enqueue_delta(key("a", Some("turn")), "pending é", &params),
+            streams.enqueue_delta(key("a", Some("turn")), "pending é", &params, 0),
             EnqueueResult::Buffered
         ));
         assert!(matches!(
-            streams.enqueue_delta(key("b", None), "flushed", &params),
+            streams.enqueue_delta(key("b", None), "flushed", &params, 0),
             EnqueueResult::Buffered
         ));
         streams.flush(&key("b", None), "base").expect("flushes");
         streams.preserve_base(&key("b", None), "baseflushed".into());
         assert!(matches!(
-            streams.enqueue_delta(key("c", Some("turn")), "closed", &params),
+            streams.enqueue_delta(key("c", Some("turn")), "closed", &params, 0),
             EnqueueResult::Buffered
         ));
         streams.flush(&key("c", Some("turn")), "").expect("flushes");
@@ -1369,7 +1434,7 @@ mod tests {
         let mut streams = NotificationStreamBuffer::default();
         let text = "界".repeat(13_000);
         assert!(matches!(
-            streams.enqueue_delta(key.clone(), &text, &Value::Null),
+            streams.enqueue_delta(key.clone(), &text, &Value::Null, 0),
             EnqueueResult::Buffered
         ));
         assert_eq!(streams.pending_bytes(), TOOL_OUTPUT_CHARS * 3);
@@ -1389,7 +1454,7 @@ mod tests {
             method: "item/agentMessage/delta".into(),
         };
         let mut streams = NotificationStreamBuffer::default();
-        streams.enqueue_delta(key.clone(), "abc", &json!({"delta":"abc"}));
+        streams.enqueue_delta(key.clone(), "abc", &json!({"delta":"abc"}), 0);
         assert!(streams.has_pending(&key));
         assert_eq!(streams.pending_bytes(), 3);
         let encoded = serde_json::to_string(&streams).unwrap();
@@ -1506,3 +1571,4 @@ mod tests {
         )));
     }
 }
+

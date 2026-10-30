@@ -35,7 +35,7 @@ fn p06_empty_deltas_arm_timer_and_coalesce_without_refusal() {
             )
             .expect("analytics never refuses empty delta");
         assert!(matches!(
-            streams.enqueue_delta(key.clone(), "", &params),
+            streams.enqueue_delta(key.clone(), "", &params, 0),
             EnqueueResult::Buffered
         ));
     }
@@ -117,7 +117,7 @@ fn failed_notification_transaction_discards_staged_stream_changes() {
     let original_params =
         json!({"threadId":"thread","turnId":"turn","itemId":"answer","delta":"old"});
     assert!(matches!(
-        streams.enqueue_delta(key.clone(), "old", &original_params),
+        streams.enqueue_delta(key.clone(), "old", &original_params, 0),
         EnqueueResult::Buffered
     ));
     let frame = super::tests::frame(&json!({
@@ -270,3 +270,4 @@ fn p06_recovery_message_retains_buffered_text_questions_and_atomicity() {
         0
     );
 }
+

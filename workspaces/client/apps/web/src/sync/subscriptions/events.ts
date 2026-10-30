@@ -18,9 +18,11 @@ export const {
   watchResourceChanges,
   watchResourceConnection,
   watchTokenRateEvents,
+  watchLiveDeltas,
   acknowledgeEntitySequences,
 } = subscriptions;
 export const defaultSubscriptions = subscriptions;
 export { createSubscriptions } from "./module";
 export { createDataObserver } from "./data";
 export type * from "../resourceEvents";
+
