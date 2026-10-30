@@ -1847,7 +1847,7 @@ mod tests {
                 json!({"accountKey":"account","epoch":3,"status":"running","startedAt":1.0}),
             ),
         ] {
-            db.execute("INSERT INTO runtime_monitors VALUES(?1,?2)", params![id, json!({"id":id,"rootRequestId":"root","finished":null,"error":null,"reattachRecovery":recovery}).to_string()]).expect("monitor");
+            db.execute("INSERT INTO runtime_monitors(id,record) VALUES(?1,?2)", params![id, json!({"id":id,"rootRequestId":"root","finished":null,"error":null,"reattachRecovery":recovery}).to_string()]).expect("monitor");
         }
         db.execute("UPDATE runtime_monitors SET record=json_set(record,'$.error','existing') WHERE id='one'", []).expect("existing error");
         batch(&mut db, "runtime_monitors").expect("migration");
@@ -2384,7 +2384,7 @@ mod tests {
         let operation =
             json!({"agent":"agent","epoch":1,"accountKey":"account","connectionId":"1"});
         db.execute(
-            "INSERT INTO runtime_monitors VALUES('monitor',?1)",
+            "INSERT INTO runtime_monitors(id,record) VALUES('monitor',?1)",
             [json!({"operation":operation,"streamQueue":[{"operation":operation}]}).to_string()],
         )
         .expect("monitor owner");
@@ -2560,7 +2560,7 @@ mod tests {
             let original = json!({"id":"watch","operation":operation,"untouched":{"future":[1,2]}})
                 .to_string();
             db.execute(
-                "INSERT INTO runtime_monitors VALUES('watch',?1)",
+                "INSERT INTO runtime_monitors(id,record) VALUES('watch',?1)",
                 [&original],
             )
             .expect("monitor");

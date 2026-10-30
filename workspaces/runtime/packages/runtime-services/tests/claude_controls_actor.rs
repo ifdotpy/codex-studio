@@ -1084,7 +1084,7 @@ async fn definite_not_sent_releases_and_retries_the_same_request_after_fresh_idl
     store
         .transaction(move |tx| {
             tx.execute(
-                "INSERT INTO runtime_monitors VALUES('busy',?1)",
+                "INSERT INTO runtime_monitors(id,record) VALUES('busy',?1)",
                 [monitor.to_string()],
             )?;
             Ok(())
@@ -1173,7 +1173,7 @@ async fn quota_preparation_refusal_releases_and_retries_after_fresh_idle_proof()
     store
         .transaction(move |tx| {
             tx.execute(
-                "INSERT INTO runtime_monitors VALUES('busy',?1)",
+                "INSERT INTO runtime_monitors(id,record) VALUES('busy',?1)",
                 [monitor.to_string()],
             )?;
             Ok(())

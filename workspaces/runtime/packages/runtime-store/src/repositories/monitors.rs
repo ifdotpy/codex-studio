@@ -186,7 +186,7 @@ mod tests {
     fn single_studio_error_candidate_does_not_parse_json_in_sql() {
         thread_local! { static JSON_SQL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
         let connection = Connection::open_in_memory().expect("database");
-        connection.execute_batch("CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL); INSERT INTO runtime_monitors VALUES('m','{\"status\":\"lost\",\"created\":100}');").expect("monitor");
+        connection.execute_batch("CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL); INSERT INTO runtime_monitors(id,record) VALUES('m','{\"status\":\"lost\",\"created\":100}');").expect("monitor");
         connection.trace_v2(
             rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
             Some(|event| {
@@ -216,8 +216,11 @@ mod tests {
         )
         .unwrap();
         let raw = r#"{"id":"m","agent":"a","epoch":1,"requestId":"r","turnId":null,"status":"running","activityAt":1,"activityGeneration":0,"bytes":0,"command":"","created":1,"cwd":"/","interactive":false,"livenessCommand":"","log":"/log","stallTimeoutSeconds":0,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":1000,"wakeOn":"exit","future":true}"#;
-        db.execute("INSERT INTO runtime_monitors VALUES ('m',?1)", [raw])
-            .unwrap();
+        db.execute(
+            "INSERT INTO runtime_monitors(id,record) VALUES ('m',?1)",
+            [raw],
+        )
+        .unwrap();
         let saved = MonitorsRepository::get(&db, "m").unwrap().unwrap();
         assert!(
             !serde_json::to_string(&saved)
@@ -284,7 +287,7 @@ mod tests {
         connection
             .execute_batch(
                 "CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL);
-                 INSERT INTO runtime_monitors VALUES
+                 INSERT INTO runtime_monitors(id,record) VALUES
                    ('a-malformed','{'),
                    ('b-done','{\"status\":\"completed\",\"streamQueue\":[]}'),
                    ('c-other','{\"status\":\"completed\",\"streamQueue\":{}}'),
@@ -344,7 +347,7 @@ mod tests {
         connection
             .execute_batch(
                 r#"CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL);
-                 INSERT INTO runtime_monitors VALUES
+                 INSERT INTO runtime_monitors(id,record) VALUES
                    ('a-malformed','{'),
                    ('b-lost','{"status":"lost","created":100,"exitCode":null}'),
                    ('c-lost-old','{"status":"lost","created":10}'),

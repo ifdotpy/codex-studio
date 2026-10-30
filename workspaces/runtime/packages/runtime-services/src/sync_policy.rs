@@ -3002,7 +3002,7 @@ mod tests {
         // The current provider column rejects that corruption at write time.
         connection
             .execute_batch(
-                "CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY, record TEXT NOT NULL);
+                "CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY, record TEXT NOT NULL, stream_pending INTEGER NOT NULL DEFAULT 0, monitor_status TEXT, monitor_error_candidate INTEGER NOT NULL DEFAULT 1, monitor_created REAL NOT NULL DEFAULT 0);
                  CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL);
                  CREATE TABLE sync_entities(
                      collection TEXT NOT NULL,id TEXT NOT NULL,seq INTEGER NOT NULL,
@@ -3161,7 +3161,7 @@ mod tests {
         // The current provider column rejects that corruption at write time.
         connection
             .execute_batch(
-                "CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+                "CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL, stream_pending INTEGER NOT NULL DEFAULT 0, monitor_status TEXT, monitor_error_candidate INTEGER NOT NULL DEFAULT 1, monitor_created REAL NOT NULL DEFAULT 0);
                  CREATE INDEX runtime_monitor_status ON runtime_monitors(
                      json_extract(record,'$.status'),json_extract(record,'$.created'));
                  CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);

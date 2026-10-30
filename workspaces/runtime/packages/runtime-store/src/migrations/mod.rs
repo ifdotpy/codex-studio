@@ -1168,7 +1168,7 @@ mod tests {
     #[test]
     fn migration_removes_unused_monitor_stall_index() {
         let mut db = Connection::open_in_memory().expect("database");
-        db.execute_batch("CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL); CREATE INDEX runtime_monitor_stall_due ON runtime_monitors(json_extract(record,'$.activityAt')) WHERE json_extract(record,'$.status')='running'; INSERT INTO runtime_monitors VALUES('m','{}');").expect("legacy monitor");
+        db.execute_batch("CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL); CREATE INDEX runtime_monitor_stall_due ON runtime_monitors(json_extract(record,'$.activityAt')) WHERE json_extract(record,'$.status')='running'; INSERT INTO runtime_monitors(id,record) VALUES('m','{}');").expect("legacy monitor");
         let tx = db.transaction().expect("transaction");
         let accounts = Accounts::new();
         let step = CATALOG

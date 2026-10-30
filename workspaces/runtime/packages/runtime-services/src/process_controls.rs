@@ -1094,7 +1094,7 @@ mod claim_identity_tests {
     fn process_claim_reuses_its_admitted_token_after_expiry_without_another_effect() {
         let mut db = Connection::open_in_memory().expect("database");
         db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT,parent_id TEXT,deleted_at REAL);
-            CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT);
+            CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT, stream_pending INTEGER NOT NULL DEFAULT 0, monitor_status TEXT, monitor_error_candidate INTEGER NOT NULL DEFAULT 1, monitor_created REAL NOT NULL DEFAULT 0);
             CREATE INDEX runtime_monitor_agent_status ON runtime_monitors(id);
             CREATE TABLE runtime_tasks(id TEXT PRIMARY KEY,record TEXT);
             CREATE INDEX runtime_task_agent_created_id ON runtime_tasks(id);
