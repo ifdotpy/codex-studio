@@ -174,7 +174,7 @@ async fn complaint_http_replays_original_signature_before_version_and_recipient_
                 &json!({
                     "id":"complaint", "leadId":lead, "author":reporter,
                     "text":"Please review", "recipient":"user", "status":"open",
-                    "created":1, "version":1, "responses":[]
+                    "created":1, "updated":null, "readAt":null, "version":1, "responses":[]
                 })
                 .to_string(),
             )

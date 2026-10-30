@@ -61,6 +61,31 @@ pub struct ComplaintWriteResult {
     pub wake_event_worker: bool,
 }
 
+// Historical receipts predate the strict stored-row contract. Replay returns
+// their original JSON shape, including sparse fields.
+#[derive(serde::Deserialize)]
+#[serde(try_from = "Value")]
+struct ComplaintReceiptReply(Value);
+
+impl TryFrom<Value> for ComplaintReceiptReply {
+    type Error = &'static str;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        if value.as_object().is_some_and(|object| {
+            object.get("id").is_some_and(Value::is_string)
+                && ["author", "leadId", "status", "text"].iter().all(|field| {
+                    object
+                        .get(*field)
+                        .is_none_or(|value| value.is_null() || value.is_string())
+                })
+        }) {
+            Ok(Self(value))
+        } else {
+            Err("invalid historical complaint reply")
+        }
+    }
+}
+
 pub struct AsyncQuestionAnswerResult {
     pub response: Value,
     pub event_inserted: bool,
@@ -533,7 +558,7 @@ pub fn respond_to_complaint(
     } = input;
     let receipt_id = format!("user:{request_id}");
     let now_ms = (unix_time()? * 1000.0) as i64;
-    let admitted = match event_write::begin_request::<studio_runtime_store::ComplaintRecord>(
+    let admitted = match event_write::begin_request::<ComplaintReceiptReply>(
         transaction,
         event_write::RequestKey::new("complaint_response", &[complaint_id, USER], request_id)
             .raw(&receipt_id),
@@ -544,7 +569,7 @@ pub fn respond_to_complaint(
     {
         event_write::CallerAdmission::Replay(reply) => {
             return Ok(ComplaintWriteResult {
-                record: reply.into_value(),
+                record: reply.0,
                 event_inserted: false,
                 wake_event_worker: false,
             });
@@ -769,4 +794,22 @@ fn unix_time() -> Result<f64, QuestionsWriteError> {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs_f64())
         .map_err(|_| QuestionsWriteError::Clock)
+}
+
+#[cfg(test)]
+mod receipt_tests {
+    use super::ComplaintReceiptReply;
+    use serde_json::json;
+
+    #[test]
+    fn sparse_historical_complaint_reply_remains_replayable() {
+        let reply: ComplaintReceiptReply =
+            serde_json::from_str(r#"{"id":"c","status":"future","text":null,"opaque":{"a":1}}"#)
+                .unwrap();
+        assert_eq!(
+            reply.0,
+            json!({"id":"c","status":"future","text":null,"opaque":{"a":1}})
+        );
+        assert!(serde_json::from_str::<ComplaintReceiptReply>(r#"{"text":false}"#).is_err());
+    }
 }

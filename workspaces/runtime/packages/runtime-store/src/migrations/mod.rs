@@ -41,6 +41,7 @@ mod m2026_10_30_agent_compactions;
 mod m2026_10_30_agent_volatile;
 mod m2026_10_30_branch_phase;
 mod m2026_10_30_capture_errors;
+mod m2026_10_30_complaint_record;
 pub(crate) mod m2026_10_30_monitor_errors;
 mod m2026_10_30_monitor_generated;
 pub(crate) mod m2026_10_30_monitor_queue;
@@ -776,6 +777,13 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| m2026_10_30_capture_errors::apply(c.transaction),
+            id: "2026-10-30-complaint-record",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Complaint records before strict typed state",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_complaint_record::apply(c.transaction),
     },
     &RegistryMigration,
     &SqlMigration {

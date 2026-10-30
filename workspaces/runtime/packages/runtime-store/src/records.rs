@@ -1266,7 +1266,7 @@ mod complaint_typed_tests {
     use serde_json::json;
 
     #[test]
-    fn complaint_deserialization_enforces_shape_and_preserves_open_status() {
+    fn complaint_deserialization_enforces_closed_shape() {
         for value in [
             json!(["c"]),
             json!({"id":"c","author":1}),
@@ -1275,24 +1275,20 @@ mod complaint_typed_tests {
         ] {
             assert!(ComplaintRecord::deserialize(value).is_err());
         }
-        for value in [
-            json!({"id":"c"}),
-            json!({"id":"c","author":null,"leadId":"l","status":"future","text":null,"future":[1]}),
-        ] {
-            let decoded = ComplaintRecord::deserialize(value.clone()).unwrap();
-            assert_eq!(decoded.into_value(), value);
-        }
+        let value = json!({"id":"c","author":null,"leadId":"l","text":null,"status":"open","recipient":"lead","version":1,"created":1.0,"updated":1.0,"readAt":null,"responses":[]});
+        let decoded = ComplaintRecord::deserialize(value.clone()).unwrap();
+        assert_eq!(decoded.into_value(), value);
     }
 
     #[test]
-    fn complaint_storage_preserves_extensions_and_enforces_identity() {
+    fn complaint_storage_preserves_bytes_and_enforces_identity() {
         let mut db = rusqlite::Connection::open_in_memory().unwrap();
         db.execute_batch(
             "CREATE TABLE runtime_complaints(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
         )
         .unwrap();
         let tx = db.transaction().unwrap();
-        let raw = r#"{ "id":"c", "status":"future", "author":null, "future":{"a":1} }"#;
+        let raw = r#"{ "id":"c", "status":"open", "author":null, "leadId":"l", "text":null, "recipient":"lead", "version":1, "created":1.0, "updated":1.0, "readAt":null, "responses":[] }"#;
         crate::QuestionsWriteRepository::put_complaint(&tx, "c", raw).unwrap();
         let saved: String = tx
             .query_row(
