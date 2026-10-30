@@ -329,7 +329,7 @@ fn claim_audio_from(
 }
 
 fn pure(method: &str) -> bool {
-    matches!(method, "markdown.parse" | "system.uuid")
+    method == "markdown.parse"
 }
 fn compute(request: &Request) -> Response {
     if request.id.is_empty() || request.id.len() > 128 {
@@ -339,10 +339,7 @@ fn compute(request: &Request) -> Response {
             "Invalid request identity.",
         );
     }
-    match request.method.as_str() {
-        "markdown.parse" => crate::markdown::dispatch(request),
-        _ => crate::platform::dispatch(request),
-    }
+    crate::markdown::dispatch(request)
 }
 
 /// `STUDIO_CORE_TRACE=1` logs each packet size and time since start to stderr.

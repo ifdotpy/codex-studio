@@ -1,5 +1,4 @@
 //! Pure platform services used by the presentation adapters.
-use crate::protocol::{Request, Response};
 
 // SAFETY: The random-byte FFI call writes only into its owned byte array.
 #[allow(unsafe_code)]
@@ -19,13 +18,6 @@ pub(crate) fn uuid() -> Result<String, String> {
         &hex[16..20],
         &hex[20..]
     ))
-}
-
-pub fn dispatch(request: &Request) -> Response {
-    match uuid() {
-        Ok(value) => Response::success(request.id.clone(), serde_json::Value::String(value)),
-        Err(error) => Response::failure(request.id.clone(), "platform_error", error),
-    }
 }
 
 /// Hidden Attar checks must not show system prompts, notifications or sound.

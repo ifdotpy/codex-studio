@@ -226,13 +226,6 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(markdown.outcome, NativeOutcome::Success(value) if value.is_array()));
-        let uuid = client
-            .request(request("uuid", "system.uuid", Value::Null))
-            .await
-            .unwrap();
-        assert!(
-            matches!(uuid.outcome, NativeOutcome::Success(Value::String(value)) if value.len() == 36)
-        );
     }
     #[tokio::test]
     async fn retired_terminal_commands_and_views_are_rejected() {
@@ -326,6 +319,7 @@ mod tests {
         for method in [
             "system.start",
             "system.info",
+            "system.uuid",
             "sync.pull",
             "sync.applyEntities",
         ] {
