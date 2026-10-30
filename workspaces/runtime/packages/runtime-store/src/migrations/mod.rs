@@ -640,6 +640,20 @@ static CATALOG: &[&dyn Migration] = &[
         },
         apply: |c| m2026_10_30_rule_monitor_records::apply(c.transaction),
     },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-unused-monitor-stall-index",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Monitor rows with the unused stall deadline expression index",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| {
+            c.transaction
+                .execute_batch("DROP INDEX IF EXISTS runtime_monitor_stall_due")?;
+            Ok(())
+        },
+    },
     &RegistryMigration,
 ];
 
@@ -1139,6 +1153,41 @@ pub(crate) fn prepare_canvas_fixture(transaction: &Transaction<'_>) -> StoreResu
 mod tests {
     use super::*;
     use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+
+    #[test]
+    fn migration_removes_unused_monitor_stall_index() {
+        let mut db = Connection::open_in_memory().expect("database");
+        db.execute_batch("CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL); CREATE INDEX runtime_monitor_stall_due ON runtime_monitors(json_extract(record,'$.activityAt')) WHERE json_extract(record,'$.status')='running'; INSERT INTO runtime_monitors VALUES('m','{}');").expect("legacy monitor");
+        let tx = db.transaction().expect("transaction");
+        let accounts = Accounts::new();
+        let step = CATALOG
+            .iter()
+            .find(|step| step.definition().id == "2026-10-30-unused-monitor-stall-index")
+            .expect("registered migration");
+        step.apply(&Context::Sql(SqlContext {
+            transaction: &tx,
+            accounts: &accounts,
+            source: SourceDatabase::Independent,
+        }))
+        .expect("migration");
+        assert!(
+            !tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='runtime_monitor_stall_due')",
+                [],
+                |row| row.get::<_, bool>(0)
+            )
+            .expect("index")
+        );
+        assert_eq!(
+            tx.query_row(
+                "SELECT record FROM runtime_monitors WHERE id='m'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .expect("row"),
+            "{}"
+        );
+    }
 
     struct BatchWitness;
     impl ReceiptFamilyMigration for BatchWitness {

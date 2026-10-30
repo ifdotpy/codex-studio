@@ -512,7 +512,6 @@ async fn malformed_monitor_row_is_skipped_while_other_rows_are_recovered() {
             // remove it in this isolated fixture to witness row-level isolation.
             tx.execute_batch(
                 "DROP INDEX runtime_monitor_agent_status;
-                 DROP INDEX runtime_monitor_stall_due;
                  DROP INDEX runtime_monitor_status",
             )?;
             tx.execute(
