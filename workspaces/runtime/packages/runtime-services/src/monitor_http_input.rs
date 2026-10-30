@@ -125,7 +125,9 @@ pub(crate) fn read(connection: &Connection, query: &Value) -> Result<ProcessRece
     let Some((_, receipt)) = saved(connection, request_id)? else {
         return Ok(missing());
     };
-    if query["agent"] != receipt.operation.agent.as_str() || query["epoch"] != receipt.operation.epoch.get() {
+    if query["agent"] != receipt.operation.agent.as_str()
+        || query["epoch"] != receipt.operation.epoch.get()
+    {
         return Ok(missing());
     }
     let Some(actor) =
@@ -141,9 +143,12 @@ pub(crate) fn read(connection: &Connection, query: &Value) -> Result<ProcessRece
     let Some(monitor) = MonitorsRepository::get(connection, &receipt.monitor)? else {
         return Ok(missing());
     };
-    let snapshot =
-        monitor_policy::MonitorSnapshot::checked_stored(&monitor, actor.value())?;
-    if !snapshot.active_owner() || snapshot.operation().is_none_or(|current| !current.same_identity(&receipt.operation)) {
+    let snapshot = monitor_policy::MonitorSnapshot::checked_stored(&monitor, actor.value())?;
+    if !snapshot.active_owner()
+        || snapshot
+            .operation()
+            .is_none_or(|current| !current.same_identity(&receipt.operation))
+    {
         return Ok(missing());
     }
     let (status, terminal) = match receipt.status {
@@ -253,7 +258,12 @@ fn put_receipt(
         status,
         Status::Acknowledged | Status::Rejected | Status::Expired
     ) {
-        settle_request(tx, &admitted, Some(receipt.operation.agent.as_str()), &receipt)?;
+        settle_request(
+            tx,
+            &admitted,
+            Some(receipt.operation.agent.as_str()),
+            &receipt,
+        )?;
     } else {
         Outbox::put(
             tx,

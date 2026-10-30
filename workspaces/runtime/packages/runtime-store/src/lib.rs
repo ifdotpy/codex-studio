@@ -95,8 +95,8 @@ use sqlite_actor::{ActorResponseDisposition, SqliteActor};
 
 pub use path::{NATIVE_LAYR_DIRECTORY, resolve_state_dir};
 pub use records::{
-    ActiveExecutionView, AgentExecutionMode, AgentId, AgentRecord, AgentRepository, AgentSandbox, AgentStatus,
-    AnnotationRecord, ChatMessage, ChatMessageId, CheckpointRecord, ComplaintRecord,
+    ActiveExecutionView, AgentExecutionMode, AgentId, AgentRecord, AgentRepository, AgentSandbox,
+    AgentStatus, AnnotationRecord, ChatMessage, ChatMessageId, CheckpointRecord, ComplaintRecord,
     CredentialCopy, EventMetadataRecord, ExecutionRunRecord, GraphAgentRecord, InterruptOutcome,
     JsonRecord, LegacyWorkReply, MessageRepository, MonitorRecord, NativeRelease,
     NativeReleaseScope, NativeReviewThread, PlanRecord, QueueEvent, QueueEventId,

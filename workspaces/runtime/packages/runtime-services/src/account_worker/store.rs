@@ -2484,20 +2484,23 @@ fn journal_one(
                 .get("processId")
                 .and_then(Value::as_str)
                 .filter(|id| !id.is_empty())
-            && let Err(error) = <crate::monitor_event_queue::OutputDelta as serde::Deserialize>::deserialize(params)
-                .map_err(|_| crate::notification_dispatch::NotificationDispatchError::invalid())
-                .and_then(|delta| crate::monitor_event_queue::enqueue_output_with_scope_in_transaction(
-                tx,
-                process_id,
-                crate::monitor_event_queue::JournalEventScope {
-                    account,
-                    cursor_scope: journal_scope,
-                    generation: entry.generation.0,
-                    cursor: entry.cursor.0,
-                    expected_agent: expected_vm_actor.map(|(actor, _)| actor),
-                },
-                &delta,
-            ))
+            && let Err(error) =
+                <crate::monitor_event_queue::OutputDelta as serde::Deserialize>::deserialize(params)
+                    .map_err(|_| crate::notification_dispatch::NotificationDispatchError::invalid())
+                    .and_then(|delta| {
+                        crate::monitor_event_queue::enqueue_output_with_scope_in_transaction(
+                            tx,
+                            process_id,
+                            crate::monitor_event_queue::JournalEventScope {
+                                account,
+                                cursor_scope: journal_scope,
+                                generation: entry.generation.0,
+                                cursor: entry.cursor.0,
+                                expected_agent: expected_vm_actor.map(|(actor, _)| actor),
+                            },
+                            &delta,
+                        )
+                    })
         {
             // A refused delta of a running monitor belongs to its agent.
             if matches!(

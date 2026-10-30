@@ -53,7 +53,13 @@ impl RulesRepository {
     }
 
     pub fn publish_entity(transaction: &Transaction<'_>, record: &RuleRecord) -> StoreResult<()> {
-        put_rule_entity(transaction, record.id(), Some(&record.agent), Some(record.name.as_str()), false)
+        put_rule_entity(
+            transaction,
+            record.id(),
+            Some(&record.agent),
+            Some(record.name.as_str()),
+            false,
+        )
     }
 
     pub fn put(transaction: &Transaction<'_>, record: &RuleRecord) -> StoreResult<()> {
@@ -99,9 +105,29 @@ fn put_rule_entity(
         name: Option<&'a str>,
     }
     #[derive(Serialize)]
-    struct Envelope<'a> { collection: &'static str, id: &'a str, value: RuleProjection<'a> }
-    let value = if deleted { RuleProjection { id: None, agent: None, name: None } } else { RuleProjection { id: Some(id), agent, name } };
-    let payload = serde_json::to_string(&Envelope { collection: "rule", id, value })?;
+    struct Envelope<'a> {
+        collection: &'static str,
+        id: &'a str,
+        value: RuleProjection<'a>,
+    }
+    let value = if deleted {
+        RuleProjection {
+            id: None,
+            agent: None,
+            name: None,
+        }
+    } else {
+        RuleProjection {
+            id: Some(id),
+            agent,
+            name,
+        }
+    };
+    let payload = serde_json::to_string(&Envelope {
+        collection: "rule",
+        id,
+        value,
+    })?;
     SyncDocumentsRepository::put_entity_payload(transaction, "rule", id, &payload, deleted)?;
     Ok(())
 }

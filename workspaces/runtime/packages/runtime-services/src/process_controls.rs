@@ -6,8 +6,8 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashSet};
 use studio_runtime_providers::ProviderKind;
 use studio_runtime_schema::process_controls::{
-    ProcessActionResult, ProcessActionStatus, ProcessControlRequest, ProcessEntry, ProcessOutcome, ProcessResponseTarget,
-    ProcessReceipt,
+    ProcessActionResult, ProcessActionStatus, ProcessControlRequest, ProcessEntry, ProcessOutcome,
+    ProcessReceipt, ProcessResponseTarget,
 };
 use studio_runtime_store::{
     ProcessActionKind, ProcessActionPhase, ProcessActionRecord, StoreError, Transaction,
@@ -128,11 +128,11 @@ fn retained_monitor_scope(
     {
         return Ok(None);
     }
-    let Some(operation) = &monitor.operation
-    else {
+    let Some(operation) = &monitor.operation else {
         return Ok(None);
     };
-    if operation.agent.as_str() != text(owner, "id", "") || Some(operation.epoch.get()) != owner["epoch"].as_i64()
+    if operation.agent.as_str() != text(owner, "id", "")
+        || Some(operation.epoch.get()) != owner["epoch"].as_i64()
     {
         return Ok(None);
     }
@@ -141,11 +141,7 @@ fn retained_monitor_scope(
         Err(crate::account_worker::WorkerError::Store(error)) => return Err(Error::Store(error)),
         _ => return Ok(None),
     }
-    match crate::account_worker::retained::monitor_command_scope(
-        tx,
-        &monitor.id,
-        operation,
-    ) {
+    match crate::account_worker::retained::monitor_command_scope(tx, &monitor.id, operation) {
         Ok(scope) => Ok(scope),
         Err(crate::account_worker::WorkerError::Store(error)) => Err(Error::Store(error)),
         _ => Ok(None),
@@ -161,7 +157,8 @@ pub fn monitor_sources(
     let mut scopes = BTreeMap::new();
     for (owner, source) in rows {
         if let ProcessSource::Monitor(monitor) = source
-            && let Some(scope) = retained_monitor_scope(tx, monitor, owner)? {
+            && let Some(scope) = retained_monitor_scope(tx, monitor, owner)?
+        {
             scopes.insert(scope.account.clone(), scope);
         }
     }
@@ -190,42 +187,82 @@ pub fn project_monitor(
         }
         _ => None,
     };
-    Ok(project_monitor_bound(raw, owner, proven.map(|scope| scope.connection.as_str()).or(owner_connection), proven.map(|scope| scope.generation)))
+    Ok(project_monitor_bound(
+        raw,
+        owner,
+        proven
+            .map(|scope| scope.connection.as_str())
+            .or(owner_connection),
+        proven.map(|scope| scope.generation),
+    ))
 }
 fn project_monitor_bound(
-    monitor: &studio_runtime_store::MonitorRecord, owner: &Value,
-    connection: Option<&str>, generation: Option<u64>,
+    monitor: &studio_runtime_store::MonitorRecord,
+    owner: &Value,
+    connection: Option<&str>,
+    generation: Option<u64>,
 ) -> Value {
     use studio_runtime_schema::studio_errors::MonitorStatus;
     let agent = monitor.agent.as_str();
     let account = text(owner, "accountKey", "default");
-    let pending = matches!(monitor.status, MonitorStatus::Approval | MonitorStatus::Starting);
+    let pending = matches!(
+        monitor.status,
+        MonitorStatus::Approval | MonitorStatus::Starting
+    );
     let operation = monitor.operation.as_ref();
-    let source_account = operation.map(|op| op.account_key.as_str()).or(pending.then_some(account));
+    let source_account = operation
+        .map(|op| op.account_key.as_str())
+        .or(pending.then_some(account));
     let mut source_connection = operation.map(|op| op.connection_id.as_str());
     let mut source_thread = operation.and_then(|op| op.evidence.thread_id.as_deref());
-    if generation.is_some() { source_connection = connection; }
-    else if monitor.status == MonitorStatus::Running && connection.is_some()
-        && monitor.reattached_connection_id.as_deref() == connection {
+    if generation.is_some() {
+        source_connection = connection;
+    } else if monitor.status == MonitorStatus::Running
+        && connection.is_some()
+        && monitor.reattached_connection_id.as_deref() == connection
+    {
         source_connection = connection;
         source_thread = owner["threadId"].as_str();
     }
-    if generation.is_none() && source_thread.is_none_or(str::is_empty)
-        && operation.map(|op| op.connection_id.as_str()) == connection {
+    if generation.is_none()
+        && source_thread.is_none_or(str::is_empty)
+        && operation.map(|op| op.connection_id.as_str()) == connection
+    {
         source_thread = owner["threadId"].as_str();
     }
     let epoch = monitor.epoch.get();
-    let mut native = json!([monitor.id, epoch, source_account, source_connection, source_thread]);
-    if let Some(generation) = generation { native.as_array_mut().expect("identity").push(json!(generation)); }
+    let mut native = json!([
+        monitor.id,
+        epoch,
+        source_account,
+        source_connection,
+        source_thread
+    ]);
+    if let Some(generation) = generation {
+        native
+            .as_array_mut()
+            .expect("identity")
+            .push(json!(generation));
+    }
     let same = (generation.is_some() || source_account == Some(account))
         && owner["epoch"].as_i64() == Some(epoch)
-        && connection.is_some_and(|c| !c.is_empty()) && source_connection == connection
-        && (generation.is_some() || (source_thread.is_some_and(|v| !v.is_empty()) && source_thread == owner["threadId"].as_str()));
-    let can_input = same && owner["autoWake"] == true && monitor.interactive && monitor.status == MonitorStatus::Running;
+        && connection.is_some_and(|c| !c.is_empty())
+        && source_connection == connection
+        && (generation.is_some()
+            || (source_thread.is_some_and(|v| !v.is_empty())
+                && source_thread == owner["threadId"].as_str()));
+    let can_input = same
+        && owner["autoWake"] == true
+        && monitor.interactive
+        && monitor.status == MonitorStatus::Running;
     let output = monitor.tail.as_str();
     let bytes = monitor.bytes.get() as u64;
     let command = monitor.command.as_str();
-    let name = if command.is_empty() { "Command monitor" } else { command };
+    let name = if command.is_empty() {
+        "Command monitor"
+    } else {
+        command
+    };
     let mut result = json!({"id":monitor.id,"key":URL_SAFE_NO_PAD.encode(json!(["monitor",agent,monitor.id]).to_string()),
         "generation":digest(&json!(["monitor",agent,native])),"agent":agent,"accountKey":account,"epoch":owner["epoch"],
         "source":"monitor","status":monitor.status,"cancelRequested":monitor.cancel_requested == Some(true),
@@ -236,11 +273,15 @@ fn project_monitor_bound(
         "capabilities":{"readOutput":true,"sendInput":can_input,"resize":can_input,"stop":same || (pending && owner["epoch"].as_i64() == Some(epoch) && source_account == Some(account))},
         "_raw":{"id":monitor.id,"status":monitor.status,"reattachedConnectionId":monitor.reattached_connection_id},
         "_sourceAccountKey":source_account,"_sourceConnectionId":source_connection,"_sourceThreadId":source_thread,"_sourceEpoch":epoch});
-    if let Some(generation) = generation { result["_sourceGeneration"] = json!(generation); }
+    if let Some(generation) = generation {
+        result["_sourceGeneration"] = json!(generation);
+    }
     if let Some(budget) = &monitor.output_wake_budget {
         result["outputWakeBudget"] = json!({"totalSuppressedMatches":budget.total_suppressed_matches,"paused":budget.paused,"tokens":budget.tokens});
     }
-    if let Some(patterns) = &monitor.output_patterns { result["outputPatterns"] = json!(patterns); }
+    if let Some(patterns) = &monitor.output_patterns {
+        result["outputPatterns"] = json!(patterns);
+    }
     result
 }
 
@@ -295,7 +336,10 @@ pub fn owners(connection: &Connection, scope: &str) -> Result<Vec<Value>, Error>
 }
 
 /// A process source retains its owning record type through selection.
-pub enum ProcessSource { Monitor(Box<studio_runtime_store::MonitorRecord>), Task(Value) }
+pub enum ProcessSource {
+    Monitor(Box<studio_runtime_store::MonitorRecord>),
+    Task(Value),
+}
 
 /// Scoped active commands paired with their already-loaded owners.
 pub fn process_rows<'a>(
@@ -330,7 +374,9 @@ pub fn process_rows<'a>(
             for row in rows {
                 let raw = row.map_err(StoreError::from)?;
                 let source = if table == "runtime_monitors" {
-                    ProcessSource::Monitor(Box::new(serde_json::from_str(&raw).map_err(StoreError::from)?))
+                    ProcessSource::Monitor(Box::new(
+                        serde_json::from_str(&raw).map_err(StoreError::from)?,
+                    ))
                 } else {
                     ProcessSource::Task(serde_json::from_str(&raw).map_err(StoreError::from)?)
                 };
@@ -366,21 +412,53 @@ pub fn project(source: &str, raw: &Value, owner: &Value, connection: Option<&str
     let epoch = raw["ownerEpoch"].clone();
     let claude = source == "claude_task";
     let item = text(raw, "itemId", "");
-    let opaque = if claude { item.strip_prefix("task:").unwrap_or(item) } else { text(raw, "processId", item) };
-    let native = if claude {
-        json!([opaque, epoch, source_account, source_connection, source_thread, raw["turnId"]])
+    let opaque = if claude {
+        item.strip_prefix("task:").unwrap_or(item)
     } else {
-        json!([opaque, item, epoch, source_account, source_connection, source_thread, raw["turnId"]])
+        text(raw, "processId", item)
     };
-    let same = source_account == account && epoch == owner["epoch"]
-        && connection.is_some_and(|c| !c.is_empty()) && source_connection.as_str() == connection
-        && source_thread.as_str().is_some_and(|v| !v.is_empty()) && source_thread == owner["threadId"];
-    let can_input = same && owner["autoWake"] == true && !claude
+    let native = if claude {
+        json!([
+            opaque,
+            epoch,
+            source_account,
+            source_connection,
+            source_thread,
+            raw["turnId"]
+        ])
+    } else {
+        json!([
+            opaque,
+            item,
+            epoch,
+            source_account,
+            source_connection,
+            source_thread,
+            raw["turnId"]
+        ])
+    };
+    let same = source_account == account
+        && epoch == owner["epoch"]
+        && connection.is_some_and(|c| !c.is_empty())
+        && source_connection.as_str() == connection
+        && source_thread.as_str().is_some_and(|v| !v.is_empty())
+        && source_thread == owner["threadId"];
+    let can_input = same
+        && owner["autoWake"] == true
+        && !claude
         && raw["processId"].as_str().is_some_and(|v| !v.is_empty());
     let output = if claude { "" } else { text(raw, "tail", "") };
     let bytes = raw["bytes"].as_u64().unwrap_or(output.len() as u64);
-    let default_name = if claude { "Claude background task" } else { "Background command" };
-    let name = if claude { text(raw, "name", text(raw, "command", default_name)) } else { text(raw, "command", text(raw, "name", default_name)) };
+    let default_name = if claude {
+        "Claude background task"
+    } else {
+        "Background command"
+    };
+    let name = if claude {
+        text(raw, "name", text(raw, "command", default_name))
+    } else {
+        text(raw, "command", text(raw, "name", default_name))
+    };
     let mut result = json!({"id":text(raw,"id",opaque),"key":URL_SAFE_NO_PAD.encode(json!([source,agent,opaque]).to_string()),
         "generation":digest(&json!([source,agent,native])),"agent":agent,"accountKey":account,"epoch":owner["epoch"],
         "source":source,"status":text(raw,"status","unknown"),"cancelRequested":raw["cancelRequested"]==true,
@@ -547,18 +625,41 @@ pub fn processes(
         let owner_connection = connections.get(text(owner, "id", "")).map(String::as_str);
         match row {
             ProcessSource::Monitor(monitor) => {
-                let account = monitor.operation.as_ref().map(|op| op.account_key.as_str()).unwrap_or("default");
-                output.push(project_monitor(connection, monitor, owner, owner_connection, connections.sources.get(account))?);
+                let account = monitor
+                    .operation
+                    .as_ref()
+                    .map(|op| op.account_key.as_str())
+                    .unwrap_or("default");
+                output.push(project_monitor(
+                    connection,
+                    monitor,
+                    owner,
+                    owner_connection,
+                    connections.sources.get(account),
+                )?);
             }
             ProcessSource::Task(raw) => {
                 let mut raw = raw.clone();
-                let provider = text(&raw, "sourceProvider", text(owner, "provider", ProviderKind::Codex.key())).to_owned();
-                let source = if raw["kind"] == "command" && studio_runtime_store::truthy(raw.get("processId")) {
+                let provider = text(
+                    &raw,
+                    "sourceProvider",
+                    text(owner, "provider", ProviderKind::Codex.key()),
+                )
+                .to_owned();
+                let source = if raw["kind"] == "command"
+                    && studio_runtime_store::truthy(raw.get("processId"))
+                {
                     "codex_task"
-                } else if provider == ProviderKind::Claude.key() && raw["kind"] == "tool"
-                    && text(&raw, "itemId", "").strip_prefix("task:").is_some_and(|v| !v.is_empty()) {
+                } else if provider == ProviderKind::Claude.key()
+                    && raw["kind"] == "tool"
+                    && text(&raw, "itemId", "")
+                        .strip_prefix("task:")
+                        .is_some_and(|v| !v.is_empty())
+                {
                     "claude_task"
-                } else { continue; };
+                } else {
+                    continue;
+                };
                 raw["sourceProvider"] = json!(provider);
                 output.push(project(source, &raw, owner, owner_connection));
             }
@@ -628,7 +729,11 @@ fn response_matches(expected: &Value, target: &ProcessResponseTarget) -> bool {
         && expected["threadId"] == target.thread_id.as_str()
         && expected["turnId"] == target.turn_id.as_str()
 }
-pub fn validate_response(owner: &Value, target: &ProcessResponseTarget, connection: Option<&str>) -> bool {
+pub fn validate_response(
+    owner: &Value,
+    target: &ProcessResponseTarget,
+    connection: Option<&str>,
+) -> bool {
     response_matches(&response_target(owner, connection), target)
 }
 pub fn validate_stop_response(
@@ -639,7 +744,8 @@ pub fn validate_stop_response(
 ) -> bool {
     validate_response(owner, target, Some(&scope.connection))
         || proof.is_some_and(|proof| {
-            proof.matches(owner, scope) && response_matches(&response_identity(owner, &scope.connection), target)
+            proof.matches(owner, scope)
+                && response_matches(&response_identity(owner, &scope.connection), target)
         })
 }
 
@@ -928,9 +1034,15 @@ mod claim_identity_tests {
         let owner = json!({"id":"owner","epoch":1,"accountKey":"default","threadId":"thread","autoWake":true});
         for status in ["starting", "running"] {
             let raw = json!({"id":"watch","agent":"owner","epoch":1,"status":status,"requestId":"request","created":1,"activityAt":1,"activityGeneration":0,"bytes":12,"command":"printf x","cwd":std::env::temp_dir(),"interactive":true,"livenessCommand":"","log":std::env::temp_dir().join("watch.log"),"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"x","timeout_ms":3600000,"wakeOn":"exit","operation":{"agent":"owner","epoch":1,"accountKey":"default","connectionId":"connection","threadId":"thread"}});
-            let fixture = format!(r#"{{"id":"watch","agent":"owner","epoch":1,"status":"{status}","requestId":"request","created":1,"activityAt":1,"activityGeneration":0,"bytes":12,"command":"printf x","cwd":{},"interactive":true,"livenessCommand":"","log":{},"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"x","timeout_ms":3600000,"wakeOn":"exit","operation":{{"agent":"owner","epoch":1,"accountKey":"default","connectionId":"connection","threadId":"thread"}}}}"#, serde_json::to_string(&std::env::temp_dir()).unwrap(), serde_json::to_string(&std::env::temp_dir().join("watch.log")).unwrap());
-            let record: studio_runtime_store::MonitorRecord = serde_json::from_str(&fixture).unwrap();
-            let mut expected = legacy_project_bound("monitor", &raw, &owner, Some("connection"), None);
+            let fixture = format!(
+                r#"{{"id":"watch","agent":"owner","epoch":1,"status":"{status}","requestId":"request","created":1,"activityAt":1,"activityGeneration":0,"bytes":12,"command":"printf x","cwd":{},"interactive":true,"livenessCommand":"","log":{},"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"x","timeout_ms":3600000,"wakeOn":"exit","operation":{{"agent":"owner","epoch":1,"accountKey":"default","connectionId":"connection","threadId":"thread"}}}}"#,
+                serde_json::to_string(&std::env::temp_dir()).unwrap(),
+                serde_json::to_string(&std::env::temp_dir().join("watch.log")).unwrap()
+            );
+            let record: studio_runtime_store::MonitorRecord =
+                serde_json::from_str(&fixture).unwrap();
+            let mut expected =
+                legacy_project_bound("monitor", &raw, &owner, Some("connection"), None);
             let mut actual = project_monitor_bound(&record, &owner, Some("connection"), None);
             expected.as_object_mut().unwrap().remove("_raw");
             actual.as_object_mut().unwrap().remove("_raw");

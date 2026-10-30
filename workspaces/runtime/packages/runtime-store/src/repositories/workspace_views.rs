@@ -154,9 +154,7 @@ impl WorkspaceViewsRepository {
         .collect()
     }
 
-    pub fn agents(
-        connection: &Connection,
-    ) -> StoreResult<Vec<crate::AgentRecord>> {
+    pub fn agents(connection: &Connection) -> StoreResult<Vec<crate::AgentRecord>> {
         let fields = crate::agent_volatile::columns("v.");
         let mut statement = connection.prepare_cached(&format!(
             "SELECT {fields},a.id,a.record,v.id IS NOT NULL FROM runtime_agents a \

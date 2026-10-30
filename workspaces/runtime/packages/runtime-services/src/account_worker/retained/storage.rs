@@ -299,9 +299,8 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
                 .all(|key| matches!(key.as_str(), "cwd" | "includeLayers"))
         })
         && call.params.get("cwd").is_some_and(|cwd| {
-            cwd.as_str().is_some_and(|cwd| {
-                agent_record.cwd.as_deref() == Some(cwd)
-            })
+            cwd.as_str()
+                .is_some_and(|cwd| agent_record.cwd.as_deref() == Some(cwd))
         })
         && if let Some(monitor_id) = config_monitor_id {
             tx.query_row(
@@ -422,18 +421,33 @@ fn authorize_retained_monitor_control(
     let Some(record) = studio_runtime_store::MonitorsRepository::get(tx, id)? else {
         return Ok(false);
     };
-    let Some(operation) = record.operation.as_ref() else { return Ok(false); };
-    if record.status != crate::monitor_policy::MonitorStatus::Running || record.agent != actor.agent
-        || record.epoch.get() != actor.epoch || operation.agent.as_str() != actor.agent
-        || operation.epoch.get() != actor.epoch || operation.account_key.as_str() != call.scope.account
-        || vm_actor(tx, &actor.agent)? { return Ok(false); }
-    let Some(original) = monitor_command_scope(tx, id, operation)? else { return Ok(false); };
-    if original.account != call.scope.account || original.generation != call.scope.generation { return Ok(false); }
+    let Some(operation) = record.operation.as_ref() else {
+        return Ok(false);
+    };
+    if record.status != crate::monitor_policy::MonitorStatus::Running
+        || record.agent != actor.agent
+        || record.epoch.get() != actor.epoch
+        || operation.agent.as_str() != actor.agent
+        || operation.epoch.get() != actor.epoch
+        || operation.account_key.as_str() != call.scope.account
+        || vm_actor(tx, &actor.agent)?
+    {
+        return Ok(false);
+    }
+    let Some(original) = monitor_command_scope(tx, id, operation)? else {
+        return Ok(false);
+    };
+    if original.account != call.scope.account || original.generation != call.scope.generation {
+        return Ok(false);
+    }
     if call.method == Method::CommandExecTerminate {
-        return Ok(record.cancel_requested == Some(true) && call.operation == format!("monitor-cancel:{id}")
+        return Ok(record.cancel_requested == Some(true)
+            && call.operation == format!("monitor-cancel:{id}")
             && call.params == json!({"processId":id}));
     }
-    let Some(attempt) = record.input_attempt.as_ref() else { return Ok(false); };
+    let Some(attempt) = record.input_attempt.as_ref() else {
+        return Ok(false);
+    };
     let params_match = match (&attempt.method, call.method) {
         (studio_runtime_schema::monitor_record::MonitorInputMethod::Write(expected), Method::CommandExecWrite) =>
             <studio_runtime_schema::monitor_record::MonitorWriteParams as serde::Deserialize>::deserialize(&call.params).is_ok_and(|actual| actual == *expected),
@@ -441,13 +455,19 @@ fn authorize_retained_monitor_control(
             <studio_runtime_schema::monitor_record::MonitorResizeParams as serde::Deserialize>::deserialize(&call.params).is_ok_and(|actual| actual == *expected),
         _ => false,
     };
-    Ok(current.epoch == actor.epoch && current.auto_wake == Some(true)
+    Ok(current.epoch == actor.epoch
+        && current.auto_wake == Some(true)
         && !current.is_deleted()
-        && current.extra.get("deleted") != Some(&json!(true)) && record.interactive
-        && record.cancel_requested != Some(true) && !attempt.id.is_empty()
+        && current.extra.get("deleted") != Some(&json!(true))
+        && record.interactive
+        && record.cancel_requested != Some(true)
+        && !attempt.id.is_empty()
         && attempt.status == studio_runtime_schema::monitor_record::MonitorInputStatus::Submitted
-        && attempt.operation.agent == operation.agent && attempt.operation.epoch == operation.epoch
-        && attempt.operation.account_key == operation.account_key && attempt.operation.connection_id == operation.connection_id && params_match
+        && attempt.operation.agent == operation.agent
+        && attempt.operation.epoch == operation.epoch
+        && attempt.operation.account_key == operation.account_key
+        && attempt.operation.connection_id == operation.connection_id
+        && params_match
         && call.operation == format!("monitor-input:{id}:{}", attempt.id))
 }
 
@@ -481,9 +501,13 @@ fn authorize_recovered_monitor_cancel(
     else {
         return Ok(false);
     };
-    let Some(operation) = record.operation.as_ref() else { return Ok(false); };
-    Ok(record.agent == actor.agent && record.epoch.get() == actor.epoch
-        && operation.agent.as_str() == actor.agent && operation.epoch.get() == actor.epoch
+    let Some(operation) = record.operation.as_ref() else {
+        return Ok(false);
+    };
+    Ok(record.agent == actor.agent
+        && record.epoch.get() == actor.epoch
+        && operation.agent.as_str() == actor.agent
+        && operation.epoch.get() == actor.epoch
         && operation.account_key.as_str() == call.scope.account
         && record.status == crate::monitor_policy::MonitorStatus::Running
         && record.cancel_requested == Some(true)
@@ -1380,8 +1404,7 @@ mod replay_identity_tests {
         store
             .transaction(move |tx| {
                 AgentRepository::put(tx, &studio_runtime_store::AgentRecord::from_value(agent)?)?;
-                studio_runtime_store::Table::new(tx)
-                    .put(&watch)
+                studio_runtime_store::Table::new(tx).put(&watch)
             })
             .await
             .expect("owners");

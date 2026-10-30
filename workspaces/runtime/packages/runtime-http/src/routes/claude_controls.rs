@@ -67,7 +67,8 @@ async fn repair_report(
     let Some(thread) = state_thread(&agent) else {
         return super::generated_json(json!({"status":"none","skippedRows":0,"invalidSequence":false,"scopeConfirmed":null,"nativeHistoryConfirmed":null})).map(Json);
     };
-    let account = agent.extra
+    let account = agent
+        .extra
         .get("lazyAccountTransfer")
         .and_then(|transfer| transfer.get("sourceAccountKey"))
         .and_then(Value::as_str)
@@ -151,7 +152,8 @@ async fn session(
     )
     .map_err(control_error)?;
     let account = if is_state {
-        agent.extra
+        agent
+            .extra
             .get("lazyAccountTransfer")
             .and_then(|lazy| lazy.get("sourceAccountKey"))
             .and_then(Value::as_str)
@@ -251,11 +253,12 @@ async fn file_backups(
         let id = body.id.clone();
         let (agent, settled) = store
             .read_async("claude/file-backups", move |tx| {
-                let agent = AgentRepository::get(tx, &AgentId(id))?
-                    .ok_or_else(|| studio_runtime_store::StoreError::InvalidStoredRecord {
+                let agent = AgentRepository::get(tx, &AgentId(id))?.ok_or_else(|| {
+                    studio_runtime_store::StoreError::InvalidStoredRecord {
                         object: "agent",
                         id: "missing".into(),
-                    })?;
+                    }
+                })?;
                 let settled = ClaudeControlRepository::settled_file_rewinds(tx, &agent.value())?;
                 Ok::<_, studio_runtime_store::StoreError>((agent, settled))
             })
@@ -267,7 +270,9 @@ async fn file_backups(
             None,
         )
         .map_err(control_error)?;
-        let thread = agent.thread_id.as_deref()
+        let thread = agent
+            .thread_id
+            .as_deref()
             .filter(|s| !s.is_empty())
             .ok_or_else(|| control_error(ControlError::Request))?;
         let account = &agent.account_key;
@@ -301,7 +306,10 @@ async fn file_backups(
     .map_err(|_| ApiError::internal())?
 }
 
-async fn require_claude_account(state: &HttpState, agent: &studio_runtime_store::AgentRecord) -> Result<(), ApiError> {
+async fn require_claude_account(
+    state: &HttpState,
+    agent: &studio_runtime_store::AgentRecord,
+) -> Result<(), ApiError> {
     let account_key = agent.account_key.clone();
     let driver = state.account_driver.clone();
     let policy = state.account_policy.clone();
@@ -331,7 +339,8 @@ async fn require_claude_account(state: &HttpState, agent: &studio_runtime_store:
 }
 
 fn state_thread(agent: &studio_runtime_store::AgentRecord) -> Option<&str> {
-    let transfer = agent.extra
+    let transfer = agent
+        .extra
         .get("lazyAccountTransfer")
         .filter(|transfer| transfer.as_object().is_some_and(|value| !value.is_empty()));
     if let Some(transfer) = transfer {
@@ -340,7 +349,10 @@ fn state_thread(agent: &studio_runtime_store::AgentRecord) -> Option<&str> {
             .and_then(Value::as_str)
             .filter(|thread| !thread.is_empty())
     } else {
-        agent.thread_id.as_deref().filter(|thread| !thread.is_empty())
+        agent
+            .thread_id
+            .as_deref()
+            .filter(|thread| !thread.is_empty())
     }
 }
 

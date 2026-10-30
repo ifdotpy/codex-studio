@@ -1016,7 +1016,9 @@ async fn workspace_with_vm_action(
                 .filter(|value| !value.is_empty())
                 .ok_or_else(|| refusal("workspace-readiness/vm-host-project-required".into()))?
         } else {
-            ready.cwd.as_deref()
+            ready
+                .cwd
+                .as_deref()
                 .filter(|value| value.starts_with('/'))
                 .ok_or_else(|| refusal("workspace-state/vm-cwd".into()))?
         };
@@ -1030,9 +1032,12 @@ async fn workspace_with_vm_action(
         );
     }
     // Git provisioning acquires its own short transactions. No store transaction is held here.
-    match Box::pin(crate::workspace_ready_git::prepare(Arc::clone(&store), intent.agent_id.clone()))
-        .await
-        .map_err(|e| refusal(e.to_string()))?
+    match Box::pin(crate::workspace_ready_git::prepare(
+        Arc::clone(&store),
+        intent.agent_id.clone(),
+    ))
+    .await
+    .map_err(|e| refusal(e.to_string()))?
     {
         crate::workspace_ready::WorkspaceDecision::Ready { token } => Ok(token),
         crate::workspace_ready::WorkspaceDecision::Refuse(e) => Err(refusal(e.to_string())),
@@ -1372,7 +1377,10 @@ pub(crate) async fn prepare_monitor_command(
     .await
 }
 
-fn validate_monitor_actor(record: &studio_runtime_store::AgentRecord, epoch: u64) -> Result<(), WorkerError> {
+fn validate_monitor_actor(
+    record: &studio_runtime_store::AgentRecord,
+    epoch: u64,
+) -> Result<(), WorkerError> {
     if crate::legacy_image_workspace::is_legacy(&record.value()) {
         return Err(refusal("This legacy workspace is finished".into()));
     }

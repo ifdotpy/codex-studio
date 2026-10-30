@@ -161,7 +161,11 @@ pub struct AgentActiveTool {
 pub struct AgentActivity {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub phase: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_nonnegative_time", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nonnegative_time",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub at: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<AgentActiveTool>>,
@@ -226,7 +230,11 @@ pub struct CleanedWorktree {
 pub struct NativeSafetyBuffering {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub account_key: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_nonnegative_time", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nonnegative_time",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub at: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub connection_id: Option<String>,
@@ -257,7 +265,11 @@ pub enum NativeStatusPhase {
 pub struct NativeStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub phase: Option<NativeStatusPhase>,
-    #[serde(default, deserialize_with = "deserialize_nonnegative_time", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nonnegative_time",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub at: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -280,7 +292,10 @@ pub enum AgentSandbox {
         writable_roots: Option<Vec<String>>,
         #[serde(rename = "networkAccess", skip_serializing_if = "Option::is_none")]
         network_access: Option<bool>,
-        #[serde(rename = "excludeTmpdirEnvVar", skip_serializing_if = "Option::is_none")]
+        #[serde(
+            rename = "excludeTmpdirEnvVar",
+            skip_serializing_if = "Option::is_none"
+        )]
         exclude_tmpdir_env_var: Option<bool>,
         #[serde(rename = "excludeSlashTmp", skip_serializing_if = "Option::is_none")]
         exclude_slash_tmp: Option<bool>,
@@ -319,7 +334,11 @@ pub struct AgentRecord {
     pub cwd: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_optional_safe_counter", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_safe_counter",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub compactions: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worktree_ready: Option<bool>,
@@ -329,7 +348,11 @@ pub struct AgentRecord {
     pub native_response_turn: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parked_event: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_optional_safe_counter", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_safe_counter",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub events: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_event: Option<String>,
@@ -382,7 +405,9 @@ pub struct AgentRecord {
     pub extra: BTreeMap<String, Value>,
 }
 
-fn deserialize_agent_epoch<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<i64, D::Error> {
+fn deserialize_agent_epoch<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<i64, D::Error> {
     let epoch = i64::deserialize(deserializer)?;
     if (0..=studio_runtime_schema::shared_values::MAX_SAFE_INTEGER).contains(&epoch) {
         Ok(epoch)
@@ -391,7 +416,9 @@ fn deserialize_agent_epoch<'de, D: serde::Deserializer<'de>>(deserializer: D) ->
     }
 }
 
-fn deserialize_safe_counter<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
+fn deserialize_safe_counter<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<u64, D::Error> {
     let value = u64::deserialize(deserializer)?;
     if value <= studio_runtime_schema::shared_values::MAX_SAFE_INTEGER as u64 {
         Ok(value)
@@ -400,14 +427,18 @@ fn deserialize_safe_counter<'de, D: serde::Deserializer<'de>>(deserializer: D) -
     }
 }
 
-pub(crate) fn deserialize_optional_safe_counter<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<u64>, D::Error> {
+pub(crate) fn deserialize_optional_safe_counter<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<u64>, D::Error> {
     #[derive(Deserialize)]
     #[serde(transparent)]
     struct Safe(#[serde(deserialize_with = "deserialize_safe_counter")] u64);
     Ok(Option::<Safe>::deserialize(deserializer)?.map(|value| value.0))
 }
 
-fn deserialize_nonnegative_time<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<f64>, D::Error> {
+fn deserialize_nonnegative_time<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<f64>, D::Error> {
     let value = Option::<f64>::deserialize(deserializer)?;
     if value.is_none_or(|time| time.is_finite() && time >= 0.0) {
         Ok(value)
@@ -823,7 +854,10 @@ impl AgentRecord {
     pub fn into_value(mut self) -> Value {
         let extra = std::mem::take(&mut self.extra);
         let mut value = crate::projection_value(&self);
-        value.as_object_mut().expect("agent is an object").extend(extra);
+        value
+            .as_object_mut()
+            .expect("agent is an object")
+            .extend(extra);
         value
     }
 
@@ -929,7 +963,10 @@ mod duplicate_stored_record_tests {
     }
     #[test]
     fn duplicate_stored_record_monitor() {
-        assert!(serde_json::from_str::<MonitorRecord>(r#"{"id":"other","id":"m","future":null}"#).is_err());
+        assert!(
+            serde_json::from_str::<MonitorRecord>(r#"{"id":"other","id":"m","future":null}"#)
+                .is_err()
+        );
     }
     #[test]
     fn duplicate_stored_record_asset() {
@@ -1475,9 +1512,7 @@ impl JsonRecord for WorkItemRecord {
 /// The stored run uses the execution-history owner with unconstrained historical evidence.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(transparent)]
-pub struct ExecutionRunRecord(
-    crate::ExecutionRun<Value, studio_runtime_schema::AgentCounter>,
-);
+pub struct ExecutionRunRecord(crate::ExecutionRun<Value, studio_runtime_schema::AgentCounter>);
 impl<'de> Deserialize<'de> for ExecutionRunRecord {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let studio_runtime_schema::json_object::JsonObject(run) =
@@ -1489,10 +1524,7 @@ impl ExecutionRunRecord {
     pub fn from_value(value: Value) -> Result<Self, serde_json::Error> {
         Self::deserialize(value)
     }
-    pub fn run(
-        &self,
-    ) -> &crate::ExecutionRun<Value, studio_runtime_schema::AgentCounter>
-    {
+    pub fn run(&self) -> &crate::ExecutionRun<Value, studio_runtime_schema::AgentCounter> {
         &self.0
     }
 }
@@ -2296,7 +2328,10 @@ pub fn decode_agent_record(
 
 pub(crate) fn parse_agent_record(row_id: &str, encoded: &str) -> StoreResult<AgentRecord> {
     #[cfg(any(test, feature = "test-support"))]
-    crate::agent_volatile::publication_work::record(row_id, crate::agent_volatile::publication_work::Operation::Decode);
+    crate::agent_volatile::publication_work::record(
+        row_id,
+        crate::agent_volatile::publication_work::Operation::Decode,
+    );
     let agent: AgentRecord = serde_json::from_str(encoded)
         .map_err(|_| invalid_agent_field(row_id, "", "record_decode", None))?;
     if agent.id.0 != row_id {
@@ -2888,10 +2923,12 @@ mod tests {
     fn table_upserts_reads_lists_and_inserts_only_once() {
         let connection = database();
         let table = Table::<AgentRecord>::new(&connection);
-        let first =
-            agent(json!({"accountKey":"default","id":"a1","provider":"codex","rootId":"a1","epoch":0,"status":"idle"}));
-        let second =
-            agent(json!({"accountKey":"default","id":"a2","provider":"codex","rootId":"a2","epoch":0,"status":"queued"}));
+        let first = agent(
+            json!({"accountKey":"default","id":"a1","provider":"codex","rootId":"a1","epoch":0,"status":"idle"}),
+        );
+        let second = agent(
+            json!({"accountKey":"default","id":"a2","provider":"codex","rootId":"a2","epoch":0,"status":"queued"}),
+        );
 
         assert!(table.insert_new(&first).expect("first insert succeeds"));
         assert!(!table.insert_new(&first).expect("duplicate id is ignored"));
@@ -3172,11 +3209,20 @@ mod agent_projection_tests {
     #[test]
     fn stored_agent_reads_typed_volatile_columns() {
         let db = Connection::open_in_memory().unwrap();
-        db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL)").unwrap();
-        db.execute_batch(crate::agent_volatile::agent_volatile_table_sql()).unwrap();
-        db.execute("INSERT INTO runtime_agents VALUES('a',?1)", [r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default"}"#]).unwrap();
+        db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+            .unwrap();
+        db.execute_batch(crate::agent_volatile::agent_volatile_table_sql())
+            .unwrap();
+        db.execute(
+            "INSERT INTO runtime_agents VALUES('a',?1)",
+            [r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default"}"#],
+        )
+        .unwrap();
         db.execute("INSERT INTO runtime_agent_volatile(id,events,tail,contextUsage) VALUES('a','3','\"answer\"','{\"tokens\":20,\"window\":100,\"at\":1.5}')", []).unwrap();
-        let agent = Table::<AgentRecord>::new(&db).get(&AgentId::from("a")).unwrap().unwrap();
+        let agent = Table::<AgentRecord>::new(&db)
+            .get(&AgentId::from("a"))
+            .unwrap()
+            .unwrap();
         assert_eq!(agent.events, Some(3));
         assert_eq!(agent.tail.as_deref(), Some("answer"));
         assert_eq!(agent.context_usage.as_ref().unwrap().tokens, Some(20));
@@ -3185,14 +3231,34 @@ mod agent_projection_tests {
     #[test]
     fn typed_agent_can_clear_volatile_activity() {
         let db = Connection::open_in_memory().unwrap();
-        db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL)").unwrap();
-        db.execute_batch(crate::agent_volatile::agent_volatile_table_sql()).unwrap();
-        db.execute("INSERT INTO runtime_agents VALUES('a',?1)", [r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default"}"#]).unwrap();
-        db.execute("INSERT INTO runtime_agent_volatile(id,activity) VALUES('a',?1)", [r#"{"phase":"thinking","at":1.5}"#]).unwrap();
-        let mut agent = Table::<AgentRecord>::new(&db).get(&AgentId::from("a")).unwrap().unwrap();
+        db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+            .unwrap();
+        db.execute_batch(crate::agent_volatile::agent_volatile_table_sql())
+            .unwrap();
+        db.execute(
+            "INSERT INTO runtime_agents VALUES('a',?1)",
+            [r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default"}"#],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO runtime_agent_volatile(id,activity) VALUES('a',?1)",
+            [r#"{"phase":"thinking","at":1.5}"#],
+        )
+        .unwrap();
+        let mut agent = Table::<AgentRecord>::new(&db)
+            .get(&AgentId::from("a"))
+            .unwrap()
+            .unwrap();
         agent.activity = None;
         crate::agent_volatile::put(&db, "a", &agent.value(), false).unwrap();
-        assert!(Table::<AgentRecord>::new(&db).get(&AgentId::from("a")).unwrap().unwrap().activity.is_none());
+        assert!(
+            Table::<AgentRecord>::new(&db)
+                .get(&AgentId::from("a"))
+                .unwrap()
+                .unwrap()
+                .activity
+                .is_none()
+        );
     }
 
     #[test]
@@ -3222,31 +3288,69 @@ mod agent_projection_tests {
     #[test]
     fn stored_agent_rejects_malformed_parent_and_deletion_marker() {
         for field in [r#""parentId":false"#, r#""deletedAt":"bad""#] {
-            let raw = format!(r#"{{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default",{field}}}"#);
+            let raw = format!(
+                r#"{{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default",{field}}}"#
+            );
             assert!(serde_json::from_str::<AgentRecord>(&raw).is_err());
         }
     }
 
     #[test]
     fn stored_agent_epoch_must_be_nonnegative_and_safe() {
-        for epoch in [-1_i64, studio_runtime_schema::shared_values::MAX_SAFE_INTEGER + 1] {
-            let raw = format!(r#"{{"id":"a","rootId":"a","epoch":{epoch},"status":"idle","accountKey":"default"}}"#);
+        for epoch in [
+            -1_i64,
+            studio_runtime_schema::shared_values::MAX_SAFE_INTEGER + 1,
+        ] {
+            let raw = format!(
+                r#"{{"id":"a","rootId":"a","epoch":{epoch},"status":"idle","accountKey":"default"}}"#
+            );
             assert!(serde_json::from_str::<AgentRecord>(&raw).is_err());
         }
     }
 
     #[test]
     fn stored_agent_rejects_unsafe_counters_and_negative_activity_time() {
-        let raw = format!(r#"{{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default","compactions":{}}}"#, studio_runtime_schema::shared_values::MAX_SAFE_INTEGER + 1);
+        let raw = format!(
+            r#"{{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default","compactions":{}}}"#,
+            studio_runtime_schema::shared_values::MAX_SAFE_INTEGER + 1
+        );
         assert!(serde_json::from_str::<AgentRecord>(&raw).is_err());
         let db = Connection::open_in_memory().unwrap();
-        db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL)").unwrap();
-        db.execute_batch(crate::agent_volatile::agent_volatile_table_sql()).unwrap();
-        db.execute("INSERT INTO runtime_agents VALUES('a',?1)", [r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default"}"#]).unwrap();
-        db.execute("INSERT INTO runtime_agent_volatile(id,events,activity) VALUES('a',?1,?2)", [format!("{}",studio_runtime_schema::shared_values::MAX_SAFE_INTEGER + 1), r#"{"at":1}"#.to_string()]).unwrap();
-        assert!(Table::<AgentRecord>::new(&db).get(&AgentId::from("a")).is_err());
-        db.execute("UPDATE runtime_agent_volatile SET events='1', activity=?1 WHERE id='a'", [r#"{"at":-1}"#]).unwrap();
-        assert!(Table::<AgentRecord>::new(&db).get(&AgentId::from("a")).is_err());
+        db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL)")
+            .unwrap();
+        db.execute_batch(crate::agent_volatile::agent_volatile_table_sql())
+            .unwrap();
+        db.execute(
+            "INSERT INTO runtime_agents VALUES('a',?1)",
+            [r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default"}"#],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO runtime_agent_volatile(id,events,activity) VALUES('a',?1,?2)",
+            [
+                format!(
+                    "{}",
+                    studio_runtime_schema::shared_values::MAX_SAFE_INTEGER + 1
+                ),
+                r#"{"at":1}"#.to_string(),
+            ],
+        )
+        .unwrap();
+        assert!(
+            Table::<AgentRecord>::new(&db)
+                .get(&AgentId::from("a"))
+                .is_err()
+        );
+        db.execute(
+            "UPDATE runtime_agent_volatile SET events='1', activity=?1 WHERE id='a'",
+            [r#"{"at":-1}"#],
+        )
+        .unwrap();
+        assert!(
+            Table::<AgentRecord>::new(&db)
+                .get(&AgentId::from("a"))
+                .is_err()
+        );
     }
 
     #[test]

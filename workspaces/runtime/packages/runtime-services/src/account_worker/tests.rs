@@ -2071,7 +2071,9 @@ impl crate::provider_callbacks::tools::StatusWatchPort for GatedShutdownStatus {
     > {
         Box::pin(async move {
             Ok(crate::provider_callbacks::tools::RulesActionResult {
-                value: studio_runtime_schema::raw_json::RawJson(serde_json::value::to_raw_value(&Value::Null).expect("JSON")),
+                value: studio_runtime_schema::raw_json::RawJson(
+                    serde_json::value::to_raw_value(&Value::Null).expect("JSON"),
+                ),
                 cancel_monitor_ids: Vec::new(),
             })
         })
@@ -2156,7 +2158,9 @@ impl crate::provider_callbacks::tools::StatusWatchPort for SameAccountProviderSt
     > {
         Box::pin(async move {
             Ok(crate::provider_callbacks::tools::RulesActionResult {
-                value: studio_runtime_schema::raw_json::RawJson(serde_json::value::to_raw_value(&Value::Null).expect("JSON")),
+                value: studio_runtime_schema::raw_json::RawJson(
+                    serde_json::value::to_raw_value(&Value::Null).expect("JSON"),
+                ),
                 cancel_monitor_ids: Vec::new(),
             })
         })
@@ -2688,8 +2692,12 @@ async fn worker_barrier(worker: &AccountHandle) {
     let mut finished = worker.completion_signal();
     let exited = async {
         loop {
-            if *finished.borrow_and_update() { break; }
-            if finished.changed().await.is_err() { break; }
+            if *finished.borrow_and_update() {
+                break;
+            }
+            if finished.changed().await.is_err() {
+                break;
+            }
         }
     };
     tokio::select! {
@@ -4827,7 +4835,8 @@ async fn vm_actor_turn_with_host_mcp(child: bool) {
                     record.execution_mode = Some(studio_runtime_store::AgentExecutionMode::Vm);
                     record.extra.insert("layrReady".into(), json!(true));
                     record.cwd = Some("/home/studio/project".into());
-                    record.workspace_mode = Some(studio_runtime_schema::records::WorkspaceMode::Layr);
+                    record.workspace_mode =
+                        Some(studio_runtime_schema::records::WorkspaceMode::Layr);
                     record.thread_id = None;
                     AgentRepository::put(tx, &record)
                 })
@@ -4943,7 +4952,8 @@ async fn vm_session_identity_refusal_holds_one_actor_and_keeps_sibling_usable() 
                     primary.execution_mode = Some(studio_runtime_store::AgentExecutionMode::Vm);
                     primary.extra.insert("layrReady".into(), json!(true));
                     primary.cwd = Some("/home/studio/project".into());
-                    primary.workspace_mode = Some(studio_runtime_schema::records::WorkspaceMode::Layr);
+                    primary.workspace_mode =
+                        Some(studio_runtime_schema::records::WorkspaceMode::Layr);
                     primary.thread_id = None;
                     AgentRepository::put(tx, &primary)?;
 
@@ -5106,7 +5116,8 @@ async fn vm_adapter_exit_recovers_only_its_actor_and_keeps_sibling_usable() {
                     primary.execution_mode = Some(studio_runtime_store::AgentExecutionMode::Vm);
                     primary.extra.insert("layrReady".into(), json!(true));
                     primary.cwd = Some("/home/studio/project".into());
-                    primary.workspace_mode = Some(studio_runtime_schema::records::WorkspaceMode::Layr);
+                    primary.workspace_mode =
+                        Some(studio_runtime_schema::records::WorkspaceMode::Layr);
                     primary.thread_id = None;
                     AgentRepository::put(tx, &primary)?;
 
@@ -5321,7 +5332,8 @@ async fn vm_claude_refresh_copies_rotation_to_active_guest_without_restart() {
                     record.extra.insert("provider".into(), json!("claude"));
                     record.extra.insert("layrReady".into(), json!(true));
                     record.cwd = Some("/home/studio/project".into());
-                    record.workspace_mode = Some(studio_runtime_schema::records::WorkspaceMode::Layr);
+                    record.workspace_mode =
+                        Some(studio_runtime_schema::records::WorkspaceMode::Layr);
                     record.extra.insert("claudeOptions".into(), json!({}));
                     record.thread_id = None;
                     AgentRepository::put(tx, &record)
@@ -5606,7 +5618,8 @@ async fn retained_vm_notification_is_epoch_fenced_and_committed_before_delivery(
                     record.execution_mode = Some(studio_runtime_store::AgentExecutionMode::Vm);
                     record.extra.insert("layrReady".into(), json!(true));
                     record.cwd = Some("/home/studio/project".into());
-                    record.workspace_mode = Some(studio_runtime_schema::records::WorkspaceMode::Layr);
+                    record.workspace_mode =
+                        Some(studio_runtime_schema::records::WorkspaceMode::Layr);
                     record.thread_id = None;
                     AgentRepository::put(tx, &record)
                 })
@@ -5691,7 +5704,8 @@ async fn retained_vm_auth_callback_replies_through_the_account_session() {
                     record.execution_mode = Some(studio_runtime_store::AgentExecutionMode::Vm);
                     record.extra.insert("layrReady".into(), json!(true));
                     record.cwd = Some("/home/studio/project".into());
-                    record.workspace_mode = Some(studio_runtime_schema::records::WorkspaceMode::Layr);
+                    record.workspace_mode =
+                        Some(studio_runtime_schema::records::WorkspaceMode::Layr);
                     record.thread_id = None;
                     AgentRepository::put(tx, &record)
                 })
@@ -5766,7 +5780,8 @@ async fn retained_vm_reply_uses_its_actor_cursor_when_host_cursor_is_zero() {
                     record.execution_mode = Some(studio_runtime_store::AgentExecutionMode::Vm);
                     record.extra.insert("layrReady".into(), json!(true));
                     record.cwd = Some("/home/studio/project".into());
-                    record.workspace_mode = Some(studio_runtime_schema::records::WorkspaceMode::Layr);
+                    record.workspace_mode =
+                        Some(studio_runtime_schema::records::WorkspaceMode::Layr);
                     record.thread_id = Some("fake-thread-0".to_string());
                     AgentRepository::put(tx, &record)
                 })
@@ -5867,7 +5882,8 @@ async fn retained_unknown_replay_precedes_changed_vm_session_fence() {
                     record.execution_mode = Some(studio_runtime_store::AgentExecutionMode::Vm);
                     record.extra.insert("layrReady".into(), json!(true));
                     record.cwd = Some("/home/studio/project".into());
-                    record.workspace_mode = Some(studio_runtime_schema::records::WorkspaceMode::Layr);
+                    record.workspace_mode =
+                        Some(studio_runtime_schema::records::WorkspaceMode::Layr);
                     record.thread_id = None;
                     AgentRepository::put(tx, &record)
                 })
@@ -6020,7 +6036,8 @@ async fn vm_auth_callback_is_not_sent_after_account_reconnect_at_final_fence() {
                     record.execution_mode = Some(studio_runtime_store::AgentExecutionMode::Vm);
                     record.extra.insert("layrReady".into(), json!(true));
                     record.cwd = Some("/home/studio/project".into());
-                    record.workspace_mode = Some(studio_runtime_schema::records::WorkspaceMode::Layr);
+                    record.workspace_mode =
+                        Some(studio_runtime_schema::records::WorkspaceMode::Layr);
                     record.thread_id = None;
                     AgentRepository::put(tx, &record)
                 })
@@ -6102,7 +6119,8 @@ async fn vm_auth_callback_shutdown_waits_for_final_generation_fence() {
                     record.execution_mode = Some(studio_runtime_store::AgentExecutionMode::Vm);
                     record.extra.insert("layrReady".into(), json!(true));
                     record.cwd = Some("/home/studio/project".into());
-                    record.workspace_mode = Some(studio_runtime_schema::records::WorkspaceMode::Layr);
+                    record.workspace_mode =
+                        Some(studio_runtime_schema::records::WorkspaceMode::Layr);
                     record.thread_id = None;
                     AgentRepository::put(tx, &record)
                 })
@@ -6186,7 +6204,8 @@ async fn vm_worker_restart_reconciles_uncertain_provider_start_without_resending
                     record.execution_mode = Some(studio_runtime_store::AgentExecutionMode::Vm);
                     record.extra.insert("layrReady".into(), json!(true));
                     record.cwd = Some("/home/studio/project".into());
-                    record.workspace_mode = Some(studio_runtime_schema::records::WorkspaceMode::Layr);
+                    record.workspace_mode =
+                        Some(studio_runtime_schema::records::WorkspaceMode::Layr);
                     AgentRepository::put(tx, &record)
                 })
                 .await?;

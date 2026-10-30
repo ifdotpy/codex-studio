@@ -751,7 +751,9 @@ async fn actual_lost_monitor_settlement_preserves_identity_and_unknown_effects()
         json!({"accountKey":"default","epoch":0,"status":"running","startedAt":now});
     record["command"] = json!("password=command-canary");
     store
-        .transaction(move |tx| Table::new(tx).put(&serde_json::from_value::<MonitorRecord>(record)?))
+        .transaction(move |tx| {
+            Table::new(tx).put(&serde_json::from_value::<MonitorRecord>(record)?)
+        })
         .await
         .unwrap();
     let mut stream = incident_stream(&app).await;
@@ -879,7 +881,9 @@ async fn a_malformed_source_timestamp_uses_observation_time_and_still_streams() 
     let now = studio_runtime_services::event_write::unix_time().unwrap();
     let record = monitor(root.path(), "bad-clock", "running", Value::Null, "", now);
     store
-        .transaction(move |tx| Table::new(tx).put(&serde_json::from_value::<MonitorRecord>(record)?))
+        .transaction(move |tx| {
+            Table::new(tx).put(&serde_json::from_value::<MonitorRecord>(record)?)
+        })
         .await
         .unwrap();
     let mut stream = incident_stream(&app).await;
@@ -955,10 +959,7 @@ async fn malformed_receipts_agents_and_owners_do_not_poison_startup_or_following
     assert!(!body.to_string().contains("private-name-canary"));
     let streamed =
         streamed_incident(&mut stream, "stored:runtime_agents:bad-agent", "upsert").await;
-    assert_eq!(
-        streamed["value"]["diagnostics"]["causes"][0]["pointer"],
-        ""
-    );
+    assert_eq!(streamed["value"]["diagnostics"]["causes"][0]["pointer"], "");
     let raw: String = store
         .test_reader()
         .unwrap()
@@ -1019,7 +1020,10 @@ async fn malformed_failed_monitor_fields_remain_candidates_and_stream_after_a_he
         tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.name','Healthy following source') WHERE id='owner'",[])?;
         Ok(())
     }).await;
-    assert!(following.is_err(), "strict monitor projection rejects malformed retained rows");
+    assert!(
+        following.is_err(),
+        "strict monitor projection rejects malformed retained rows"
+    );
     let (_, body) = call(&app, "GET", "/api/studio-errors", None).await;
     for id in [
         "bad-exit",

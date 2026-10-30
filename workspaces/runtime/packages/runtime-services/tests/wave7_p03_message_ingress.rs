@@ -490,7 +490,10 @@ fn assert_json(actual: &Value, expected: &Value, path: &str) {
         (Value::Object(a), Value::Object(b)) => {
             let mut b = b.clone();
             if a.contains_key("rootId") && a.contains_key("epoch") {
-                for key in studio_runtime_store::agent_volatile::AGENT_VOLATILE_FIELDS.into_iter().chain(["parentId", "threadId", "turnId"]) {
+                for key in studio_runtime_store::agent_volatile::AGENT_VOLATILE_FIELDS
+                    .into_iter()
+                    .chain(["parentId", "threadId", "turnId"])
+                {
                     if !a.contains_key(key) && b.get(key).is_some_and(Value::is_null) {
                         b.remove(key);
                     }

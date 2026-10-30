@@ -756,7 +756,10 @@ fn required_agent(params: &QueryParams) -> Result<&str, ApiError> {
         .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Select an agent"))
 }
 
-async fn read_agent(state: &HttpState, agent_id: &str) -> Result<studio_runtime_store::AgentRecord, ApiError> {
+async fn read_agent(
+    state: &HttpState,
+    agent_id: &str,
+) -> Result<studio_runtime_store::AgentRecord, ApiError> {
     let store = state.store.as_ref().ok_or_else(ApiError::internal)?;
     let agent_id = agent_id.to_owned();
     store

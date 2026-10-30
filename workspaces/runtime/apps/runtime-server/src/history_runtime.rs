@@ -1237,14 +1237,10 @@ mod tests {
     fn retired_tombstones_leave_the_roster_until_their_deletion_changes() {
         let settled = BTreeMap::from([("gone".to_owned(), json!(1.0))]);
         let live = typed_actor(json!({"id":"live","threadId":"t","deletedAt":null}));
-        let never_started =
-            typed_actor(json!({"id":"empty","threadId":"","deletedAt":1.0}));
-        let settled_tombstone =
-            typed_actor(json!({"id":"gone","threadId":"t","deletedAt":1.0}));
-        let pending_tombstone =
-            typed_actor(json!({"id":"late","threadId":"t","deletedAt":1.0}));
-        let redeleted =
-            typed_actor(json!({"id":"gone","threadId":"t","deletedAt":2.0}));
+        let never_started = typed_actor(json!({"id":"empty","threadId":"","deletedAt":1.0}));
+        let settled_tombstone = typed_actor(json!({"id":"gone","threadId":"t","deletedAt":1.0}));
+        let pending_tombstone = typed_actor(json!({"id":"late","threadId":"t","deletedAt":1.0}));
+        let redeleted = typed_actor(json!({"id":"gone","threadId":"t","deletedAt":2.0}));
         assert!(!is_retired(&live, &settled));
         assert!(is_retired(&never_started, &settled));
         assert!(is_retired(&settled_tombstone, &settled));
@@ -1359,21 +1355,11 @@ mod tests {
             &mut row_ids,
             vec![
                 (1, None),
-                (
-                    2,
-                    Some(typed_actor(
-                        json!({"id":"b","deletedAt":1.0}),
-                    )),
-                ),
+                (2, Some(typed_actor(json!({"id":"b","deletedAt":1.0})))),
             ],
         );
         assert_eq!(row_ids, vec![2]);
-        assert_eq!(
-            actors,
-            vec![typed_actor(
-                json!({"id":"b","deletedAt":1.0})
-            )]
-        );
+        assert_eq!(actors, vec![typed_actor(json!({"id":"b","deletedAt":1.0}))]);
     }
 
     #[test]

@@ -126,7 +126,8 @@ async fn installed_runtime_drives_input_through_http() {
         .expect("case")
         .clone();
     case["before"]["interactive"] = json!(true);
-    crate::monitor_fixtures::checked(case["before"].clone(), case["actor"].clone()).expect("valid monitor fixture");
+    crate::monitor_fixtures::checked(case["before"].clone(), case["actor"].clone())
+        .expect("valid monitor fixture");
     let store = Arc::new(fixtures::store(root.path(), "http").await);
     let mut monitor = crate::monitor_fixtures::monitor(root.path());
     monitor.interactive = true;

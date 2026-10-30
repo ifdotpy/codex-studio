@@ -97,14 +97,24 @@ fn monitor_kind(record: &studio_runtime_store::MonitorRecord) -> Option<Kind> {
     match record.status {
         MonitorStatus::Lost => Some(Kind::MonitorOutcomeLost),
         MonitorStatus::Failed if record.exit_code.is_none() => {
-            let Some(error) = record.error.as_ref().map(|v| v.as_str()).filter(|v| !v.is_empty()) else {
+            let Some(error) = record
+                .error
+                .as_ref()
+                .map(|v| v.as_str())
+                .filter(|v| !v.is_empty())
+            else {
                 return Some(Kind::UnclassifiedFailure);
             };
-            let owner_stopped = error == MONITOR_OWNER_STOPPED_ERROR || error.ends_with(&format!(": {MONITOR_OWNER_STOPPED_ERROR}"));
+            let owner_stopped = error == MONITOR_OWNER_STOPPED_ERROR
+                || error.ends_with(&format!(": {MONITOR_OWNER_STOPPED_ERROR}"));
             (!owner_stopped).then_some(Kind::MonitorNotRecorded)
         }
-        MonitorStatus::Approval | MonitorStatus::Starting | MonitorStatus::Running
-        | MonitorStatus::Completed | MonitorStatus::Failed | MonitorStatus::Cancelled => None,
+        MonitorStatus::Approval
+        | MonitorStatus::Starting
+        | MonitorStatus::Running
+        | MonitorStatus::Completed
+        | MonitorStatus::Failed
+        | MonitorStatus::Cancelled => None,
     }
 }
 
@@ -133,27 +143,47 @@ fn retained_causes(kind: Kind, error: &str) -> Vec<Cause> {
 
 /// Project known machine facts through their actual record owners; never copy transport extensions.
 fn monitor_evidence(record: &studio_runtime_store::MonitorRecord) -> Cause {
-    let operation = record.operation.as_ref().map(|operation| MonitorOperationIdentity {
-        agent: operation.agent.as_str().to_owned(), epoch: operation.epoch.get(),
-        account_key: operation.account_key.as_str().to_owned(), connection_id: operation.connection_id.as_str().to_owned(),
-    });
+    let operation = record
+        .operation
+        .as_ref()
+        .map(|operation| MonitorOperationIdentity {
+            agent: operation.agent.as_str().to_owned(),
+            epoch: operation.epoch.get(),
+            account_key: operation.account_key.as_str().to_owned(),
+            connection_id: operation.connection_id.as_str().to_owned(),
+        });
     let recovery = record.reattach_recovery.as_ref().and_then(|recovery| {
         let (status, started_at) = match recovery.state {
-            studio_runtime_schema::monitor_record::ReattachState::Running { started_at } => (studio_runtime_schema::studio_errors::MonitorRecoveryStatus::Running, Some(started_at)),
-            studio_runtime_schema::monitor_record::ReattachState::NotReattachable { started_at } => (studio_runtime_schema::studio_errors::MonitorRecoveryStatus::NotReattachable, started_at),
+            studio_runtime_schema::monitor_record::ReattachState::Running { started_at } => (
+                studio_runtime_schema::studio_errors::MonitorRecoveryStatus::Running,
+                Some(started_at),
+            ),
+            studio_runtime_schema::monitor_record::ReattachState::NotReattachable {
+                started_at,
+            } => (
+                studio_runtime_schema::studio_errors::MonitorRecoveryStatus::NotReattachable,
+                started_at,
+            ),
         };
         started_at.map(|started_at| MonitorRecoveryEvidence {
-            status, started_at,
+            status,
+            started_at,
             proof: recovery.proof.as_deref().map(|proof| {
                 let de = serde::de::value::StrDeserializer::<serde::de::value::Error>::new(proof);
                 match <MonitorRecoveryReason as serde::Deserialize>::deserialize(de) {
                     Ok(reason) => MonitorRecoveryProof::Recognized { reason },
-                    Err(_) => MonitorRecoveryProof::Unclassified { sha256: studio_runtime_store::sha256_hex(proof.as_bytes()) },
+                    Err(_) => MonitorRecoveryProof::Unclassified {
+                        sha256: studio_runtime_store::sha256_hex(proof.as_bytes()),
+                    },
                 }
             }),
         })
     });
-    Cause::Monitor { status: record.status, operation, recovery }
+    Cause::Monitor {
+        status: record.status,
+        operation,
+        recovery,
+    }
 }
 
 fn invalid_monitor(id: &str, at: f64, pointer: Option<String>, cause: Cause) -> StudioError {
@@ -214,9 +244,7 @@ fn event_source(tx: &Transaction<'_>, id: &str) -> Result<EventSource, StoreErro
 
 fn read_owner(tx: &Transaction<'_>, id: &str) -> Result<SourceOwner, StoreError> {
     match studio_runtime_store::AgentRepository::get(tx, &studio_runtime_store::AgentId::from(id)) {
-        Ok(Some(record)) if record.is_deleted() => {
-            Ok(SourceOwner::Deleted)
-        }
+        Ok(Some(record)) if record.is_deleted() => Ok(SourceOwner::Deleted),
         Ok(Some(record)) => Ok(SourceOwner::Live(std::sync::Arc::new(record))),
         Ok(None) => Ok(SourceOwner::Missing),
         Err(error) if malformed_source(&error) => Ok(SourceOwner::Invalid(store_causes(&error))),
@@ -225,9 +253,7 @@ fn read_owner(tx: &Transaction<'_>, id: &str) -> Result<SourceOwner, StoreError>
 }
 
 fn owner_name(record: &studio_runtime_store::AgentRecord) -> String {
-    record.name.as_deref()
-        .unwrap_or("Agent")
-        .to_owned()
+    record.name.as_deref().unwrap_or("Agent").to_owned()
 }
 
 fn invalid_source(
@@ -314,18 +340,37 @@ fn build(tx: &Transaction<'_>, now: f64) -> Result<(Vec<StudioError>, Baseline),
     let mut groups = std::collections::BTreeMap::<(String, String), MonitorGroup>::new();
     for (id, raw) in found {
         let mut deserializer = serde_json::Deserializer::from_str(&raw);
-        let record: studio_runtime_store::MonitorRecord = match serde_path_to_error::deserialize(&mut deserializer) {
-            Ok(record) => record,
-            Err(error) => {
-                let path = error.path().to_string();
-                let pointer = (path != ".").then(|| format!("/{path}"));
-                push(&mut rows, invalid_monitor(&id, now, pointer, json_cause(error.inner())));
-                continue;
-            }
-        };
-        let at = record.finished.as_ref().map(|v| v.seconds()).unwrap_or(record.created.seconds());
+        let record: studio_runtime_store::MonitorRecord =
+            match serde_path_to_error::deserialize(&mut deserializer) {
+                Ok(record) => record,
+                Err(error) => {
+                    let path = error.path().to_string();
+                    let pointer = (path != ".").then(|| format!("/{path}"));
+                    push(
+                        &mut rows,
+                        invalid_monitor(&id, now, pointer, json_cause(error.inner())),
+                    );
+                    continue;
+                }
+            };
+        let at = record
+            .finished
+            .as_ref()
+            .map(|v| v.seconds())
+            .unwrap_or(record.created.seconds());
         if record.id != id {
-            push(&mut rows, invalid_monitor(&id, now, Some("/id".into()), Cause::SchemaViolation { pointer: "/id".into(), keyword: "identity".into() }));
+            push(
+                &mut rows,
+                invalid_monitor(
+                    &id,
+                    now,
+                    Some("/id".into()),
+                    Cause::SchemaViolation {
+                        pointer: "/id".into(),
+                        keyword: "identity".into(),
+                    },
+                ),
+            );
             continue;
         }
         let evidence = monitor_evidence(&record);
@@ -364,14 +409,16 @@ fn build(tx: &Transaction<'_>, now: f64) -> Result<(Vec<StudioError>, Baseline),
         if dismissed.contains_key(&format!("{MONITOR_ROW_PREFIX}{id}")) {
             continue;
         }
-        let rule = record.rule_id.as_ref().filter(|rule| !rule.is_empty()).cloned();
+        let rule = record
+            .rule_id
+            .as_ref()
+            .filter(|rule| !rule.is_empty())
+            .cloned();
         let key = match &rule {
             Some(rule) => format!("rule:{rule}"),
             None => format!(
                 "command:{agent_id}:{}",
-                &studio_runtime_store::sha256_hex(
-                    record.command.as_str().as_bytes()
-                )[..16]
+                &studio_runtime_store::sha256_hex(record.command.as_str().as_bytes())[..16]
             ),
         };
         let failure = MonitorFailure {
@@ -1140,8 +1187,7 @@ mod tests {
     #[test]
     fn monitor_evidence_omits_closed_recovery_without_start() {
         let record = json!({"status":"lost","reattachRecovery":{"accountKey":"account","epoch":2,"status":"not_reattachable","proof":"legacy"}});
-        let encoded =
-            serde_json::to_value(monitor_evidence(&monitor(record))).unwrap();
+        let encoded = serde_json::to_value(monitor_evidence(&monitor(record))).unwrap();
         assert!(encoded.get("recovery").is_none() || encoded["recovery"].is_null());
     }
 
@@ -1170,9 +1216,9 @@ mod tests {
             Some(Kind::MonitorOutcomeLost)
         );
         assert_eq!(
-            monitor_kind(
-                &monitor(json!({"status":"failed","exitCode":null,"error":"Monitor changed during preparation"}))
-            ),
+            monitor_kind(&monitor(
+                json!({"status":"failed","exitCode":null,"error":"Monitor changed during preparation"})
+            )),
             Some(Kind::MonitorNotRecorded)
         );
         assert_eq!(

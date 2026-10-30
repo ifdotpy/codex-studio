@@ -275,7 +275,10 @@ async fn confirmed_restart_is_atomic_replay_safe_and_waits_for_exit() {
         Some(studio_runtime_services::process_controls::digest(&body).as_str())
     );
     assert_eq!(new.command.as_str(), "printf test");
-    assert_eq!(new.output_patterns.as_deref(), Some(["test complete".to_owned()].as_slice()));
+    assert_eq!(
+        new.output_patterns.as_deref(),
+        Some(["test complete".to_owned()].as_slice())
+    );
     let db = store.test_reader().unwrap();
     assert!(!monitor_runtime::restart_ready(&db, &new).unwrap());
     assert!(

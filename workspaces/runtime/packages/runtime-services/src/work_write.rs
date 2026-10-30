@@ -902,9 +902,7 @@ fn accepted_archive_preflight(
             json!({"status":"kept","reason":"The archive actor changed"}),
         ));
     };
-    if actor.epoch != actor_epoch
-        || actor.deleted_at.is_some()
-    {
+    if actor.epoch != actor_epoch || actor.deleted_at.is_some() {
         return Ok(Some(
             json!({"status":"kept","reason":"The archive actor changed"}),
         ));
@@ -1368,7 +1366,8 @@ pub enum VmAcceptPreparation {
 fn vm_result_needs_merge(lead_id: &str, owner: &AgentRecord) -> bool {
     owner.id.0 != lead_id
         && (owner.execution_mode == Some(studio_runtime_store::AgentExecutionMode::Vm)
-            || owner.workspace_mode == Some(studio_runtime_schema::records::WorkspaceMode::LayrNative))
+            || owner.workspace_mode
+                == Some(studio_runtime_schema::records::WorkspaceMode::LayrNative))
         && owner.extra.get("role").and_then(Value::as_str) != Some("reviewer")
 }
 
@@ -1390,7 +1389,8 @@ pub async fn prepare_vm_accept(
         .transaction_with_error(move |tx| {
             let lead = event_write::checked_agent(tx, &agent_id)?;
             if lead.execution_mode != Some(studio_runtime_store::AgentExecutionMode::Vm)
-                && lead.workspace_mode != Some(studio_runtime_schema::records::WorkspaceMode::LayrNative)
+                && lead.workspace_mode
+                    != Some(studio_runtime_schema::records::WorkspaceMode::LayrNative)
             {
                 return Ok(VmAcceptPreparation::NotVm);
             }
@@ -2372,9 +2372,7 @@ pub fn release_failed_work(
                 .as_str()
                 .ok_or_else(|| invalid("runtime_work", "<invalid>"))?;
             let root = AgentRepository::get(tx, &worker.root_id)?;
-            if let Some(root) = root.filter(|root| {
-                !root.is_deleted()
-            }) {
+            if let Some(root) = root.filter(|root| !root.is_deleted()) {
                 let owner = released["releases"]
                     .as_array()
                     .and_then(|history| history.last())
@@ -2410,9 +2408,7 @@ pub fn release_failed_work(
 }
 
 fn continuation_work_pending(agent: &AgentRecord) -> bool {
-    if agent.auto_wake != Some(true)
-        || agent.is_deleted()
-    {
+    if agent.auto_wake != Some(true) || agent.is_deleted() {
         return false;
     }
     let default_account = json!("default");
@@ -3080,7 +3076,8 @@ fn submit(
     }
     validate_submission_files(&submitter, &input.files, input.prepared_files.as_ref())?;
     if submitter.execution_mode == Some(studio_runtime_store::AgentExecutionMode::Vm)
-        || submitter.workspace_mode == Some(studio_runtime_schema::records::WorkspaceMode::LayrNative)
+        || submitter.workspace_mode
+            == Some(studio_runtime_schema::records::WorkspaceMode::LayrNative)
     {
         let Some(request_id) = input.vm_evidence_request_id.as_deref() else {
             return Err(Error::Conflict(
@@ -3750,7 +3747,9 @@ fn validate_submission_files(
     if files.is_empty() {
         return Ok(());
     }
-    let cwd = agent.cwd.as_deref()
+    let cwd = agent
+        .cwd
+        .as_deref()
         .filter(|cwd| !cwd.is_empty())
         .ok_or_else(|| invalid("runtime_agents", &agent.id.0))?;
     let Some(prepared) = prepared else {
@@ -3758,7 +3757,10 @@ fn validate_submission_files(
             "Submission file evidence must be prepared before saving the result",
         ));
     };
-    if prepared.owner != agent.id.0 || prepared.cwd.as_deref() != Some(cwd) || prepared.files != files {
+    if prepared.owner != agent.id.0
+        || prepared.cwd.as_deref() != Some(cwd)
+        || prepared.files != files
+    {
         return Err(Error::Conflict(
             "Submission file ownership changed before saving the result",
         ));
@@ -3781,7 +3783,9 @@ fn resolve_submission_files(
     if files.is_empty() {
         return Ok(Vec::new());
     }
-    let cwd = agent.cwd.as_deref()
+    let cwd = agent
+        .cwd
+        .as_deref()
         .filter(|cwd| !cwd.is_empty())
         .ok_or_else(|| invalid("runtime_agents", &agent.id.0))?;
     let mut resolved = Vec::with_capacity(files.len());

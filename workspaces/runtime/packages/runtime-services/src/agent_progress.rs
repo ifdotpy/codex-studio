@@ -82,14 +82,16 @@ pub(crate) fn derive<'a>(
             commands.push(AgentCommandProgress {
                 monitor_id: monitor.id,
                 stage: monitor
-                    .command.as_str()
+                    .command
+                    .as_str()
                     .lines()
                     .next()
                     .unwrap_or_default()
                     .to_owned(),
                 started_at: monitor.created.seconds(),
                 last_output_line: monitor
-                    .tail.as_str()
+                    .tail
+                    .as_str()
                     .lines()
                     .rev()
                     .find(|line| !line.trim().is_empty())

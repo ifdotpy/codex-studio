@@ -1450,8 +1450,7 @@ mod managed_work_port_tests {
                 let monitor = studio_runtime_store::MonitorsRepository::get(tx, &id)?
                     .expect("gate monitor exists");
                 assert_eq!(
-                    std::path::Path::new(&monitor.log)
-                    .parent(),
+                    std::path::Path::new(&monitor.log).parent(),
                     Some(log_root.as_path())
                 );
                 assert_eq!(monitor.timeout_ms.get(), 4321);

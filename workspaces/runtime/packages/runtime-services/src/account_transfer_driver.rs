@@ -1603,8 +1603,19 @@ mod request_tests {
         )
         .expect("read monitor")
         .expect("monitor remains");
-        assert_eq!(monitor.status, studio_runtime_schema::studio_errors::MonitorStatus::Running);
-        assert_eq!(monitor.operation.as_ref().expect("operation").account_key.as_str(), "source");
+        assert_eq!(
+            monitor.status,
+            studio_runtime_schema::studio_errors::MonitorStatus::Running
+        );
+        assert_eq!(
+            monitor
+                .operation
+                .as_ref()
+                .expect("operation")
+                .account_key
+                .as_str(),
+            "source"
+        );
     }
 
     #[test]

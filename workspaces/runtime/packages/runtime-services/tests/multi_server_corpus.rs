@@ -1361,9 +1361,14 @@ async fn child_result_requires_link_membership_and_updates_proxy() {
     );
     drop(connection);
     let structured = json!({"requestId":"child-result-structured","action":"event","payload":{"link":"result-link","parentEpoch":3,"kind":"child_result","text":json!({"agent_id":"result-child","result":{"ok":true}}).to_string()}});
-    effects.execute("peer-server", &structured).await.expect("structured child result");
+    effects
+        .execute("peer-server", &structured)
+        .await
+        .expect("structured child result");
     let connection = store.test_reader().expect("stored structured result");
-    let proxy = AgentRepository::get(&connection, &AgentId::from("result-child")).unwrap().unwrap();
+    let proxy = AgentRepository::get(&connection, &AgentId::from("result-child"))
+        .unwrap()
+        .unwrap();
     assert_eq!(proxy.last_answer.as_deref(), Some(r#"{"ok":true}"#));
     drop(connection);
     store.transaction(|tx| {
@@ -2100,7 +2105,7 @@ async fn exec_event_owner_checks_accept_the_receipt_form_like_python() {
                     json!(studio_runtime_schema::ProviderKind::Codex),
                 )]),
                 ..AgentRecord::test_defaults()
-    };
+            };
             record.auto_wake = Some(true);
             record.cwd = Some(std::env::current_dir().unwrap().display().to_string());
             record.extra.insert("concurrency".into(), json!(32));

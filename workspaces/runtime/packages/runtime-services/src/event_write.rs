@@ -686,7 +686,8 @@ pub fn recovery_pending(agent: &AgentRecord) -> bool {
     let extra = &agent.extra;
     let matches = |recovery: &Value| {
         recovery.get("epoch").and_then(Value::as_i64) == Some(agent.epoch)
-            && recovery.get("accountKey").and_then(Value::as_str) == Some(agent.account_key.as_str())
+            && recovery.get("accountKey").and_then(Value::as_str)
+                == Some(agent.account_key.as_str())
             && recovery.get("threadId").and_then(Value::as_str) == agent.thread_id.as_deref()
     };
     let root = extra
@@ -804,12 +805,10 @@ mod tests {
             root_id: AgentId::from("a"),
             epoch: 3,
             status: AgentStatus::Idle,
-            extra: BTreeMap::from([
-                (
-                    "provider".to_owned(),
-                    json!(studio_runtime_schema::ProviderKind::Codex),
-                ),
-            ]),
+            extra: BTreeMap::from([(
+                "provider".to_owned(),
+                json!(studio_runtime_schema::ProviderKind::Codex),
+            )]),
             ..AgentRecord::test_defaults()
         };
         AgentRepository::put(&connection, &agent).expect("agent writes");

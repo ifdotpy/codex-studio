@@ -70,7 +70,9 @@ impl<'de> Deserialize<'de> for NonnegativeNumber {
         }
     }
 }
-fn nonnegative_integer_if_present<'de, D: Deserializer<'de>>(d: D) -> Result<Option<NonnegativeInteger>, D::Error> {
+fn nonnegative_integer_if_present<'de, D: Deserializer<'de>>(
+    d: D,
+) -> Result<Option<NonnegativeInteger>, D::Error> {
     NonnegativeInteger::deserialize(d).map(Some)
 }
 fn nonempty<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
