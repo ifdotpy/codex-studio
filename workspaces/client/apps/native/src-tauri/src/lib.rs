@@ -568,7 +568,7 @@ async fn client_request(
         );
     }
     if request.method == studio_client_core::desktop::SIGN_IN_CANCEL_METHOD {
-        return Ok(studio_client_core::desktop::dispatch(request, None, None).await);
+        return Ok(studio_client_core::desktop::dispatch(request, None).await);
     }
     if needs_gesture {
         let params = request

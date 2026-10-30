@@ -68,7 +68,7 @@ fn purpose(method: &str) -> Option<u32> {
         "desktop.openExternal"
         | crate::desktop::SIGN_IN_OPEN_METHOD
         | crate::desktop::SIGN_IN_PREPARE_METHOD => EXTERNAL_LINK_PURPOSE,
-        "desktop.saveBegin" | "desktop.savePreview" => 5,
+        "desktop.saveBegin" => 5,
         "desktop.fileAction" => 6,
         "desktop.requestMicrophone" | "desktop.reserveMicrophone" => 7,
         "desktop.prepareTranscription" => 8,
@@ -233,11 +233,7 @@ async fn prepare_sign_in(
     Ok(Value::String(url))
 }
 
-pub async fn dispatch(
-    request: Request,
-    backend: Option<&crate::backend::Backend>,
-    previews: Option<&crate::file_preview::Previews>,
-) -> Response {
+pub async fn dispatch(request: Request, backend: Option<&crate::backend::Backend>) -> Response {
     let result = async {
         if matches!(
             request.method.as_str(),
@@ -293,12 +289,6 @@ pub async fn dispatch(
         }
         #[cfg(target_os = "macos")]
         {
-            if request.method == "desktop.savePreview" {
-                let (name, bytes) = previews
-                    .ok_or("The preview service is unavailable.")?
-                    .snapshot(&value)?;
-                return save_snapshot(name, bytes).await;
-            }
             if request.method == "desktop.fileAction" {
                 let backend = backend.ok_or("The native backend is unavailable.")?;
                 let file = crate::file_actions::resolve(backend, value).await?;
@@ -659,7 +649,7 @@ mod tests {
                 "value":{"url":"https://example.com/authorize", "requestId":"card-1"}
             }),
         };
-        let response = dispatch(request, None, None).await;
+        let response = dispatch(request, None).await;
         assert!(response.error.is_none(), "{:?}", response.error);
         let preparation = response.result.unwrap();
         assert!(preparation.as_str().is_some_and(|id| id.len() >= 32));
@@ -678,7 +668,6 @@ mod tests {
                 params: serde_json::json!({"_nativeWindow":"main","value":{"preparation":preparation,"requestId":"card-1"}}),
             },
             None,
-            None,
         ).await;
         assert_eq!(canceled.result, Some(Value::Bool(true)));
     }
@@ -693,12 +682,12 @@ mod tests {
             method: crate::desktop::SIGN_IN_OPEN_METHOD.into(),
             params,
         };
-        let first = dispatch(make_request(params.clone()), None, None).await;
+        let first = dispatch(make_request(params.clone()), None).await;
         assert_eq!(
             first.error.unwrap().message,
             "This sign-in belongs to another server view."
         );
-        let replay = dispatch(make_request(params.clone()), None, None).await;
+        let replay = dispatch(make_request(params.clone()), None).await;
         assert!(
             replay
                 .error
@@ -712,7 +701,7 @@ mod tests {
             serde_json::json!("forged"),
         ] {
             params["value"]["preparation"] = invalid;
-            let response = dispatch(make_request(params.clone()), None, None).await;
+            let response = dispatch(make_request(params.clone()), None).await;
             assert!(
                 response
                     .error
@@ -821,7 +810,6 @@ mod tests {
             "desktop.copyText",
             "desktop.showVaultKeys",
             "desktop.saveBegin",
-            "desktop.savePreview",
             "desktop.fileAction",
         ] {
             let reply = dispatch(
@@ -830,7 +818,6 @@ mod tests {
                     method: method.into(),
                     params: serde_json::json!({"value":"https://example.com"}),
                 },
-                None,
                 None,
             )
             .await;

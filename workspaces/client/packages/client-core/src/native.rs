@@ -96,7 +96,6 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
         let mut requests = tokio::task::JoinSet::new();
         let startup = Arc::new(tokio::sync::Mutex::new(None::<serde_json::Value>));
         let active = Arc::new(AtomicBool::new(false));
-        let previews = crate::file_preview::Previews::default();
         let mut background = tokio::task::JoinSet::new();
         let (events, mut event_receiver) = tokio::sync::mpsc::channel::<serde_json::Value>(64);
         let mut views = crate::views::Views::new(
@@ -169,7 +168,6 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                 Network(Request),
                 Action(Request),
                 Desktop(Request),
-                Preview(Request),
                 RichDocument(Request),
                 Startup(Request),
                 Delivery(Request),
@@ -201,7 +199,6 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                 {
                     Work::RichDocument(request)
                 }
-                Ok(request) if request.method.starts_with("preview.") => Work::Preview(request),
                 Ok(request) if request.method.starts_with("speech.") => Work::Speech(request),
                 Ok(request) if request.method.starts_with("media.") => Work::Media(request),
                 Ok(request) if request.method == "notifications.show" => Work::Notify(request),
@@ -240,7 +237,6 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
             // Completed tasks must leave the set; the permit bounds active work.
             while requests.try_join_next().is_some() {}
             let startup = startup.clone();
-            let previews = previews.clone();
             requests.spawn(async move {
                 let _permit = permit;
                 let response = match work {
@@ -264,16 +260,10 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                         }
                     }
                     Work::RichDocument(request) => crate::rich_document::dispatch(request).await,
-                    Work::Preview(request) => {
-                        previews
-                            .dispatch(backend.as_ref().as_ref().ok(), request)
-                            .await
-                    }
                     Work::Desktop(request) => {
                         crate::desktop::dispatch(
                             request,
                             backend.as_ref().as_ref().ok(),
-                            Some(&previews),
                         )
                         .await
                     }

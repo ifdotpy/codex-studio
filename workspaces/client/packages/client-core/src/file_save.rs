@@ -608,7 +608,6 @@ mod tests {
                     params: json!({"value":value}),
                 },
                 None,
-                None,
             )
             .await;
             assert!(response.error.is_none(), "{:?}", response.error);

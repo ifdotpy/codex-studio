@@ -196,10 +196,6 @@ const UNSAFE_RUST_ALLOWLIST: [string, string][] = [
     "UserNotifications delegate class and center bindings.",
   ],
   [
-    "workspaces/client/packages/client-core/src/pdf.rs",
-    "CoreGraphics PDF page render context.",
-  ],
-  [
     "workspaces/client/packages/client-core/src/platform.rs",
     "getentropy for client random identifiers.",
   ],
