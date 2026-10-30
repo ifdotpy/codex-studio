@@ -1337,6 +1337,11 @@ impl JsonRecord for MonitorRecord {
     fn record_key(&self) -> Option<&Self::Id> {
         Some(self.id())
     }
+    fn monitor_stream_pending(&self) -> bool {
+        self.stream_queue
+            .as_ref()
+            .is_some_and(|queue| !queue.is_empty())
+    }
 }
 pub use studio_runtime_schema::terminal_record::TerminalRecord;
 
@@ -1797,6 +1802,10 @@ pub trait JsonRecord: Serialize + DeserializeOwned {
 
     fn record_key(&self) -> Option<&Self::Id>;
 
+    fn monitor_stream_pending(&self) -> bool {
+        false
+    }
+
     fn decode_stored(connection: &Connection, row_id: &str, encoded: &str) -> StoreResult<Self> {
         decode_record::<Self>(connection, row_id, encoded)
     }
@@ -1993,7 +2002,10 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
 
     /// Upsert a record and related non-record columns in a hybrid table.
     pub fn put_with_columns(&self, record: &R, columns: &[(&str, SqlValue)]) -> StoreResult<()> {
-        if R::KEY_MODE != RecordKeyMode::PayloadId || R::TABLE == AgentRecord::TABLE {
+        if R::KEY_MODE != RecordKeyMode::PayloadId
+            || R::TABLE == AgentRecord::TABLE
+            || R::TABLE == MonitorRecord::TABLE
+        {
             return Err(crate::StoreError::RecordContract(
                 "external-key records must be written with put_at",
             ));
@@ -2105,6 +2117,13 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
             return crate::agent_volatile::update(self.connection, id, &value);
         }
         let encoded = encode_record(record, id)?;
+        if R::TABLE == MonitorRecord::TABLE {
+            let changed = self.connection.execute(
+                "UPDATE runtime_monitors SET record=?1,stream_pending=?2 WHERE id=?3",
+                params![encoded, record.monitor_stream_pending(), id],
+            )?;
+            return Ok(changed == 1);
+        }
         let changed = self.connection.execute(
             &format!("UPDATE {} SET record=?1 WHERE id=?2", quoted_table::<R>()),
             params![encoded, id],
@@ -2118,6 +2137,20 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
             return crate::agent_volatile::put(self.connection, id, &value, !update);
         }
         let encoded = encode_record(record, id)?;
+        if R::TABLE == MonitorRecord::TABLE {
+            let conflict = if update {
+                "DO UPDATE SET record=excluded.record,stream_pending=excluded.stream_pending"
+            } else {
+                "DO NOTHING"
+            };
+            let sql = format!(
+                "INSERT INTO runtime_monitors(id,record,stream_pending) VALUES (?1,?2,?3) ON CONFLICT(id) {conflict}"
+            );
+            let changed = self
+                .connection
+                .execute(&sql, params![id, encoded, record.monitor_stream_pending()])?;
+            return Ok(changed == 1);
+        }
         let conflict = if update {
             "DO UPDATE SET record=excluded.record"
         } else {

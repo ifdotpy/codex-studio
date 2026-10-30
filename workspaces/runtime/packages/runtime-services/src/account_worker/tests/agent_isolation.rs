@@ -818,7 +818,7 @@ async fn a_full_monitor_output_queue_holds_the_journal_until_it_drains() {
                         })
                         .collect::<Vec<_>>();
                     tx.execute(
-                        "INSERT INTO runtime_monitors(id,record) VALUES('monitor-full',?1)",
+                        "INSERT INTO runtime_monitors(id,record,stream_pending) VALUES('monitor-full',?1,1)",
                         [crate::monitor_policy::complete_test_monitor(json!({
                             "id": "monitor-full", "agent": agent, "epoch": epoch,
                             "status": "running", "bytes": 0, "created": 1.0,
@@ -871,7 +871,7 @@ async fn a_full_monitor_output_queue_holds_the_journal_until_it_drains() {
             store
                 .transaction_with(|tx| {
                     tx.execute(
-                        "UPDATE runtime_monitors SET record=json_set(record,'$.streamQueue',json('[]')) WHERE id='monitor-full'",
+                        "UPDATE runtime_monitors SET record=json_set(record,'$.streamQueue',json('[]')),stream_pending=0 WHERE id='monitor-full'",
                         [],
                     )?;
                     Ok::<_, StoreError>(())
