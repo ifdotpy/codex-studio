@@ -32,7 +32,10 @@ async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, String) {
     case["before"]["created"] = json!(0.0);
     let id = case["before"]["id"].as_str().unwrap().to_owned();
     let store = Arc::new(fixtures::store(root.path(), "shell-policy").await);
-    fixtures::seed(&store, &case).await;
+    let mut monitor = fixtures::monitor(root.path());
+    monitor.activity_at = 0.0.try_into().expect("activity");
+    monitor.created = 0.0.try_into().expect("created");
+    fixtures::seed(&store, &case, monitor).await;
     (root, store, id)
 }
 
@@ -42,7 +45,7 @@ async fn maintain(
     now: f64,
     pressure: &dyn PressureSource,
     settings: Settings,
-) -> Value {
+) -> studio_runtime_store::MonitorRecord {
     let id = id.to_owned();
     let critical = pressure.critical();
     store
@@ -103,17 +106,21 @@ async fn pressure_requires_thirty_idle_minutes_and_preserves_active_turns() {
             ..Settings::default()
         };
         assert_ne!(
-            maintain(&store, &id, 1800.0, &source, settings.clone()).await["cancelRequested"],
-            true
+            maintain(&store, &id, 1800.0, &source, settings.clone())
+                .await
+                .cancel_requested,
+            Some(true)
         );
         source.0.store(true, Ordering::SeqCst);
         assert_ne!(
-            maintain(&store, &id, 1799.999, &source, settings.clone()).await["cancelRequested"],
-            true
+            maintain(&store, &id, 1799.999, &source, settings.clone())
+                .await
+                .cancel_requested,
+            Some(true)
         );
         let record = maintain(&store, &id, 1800.0, &source, settings).await;
         assert_eq!(
-            record["cancelRequested"] == true,
+            record.cancel_requested == Some(true),
             blocker == "none",
             "{blocker}"
         );
@@ -184,8 +191,8 @@ impl MonitorNative for Native {
         Box::pin(async move {
             let conn = self.store.test_reader().unwrap();
             let monitor = MonitorsRepository::get(&conn, &self.id).unwrap().unwrap();
-            assert_eq!(monitor.value()["cancelRequested"], true);
-            assert!(monitor.value()["shellPressureCleanup"].is_object());
+            assert_eq!(monitor.cancel_requested, Some(true));
+            assert!(monitor.shell_pressure_cleanup.is_some());
             let notices: i64 = conn
                 .query_row("SELECT count(*) FROM runtime_items", [], |r| r.get(0))
                 .unwrap();
@@ -230,7 +237,7 @@ async fn cleanup_records_intent_before_native_stop_and_never_repeats_unknown_io(
     let monitor = MonitorsRepository::get(&conn, &id).unwrap().unwrap();
     let mut active = actor.value();
     active["inFlight"] = json!(true);
-    assert!(!policy::monitor_cleanup_allowed(&conn, &active, &monitor.value(), 3600.0).unwrap());
+    assert!(!policy::monitor_cleanup_allowed(&conn, &active, &monitor, 3600.0).unwrap());
 }
 
 #[tokio::test]
@@ -243,7 +250,7 @@ async fn an_explicit_owner_stop_does_not_inherit_the_pressure_guard() {
             let (_, operation) = monitor_driver::reserve_cancel(tx, &id, Some("agent"), 1801.0)?;
             assert!(operation.is_some());
             let (snapshot, actor) = monitor_runtime::snapshot(tx, &id)?;
-            assert!(snapshot.record().get("shellPressureCleanup").is_none());
+            assert!(snapshot.record().shell_pressure_cleanup.is_none());
             let mut active = actor.value();
             active["inFlight"] = json!(true);
             assert!(policy::monitor_cleanup_allowed(
@@ -271,7 +278,7 @@ async fn new_output_or_an_expired_decision_blocks_pressure_termination() {
     assert!(policy::monitor_cleanup_allowed(&conn, &actor, &monitor, 1801.0).unwrap());
     assert!(!policy::monitor_cleanup_allowed(&conn, &actor, &monitor, 1803.0).unwrap());
     let mut output = monitor;
-    output["activityGeneration"] = json!(1);
+    output.activity_generation = 1_i64.try_into().unwrap();
     assert!(!policy::monitor_cleanup_allowed(&conn, &actor, &output, 1801.0).unwrap());
 }
 
@@ -301,8 +308,8 @@ async fn a_proved_not_sent_expired_cleanup_withdraws_its_cancel_intent() {
         .unwrap();
     let conn = store.test_reader().unwrap();
     let monitor = MonitorsRepository::get(&conn, &id).unwrap().unwrap();
-    assert_eq!(monitor.value()["cancelRequested"], false);
-    assert!(monitor.value().get("shellPressureCleanup").is_none());
+    assert_eq!(monitor.cancel_requested, Some(false));
+    assert!(monitor.shell_pressure_cleanup.is_none());
     assert_eq!(
         fixtures::events(&store)[0]["text"]["shellPolicy"]["kind"],
         "cleanup_skipped"

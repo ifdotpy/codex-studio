@@ -243,7 +243,7 @@ pub async fn request(
             drop_orphan_summary_in(tx, &lead)?;
             let actor = crate::event_write::checked_agent(tx, &lead)
                 .map_err(|_| TransferError::Refused("Unknown managed agent"))?;
-            if actor.extra.get("isLead") != Some(&Value::Bool(true)) {
+            if actor.is_lead != Some(true) {
                 return Err(TransferError::Refused(
                     "Choose the orchestrator to transfer its team",
                 ));
@@ -1219,7 +1219,7 @@ mod request_tests {
             lead.root_id = AgentId::from("legacy-root");
             AgentRepository::put(tx, &lead)?;
             let mut child = AgentRepository::get(tx, &AgentId::from("child"))?.expect("child");
-            child.extra.insert("deletedAt".into(), json!(0));
+            child.deleted_at = Some((0) as f64);
             AgentRepository::put(tx, &child)?;
             for value in [
                 json!({"id":"nested", "rootId":"lead", "parentId":"child", "provider":"codex"}),
@@ -1388,7 +1388,7 @@ mod request_tests {
         run_async(store.transaction(|tx| {
             let mut deleted =
                 AgentRepository::get(tx, &AgentId::from("fixture-1"))?.expect("fixture member");
-            deleted.extra.insert("deletedAt".into(), json!(1.0));
+            deleted.deleted_at = Some(1.0);
             AgentRepository::put(tx, &deleted)
         }))
         .expect("deleted own-team records do not consume the snapshot boundary");
@@ -1398,7 +1398,7 @@ mod request_tests {
         run_async(store.transaction(|tx| {
             let mut restored =
                 AgentRepository::get(tx, &AgentId::from("fixture-1"))?.expect("fixture member");
-            restored.extra.insert("deletedAt".into(), json!(0));
+            restored.deleted_at = Some((0) as f64);
             AgentRepository::put(tx, &restored)
         }))
         .expect("restore a member beyond the active transfer boundary");
@@ -1582,7 +1582,7 @@ mod request_tests {
                 params:json!({"processId":"watch","cwd":cwd,"command":["true"]}),
             })?;
             tx.execute("INSERT INTO runtime_monitors(id,record) VALUES('watch',?1)",
-                [json!({"id":"watch","agent":"lead","epoch":1,"status":"running","operation":{"agent":"lead","epoch":1,"accountKey":"source","connectionId":"original","rootRequestId":root,"providerRequest":admitted}}).to_string()])?;
+                [crate::monitor_policy::complete_test_monitor(json!({"id":"watch","agent":"lead","epoch":1,"status":"running","operation":{"agent":"lead","epoch":1,"accountKey":"source","connectionId":"original","rootRequestId":root,"providerRequest":admitted}})).to_string()])?;
             let key=studio_runtime_schema::provider_call_contract::transport_key("source","monitor:watch");
             let prepared = studio_runtime_schema::provider_call_contract::TransportRequest {
                 id:studio_runtime_schema::provider_input::RequestId::String(key.clone()),generation:4,method,
@@ -1603,8 +1603,19 @@ mod request_tests {
         )
         .expect("read monitor")
         .expect("monitor remains");
-        assert_eq!(monitor.value()["status"], "running");
-        assert_eq!(monitor.value()["operation"]["accountKey"], "source");
+        assert_eq!(
+            monitor.status,
+            studio_runtime_schema::studio_errors::MonitorStatus::Running
+        );
+        assert_eq!(
+            monitor
+                .operation
+                .as_ref()
+                .expect("operation")
+                .account_key
+                .as_str(),
+            "source"
+        );
     }
 
     #[test]
@@ -1634,7 +1645,7 @@ mod request_tests {
         }
         let (_root, store) = store_with_agents();
         run_async(store.transaction(|tx| {
-            tx.execute("INSERT INTO runtime_monitors VALUES('watch',?1)",[json!({"id":"watch","agent":"lead","epoch":1,"status":"running","operation":{"agent":"lead","epoch":1,"accountKey":"source","connectionId":"original"}}).to_string()])?;
+            tx.execute("INSERT INTO runtime_monitors VALUES('watch',?1)",[crate::monitor_policy::complete_test_monitor(json!({"id":"watch","agent":"lead","epoch":1,"status":"running","operation":{"agent":"lead","epoch":1,"accountKey":"source","connectionId":"original"}})).to_string()])?;
             Ok(())
         })).expect("persist the unproven monitor");
         let transfer = "5a300f72-4ea6-4d30-8a0e-9b2c13c4a001";

@@ -921,12 +921,11 @@ async fn read_roster_rows(
 /// A deleted agent leaves the roster once nothing is left to import for it: it never
 /// reached a thread, or its final checkpoint already saw this `deletedAt`.
 fn is_retired(agent: &AgentRecord, settled: &BTreeMap<String, Value>) -> bool {
-    let deleted_at = agent.extra.get("deletedAt").unwrap_or(&Value::Null);
-    !deleted_at.is_null()
+    agent.deleted_at.is_some()
         && (agent.thread_id.as_deref().is_none_or(str::is_empty)
             || settled
                 .get(agent.id().as_ref())
-                .is_some_and(|value| value == deleted_at))
+                .is_some_and(|value| value.as_f64() == agent.deleted_at))
 }
 
 /// Final checkpoints of deleted agents, so a restart does not import every tombstone again.
@@ -965,15 +964,12 @@ fn retire_settled(
     let mut index = 0;
     while index < actors.len() {
         let actor = &actors[index];
-        if let Some(deleted_at) = actor
-            .extra
-            .get("deletedAt")
-            .filter(|value| !value.is_null())
+        if let Some(deleted_at) = actor.deleted_at
             && runtime.collector.schedule.settled(actor)
         {
             let id = actor.id().as_ref().to_owned();
             runtime.collector.schedule.remove(&id);
-            runtime.settled.insert(id, deleted_at.clone());
+            runtime.settled.insert(id, serde_json::json!(deleted_at));
             actors.remove(index);
             row_ids.remove(index);
         } else {
@@ -1115,11 +1111,11 @@ mod tests {
             json!({"id":"a"}),
             json!({"id":"a", "threadId":""}),
             json!({"id":"a", "threadId":"thread"}),
-            json!({"id":"a", "threadId":"thread", "accountKey":"other", "deletedAt":{"at":1}}),
+            json!({"id":"a", "threadId":"thread", "accountKey":"other", "deletedAt":1.0}),
             json!({"id":"a", "threadId":"thread", "deletedAt":42}),
         ] {
             let actor = typed_actor(value.clone());
-            let settled = BTreeMap::from([("a".to_owned(), json!({"at":1}))]);
+            let settled = BTreeMap::from([("a".to_owned(), json!(1.0))]);
             let deleted = &value["deletedAt"];
             let legacy_retired = !deleted.is_null()
                 && (value["threadId"].as_str().is_none_or(str::is_empty)
@@ -1239,16 +1235,12 @@ mod tests {
 
     #[test]
     fn retired_tombstones_leave_the_roster_until_their_deletion_changes() {
-        let settled = BTreeMap::from([("gone".to_owned(), json!("2026-10-18T00:00:00Z"))]);
+        let settled = BTreeMap::from([("gone".to_owned(), json!(1.0))]);
         let live = typed_actor(json!({"id":"live","threadId":"t","deletedAt":null}));
-        let never_started =
-            typed_actor(json!({"id":"empty","threadId":"","deletedAt":"2026-10-18T00:00:00Z"}));
-        let settled_tombstone =
-            typed_actor(json!({"id":"gone","threadId":"t","deletedAt":"2026-10-18T00:00:00Z"}));
-        let pending_tombstone =
-            typed_actor(json!({"id":"late","threadId":"t","deletedAt":"2026-10-18T00:00:00Z"}));
-        let redeleted =
-            typed_actor(json!({"id":"gone","threadId":"t","deletedAt":"2026-10-19T00:00:00Z"}));
+        let never_started = typed_actor(json!({"id":"empty","threadId":"","deletedAt":1.0}));
+        let settled_tombstone = typed_actor(json!({"id":"gone","threadId":"t","deletedAt":1.0}));
+        let pending_tombstone = typed_actor(json!({"id":"late","threadId":"t","deletedAt":1.0}));
+        let redeleted = typed_actor(json!({"id":"gone","threadId":"t","deletedAt":2.0}));
         assert!(!is_retired(&live, &settled));
         assert!(is_retired(&never_started, &settled));
         assert!(is_retired(&settled_tombstone, &settled));
@@ -1363,21 +1355,11 @@ mod tests {
             &mut row_ids,
             vec![
                 (1, None),
-                (
-                    2,
-                    Some(typed_actor(
-                        json!({"id":"b","deletedAt":"2026-10-18T00:00:00Z"}),
-                    )),
-                ),
+                (2, Some(typed_actor(json!({"id":"b","deletedAt":1.0})))),
             ],
         );
         assert_eq!(row_ids, vec![2]);
-        assert_eq!(
-            actors,
-            vec![typed_actor(
-                json!({"id":"b","deletedAt":"2026-10-18T00:00:00Z"})
-            )]
-        );
+        assert_eq!(actors, vec![typed_actor(json!({"id":"b","deletedAt":1.0}))]);
     }
 
     #[test]

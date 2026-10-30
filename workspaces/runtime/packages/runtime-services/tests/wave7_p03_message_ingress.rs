@@ -142,7 +142,11 @@ impl Fixture {
             tx.execute("UPDATE runtime_agents SET record=json_remove(record,'$.threadId') WHERE json_type(record,'$.threadId')='null'", [])?;
             tx.execute("UPDATE runtime_agents SET record=json_remove(record,'$.turnId') WHERE json_type(record,'$.turnId')='null'", [])?;
             tx.execute("UPDATE sync_entities SET hash=sync_entity_hash(payload) WHERE payload IS NOT NULL", [])?;
-            studio_runtime_store::migrations::migrate_2026_10_20(tx)
+            studio_runtime_store::migrations::migrate_2026_10_20(tx)?;
+            for field in studio_runtime_store::agent_volatile::AGENT_VOLATILE_FIELDS {
+                tx.execute(&format!("UPDATE runtime_agent_volatile SET \"{field}\"=NULL WHERE \"{field}\"='null'"), [])?;
+            }
+            Ok(())
         }).await.expect("configure ingress case");
     }
 }
@@ -486,7 +490,10 @@ fn assert_json(actual: &Value, expected: &Value, path: &str) {
         (Value::Object(a), Value::Object(b)) => {
             let mut b = b.clone();
             if a.contains_key("rootId") && a.contains_key("epoch") {
-                for key in ["threadId", "turnId"] {
+                for key in studio_runtime_store::agent_volatile::AGENT_VOLATILE_FIELDS
+                    .into_iter()
+                    .chain(["parentId", "threadId", "turnId"])
+                {
                     if !a.contains_key(key) && b.get(key).is_some_and(Value::is_null) {
                         b.remove(key);
                     }
@@ -977,7 +984,7 @@ async fn voice_delivery_prepares_workspace_admission() {
                     }),
                 );
                 if operation == "unrelated" {
-                    other.extra.insert("cwd".into(), json!(root));
+                    other.cwd = Some(root.to_string_lossy().into_owned());
                 }
                 studio_runtime_store::AgentRepository::put(tx, &other)
             })
@@ -1078,11 +1085,11 @@ async fn late_operation_paths_use_the_prepared_canonical_relation() {
             root.clone()
         } else {
             let alias = root.join("workspace-alias");
-            std::os::unix::fs::symlink(other.extra["cwd"].as_str().expect("cwd"), &alias)
+            std::os::unix::fs::symlink(other.cwd.as_deref().expect("cwd"), &alias)
                 .expect("workspace alias");
             alias
         };
-        other.extra.insert("cwd".into(), json!(path));
+        other.cwd = Some(path.to_string_lossy().into_owned());
         if scenario != "unknown_alias" {
             store
                 .transaction({

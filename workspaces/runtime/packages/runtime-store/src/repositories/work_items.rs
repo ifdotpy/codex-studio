@@ -109,7 +109,7 @@ impl WorkItemsRepository {
             .optional()?;
         let raw = raw.ok_or_else(invalid)?;
         let value: Value = serde_json::from_str(&raw).map_err(|_| invalid())?;
-        let studio_runtime_schema::json_object::JsonObject(run): studio_runtime_schema::json_object::JsonObject<super::execution_history::ExecutionRun<Value, studio_runtime_schema::records::agent_projection::AgentCounter>> =
+        let studio_runtime_schema::json_object::JsonObject(run): studio_runtime_schema::json_object::JsonObject<super::execution_history::ExecutionRun<Value, studio_runtime_schema::AgentCounter>> =
             serde::Deserialize::deserialize(&value).map_err(|_| {
                 // The older record owner reports malformed JSON or a missing ID at
                 // the agent pointer; schema errors are located at the run row.

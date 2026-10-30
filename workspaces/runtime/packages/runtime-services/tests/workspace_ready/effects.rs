@@ -98,9 +98,14 @@ impl Fixture {
         let snapshot = CheckpointsRepository::reservation_snapshot(&connection, &self.id)
             .expect("snapshot")
             .unwrap_or_else(|| WorkspaceSnapshot {
-                agent: studio_runtime_store::StoredCheckpointObject {
-                    id: self.id.clone(),
-                    record: plan.source.clone(),
+                agent: {
+                    let mut record = plan.source.clone();
+                    record["id"] = json!(self.id);
+                    record["rootId"] = json!(self.id);
+                    record["provider"] = json!("codex");
+                    record["accountKey"] = json!("default");
+                    record["status"] = json!("queued");
+                    studio_runtime_store::AgentRecord::from_value(record).expect("fixture agent")
                 },
                 parent_checkpoint: None,
                 agents: Vec::new(),
@@ -135,7 +140,7 @@ impl Fixture {
         snapshot(&self.store, &self.id)
             .expect("snapshot")
             .agent
-            .record
+            .value()
     }
     async fn patch(&self, key: &str, value: Value) {
         let store = std::sync::Arc::clone(&self.store);
@@ -438,7 +443,7 @@ async fn partial_or_dirty_effect_is_never_adopted_reset_or_cleaned() {
 #[tokio::test]
 async fn late_completion_never_attaches_to_deleted_stopped_replaced_or_new_epoch_actor() {
     for (key, value) in [
-        ("deletedAt", json!(10)),
+        ("deletedAt", json!(10.0)),
         ("autoWake", json!(false)),
         ("epoch", json!(999)),
         ("cwd", json!("/var/tmp/changed")),
@@ -1529,7 +1534,7 @@ async fn public_probe_child() {
     if expected == "recovery" {
         assert_recovery(result);
         assert_eq!(
-            snapshot(&store, &id).expect("actor").agent.record["worktreeReady"],
+            snapshot(&store, &id).expect("actor").agent.value()["worktreeReady"],
             false
         );
     } else {
@@ -1550,7 +1555,7 @@ async fn public_probe_child() {
         }
         if expected == "ref-conflict" {
             assert!(
-                snapshot(&store, &id).expect("actor").agent.record["checkpointError"]
+                snapshot(&store, &id).expect("actor").agent.value()["checkpointError"]
                     .as_str()
                     .expect("ref conflict")
                     .contains("Checkpoint reference already names a different commit")
@@ -1998,7 +2003,7 @@ async fn reservation_snapshot_yields_the_reservations_of_the_full_snapshot() {
         let light = CheckpointsRepository::reservation_snapshot(&db, &id)
             .expect("light")
             .expect("agent");
-        assert_eq!(full.agent.record, light.agent.record, "{id}");
+        assert_eq!(full.agent.value(), light.agent.value(), "{id}");
         // Row order differs (rowid scan versus index); every consumer is order-independent.
         let sorted = |snapshot: &WorkspaceSnapshot| {
             let mut all = studio_runtime_store::workspace_ready::reservations(snapshot);

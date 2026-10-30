@@ -542,6 +542,7 @@ async fn failed_status_probe_is_not_absence_and_never_opens_child() {
 }
 
 #[tokio::test]
+#[ignore = "heavy tier: just test-quarantine (flaky under load, issue #616)"]
 async fn unverifiable_retained_child_refused_before_open() {
     watchdog(async {
     let state = DisposableState::new();

@@ -160,13 +160,7 @@ fn monitor_cancel_owner(
     monitor_id: &str,
 ) -> Result<String, crate::managed_host_tools::Error> {
     let owner =
-        studio_runtime_store::MonitorsRepository::get(tx, monitor_id)?.and_then(|monitor| {
-            monitor
-                .value()
-                .get("agent")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        });
+        studio_runtime_store::MonitorsRepository::get(tx, monitor_id)?.map(|monitor| monitor.agent);
     match owner {
         Some(owner) if owner != caller && is_descendant(tx, caller, &owner)? => Ok(owner),
         _ => Ok(caller.to_owned()),
@@ -332,7 +326,7 @@ impl crate::managed_host_tools::ContextPort for ProductionPorts {
         args: &Value,
     ) -> Result<crate::managed_host_tools::OperationResult, crate::managed_host_tools::Error> {
         let topic = args["topic"].as_str().unwrap_or_default();
-        let content = if topic == "monitor" {
+        if topic == "monitor" {
             let id = args["id"]
                 .as_str()
                 .ok_or(crate::managed_host_tools::Error::Invalid(
@@ -345,10 +339,25 @@ impl crate::managed_host_tools::ContextPort for ProductionPorts {
                     "Unknown monitor in this team",
                 ));
             }
-            snapshot.record().clone()
-        } else {
-            context::topic(tx, actor, topic, self.preparation.as_deref())?
-        };
+            let content = snapshot.record();
+            let bytes =
+                serde_json::to_vec(content).map_err(studio_runtime_store::StoreError::from)?;
+            let version = studio_runtime_store::sha256_hex(&bytes)[..24].to_owned();
+            #[derive(serde::Serialize)]
+            struct Context<'a> {
+                topic: &'a str,
+                version: String,
+                content: &'a studio_runtime_store::MonitorRecord,
+            }
+            return Ok(crate::managed_host_tools::OperationResult::reply(
+                &Context {
+                    topic,
+                    version,
+                    content,
+                },
+            ));
+        }
+        let content = context::topic(tx, actor, topic, self.preparation.as_deref())?;
         let version = studio_runtime_store::sha256_hex(
             studio_runtime_store::python_json_compact(&content).as_bytes(),
         )[..24]
@@ -504,14 +513,14 @@ impl crate::managed_host_tools::ReviewPort for ProductionPorts {
         let root =
             studio_runtime_store::ContextRepairRepository::agent(tx, &actor.record().root_id.0)?
                 .ok_or(crate::managed_host_tools::Error::Stale)?;
-        let directory = actor
-            .record()
-            .extra
-            .get("cwd")
-            .and_then(Value::as_str)
-            .ok_or(crate::managed_host_tools::Error::Unavailable(
-                "agent-create/worker-driver",
-            ))?;
+        let directory =
+            actor
+                .record()
+                .cwd
+                .as_deref()
+                .ok_or(crate::managed_host_tools::Error::Unavailable(
+                    "agent-create/worker-driver",
+                ))?;
         let key = args
             .get("request_id")
             .and_then(Value::as_str)

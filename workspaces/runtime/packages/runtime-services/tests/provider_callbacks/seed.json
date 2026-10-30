@@ -1624,6 +1624,7 @@
         "epoch": 3,
         "error": null,
         "finished": null,
+        "startedAt": 0,
         "status": "running"
       },
       "requestId": "managed-monitor",

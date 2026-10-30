@@ -65,14 +65,14 @@ pub fn checkpoint_list(
             .iter()
             .find(|agent| agent.id().as_ref() == agent_id)
             .ok_or(QuestionsReadsError::UnknownAgent)?;
-        if deleted_value(caller.extra.get("deletedAt")) {
+        if caller.is_deleted() {
             return Err(QuestionsReadsError::DeletedAgent);
         }
         vec![agent_id.to_owned()]
     } else {
         agents
             .iter()
-            .filter(|agent| !deleted_value(agent.extra.get("deletedAt")))
+            .filter(|agent| !agent.is_deleted())
             .map(|agent| agent.id().as_ref().to_owned())
             .collect()
     };

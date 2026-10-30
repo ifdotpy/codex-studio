@@ -211,52 +211,6 @@ struct ClaudeCredentialRequest<'a> {
 }
 
 impl HostRuntime {
-    #[doc(hidden)]
-    pub async fn start(
-        state: &mut HttpState,
-        store: Arc<RuntimeStore>,
-        accounts: Arc<AccountDriver>,
-        native_path: Option<String>,
-        config: AccountRegistryConfig,
-    ) -> Result<Self, WorkerError> {
-        Self::start_with_monitor_wake(
-            state,
-            store,
-            accounts,
-            native_path,
-            Arc::new(tokio::sync::Notify::new()),
-            AccountSessionBroker::new(),
-            config,
-        )
-        .await
-    }
-
-    #[doc(hidden)]
-    pub async fn start_with_monitor_wake(
-        state: &mut HttpState,
-        store: Arc<RuntimeStore>,
-        accounts: Arc<AccountDriver>,
-        native_path: Option<String>,
-        monitor_dispatch_wake: Arc<tokio::sync::Notify>,
-        session_broker: AccountSessionBroker,
-        config: AccountRegistryConfig,
-    ) -> Result<Self, WorkerError> {
-        Self::start_with_monitor_wake_and_native_runtime(
-            state,
-            store,
-            accounts,
-            native_path,
-            monitor_dispatch_wake,
-            session_broker,
-            None,
-            Arc::new(Mutex::new(BTreeMap::new())),
-            config,
-            None,
-            None,
-        )
-        .await
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub async fn start_with_monitor_wake_and_native_runtime(
         state: &mut HttpState,
@@ -501,31 +455,13 @@ impl HostRuntime {
         wake: Arc<tokio::sync::Notify>,
         config: AccountRegistryConfig,
     ) -> Result<Self, WorkerError> {
-        Self::with_launcher_and_monitor_wake(
-            store,
-            launcher,
-            wake,
-            Arc::new(tokio::sync::Notify::new()),
-            config,
-        )
-        .await
-    }
-
-    #[doc(hidden)]
-    pub async fn with_launcher_and_monitor_wake(
-        store: Arc<RuntimeStore>,
-        launcher: Arc<dyn AccountLauncher>,
-        wake: Arc<tokio::sync::Notify>,
-        monitor_dispatch_wake: Arc<tokio::sync::Notify>,
-        config: AccountRegistryConfig,
-    ) -> Result<Self, WorkerError> {
         Self::with_launcher_broker(
             store,
             launcher,
             wake,
             RegistryRuntimeOptions {
                 continuation_wake: Arc::new(tokio::sync::Notify::new()),
-                monitor_dispatch_wake,
+                monitor_dispatch_wake: Arc::new(tokio::sync::Notify::new()),
                 session_broker: AccountSessionBroker::new(),
                 preparation_resources: None,
                 config,
@@ -2359,12 +2295,18 @@ mod install_root_tests {
             Some(account_policy),
         )
         .with_account_driver(accounts.clone());
-        let runtime = super::HostRuntime::start(
+        let runtime = super::HostRuntime::start_with_monitor_wake_and_native_runtime(
             &mut state,
             store,
             accounts,
             None,
+            Arc::new(tokio::sync::Notify::new()),
+            super::AccountSessionBroker::new(),
+            None,
+            Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new())),
             super::AccountRegistryConfig::default(),
+            None,
+            None,
         )
         .await
         .expect("composed host runtime starts");
@@ -2565,6 +2507,7 @@ mod voice_composition_tests {
                         root_id: id,
                         epoch: 3,
                         status: AgentStatus::Idle,
+                        is_lead: Some(true),
                         account_key: "voice-account".into(),
                         thread_id: Some("voice-thread".into()),
                         auto_wake: None,
@@ -2573,15 +2516,13 @@ mod voice_composition_tests {
                         execution_mode: None,
                         turn_epoch: None,
                         turn_id: None,
-                        extra: [
-                            ("isLead".into(), Value::Bool(true)),
-                            (
-                                "provider".into(),
-                                serde_json::to_value(studio_runtime_schema::ProviderKind::Codex)
-                                    .unwrap(),
-                            ),
-                        ]
+                        extra: [(
+                            "provider".into(),
+                            serde_json::to_value(studio_runtime_schema::ProviderKind::Codex)
+                                .unwrap(),
+                        )]
                         .into(),
+                        ..AgentRecord::test_defaults()
                     },
                 )?;
                 Ok(())
@@ -3856,59 +3797,6 @@ fn selected_account(
         .ok_or_else(|| WorkerError::PreparationRefused("account-driver/profile-home".into()))?
         .to_owned();
     Ok((kind, home, false, Some(profile)))
-}
-
-#[doc(hidden)]
-pub fn codex_launch(
-    native_path: Option<&str>,
-    environment: BTreeMap<String, String>,
-    home: String,
-    isolated: bool,
-    root: PathBuf,
-) -> ProviderLaunchSpec {
-    adapter(ProviderKind::Codex)
-        .host_launch(HostLaunch {
-            profile: None,
-            home,
-            isolated,
-            codex_executable: native_path,
-            claude_bridge_dir: Path::new(""),
-            account: "default",
-            root,
-            environment,
-        })
-        .expect("Codex launch is infallible")
-        .spec
-}
-
-#[doc(hidden)]
-pub fn claude_launch(
-    profile: serde_json::Value,
-    bridge_dir: &Path,
-    state_root: &Path,
-    account: &str,
-    environment: BTreeMap<String, String>,
-) -> Result<ProviderLaunchSpec, WorkerError> {
-    let profile =
-        studio_runtime_services::claude_bridge::ClaudeLaunchProfile::from_record(&profile)
-            .map_err(|_| {
-                WorkerError::PreparationRefused(
-                    studio_runtime_services::provider_adapter::CLAUDE_ACCOUNT_IDENTITY_REFUSAL
-                        .into(),
-                )
-            })?;
-    adapter(ProviderKind::Claude)
-        .host_launch(HostLaunch {
-            profile: Some(&profile),
-            home: String::new(),
-            isolated: false,
-            codex_executable: None,
-            claude_bridge_dir: bridge_dir,
-            account,
-            root: state_root.to_path_buf(),
-            environment,
-        })
-        .map(|launch| launch.spec)
 }
 
 #[cfg(test)]

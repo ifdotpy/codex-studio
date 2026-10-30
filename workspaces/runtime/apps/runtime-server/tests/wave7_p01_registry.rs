@@ -31,6 +31,80 @@ use studio_runtime_store::path_identity::CanonicalPath;
 use studio_runtime_store::{RuntimeStore, StoreError};
 use tokio::sync::{Notify, mpsc, watch};
 
+use std::path::Path;
+use studio_runtime_services::provider_adapter::{HostLaunch, ProviderKind, adapter};
+fn codex_launch(
+    native_path: Option<&str>,
+    environment: BTreeMap<String, String>,
+    home: String,
+    isolated: bool,
+    root: PathBuf,
+) -> ProviderLaunchSpec {
+    adapter(ProviderKind::Codex)
+        .host_launch(HostLaunch {
+            profile: None,
+            home,
+            isolated,
+            codex_executable: native_path,
+            claude_bridge_dir: Path::new(""),
+            account: "default",
+            root,
+            environment,
+        })
+        .expect("Codex launch is infallible")
+        .spec
+}
+
+fn claude_launch(
+    profile: &serde_json::Value,
+    bridge_dir: &Path,
+    state_root: &Path,
+    account: &str,
+    environment: BTreeMap<String, String>,
+) -> Result<ProviderLaunchSpec, WorkerError> {
+    let profile = studio_runtime_services::claude_bridge::ClaudeLaunchProfile::from_record(profile)
+        .map_err(|_| {
+            WorkerError::PreparationRefused(
+                studio_runtime_services::provider_adapter::CLAUDE_ACCOUNT_IDENTITY_REFUSAL.into(),
+            )
+        })?;
+    adapter(ProviderKind::Claude)
+        .host_launch(HostLaunch {
+            profile: Some(&profile),
+            home: String::new(),
+            isolated: false,
+            codex_executable: None,
+            claude_bridge_dir: bridge_dir,
+            account,
+            root: state_root.to_path_buf(),
+            environment,
+        })
+        .map(|launch| launch.spec)
+}
+
+async fn start_host(
+    state: &mut studio_runtime_http::HttpState,
+    store: Arc<RuntimeStore>,
+    accounts: Arc<studio_runtime_services::account_driver::AccountDriver>,
+    native_path: Option<String>,
+    config: AccountRegistryConfig,
+) -> Result<host_runtime::HostRuntime, WorkerError> {
+    host_runtime::HostRuntime::start_with_monitor_wake_and_native_runtime(
+        state,
+        store,
+        accounts,
+        native_path,
+        Arc::new(Notify::new()),
+        AccountSessionBroker::new(),
+        None,
+        Arc::new(Mutex::new(BTreeMap::new())),
+        config,
+        None,
+        None,
+    )
+    .await
+}
+
 fn test_registry_config() -> AccountRegistryConfig {
     AccountRegistryConfig::default()
 }
@@ -1869,7 +1943,7 @@ async fn recovery_selection_matches_frozen_scheduler_roster_without_changing_sto
     );
     let db = fixture.store.test_reader().unwrap();
     let mut query = db.prepare("SELECT id,record FROM runtime_agents").unwrap();
-    let stored = query
+    let mut stored = query
         .query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })
@@ -1881,7 +1955,24 @@ async fn recovery_selection_matches_frozen_scheduler_roster_without_changing_sto
             (id, record)
         })
         .collect::<BTreeMap<_, _>>();
-    assert_eq!(json!(stored), fixture.agents["stored"]);
+    let mut expected = fixture.agents["stored"].clone();
+    for record in expected
+        .as_object_mut()
+        .expect("agent records")
+        .values_mut()
+        .chain(stored.values_mut())
+    {
+        let fields = record.as_object_mut().expect("agent record");
+        for key in studio_runtime_store::agent_volatile::AGENT_VOLATILE_FIELDS
+            .into_iter()
+            .chain(["parentId", "threadId", "turnId"])
+        {
+            if fields.get(key).is_some_and(Value::is_null) {
+                fields.remove(key);
+            }
+        }
+    }
+    assert_eq!(json!(stored), expected);
     assert_eq!(fixture.agents["cases"], 9);
 }
 
@@ -2459,7 +2550,7 @@ async fn every_launch_signature_field_matches_frozen_appserver_contract() {
             ("UNCHANGED".into(), "Unicode café".into()),
         ]);
         let oracle = launch_fixture(root.path(), isolated, true);
-        let launch = host_runtime::codex_launch(
+        let launch = codex_launch(
             Some("/fixture/codex"),
             environment,
             home.to_string_lossy().into_owned(),
@@ -2543,7 +2634,7 @@ fn direct_launch_command_and_environment_match_frozen_contract() {
             ("UNCHANGED".into(), "Unicode café".into()),
         ]);
         let oracle = launch_fixture(root.path(), isolated, false);
-        let launch = host_runtime::codex_launch(
+        let launch = codex_launch(
             Some("/fixture/codex"),
             environment,
             home.to_string_lossy().into_owned(),
@@ -2652,7 +2743,7 @@ async fn running_app_server_started_with_the_frozen_command_reattaches() {
             ("HOME".into(), root.to_string_lossy().into_owned()),
             ("PATH".into(), "/usr/bin:/bin".into()),
         ]);
-        let launch = host_runtime::codex_launch(
+        let launch = codex_launch(
             executable.to_str(),
             environment,
             home.to_string_lossy().into_owned(),
@@ -2966,8 +3057,8 @@ fn claude_launch_uses_resolved_node_bridge_and_profile_cli_without_invoking_it()
         "_credentialIdentity":"claude:fixture@example.test",
         "claudeOptions":{"customModels":[], "launchArgs":"--chrome"}
     });
-    let launch = host_runtime::claude_launch(
-        profile,
+    let launch = claude_launch(
+        &profile,
         &bridge_dir,
         &root,
         "claude-fixture-account",
@@ -3075,7 +3166,7 @@ async fn host_start_reattaches_existing_launch_and_delivers_http_input() {
     .unwrap();
     std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
     let environment: BTreeMap<String, String> = std::env::vars().collect();
-    let mut launch = host_runtime::codex_launch(
+    let mut launch = codex_launch(
         Some(executable.to_str().unwrap()),
         environment.clone(),
         home.to_string_lossy().into_owned(),
@@ -3142,7 +3233,7 @@ async fn host_start_reattaches_existing_launch_and_delivers_http_input() {
         None,
     )
     .with_account_driver(accounts.clone());
-    let runtime = host_runtime::HostRuntime::start(
+    let runtime = start_host(
         &mut state,
         fixture.store.clone(),
         accounts.clone(),
@@ -3320,7 +3411,7 @@ async fn host_start_reattaches_existing_launch_and_delivers_http_input() {
     assert_eq!(app.clone().oneshot(request).await.unwrap().status(), 200);
     runtime_shutdown::close(runtime, &state).await.unwrap();
     assert!(std::path::Path::new(&format!("/proc/{pid}")).exists());
-    let launch = host_runtime::codex_launch(
+    let launch = codex_launch(
         Some(executable.to_str().unwrap()),
         environment,
         home.to_string_lossy().into_owned(),
@@ -3487,7 +3578,7 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
         None,
     )
     .with_account_driver(accounts.clone());
-    let runtime = host_runtime::HostRuntime::start(
+    let runtime = start_host(
         &mut state,
         fixture.store.clone(),
         accounts.clone(),
@@ -3703,7 +3794,7 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
     wait_for_file_lines(&queries, 2, &mut query_events).await;
     runtime_shutdown::close(runtime, &state).await.unwrap();
     let mut restarted_state = state.clone();
-    let restarted = host_runtime::HostRuntime::start(
+    let restarted = start_host(
         &mut restarted_state,
         fixture.store.clone(),
         accounts,
@@ -3878,7 +3969,7 @@ async fn direct_launch_mode_completes_http_turn_and_reaps_child() {
         None,
     )
     .with_account_driver(accounts.clone());
-    let runtime = host_runtime::HostRuntime::start(
+    let runtime = start_host(
         &mut state,
         fixture.store.clone(),
         accounts,
@@ -4083,7 +4174,7 @@ async fn direct_generation_and_journal_identity_survive_backend_restart() {
     )
     .with_account_driver(accounts.clone());
     let mut changes = state.sync_changes_handle().subscribe();
-    let runtime = host_runtime::HostRuntime::start(
+    let runtime = start_host(
         &mut state,
         fixture.store.clone(),
         accounts.clone(),
@@ -4122,7 +4213,7 @@ async fn direct_generation_and_journal_identity_survive_backend_restart() {
 
     let second_agent_id = fixture.agents[1]["id"].as_str().unwrap();
     make_direct_agent_runnable(&fixture.store, second_agent_id, "default").await;
-    let runtime = host_runtime::HostRuntime::start(
+    let runtime = start_host(
         &mut state,
         fixture.store.clone(),
         accounts,
@@ -4221,7 +4312,7 @@ async fn direct_child_sigkill_settles_unknown_without_resend() {
         None,
     )
     .with_account_driver(accounts.clone());
-    let runtime = host_runtime::HostRuntime::start(
+    let runtime = start_host(
         &mut state,
         fixture.store.clone(),
         accounts,
@@ -4417,7 +4508,7 @@ async fn direct_child_crash_before_turn_write_retries_queued_input_once() {
     };
     assert_eq!(app.clone().oneshot(post()).await.unwrap().status(), 200);
     let mut changes = state.sync_changes_handle().subscribe();
-    let runtime = host_runtime::HostRuntime::start(
+    let runtime = start_host(
         &mut state,
         fixture.store.clone(),
         accounts,
@@ -4913,7 +5004,7 @@ async fn backend_restart_keeps_live_work_and_ends_the_stopped_turn_once() {
     .with_account_driver(accounts.clone());
 
     // The first backend starts both turns.
-    let runtime = host_runtime::HostRuntime::start(
+    let runtime = start_host(
         &mut state,
         store.clone(),
         accounts.clone(),
@@ -4980,7 +5071,7 @@ async fn backend_restart_keeps_live_work_and_ends_the_stopped_turn_once() {
     assert_eq!(restart_agent(&store, &b)["status"], "paused");
 
     // A new backend process attaches to the same provider generation.
-    let runtime = host_runtime::HostRuntime::start(
+    let runtime = start_host(
         &mut state,
         store.clone(),
         accounts,

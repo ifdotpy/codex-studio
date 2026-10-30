@@ -271,10 +271,10 @@ impl studio_runtime_services::monitor_driver::MonitorNative for Port {
     ) -> futures_util::future::BoxFuture<'a, studio_runtime_services::monitor_driver::Submission>
     {
         Box::pin(async move {
-            assert_eq!(operation.agent, "owner");
-            assert_eq!(operation.epoch, 1);
-            assert_eq!(operation.account_key, self.scope.account);
-            assert_eq!(operation.connection_id, self.scope.connection);
+            assert_eq!(operation.agent.as_str(), "owner");
+            assert_eq!(operation.epoch.get(), 1);
+            assert_eq!(operation.account_key.as_str(), self.scope.account);
+            assert_eq!(operation.connection_id.as_str(), self.scope.connection);
             let studio_runtime_services::monitor_policy::Effect::Native { method, params, .. } =
                 effect
             else {
@@ -391,7 +391,18 @@ async fn transferred_monitor_fixture(
     }
     case["before"]["operation"] =
         json!({"agent":"owner","epoch":1,"accountKey":"default","connectionId":"actual-uuid"});
-    crate::monitor_fixtures::seed(&port.store, &case).await;
+    let mut initial = crate::monitor_fixtures::monitor(port.store.root());
+    initial.agent = "owner".into();
+    initial.epoch = 1.try_into().expect("epoch");
+    initial.interactive = true;
+    if behavior == "transferred_reattached" {
+        initial.reattached_connection_id = Some("reattached-source".into());
+    }
+    let operation = initial.operation.as_mut().expect("operation");
+    operation.agent = "owner".to_owned().try_into().expect("agent");
+    operation.epoch = 1.try_into().expect("epoch");
+    operation.connection_id = "actual-uuid".to_owned().try_into().expect("connection");
+    crate::monitor_fixtures::seed(&port.store, &case, initial).await;
     let monitor = case["before"].clone();
     let id = monitor["id"].as_str().unwrap().to_owned();
     let receipt_monitor = monitor.clone();
@@ -700,7 +711,7 @@ async fn held_claude_response_stop_is_exact_and_replays_without_another_read() {
         changed["responseTarget"]["turnId"] = json!("other");
         assert_eq!(
             call(&app, "POST", "/api/processes/action", changed).await.0,
-            400
+            409
         );
         assert_eq!(*port.calls.lock().unwrap(), calls);
         let after: String = port
@@ -1050,7 +1061,45 @@ async fn process_receipt_cannot_certify_a_missing_result() {
 }
 
 #[tokio::test]
-async fn process_command_legacy_nulls_keep_exact_replay_signature() {
+async fn process_typed_ingress_rejects_invalid_input_before_effects() {
+    let (_root, app, port) = fixture("success").await;
+    let valid = json!({"action":"stop_owned","requestId":"request","agent":"owner","accountKey":"default","epoch":1,"processes":[{"key":"key","generation":"gen","agent":"owner","accountKey":"default","epoch":1}]});
+    for (field, value) in [
+        ("requestId", json!("")),
+        ("processes", json!([])),
+        ("unexpected", json!(true)),
+    ] {
+        let mut body = valid.clone();
+        body[field] = value;
+        assert_eq!(
+            call(&app, "POST", "/api/processes/action", body).await.0,
+            400
+        );
+    }
+    assert!(port.calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn process_preupgrade_receipt_conflicts_without_a_second_effect() {
+    let (_root, app, port) = fixture("success").await;
+    port.store.transaction_with(|tx| {
+        tx.execute("INSERT INTO runtime_process_actions(id,signature,record) VALUES('request',?1,'{}')", ["b16654521805af453f0fc6e0b9f42fb54887c3b20eb1fb103b50e05a645497f8"])?;
+        Ok::<_, StoreError>(())
+    }).await.unwrap();
+    let body = json!({"action":"stop_owned","requestId":"request","agent":"owner","accountKey":"acct","epoch":1.0,"processes":[{"key":"key","generation":"gen","agent":"owner","accountKey":"acct","epoch":1.0}],"responseTarget":null});
+    for _ in 0..2 {
+        assert_eq!(
+            call(&app, "POST", "/api/processes/action", body.clone())
+                .await
+                .0,
+            409
+        );
+    }
+    assert!(port.calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn process_command_legacy_nulls_share_normalized_signature() {
     let (_root, app, port) = fixture("claude").await;
     let (_, list) = call(&app, "GET", "/api/processes?agent=owner", Value::Null).await;
     let body = json!({"action":"background_command","requestId":"move","agent":"owner","accountKey":"default","epoch":1,"responseTarget":list["responseTarget"],"itemId":"toolu-1","process":null,"processes":[],"includeDescendants":false});
@@ -1065,14 +1114,14 @@ async fn process_command_legacy_nulls_keep_exact_replay_signature() {
     let mut changed = body;
     changed.as_object_mut().unwrap().remove("process");
     assert_eq!(
-        call(&app, "POST", "/api/processes/action", changed).await.0,
-        400
+        call(&app, "POST", "/api/processes/action", changed).await.1,
+        result
     );
     assert_eq!(port.calls.lock().unwrap().len(), 1);
 }
 
 #[tokio::test]
-async fn process_identity_numeric_spelling_is_not_normalized_into_authority() {
+async fn process_identity_numeric_spelling_is_normalized() {
     let (_root, app, port) = fixture("success").await;
     let (_, list) = call(&app, "GET", "/api/processes?agent=owner", Value::Null).await;
     let p = &list["processes"][0];
@@ -1080,9 +1129,8 @@ async fn process_identity_numeric_spelling_is_not_normalized_into_authority() {
         "process":{"key":p["key"],"generation":p["generation"],"agent":"owner","accountKey":"default","epoch":1.0}});
     let (status, result) = call(&app, "POST", "/api/processes/action", body.clone()).await;
     assert_eq!(status, 200, "{result}");
-    assert_eq!(result["status"], "partial");
-    assert_eq!(result["processes"][0]["status"], "stale");
-    assert!(port.calls.lock().unwrap().is_empty());
+    assert_ne!(result["processes"][0]["status"], "stale");
+    assert!(!port.calls.lock().unwrap().is_empty());
     assert_eq!(
         call(&app, "POST", "/api/processes/action", body).await.1,
         result

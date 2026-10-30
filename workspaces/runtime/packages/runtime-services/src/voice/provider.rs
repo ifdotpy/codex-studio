@@ -2732,29 +2732,16 @@ mod tests {
             "provider".into(),
             json!(studio_runtime_schema::ProviderKind::Codex),
         );
-        extra.insert("isLead".into(), json!(true));
         let agent = AgentRecord {
-            in_flight: None,
             account_key: "default".into(),
             thread_id: Some("voice-thread".into()),
-            turn_id: None,
-            auto_wake: None,
-            usage_resume_enabled: None,
-            execution_mode: None,
-            turn_epoch: None,
-            title_job: None,
-            start_outcome_hold: None,
-            fired_events: Default::default(),
-            native_review_thread: None,
-            vm_launch: None,
-            credential_copy: None,
-            vm_auth_bootstrap: None,
-            native_release: None,
+            is_lead: Some(true),
             id: AgentId::from("voice-agent"),
             root_id: AgentId::from("voice-agent"),
             epoch: 0,
             status: AgentStatus::Idle,
             extra,
+            ..AgentRecord::test_defaults()
         };
         let old_offer = "v=0\r\nold-offer".to_owned();
         let transaction_offer = old_offer.clone();

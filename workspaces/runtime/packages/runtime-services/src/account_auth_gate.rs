@@ -179,7 +179,7 @@ pub async fn hold_unstarted(
                     || agent.auto_wake != Some(true)
                     || agent.in_flight == Some(true)
                     || agent.extra.contains_key("startAttempt")
-                    || studio_runtime_store::truthy(agent.extra.get("deletedAt"))
+                    || agent.is_deleted()
                 {
                     continue;
                 }

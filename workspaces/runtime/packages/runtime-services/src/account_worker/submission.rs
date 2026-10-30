@@ -222,10 +222,7 @@ async fn vm_launch_request(
                             "vm-agent/identity-changed".into(),
                         ));
                     }
-                    let cwd = record
-                        .extra
-                        .get("cwd")
-                        .and_then(Value::as_str)
+                    let cwd = record.cwd.as_deref()
                         .or(intent_cwd.as_deref())
                         .filter(|value| value.starts_with('/'))
                         .ok_or_else(|| WorkerError::PreparationRefused("vm-agent/cwd".into()))?;

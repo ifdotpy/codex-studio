@@ -64,9 +64,10 @@ mod tests {
         .into_iter()
         .enumerate()
         {
-            let mut agent =
-                AgentRecord::from_value(json!({"accountKey":"default","id":"a","rootId":"a","epoch":0,"status":"failed"}))
-                    .expect("agent");
+            let mut agent = AgentRecord::from_value(
+                json!({"accountKey":"default","id":"a","rootId":"a","epoch":0,"status":"failed"}),
+            )
+            .expect("agent");
             if let Some(provider) = provider {
                 agent.extra.insert("provider".into(), provider);
             }

@@ -50,11 +50,13 @@ async fn claim_retry(state: &State) -> String {
                         PREVIOUS_TURN,
                         &settings,
                         NOW,
+                        None,
                     )
                     .expect("failure");
                     let scheduled = failure.record.expect("scheduled retry").value();
-                    let held = AgentRecord::from_value(failure.agent.expect("agent").into_value())
-                        .map_err(StoreError::from)?;
+                    let held =
+                        AgentRecord::from_value(failure.agent.expect("agent").value().clone())
+                            .map_err(StoreError::from)?;
                     AgentRepository::put(tx, &held)?;
                     ContinuationRepository::put_record(
                         tx,
@@ -85,9 +87,10 @@ async fn claim_retry(state: &State) -> String {
                         &agent,
                         &record,
                     )?;
-                    let claimed =
-                        AgentRecord::from_value(claim.agent.expect("claimed agent").into_value())
-                            .map_err(StoreError::from)?;
+                    let claimed = AgentRecord::from_value(
+                        claim.agent.expect("claimed agent").value().clone(),
+                    )
+                    .map_err(StoreError::from)?;
                     AgentRepository::put(tx, &claimed)?;
                     Ok(record["id"].as_str().expect("id").to_owned())
                 })

@@ -27,8 +27,10 @@ impl MonitorNative for Port {
 async fn fixture() -> (tempfile::TempDir, RuntimeStore, PreparedStart) {
     let root = fixtures::tempdir();
     let mut case = fixtures::corpus(root.path()).remove(0);
-    let operation: Operation =
-        serde_json::from_value(case["before"]["operation"].clone()).expect("operation");
+    let operation: Operation = serde_json::from_str(
+        r#"{"agent":"agent","epoch":2,"accountKey":"default","connectionId":"connection"}"#,
+    )
+    .expect("operation");
     case["before"]
         .as_object_mut()
         .expect("monitor")
@@ -39,9 +41,19 @@ async fn fixture() -> (tempfile::TempDir, RuntimeStore, PreparedStart) {
     case["actor"]["threadId"] = json!("thread");
     case["actor"]["turnId"] = json!("turn");
     let store = fixtures::store(root.path(), "start").await;
-    fixtures::seed(&store, &case).await;
+    let mut monitor = fixtures::monitor(root.path());
+    monitor.operation = None;
+    monitor.status = studio_runtime_schema::studio_errors::MonitorStatus::Starting;
+    monitor.turn_id = Some("created-turn".into());
+    fixtures::seed(&store, &case, monitor).await;
+    let monitor = MonitorsRepository::get(
+        &store.test_reader().expect("reader"),
+        case["before"]["id"].as_str().expect("id"),
+    )
+    .expect("read monitor")
+    .expect("seeded monitor");
     let prepared = PreparedStart {
-        monitor: case["before"].clone(),
+        monitor,
         actor: case["actor"].clone(),
         operation,
         params: json!({"processId":case["before"]["id"], "cwd":case["before"]["cwd"],
@@ -68,7 +80,7 @@ async fn change_actor(store: &RuntimeStore, patch: Value) {
 #[tokio::test]
 async fn monitor_start_survives_actor_progress_and_submits_once() {
     let (_root, store, prepared) = fixture().await;
-    let id = prepared.monitor["id"].as_str().expect("monitor id");
+    let id = prepared.monitor.id.as_str();
     change_actor(
         &store,
         json!({
@@ -91,15 +103,17 @@ async fn monitor_start_survives_actor_progress_and_submits_once() {
         MonitorsRepository::get(&db, id)
             .expect("read")
             .expect("monitor")
-            .value()["status"],
+            .status
+            .as_str(),
         "running"
     );
     assert_eq!(
         MonitorsRepository::get(&db, id)
             .expect("read")
             .expect("monitor")
-            .value()["turnId"],
-        "created-turn"
+            .turn_id
+            .as_deref(),
+        Some("created-turn")
     );
     assert!(
         monitor_driver::start(&store, &port, id, &prepared, 2002.0)
@@ -115,7 +129,7 @@ async fn monitor_start_survives_actor_progress_and_submits_once() {
 #[tokio::test]
 async fn monitor_start_refuses_changed_ownership_permissions_or_monitor() {
     let (_root, store, prepared) = fixture().await;
-    let id = prepared.monitor["id"].as_str().expect("monitor id");
+    let id = prepared.monitor.id.as_str();
     let baseline = json!({"actor": prepared.actor, "before": prepared.monitor, "priorEvents": []});
     let baseline_actor =
         AgentRepository::get(&store.test_reader().expect("reader"), &"agent".into())
@@ -124,8 +138,7 @@ async fn monitor_start_refuses_changed_ownership_permissions_or_monitor() {
             .value();
     let baseline_monitor = MonitorsRepository::get(&store.test_reader().expect("reader"), id)
         .expect("read monitor")
-        .expect("monitor")
-        .value();
+        .expect("monitor");
     for patch in [
         json!({"epoch":3}),
         json!({"autoWake":false}),
@@ -147,7 +160,7 @@ async fn monitor_start_refuses_changed_ownership_permissions_or_monitor() {
         json!({"remoteWorker":true}),
         json!({"remoteAnchor":true}),
     ] {
-        fixtures::seed(&store, &baseline).await;
+        fixtures::seed(&store, &baseline, baseline_monitor.clone()).await;
         assert_eq!(
             AgentRepository::get(&store.test_reader().expect("reader"), &"agent".into())
                 .expect("read actor")
@@ -158,8 +171,7 @@ async fn monitor_start_refuses_changed_ownership_permissions_or_monitor() {
         assert_eq!(
             MonitorsRepository::get(&store.test_reader().expect("reader"), id)
                 .expect("read monitor")
-                .expect("monitor")
-                .value(),
+                .expect("monitor"),
             baseline_monitor
         );
         assert_eq!(fixtures::events(&store), json!([]));
@@ -188,8 +200,7 @@ async fn monitor_start_refuses_changed_ownership_permissions_or_monitor() {
         assert_eq!(
             MonitorsRepository::get(&store.test_reader().expect("reader"), id)
                 .expect("read")
-                .expect("monitor")
-                .value(),
+                .expect("monitor"),
             baseline_monitor
         );
     }
@@ -197,7 +208,7 @@ async fn monitor_start_refuses_changed_ownership_permissions_or_monitor() {
         "DELETE FROM runtime_monitors",
         "UPDATE runtime_monitors SET record=json_set(record,'$.command','changed')",
     ] {
-        fixtures::seed(&store, &baseline).await;
+        fixtures::seed(&store, &baseline, baseline_monitor.clone()).await;
         assert_eq!(
             AgentRepository::get(&store.test_reader().expect("reader"), &"agent".into())
                 .expect("read actor")
@@ -208,8 +219,7 @@ async fn monitor_start_refuses_changed_ownership_permissions_or_monitor() {
         assert_eq!(
             MonitorsRepository::get(&store.test_reader().expect("reader"), id)
                 .expect("read monitor")
-                .expect("monitor")
-                .value(),
+                .expect("monitor"),
             baseline_monitor
         );
         assert_eq!(fixtures::events(&store), json!([]));
@@ -221,8 +231,7 @@ async fn monitor_start_refuses_changed_ownership_permissions_or_monitor() {
             .await
             .expect("monitor change");
         let changed_monitor = MonitorsRepository::get(&store.test_reader().expect("reader"), id)
-            .expect("read monitor")
-            .map(|monitor| monitor.value());
+            .expect("read monitor");
         let port = Port::default();
         assert!(
             monitor_driver::start(&store, &port, id, &prepared, 2001.0)
@@ -240,8 +249,7 @@ async fn monitor_start_refuses_changed_ownership_permissions_or_monitor() {
         );
         assert_eq!(
             MonitorsRepository::get(&store.test_reader().expect("reader"), id)
-                .expect("read monitor")
-                .map(|monitor| monitor.value()),
+                .expect("read monitor"),
             changed_monitor
         );
     }

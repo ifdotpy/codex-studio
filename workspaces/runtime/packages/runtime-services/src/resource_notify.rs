@@ -425,14 +425,6 @@ impl ResourceNotifications {
             .map(|state| state.resource_revision(&resource.to_string()))
             .map_err(|_| ResourceNotifyError::Unavailable)
     }
-
-    /// External state notifications require a reset even if their entity sequence is unchanged.
-    pub fn entity_reset_after(&self, revision: i64) -> Result<bool, ResourceNotifyError> {
-        self.publications
-            .lock()
-            .map(|state| state.entity_reset_revision > revision)
-            .map_err(|_| ResourceNotifyError::Unavailable)
-    }
 }
 
 fn validate(value: &Value) -> Result<(), ResourceNotifyError> {

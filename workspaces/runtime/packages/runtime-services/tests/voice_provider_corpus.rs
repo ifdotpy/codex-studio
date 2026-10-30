@@ -404,8 +404,8 @@ async fn seeded_store() -> (tempfile::TempDir, RuntimeStore) {
                 let id = studio_runtime_store::AgentId::from(agent);
                 let record = studio_runtime_store::AgentRecord {
                     in_flight: None,
-        account_key: "default".into(),
-        thread_id: None,
+        account_key: "account".into(),
+        thread_id: Some("thread".into()),
         turn_id: None,
         auto_wake: None,
         usage_resume_enabled: None,
@@ -421,12 +421,11 @@ async fn seeded_store() -> (tempfile::TempDir, RuntimeStore) {
                     native_release: None,
                     id: id.clone(), root_id: id, epoch: 0,
                     status: studio_runtime_store::AgentStatus::Idle,
+                    is_lead: Some(true),
                     extra: [
                         ("provider".into(), serde_json::to_value(studio_runtime_schema::ProviderKind::Codex).expect("provider")),
-                        ("isLead".into(), serde_json::Value::Bool(true)),
-                        ("threadId".into(), serde_json::Value::String("thread".into())),
-                        ("accountKey".into(), serde_json::Value::String("account".into())),
                     ].into(),
+                    ..studio_runtime_store::AgentRecord::test_defaults()
                 };
                 studio_runtime_store::AgentRepository::put(connection, &record)?;
             }

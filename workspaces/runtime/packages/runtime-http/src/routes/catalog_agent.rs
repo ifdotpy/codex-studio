@@ -419,19 +419,15 @@ async fn native_command_cancel(
             let agent = WorkspaceViewsRepository::agent(connection, agent_id)
                 .map_err(ApiError::stored)?
                 .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown managed agent"))?;
-            Ok::<_, ApiError>((task, agent.value()))
+            Ok::<_, ApiError>((task, agent))
         })
         .await?;
     let snapshot = studio_runtime_services::native_actions::CommandSnapshot::from_records(
         task.clone(),
-        agent.clone(),
+        agent.value(),
     )
     .map_err(native_command_error)?;
-    let account = agent
-        .get("accountKey")
-        .and_then(Value::as_str)
-        .unwrap_or("default")
-        .to_owned();
+    let account = agent.account_key.clone();
     let port = state
         .account_session
         .clone()
@@ -452,20 +448,10 @@ async fn native_command_cancel(
             .and_then(Value::as_str)
             .ok_or_else(invalid_stored_task)?
             .to_owned(),
-        agent: agent
-            .get("id")
-            .and_then(Value::as_str)
-            .ok_or_else(invalid_stored_agent)?
-            .to_owned(),
-        epoch: agent
-            .get("epoch")
-            .and_then(Value::as_u64)
-            .ok_or_else(invalid_stored_agent)?,
+        agent: agent.id.0.clone(),
+        epoch: u64::try_from(agent.epoch).map_err(|_| invalid_stored_agent())?,
         account: account.clone(),
-        thread: agent
-            .get("threadId")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
+        thread: agent.thread_id.clone(),
         connection: scope.connection.clone(),
         generation: scope.generation,
         request: request_id.clone(),
@@ -770,7 +756,10 @@ fn required_agent(params: &QueryParams) -> Result<&str, ApiError> {
         .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Select an agent"))
 }
 
-async fn read_agent(state: &HttpState, agent_id: &str) -> Result<studio_runtime_store::AgentRecord, ApiError> {
+async fn read_agent(
+    state: &HttpState,
+    agent_id: &str,
+) -> Result<studio_runtime_store::AgentRecord, ApiError> {
     let store = state.store.as_ref().ok_or_else(ApiError::internal)?;
     let agent_id = agent_id.to_owned();
     store

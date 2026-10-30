@@ -1395,7 +1395,7 @@ fn notify_parent_of_settled_turn(
     at: f64,
 ) -> studio_runtime_store::StoreResult<()> {
     let agent_id = agent.id.0.as_str();
-    if !agent.extra.get("parentId").is_some_and(Value::is_string) {
+    if !agent.parent_id.is_some() {
         return Ok(());
     }
     let stopped = matches!(
@@ -1449,7 +1449,7 @@ pub(crate) fn notify_parent_of_failed_turn(
         })
     };
     if agent.status != AgentStatus::Failed
-        || !agent.extra.get("parentId").is_some_and(Value::is_string)
+        || !agent.parent_id.is_some()
         || agent.extra.get("lastCompletedTurn") != Some(&json!(turn_id))
         || agent.auto_wake != Some(true)
         || !reports_turns(&agent)
@@ -1464,8 +1464,8 @@ pub(crate) fn notify_parent_of_failed_turn(
 /// A live child of the current turn epoch: not deleted, archived or moving.
 fn reports_turns(agent: &AgentRecord) -> bool {
     let flag = |key: &str| studio_runtime_store::truthy(agent.extra.get(key));
-    !flag("deletedAt")
-        && !flag("agentArchive")
+    !agent.is_deleted()
+        && agent.agent_archive.is_none()
         && !flag("executionMove")
         && agent.turn_epoch == Some(agent.epoch)
 }
@@ -1493,7 +1493,7 @@ fn enqueue_turn_result(
     turn_id: &str,
     at: f64,
 ) -> studio_runtime_store::StoreResult<()> {
-    let Some(parent_id) = agent.extra.get("parentId").and_then(Value::as_str) else {
+    let Some(parent_id) = agent.parent_id.as_deref() else {
         return Ok(());
     };
     let Some(parent) = AgentRepository::get(tx, &AgentId::from(parent_id))? else {
@@ -1511,11 +1511,12 @@ fn enqueue_turn_result(
                 .or(error.as_str())
                 .map_or_else(|| error.to_string(), str::to_owned)
         ),
-        None => agent
-            .extra
-            .get("lastAnswer")
-            .cloned()
-            .unwrap_or(json!("No final text returned")),
+        None => json!(
+            agent
+                .last_answer
+                .as_deref()
+                .unwrap_or("No final text returned")
+        ),
     };
     let assignments = crate::agent_progress::assignments(tx, &agent.id.0)?;
     let progress = crate::agent_progress::derive(tx, value, &assignments)?;
@@ -1574,7 +1575,7 @@ fn finalize_deleted(tx: &Transaction<'_>, id: &str) -> Result<(), ManagementErro
     let Some(mut agent) = AgentRepository::get(tx, &AgentId::from(id))? else {
         return Ok(());
     };
-    if !studio_runtime_store::truthy(agent.extra.get("deletedAt")) {
+    if !agent.is_deleted() {
         return Ok(());
     }
     if !needs_deleted_settlement(&agent) {
@@ -1583,8 +1584,8 @@ fn finalize_deleted(tx: &Transaction<'_>, id: &str) -> Result<(), ManagementErro
     agent.status = studio_runtime_store::AgentStatus::Paused;
     agent.in_flight = Some(false);
     agent.turn_id = None;
-    agent.extra.insert("activity".to_owned(), Value::Null);
-    agent.extra.insert("activeTools".to_owned(), json!([]));
+    agent.activity = None;
+    agent.active_tools = Some(Vec::new());
     if let Some(attempt) = agent.extra.get_mut("startAttempt")
         && studio_runtime_store::truthy(attempt.get("activeAtReservation"))
     {
@@ -1595,7 +1596,7 @@ fn finalize_deleted(tx: &Transaction<'_>, id: &str) -> Result<(), ManagementErro
 }
 
 fn needs_deleted_settlement(agent: &AgentRecord) -> bool {
-    studio_runtime_store::truthy(agent.extra.get("deletedAt"))
+    agent.is_deleted()
         && (agent.in_flight == Some(true)
             || agent
                 .turn_id

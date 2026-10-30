@@ -88,23 +88,6 @@ pub struct Puller {
     stop: watch::Receiver<bool>,
 }
 
-/// The result of one pass.
-#[derive(Debug, PartialEq)]
-pub enum Outcome {
-    /// The `autoUpdate` setting is off. No server is asked.
-    Disabled,
-    /// This process does not run from the installed app, so it has no build stamp.
-    NoBuild,
-    /// No newer build, or a pending update already holds a build that is as new.
-    Idle,
-    /// The build is staged in the state directory and named by the pending file.
-    Staged { build: Value, server: String },
-    /// The pull of the build failed; the reason is recorded in the status file.
-    Failed { build: Value, reason: String },
-    /// The backend stopped during the pull. The pull records nothing.
-    Stopped,
-}
-
 /// A step that ended a pull early.
 #[derive(Debug)]
 enum Step {
@@ -195,16 +178,16 @@ impl Puller {
     }
 
     /// One pass. An error means that the pass could not read or write its files.
-    pub async fn pull(&self) -> Result<Outcome, String> {
+    async fn pull(&self) -> Result<(), String> {
         self.pass().await.map_err(|step| step.reason())
     }
 
-    async fn pass(&self) -> Result<Outcome, Step> {
+    async fn pass(&self) -> Result<(), Step> {
         let Some(local) = peer_updates::read_build(&self.app) else {
-            return Ok(Outcome::NoBuild);
+            return Ok(());
         };
         if !self.enabled().await? {
-            return Ok(Outcome::Disabled);
+            return Ok(());
         }
         let now = (self.clock)();
         let root = self.root().to_path_buf();
@@ -230,7 +213,7 @@ impl Puller {
                 .is_none_or(|pending| built_at(&pending["build"]) < built_at(build))
         }) else {
             write_json(&root.join(STATUS_FILE), &status)?;
-            return Ok(Outcome::Idle);
+            return Ok(());
         };
         match self.fetch(&server, &build).await {
             Ok(app) => {
@@ -256,9 +239,9 @@ impl Puller {
                     "outcome": "staged", "reason": null,
                 });
                 write_json(&root.join(STATUS_FILE), &status)?;
-                Ok(Outcome::Staged { build, server })
+                Ok(())
             }
-            Err(Step::Stopped) => Ok(Outcome::Stopped),
+            Err(Step::Stopped) => Ok(()),
             Err(step) => {
                 let reason: String = step.reason().chars().take(REASON_CHARS).collect();
                 status["failures"][build_key(&build)] =
@@ -268,7 +251,7 @@ impl Puller {
                     "outcome": "failed", "reason": reason,
                 });
                 write_json(&root.join(STATUS_FILE), &status)?;
-                Ok(Outcome::Failed { build, reason })
+                Ok(())
             }
         }
     }
@@ -1099,13 +1082,7 @@ exit 0"#;
     #[tokio::test]
     async fn newer_offer_is_pulled_verified_and_staged() {
         let f = fixture().await;
-        assert_eq!(
-            f.puller.pull().await.unwrap(),
-            Outcome::Staged {
-                build: new_build(),
-                server: "server".to_owned()
-            }
-        );
+        f.puller.pull().await.unwrap();
         let pending = read_json(&f.state().join(PENDING_FILE)).unwrap();
         assert_eq!(pending["build"], new_build());
         assert_eq!(pending["from"], "server");
@@ -1128,7 +1105,7 @@ exit 0"#;
         assert_eq!(read_names(&f.state().join("updates")), ["1791980000.25"]);
         assert_eq!(status_of(&f)["lastPull"]["outcome"], "staged");
         // The next pass finds the staged build and pulls nothing again.
-        assert_eq!(f.puller.pull().await.unwrap(), Outcome::Idle);
+        f.puller.pull().await.unwrap();
         assert_eq!(f.link.count("update.export"), 1);
     }
 
@@ -1144,10 +1121,8 @@ exit 0"#;
                  printf Bud1 > \"$(dirname \"$4\")/1791980000.25/.DS_Store\"; ",
             ),
         );
-        assert!(matches!(
-            f.puller.pull().await.unwrap(),
-            Outcome::Staged { .. }
-        ));
+        f.puller.pull().await.unwrap();
+        assert!(read_pending(&f.state()).is_some());
         let pending = read_json(&f.state().join(PENDING_FILE)).unwrap();
         assert_eq!(
             pending["app"],
@@ -1164,14 +1139,10 @@ exit 0"#;
             "ditto-extra-entry",
             &extract_body("mkdir \"$4/__MACOSX\"; "),
         );
+        f.puller.pull().await.unwrap();
         assert_eq!(
-            f.puller.pull().await.unwrap(),
-            Outcome::Failed {
-                build: new_build(),
-                reason:
-                    "The update archive does not hold only the app: 'Codex Studio.app', '__MACOSX'"
-                        .to_owned(),
-            }
+            status_of(&f)["lastPull"]["reason"],
+            "The update archive does not hold only the app: 'Codex Studio.app', '__MACOSX'"
         );
         assert!(read_pending(&f.state()).is_none());
         assert!(read_names(&f.state().join("updates")).is_empty());
@@ -1182,7 +1153,7 @@ exit 0"#;
         let f = fixture().await;
         for build in [old_build(), stamp(1791899999.5, 'c')] {
             write_build(&f.peer_app, &build);
-            assert_eq!(f.puller.pull().await.unwrap(), Outcome::Idle);
+            f.puller.pull().await.unwrap();
         }
         assert_eq!(f.link.count("update.offer"), 2);
         assert_eq!(f.link.count("update.export"), 0);
@@ -1203,7 +1174,7 @@ exit 0"#;
             })
             .await
             .unwrap();
-        assert_eq!(f.puller.pull().await.unwrap(), Outcome::Disabled);
+        f.puller.pull().await.unwrap();
         assert!(f.link.actions.lock().unwrap().is_empty());
     }
 
@@ -1211,12 +1182,10 @@ exit 0"#;
     async fn bad_chunk_hash_is_recorded_and_skipped_for_an_hour() {
         let f = fixture().await;
         f.link.corrupt_chunks.store(1, Ordering::SeqCst);
+        f.puller.pull().await.unwrap();
         assert_eq!(
-            f.puller.pull().await.unwrap(),
-            Outcome::Failed {
-                build: new_build(),
-                reason: "Invalid update archive chunk".to_owned(),
-            }
+            status_of(&f)["lastPull"]["reason"],
+            "Invalid update archive chunk"
         );
         assert!(read_pending(&f.state()).is_none());
         assert!(read_names(&f.state().join("updates")).is_empty());
@@ -1230,13 +1199,11 @@ exit 0"#;
         assert_eq!(f.link.count("update.release"), 1);
         f.clock
             .fetch_add(FAILURE_RETRY_SECONDS - 1, Ordering::SeqCst);
-        assert_eq!(f.puller.pull().await.unwrap(), Outcome::Idle);
+        f.puller.pull().await.unwrap();
         assert_eq!(f.link.count("update.export"), 1);
         f.clock.fetch_add(2, Ordering::SeqCst);
-        assert!(matches!(
-            f.puller.pull().await.unwrap(),
-            Outcome::Staged { .. }
-        ));
+        f.puller.pull().await.unwrap();
+        assert!(read_pending(&f.state()).is_some());
         assert_eq!(f.link.count("update.export"), 2);
     }
 
@@ -1249,7 +1216,7 @@ exit 0"#;
                 .to_string(),
         )
         .unwrap();
-        assert_eq!(f.puller.pull().await.unwrap(), Outcome::Idle);
+        f.puller.pull().await.unwrap();
         assert_eq!(f.link.count("update.export"), 0);
     }
 
@@ -1257,12 +1224,10 @@ exit 0"#;
     async fn other_certificate_is_refused() {
         let f = fixture().await;
         std::fs::write(f.peer_app.join("Contents/CERTIFICATE"), "Another Signing").unwrap();
+        f.puller.pull().await.unwrap();
         assert_eq!(
-            f.puller.pull().await.unwrap(),
-            Outcome::Failed {
-                build: new_build(),
-                reason: "Another certificate signed the build".to_owned(),
-            }
+            status_of(&f)["lastPull"]["reason"],
+            "Another certificate signed the build"
         );
         assert!(read_pending(&f.state()).is_none());
         assert!(!f.state().join("updates").join("1791980000.25").exists());
@@ -1272,9 +1237,9 @@ exit 0"#;
     async fn broken_signature_is_refused() {
         // The archive gets a file that breaks the seal of the app.
         let f = fixture_with("touch \"$4/Contents/BAD_SIGNATURE\"; ").await;
-        let Outcome::Failed { reason, .. } = f.puller.pull().await.unwrap() else {
-            panic!("the pull fails");
-        };
+        f.puller.pull().await.unwrap();
+        let status = status_of(&f);
+        let reason = status["lastPull"]["reason"].as_str().unwrap();
         assert!(reason.starts_with("The signature check failed"), "{reason}");
         assert!(read_pending(&f.state()).is_none());
     }
@@ -1283,7 +1248,7 @@ exit 0"#;
     async fn older_peer_without_update_actions_offers_nothing() {
         let f = fixture().await;
         *f.link.offer_refusal.lock().unwrap() = Some("Unknown cross-server operation");
-        assert_eq!(f.puller.pull().await.unwrap(), Outcome::Idle);
+        f.puller.pull().await.unwrap();
         assert_eq!(f.link.count("update.offer"), 1);
         assert_eq!(f.link.count("update.export"), 0);
         assert!(read_pending(&f.state()).is_none());
@@ -1294,7 +1259,7 @@ exit 0"#;
     async fn older_peer_that_asks_for_a_link_offers_nothing() {
         let f = fixture().await;
         *f.link.offer_refusal.lock().unwrap() = Some("Supply a remote-parent link");
-        assert_eq!(f.puller.pull().await.unwrap(), Outcome::Idle);
+        f.puller.pull().await.unwrap();
         assert!(read_pending(&f.state()).is_none());
     }
 
@@ -1311,7 +1276,7 @@ exit 0"#;
             .to_string(),
         )
         .unwrap();
-        assert_eq!(f.puller.pull().await.unwrap(), Outcome::Idle);
+        f.puller.pull().await.unwrap();
         assert!(!f.state().join(PENDING_FILE).exists());
         assert!(!folder.exists());
     }
@@ -1333,7 +1298,7 @@ exit 0"#;
     async fn stopped_pull_records_no_failure() {
         let f = fixture().await;
         f._stop.send_replace(true);
-        assert_eq!(f.puller.pull().await.unwrap(), Outcome::Stopped);
+        f.puller.pull().await.unwrap();
         assert!(read_pending(&f.state()).is_none());
         assert!(read_names(&f.state().join("updates")).is_empty());
     }

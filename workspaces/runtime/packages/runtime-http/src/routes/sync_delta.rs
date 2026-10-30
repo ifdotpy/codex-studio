@@ -2,17 +2,17 @@
 
 use std::sync::Arc;
 
-use serde_json::Value;
 use studio_runtime_store::{RuntimeStore, StoreError, Transaction};
 
 use crate::error::ApiError;
 
-pub(crate) async fn write<E>(
+pub(crate) async fn write<T, E>(
     store: Arc<RuntimeStore>,
-    operation: impl FnOnce(&Transaction<'_>) -> Result<Value, E> + Send + 'static,
+    operation: impl FnOnce(&Transaction<'_>) -> Result<T, E> + Send + 'static,
     map_error: impl FnOnce(E) -> ApiError + Send + 'static,
-) -> Result<Value, ApiError>
+) -> Result<T, ApiError>
 where
+    T: Send + 'static,
     E: From<StoreError> + Send + 'static,
 {
     store

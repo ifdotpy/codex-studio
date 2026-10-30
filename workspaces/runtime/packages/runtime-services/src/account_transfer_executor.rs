@@ -1313,7 +1313,7 @@ impl TransferExecutor for AccountTransferExecutor {
                 .ok_or(TransferError::Requires("provider-session/account-worker"))?;
             let attempt_id = format!("account-transfer:{transfer_id}:{agent_id}");
             let generation = scope.generation;
-            let prepared =
+            let prepared = Box::pin(
                 crate::account_worker::preparation::prepare_account_transfer_native_thread(
                     Arc::clone(&self.store),
                     &self.preparation,
@@ -1321,9 +1321,10 @@ impl TransferExecutor for AccountTransferExecutor {
                     transfer_id,
                     &attempt_id,
                     generation,
-                )
-                .await
-                .map_err(|_| TransferError::Refused("Destination thread preparation failed"))?;
+                ),
+            )
+            .await
+            .map_err(|_| TransferError::Refused("Destination thread preparation failed"))?;
             let mut params = prepared.params;
             params["model"] = settings["model"].clone();
             if let Some(config) = params.get_mut("config").and_then(Value::as_object_mut) {
