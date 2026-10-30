@@ -1314,14 +1314,14 @@ impl TransferExecutor for AccountTransferExecutor {
             let attempt_id = format!("account-transfer:{transfer_id}:{agent_id}");
             let generation = scope.generation;
             let prepared =
-                crate::account_worker::preparation::prepare_account_transfer_native_thread(
+                Box::pin(crate::account_worker::preparation::prepare_account_transfer_native_thread(
                     Arc::clone(&self.store),
                     &self.preparation,
                     agent_id,
                     transfer_id,
                     &attempt_id,
                     generation,
-                )
+                ))
                 .await
                 .map_err(|_| TransferError::Refused("Destination thread preparation failed"))?;
             let mut params = prepared.params;
