@@ -1,9 +1,9 @@
 //! Persistence primitives shared by the remote federation and multi-server
 //! transports. This module only uses tables already owned by the Python schema.
 
+use super::super::remote_outbox::{RemoteEffect, RemoteOutbox};
 use super::multi_server_delivery::{admit_remote, remote_result_key, replay_remote, settle_remote};
 use super::outbox::OutboxError;
-use super::remote_outbox::{RemoteEffect, RemoteOutbox};
 use crate::request_results::{Admission, AdmittedRequest};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
@@ -705,8 +705,8 @@ mod tests {
         let db = nonce_db();
         db.execute(
             "INSERT INTO runtime_outbox(id,kind,owner_kind,owner_id,request_id,signature,status,payload,created,target) VALUES(?1,'remote_delivery','server','server-a','00000000-03e8-7000-8000-000000000001','fingerprint-a','submitted','{\"effect\":\"access_request\",\"record\":{}}',1,'server-a')",
-            [super::remote_outbox::RemoteOutbox::id(
-                super::remote_outbox::RemoteEffect::AccessRequest,
+            [super::super::remote_outbox::RemoteOutbox::id(
+                super::super::remote_outbox::RemoteEffect::AccessRequest,
                 "server-a",
                 "00000000-03e8-7000-8000-000000000001",
             )],
