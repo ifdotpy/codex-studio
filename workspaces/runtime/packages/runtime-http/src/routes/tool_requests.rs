@@ -12,7 +12,10 @@ pub(crate) fn routes() -> RouteGroup {
         read,
     )])
 }
-async fn read(State(state): State<HttpState>, query: QueryParams) -> Result<Json<Value>, ApiError> {
+async fn read(
+    State(state): State<HttpState>,
+    query: QueryParams,
+) -> Result<Json<crate::generated::ToolRequestsApiToolRequestsGetResponse>, ApiError> {
     let actor = query
         .typed_value("agent")
         .and_then(Value::as_str)
@@ -23,9 +26,6 @@ async fn read(State(state): State<HttpState>, query: QueryParams) -> Result<Json
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
         .map(str::to_owned);
-    run(state, actor, id).await
-}
-async fn run(state: HttpState, actor: String, id: Option<String>) -> Result<Json<Value>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
     let state_root = store.root().to_owned();
     let payload_root = state_root.clone();
@@ -65,8 +65,7 @@ async fn run(state: HttpState, actor: String, id: Option<String>) -> Result<Json
                     &canonical,
                 ))
             })?;
-    let value = serde_json::to_value(response).map_err(|_| ApiError::internal())?;
-    Ok(Json(value))
+    Ok(Json(response))
 }
 
 fn resolve_payload_response(state_root: &std::path::Path, value: Value) -> Result<Value, ApiError> {
@@ -121,6 +120,51 @@ inventory::submit! {
 mod tests {
     use super::resolve_payload_response;
     use serde_json::json;
+
+    #[tokio::test]
+    async fn tool_request_list_is_returned_as_json() {
+        use axum::{
+            body::{Body, to_bytes},
+            http::{Request, StatusCode},
+        };
+        use std::sync::Arc;
+        use tower::ServiceExt;
+        let root = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            studio_runtime_store::RuntimeStore::open(Some(root.path()))
+                .await
+                .unwrap(),
+        );
+        let agent = studio_runtime_store::AgentRecord::from_value(json!({"id":"agent","rootId":"agent","epoch":1,"status":"idle","accountKey":"default","provider":"codex"})).unwrap();
+        store
+            .transaction(move |tx| studio_runtime_store::AgentRepository::put(tx, &agent))
+            .await
+            .unwrap();
+        let app = crate::router::router(crate::router::HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            "isolated".into(),
+            49171,
+            None,
+            Some(store),
+            None,
+        ))
+        .unwrap();
+        let request = Request::builder()
+            .uri("/api/tool-requests?agent=agent")
+            .header("host", "127.0.0.1:49171")
+            .header("x-canvas-token", "token")
+            .extension(axum::extract::ConnectInfo(
+                "127.0.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
+            ))
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 65536).await.unwrap()).unwrap();
+        assert_eq!(body, json!({"requests":[]}));
+    }
 
     #[test]
     fn tool_request_response_resolves_nested_blob_payloads() {

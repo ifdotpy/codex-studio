@@ -7,7 +7,7 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use base64::Engine;
-use serde_json::{Value, json};
+use serde_json::Value;
 use studio_runtime_schema::shared_values::USER_ATTACHMENT_LIMIT_LABEL;
 use studio_runtime_services::payload_store::{self, PayloadStoreError};
 use studio_runtime_services::workspace_files::{self, WorkspaceContext, WorkspaceFilesError};
@@ -65,13 +65,12 @@ pub(crate) async fn file_info(
     )
     .await
     .map_err(|_| ApiError::internal())??;
-    super::generated_json::<crate::generated::FileInfo>(json!({
-        "path": result.path,
-        "name": result.name,
-        "mime": result.mime,
-        "size": result.size,
+    Ok(Json(crate::generated::FileInfo {
+        path: result.path,
+        name: result.name,
+        mime: result.mime,
+        size: result.size,
     }))
-    .map(Json)
 }
 
 pub(crate) async fn file_content(
@@ -91,12 +90,11 @@ pub(crate) async fn file_content(
     )
     .await
     .map_err(|_| ApiError::internal())??;
-    super::generated_json::<crate::generated::FileContent>(json!({
-        "name": result.name,
-        "mime": result.mime,
-        "base64": base64_encode(&result.bytes),
+    Ok(Json(crate::generated::FileContent {
+        name: result.name,
+        mime: result.mime,
+        base64: base64_encode(&result.bytes),
     }))
-    .map(Json)
 }
 
 /// A file to read once the store lookups are done.
@@ -298,6 +296,52 @@ mod tests {
     use serde_json::{Value, json};
     use studio_runtime_store::{AgentRecord, AgentRepository, RuntimeStore};
     use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn file_preview_returns_info_and_content() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        tokio::fs::write(workspace.path().join("sample.txt"), "hello")
+            .await
+            .unwrap();
+        let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
+        let agent = AgentRecord::from_value(json!({"id":"worker","rootId":"worker","epoch":1,"status":"idle","accountKey":"default","provider":"codex","cwd":workspace.path()})).unwrap();
+        store
+            .transaction(move |tx| AgentRepository::put(tx, &agent))
+            .await
+            .unwrap();
+        let app = crate::router::router(crate::router::HttpState::new(
+            "token".into(),
+            "fixture".into(),
+            "isolated".into(),
+            49171,
+            None,
+            Some(store),
+            None,
+        ))
+        .unwrap();
+        for (route, field, expected) in [
+            ("file-info", "size", json!(5)),
+            ("file", "base64", json!("aGVsbG8=")),
+        ] {
+            let request = Request::builder()
+                .uri(format!("/api/{route}?agent=worker&path=sample.txt"))
+                .header("host", "127.0.0.1:49171")
+                .header("x-canvas-token", "token")
+                .extension(axum::extract::ConnectInfo(
+                    "127.0.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
+                ))
+                .body(Body::empty())
+                .unwrap();
+            let response = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body: Value =
+                serde_json::from_slice(&to_bytes(response.into_body(), 65536).await.unwrap())
+                    .unwrap();
+            assert_eq!(body["name"], "sample.txt");
+            assert_eq!(body[field], expected);
+        }
+    }
 
     #[tokio::test]
     async fn asset_upload_uses_nullable_fields_and_base64_precedence() {

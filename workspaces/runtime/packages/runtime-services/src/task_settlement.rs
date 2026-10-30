@@ -204,7 +204,7 @@ pub async fn recover_on_startup(store: &RuntimeStore, at: f64) -> StoreResult<us
 pub struct CommandCheck {
     pub agent: Value,
     pub thread: String,
-    pub tasks: Vec<Value>,
+    pub tasks: Vec<TaskRecord>,
 }
 
 /// One check per agent of `account` with a running background command of a
@@ -236,7 +236,7 @@ pub fn absent_command_checks(
         let mut tasks = Vec::new();
         for task in running_tasks(connection, &agent_id)? {
             if checkable_command(connection, &agent, account, &thread, &task)? {
-                tasks.push(task.into_value());
+                tasks.push(task);
             }
         }
         if !tasks.is_empty() {
@@ -335,23 +335,22 @@ pub fn close_absent_commands(
     }
     let mut closed = 0;
     for expected in &check.tasks {
-        let id = expected["id"].as_str().unwrap_or_default();
-        let Some(current) = TaskRepository::get(tx, &TaskId::from(id))? else {
+        let id = expected.id().as_ref();
+        let Some(mut current) = TaskRepository::get(tx, &TaskId::from(id))? else {
             continue;
         };
-        if &current.value() != expected
+        if &current != expected
             || !checkable_command(tx, &agent, account, &check.thread, &current)?
             || listed(report, &current.value())
         {
             continue;
         }
-        let mut lost = current;
-        lost.set_status(LOST_TASK_STATUS);
-        lost.set_finished(json!(at));
-        lost.set_error(json!(LOST_COMMAND));
-        lost.remove_recovery_hold();
-        let turn = lost.turn_id().map(str::to_owned);
-        write_task(tx, &lost)?;
+        current.set_status(LOST_TASK_STATUS);
+        current.set_finished(json!(at));
+        current.set_error(json!(LOST_COMMAND));
+        current.remove_recovery_hold();
+        let turn = current.turn_id().map(str::to_owned);
+        write_task(tx, &current)?;
         tx.execute(
             "UPDATE runtime_items SET record=json_set(record,'$.toolStatus','lost') \
              WHERE id=?1 AND agent=?2 AND json_extract(record,'$.turnId')=?3",
@@ -602,7 +601,7 @@ mod tests {
         let ids = found[0]
             .tasks
             .iter()
-            .map(|task| task["id"].clone())
+            .map(|task| json!(task.id()))
             .collect::<Vec<_>>();
         assert_eq!(ids, vec![json!("done:gone"), json!("done:kept")]);
         let check = found[0].clone();

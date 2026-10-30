@@ -54,7 +54,7 @@ pub(crate) async fn notify_resources(
     body: Value,
 ) -> Result<Json<crate::generated::ResourceNotifyAck>, ApiError> {
     let notifications = state.resource_notifications;
-    let request_id = body["requestId"].clone();
+    let request_id = body["requestId"].as_str().map(str::to_owned);
     studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/routes/sync_stream",
         move || notifications.publish_once(&body),
@@ -68,11 +68,10 @@ pub(crate) async fn notify_resources(
             ApiError::new(StatusCode::SERVICE_UNAVAILABLE, error.to_string())
         }
     })?;
-    Ok(Json(super::generated_json::<
-        crate::generated::ResourceNotifyAck,
-    >(
-        json!({"requestId": request_id, "accepted": true})
-    )?))
+    Ok(Json(crate::generated::ResourceNotifyAck {
+        request_id: request_id.ok_or_else(ApiError::internal)?,
+        accepted: true,
+    }))
 }
 
 /// Sessions share the same authenticated HTTP boundary as their streams. The
@@ -2100,6 +2099,34 @@ mod tests {
     }
     use super::*;
     use studio_runtime_services::change_notifications::ChangeNotificationHub;
+
+    #[tokio::test]
+    async fn notify_returns_typed_ack_and_keeps_request_replay() {
+        let root = tempfile::tempdir().unwrap();
+        let state = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            None,
+            None,
+        );
+        let body = json!({"requestId":"request", "resources":[{"kind":"models"}]});
+        for _ in 0..2 {
+            let Json(ack) = notify_resources(state.clone(), body.clone()).await.unwrap();
+            assert_eq!(ack.request_id, "request");
+            assert!(ack.accepted);
+        }
+        assert!(
+            notify_resources(
+                state,
+                json!({"requestId":"request", "resources":[{"kind":"accounts"}]})
+            )
+            .await
+            .is_err()
+        );
+    }
 
     #[tokio::test(start_paused = true)]
     async fn state_stream_terminal_live_cursors_keep_independent_frame_budgets() {

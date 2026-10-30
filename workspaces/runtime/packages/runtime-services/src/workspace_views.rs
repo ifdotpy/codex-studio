@@ -552,7 +552,7 @@ pub fn workspace_inbox(
         .filter(|item| item.status() == studio_runtime_store::WorkStatus::Review)
     {
         inbox.push(WorkspaceInboxItem::Other(json!({
-            "id":item.id(),"kind":"work","agent":item.value()["rootId"],"title":item.title(),
+            "id":item.id(),"kind":"work","agent":item.root_id(),"title":item.title(),
             "text":"Result awaits acceptance","work":crate::work_policy::work_item_view(item, statuses),
         })));
     }
@@ -629,6 +629,37 @@ mod tests {
     };
     use serde_json::json;
     use std::time::Duration;
+
+    #[test]
+    fn review_inbox_keeps_typed_work_root_and_missing_root() {
+        let work = [
+            studio_runtime_store::WorkItemRecord::checked(
+                &json!({"id":"one","status":"review","rootId":"lead"}),
+            )
+            .unwrap(),
+            studio_runtime_store::WorkItemRecord::checked(&json!({"id":"two","status":"review"}))
+                .unwrap(),
+        ];
+        let inbox = super::workspace_inbox(super::WorkspaceInboxData {
+            agents: &[],
+            all_agents: &[],
+            requests: &[],
+            complaints: &[],
+            work: &work,
+            statuses: &Default::default(),
+            monitors: &[],
+            rules: &[],
+        })
+        .unwrap();
+        let agents: Vec<_> = inbox
+            .iter()
+            .map(|item| match item {
+                super::WorkspaceInboxItem::Other(value) => value["agent"].clone(),
+                super::WorkspaceInboxItem::Monitor { .. } => unreachable!("work items only"),
+            })
+            .collect();
+        assert_eq!(agents, [json!("lead"), json!(null)]);
+    }
 
     #[test]
     fn typed_cursor_rejects_wrong_fields_unknown_fields_and_unsafe_integers() {

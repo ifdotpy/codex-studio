@@ -209,10 +209,7 @@ async fn run_accepted_archive(
     }
     let intent_id = &intent.intent_id;
     let owner_id = work.owner().unwrap_or_default().to_owned();
-    let root_id = work.value()["rootId"]
-        .as_str()
-        .unwrap_or_default()
-        .to_owned();
+    let root_id = work.root_id().unwrap_or_default().to_owned();
     if intent_id.is_empty() || owner_id.is_empty() || root_id.is_empty() {
         return Ok(ArchiveRun::Skipped);
     }
@@ -226,7 +223,7 @@ async fn run_accepted_archive(
                     .ok_or(Error::InvalidRequest("Unknown work item"))?;
                 if current.status() != studio_runtime_store::WorkStatus::Accepted
                     || current.owner() != Some(owner_for_claim.as_str())
-                    || current.value()["rootId"] != root_for_claim
+                    || current.root_id() != Some(root_for_claim.as_str())
                 {
                     return Ok(None);
                 }
@@ -412,7 +409,7 @@ async fn run_accepted_archive(
             };
             if current.status() != studio_runtime_store::WorkStatus::Accepted
                 || current.owner() != Some(owner_for_settlement.as_str())
-                || current.value()["rootId"] != root_for_settlement
+                || current.root_id() != Some(root_for_settlement.as_str())
             {
                 return Ok(ArchiveRun::Skipped);
             }
@@ -3164,7 +3161,7 @@ fn submit(
             &lead,
             format!("work-result:{result_id}"),
             "work_review",
-            json!({"task":input.task_id,"title":work.value()["title"],"result":result}).to_string(),
+            json!({"task":input.task_id,"title":work.title(),"result":result}).to_string(),
             now,
         )?;
     }
@@ -3571,8 +3568,7 @@ pub fn work_item_view(
 }
 
 fn single_view(tx: &Transaction<'_>, work: &WorkItemRecord) -> Result<Value, Error> {
-    let statuses = dependency_statuses(tx, work)?;
-    Ok(crate::work_policy::work_item_view(work, &statuses))
+    Ok(work_item_view(tx, work)?)
 }
 
 fn validate_dependencies(

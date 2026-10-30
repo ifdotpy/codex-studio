@@ -294,12 +294,11 @@ fn answered_questions(
                 .and_then(Value::as_str)
                 .ok_or_else(stored)?;
             // Historical missing, null and non-array leaves mean no selected answers.
-            let values = answers
+            let answers = answers
                 .get(id)
                 .and_then(|answer| answer.get("answers"))
-                .and_then(Value::as_array);
-            let answers = values
-                .map(|values| serde_json::from_value::<Vec<String>>(json!(values)))
+                .filter(|values| values.is_array())
+                .map(<Vec<String> as serde::Deserialize>::deserialize)
                 .transpose()
                 .map_err(|_| QuestionsWriteError::InvalidRequest("Supply question answers"))?
                 .unwrap_or_default();

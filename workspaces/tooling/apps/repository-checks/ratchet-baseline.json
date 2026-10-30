@@ -333,10 +333,6 @@
       "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:0"
     },
     {
-      "file": "workspaces/runtime/packages/runtime-services/src/notification_dispatch/questions.rs",
-      "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:0"
-    },
-    {
       "file": "workspaces/runtime/packages/runtime-services/src/payload_blobs.rs",
       "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:0"
     },
@@ -373,20 +369,12 @@
       "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:0"
     },
     {
-      "file": "workspaces/runtime/packages/runtime-services/src/provider_callbacks/tools.rs",
-      "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:0"
-    },
-    {
       "file": "workspaces/runtime/packages/runtime-services/src/provider_callbacks/tools/runtime_dispatch.rs",
       "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:0"
     },
     {
       "file": "workspaces/runtime/packages/runtime-services/src/provider_callbacks/tools/runtime_dispatch.rs",
       "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:1"
-    },
-    {
-      "file": "workspaces/runtime/packages/runtime-services/src/questions_write.rs",
-      "fingerprint": "eef1a49005de15dc8b62b240413d697ea6cf01f9333938bfd5f4ca039432fc70:0"
     },
     {
       "file": "workspaces/runtime/packages/runtime-services/src/recovery_history.rs",
@@ -425,16 +413,8 @@
       "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:2"
     },
     {
-      "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
-      "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:3"
-    },
-    {
       "file": "workspaces/runtime/packages/runtime-services/src/sync_views.rs",
       "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:0"
-    },
-    {
-      "file": "workspaces/runtime/packages/runtime-services/src/terminal_pty.rs",
-      "fingerprint": "68c8a0a19b1f3e3b80812c596b0aa5fbcf30eba017df726b15d7117b330acadf:0"
     },
     {
       "file": "workspaces/runtime/packages/runtime-services/src/token_rate.rs",
@@ -2699,10 +2679,6 @@
     {
       "file": "workspaces/runtime/packages/runtime-services/src/managed_host_tools.rs",
       "fingerprint": "cf14cfb5a945a36d1af7301ab53d9f7764e3ea1d1fcf05e687640a1d674630e8:0"
-    },
-    {
-      "file": "workspaces/runtime/packages/runtime-services/src/provider_callbacks/tools.rs",
-      "fingerprint": "3452d37068408bf7a09bbc8d0fe2f62a5aeef63d66447d8d4028334cdffb6c58:0"
     },
     {
       "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",

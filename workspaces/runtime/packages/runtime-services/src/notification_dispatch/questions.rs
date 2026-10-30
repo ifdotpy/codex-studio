@@ -23,9 +23,7 @@ struct Question {
     is_secret: bool,
 }
 fn fields(value: &Value) -> Result<Vec<Value>, NotificationDispatchError> {
-    let questions: Vec<Question> =
-        serde_json::from_value(value.clone()).map_err(|_| NotificationDispatchError::invalid())?;
-    questions.into_iter().enumerate().map(|(index,q)| {
+    Vec::<Question>::deserialize(value).map_err(|_| NotificationDispatchError::invalid())?.into_iter().enumerate().map(|(index,q)| {
         let options=q.options.unwrap_or_default().into_iter().map(|option|match option {
             Value::String(label)=>Ok(json!({"label":label})),
             Value::Object(ref object) if object.get("label").is_some_and(Value::is_string)=>Ok(option),
