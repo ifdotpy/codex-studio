@@ -167,14 +167,7 @@ fn transfers() -> &'static Mutex<Transfers> {
     POOL.get_or_init(Mutex::default)
 }
 pub(crate) fn uuid() -> Result<String, String> {
-    crate::platform::dispatch(&crate::protocol::Request {
-        id: "file-save-id".into(),
-        method: "system.uuid".into(),
-        params: Value::Null,
-    })
-    .result
-    .and_then(|v| v.as_str().map(str::to_owned))
-    .ok_or("Cannot create a save identity.".into())
+    crate::platform::uuid().map_err(|_| "Cannot create a save identity.".into())
 }
 fn name(value: Option<&str>) -> Result<String, String> {
     let raw = value

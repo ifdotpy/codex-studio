@@ -104,14 +104,7 @@ impl Store {
         let id = request.id.clone();
         match request.method.as_str() {
             "markdown.parse" => Ok(crate::markdown::dispatch(request)),
-            method
-                if method == "system.uuid"
-                    || method == "text.sentences"
-                    || method == "locale.language_name"
-                    || method.starts_with("url.") =>
-            {
-                Ok(crate::platform::dispatch(request))
-            }
+            "system.uuid" => Ok(crate::platform::dispatch(request)),
             method if method.starts_with("drafts.") => {
                 Ok(crate::draft_store::dispatch(&mut self.connection, request))
             }

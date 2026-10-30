@@ -360,10 +360,7 @@ fn claim_audio_from(
 }
 
 fn pure(method: &str) -> bool {
-    matches!(
-        method,
-        "markdown.parse" | "system.uuid" | "text.sentences" | "locale.language_name"
-    ) || method.starts_with("url.")
+    matches!(method, "markdown.parse" | "system.uuid")
 }
 fn compute(request: &Request) -> Response {
     if request.id.is_empty() || request.id.len() > 128 {
