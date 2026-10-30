@@ -121,13 +121,11 @@ async fn answer(
             super::generated_json::<crate::generated::AnswerResult>(answer.response)?,
         ));
     }
-    let validators = state.validators.clone();
     if let Some(answer) = questions_write::answer_async_question_in_store(
         async_store,
         &id,
         &data,
         callback_clock().map_err(|_| ApiError::internal())?,
-        move |record| validators.validate_table_record("runtime_requests", record),
     )
     .await
     .map_err(async_question_error)?
@@ -222,6 +220,7 @@ fn async_question_error(error: QuestionsWriteError) -> ApiError {
         }
         E::InvalidStoredObject { object, id } => ApiError::invalid_stored(object, &id),
         E::Store(error) => ApiError::stored(error),
+        E::Approval(error) => ApiError::stored(error.into()),
         E::Json(_) | E::Clock => ApiError::internal(),
         E::Coordination(error) => match error {
             studio_runtime_services::coordination::CoordinationError::RequestResult(error) => {
@@ -347,11 +346,8 @@ async fn defer_question(
     let id = body.id;
     let deferred = body.deferred;
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let validators = state.validators.clone();
     let result = write(store, move |transaction| {
-        questions_write::defer_question(transaction, &id, deferred, |record| {
-            validators.validate_table_record("runtime_requests", record)
-        })
+        questions_write::defer_question(transaction, &id, deferred)
     })
     .await?;
     Ok(Json(super::generated_json::<
@@ -371,11 +367,8 @@ async fn delete_question(
             .map_err(callback_error)?
     } else {
         let store = state.store.clone().ok_or_else(ApiError::internal)?;
-        let validators = state.validators.clone();
         write(store, move |transaction| {
-            questions_write::delete_question(transaction, &id, |record| {
-                validators.validate_table_record("runtime_requests", record)
-            })
+            questions_write::delete_question(transaction, &id)
         })
         .await?
     };
@@ -521,6 +514,7 @@ fn api_error(error: QuestionsWriteError) -> ApiError {
             ApiError::invalid_stored(object, &id)
         }
         QuestionsWriteError::Store(error) => ApiError::stored(error),
+        QuestionsWriteError::Approval(error) => ApiError::stored(error.into()),
         QuestionsWriteError::Event(error) => super::work_items::write_error(error),
         QuestionsWriteError::Json(_) | QuestionsWriteError::Clock => ApiError::internal(),
         QuestionsWriteError::Coordination(_) | QuestionsWriteError::Projects(_) => {
