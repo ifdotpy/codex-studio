@@ -40,6 +40,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function isQueueCancellation(value: unknown): value is QueueMutation {
   return (
     isRecord(value) &&
+    !("message_id" in value) &&
     value.action === "cancel" &&
     typeof value.agent === "string" &&
     typeof value.id === "string" &&

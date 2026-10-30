@@ -1,6 +1,6 @@
 //! Shared process panel with exact-owner checks and retained stop receipts.
 use super::{
-    extractors::{ApiRawJson, QueryParams},
+    extractors::{ApiJson, QueryParams},
     manifest::{OperationStatus, RouteGroup, get, post},
 };
 use crate::{error::ApiError, router::HttpState};
@@ -175,7 +175,7 @@ async fn receipt(
 async fn action(
     State(state): State<HttpState>,
     runtime: Option<Extension<Arc<MonitorRuntime>>>,
-    ApiRawJson(request): ApiRawJson<Request>,
+    ApiJson(request): ApiJson<Request>,
 ) -> Result<Json<ProcessActionResult>, ApiError> {
     execute(state, runtime.map(|Extension(r)| r), request)
         .await

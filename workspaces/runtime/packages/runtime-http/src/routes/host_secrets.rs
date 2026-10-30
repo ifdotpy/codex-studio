@@ -1,6 +1,6 @@
 //! HTTP adaptation for project secrets and the platform-bound vault actions.
 
-use super::extractors::ApiRawJson;
+use super::extractors::ApiJson;
 use super::manifest::{OperationStatus, RouteGroup, post};
 use crate::error::ApiError;
 use crate::router::HttpState;
@@ -321,7 +321,7 @@ async fn guest_call(
 
 async fn list_secrets(
     State(state): State<HttpState>,
-    ApiRawJson(body): ApiRawJson<crate::generated::ProjectSecretsListRequest>,
+    ApiJson(body): ApiJson<crate::generated::ProjectSecretsListRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let project_id = body.project_id;
     guest_call(&state, false, move |rpc| {
@@ -332,7 +332,7 @@ async fn list_secrets(
 
 async fn set_secret(
     State(state): State<HttpState>,
-    ApiRawJson(body): ApiRawJson<crate::generated::ProjectSecretSetRequest>,
+    ApiJson(body): ApiJson<crate::generated::ProjectSecretSetRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let project_id = body.project_id;
     let name = body.name;
@@ -346,7 +346,7 @@ async fn set_secret(
 
 async fn remove_secret(
     State(state): State<HttpState>,
-    ApiRawJson(body): ApiRawJson<crate::generated::ProjectSecretRemoveRequest>,
+    ApiJson(body): ApiJson<crate::generated::ProjectSecretRemoveRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let project_id = body.project_id;
     let name = body.name;
@@ -359,7 +359,7 @@ async fn remove_secret(
 
 async fn aws_login(
     State(state): State<HttpState>,
-    ApiRawJson(body): ApiRawJson<crate::generated::VaultLoginRequest>,
+    ApiJson(body): ApiJson<crate::generated::VaultLoginRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let profile = body.profile;
     let request_id = body.request_id;
@@ -388,7 +388,7 @@ async fn aws_login(
 
 async fn pull(
     State(state): State<HttpState>,
-    ApiRawJson(body): ApiRawJson<crate::generated::VaultPullRequest>,
+    ApiJson(body): ApiJson<crate::generated::VaultPullRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let project_id = body.project_id;
     let request_id = body.request_id;
@@ -453,7 +453,7 @@ async fn pull(
 
 async fn setup(
     State(state): State<HttpState>,
-    ApiRawJson(body): ApiRawJson<crate::generated::VaultSetupRequest>,
+    ApiJson(body): ApiJson<crate::generated::VaultSetupRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let project_id = body.project_id;
     let request_id = body.request_id;
@@ -503,7 +503,7 @@ async fn setup(
 
 async fn setup_facts(
     State(state): State<HttpState>,
-    ApiRawJson(body): ApiRawJson<crate::generated::VaultSetupFactsRequest>,
+    ApiJson(body): ApiJson<crate::generated::VaultSetupFactsRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let project_id = &body.project_id;
     let requested_prefix = body.prefix.as_ref().and_then(Option::as_deref);
@@ -997,7 +997,7 @@ fn desk_reason(stderr: &str, stdout: &str) -> String {
 
 async fn unlock(
     State(state): State<HttpState>,
-    ApiRawJson(body): ApiRawJson<crate::generated::VaultUnlockRequest>,
+    ApiJson(body): ApiJson<crate::generated::VaultUnlockRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let project_id = body.project_id;
     let words = body.words;
@@ -2244,7 +2244,7 @@ else exit 94; fi"#;
         );
         let replay = super::pull(
             axum::extract::State(without_command),
-            super::ApiRawJson(crate::generated::VaultPullRequest::new(
+            super::ApiJson(crate::generated::VaultPullRequest::new(
                 "p1".into(),
                 "pull-fixture".into(),
             )),

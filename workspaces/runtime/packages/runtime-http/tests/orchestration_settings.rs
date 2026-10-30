@@ -88,6 +88,10 @@ async fn settings_default_persist_and_refuse_out_of_range_values() {
         settings(json!(0), json!(IDLE_SESSION_UNLOAD_SETTING.max + 1)),
         settings(json!(0), json!(-1)),
         json!({ HOLD: 0 }),
+        json!({ HOLD: 0, UNLOAD: 0, "unexpected": true }),
+        json!({ HOLD: 0, UNLOAD: 0, "idleCompaction": null }),
+        json!({ HOLD: 0, UNLOAD: 0, "shellPolicy": null }),
+        json!({ HOLD: 0.5, UNLOAD: 0 }),
     ] {
         let (status, response) = call(&app, "POST", Some(body.clone())).await;
         assert!((400..500).contains(&status), "{body}: {status} {response}");

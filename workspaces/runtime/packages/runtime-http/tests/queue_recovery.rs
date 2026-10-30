@@ -199,7 +199,7 @@ async fn call(app: &axum::Router, body: Option<Value>) -> (u16, Value) {
 async fn promotion(app: &axum::Router) -> Value {
     let (status, queue) = call(app, None).await;
     assert_eq!(status, 200, "{queue}");
-    json!({"agent":ACTOR,"action":"send_now","message_id":USER,"request_id":studio_runtime_schema::persistence::RequestIdentity::issue_root(),"expected_revision":queue["revision"]})
+    json!({"agent":ACTOR,"action":"send_now","id":USER,"request_id":studio_runtime_schema::persistence::RequestIdentity::issue_root(),"expected_revision":queue["revision"]})
 }
 fn snapshot(store: &RuntimeStore) -> Vec<Vec<String>> {
     let db = store.test_reader().unwrap();
@@ -256,7 +256,7 @@ async fn send_now_recovers_proven_unsent_failed_batch_and_replays_lost_http_succ
     assert_eq!(replay, receipt, "the durable receipt replays unchanged");
     assert_eq!(snapshot(&store), state);
     let mut conflicting = body;
-    conflicting["message_id"] = json!("original-0");
+    conflicting["id"] = json!("original-0");
     let (status, result) = call(&app, Some(conflicting)).await;
     assert_eq!(status, 409, "{result}");
     assert_eq!(

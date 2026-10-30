@@ -1199,6 +1199,8 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
     }
     crate::records::refresh_openapi(&mut openapi)?;
     crate::multi_server_protocol::refresh_openapi(&mut openapi);
+    openapi["components"]["schemas"]["BackgroundShellPolicySettings"]["properties"]["quietThresholdMs"]
+        ["not"] = serde_json::json!({"minimum":1,"maximum":crate::shell_policy::QUIET_MIN_MS - 1});
     let native_command = &mut openapi["components"]["schemas"]["NativeCommandRequest"];
     native_command["properties"]["request_id"] = serde_json::json!({
         "type":"string", "format":"uuid",

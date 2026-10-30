@@ -16161,6 +16161,10 @@
             "description": "Milliseconds without shell output before one check-in. Use 0 to disable, or at least 10000.",
             "maximum": 9007199254740991,
             "minimum": 0,
+            "not": {
+              "maximum": 9999,
+              "minimum": 1
+            },
             "type": "integer"
           }
         },
@@ -39635,28 +39639,6 @@
       },
       "QueueCancelBody": {
         "additionalProperties": false,
-        "else": {
-          "properties": {
-            "message_id": {
-              "minLength": 1,
-              "type": "string"
-            }
-          },
-          "required": [
-            "message_id"
-          ]
-        },
-        "if": {
-          "properties": {
-            "id": {
-              "minLength": 1,
-              "type": "string"
-            }
-          },
-          "required": [
-            "id"
-          ]
-        },
         "properties": {
           "action": {
             "const": "cancel",
@@ -39681,31 +39663,20 @@
             ]
           },
           "id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "message_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "minLength": 1,
+            "type": "string"
           },
           "request_id": {
-            "anyOf": [
-              {
-                "maxLength": 200,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
+            "maxLength": 200,
+            "type": [
+              "string",
+              "null"
             ]
           }
         },
         "required": [
-          "action"
+          "action",
+          "id"
         ],
         "type": "object"
       },
@@ -39754,26 +39725,14 @@
             ]
           },
           "id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "message_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "minLength": 1,
+            "type": "string"
           },
           "request_id": {
-            "anyOf": [
-              {
-                "maxLength": 200,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
+            "maxLength": 200,
+            "type": [
+              "string",
+              "null"
             ]
           },
           "text": {
@@ -39783,6 +39742,7 @@
         },
         "required": [
           "action",
+          "id",
           "text"
         ],
         "type": "object"
@@ -39814,61 +39774,93 @@
         "type": "object"
       },
       "QueueFirstBody": {
-        "additionalProperties": false,
-        "properties": {
-          "action": {
-            "enum": [
-              "first",
-              "send_now"
-            ],
-            "type": "string"
-          },
-          "agent": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "expectedText": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "expected_revision": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "message_id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "request_id": {
-            "anyOf": [
-              {
-                "maxLength": 200,
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "const": "first",
                 "type": "string"
               },
-              {
-                "type": "null"
+              "agent": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "expectedText": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "expected_revision": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "request_id": {
+                "maxLength": 200,
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
-            ]
+            },
+            "required": [
+              "action",
+              "id"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "const": "send_now",
+                "type": "string"
+              },
+              "agent": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "expectedText": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "expected_revision": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "request_id": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "action",
+              "id",
+              "request_id"
+            ],
+            "type": "object"
           }
-        },
-        "required": [
-          "action"
-        ],
-        "type": "object"
+        ]
       },
       "QueueItem": {
         "additionalProperties": false,
@@ -39992,14 +39984,10 @@
             "type": "array"
           },
           "request_id": {
-            "anyOf": [
-              {
-                "maxLength": 200,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
+            "maxLength": 200,
+            "type": [
+              "string",
+              "null"
             ]
           }
         },
