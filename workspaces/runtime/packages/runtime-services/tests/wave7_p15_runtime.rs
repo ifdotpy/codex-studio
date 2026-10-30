@@ -1,10 +1,12 @@
 //! P15 checks frozen monitor effects and durable HTTP input replay.
-use crate::TestJson;
 use crate::monitor_runtime_fixtures as fixtures;
 
 use base64::Engine;
 use serde_json::{Value, json};
 use std::sync::Arc;
+use studio_runtime_schema::monitor_record::{
+    MonitorCancelStatus, MonitorInputStatus as AttemptStatus, MonitorQueueEvent,
+};
 use studio_runtime_services::{
     agent_lifecycle_runtime,
     agent_management::Action,
@@ -47,34 +49,13 @@ async fn input_schema(store: &RuntimeStore) {
 
 #[tokio::test]
 async fn migrated_monitor_inputs_remain_visible_through_process_receipt() {
-    use serde::{Deserialize, Serialize};
+    use serde::Serialize;
     use studio_runtime_schema::persistence::MonitorInputStatus;
     #[derive(Serialize)]
     struct LegacyReceipt {
         monitor: String,
         operation: studio_runtime_store::MonitorOperation,
         status: MonitorInputStatus,
-    }
-    #[derive(Serialize)]
-    #[serde(rename_all = "camelCase")]
-    struct Query<'a> {
-        request_id: &'a str,
-        agent: &'a str,
-        account_key: &'a str,
-        epoch: i64,
-    }
-    #[derive(Deserialize)]
-    struct ReadReceipt {
-        found: bool,
-        result: ReadResult,
-    }
-    #[derive(Deserialize)]
-    struct ReadResult {
-        response: ReadResponse,
-    }
-    #[derive(Deserialize)]
-    struct ReadResponse {
-        status: String,
     }
     let root = fixtures::tempdir();
     let case = running(&fixtures::corpus(root.path()));
@@ -113,37 +94,42 @@ async fn migrated_monitor_inputs_remain_visible_through_process_receipt() {
         .await
         .expect("migrate input");
     for (id, expected) in [("pending-input", "pending"), ("unknown-input", "unknown")] {
-        let query = serde_json::to_value(Query {
-            request_id: id,
-            agent: "agent",
-            account_key: "default",
-            epoch: 2,
-        })
-        .expect("query");
+        let query = json!({"requestId": id, "agent": "agent", "accountKey": "default", "epoch": 2});
         let receipt = studio_runtime_services::process_controls::receipt(
             &store.test_reader().expect("read"),
             &query,
         )
         .expect("caller");
-        let result: ReadReceipt =
-            serde_json::from_value(serde_json::to_value(receipt).expect("response"))
-                .expect("typed response");
-        assert!(result.found);
-        assert_eq!(result.result.response.status, expected);
+        let studio_runtime_schema::process_controls::ProcessReceipt::Found(receipt) = receipt
+        else {
+            panic!("migrated receipt must be found");
+        };
+        let Some(studio_runtime_schema::process_controls::ProcessResponse::MonitorInput(response)) =
+            receipt.result.response
+        else {
+            panic!("monitor input response");
+        };
+        use studio_runtime_schema::process_controls::MonitorInputStatus;
+        assert_eq!(
+            response.status,
+            match expected {
+                "pending" => MonitorInputStatus::Pending,
+                "unknown" => MonitorInputStatus::Unknown,
+                _ => panic!("unexpected fixture status"),
+            }
+        );
     }
 }
 
-fn record(store: &RuntimeStore, id: &str) -> Value {
+fn record(store: &RuntimeStore, id: &str) -> MonitorRecord {
     MonitorsRepository::get(&store.test_reader().expect("read"), id)
         .expect("get")
         .expect("monitor")
-        .value()
 }
-fn rule_record(store: &RuntimeStore, id: &str) -> Value {
+fn rule_record(store: &RuntimeStore, id: &str) -> RuleRecord {
     RulesRepository::get(&store.test_reader().expect("read"), id)
         .expect("get rule")
         .expect("rule")
-        .value()
 }
 fn running(cases: &[Value]) -> Value {
     cases
@@ -164,18 +150,31 @@ fn delivery(case: &Value, cursor: &str, event: MonitorEvent) -> Delivery {
     }
 }
 
-fn rule_case(name: &str) -> Value {
-    let mut case = serde_json::from_str::<Vec<Value>>(include_str!("rules_engine/expected.json"))
-        .expect("frozen rule cases")
-        .into_iter()
-        .find(|case| case["name"] == name)
-        .unwrap_or_else(|| panic!("rule case {name}"));
-    // The frozen rule owner is a Codex agent from before explicit identity.
-    case["owner"]["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
-    case
+#[derive(serde::Deserialize)]
+struct RuleCase {
+    name: String,
+    owner: AgentRecord,
+    rule: RuleRecord,
+    now: f64,
+    event: Option<RuleEventFixture>,
 }
-
-fn due_rule_case() -> Value {
+#[derive(serde::Deserialize)]
+struct RuleEventFixture {
+    kind: String,
+    text: String,
+    key: String,
+}
+fn rule_case(name: &str) -> RuleCase {
+    serde_json::from_str::<Vec<RuleCase>>(
+        &include_str!("rules_engine/expected.json")
+            .replace("\"owner\": {", "\"owner\": {\"provider\":\"codex\","),
+    )
+    .expect("frozen rule cases")
+    .into_iter()
+    .find(|case| case.name == name)
+    .unwrap_or_else(|| panic!("rule case {name}"))
+}
+fn due_rule_case() -> RuleCase {
     rule_case("interval-boundary--1")
 }
 
@@ -242,7 +241,7 @@ async fn oversized_provider_delta_is_persisted_in_order_and_replayed_exactly() {
         std::fs::read(store.root().join("monitor-logs").join(format!("{id}.log"))).expect("log"),
         bytes
     );
-    assert_eq!(record(&store, &id)["bytes"], bytes.len());
+    assert_eq!(record(&store, &id).bytes.get(), bytes.len() as i64);
     assert!(
         monitor_event_queue::next(&store)
             .await
@@ -264,8 +263,14 @@ async fn account_worker_monitor_output_is_durable_ordered_and_exactly_acknowledg
         .expect("account");
     let id_for_enqueue = id.to_owned();
     let account_for_enqueue = account.to_owned();
-    let first = monitor_event_queue::OutputDelta { delta_base64: base64::engine::general_purpose::STANDARD.encode(b"one"), stream: None };
-    let second = monitor_event_queue::OutputDelta { delta_base64: base64::engine::general_purpose::STANDARD.encode(b"two"), stream: None };
+    let first = monitor_event_queue::OutputDelta {
+        delta_base64: base64::engine::general_purpose::STANDARD.encode(b"one"),
+        stream: None,
+    };
+    let second = monitor_event_queue::OutputDelta {
+        delta_base64: base64::engine::general_purpose::STANDARD.encode(b"two"),
+        stream: None,
+    };
     store
         .transaction_with(move |tx| {
             monitor_event_queue::enqueue_output_in_transaction(
@@ -342,7 +347,10 @@ async fn account_worker_monitor_output_is_durable_ordered_and_exactly_acknowledg
     monitor_event_queue::enqueue_exit(&store, id, &operation, "result:monitor", Some(0), None, 9.0)
         .await
         .expect("replay acknowledged result without duplicating it");
-    let probe_result = studio_runtime_schema::monitor_record::MonitorProbeResult::Completed { exit_code: 1, output: "still responsive".into() };
+    let probe_result = studio_runtime_schema::monitor_record::MonitorProbeResult::Completed {
+        exit_code: 1,
+        output: "still responsive".into(),
+    };
     monitor_event_queue::enqueue_probe(&store, id, &operation, 8, &probe_result)
         .await
         .expect("enqueue completed liveness probe");
@@ -376,14 +384,14 @@ async fn transient_rule_submit_failure_reconciles_the_saved_launch_identity() {
     let store = Arc::new(fixtures::store(root.path(), "rule-retry").await);
     fixtures::seed(&store, &running(&monitor_cases)).await;
     let rule_case = due_rule_case();
-    let rule = rule_case["rule"].clone();
-    let rule_id = rule["id"].as_str().expect("rule id").to_owned();
-    let now = rule_case["now"].as_f64().expect("rule time");
-    let owner = AgentRecord::from_value(rule_case["owner"].clone()).expect("rule owner");
+    let rule = rule_case.rule.clone();
+    let rule_id = rule.id.clone();
+    let now = rule_case.now;
+    let owner = rule_case.owner;
     store
         .transaction(move |tx| {
             AgentRepository::put(tx, &owner)?;
-            RulesRepository::put(tx, &serde_json::from_value::<RuleRecord>(rule)?)
+            RulesRepository::put(tx, &rule)
         })
         .await
         .expect("seed due rule and owner");
@@ -401,7 +409,7 @@ async fn transient_rule_submit_failure_reconciles_the_saved_launch_identity() {
         .extend([true, false]);
 
     assert!(runtime.tick(now + 1.0).await.is_err());
-    assert_eq!(rule_record(&store, &rule_id)["inFlight"], true);
+    assert_eq!(rule_record(&store, &rule_id).in_flight, true);
     let reserved_json: String = store
         .test_reader()
         .expect("read")
@@ -445,16 +453,15 @@ async fn event_submission_failure_recovers_the_committed_launch_intent() {
     let store = Arc::new(fixtures::store(root.path(), "event-rule-retry").await);
     fixtures::seed(&store, &running(&monitor_cases)).await;
     let event_case = rule_case("event-work_review");
-    let event = event_case["event"].clone();
-    let event_kind = event["kind"].as_str().expect("event kind").to_owned();
-    let event_text = event["text"].as_str().expect("event text").to_owned();
-    let event_key = event["key"].as_str().expect("event key").to_owned();
-    let event_now = event_case["now"].as_f64().expect("event time");
-    let owner = AgentRecord::from_value(event_case["owner"].clone()).expect("event owner");
-    let mut event_rule = event_case["rule"].clone();
-    event_rule["event"] = event["kind"].clone();
-    event_rule["command"] = json!("printf marker");
-    let rule = serde_json::from_value::<RuleRecord>(event_rule).expect("event rule");
+    let event = event_case.event.expect("event");
+    let event_kind = event.kind;
+    let event_text = event.text;
+    let event_key = event.key;
+    let event_now = event_case.now;
+    let owner = event_case.owner;
+    let mut rule = event_case.rule;
+    rule.event = event_kind.clone();
+    rule.command = "printf marker".to_owned().try_into().expect("command");
     let check = store
         .transaction_with::<_, rules_tick::RulesTickError>(move |tx| {
             AgentRepository::put(tx, &owner)?;
@@ -475,20 +482,17 @@ async fn event_submission_failure_recovers_the_committed_launch_intent() {
         })
         .await
         .expect("event transaction commits its launch intent");
-    let reserved = rule_record(&store, &check.rule_id)["launchIntent"].clone();
+    let reserved = rule_record(&store, &check.rule_id).launch_intent;
 
     let port = Arc::new(Port::default());
     let runtime = runtime(&store, &port);
     assert!(
         runtime
-            .submit_event_checks(
-                std::slice::from_ref(&check),
-                event_case["now"].as_f64().expect("event time")
-            )
+            .submit_event_checks(std::slice::from_ref(&check), event_now)
             .await
             .is_err()
     );
-    assert_eq!(rule_record(&store, &check.rule_id)["inFlight"], true);
+    assert_eq!(rule_record(&store, &check.rule_id).in_flight, true);
     assert!(port.rule_checks.lock().expect("rule checks").is_empty());
 
     *port.rule_available.lock().expect("rule availability") = true;
@@ -497,11 +501,11 @@ async fn event_submission_failure_recovers_the_committed_launch_intent() {
         .lock()
         .expect("rule reconciliation") = true;
     runtime
-        .tick(event_case["now"].as_f64().expect("event time") + 1.0)
+        .tick(event_now + 1.0)
         .await
         .expect("tick recovers committed event launch");
     assert_eq!(
-        rule_record(&store, &check.rule_id)["launchIntent"],
+        rule_record(&store, &check.rule_id).launch_intent,
         reserved,
         "recovery retains the exact persisted request identity"
     );
@@ -535,6 +539,7 @@ async fn durable_results_win_over_stalls_across_every_write_failure_and_restart(
                 Arc::new(fixtures::store(root.path(), &format!("{table}-{boundary}")).await);
             fixtures::seed(&store, &case).await;
             let id = case["before"]["id"].as_str().expect("id");
+            let original = record(&store, id);
             let receipt = ResultReceipt {
                 version: 1,
                 key: id.into(),
@@ -552,7 +557,7 @@ async fn durable_results_win_over_stalls_across_every_write_failure_and_restart(
                 runtime(&store, &port).tick(2000.0).await.is_err(),
                 "{table}/{boundary}"
             );
-            assert_eq!(record(&store, id), case["before"]);
+            assert_eq!(record(&store, id), original);
             assert_eq!(fixtures::events(&store), json!([]));
             store
                 .transaction(move |tx| {
@@ -567,7 +572,7 @@ async fn durable_results_win_over_stalls_across_every_write_failure_and_restart(
             let runtime = runtime(&store, &port);
             runtime.tick(2000.0).await.expect("recover before stall");
             runtime.tick(2000.0).await.expect("repeat");
-            assert_eq!(record(&store, id)["status"], "completed");
+            assert_eq!(record(&store, id).status.as_str(), "completed");
             assert_eq!(fixtures::events(&store), case["events"]);
             assert!(port.submitted.lock().expect("submissions").is_empty());
         }
@@ -604,7 +609,7 @@ async fn lifecycle_cancel_intent_survives_crash_before_committed_and_dispatches_
         })
         .await
         .expect("stop commits monitor cancellation without invoking committed hook");
-    assert_eq!(record(&store, &id)["cancelRequested"], true);
+    assert_eq!(record(&store, &id).cancel_requested, Some(true));
 
     let path = store.root().to_owned();
     drop(store);
@@ -658,7 +663,7 @@ async fn output_cursor_and_exit_replay_after_lost_ack_are_exactly_once() {
     *port.fail_ack.lock().expect("ack") = true;
     let runtime = runtime(&store, &port);
     assert!(runtime.tick(1999.0).await.is_err());
-    assert_eq!(record(&store, &id)["bytes"], 6);
+    assert_eq!(record(&store, &id).bytes.get(), 6);
     let mut changed = output;
     changed.event = MonitorEvent::Output {
         offset: 0,
@@ -685,11 +690,11 @@ async fn output_cursor_and_exit_replay_after_lost_ack_are_exactly_once() {
     ));
     *port.fail_ack.lock().expect("ack") = true;
     assert!(runtime.tick(2000.0).await.is_err());
-    assert_eq!(record(&store, &id)["status"], "completed");
+    assert_eq!(record(&store, &id).status.as_str(), "completed");
     runtime.tick(2000.0).await.expect("exit replay");
-    assert_eq!(record(&store, &id)["bytes"], 6);
-    assert_eq!(record(&store, &id)["tail"], "marker");
-    assert_eq!(record(&store, &id)["status"], "completed");
+    assert_eq!(record(&store, &id).bytes.get(), 6);
+    assert_eq!(record(&store, &id).tail.as_str(), "marker");
+    assert_eq!(record(&store, &id).status.as_str(), "completed");
     assert_eq!(
         fixtures::events(&store).as_array().expect("events").len(),
         1
@@ -715,7 +720,10 @@ async fn reattach_cancel_and_unknown_input_never_resend_a_command() {
     let runtime = runtime(&store, &port);
     runtime.tick(2000.0).await.expect("attach");
     let id = case["before"]["id"].as_str().expect("id").to_owned();
-    assert_eq!(record(&store, &id)["reattachedConnectionId"], "restarted");
+    assert_eq!(
+        record(&store, &id).reattached_connection_id.as_deref(),
+        Some("restarted")
+    );
     assert!(port.submitted.lock().expect("submitted").is_empty());
     let input = Input {
         text: "hello".into(),
@@ -742,7 +750,13 @@ async fn reattach_cancel_and_unknown_input_never_resend_a_command() {
         .await
         .expect("duplicate cancel");
     assert_eq!(port.submitted.lock().expect("submitted").len(), 3);
-    assert_eq!(record(&store, &id)["inputAttempt"]["status"], "uncertain");
+    assert_eq!(
+        record(&store, &id)
+            .input_attempt
+            .expect("input attempt")
+            .status,
+        AttemptStatus::Uncertain
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -763,63 +777,82 @@ async fn stopped_runtime_exits_without_ticking_or_submitting() {
 }
 
 #[tokio::test]
-#[allow(clippy::disallowed_methods)]
 async fn monitor_completion_commits_the_python_rule_result_and_wake_atomically() {
     use studio_runtime_store::{RuleRecord, RulesRepository};
     let root = fixtures::tempdir();
     fixtures::corpus(root.path());
-    let mut cases: Vec<Value> = serde_json::from_str(
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct CompletionCase {
+        name: String,
+        actor: AgentRecord,
+        before: MonitorRecord,
+        after: MonitorRecord,
+        rule: Option<RuleRecord>,
+        after_rule: Option<RuleRecord>,
+        code: Option<i64>,
+        error: Option<String>,
+        now: f64,
+        wakes: Vec<ExpectedWake>,
+    }
+    #[derive(serde::Deserialize)]
+    struct ExpectedWake {
+        id: String,
+        kind: String,
+        text: String,
+    }
+    #[derive(Debug, PartialEq, serde::Deserialize)]
+    struct WakeText {
+        rule: String,
+        name: String,
+        instruction: String,
+        output: String,
+    }
+    #[derive(Debug, PartialEq)]
+    struct Wake {
+        id: String,
+        kind: String,
+        text: WakeText,
+    }
+    let cases: Vec<CompletionCase> = serde_json::from_str(
         &include_str!("wave7_p15_support/completions.json")
-            .replace("@FIXTURE_ROOT@", &root.path().to_string_lossy()),
+            .replace("@FIXTURE_ROOT@", &root.path().to_string_lossy())
+            .replace("\"actor\": {", "\"actor\": {\"provider\":\"codex\","),
     )
     .expect("frozen rule completions");
     assert_eq!(cases.len(), 9);
-    // These Python monitor completions belong to the historical Codex actor.
-    for case in &mut cases {
-        case["actor"]["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
-        for field in ["rule", "afterRule"] {
-            if !case[field].is_null() {
-                let rule: RuleRecord = serde_json::from_value(case[field].clone()).expect("stored rule");
-                case[field] = json!(rule);
-            }
-        }
-        for field in ["before", "after"] {
-            let monitor: studio_runtime_store::MonitorRecord = serde_json::from_value(case[field].clone()).expect("stored monitor");
-            case[field] = json!(monitor);
-        }
-    }
     for (number, case) in cases.iter().enumerate() {
         let store = Arc::new(fixtures::store(root.path(), &format!("rule-{number}")).await);
-        fixtures::seed(&store, case).await;
-        if !case["rule"].is_null() {
-            let rule = case["rule"].clone();
-            store
-                .transaction(move |tx| RulesRepository::put(tx, &serde_json::from_value::<RuleRecord>(rule)?))
-                .await
-                .expect("rule");
-        }
+        let actor = case.actor.clone();
+        let before = case.before.clone();
+        let rule = case.rule.clone();
+        store
+            .transaction(move |tx| {
+                AgentRepository::put(tx, &actor)?;
+                Table::new(tx).put(&before)?;
+                if let Some(rule) = rule {
+                    RulesRepository::put(tx, &rule)?;
+                }
+                Ok(())
+            })
+            .await
+            .expect("seed completion");
         let runtime = runtime(&store, &Arc::new(Port::default()));
-        let result = delivery(
-            case,
-            "exit",
-            MonitorEvent::Exit {
-                code: case["code"].as_i64(),
-                error: case["error"].as_str().map(str::to_owned),
-                finished: case["now"].as_f64().expect("now"),
+        let result = Delivery {
+            id: case.before.id.clone(),
+            operation: case.before.operation.clone().expect("operation"),
+            cursor: "exit".into(),
+            event: MonitorEvent::Exit {
+                code: case.code,
+                error: case.error.clone(),
+                finished: case.now,
             },
-        );
+        };
         store.transaction(move |tx| { for operation in ["INSERT", "UPDATE"] { tx.execute_batch(&format!("CREATE TRIGGER injected_{operation} AFTER {operation} ON runtime_monitors BEGIN SELECT RAISE(ABORT,'injected'); END"))?; } Ok(()) }).await.expect("failure");
-        assert!(
-            runtime
-                .deliver(&result, case["now"].as_f64().expect("now"))
-                .await
-                .is_err()
-        );
-        let original_rule = RulesRepository::get(&store.test_reader().expect("read"), "rule")
-            .expect("get")
-            .map(|row| row.value())
-            .unwrap_or(Value::Null);
-        assert_eq!(original_rule, case["rule"]);
+        assert!(runtime.deliver(&result, case.now).await.is_err());
+        let original_rule =
+            RulesRepository::get(&store.test_reader().expect("read"), "rule").expect("get");
+        assert_eq!(original_rule, case.rule);
         assert_eq!(fixtures::events(&store), json!([]));
         store
             .transaction(move |tx| {
@@ -830,33 +863,39 @@ async fn monitor_completion_commits_the_python_rule_result_and_wake_atomically()
             .expect("release");
         for _ in 0..2 {
             runtime
-                .deliver(&result, case["now"].as_f64().expect("now"))
+                .deliver(&result, case.now)
                 .await
                 .expect("completion replay");
         }
-        assert_eq!(
-            record(&store, &result.id),
-            case["after"],
-            "{}",
-            case["name"]
-        );
-        let saved_rule = RulesRepository::get(&store.test_reader().expect("read"), "rule")
-            .expect("get")
-            .map(|row| row.value());
-        assert_eq!(
-            saved_rule.unwrap_or(Value::Null),
-            case["afterRule"],
-            "{}",
-            case["name"]
-        );
-        let events = fixtures::events(&store);
-        let wakes: Vec<_> = events
-            .as_array()
+        assert_eq!(record(&store, &result.id), case.after, "{}", case.name);
+        let saved_rule =
+            RulesRepository::get(&store.test_reader().expect("read"), "rule").expect("get");
+        assert_eq!(saved_rule, case.after_rule, "{}", case.name);
+        let db = store.test_reader().expect("read");
+        let mut query = db
+            .prepare("SELECT id, kind, text FROM runtime_events ORDER BY id")
+            .expect("events");
+        let wakes: Vec<Wake> = query
+            .query_map([], |row| {
+                let text: String = row.get(2)?;
+                Ok(Wake {
+                    id: row.get(0)?,
+                    kind: row.get(1)?,
+                    text: serde_json::from_str(&text).expect("wake text"),
+                })
+            })
             .expect("events")
+            .collect::<Result<_, _>>()
+            .expect("events");
+        let expected: Vec<Wake> = case
+            .wakes
             .iter()
-            .map(|e| json!({"id":e["id"],"kind":e["kind"],"text":e["text"]}))
+            .map(|wake| Wake {
+                id: wake.id.clone(),
+                kind: wake.kind.clone(),
+                text: serde_json::from_str(&wake.text).expect("wake text"),
+            })
             .collect();
-        let expected: Vec<_> = case["wakes"].as_array().expect("wakes").iter().map(|e| json!({"id":e["id"],"kind":e["kind"],"text":serde_json::from_str::<Value>(e["text"].as_str().expect("text")).expect("generated wake JSON")})).collect();
         assert_eq!(wakes, expected);
     }
 }
@@ -915,10 +954,11 @@ async fn cancelled_intent_is_committed_before_transport_and_rolls_back_on_each_w
             let port = Arc::new(Port::default());
             let runtime = runtime(&store, &port);
             let id = case["before"]["id"].as_str().expect("id");
+            let original = record(&store, id);
             store.transaction(move |tx| { for operation in ["INSERT", "UPDATE"] { tx.execute_batch(&format!("CREATE TRIGGER injected_{operation} {timing} {operation} ON {table} BEGIN SELECT RAISE(ABORT,'injected'); END"))?; } Ok(()) }).await.expect("inject");
             assert!(runtime.cancel(id, None, 2000.0).await.is_err());
             assert!(port.submitted.lock().expect("submitted").is_empty());
-            assert_eq!(record(&store, id), case["before"]);
+            assert_eq!(record(&store, id), original);
             store
                 .transaction(move |tx| {
                     tx.execute_batch("DROP TRIGGER injected_INSERT; DROP TRIGGER injected_UPDATE")?;
@@ -929,7 +969,7 @@ async fn cancelled_intent_is_committed_before_transport_and_rolls_back_on_each_w
             runtime.cancel(id, None, 2000.0).await.expect("cancel");
             runtime.cancel(id, None, 2000.0).await.expect("replay");
             assert_eq!(port.submitted.lock().expect("submitted").len(), 1);
-            assert_eq!(record(&store, id)["cancelRequested"], true);
+            assert_eq!(record(&store, id).cancel_requested, Some(true));
         }
     }
 }
@@ -955,7 +995,13 @@ async fn cancel_intent_replays_after_restart_until_written_and_holds_unknown() {
         .await
         .expect("cancel reservation");
     assert!(operation.is_some());
-    assert_eq!(record(&store, &id)["cancelDispatch"]["status"], "pending");
+    assert_eq!(
+        record(&store, &id)
+            .cancel_dispatch
+            .expect("cancel dispatch")
+            .status,
+        MonitorCancelStatus::Pending
+    );
     let state = store.root().to_owned();
     drop(store);
 
@@ -967,10 +1013,19 @@ async fn cancel_intent_replays_after_restart_until_written_and_holds_unknown() {
         .tick(2001.0)
         .await
         .expect("proven not sent");
-    assert_eq!(record(&store, &id)["cancelDispatch"]["status"], "pending");
     assert_eq!(
-        record(&store, &id)["cancelDispatch"]["nextAttemptAt"],
-        2002.0
+        record(&store, &id)
+            .cancel_dispatch
+            .expect("cancel dispatch")
+            .status,
+        MonitorCancelStatus::Pending
+    );
+    assert_eq!(
+        record(&store, &id)
+            .cancel_dispatch
+            .expect("cancel dispatch")
+            .next_attempt_at,
+        Some(2002.0)
     );
     assert_eq!(port.submitted.lock().expect("submitted").len(), 1);
     restarted_runtime
@@ -983,10 +1038,19 @@ async fn cancel_intent_replays_after_restart_until_written_and_holds_unknown() {
         .tick(2002.0)
         .await
         .expect("second not-sent receipt");
-    assert_eq!(record(&store, &id)["cancelDispatch"]["attempts"], 2);
     assert_eq!(
-        record(&store, &id)["cancelDispatch"]["nextAttemptAt"],
-        2004.0
+        record(&store, &id)
+            .cancel_dispatch
+            .expect("cancel dispatch")
+            .attempts,
+        Some(2)
+    );
+    assert_eq!(
+        record(&store, &id)
+            .cancel_dispatch
+            .expect("cancel dispatch")
+            .next_attempt_at,
+        Some(2004.0)
     );
     restarted_runtime
         .tick(2003.5)
@@ -999,7 +1063,13 @@ async fn cancel_intent_replays_after_restart_until_written_and_holds_unknown() {
         .tick(2004.0)
         .await
         .expect("written receipt");
-    assert_eq!(record(&store, &id)["cancelDispatch"]["status"], "written");
+    assert_eq!(
+        record(&store, &id)
+            .cancel_dispatch
+            .expect("cancel dispatch")
+            .status,
+        MonitorCancelStatus::Written
+    );
     {
         let submitted = port.submitted.lock().expect("submitted");
         assert_eq!(submitted.len(), 3);
@@ -1024,8 +1094,11 @@ async fn cancel_intent_replays_after_restart_until_written_and_holds_unknown() {
         .await
         .expect("unknown cancel receipt");
     assert_eq!(
-        record(&unknown_store, unknown_id)["cancelDispatch"]["status"],
-        "unknown"
+        record(&unknown_store, unknown_id)
+            .cancel_dispatch
+            .expect("cancel dispatch")
+            .status,
+        MonitorCancelStatus::Unknown
     );
     *unknown_port.unknown.lock().expect("unknown") = false;
     unknown_runtime.tick(2011.0).await.expect("hold unknown");
@@ -1044,13 +1117,13 @@ async fn permanent_cancel_refusal_settles_and_is_not_retried() {
             "cancel-monitor-missing",
             NotSentReason::MonitorMissing,
             "cancelled",
-            "done",
+            MonitorCancelStatus::Done,
         ),
         (
             "cancel-session-missing",
             NotSentReason::SessionMissing,
             "running",
-            "unknown",
+            MonitorCancelStatus::Unknown,
         ),
     ] {
         let store = Arc::new(fixtures::store(root.path(), name).await);
@@ -1066,22 +1139,34 @@ async fn permanent_cancel_refusal_settles_and_is_not_retried() {
             .await
             .expect("permanent refusal recorded");
 
-        assert_eq!(record(&store, id)["status"], expected_status);
+        assert_eq!(record(&store, id).status.as_str(), expected_status);
         assert_eq!(
-            record(&store, id)["cancelDispatch"]["status"],
+            record(&store, id)
+                .cancel_dispatch
+                .expect("cancel dispatch")
+                .status,
             expected_dispatch
         );
         assert_eq!(
-            record(&store, id)["cancelDispatch"]["error"],
-            "injected not sent"
+            record(&store, id)
+                .cancel_dispatch
+                .expect("cancel dispatch")
+                .error
+                .as_deref(),
+            Some("injected not sent")
         );
         if reason == NotSentReason::SessionMissing {
             let record = record(&store, id);
-            assert_eq!(record["status"], "running");
-            assert_eq!(record["error"], "injected not sent");
-            let view =
-                studio_runtime_services::sync_views::project_persisted_record("monitor", &record)
-                    .expect("monitor DTO projection");
+            assert_eq!(record.status.as_str(), "running");
+            assert_eq!(
+                record.error.as_ref().map(|error| error.as_str()),
+                Some("injected not sent")
+            );
+            let view = studio_runtime_services::sync_views::project_persisted_record(
+                "monitor",
+                &json!(record),
+            )
+            .expect("monitor DTO projection");
             assert_eq!(view["error"], "injected not sent");
         }
         runtime
@@ -1129,8 +1214,14 @@ async fn cancellation_racing_exit_settles_without_native_terminate() {
         .await
         .expect("exit wins the race");
 
-    assert_eq!(record(&store, &id)["status"], "cancelled");
-    assert_eq!(record(&store, &id)["cancelDispatch"]["status"], "done");
+    assert_eq!(record(&store, &id).status.as_str(), "cancelled");
+    assert_eq!(
+        record(&store, &id)
+            .cancel_dispatch
+            .expect("cancel dispatch")
+            .status,
+        MonitorCancelStatus::Done
+    );
     assert!(port.submitted.lock().expect("submitted").is_empty());
     assert!(port.deliveries.lock().expect("deliveries").is_empty());
 }
@@ -1145,9 +1236,13 @@ async fn quarantined_delivery_does_not_stop_other_monitors_or_timer() {
     healthy_case["before"]["log"] = json!("unused-until-output");
     let store = Arc::new(fixtures::store(root.path(), "bad-delivery").await);
     fixtures::seed(&store, &bad_case).await;
-    let bad_id = bad_case["before"]["id"].as_str().expect("monitor id").to_owned();
+    let bad_id = bad_case["before"]["id"]
+        .as_str()
+        .expect("monitor id")
+        .to_owned();
     let mut healthy = MonitorsRepository::get(&store.test_reader().expect("read"), &bad_id)
-        .expect("get").expect("monitor");
+        .expect("get")
+        .expect("monitor");
     healthy.id = "healthy-monitor".to_owned();
     healthy.log = "unused-until-output".to_owned();
     store
@@ -1181,16 +1276,23 @@ async fn quarantined_delivery_does_not_stop_other_monitors_or_timer() {
     healthy_output.operation.connection_id = healthy_case["before"]["operation"]["connectionId"]
         .as_str()
         .expect("connection id")
-        .to_owned().try_into().unwrap();
+        .to_owned()
+        .try_into()
+        .unwrap();
     healthy_case["before"]["log"] = json!(
         store
             .root()
             .join("monitor-logs")
             .join("healthy-monitor.log")
     );
-    let mut healthy = MonitorsRepository::get(&store.test_reader().expect("read"), "healthy-monitor")
-        .expect("get").expect("monitor");
-    healthy.log = healthy_case["before"]["log"].as_str().expect("log").to_owned();
+    let mut healthy =
+        MonitorsRepository::get(&store.test_reader().expect("read"), "healthy-monitor")
+            .expect("get")
+            .expect("monitor");
+    healthy.log = healthy_case["before"]["log"]
+        .as_str()
+        .expect("log")
+        .to_owned();
     store
         .transaction(move |tx| Table::new(tx).put(&healthy))
         .await
@@ -1214,18 +1316,22 @@ async fn quarantined_delivery_does_not_stop_other_monitors_or_timer() {
     }
 
     let bad_id = bad_case["before"]["id"].as_str().expect("bad id");
-    assert_eq!(record(&store, bad_id)["status"], "failed");
+    assert_eq!(record(&store, bad_id).status.as_str(), "failed");
     assert_eq!(
-        record(&store, bad_id)["deliveryFailure"]["cursor"],
+        record(&store, bad_id)
+            .delivery_failure
+            .expect("delivery failure")
+            .cursor,
         "foreign-exit"
     );
     assert!(
-        record(&store, bad_id)["deliveryFailure"]["error"]
-            .as_str()
-            .expect("located error")
+        record(&store, bad_id)
+            .delivery_failure
+            .expect("delivery failure")
+            .error
             .contains("result operation changed")
     );
-    assert_eq!(record(&store, "healthy-monitor")["bytes"], 7);
+    assert_eq!(record(&store, "healthy-monitor").bytes.get(), 7);
     assert!(
         !task.is_finished(),
         "bad delivery does not stop the timer task"
@@ -1247,7 +1353,8 @@ async fn http_input_retry_after_ack_replays_one_logical_input() {
     fixtures::seed(&store, &case).await;
     let id = case["before"]["id"].as_str().expect("monitor id");
     let mut monitor = MonitorsRepository::get(&store.test_reader().expect("read"), id)
-        .expect("get").expect("monitor");
+        .expect("get")
+        .expect("monitor");
     monitor.interactive = true;
     store
         .transaction(move |tx| Table::new(tx).put(&monitor))
@@ -1267,18 +1374,18 @@ async fn http_input_retry_after_ack_replays_one_logical_input() {
         .input_http(id, &input_request_id("lost-http-success"), &input, 2000.0)
         .await
         .expect("first input acknowledged");
-    let first = record(&store, id)["lastInputAttempt"]["id"]
-        .as_str()
+    let first = record(&store, id)
+        .last_input_attempt
         .expect("first ticket")
-        .to_owned();
+        .id;
     runtime
         .input_http(id, &input_request_id("lost-http-success"), &input, 2001.0)
         .await
         .expect("same logical input replays its acknowledgement");
-    let second = record(&store, id)["lastInputAttempt"]["id"]
-        .as_str()
+    let second = record(&store, id)
+        .last_input_attempt
         .expect("second ticket")
-        .to_owned();
+        .id;
 
     assert_eq!(first, second);
     let submissions = port.submitted.lock().expect("submissions");
@@ -1382,7 +1489,10 @@ async fn http_input_busy_sequence_records_a_refusal_and_preserves_prior_receipts
         studio_runtime_schema::process_controls::MonitorInputStatus::Rejected
     );
     assert_eq!(
-        record(&store, &id)["lastInputAttempt"]["id"],
+        record(&store, &id)
+            .last_input_attempt
+            .expect("input attempt")
+            .id,
         format!("http:{}", input_request_id("active-request")),
         "busy request never reserves an inputAttempt"
     );
@@ -1473,10 +1583,11 @@ async fn http_input_receipts_survive_restart_and_refuse_uncertain_or_changed_con
         let saved = record(&store, id);
         if boundary == "settlement-rollback" {
             assert_eq!(
-                saved["inputAttempt"]["status"], "submitted",
+                saved.input_attempt.expect("input attempt").status,
+                AttemptStatus::Submitted,
                 "monitor settlement shares receipt transaction"
             );
-            assert!(saved.get("lastInputAttempt").is_none());
+            assert!(saved.last_input_attempt.is_none());
         }
         let path = store.root().to_owned();
         drop(store);
@@ -1538,8 +1649,8 @@ async fn http_input_receipts_survive_restart_and_refuse_uncertain_or_changed_con
             );
         }
         if matches!(boundary, "unknown" | "written-unknown") {
-            let operation = serde_json::from_value(case["before"]["operation"].clone())
-                .expect("original operation");
+            let operation =
+                serde_json::from_value(case["before"]["operation"].clone()).expect("operation");
             monitor_runtime::settle_input(
                 &store,
                 id,
@@ -1576,7 +1687,8 @@ async fn committed_managed_start_is_dispatched_after_admission() {
     fixtures::seed(&store, &case).await;
     let id = case["before"]["id"].as_str().expect("monitor id");
     let mut monitor = MonitorsRepository::get(&store.test_reader().expect("read"), id)
-        .expect("get").expect("monitor");
+        .expect("get")
+        .expect("monitor");
     monitor.status = studio_runtime_schema::studio_errors::MonitorStatus::Starting;
     monitor.operation = None;
     store
@@ -1608,7 +1720,10 @@ async fn output_queue_enforces_capacity_and_preserves_terminal_reserve_atomicall
     let chunk = base64::engine::general_purpose::STANDARD.encode(b"x");
     let enqueue_id = id.to_owned();
     let enqueue_account = account.to_owned();
-    let enqueue_chunk = monitor_event_queue::OutputDelta { delta_base64: chunk.clone(), stream: None };
+    let enqueue_chunk = monitor_event_queue::OutputDelta {
+        delta_base64: chunk.clone(),
+        stream: None,
+    };
     store
         .transaction_with(move |tx| {
             for cursor in 0..126 {
@@ -1628,7 +1743,10 @@ async fn output_queue_enforces_capacity_and_preserves_terminal_reserve_atomicall
     let before = record(&store, id);
     let rejected_id = id.to_owned();
     let rejected_account = account.to_owned();
-    let rejected_chunk = monitor_event_queue::OutputDelta { delta_base64: chunk, stream: None };
+    let rejected_chunk = monitor_event_queue::OutputDelta {
+        delta_base64: chunk,
+        stream: None,
+    };
     let rejected_identity =
         studio_runtime_services::notification_dispatch::ProviderDeliveryIdentity {
             provider_handle: format!("account:{account}"),
@@ -1662,17 +1780,23 @@ async fn output_queue_enforces_capacity_and_preserves_terminal_reserve_atomicall
     );
 
     let operation = serde_json::from_value(case["before"]["operation"].clone()).expect("operation");
-    monitor_event_queue::enqueue_probe(&store, id, &operation, 8, &studio_runtime_schema::monitor_record::MonitorProbeResult::Completed { exit_code: 0, output: String::new() })
-        .await
-        .expect("probe fits reserved event slot");
+    monitor_event_queue::enqueue_probe(
+        &store,
+        id,
+        &operation,
+        8,
+        &studio_runtime_schema::monitor_record::MonitorProbeResult::Completed {
+            exit_code: 0,
+            output: String::new(),
+        },
+    )
+    .await
+    .expect("probe fits reserved event slot");
     monitor_event_queue::enqueue_exit(&store, id, &operation, "exit:count", Some(0), None, 9.0)
         .await
         .expect("exit fits reserved event slot");
     assert_eq!(
-        record(&store, id)["streamQueue"]
-            .as_array()
-            .expect("stream queue")
-            .len(),
+        record(&store, id).stream_queue.expect("stream queue").len(),
         128
     );
 }
@@ -1692,7 +1816,10 @@ async fn output_queue_enforces_byte_limit_and_keeps_room_for_terminal_receipts()
     let chunk = base64::engine::general_purpose::STANDARD.encode(&bytes);
     let enqueue_id = id.to_owned();
     let enqueue_account = account.to_owned();
-    let enqueue_chunk = monitor_event_queue::OutputDelta { delta_base64: chunk.clone(), stream: None };
+    let enqueue_chunk = monitor_event_queue::OutputDelta {
+        delta_base64: chunk.clone(),
+        stream: None,
+    };
     store
         .transaction_with(move |tx| {
             for cursor in 0..30 {
@@ -1710,12 +1837,15 @@ async fn output_queue_enforces_byte_limit_and_keeps_room_for_terminal_receipts()
         .await
         .expect("fill output byte admission limit");
     assert_eq!(
-        record(&store, id)["streamQueue"][29]["byteLength"],
+        record(&store, id).stream_queue.expect("stream queue")[29].byte_length(),
         32 * 1024
     );
     let rejected_id = id.to_owned();
     let rejected_account = account.to_owned();
-    let rejected_chunk = monitor_event_queue::OutputDelta { delta_base64: chunk, stream: None };
+    let rejected_chunk = monitor_event_queue::OutputDelta {
+        delta_base64: chunk,
+        stream: None,
+    };
     let error = store
         .transaction_with(move |tx| {
             monitor_event_queue::enqueue_output_in_transaction(
@@ -1735,11 +1865,20 @@ async fn output_queue_enforces_byte_limit_and_keeps_room_for_terminal_receipts()
     ));
     let operation = serde_json::from_value(case["before"]["operation"].clone()).expect("operation");
     assert!(
-        monitor_event_queue::enqueue_probe(&store, id, &operation, 8, &studio_runtime_schema::monitor_record::MonitorProbeResult::Completed { exit_code: 0, output: String::new() })
-            .await
-            .expect_err("probe cannot consume terminal reserve")
-            .to_string()
-            .contains("queue is full")
+        monitor_event_queue::enqueue_probe(
+            &store,
+            id,
+            &operation,
+            8,
+            &studio_runtime_schema::monitor_record::MonitorProbeResult::Completed {
+                exit_code: 0,
+                output: String::new()
+            }
+        )
+        .await
+        .expect_err("probe cannot consume terminal reserve")
+        .to_string()
+        .contains("queue is full")
     );
     monitor_event_queue::enqueue_exit(&store, id, &operation, "exit:bytes", Some(0), None, 9.0)
         .await
@@ -1784,28 +1923,38 @@ async fn bounded_probes_preserve_room_for_the_largest_exit_receipt() {
         } else {
             remainder
         };
-        let result = studio_runtime_schema::monitor_record::MonitorProbeResult::Failed { error: "x".repeat(result_bytes - 12) };
+        let result = studio_runtime_schema::monitor_record::MonitorProbeResult::Failed {
+            error: "x".repeat(result_bytes - 12),
+        };
         monitor_event_queue::enqueue_probe(&store, id, &operation, generation as i64, &result)
             .await
             .expect("probe fills bounded admission budget");
     }
     let probe_queue = record(&store, id);
-    let probe_queue = probe_queue["streamQueue"].as_array().expect("probe queue");
+    let probe_queue = probe_queue.stream_queue.expect("probe queue");
     assert_eq!(probe_queue.len(), probe_count);
     assert_eq!(
         probe_queue
             .iter()
-            .map(|item| item["byteLength"].as_u64().expect("probe bytes"))
+            .map(MonitorQueueEvent::byte_length)
             .sum::<u64>(),
         probe_limit as u64,
         "probes exactly fill their admission budget"
     );
     assert!(
-        monitor_event_queue::enqueue_probe(&store, id, &operation, probe_count as i64, &studio_runtime_schema::monitor_record::MonitorProbeResult::Failed { error: "x".into() })
-            .await
-            .expect_err("additional probe exceeds its budget")
-            .to_string()
-            .contains("queue is full")
+        monitor_event_queue::enqueue_probe(
+            &store,
+            id,
+            &operation,
+            probe_count as i64,
+            &studio_runtime_schema::monitor_record::MonitorProbeResult::Failed {
+                error: "x".into()
+            }
+        )
+        .await
+        .expect_err("additional probe exceeds its budget")
+        .to_string()
+        .contains("queue is full")
     );
     let largest_error = "e".repeat(monitor_event_queue::EXIT_RECEIPT_MAX_ERROR_BYTES);
     monitor_event_queue::enqueue_exit(
@@ -1820,12 +1969,15 @@ async fn bounded_probes_preserve_room_for_the_largest_exit_receipt() {
     .await
     .expect("the maximum exit receipt still fits after probes");
     let saved = record(&store, id);
-    let queued = saved["streamQueue"].as_array().expect("queued stream");
+    let queued = saved.stream_queue.expect("queued stream");
     assert_eq!(queued.len(), probe_count + 1);
-    assert_eq!(queued.last().expect("exit receipt")["kind"], "exit");
+    assert!(matches!(
+        queued.last().expect("exit receipt"),
+        MonitorQueueEvent::Exit { .. }
+    ));
     assert_eq!(
-        queued.last().expect("exit receipt")["byteLength"],
-        monitor_event_queue::EXIT_RECEIPT_MAX_ERROR_BYTES
+        queued.last().expect("exit receipt").byte_length(),
+        monitor_event_queue::EXIT_RECEIPT_MAX_ERROR_BYTES as u64
     );
 }
 
@@ -1866,6 +2018,12 @@ async fn cancellation_recovery_runs_after_a_full_delivery_batch() {
     let runtime = runtime(&store, &port);
     runtime.tick(2001.0).await.expect("full output batch");
     assert_eq!(port.deliveries.lock().expect("deliveries").len(), 0);
-    assert_eq!(record(&store, &id)["cancelDispatch"]["status"], "written");
+    assert_eq!(
+        record(&store, &id)
+            .cancel_dispatch
+            .expect("cancel dispatch")
+            .status,
+        MonitorCancelStatus::Written
+    );
     assert_eq!(port.submitted.lock().expect("submitted").len(), 1);
 }
