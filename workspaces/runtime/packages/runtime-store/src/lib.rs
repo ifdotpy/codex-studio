@@ -5,6 +5,7 @@ pub mod blocking_pool;
 mod bootstrap;
 mod cached_sql;
 pub mod entity_publication;
+pub mod durable_seq;
 pub mod error_incidents;
 pub mod migrations;
 pub use cached_sql::{CachedSql, STATEMENT_CACHE_CAPACITY};

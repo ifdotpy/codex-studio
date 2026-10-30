@@ -96,6 +96,11 @@ const OCTOBER_29: MigrationDate = MigrationDate {
     month: 10,
     day: 29,
 };
+const OCTOBER_30: MigrationDate = MigrationDate {
+    year: 2026,
+    month: 10,
+    day: 30,
+};
 const OCTOBER_22: MigrationDate = MigrationDate {
     year: 2026,
     month: 10,
@@ -572,6 +577,16 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| m2026_10_29_request_results_v2::message_revision(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-durable-seq",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Main tables without a change number and tombstones",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| crate::durable_seq::install(c.transaction),
     },
     &RegistryMigration,
 ];

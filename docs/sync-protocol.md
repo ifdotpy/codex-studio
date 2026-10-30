@@ -149,6 +149,25 @@ updates. Stream payloads are not walked against generated
 runtime validators; handlers retain structural preconditions and workspace,
 epoch, revision, and ordering checks.
 
+### Durable change source
+
+The [durable source](../workspaces/runtime/packages/runtime-store/src/durable_seq.rs)
+numbers every insert, update and delete of the main tables from one global counter.
+`DURABLE_TABLES` lists the opted-in tables (`runtime_agents`, `runtime_requests`,
+`runtime_work`); a new table opts in with one line there. The installer adds a `seq`
+column and three triggers. A delete writes a tombstone `(table, id, seq)`.
+
+`changes_since(table, cursor)` returns the rows with `seq` above the cursor and the
+tombstones above it, or a snapshot when the cursor is absent, in the future, or below
+`durable_counter.floor`. The floor is the highest `seq` of a pruned tombstone.
+Tombstones live `TOMBSTONE_RETENTION_SECONDS` (90 days); a delete prunes older ones.
+
+Status: the source and its checks exist. The stream still reads `sync_entities`, and
+entity publication still writes it. Moving the stream to this source and then stopping
+the publication of agents, requests and work is the next step. Before that step removes
+the transcript copy in `sync_entities`, `transcript_copy_missing_from_owner` must return
+nothing for the live store. Old `sync_entities` rows are deleted by a later migration.
+
 ### Entity publication
 
 The renderer reads chats and cards only from their `sync_entities` rows, and a
