@@ -6,9 +6,11 @@ import {
   readTestState,
   readFixtureSyncContract,
   stubEntityState,
+  handleEntitySyncFixtureRequest,
 } from "../playwright.ts";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { createServer } from "node:http";
 
 test("phone conversation gives the transcript its viewport budget", async ({
   browser,
@@ -22,6 +24,9 @@ test("phone conversation gives the transcript its viewport budget", async ({
   const origin = readOnlyRust.origin;
   const snapshot: EntityFixtureState & Pick<TestStateView, "threads"> =
     await readTestState(origin);
+  snapshot.runtime.desktop = await (
+    await fetch(new URL("/api/desktop", origin))
+  ).json();
   const agent = snapshot.threads.find((row) => row.name === "Other project")!;
   agent.status = "waiting";
   agent.inFlight = false;
@@ -58,6 +63,7 @@ test("phone conversation gives the transcript its viewport budget", async ({
         hasTouch: width < 760,
         colorScheme: scheme,
       });
+      let stream: ReturnType<typeof createServer> | undefined;
       try {
         const view = structuredClone(snapshot);
         assert.ok(view.runtime.desktop);
@@ -68,11 +74,46 @@ test("phone conversation gives the transcript its viewport budget", async ({
             ? {
                 level: "warning",
                 message:
-                  "The Mac disk has only 13 GB free. Free disk space to keep agents running.",
+                  "The device has only 13 GB free. Free disk space to keep agents running.",
               }
             : null,
         };
+        stream = createServer(async (request, response) => {
+          response.setHeader("Access-Control-Allow-Origin", "*");
+          response.setHeader("Access-Control-Allow-Headers", "*");
+          if (request.method === "OPTIONS") {
+            response.writeHead(204).end();
+            return;
+          }
+          let body = "";
+          if (request.method === "POST")
+            for await (const chunk of request) body += chunk;
+          if (
+            !handleEntitySyncFixtureRequest(request, response, {
+              snapshot: view,
+              workspaceId: contract.identity.workspaceId,
+              versionedResources: true,
+              ...(body ? { subscriptionUpdate: JSON.parse(body) } : {}),
+            })
+          )
+            response.writeHead(404).end();
+        });
+        await new Promise<void>((resolve) =>
+          stream.listen(0, "127.0.0.1", resolve),
+        );
+        const streamPort = (stream.address() as import("node:net").AddressInfo)
+          .port;
         await stubEntityState(page, view, contract);
+        for (const route of [
+          "**/api/sync/stream?*",
+          "**/api/sync/subscriptions",
+        ])
+          await page.route(route, (request) => {
+            const url = new URL(request.request().url());
+            return request.continue({
+              url: `http://127.0.0.1:${streamPort}${url.pathname}${url.search}`,
+            });
+          });
         // Native transcript scopes continue to read the server's messages.
         await page.route("**/api/sync/pull**", (route) =>
           new URL(route.request().url()).searchParams.get("scope") ===
@@ -210,26 +251,17 @@ test("phone conversation gives the transcript its viewport budget", async ({
           const attachBox = (await attach.boundingBox())!;
           expect(attachBox.width).toBeGreaterThanOrEqual(44);
           expect(attachBox.height).toBeGreaterThanOrEqual(44);
-          // Only the lead provider remains beside its name on phones.
-          const symbolRows = await page
-            .locator("#composer .execution-symbols")
-            .evaluateAll((nodes) =>
-              nodes
-                .filter((node) => node.getClientRects().length)
-                .map((node) =>
-                  [...node.children].map(
-                    (child) => child.getBoundingClientRect().top,
-                  ),
-                ),
-            );
-          expect(symbolRows).toHaveLength(1);
-          await expect(page.locator(".execution-summary-more")).toHaveText(
-            "+2",
-          );
-          for (const tops of symbolRows)
-            expect(Math.max(...tops) - Math.min(...tops)).toBeLessThanOrEqual(
-              1,
-            );
+          // The lead stays visible; the control names all roles accessibly.
+          await expect(
+            page.locator('.execution-summary-segment[data-role="lead"]'),
+          ).toBeVisible();
+          for (const role of ["worker", "review"])
+            await expect(
+              page.locator(`.execution-summary-segment[data-role="${role}"]`),
+            ).toBeHidden();
+          await expect(
+            page.locator(".execution-summary-trigger"),
+          ).toHaveAccessibleName(/Workers.*Review/);
           const disclosure = page.locator(
             ".composer-tools-disclosure > summary",
           );
@@ -340,6 +372,10 @@ test("phone conversation gives the transcript its viewport budget", async ({
         });
       } finally {
         await page.context().close();
+        if (stream?.listening)
+          await new Promise<void>((resolve, reject) =>
+            stream!.close((error) => (error ? reject(error) : resolve())),
+          );
       }
     }
   }
