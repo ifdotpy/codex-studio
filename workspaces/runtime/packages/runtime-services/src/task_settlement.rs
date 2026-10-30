@@ -18,8 +18,8 @@
 use rusqlite::Transaction;
 use serde_json::{Value, json};
 use studio_runtime_store::{
-    AgentId, AgentRecord, AgentRepository, RuntimeStore, StoreError, StoreResult,
-    TaskId, TaskRecord, TaskRepository, truthy,
+    AgentId, AgentRecord, AgentRepository, RuntimeStore, StoreError, StoreResult, TaskId,
+    TaskRecord, TaskRepository, truthy,
 };
 
 /// The status of a task whose turn ended before the provider reported its end.
@@ -464,7 +464,8 @@ mod tests {
                     )?;
                 }
                 for id in &completed {
-                    tx.execute("INSERT INTO runtime_completed_turns(id) VALUES(?1)", [id])?;
+                    let (chat, turn) = id.split_once(':').expect("<chat>:<turn>");
+                    studio_runtime_store::domain::complete_turn(tx, chat, turn)?;
                 }
                 Ok::<_, StoreError>(())
             })

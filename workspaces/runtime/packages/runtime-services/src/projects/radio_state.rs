@@ -332,10 +332,8 @@ pub(super) fn turn(agent: &Value, active: &Active, event: Option<&QueueEvent>) -
     None
 }
 pub(super) fn completed(db: &Connection, agent: &str, turn: &str) -> Result<bool, ProjectsError> {
-    Ok(db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM runtime_completed_turns WHERE id=?1)",
-        [format!("{agent}:{turn}")],
-        |r| r.get(0),
+    Ok(studio_runtime_store::domain::turn_completed(
+        db, agent, turn,
     )?)
 }
 pub(super) fn pending_question(

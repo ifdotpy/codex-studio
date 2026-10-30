@@ -64,10 +64,7 @@ const TABLES: &[TableRequirement] = &[
         name: "runtime_agents",
         columns: &["id", "record"],
     },
-    TableRequirement {
-        name: "runtime_completed_turns",
-        columns: &["id"],
-    },
+    crate::domain::TABLE_REQUIREMENTS[1],
     TableRequirement {
         name: "runtime_events",
         columns: &[

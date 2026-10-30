@@ -613,7 +613,7 @@ fn snapshot(connection: &Connection) -> serde_json::Value {
             .query_map([], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,i64>(2)?,row.get::<_,String>(3)?,row.get::<_,String>(4)?,row.get::<_,i64>(5)?)))
             .expect("sync snapshot queries").collect::<Result<Vec<_>,_>>().expect("sync snapshot reads");
     let completed = connection
-        .prepare("SELECT id FROM runtime_completed_turns ORDER BY id")
+        .prepare("SELECT chat||':'||provider_turn FROM turns WHERE state='completed' ORDER BY 1")
         .expect("completed-turn snapshot prepares")
         .query_map([], |row| row.get::<_, String>(0))
         .expect("completed-turn snapshot queries")

@@ -100,17 +100,10 @@ impl TaskRecoveryEffects for TaskRecoveryStore {
             {
                 return Ok(false);
             }
-            let completed = format!(
-                "{agent}:{}",
-                t["turnId"].as_str().ok_or(RecoveryError::CommitFailed)?
-            );
-            current.completed_turn = tx
-                .query_row(
-                    "SELECT id FROM runtime_completed_turns WHERE id=?1",
-                    [&completed],
-                    |r| r.get(0),
-                )
-                .optional()?;
+            let turn = t["turnId"].as_str().ok_or(RecoveryError::CommitFailed)?;
+            current.completed_turn =
+                studio_runtime_store::domain::turn_completed(tx, &agent, turn)?
+                    .then(|| format!("{agent}:{turn}"));
             let decision = match decision {
                 TaskAbsenceDecision::Lost => expected.absence_decision(&current, observation.quiet),
                 hold @ TaskAbsenceDecision::Hold { .. } => hold,

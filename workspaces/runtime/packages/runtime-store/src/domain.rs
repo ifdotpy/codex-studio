@@ -14,7 +14,8 @@
 //!   unique index [`ONE_UNFINISHED_TURN_INDEX`] enforces it. A chat is busy exactly
 //!   when it has such a turn ([`chat_busy`]).
 //! - `runtime_completed_turns` is the legacy form of Turn `Completed`. The migration
-//!   copies it and a trigger keeps the copy current until its writers move.
+//!   copies it. The table stays as a read-only record of old states; every writer
+//!   and reader uses [`complete_turn`] and [`turn_completed`].
 
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
@@ -247,28 +248,36 @@ pub fn check_triggers_sql() -> String {
     sql
 }
 
-/// Keeps the legacy completed-turn table and Turn `Completed` the same until the
-/// writers of the table move. The legacy id is `<chat>:<provider turn>`.
-pub const COMPLETED_TURNS_TRIGGER: &str = "turns_from_completed_turns";
+/// The legacy completed-turn table is kept as data and refuses every write. Turn
+/// `Completed` is the only live form. The mirror trigger of slice 1 is dropped.
+pub const LEGACY_COMPLETED_TURNS_TRIGGERS: [(&str, &str); 3] = [
+    ("runtime_completed_turns_read_only_insert", "INSERT"),
+    ("runtime_completed_turns_read_only_update", "UPDATE"),
+    ("runtime_completed_turns_read_only_delete", "DELETE"),
+];
 
-pub fn completed_turns_trigger_sql() -> String {
-    format!(
-        "DROP TRIGGER IF EXISTS {COMPLETED_TURNS_TRIGGER};
-         CREATE TRIGGER {COMPLETED_TURNS_TRIGGER} AFTER INSERT ON runtime_completed_turns BEGIN
-           UPDATE {TURN_TABLE} SET state='completed',session=NULL,attempt=NULL,interrupt_ticket=NULL
-             WHERE chat=substr(NEW.id,1,instr(NEW.id,':')-1)
-               AND provider_turn=substr(NEW.id,instr(NEW.id,':')+1);
-           INSERT INTO {TURN_TABLE}(id,chat,state,provider_turn)
-             SELECT NEW.id,substr(NEW.id,1,instr(NEW.id,':')-1),'completed',substr(NEW.id,instr(NEW.id,':')+1)
-             WHERE NOT EXISTS(SELECT 1 FROM {TURN_TABLE}
-               WHERE chat=substr(NEW.id,1,instr(NEW.id,':')-1)
-                 AND provider_turn=substr(NEW.id,instr(NEW.id,':')+1));
-         END;"
-    )
+pub fn legacy_completed_turns_read_only_sql() -> String {
+    let mut sql = "DROP TRIGGER IF EXISTS turns_from_completed_turns;\n".to_owned();
+    for (name, event) in LEGACY_COMPLETED_TURNS_TRIGGERS {
+        sql.push_str(&format!(
+            "DROP TRIGGER IF EXISTS {name};
+             CREATE TRIGGER {name} BEFORE {event} ON runtime_completed_turns
+             BEGIN SELECT RAISE(ABORT,'runtime_completed_turns is read only; use turns'); END;\n"
+        ));
+    }
+    sql
+}
+
+/// Make the legacy table read only, when the state has it. Safe to run again.
+pub(crate) fn make_completed_turns_read_only(transaction: &Transaction<'_>) -> StoreResult<()> {
+    if crate::schema::table_exists(transaction, "runtime_completed_turns")? {
+        transaction.execute_batch(&legacy_completed_turns_read_only_sql())?;
+    }
+    Ok(())
 }
 
 /// Deleting an agent deletes its chat and sessions and closes its unfinished turn.
-/// Finished turns stay, as `runtime_completed_turns` rows do today.
+/// Finished turns stay.
 pub const OWNER_DELETE_TRIGGER: &str = "chats_owner_delete";
 
 pub fn owner_delete_trigger_sql() -> String {
@@ -289,9 +298,6 @@ pub(crate) fn install(transaction: &Transaction<'_>) -> StoreResult<()> {
     transaction.execute_batch(&tables_sql())?;
     transaction.execute_batch(&check_triggers_sql())?;
     transaction.execute_batch(&owner_delete_trigger_sql())?;
-    if crate::schema::table_exists(transaction, "runtime_completed_turns")? {
-        transaction.execute_batch(&completed_turns_trigger_sql())?;
-    }
     Ok(())
 }
 
@@ -646,8 +652,7 @@ pub fn read_sessions(connection: &Connection, chat: &str) -> StoreResult<Vec<Ses
 
 /// Turn `provider_turn` of `chat` is completed. The one writer of Turn `Completed`:
 /// it ends the unfinished turn with that provider turn, or records a completed turn
-/// when none exists. It also writes the legacy `runtime_completed_turns` row, which
-/// readers still use until slice 3 retires the table. Repeating it changes nothing.
+/// when none exists. Repeating it changes nothing.
 pub fn complete_turn(connection: &Connection, chat: &str, provider_turn: &str) -> StoreResult<()> {
     let id = format!("{chat}:{provider_turn}");
     connection
@@ -663,9 +668,6 @@ pub fn complete_turn(connection: &Connection, chat: &str, provider_turn: &str) -
              WHERE NOT EXISTS(SELECT 1 FROM turns WHERE chat=?1 AND provider_turn=?2)",
         )?
         .execute(params![chat, provider_turn, id])?;
-    connection
-        .prepare_cached("INSERT OR IGNORE INTO runtime_completed_turns(id) VALUES(?1)")?
-        .execute([id])?;
     Ok(())
 }
 
@@ -875,6 +877,9 @@ mod tests {
             )
             .unwrap();
         }
+        for (name, _) in LEGACY_COMPLETED_TURNS_TRIGGERS {
+            db.execute_batch(&format!("DROP TRIGGER {name}")).unwrap();
+        }
         db.execute_batch("INSERT INTO runtime_completed_turns(id) VALUES('idle:x1'),('idle:x2')")
             .unwrap();
         let tx = Transaction::new_unchecked(&db, rusqlite::TransactionBehavior::Immediate).unwrap();
@@ -1058,24 +1063,43 @@ mod tests {
     }
 
     #[test]
-    fn the_legacy_completed_turn_table_completes_the_unfinished_turn() {
+    fn the_legacy_completed_turn_table_keeps_its_rows_and_refuses_writes() {
         let db = crate::fresh_state::test_canvas();
-        put(
-            &db,
-            &agent(
-                "c",
-                json!({"status":"running","inFlight":true,"turnId":"p1","threadId":"th"}),
-            ),
-        );
-        db.execute("INSERT INTO runtime_completed_turns(id) VALUES('c:p1')", [])
+        for (name, _) in LEGACY_COMPLETED_TURNS_TRIGGERS {
+            db.execute_batch(&format!("DROP TRIGGER {name}")).unwrap();
+        }
+        db.execute(
+            "INSERT INTO runtime_completed_turns(id) VALUES('c:old')",
+            [],
+        )
+        .unwrap();
+        let tx = Transaction::new_unchecked(&db, rusqlite::TransactionBehavior::Immediate).unwrap();
+        make_completed_turns_read_only(&tx).unwrap();
+        make_completed_turns_read_only(&tx).unwrap();
+        tx.commit().unwrap();
+        for sql in [
+            "INSERT INTO runtime_completed_turns(id) VALUES('c:p9')",
+            "UPDATE runtime_completed_turns SET id='c:p9'",
+            "DELETE FROM runtime_completed_turns",
+        ] {
+            assert!(fail(&db, sql).contains("read only"), "{sql}");
+        }
+        let kept: i64 = db
+            .query_row("SELECT count(*) FROM runtime_completed_turns", [], |r| {
+                r.get(0)
+            })
             .unwrap();
-        assert!(!chat_busy(&db, "c").unwrap());
-        let turns = read_turns(&db, "c").unwrap();
-        assert_eq!(turns.len(), 1);
-        assert_eq!(turns[0].state, TurnState::Completed);
-        db.execute("INSERT INTO runtime_completed_turns(id) VALUES('c:p9')", [])
+        assert_eq!(kept, 1);
+        complete_turn(&db, "c", "p9").unwrap();
+        assert!(turn_completed(&db, "c", "p9").unwrap());
+        let mirror: i64 = db
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE name='turns_from_completed_turns'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
-        assert_eq!(read_turns(&db, "c").unwrap().len(), 2);
+        assert_eq!(mirror, 0);
     }
 
     #[test]
@@ -1136,7 +1160,7 @@ mod tests {
                 r.get(0)
             })
             .unwrap();
-        assert_eq!(legacy, 2);
+        assert_eq!(legacy, 0, "complete_turn no longer writes the legacy table");
     }
 
     #[test]

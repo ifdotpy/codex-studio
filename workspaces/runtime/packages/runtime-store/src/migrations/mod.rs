@@ -37,6 +37,7 @@ mod m2026_10_28_usage_revision;
 mod m2026_10_29_agent_authorizations;
 mod m2026_10_29_model_choices;
 mod m2026_10_29_request_results_v2;
+mod m2026_10_30_completed_turns_read_only;
 mod m2026_10_30_domain_model;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -588,6 +589,16 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| m2026_10_30_domain_model::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-completed-turns-read-only",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "The completed-turn table, kept as read-only data after Turn Completed took over",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_completed_turns_read_only::apply(c.transaction),
     },
     &RegistryMigration,
 ];
