@@ -896,7 +896,7 @@ pub(crate) async fn workspace(
     resources: &PreparationResources,
     intent: &TurnIntent,
 ) -> Result<crate::workspace_ready::ReadyToken, WorkerError> {
-    workspace_with_vm_action(store, resources, intent, false).await
+    Box::pin(workspace_with_vm_action(store, resources, intent, false)).await
 }
 
 /// The stored agent of a turn being prepared; a missing row is invalid.
@@ -1030,7 +1030,7 @@ async fn workspace_with_vm_action(
         );
     }
     // Git provisioning acquires its own short transactions. No store transaction is held here.
-    match crate::workspace_ready_git::prepare(Arc::clone(&store), intent.agent_id.clone())
+    match Box::pin(crate::workspace_ready_git::prepare(Arc::clone(&store), intent.agent_id.clone()))
         .await
         .map_err(|e| refusal(e.to_string()))?
     {

@@ -990,7 +990,7 @@ pub async fn rules(
                                 .unwrap_or(false)
                     })
                     .collect::<Vec<_>>();
-                Ok::<_, RulesServiceError>(raw_rule_reply(&RuleList { rules: visible })?)
+                raw_rule_reply(&RuleList { rules: visible })
             })
             .await?;
         return Ok(RulesActionResult {
@@ -1056,9 +1056,9 @@ pub async fn rules(
             .map_err(|_| RulesServiceError::FilePath)??,
         )
     } else if action == Some(crate::rules::RuleActionName::Resume) {
-        old_before.as_ref().and_then(|old| match &old.kind {
-            studio_runtime_schema::rule_record::RuleKind::File { path } => Some(path.clone()),
-            _ => None,
+        old_before.as_ref().and_then(|old| {
+            let studio_runtime_schema::rule_record::RuleKind::File { path } = &old.kind else { return None };
+            Some(path.clone())
         })
     } else {
         None
