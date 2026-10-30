@@ -1,7 +1,7 @@
 //! Provider-owned stop policy; identity and wire profiles belong to runtime-schema.
 
 pub use studio_runtime_schema::provider_kind::{
-    ProviderKind, RequestIdScheme, UnknownProvider, WireProfile,
+    ProviderCapability, ProviderKind, RequestIdScheme, UnknownProvider, WireProfile,
 };
 
 /// The thread request that ends command processes which outlive
