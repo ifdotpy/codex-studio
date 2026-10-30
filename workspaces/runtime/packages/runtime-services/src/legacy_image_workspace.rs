@@ -129,10 +129,11 @@ mod tests {
         let store = RuntimeStore::open(Some(directory.path()))
             .await
             .expect("store");
-        let original: Value = serde_json::from_str(include_str!(
+        let mut original: Value = serde_json::from_str(include_str!(
             "../tests/startup_recovery/legacy-image-agent.json"
         ))
         .expect("legacy fixture");
+        original["accountKey"] = json!("default");
         let record = AgentRecord::from_value(original.clone()).expect("legacy stored record");
         store.transaction(move |tx| {
             AgentRepository::put(tx, &record)?;
@@ -191,7 +192,7 @@ mod tests {
             .await
             .expect("fixture operation succeeds");
         store.transaction(|tx| {
-            let agent = json!({"provider":"codex", "id":"legacy-worker", "rootId":"lead", "parentId":"lead", "epoch":1,
+            let agent = json!({"accountKey":"default","provider":"codex", "id":"legacy-worker", "rootId":"lead", "parentId":"lead", "epoch":1,
                 "workspaceMode":"image", "status":"running", "autoWake":true, "inFlight":true,
                 "turnId":"old-turn", "startAttempt":{"turnId":"old-turn"},
                 "restartRecovery":{"turnId":"old-turn","stage":"pending"}});

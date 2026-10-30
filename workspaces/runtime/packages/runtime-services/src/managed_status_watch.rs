@@ -35,7 +35,6 @@ const FILE_PATH_MAX_CHARS: usize = 4096;
 const RULE_TEXT_MAX_CHARS: usize = 12_000;
 const RULE_NAME_MAX_CHARS: usize = 120;
 const RULE_COMMAND_MAX_CHARS: usize = 12_000;
-const RULE_YEAR_SECONDS: f64 = 31_536_000.0;
 const RULE_DEFAULT_INTERVAL_SECONDS: u64 = 60;
 const RULE_DEFAULT_STALL_SECONDS: u64 = 1800;
 const DEFAULT_DELEGATION_DEPTH: u64 = 1;
@@ -696,13 +695,14 @@ fn agent_status_record(agent: &AgentRecord) -> Value {
 }
 
 fn monitor_status_record(monitor: &MonitorRecord) -> Value {
+    let error = monitor.error.value().map(|value| json!(value.as_str()));
     json!({
-        "id": monitor.get("id").cloned().unwrap_or(Value::Null),
-        "agent": monitor.get("agent").cloned().unwrap_or(Value::Null),
-        "status": monitor.get("status").cloned().unwrap_or(Value::Null),
-        "exitCode": monitor.get("exitCode").cloned().unwrap_or(Value::Null),
+        "id": monitor.id,
+        "agent": monitor.agent(),
+        "status": monitor.status(),
+        "exitCode": monitor.exit_code.value(),
         "kind": "monitor",
-        "error": clip_value(monitor.get("error")),
+        "error": clip_value(error.as_ref()),
     })
 }
 
@@ -782,15 +782,24 @@ fn is_terminal_agent(status: &AgentStatus) -> bool {
 
 fn is_active_monitor(monitor: &MonitorRecord) -> bool {
     matches!(
-        monitor.get("status").and_then(Value::as_str),
-        Some("running" | "starting" | "approval")
+        monitor.status(),
+        Some(
+            studio_runtime_schema::studio_errors::MonitorStatus::Running
+                | studio_runtime_schema::studio_errors::MonitorStatus::Starting
+                | studio_runtime_schema::studio_errors::MonitorStatus::Approval
+        )
     )
 }
 
 fn is_terminal_monitor(monitor: &MonitorRecord) -> bool {
     matches!(
-        monitor.get("status").and_then(Value::as_str),
-        Some("completed" | "failed" | "cancelled" | "lost")
+        monitor.status(),
+        Some(
+            studio_runtime_schema::studio_errors::MonitorStatus::Completed
+                | studio_runtime_schema::studio_errors::MonitorStatus::Failed
+                | studio_runtime_schema::studio_errors::MonitorStatus::Cancelled
+                | studio_runtime_schema::studio_errors::MonitorStatus::Lost
+        )
     )
 }
 
@@ -898,27 +907,124 @@ fn read_rules_request(
 /// Apply one `RulesRuntime.rules` action. The optional result's cancellation
 /// IDs are sorted and must be delivered by the callback owner after this call
 /// returns, which proves the rule transaction has committed.
+// Keep each wire field's presence and type until its normal validation point.
+#[derive(Default)]
+enum RuleField<T> {
+    #[default]
+    Missing,
+    Null,
+    Value(T),
+    Invalid,
+}
+impl<'de, T: serde::Deserialize<'de>> serde::Deserialize<'de> for RuleField<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(serde::Deserialize)]
+        #[serde(untagged)]
+        enum Input<T> {
+            Value(T),
+            Invalid(serde::de::IgnoredAny),
+        }
+        Ok(match Option::<Input<T>>::deserialize(deserializer)? {
+            None => Self::Null,
+            Some(Input::Value(value)) => Self::Value(value),
+            Some(Input::Invalid(_)) => Self::Invalid,
+        })
+    }
+}
+impl<T> RuleField<T> {
+    fn value(&self) -> Option<&T> {
+        if let Self::Value(value) = self {
+            Some(value)
+        } else {
+            None
+        }
+    }
+    fn is_missing(&self) -> bool {
+        matches!(self, Self::Missing)
+    }
+}
+#[derive(Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct ManagedRuleWire {
+    id: RuleField<String>,
+    kind: RuleField<String>,
+    path: RuleField<String>,
+    minimum_workers: RuleField<i64>,
+    duration_minutes: RuleField<i64>,
+    interval_seconds: RuleField<i64>,
+    stall_timeout_seconds: RuleField<i64>,
+    #[serde(rename = "stall_timeout_seconds")]
+    stall_alias: RuleField<i64>,
+    at: RuleField<f64>,
+    event: RuleField<String>,
+    command: RuleField<String>,
+    liveness_command: RuleField<String>,
+    #[serde(rename = "liveness_command")]
+    liveness_alias: RuleField<String>,
+    name: RuleField<String>,
+    text: RuleField<String>,
+}
+fn rule_integer(field: &RuleField<i64>, default: i64) -> Result<i64, RulesServiceError> {
+    match field {
+        RuleField::Missing | RuleField::Null => Ok(default),
+        RuleField::Value(value) => Ok(*value),
+        RuleField::Invalid => Err(RulesServiceError::Invalid("integer")),
+    }
+}
+fn rule_text(
+    field: &RuleField<String>,
+    label: &'static str,
+    maximum: usize,
+    empty: bool,
+) -> Result<String, RulesServiceError> {
+    let value = field
+        .value()
+        .ok_or(RulesServiceError::Invalid(label))?
+        .trim();
+    if value.chars().count() > maximum || (!empty && value.is_empty()) {
+        return Err(RulesServiceError::Invalid(label));
+    }
+    Ok(value.to_owned())
+}
+fn rule_empty_text(field: &RuleField<String>, maximum: usize) -> Result<String, RulesServiceError> {
+    match field {
+        RuleField::Missing | RuleField::Null => Ok(String::new()),
+        RuleField::Value(_) | RuleField::Invalid => rule_text(field, "text", maximum, true),
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WatchAction {
+    List,
+    #[default]
+    Save,
+    Pause,
+    Resume,
+    Delete,
+}
+
+#[derive(serde::Deserialize)]
+pub struct WatchActionInput {
+    #[serde(default)]
+    pub action: WatchAction,
+}
+
 pub async fn rules(
     store: &RuntimeStore,
-    actor_id: &str,
-    actor_epoch: u64,
+    actor: (&str, u64),
+    action: WatchAction,
     data: Option<&Value>,
     request_id: &str,
     now: f64,
     files: &impl RuleWatchFiles,
 ) -> Result<RulesActionResult, RulesServiceError> {
+    let (actor_id, actor_epoch) = actor;
     if !now.is_finite() {
         return Err(RulesServiceError::Invalid("time"));
     }
-    let action = data
-        .and_then(|value| value.get("action"))
-        .and_then(Value::as_str)
-        .unwrap_or(if data.is_none() { "list" } else { "save" })
-        .to_owned();
-    if data.is_some_and(|value| !value.is_object()) {
-        return Err(RulesServiceError::Invalid("rule"));
-    }
-    if action == "list" || data.is_none() {
+    let wire = data.map(|value| <studio_runtime_schema::json_object::JsonObject<ManagedRuleWire> as serde::Deserialize>::deserialize(value).map(|wire| wire.0).map_err(|_| RulesServiceError::Invalid("rule"))).transpose()?;
+    if action == WatchAction::List {
         let read_actor = actor_id.to_owned();
         let value = store
             .read_async("runtime-services/managed_status_watch", move |connection| {
@@ -933,15 +1039,15 @@ pub async fn rules(
                 let visible = rules
                     .into_iter()
                     .filter(|rule| {
-                        rule.get("rootId").and_then(Value::as_str) == Some(root.as_str())
+                        rule.root_id.as_deref() == Some(root.as_str())
                             && rule
-                                .get("agent")
-                                .and_then(Value::as_str)
+                                .agent
+                                .as_deref()
                                 .and_then(|id| live.get(id))
                                 .copied()
                                 .unwrap_or(false)
                     })
-                    .map(|rule| rule.value().clone())
+                    .map(|rule| rule.value())
                     .collect::<Vec<_>>();
                 Ok::<_, RulesServiceError>(json!({"rules": visible}))
             })
@@ -952,16 +1058,19 @@ pub async fn rules(
         });
     }
 
-    let body = data.ok_or(RulesServiceError::Invalid("rule"))?.clone();
+    let action = match action {
+        WatchAction::List => return Err(RulesServiceError::UnknownAction),
+        WatchAction::Save => Some(crate::rules::RuleActionName::Save),
+        WatchAction::Pause => Some(crate::rules::RuleActionName::Pause),
+        WatchAction::Resume => Some(crate::rules::RuleActionName::Resume),
+        WatchAction::Delete => Some(crate::rules::RuleActionName::Delete),
+    };
+    let body = wire.ok_or(RulesServiceError::Invalid("rule"))?;
     if request_id.is_empty() || request_id.chars().count() > 200 {
         return Err(RulesServiceError::Invalid("request id"));
     }
     let signature = rules_request_signature(actor_id, actor_epoch, data)?;
-    let key = match body
-        .get("id")
-        .and_then(Value::as_str)
-        .filter(|id| !id.is_empty())
-    {
+    let key = match body.id.value().filter(|id| !id.is_empty()) {
         Some(id) => id.to_owned(),
         None => stable_rule_id(request_id)?,
     };
@@ -973,8 +1082,7 @@ pub async fn rules(
                 checked_actor(connection, &read_actor, actor_epoch).map_err(status_to_rules)?;
             let saved_receipt =
                 read_rules_request(connection, &read_actor, &read_request_id, &read_signature)?;
-            let old =
-                RulesRepository::get(connection, &read_key)?.map(|record| record.value().clone());
+            let old = RulesRepository::get(connection, &read_key)?.map(|record| record.value());
             Ok::<_, RulesServiceError>((actor, old, saved_receipt))
         })
         .await?;
@@ -990,12 +1098,13 @@ pub async fn rules(
     }
 
     let kind = body
-        .get("kind")
-        .and_then(Value::as_str)
+        .kind
+        .value()
+        .map(String::as_str)
         .unwrap_or("interval")
         .to_owned();
-    let prepared_path = if action == "save" && kind == "file" {
-        let raw = text(body.get("path"), "a path", FILE_PATH_MAX_CHARS, false)?;
+    let prepared_path = if action == Some(crate::rules::RuleActionName::Save) && kind == "file" {
+        let raw = rule_text(&body.path, "a path", FILE_PATH_MAX_CHARS, false)?;
         let cwd = cwd(&prepared_actor)?.to_owned();
         let files = (*files).clone();
         Some(
@@ -1006,7 +1115,7 @@ pub async fn rules(
             .await
             .map_err(|_| RulesServiceError::FilePath)??,
         )
-    } else if action == "resume"
+    } else if action == Some(crate::rules::RuleActionName::Resume)
         && old_before
             .as_ref()
             .and_then(|old| old.get("kind"))
@@ -1064,7 +1173,7 @@ pub async fn rules(
             if actor.value() != prepared_actor.value() {
                 return Err(RulesServiceError::Stale);
             }
-            let old = RulesRepository::get(tx, &key)?.map(|record| record.value().clone());
+            let old = RulesRepository::get(tx, &key)?.map(|record| record.value());
             if old != old_before {
                 return Err(RulesServiceError::Invalid(
                     "The rule changed while it was being prepared",
@@ -1077,26 +1186,48 @@ pub async fn rules(
                     "This rule belongs to another agent",
                 ));
             }
-            let mut cancel_monitor_ids = if matches!(action.as_str(), "pause" | "delete") {
+            let action = match action {
+                Some(crate::rules::RuleActionName::Save) => crate::rules::RuleAction::Save {
+                    id: key.clone(),
+                    data: check_save(&body, old.as_ref(), &actor, &kind, now)?,
+                },
+                Some(crate::rules::RuleActionName::Pause) => {
+                    crate::rules::RuleAction::Pause { id: key.clone() }
+                }
+                Some(crate::rules::RuleActionName::Resume) => {
+                    crate::rules::RuleAction::Resume { id: key.clone() }
+                }
+                Some(crate::rules::RuleActionName::Delete) => {
+                    crate::rules::RuleAction::Delete { id: key.clone() }
+                }
+                None => return Err(RulesServiceError::UnknownAction),
+            };
+            let key = action.id().to_owned();
+            let mut cancel_monitor_ids = if matches!(
+                action,
+                crate::rules::RuleAction::Pause { .. } | crate::rules::RuleAction::Delete { .. }
+            ) {
                 active_rule_monitors(tx, &key)?
             } else {
                 Vec::new()
             };
-            let value = match action.as_str() {
-                "pause" | "resume" | "delete" => {
+            let value = match &action {
+                crate::rules::RuleAction::Pause { .. }
+                | crate::rules::RuleAction::Resume { .. }
+                | crate::rules::RuleAction::Delete { .. } => {
                     let mut old = old.ok_or(RulesServiceError::Invalid("Unknown rule"))?;
-                    if action == "resume"
+                    if matches!(action, crate::rules::RuleAction::Resume { .. })
                         && old.get("inFlight").and_then(Value::as_bool) == Some(true)
                     {
                         return Err(RulesServiceError::Invalid(
                             "Wait for the current rule check before resuming",
                         ));
                     }
-                    if action == "delete" {
+                    if matches!(action, crate::rules::RuleAction::Delete { .. }) {
                         RulesRepository::delete(tx, &key)?;
                         json!({"deleted": key})
                     } else {
-                        if action == "resume"
+                        if matches!(action, crate::rules::RuleAction::Resume { .. })
                             && actor.auto_wake != Some(true)
                         {
                             return Err(RulesServiceError::Invalid(
@@ -1106,7 +1237,7 @@ pub async fn rules(
                         if let Some(object) = old.as_object_mut() {
                             object.remove("restartCheck");
                         }
-                        let desired = if action == "resume" {
+                        let desired = if matches!(action, crate::rules::RuleAction::Resume { .. }) {
                             "active"
                         } else {
                             "paused"
@@ -1120,7 +1251,7 @@ pub async fn rules(
                                 old["lowSince"] = Value::Null;
                                 old["alerted"] = Value::Bool(false);
                             }
-                            if action == "resume"
+                            if matches!(action, crate::rules::RuleAction::Resume { .. })
                                 && old.get("kind").and_then(Value::as_str) == Some("file")
                             {
                                 let generation = old
@@ -1147,20 +1278,18 @@ pub async fn rules(
                         old
                     }
                 }
-                "save" => save_rule(
+                crate::rules::RuleAction::Save { data, .. } => save_rule(
                     tx,
                     &actor,
                     RuleSave {
-                        body: &body,
+                        data,
                         old: old.as_ref(),
                         key: &key,
-                        kind: &kind,
                         now,
                         prepared_path: prepared_path.as_deref(),
                         fingerprint: fingerprint.as_ref(),
                     },
                 )?,
-                _ => return Err(RulesServiceError::UnknownAction),
             };
             cancel_monitor_ids.sort();
             cancel_monitor_ids.dedup();
@@ -1235,11 +1364,114 @@ pub async fn acknowledge_rule_cancellations(
         .await
 }
 
+fn check_save(
+    body: &ManagedRuleWire,
+    old: Option<&Value>,
+    actor: &AgentRecord,
+    kind: &str,
+    now: f64,
+) -> Result<crate::rules::CheckedRuleSave, RulesServiceError> {
+    if old.is_some_and(|record| record.get("inFlight").and_then(Value::as_bool) == Some(true)) {
+        return Err(RulesServiceError::Invalid(
+            "Pause the rule and wait for its current check before editing",
+        ));
+    }
+    let minimum =
+        rule_integer(&body.minimum_workers, 8).map_err(|_| crate::rules::RuleSaveError::Integer);
+    let duration =
+        rule_integer(&body.duration_minutes, 30).map_err(|_| crate::rules::RuleSaveError::Integer);
+    let interval = rule_integer(&body.interval_seconds, RULE_DEFAULT_INTERVAL_SECONDS as i64)
+        .map_err(|_| crate::rules::RuleSaveError::Integer);
+    let stall_field = if body.stall_timeout_seconds.is_missing() {
+        &body.stall_alias
+    } else {
+        &body.stall_timeout_seconds
+    };
+    let stall = rule_integer(stall_field, RULE_DEFAULT_STALL_SECONDS as i64)
+        .map_err(|_| crate::rules::RuleSaveError::Integer);
+    let at = body
+        .at
+        .value()
+        .copied()
+        .unwrap_or(now + interval.as_ref().copied().unwrap_or_default() as f64);
+    let event = body
+        .event
+        .value()
+        .map(String::as_str)
+        .unwrap_or("worker_completed");
+    let command = rule_empty_text(&body.command, RULE_COMMAND_MAX_CHARS)
+        .map_err(|_| crate::rules::RuleSaveError::InputText);
+    let liveness_field = if body.liveness_command.is_missing() {
+        &body.liveness_alias
+    } else {
+        &body.liveness_command
+    };
+    let liveness_command = rule_empty_text(liveness_field, RULE_COMMAND_MAX_CHARS)
+        .map_err(|_| crate::rules::RuleSaveError::InputText);
+    let name = rule_text(&body.name, "a rule name", RULE_NAME_MAX_CHARS, false)
+        .map_err(|_| crate::rules::RuleSaveError::Name);
+    let text_value = match &body.text {
+        RuleField::Missing | RuleField::Null => {
+            Ok("Check this event and continue the original task.".to_owned())
+        }
+        RuleField::Value(_) | RuleField::Invalid => {
+            rule_text(&body.text, "an instruction", RULE_TEXT_MAX_CHARS, false)
+                .map_err(|_| crate::rules::RuleSaveError::Text)
+        }
+    };
+    crate::rules::CheckedRuleSave::new(
+        crate::rules::RuleSaveInput {
+            kind: kind.to_owned(),
+            minimum: if matches!(body.minimum_workers, RuleField::Null) {
+                Ok(None)
+            } else {
+                minimum.map(|value| Some(value.into()))
+            },
+            duration: if matches!(body.duration_minutes, RuleField::Null) {
+                Ok(None)
+            } else {
+                duration.map(|value| Some(value.into()))
+            },
+            interval,
+            stall,
+            at: crate::rules::RuleTimeInput::Unchecked(at),
+            event: event.to_owned(),
+            command,
+            liveness: liveness_command,
+            name,
+            text: text_value,
+        },
+        now,
+        actor.extra.get("isLead") == Some(&Value::Bool(true)),
+        crate::rules::RuleSaveOrder::Managed,
+    )
+    .map_err(rule_save_error)
+}
+
+fn rule_save_error(error: crate::rules::RuleSaveError) -> RulesServiceError {
+    use crate::rules::RuleSaveError as E;
+    RulesServiceError::Invalid(match error {
+        E::Integer => "integer",
+        E::InputText => "text",
+        E::Kind => "Choose interval, once, file, event, or low_workers",
+        E::Minimum => "Minimum subagents must be 1 to 255",
+        E::Duration => "Duration must be 1 to 525600 minutes",
+        E::Interval => "Interval must be 10 seconds to one year",
+        E::Stall => "stall_timeout_seconds must be 0 to 31536000",
+        E::At => "Choose a date within the next year",
+        E::Event => "Unknown event type",
+        E::Command => "A low-worker alert does not run a command",
+        E::Liveness => "liveness_command is only supported for file watches",
+        E::Name => "a rule name",
+        E::Text => "an instruction",
+        E::Lead => "Only an orchestrator can own a low-worker alert",
+    })
+}
+
 struct RuleSave<'a> {
-    body: &'a Value,
+    data: &'a crate::rules::CheckedRuleSave,
     old: Option<&'a Value>,
     key: &'a str,
-    kind: &'a str,
     now: f64,
     prepared_path: Option<&'a str>,
     fingerprint: Option<&'a Value>,
@@ -1251,104 +1483,25 @@ fn save_rule(
     save: RuleSave<'_>,
 ) -> Result<Value, RulesServiceError> {
     let RuleSave {
-        body,
+        data,
         old,
         key,
-        kind,
         now,
         prepared_path,
         fingerprint,
     } = save;
-    if old.is_some_and(|record| record.get("inFlight").and_then(Value::as_bool) == Some(true)) {
-        return Err(RulesServiceError::Invalid(
-            "Pause the rule and wait for its current check before editing",
-        ));
-    }
-    if !matches!(kind, "interval" | "once" | "file" | "event" | "low_workers") {
-        return Err(RulesServiceError::Invalid(
-            "Choose interval, once, file, event, or low_workers",
-        ));
-    }
-    let minimum = integer(body.get("minimumWorkers"), 8)?;
-    let duration = integer(body.get("durationMinutes"), 30)?;
-    if kind == "low_workers" {
-        if actor.extra.get("isLead") != Some(&Value::Bool(true)) {
-            return Err(RulesServiceError::Invalid(
-                "Only an orchestrator can own a low-worker alert",
-            ));
-        }
-        if !(1..=255).contains(&minimum) {
-            return Err(RulesServiceError::Invalid(
-                "Minimum subagents must be 1 to 255",
-            ));
-        }
-        if !(1..=525_600).contains(&duration) {
-            return Err(RulesServiceError::Invalid(
-                "Duration must be 1 to 525600 minutes",
-            ));
-        }
-        if !empty_text(body.get("command"), RULE_COMMAND_MAX_CHARS)?.is_empty() {
-            return Err(RulesServiceError::Invalid(
-                "A low-worker alert does not run a command",
-            ));
-        }
-    }
-    let interval = integer(
-        body.get("intervalSeconds"),
-        RULE_DEFAULT_INTERVAL_SECONDS as i64,
-    )?;
-    if !(10..=31_536_000).contains(&interval) {
-        return Err(RulesServiceError::Invalid(
-            "Interval must be 10 seconds to one year",
-        ));
-    }
-    let stall_value = body
-        .get("stallTimeoutSeconds")
-        .or_else(|| body.get("stall_timeout_seconds"));
-    let stall = integer(stall_value, RULE_DEFAULT_STALL_SECONDS as i64)?;
-    if !(0..=31_536_000).contains(&stall) {
-        return Err(RulesServiceError::Invalid(
-            "stall_timeout_seconds must be 0 to 31536000",
-        ));
-    }
-    let at = body
-        .get("at")
-        .filter(|value| !value.is_null())
-        .and_then(Value::as_f64)
-        .unwrap_or(now + interval as f64);
-    if !at.is_finite() || at < now - 1.0 || at > now + RULE_YEAR_SECONDS {
-        return Err(RulesServiceError::Invalid(
-            "Choose a date within the next year",
-        ));
-    }
-    let event = body
-        .get("event")
-        .and_then(Value::as_str)
-        .unwrap_or("worker_completed");
-    if !matches!(
-        event,
-        "worker_completed" | "monitor_exit" | "work_review" | "complaint"
-    ) {
-        return Err(RulesServiceError::Invalid("Unknown event type"));
-    }
-    let command = empty_text(body.get("command"), RULE_COMMAND_MAX_CHARS)?;
-    let liveness_command = empty_text(
-        body.get("livenessCommand")
-            .or_else(|| body.get("liveness_command")),
-        RULE_COMMAND_MAX_CHARS,
-    )?;
-    if !liveness_command.is_empty() && kind != "file" {
-        return Err(RulesServiceError::Invalid(
-            "liveness_command is only supported for file watches",
-        ));
-    }
-    let name = text(body.get("name"), "a rule name", RULE_NAME_MAX_CHARS, false)?;
-    let text_value = body
-        .get("text")
-        .filter(|value| !value.is_null())
-        .map(|value| text(Some(value), "an instruction", RULE_TEXT_MAX_CHARS, false))
-        .transpose()?
-        .unwrap_or_else(|| "Check this event and continue the original task.".to_owned());
+    let data = data.fields();
+    let kind = data.kind.as_str();
+    let minimum_record = data.kind.minimum();
+    let duration_record = data.kind.duration();
+    let interval = data.interval;
+    let stall = data.kind.stall();
+    let at = data.at;
+    let event = data.event.as_str();
+    let command = &data.command;
+    let liveness_command = data.kind.liveness();
+    let name = &data.name;
+    let text_value = &data.text;
     let prior = old.and_then(Value::as_object);
     let mut record = json!({
         "id": key,
@@ -1377,8 +1530,8 @@ fn save_rule(
         "fingerprint": if kind == "file" { fingerprint.cloned().unwrap_or(Value::Null) } else { Value::Null },
     });
     if kind == "low_workers" {
-        record["minimumWorkers"] = body.get("minimumWorkers").cloned().unwrap_or(json!(8));
-        record["durationMinutes"] = body.get("durationMinutes").cloned().unwrap_or(json!(30));
+        record["minimumWorkers"] = json!(minimum_record);
+        record["durationMinutes"] = json!(duration_record);
         record["lowSince"] = Value::Null;
         record["alerted"] = Value::Bool(false);
         record["nextAt"] = json!(now);
@@ -1406,7 +1559,7 @@ fn save_rule(
 
 fn checked_rule(record: Value, actor: Value) -> Result<RuleRecord, RulesServiceError> {
     let rule = RuleRecord::from_value(record).map_err(|_| RulesServiceError::Invalid("rule"))?;
-    crate::rules_engine::RuleSnapshot::from_records(rule.value().clone(), actor)?;
+    crate::rules_engine::RuleSnapshot::from_stored(&rule, actor)?;
     Ok(rule)
 }
 
@@ -1431,41 +1584,11 @@ fn cwd(agent: &AgentRecord) -> Result<&str, RulesServiceError> {
         .ok_or(RulesServiceError::Invalid("workspace path"))
 }
 
-fn integer(value: Option<&Value>, default: i64) -> Result<i64, RulesServiceError> {
-    match value {
-        None | Some(Value::Null) => Ok(default),
-        Some(value) => value.as_i64().ok_or(RulesServiceError::Invalid("integer")),
-    }
-}
-
-fn text(
-    value: Option<&Value>,
-    label: &'static str,
-    maximum: usize,
-    empty: bool,
-) -> Result<String, RulesServiceError> {
-    let value = value
-        .and_then(Value::as_str)
-        .ok_or(RulesServiceError::Invalid(label))?
-        .trim();
-    if value.chars().count() > maximum || (!empty && value.is_empty()) {
-        return Err(RulesServiceError::Invalid(label));
-    }
-    Ok(value.to_owned())
-}
-
-fn empty_text(value: Option<&Value>, maximum: usize) -> Result<String, RulesServiceError> {
-    match value {
-        None | Some(Value::Null) => Ok(String::new()),
-        Some(value) => text(Some(value), "text", maximum, true),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
         LocalRuleWatchFiles, MODEL_STATUS_HISTORY, RuleWatchFiles, RulesServiceError, StatusError,
-        model_directory, rules,
+        WatchAction, model_directory, rules,
     };
     use rusqlite::params;
     use serde_json::{Value, json};
@@ -1484,14 +1607,14 @@ mod tests {
             .transaction_with(move |tx| {
                 studio_runtime_store::receipt_schema::create(tx)?;
                 for record in [
-                    json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                    json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
                         "id":"lead","rootId":"lead","epoch":3,"status":"running",
                         "isLead":true,"autoWake":true,"cwd":cwd,
                         "concurrency":2,"maxAgents":8,
                         "workerDefaults":{"model":"gpt-fixture","effort":"high","fastMode":false}
                     }),
-                    json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"queued","rootId":"lead","epoch":4,"status":"queued","autoWake":false,"cwd":cwd}),
-                    json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"done","rootId":"lead","epoch":2,"status":"completed","autoWake":false,"cwd":cwd}),
+                    json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"queued","rootId":"lead","epoch":4,"status":"queued","autoWake":false,"cwd":cwd}),
+                    json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"done","rootId":"lead","epoch":2,"status":"completed","autoWake":false,"cwd":cwd}),
                 ] {
                     AgentRepository::put(
                         tx,
@@ -1676,14 +1799,14 @@ mod tests {
                 }
             );
         }
-        let record = json!({"provider":"codex","id":"worker","rootId":"worker","epoch":4,"status":"starting","startWait":{"reason":"slot","epoch":4,"runningTurns":2,"maxRunningTurns":3,"until":null}});
+        let record = json!({"accountKey":"default","provider":"codex","id":"worker","rootId":"worker","epoch":4,"status":"starting","startWait":{"reason":"slot","epoch":4,"runningTurns":2,"maxRunningTurns":3,"until":null}});
         let view = crate::sync_views::agent_entity_view(&record, &Default::default())
             .expect("valid legacy wait");
         assert_eq!(
             view["startWait"],
             json!({"reason":"slot","epoch":4,"runningTurns":2,"maxRunningTurns":3})
         );
-        let record = json!({"provider":"codex","id":"worker","rootId":"worker","epoch":4,"status":"running","startWait":{"reason":"slot","epoch":4}});
+        let record = json!({"accountKey":"default","provider":"codex","id":"worker","rootId":"worker","epoch":4,"status":"running","startWait":{"reason":"slot","epoch":4}});
         assert!(crate::sync_views::agent_entity_view(&record, &Default::default()).is_some());
     }
 
@@ -1719,6 +1842,104 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn managed_rule_validation_keeps_numeric_error_precedence() {
+        let (_directory, store) = fixture().await;
+        for (input, expected) in [
+            (
+                json!({"intervalSeconds":1,"name":false}),
+                "Interval must be 10 seconds to one year",
+            ),
+            (
+                json!({"stallTimeoutSeconds":-1,"name":"Watch","text":false}),
+                "stall_timeout_seconds must be 0 to 31536000",
+            ),
+            (
+                json!({"kind":"nonsense","minimumWorkers":false}),
+                "Choose interval, once, file, event, or low_workers",
+            ),
+            (
+                json!({"kind":"low_workers","minimumWorkers":0,"command":false}),
+                "Minimum subagents must be 1 to 255",
+            ),
+            (json!({"event":"bad","command":false}), "Unknown event type"),
+        ] {
+            let request = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+            let error = rules(
+                &store,
+                ("lead", 3),
+                WatchAction::Save,
+                Some(&input),
+                &request,
+                100.0,
+                &Files,
+            )
+            .await
+            .expect_err("invalid input");
+            assert!(
+                matches!(error, RulesServiceError::Invalid(message) if message == expected),
+                "{error:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn low_worker_permission_precedes_bad_command_and_name() {
+        let (_directory, store) = fixture().await;
+        let request = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let input = json!({"kind":"low_workers", "command":false, "name":false});
+        let error = rules(
+            &store,
+            ("queued", 4),
+            WatchAction::Save,
+            Some(&input),
+            &request,
+            100.0,
+            &Files,
+        )
+        .await
+        .expect_err("not lead");
+        assert!(matches!(
+            error,
+            RulesServiceError::Invalid("Only an orchestrator can own a low-worker alert")
+        ));
+    }
+
+    #[tokio::test]
+    async fn managed_wire_defaults_and_preparation_error_order_are_preserved() {
+        let (_directory, store) = fixture().await;
+        let request = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let value = json!({"name":"watch", "kind":true, "event":[], "at":"invalid", "stallTimeoutSeconds":null, "stall_timeout_seconds":1});
+        let saved = rules(
+            &store,
+            ("lead", 3),
+            WatchAction::Save,
+            Some(&value),
+            &request,
+            100.0,
+            &Files,
+        )
+        .await
+        .expect("legacy defaults");
+        assert_eq!(saved.value["kind"], "interval");
+        assert_eq!(saved.value["event"], "worker_completed");
+        assert_eq!(saved.value["at"], 160.0);
+        let request = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let invalid = json!({"kind":"file","path":"notes.txt","name":false});
+        let error = rules(
+            &store,
+            ("lead", 3),
+            WatchAction::Save,
+            Some(&invalid),
+            &request,
+            100.0,
+            &FailingFiles,
+        )
+        .await
+        .expect_err("file preparation fails first");
+        assert!(matches!(error, RulesServiceError::FilePath));
+    }
+
+    #[tokio::test]
     async fn file_rule_save_pause_and_post_commit_cancellations() {
         let (_directory, store) = fixture().await;
         let generated_request = studio_runtime_schema::persistence::RequestIdentity::issue_root();
@@ -1729,8 +1950,8 @@ mod tests {
             json!({"kind":"file","name":"watch","path":"notes.txt","intervalSeconds":30});
         let first = rules(
             &store,
-            "lead",
-            3,
+            ("lead", 3),
+            WatchAction::Save,
             Some(&generated),
             &generated_request,
             100.0,
@@ -1740,25 +1961,41 @@ mod tests {
         .expect("save generated rule");
         let replay = rules(
             &store,
-            "lead",
-            3,
+            ("lead", 3),
+            WatchAction::Save,
             Some(&generated),
             &generated_request,
             101.0,
-            &Files,
+            &FailingFiles,
         )
         .await
         .expect("replay generated rule");
         assert_eq!(first.value, replay.value);
         assert!(first.value["id"].is_string());
         assert_eq!(first.value["fingerprint"], json!([123, 4, 5]));
+        let mut explicit_save = generated.clone();
+        explicit_save["action"] = json!("save");
+        assert!(
+            rules(
+                &store,
+                ("lead", 3),
+                WatchAction::Save,
+                Some(&explicit_save),
+                &generated_request,
+                101.0,
+                &Files,
+            )
+            .await
+            .is_err(),
+            "semantically equivalent input must not replace the original request identity"
+        );
 
         let mut save = generated;
         save["id"] = json!("rule-fixed");
         let saved = rules(
             &store,
-            "lead",
-            3,
+            ("lead", 3),
+            WatchAction::Save,
             Some(&save),
             &save_request,
             100.0,
@@ -1771,8 +2008,8 @@ mod tests {
         assert!(
             rules(
                 &store,
-                "lead",
-                3,
+                ("lead", 3),
+                WatchAction::Save,
                 Some(&mismatched),
                 &save_request,
                 102.0,
@@ -1787,7 +2024,7 @@ mod tests {
         )
         .expect("read rule row")
         .expect("saved rule remains");
-        assert_eq!(persisted_after_mismatch.value(), &saved.value);
+        assert_eq!(persisted_after_mismatch.value(), saved.value);
         store
             .transaction_with(move |tx| {
                 tx.execute(
@@ -1806,8 +2043,8 @@ mod tests {
             .expect("seed cancellation monitor");
         let paused = rules(
             &store,
-            "lead",
-            3,
+            ("lead", 3),
+            WatchAction::Pause,
             Some(&json!({"action":"pause","id":"rule-fixed"})),
             &pause_request,
             100.0,
@@ -1827,7 +2064,10 @@ mod tests {
         )
         .expect("read rule")
         .expect("rule exists");
-        assert_eq!(stored.get("status"), Some(&json!("paused")));
+        assert_eq!(
+            stored.status,
+            Some(studio_runtime_schema::rule_record::RuleStatus::Paused)
+        );
         store
             .test_reader()
             .expect("read rule sync projection")
@@ -1840,8 +2080,8 @@ mod tests {
         let resumed_request = studio_runtime_schema::persistence::RequestIdentity::issue_root();
         rules(
             &store,
-            "lead",
-            3,
+            ("lead", 3),
+            WatchAction::Resume,
             Some(&json!({"action":"resume","id":"rule-fixed"})),
             &resumed_request,
             102.0,
@@ -1851,8 +2091,8 @@ mod tests {
         .expect("later rule mutation");
         let replay = rules(
             &store,
-            "lead",
-            3,
+            ("lead", 3),
+            WatchAction::Pause,
             Some(&json!({"action":"pause","id":"rule-fixed"})),
             &pause_request,
             103.0,
@@ -1885,8 +2125,8 @@ mod tests {
         assert!(
             rules(
                 &store,
-                "lead",
-                3,
+                ("lead", 3),
+                WatchAction::Pause,
                 Some(&json!({"action":"pause","id":"rule-fixed"})),
                 &pause_request,
                 104.0,
@@ -2177,8 +2417,8 @@ mod tests {
         assert!(
             rules(
                 &store,
-                "lead",
-                3,
+                ("lead", 3),
+                WatchAction::Save,
                 Some(&file_rule),
                 &studio_runtime_schema::persistence::RequestIdentity::issue_root(),
                 100.0,
@@ -2207,8 +2447,8 @@ mod tests {
         assert!(
             rules(
                 &store,
-                "lead",
-                3,
+                ("lead", 3),
+                WatchAction::Save,
                 Some(&interval_rule),
                 &studio_runtime_schema::persistence::RequestIdentity::issue_root(),
                 100.0,
@@ -2237,8 +2477,8 @@ mod tests {
         assert!(
             rules(
                 &store,
-                "lead",
-                3,
+                ("lead", 3),
+                WatchAction::Save,
                 Some(&json!({"id":"rule-write-fail","kind":"interval","name":"rule"})),
                 &studio_runtime_schema::persistence::RequestIdentity::issue_root(),
                 100.0,

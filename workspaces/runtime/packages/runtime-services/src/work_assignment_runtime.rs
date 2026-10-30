@@ -1,7 +1,7 @@
 //! Transactional work-item assignment used by the worker creation path.
 
 use serde_json::Value;
-use studio_runtime_store::{AgentRecord, Transaction, WorkItemsRepository};
+use studio_runtime_store::{AgentRecord, Transaction, WorkItemsRepository, WorkStatus};
 
 use crate::event_write::{self, EventWriteError};
 use crate::work_write::WorkWriteError;
@@ -52,13 +52,13 @@ pub fn assign_in_transaction(
     let work = WorkItemsRepository::work_record(tx, task_id)?.ok_or(
         EventWriteError::InvalidRequest("Unknown task_id in this team; no workers were created"),
     )?;
-    if work.get("rootId").and_then(Value::as_str) != Some(current_actor.root_id.0.as_str()) {
+    if work.root_id() != Some(current_actor.root_id.0.as_str()) {
         return Err(EventWriteError::InvalidRequest("Invalid request").into());
     }
-    let saved_owner = work.get("owner").and_then(Value::as_str);
+    let saved_owner = work.owner();
     let version = work
-        .get("version")
-        .and_then(Value::as_i64)
+        .version()
+        .and_then(serde_json::Number::as_i64)
         .ok_or_else(|| invalid_work(task_id))?;
     if saved_owner == Some(owner_id) {
         return Ok(Assignment {
@@ -74,10 +74,7 @@ pub fn assign_in_transaction(
         )
         .into());
     }
-    if matches!(
-        work.get("status").and_then(Value::as_str),
-        Some("accepted" | "review")
-    ) {
+    if matches!(work.status(), WorkStatus::Accepted | WorkStatus::Review) {
         return Err(EventWriteError::InvalidRequest(
             "The task is accepted, under review or owned; no workers were created",
         )

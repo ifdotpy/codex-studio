@@ -3,6 +3,24 @@
 use super::*;
 use std::sync::Mutex;
 
+#[test]
+fn read_object_preserves_objects_and_rejects_invalid_files() {
+    let folder = tempfile::tempdir().unwrap();
+    let path = folder.path().join("record.json");
+    assert_eq!(read_object(&path), None);
+    fs::write(&path, r#"{"nested":{"enabled":true},"extra":[1,null]}"#).unwrap();
+    assert_eq!(
+        read_object(&path),
+        json!({"nested":{"enabled":true},"extra":[1,null]})
+            .as_object()
+            .cloned()
+    );
+    for input in ["{", "null", "true", "1", "\"text\"", "[]"] {
+        fs::write(&path, input).unwrap();
+        assert_eq!(read_object(&path), None, "{input}");
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn executable(path: &Path, text: &str) {
     use std::os::unix::fs::PermissionsExt;

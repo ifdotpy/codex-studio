@@ -1,9 +1,7 @@
 //! On-device transcription of saved dictation. The native helper is the same
 //! Speech framework program that the Electron app packages.
-use crate::{
-    delivery::{StoreSender, state},
-    protocol::{Request, Response},
-};
+use crate::protocol::{Request, Response};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
@@ -13,6 +11,33 @@ use std::{
 };
 use tokio::{io::AsyncBufReadExt, sync::broadcast};
 
+#[derive(Default, Deserialize)]
+struct SpeechId<'a> {
+    #[serde(borrow)]
+    id: Option<&'a str>,
+}
+#[derive(Default, Deserialize)]
+struct SpeechLocale<'a> {
+    #[serde(borrow)]
+    locale: Option<&'a str>,
+}
+#[derive(Default, Deserialize)]
+struct SpeechTransfer<'a> {
+    #[serde(borrow)]
+    transfer: Option<&'a str>,
+}
+#[derive(Default, Deserialize)]
+struct SpeechPermit<'a> {
+    #[serde(borrow)]
+    permit: Option<&'a str>,
+}
+fn project<'a, T: Deserialize<'a> + Default>(value: &'a Value) -> T {
+    if value.is_object() {
+        T::deserialize(value).unwrap_or_default()
+    } else {
+        T::default()
+    }
+}
 const PERMIT_LIFETIME: Duration = Duration::from_secs(60);
 const TIMEOUT: Duration = Duration::from_secs(75 * 60);
 pub const CANCELLED: &str = "Transcription canceled. Your recording is saved.";
@@ -48,8 +73,11 @@ pub fn prepare(now: Instant) -> Result<Value, String> {
 
 /// Called after the native gesture for Cancel transcription.
 pub fn cancel(id: &Value) -> Result<Value, String> {
+    let id = Option::<&str>::deserialize(id).ok().flatten();
+    cancel_id(id)
+}
+fn cancel_id(id: Option<&str>) -> Result<Value, String> {
     let id = id
-        .as_str()
         .filter(|id| !id.is_empty() && id.len() <= 128)
         .ok_or("Invalid transcription identity.")?;
     let mut service = service()
@@ -85,7 +113,7 @@ fn upload(method: &str, params: &Value) -> Result<Value, String> {
         let service = service()
             .lock()
             .map_err(|_| "The speech service stopped.")?;
-        let permit = params["permit"].as_str().unwrap_or("");
+        let permit = project::<SpeechPermit<'_>>(params).permit.unwrap_or("");
         if !service
             .permits
             .get(permit)
@@ -151,16 +179,96 @@ pub fn validate_wav(data: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(serde::Deserialize)]
+#[serde(tag = "type")]
+enum HelperProgress {
+    #[serde(rename = "progress")]
+    Progress { completed: i64, total: i64 },
+}
+
+fn parse_progress(line: &str) -> Option<HelperProgress> {
+    serde_json::from_str(line).ok()
+}
+
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum OptionalField<T> {
+    Valid(T),
+    Other(serde::de::IgnoredAny),
+}
+
+fn tolerant_field<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    Ok(match OptionalField::deserialize(deserializer)? {
+        OptionalField::Valid(value) => Some(value),
+        OptionalField::Other(_) => None,
+    })
+}
+
+#[derive(serde::Deserialize)]
+struct HelperFields {
+    #[serde(default, deserialize_with = "tolerant_field")]
+    text: Option<String>,
+    #[serde(default, deserialize_with = "tolerant_field")]
+    provider: Option<String>,
+    #[serde(default, rename = "onDevice", deserialize_with = "tolerant_field")]
+    on_device: Option<bool>,
+    #[serde(default, deserialize_with = "tolerant_field")]
+    error: Option<String>,
+    // Flattening ignored members also makes this an object-only wire shape.
+    #[serde(flatten)]
+    _unknown: std::collections::BTreeMap<String, serde::de::IgnoredAny>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum HelperOutput {
+    Object(HelperFields),
+    Other(serde::de::IgnoredAny),
+}
+
+enum HelperOutcome {
+    Success {
+        text: String,
+        provider: String,
+        on_device: bool,
+    },
+    Failure(String),
+}
+
+fn helper_outcome(bytes: &[u8], success: bool) -> HelperOutcome {
+    const FAILED: &str =
+        "Native transcription failed. Your recording is saved; retry transcription.";
+    const EMPTY: &str = "No speech was recognized. Your recording is saved.";
+    let parsed = serde_json::from_slice::<HelperOutput>(bytes);
+    let fields = match parsed {
+        Ok(HelperOutput::Object(fields)) => fields,
+        Ok(HelperOutput::Other(_)) => {
+            return HelperOutcome::Failure(if success { EMPTY } else { FAILED }.into());
+        }
+        Err(_) => return HelperOutcome::Failure(FAILED.into()),
+    };
+    if success && let Some(text) = fields.text.filter(|text| !text.trim().is_empty()) {
+        return HelperOutcome::Success {
+            text,
+            provider: fields.provider.unwrap_or_else(|| "macOS Speech".into()),
+            on_device: fields.on_device.unwrap_or(true),
+        };
+    }
+    HelperOutcome::Failure(
+        fields
+            .error
+            .unwrap_or_else(|| if success { EMPTY } else { FAILED }.into()),
+    )
+}
+
 /// Only increasing, bounded progress lines are events. Other output is diagnostic.
 fn progress_line(line: &str, previous: &mut i64) -> Option<(i64, i64)> {
-    let value: Value = serde_json::from_str(line).ok()?;
-    let (completed, total) = (value["completed"].as_i64()?, value["total"].as_i64()?);
-    if value["type"] != "progress"
-        || !(1..=37).contains(&total)
-        || completed < 0
-        || completed > total
-        || completed <= *previous
-    {
+    let HelperProgress::Progress { completed, total } = parse_progress(line)?;
+    if !(1..=37).contains(&total) || completed < 0 || completed > total || completed <= *previous {
         return None;
     }
     *previous = completed;
@@ -247,45 +355,31 @@ async fn run(
             return Err(error);
         }
     };
-    let parsed: Option<Value> = serde_json::from_slice(&bytes).ok();
-    if !status.success() {
-        return Err(parsed
-            .as_ref()
-            .and_then(|v| v["error"].as_str())
-            .map(str::to_owned)
-            .unwrap_or(
-                "Native transcription failed. Your recording is saved; retry transcription.".into(),
-            ));
-    }
-    let value = parsed
-        .ok_or("Native transcription failed. Your recording is saved; retry transcription.")?;
-    match value["text"].as_str() {
-        Some(text) if !text.trim().is_empty() => Ok(json!({
+    match helper_outcome(&bytes, status.success()) {
+        HelperOutcome::Success {
+            text,
+            provider,
+            on_device,
+        } => Ok(json!({
             "text": text,
-            "provider": value["provider"].as_str().unwrap_or("macOS Speech"),
-            "onDevice": value["onDevice"].as_bool().unwrap_or(true),
+            "provider": provider,
+            "onDevice": on_device,
         })),
-        _ => Err(value["error"]
-            .as_str()
-            .unwrap_or("No speech was recognized. Your recording is saved.")
-            .to_owned()),
+        HelperOutcome::Failure(error) => Err(error),
     }
 }
 
-async fn transcribe(store: &StoreSender, params: &Value) -> Result<Value, String> {
-    let id = params["id"]
-        .as_str()
+async fn transcribe(params: &Value) -> Result<Value, String> {
+    let id = project::<SpeechId<'_>>(params)
+        .id
         .filter(|v| !v.is_empty() && v.len() <= 128)
         .ok_or("Invalid transcription identity.")?
         .to_owned();
-    let locale = params["locale"]
-        .as_str()
+    let locale = project::<SpeechLocale<'_>>(params)
+        .locale
         .filter(|v| valid_locale(v))
         .ok_or("Invalid speech language.")?;
-    let recording = params["recording"]
-        .as_str()
-        .filter(|v| !v.is_empty() && v.len() <= 128);
-    if recording.is_none() && !params["transfer"].is_string() {
+    if project::<SpeechTransfer<'_>>(params).transfer.is_none() {
         return Err("Invalid recording.".into());
     }
     let (stop, stopped) = tokio::sync::watch::channel(false);
@@ -293,7 +387,7 @@ async fn transcribe(store: &StoreSender, params: &Value) -> Result<Value, String
         let mut service = service()
             .lock()
             .map_err(|_| "The speech service stopped.")?;
-        let permit = params["permit"].as_str().unwrap_or("");
+        let permit = project::<SpeechPermit<'_>>(params).permit.unwrap_or("");
         match service.permits.remove(permit) {
             Some(expires) if expires > Instant::now() => {}
             _ => return Err("Use the Transcribe button again.".into()),
@@ -315,40 +409,22 @@ async fn transcribe(store: &StoreSender, params: &Value) -> Result<Value, String
         .prefix("codex-studio-speech-")
         .tempdir()
         .map_err(|e| e.to_string())?;
-    let file = if let Some(recording) = recording {
-        let exported = state(
-            store,
-            "dictation.wav",
-            json!({"id":recording,"directory":directory.path()}),
-        )
-        .await?;
-        let file = PathBuf::from(
-            exported["path"]
-                .as_str()
-                .ok_or("The recording was not exported.")?,
-        );
-        let bytes = tokio::fs::read(&file).await.map_err(|e| e.to_string())?;
-        validate_wav(&bytes)?;
-        file
-    } else {
-        let (_, bytes) = uploads()
-            .lock()
-            .map_err(|_| "The speech upload stopped.")?
-            .take(params, Instant::now())?;
-        validate_wav(&bytes)?;
-        let file = directory.path().join("recording.wav");
-        tokio::fs::write(&file, bytes)
-            .await
-            .map_err(|e| e.to_string())?;
-        file
-    };
+    let (_, bytes) = uploads()
+        .lock()
+        .map_err(|_| "The speech upload stopped.")?
+        .take(params, Instant::now())?;
+    validate_wav(&bytes)?;
+    let file = directory.path().join("recording.wav");
+    tokio::fs::write(&file, bytes)
+        .await
+        .map_err(|e| e.to_string())?;
     run(&helper()?, &file, locale, &id, stopped).await
 }
 
-pub async fn dispatch(store: &StoreSender, request: Request) -> Response {
+pub async fn dispatch(request: Request) -> Response {
     let result = match request.method.as_str() {
-        "speech.transcribe" => transcribe(store, &request.params).await,
-        "speech.cancel" => cancel(&request.params["id"]),
+        "speech.transcribe" => transcribe(&request.params).await,
+        "speech.cancel" => cancel_id(project::<SpeechId<'_>>(&request.params).id),
         "speech.uploadBegin" | "speech.uploadChunk" | "speech.uploadCancel" => {
             upload(&request.method, &request.params)
         }
@@ -363,6 +439,50 @@ pub async fn dispatch(store: &StoreSender, request: Request) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn speech_command_validation_keeps_permit_until_cancelled_attempt() {
+        let permit = prepare(Instant::now()).unwrap();
+        let id = "speech-input-order-fixture";
+        let request = |params| Request {
+            id: "fixture".into(),
+            method: "speech.transcribe".into(),
+            params,
+        };
+        for (params, expected) in [
+            (
+                json!({"id":null,"locale":null,"permit":permit}),
+                "Invalid transcription identity.",
+            ),
+            (
+                json!({"id":id,"locale":null,"permit":permit}),
+                "Invalid speech language.",
+            ),
+            (
+                json!({"id":id,"locale":"en","recording":null,"transfer":null,"permit":permit}),
+                "Invalid recording.",
+            ),
+            (
+                json!({"id":id,"locale":"en","recording":"old","permit":permit}),
+                "Invalid recording.",
+            ),
+        ] {
+            assert_eq!(
+                dispatch(request(params)).await.error.unwrap().message,
+                expected
+            );
+        }
+        let bad = upload("speech.uploadBegin", &json!({"permit":"bad","size":null}));
+        assert_eq!(bad.unwrap_err(), "Use the Transcribe button again.");
+        cancel(&json!(id)).unwrap();
+        let params = json!({"id":id,"locale":"en","recording":null,"transfer":"","permit":permit});
+        let first = dispatch(request(params.clone())).await;
+        assert_eq!(first.error.unwrap().message, CANCELLED);
+        let replay = dispatch(request(params)).await;
+        assert_eq!(
+            replay.error.unwrap().message,
+            "Use the Transcribe button again."
+        );
+    }
     #[test]
     fn speech_uploads_require_permission_preserve_bytes_and_cannot_authorize_saves() {
         use base64::Engine;
@@ -403,18 +523,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancellation_before_dispatch_never_reads_the_saved_recording() {
+    async fn cancellation_before_dispatch_never_reads_the_upload() {
         let id = "cancel-before-worker";
         let permit = prepare(Instant::now()).unwrap();
         assert_eq!(cancel(&json!(id)).unwrap(), false);
-        let (store, mut receiver) = tokio::sync::mpsc::channel(1);
-        let result = transcribe(
-            &store,
-            &json!({"id":id,"permit":permit,"locale":"en-US","recording":"saved"}),
-        )
-        .await;
+        let result =
+            transcribe(&json!({"id":id,"permit":permit,"locale":"en-US","transfer":"saved"})).await;
         assert_eq!(result.unwrap_err(), CANCELLED);
-        assert!(receiver.try_recv().is_err());
     }
 
     #[test]
@@ -433,7 +548,7 @@ mod tests {
         ] {
             assert!(!valid_locale(bad), "{bad}");
         }
-        let mut wav = crate::dictation::wav_header(2, 16000).to_vec();
+        let mut wav = b"RIFF\x28\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\x3e\0\0\0\x7d\0\0\x02\0\x10\0data\x04\0\0\0".to_vec();
         wav.extend([1, 0, 2, 0]);
         validate_wav(&wav).unwrap();
         let mut odd = wav.clone();
@@ -447,6 +562,7 @@ mod tests {
             "diagnostic",
             r#"{"type":"progress","completed":3,"total":2}"#,
             r#"{"type":"progress","completed":1,"total":38}"#,
+            r#"{"type":"progress","completed":1.0,"total":2}"#,
             r#"{"type":"progress","completed":2,"total":2}"#,
         ];
         let events: Vec<_> = lines
@@ -466,6 +582,9 @@ mod tests {
              en-US) echo '{\"type\":\"progress\",\"completed\":0,\"total\":1}' >&2; echo '{\"type\":\"progress\",\"completed\":1,\"total\":1}' >&2; echo '{\"text\":\"Привет 🦀\",\"provider\":\"macOS Speech\",\"onDevice\":true}';;\n\
              de-DE) echo '{\"error\":\"On-device speech is unavailable.\"}'; exit 1;;\n\
              fr-FR) echo 'not json'; exit 1;;\n\
+             it-IT) echo '{\"text\":\"hello\",\"provider\":42,\"onDevice\":null,\"extension\":true}';;\n\
+             es-ES) echo '[\"hello\",\"provider\",true]';;\n\
+             pt-BR) echo '{\"text\":\" \",\"error\":\"No result\"}';;\n\
              *) mkfifo \"$1\"; echo '{\"type\":\"progress\",\"completed\":0,\"total\":1}' >&2; exec cat \"$1\";;\nesac\n",
         )
         .unwrap();
@@ -492,10 +611,28 @@ mod tests {
             "On-device speech is unavailable."
         );
         assert!(
-            run(&script, &file, "fr-FR", "three", stopped)
+            run(&script, &file, "fr-FR", "three", stopped.clone())
                 .await
                 .unwrap_err()
                 .starts_with("Native transcription failed")
+        );
+        assert_eq!(
+            run(&script, &file, "it-IT", "defaults", stopped.clone())
+                .await
+                .unwrap(),
+            json!({"text":"hello","provider":"macOS Speech","onDevice":true})
+        );
+        assert_eq!(
+            run(&script, &file, "es-ES", "array", stopped.clone())
+                .await
+                .unwrap_err(),
+            "No speech was recognized. Your recording is saved."
+        );
+        assert_eq!(
+            run(&script, &file, "pt-BR", "empty", stopped)
+                .await
+                .unwrap_err(),
+            "No result"
         );
         let (stop, stopped) = tokio::sync::watch::channel(false);
         let task = tokio::spawn({

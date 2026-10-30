@@ -1445,31 +1445,69 @@ fn parse_object(raw: &str, table: &'static str) -> Result<Value, AnalyticsError>
     }
     Ok(value)
 }
+/// Tolerant projection of historical item records used by message metadata.
+pub struct MessageItem {
+    pub kind: Option<String>,
+    pub thread_id: Option<String>,
+    pub turn_id: Option<String>,
+    pub at: Option<serde_json::Number>,
+}
+
+/// Historical turns may be partial; fields retain the reader's old fallbacks.
+pub struct MessageTurn {
+    pub thread_id: Option<String>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub account_key: Option<String>,
+    pub duration_ms: Option<serde_json::Number>,
+    pub status: Option<String>,
+}
+
+fn message_text(row: &Value, key: &str) -> Option<String> {
+    row.get(key).and_then(Value::as_str).map(str::to_owned)
+}
+
 pub fn message_item(
     db: &Connection,
     agent: &str,
     item: &str,
     thread: Option<&str>,
-) -> Result<Option<Value>, AnalyticsError> {
-    unique_record(
+) -> Result<Option<MessageItem>, AnalyticsError> {
+    Ok(unique_record(
         db,
         "SELECT record FROM analytics_items WHERE agent=?1 AND json_extract(record,'$.itemId')=?2 AND (?3 IS NULL OR thread=?3) LIMIT 2",
         rusqlite::params![agent, item, thread],
         "analytics_items",
-    )
+    )?.map(|row| MessageItem {
+        kind: message_text(&row, "type"),
+        thread_id: message_text(&row, "threadId"),
+        turn_id: message_text(&row, "turnId"),
+        at: row.get("finishedAt").filter(|value| !value.is_null())
+            .or_else(|| row.get("startedAt"))
+            .or_else(|| row.get("at"))
+            .and_then(Value::as_number).cloned(),
+    }))
 }
 pub fn message_turn(
     db: &Connection,
     agent: &str,
     turn: &str,
     thread: Option<&str>,
-) -> Result<Option<Value>, AnalyticsError> {
-    unique_record(
+) -> Result<Option<MessageTurn>, AnalyticsError> {
+    Ok(unique_record(
         db,
         "SELECT record FROM analytics_turns WHERE agent=?1 AND json_extract(record,'$.turnId')=?2 AND (?3 IS NULL OR json_extract(record,'$.threadId')=?3) LIMIT 2",
         rusqlite::params![agent, turn, thread],
         "analytics_turns",
-    )
+    )?.map(|row| MessageTurn {
+        thread_id: message_text(&row, "threadId"),
+        model: message_text(&row, "model"),
+        effort: message_text(&row, "effort"),
+        account_key: message_text(&row, "accountKey"),
+        duration_ms: row.get("nativeDurationMs").or_else(|| row.get("durationMs"))
+            .and_then(Value::as_number).cloned(),
+        status: message_text(&row, "status"),
+    }))
 }
 pub fn message_run(
     db: &Connection,

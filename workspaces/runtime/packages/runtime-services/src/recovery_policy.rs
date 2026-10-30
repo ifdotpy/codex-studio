@@ -4,6 +4,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
 use studio_runtime_schema::provider_errors::is_misalignment_policy_violation;
+use studio_runtime_schema::recovery_record::{RecoveryAgentRecord, RecoveryFields, RecoverySource};
 use studio_runtime_schema::shared_values::LEGACY_VM_PROVIDER_DISCONNECTED_TURN_ERROR;
 use studio_runtime_store::{
     BACKEND_RESTARTED_TURN_ERROR, PROVIDER_DISCONNECTED_TURN_ERROR,
@@ -29,11 +30,13 @@ pub enum InvalidRecoveryRecord {
 #[derive(Clone)]
 pub struct RecoverySnapshot {
     agent: Arc<Value>,
+    typed: Arc<RecoveryAgentRecord>,
 }
 /// Proof from the recovery policy that this saved turn may be checked automatically.
 /// Private fields keep the account caller and completion writer on one eligibility owner.
 pub(crate) struct AutomaticTurnRecovery<'a> {
     record: &'a Value,
+    typed: &'a RecoveryAgentRecord,
     kind: AutomaticTurnKind,
 }
 
@@ -55,7 +58,13 @@ impl AutomaticTurnRecovery<'_> {
         receipt["turnId"] == turn_id
             && match self.kind {
                 AutomaticTurnKind::Restart => {
-                    matches!(receipt["stage"].as_str(), Some("pending" | "superseded"))
+                    matches!(
+                        self.typed
+                            .restart_recovery
+                            .as_deref()
+                            .and_then(|r| r.stage.as_deref()),
+                        Some("pending" | "superseded")
+                    )
                 }
                 AutomaticTurnKind::Transport => true,
             }
@@ -64,17 +73,13 @@ impl AutomaticTurnRecovery<'_> {
 
 impl RecoverySnapshot {
     pub fn from_record(agent: Value) -> Result<Self, InvalidRecoveryRecord> {
-        if !studio_runtime_schema::validate("RecoveryAgentRecord", &agent).map_err(|_| {
-            InvalidRecoveryRecord::Schema {
-                location: "RecoveryAgentRecord.schema",
-            }
-        })? {
-            return Err(InvalidRecoveryRecord::Schema {
+        let typed: RecoveryAgentRecord =
+            serde::Deserialize::deserialize(&agent).map_err(|_| InvalidRecoveryRecord::Schema {
                 location: "runtime_agents.recovery",
-            });
-        }
+            })?;
         Ok(Self {
             agent: Arc::new(agent),
+            typed: Arc::new(typed),
         })
     }
     pub fn record(&self) -> &Value {
@@ -91,8 +96,36 @@ impl RecoverySnapshot {
             })
             .unwrap_or(&NULL_VALUE)
     }
+    pub(crate) fn restart_input_wait(&self) -> bool {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Marker {
+            stage: Option<String>,
+        }
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Record {
+            restart_recovery: Option<Marker>,
+            context_repair_wait: Option<serde::de::IgnoredAny>,
+        }
+        serde_json::from_str::<Record>(&self.agent.to_string())
+            .ok()
+            .is_some_and(|record| {
+                record
+                    .restart_recovery
+                    .and_then(|marker| marker.stage)
+                    .as_deref()
+                    == Some("held")
+                    && record.context_repair_wait.is_some()
+            })
+    }
+
+    pub(crate) fn is_unclean_start(&self) -> bool {
+        unclean_start_candidate(&self.agent.to_string()) && clear(&self.agent, &self.typed)
+    }
+
     pub fn eligibility(&self) -> Eligibility {
-        eligibility(&self.agent)
+        eligibility(&self.agent, &self.typed)
     }
 
     pub(crate) fn automatic_turn(&self) -> Option<AutomaticTurnRecovery<'_>> {
@@ -106,6 +139,7 @@ impl RecoverySnapshot {
         };
         Some(AutomaticTurnRecovery {
             record: self.record(),
+            typed: &self.typed,
             kind,
         })
     }
@@ -181,15 +215,20 @@ fn account_equal(a: &Value, b: &Value) -> bool {
     a.get("accountKey").cloned().unwrap_or(json!("default"))
         == b.get("accountKey").cloned().unwrap_or(json!("default"))
 }
-fn thread_block(a: &Value) -> bool {
-    (has(a, "threadId") && a["nativeThreadBlock"]["threadId"] == a["threadId"])
-        || (has(a, "threadId")
+fn thread_block(a: &Value, typed: &RecoveryAgentRecord) -> bool {
+    (typed.thread_id.as_deref().is_some_and(|s| !s.is_empty())
+        && a["nativeThreadBlock"]["threadId"] == a["threadId"])
+        || (typed.thread_id.as_deref().is_some_and(|s| !s.is_empty())
             && (is_misalignment_policy_violation(&a["error"])
-                || (has(&a["nativeTurnError"], "turnId")
+                || (typed
+                    .native_turn_error
+                    .as_deref()
+                    .and_then(|e| e.turn_id.as_deref())
+                    .is_some_and(|s| !s.is_empty())
                     && a["nativeTurnError"]["turnId"] == a["turnId"]
                     && is_misalignment_policy_violation(&a["nativeTurnError"]["error"]))))
 }
-fn clear(a: &Value) -> bool {
+fn clear(a: &Value, typed: &RecoveryAgentRecord) -> bool {
     ![
         "deletedAt",
         "nativeFailureHold",
@@ -198,23 +237,24 @@ fn clear(a: &Value) -> bool {
     ]
     .iter()
     .any(|k| has(a, k))
-        && !thread_block(a)
+        && !thread_block(a, typed)
 }
-fn attempt_matches(a: &Value, t: &Value) -> bool {
-    has(t, "id")
+fn attempt_matches(a: &Value, t: &Value, typed: &RecoveryFields) -> bool {
+    typed.id.as_deref().is_some_and(|s| !s.is_empty())
         && t["epoch"] == a["epoch"]
         && account_equal(t, a)
         && !has(t, "action")
-        && !has(t, "activeAtReservation")
-        && !has(t, "turnId")
-        && !has(t, "observedTurnId")
+        && !typed.active_at_reservation.unwrap_or(false)
+        && !typed.turn_id.as_deref().is_some_and(|s| !s.is_empty())
+        && !typed
+            .observed_turn_id
+            .as_deref()
+            .is_some_and(|s| !s.is_empty())
 }
-fn events_valid(t: &Value) -> bool {
-    t["events"].as_array().is_some_and(|events| {
+fn events_valid(t: &RecoveryFields) -> bool {
+    t.events.as_ref().is_some_and(|events| {
         !events.is_empty()
-            && events
-                .iter()
-                .all(|e| e.as_str().is_some_and(|s| !s.is_empty()))
+            && events.iter().all(|event| !event.is_empty())
             && events
                 .iter()
                 .collect::<std::collections::HashSet<_>>()
@@ -225,7 +265,101 @@ fn events_valid(t: &Value) -> bool {
 fn scope(a: &Value) -> Value {
     json!({"id":a["id"],"accountKey":a["accountKey"],"epoch":a["epoch"],"threadId":a["threadId"]})
 }
-fn eligibility(a: &Value) -> Eligibility {
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UncleanStartCandidate {
+    epoch: i64,
+    account_key: Option<String>,
+    thread_id: Option<String>,
+    status: String,
+    in_flight: Option<bool>,
+    auto_wake: Option<bool>,
+    start_attempt: UncleanAttempt,
+    start_outcome_hold: UncleanHold,
+    deleted_at: Option<serde::de::IgnoredAny>,
+    native_failure_hold: Option<bool>,
+    account_transfer_id: Option<String>,
+    workspace_operation: Option<serde::de::IgnoredAny>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UncleanAttempt {
+    id: String,
+    epoch: i64,
+    account_key: Option<String>,
+    thread_id: Option<String>,
+    submitted: bool,
+    events: Vec<String>,
+    turn_id: Option<String>,
+    observed_turn_id: Option<String>,
+    action: Option<serde::de::IgnoredAny>,
+    active_at_reservation: Option<bool>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UncleanHold {
+    stage: String,
+    reason: Option<String>,
+    attempt_id: Option<String>,
+}
+
+fn unclean_start_candidate(raw: &str) -> bool {
+    let Ok(candidate) = serde_json::from_str::<UncleanStartCandidate>(raw) else {
+        return false;
+    };
+    let attempt = &candidate.start_attempt;
+    let hold = &candidate.start_outcome_hold;
+    let mut events = std::collections::BTreeSet::new();
+    candidate.status == "interrupted"
+        && candidate.in_flight == Some(false)
+        && candidate.auto_wake == Some(false)
+        && candidate.deleted_at.is_none()
+        && candidate.native_failure_hold != Some(true)
+        && candidate.account_transfer_id.is_none()
+        && candidate.workspace_operation.is_none()
+        && candidate
+            .thread_id
+            .as_deref()
+            .is_some_and(|thread| !thread.is_empty())
+        && attempt
+            .thread_id
+            .as_ref()
+            .is_none_or(|thread| Some(thread) == candidate.thread_id.as_ref())
+        && candidate.account_key.as_deref().unwrap_or("default")
+            == attempt.account_key.as_deref().unwrap_or("default")
+        && candidate.epoch == attempt.epoch
+        && !attempt.id.is_empty()
+        && !attempt.submitted
+        && attempt.turn_id.is_none()
+        && attempt.observed_turn_id.is_none()
+        && attempt.action.is_none()
+        && attempt.active_at_reservation != Some(true)
+        && !attempt.events.is_empty()
+        && attempt
+            .events
+            .iter()
+            .all(|event| !event.is_empty() && events.insert(event))
+        && hold.stage == "held"
+        && hold.reason.as_deref()
+            == Some(studio_runtime_store::SchedulerRepository::UNCLEAN_START_HOLD)
+        && hold.attempt_id.as_deref() == Some(attempt.id.as_str())
+}
+
+fn eligibility(a: &Value, typed: &RecoveryAgentRecord) -> Eligibility {
+    let empty = RecoveryFields::default();
+    let rt = typed.restart_recovery.as_deref().unwrap_or(&empty);
+    let tt = typed
+        .start_attempt
+        .as_deref()
+        .or(rt.start_attempt.as_deref())
+        .unwrap_or(&empty);
+    let d_typed = typed.disconnect_recovery.as_deref().unwrap_or(&empty);
+    let dt_typed = d_typed.start_attempt.as_deref().unwrap_or(&empty);
+    let repair_typed = typed.context_repair.as_deref().unwrap_or(&empty);
+
     let r = &a["restartRecovery"];
     let t = a
         .get("startAttempt")
@@ -235,20 +369,26 @@ fn eligibility(a: &Value) -> Eligibility {
     let w = &a["contextRepairWait"];
     let repair = &a["contextRepair"];
     let c = &a["connectionRecovery"];
-    let inactive = !has(a, "inFlight");
-    let stopped = inactive && !has(a, "autoWake");
+    let inactive = !typed.in_flight.unwrap_or(false);
+    let stopped = inactive && !typed.auto_wake.unwrap_or(false);
     let turn_epoch = a.get("turnEpoch").unwrap_or(&a["epoch"]) == &a["epoch"];
-    let orphan_busy = has(a, "inFlight")
-        && !has(a, "turnId")
+    let orphan_busy = typed.in_flight.unwrap_or(false)
+        && !typed.turn_id.as_deref().is_some_and(|s| !s.is_empty())
         && !has(a, "startAttempt")
-        && has(a, "threadId")
+        && typed.thread_id.as_deref().is_some_and(|s| !s.is_empty())
         && !has(a, "deletedAt");
-    let restart_input_wait = r["stage"] == "held" && has(a, "contextRepairWait");
-    let unconfirmed_start =
-        (has(a, "inFlight") || a["startOutcomeHold"]["stage"] == "held" || restart_input_wait)
-            && has(a, "autoWake")
-            && !has(a, "turnId")
-            && has(a, "threadId")
+    let restart_input_wait = rt.stage.as_deref() == Some("held") && has(a, "contextRepairWait");
+    let unconfirmed_start = (unclean_start_candidate(&a.to_string()) && clear(a, typed))
+        || (typed.in_flight.unwrap_or(false)
+            || typed
+                .start_outcome_hold
+                .as_deref()
+                .and_then(|hold| hold.stage.as_deref())
+                == Some("held")
+            || restart_input_wait)
+            && typed.auto_wake.unwrap_or(false)
+            && !typed.turn_id.as_deref().is_some_and(|s| !s.is_empty())
+            && typed.thread_id.as_deref().is_some_and(|s| !s.is_empty())
             && ![
                 "deletedAt",
                 "nativeFailureHold",
@@ -258,23 +398,26 @@ fn eligibility(a: &Value) -> Eligibility {
             .iter()
             .any(|k| has(a, k))
             && !has(t, "action")
-            && has(t, "id")
-            && t["submitted"] == true
-            && (t["executionOutcome"] == "unknown"
+            && tt.id.as_deref().is_some_and(|s| !s.is_empty())
+            && tt.submitted == Some(true)
+            && (tt.execution_outcome.as_deref() == Some("unknown")
                 // A process stop can end a submitted start before its response
                 // records an outcome; a held restart marker keeps that attempt
                 // without one, which is unknown too.
                 || (restart_input_wait
                     && !has(a, "startAttempt")
-                    && t.get("executionOutcome").is_none_or(Value::is_null))
+                    && tt.execution_outcome.is_none())
                 || a["error"] == "turn/start response timed out; outcome unknown")
             && t["epoch"] == a["epoch"]
             && account_equal(t, a)
             && t["threadId"] == a["threadId"]
-            && has(t, "events")
-            && !has(t, "turnId")
-            && !has(t, "observedTurnId");
-    let busy_provider = has(a, "threadId")
+            && tt.events.as_ref().is_some_and(|events| !events.is_empty())
+            && !tt.turn_id.as_deref().is_some_and(|s| !s.is_empty())
+            && !tt
+                .observed_turn_id
+                .as_deref()
+                .is_some_and(|s| !s.is_empty());
+    let busy_provider = typed.thread_id.as_deref().is_some_and(|s| !s.is_empty())
         && a["error"]
             .as_str()
             .and_then(|s| serde_json::from_str::<Value>(s).ok())
@@ -282,11 +425,11 @@ fn eligibility(a: &Value) -> Eligibility {
             .is_some_and(|(error, kind)| {
                 crate::provider_adapter::adapter(kind).is_busy_error(&error)
             });
-    let preparation = a["status"] == "failed"
-        && has(a, "autoWake")
+    let preparation = typed.status == "failed"
+        && typed.auto_wake.unwrap_or(false)
         && inactive
-        && !has(a, "turnId")
-        && clear(a)
+        && !typed.turn_id.as_deref().is_some_and(|s| !s.is_empty())
+        && clear(a, typed)
         && (busy_provider
             || one(
                 &a["error"],
@@ -298,14 +441,14 @@ fn eligibility(a: &Value) -> Eligibility {
                     "Supervisor open failed: Supervisor handle exists with an incompatible or stopped child",
                 ],
             ))
-        && attempt_matches(a, t)
-        && t["submitted"] == false
-        && has(t, "events");
+        && attempt_matches(a, t, tt)
+        && tt.submitted == Some(false)
+        && tt.events.as_ref().is_some_and(|events| !events.is_empty());
     let dt = &d["startAttempt"];
-    let disconnected_preparation = a["status"] == "interrupted"
+    let disconnected_preparation = typed.status == "interrupted"
         && stopped
         && !has(a, "startAttempt")
-        && !has(a, "turnId")
+        && !typed.turn_id.as_deref().is_some_and(|s| !s.is_empty())
         && one(
             &a["error"],
             &[
@@ -314,33 +457,36 @@ fn eligibility(a: &Value) -> Eligibility {
                 LEGACY_VM_PROVIDER_DISCONNECTED_TURN_ERROR,
             ],
         )
-        && has(d, "autoWake")
-        && !has(d, "turnId")
+        && d_typed.auto_wake.unwrap_or(false)
+        && !d_typed.turn_id.as_deref().is_some_and(|s| !s.is_empty())
         && same(a, d, &["epoch", "accountKey", "threadId"])
-        && attempt_matches(a, dt)
-        && dt["submitted"] == false
-        && events_valid(dt)
-        && clear(a)
-        && !one(&r["stage"], &["pending", "held", "superseded"]);
-    let state_match = (one(
-        &a["status"],
-        &["interrupted", "paused", "completed", "failed"],
+        && attempt_matches(a, dt, dt_typed)
+        && dt_typed.submitted == Some(false)
+        && events_valid(dt_typed)
+        && clear(a, typed)
+        && !matches!(rt.stage.as_deref(), Some("pending" | "held" | "superseded"));
+    let state_match = (matches!(
+        typed.status.as_str(),
+        "interrupted" | "paused" | "completed" | "failed"
     ) && (a["turnId"].is_null() || a["turnId"] == r["turnId"]))
-        || (a["status"] == "running" && has(a, "inFlight") && has(a, "autoWake"));
-    let pending_restart_turn = one(&r["stage"], &["pending", "superseded"])
-        && has(r, "autoWake")
-        && has(r, "turnId")
-        && d["source"] == "restart"
+        || (typed.status == "running"
+            && typed.in_flight.unwrap_or(false)
+            && typed.auto_wake.unwrap_or(false));
+    let pending_restart_turn = matches!(rt.stage.as_deref(), Some("pending" | "superseded"))
+        && rt.auto_wake.unwrap_or(false)
+        && rt.turn_id.as_deref().is_some_and(|s| !s.is_empty())
+        && matches!(d_typed.source.as_ref(), Some(RecoverySource::Text(source)) if source == "restart")
         && r["epoch"] == a["epoch"]
         && account_equal(r, a)
         && r["threadId"] == a["threadId"]
         && state_match
-        && clear(a);
+        && clear(a, typed);
     let mut wait_scope = scope(a);
     wait_scope["attemptId"] = t["id"].clone();
-    let supervisor_wait =
-        a["status"] == "failed" && !has(a, "contextRepairWait") && a["error"] == SUPERVISOR_UNKNOWN;
-    let context_wait = a["status"] == "queued"
+    let supervisor_wait = typed.status == "failed"
+        && !has(a, "contextRepairWait")
+        && a["error"] == SUPERVISOR_UNKNOWN;
+    let context_wait = typed.status == "queued"
         && one(
             &a["error"],
             &[
@@ -354,31 +500,34 @@ fn eligibility(a: &Value) -> Eligibility {
         && w["events"] == t["events"]
         && !has(w, "action");
     let queued_restart = (supervisor_wait || context_wait)
-        && has(a, "autoWake")
+        && typed.auto_wake.unwrap_or(false)
         && inactive
-        && clear(a)
-        && has(a, "threadId")
-        && has(r, "turnId")
+        && clear(a, typed)
+        && typed.thread_id.as_deref().is_some_and(|s| !s.is_empty())
+        && rt.turn_id.as_deref().is_some_and(|s| !s.is_empty())
         && (a["turnId"].is_null() || a["turnId"] == r["turnId"])
-        && attempt_matches(a, t)
-        && t["submitted"] == false
-        && has(t, "events")
-        && r["stage"] == "pending"
-        && has(r, "autoWake")
+        && attempt_matches(a, t, tt)
+        && tt.submitted == Some(false)
+        && tt.events.as_ref().is_some_and(|events| !events.is_empty())
+        && rt.stage.as_deref() == Some("pending")
+        && rt.auto_wake.unwrap_or(false)
         && same(r, a, &["epoch", "accountKey", "threadId"])
-        && !one(&repair["phase"], ACTIVE_REPAIR);
-    let surviving = r["stage"] == "finished"
-        && has(r, "autoWake")
-        && d["source"] == "restart"
-        && has(d, "autoWake")
+        && !repair_typed
+            .phase
+            .as_deref()
+            .is_some_and(|s| ACTIVE_REPAIR.contains(&s));
+    let surviving = rt.stage.as_deref() == Some("finished")
+        && rt.auto_wake.unwrap_or(false)
+        && matches!(d_typed.source.as_ref(), Some(RecoverySource::Text(source)) if source == "restart")
+        && d_typed.auto_wake.unwrap_or(false)
         && same(d, a, &["epoch", "accountKey", "threadId", "turnId"])
-        && repair["phase"] == "failed"
+        && repair_typed.phase.as_deref() == Some("failed")
         && repair["error"].as_str().is_some_and(|s| {
             s.starts_with("Context repair requires a confirmed idle native thread; native status: ")
         })
         && repair["source"]["threadId"] == a["threadId"];
-    let continued = r["stage"] == "continued"
-        && r["outcome"] == "active"
+    let continued = rt.stage.as_deref() == Some("continued")
+        && rt.outcome.as_deref() == Some("active")
         && c["source"] == "native_thread_read"
         && c["outcome"] == "active"
         && c["automatic"] == true
@@ -393,26 +542,28 @@ fn eligibility(a: &Value) -> Eligibility {
     // check. A queued restart follow-up (`eventId`) is not an adopted turn.
     let reattached_turn = continued
         && r["eventId"].is_null()
-        && has(r, "autoWake")
-        && has(r, "turnId")
+        && rt.auto_wake.unwrap_or(false)
+        && rt.turn_id.as_deref().is_some_and(|s| !s.is_empty())
         && r["turnId"] == a["turnId"]
-        && d["source"] == "restart"
-        && a["status"] == "running"
+        && matches!(d_typed.source.as_ref(), Some(RecoverySource::Text(source)) if source == "restart")
+        && typed.status == "running"
         && same(r, a, &["epoch", "accountKey", "threadId"])
-        && clear(a);
+        && clear(a, typed);
     let restart_turn = pending_restart_turn || reattached_turn;
     let same_repair = repair["agent"] == a["id"]
         && same(&repair["source"], &scope(a), &["id", "accountKey", "epoch"])
-        && ((repair["phase"] == "unchanged" && repair["source"]["threadId"] == a["threadId"])
-            || (repair["phase"] == "completed" && repair["newThreadId"] == a["threadId"])
+        && ((repair_typed.phase.as_deref() == Some("unchanged")
+            && repair["source"]["threadId"] == a["threadId"])
+            || (repair_typed.phase.as_deref() == Some("completed")
+                && repair["newThreadId"] == a["threadId"])
             || surviving);
-    let queued_active_wait = a["status"] == "queued"
-        && has(a, "autoWake")
+    let queued_active_wait = typed.status == "queued"
+        && typed.auto_wake.unwrap_or(false)
         && inactive
-        && has(a, "threadId")
-        && has(a, "turnId")
+        && typed.thread_id.as_deref().is_some_and(|s| !s.is_empty())
+        && typed.turn_id.as_deref().is_some_and(|s| !s.is_empty())
         && turn_epoch
-        && clear(a)
+        && clear(a, typed)
         && same_repair
         && a["error"] == "Context repair waits for the current agent operation"
         && w["error"] == a["error"]
@@ -421,14 +572,14 @@ fn eligibility(a: &Value) -> Eligibility {
         && !["action", "actionRequestId", "actionIdentity"]
             .iter()
             .any(|k| has(w, k) || has(t, k))
-        && attempt_matches(a, t)
-        && t["submitted"] == false
-        && events_valid(t)
+        && attempt_matches(a, t, tt)
+        && tt.submitted == Some(false)
+        && events_valid(tt)
         && w["events"] == t["events"]
         && (continued || surviving)
-        && has(r, "autoWake")
+        && rt.auto_wake.unwrap_or(false)
         && same(r, a, &["epoch", "accountKey", "threadId", "turnId"]);
-    let interrupted_transport = a["status"] == "interrupted"
+    let interrupted_transport = typed.status == "interrupted"
         && stopped
         && one(
             &a["error"],
@@ -446,27 +597,30 @@ fn eligibility(a: &Value) -> Eligibility {
     // As for an adopted restart turn, the worker reads it in native history
     // once per connection: an ended turn is reconciled, a running one only
     // records the check.
-    let reattached_transport = a["status"] == "running"
-        && has(a, "autoWake")
+    let reattached_transport = typed.status == "running"
+        && typed.auto_wake.unwrap_or(false)
         && c["source"] == "native_thread_read"
         && c["outcome"] == "active"
         && c["automatic"] == true
         && c["turnId"] == a["turnId"];
     let transport_turn = (interrupted_transport || reattached_transport)
-        && has(a, "threadId")
-        && has(a, "turnId")
-        && clear(a)
+        && typed.thread_id.as_deref().is_some_and(|s| !s.is_empty())
+        && typed.turn_id.as_deref().is_some_and(|s| !s.is_empty())
+        && clear(a, typed)
         && !has(a, "contextRepairWait")
-        && !one(&repair["phase"], ACTIVE_REPAIR)
-        && !one(&r["stage"], &["pending", "superseded"])
-        && d["source"] != "restart"
-        && has(d, "autoWake")
+        && !repair_typed
+            .phase
+            .as_deref()
+            .is_some_and(|s| ACTIVE_REPAIR.contains(&s))
+        && !matches!(rt.stage.as_deref(), Some("pending" | "superseded"))
+        && !matches!(d_typed.source.as_ref(), Some(RecoverySource::Text(source)) if source == "restart")
+        && d_typed.auto_wake.unwrap_or(false)
         && same(d, a, &["epoch", "accountKey", "threadId", "turnId"])
         && turn_epoch
         && (!has(a, "startAttempt")
             || (t == &d["startAttempt"]
-                && has(t, "id")
-                && t["submitted"] == true
+                && tt.id.as_deref().is_some_and(|s| !s.is_empty())
+                && tt.submitted == Some(true)
                 && !has(t, "action")
                 && t["epoch"] == a["epoch"]
                 && account_equal(t, a)
@@ -478,15 +632,15 @@ fn eligibility(a: &Value) -> Eligibility {
         || queued_active_wait
         || restart_turn
         || transport_turn
-        || (a["status"] == "interrupted"
+        || (typed.status == "interrupted"
             && stopped
             && !has(a, "startAttempt")
-            && !one(&r["stage"], &["pending", "superseded"])
+            && !matches!(rt.stage.as_deref(), Some("pending" | "superseded"))
             && !["accountTransferId", "workspaceOperation", "deletedAt"]
                 .iter()
                 .any(|k| has(a, k))
-            && has(a, "threadId")
-            && has(a, "turnId")
+            && typed.thread_id.as_deref().is_some_and(|s| !s.is_empty())
+            && typed.turn_id.as_deref().is_some_and(|s| !s.is_empty())
             && one(
                 &a["error"],
                 &[
@@ -496,17 +650,22 @@ fn eligibility(a: &Value) -> Eligibility {
                     BACKEND_RESTARTED_TURN_ERROR,
                 ],
             )
-            && !thread_block(a));
-    let completed_owner =
-        a["status"] == "completed" && inactive && !has(a, "turnId") && !has(a, "startAttempt");
+            && !thread_block(a, typed));
+    let completed_owner = typed.status == "completed"
+        && inactive
+        && !typed.turn_id.as_deref().is_some_and(|s| !s.is_empty())
+        && !has(a, "startAttempt");
     let task_owner = !has(a, "deletedAt")
         && crate::provider_adapter::native_history(a)
-        && has(a, "threadId")
+        && typed.thread_id.as_deref().is_some_and(|s| !s.is_empty())
         && !has(a, "accountTransferId")
         && !has(a, "workspaceOperation")
         && (!has(a, "contextRepairWait") || completed_owner)
-        && !one(&a["status"], &["queued", "starting"])
-        && !one(&repair["phase"], ACTIVE_REPAIR);
+        && !matches!(typed.status.as_str(), "queued" | "starting")
+        && !repair_typed
+            .phase
+            .as_deref()
+            .is_some_and(|s| ACTIVE_REPAIR.contains(&s));
     Eligibility {
         orphan_busy,
         unconfirmed_start,
@@ -573,6 +732,28 @@ mod unbounded_batch_tests {
             assert!(!eligible(agent), "empty input must remain blocked");
         }
     }
+
+    #[test]
+    fn numeric_epoch_alias_does_not_change_exact_receipt_identity() {
+        let mut agent = json!({"id":"agent","rootId":"agent","epoch":1,"accountKey":"default",
+            "threadId":"thread","status":"interrupted","inFlight":false,"autoWake":false,
+            "error":PROVIDER_DISCONNECTED_TURN_ERROR,"disconnectRecovery":{"autoWake":true,
+                "epoch":1,"accountKey":"default","threadId":"thread",
+                "startAttempt":{"id":"attempt","epoch":1,"accountKey":"default","threadId":"thread","submitted":false,"events":["event"]}}});
+        assert!(
+            RecoverySnapshot::from_record(agent.clone())
+                .expect("record")
+                .eligibility()
+                .disconnected_preparation
+        );
+        agent["disconnectRecovery"]["epoch"] = json!(1.0);
+        assert!(
+            !RecoverySnapshot::from_record(agent)
+                .expect("numeric alias accepted")
+                .eligibility()
+                .disconnected_preparation
+        );
+    }
 }
 
 #[cfg(test)]
@@ -599,16 +780,22 @@ mod connection_recovery_identity_tests {
 
 #[cfg(test)]
 mod disconnect_text_tests {
-    use super::eligibility;
+    use super::{Eligibility, RecoverySnapshot};
     use serde_json::json;
     use studio_runtime_store::{
         PROVIDER_DISCONNECTED_TURN_ERROR, VM_PROVIDER_DISCONNECTED_TURN_ERROR,
     };
 
     fn interrupted(error: &str) -> serde_json::Value {
-        json!({"id":"agent-1","epoch":4,"accountKey":"acct","status":"interrupted",
+        json!({"id":"agent-1","rootId":"agent-1","epoch":4,"accountKey":"acct","status":"interrupted",
                "inFlight":false,"autoWake":false,"threadId":"thread-1","turnId":"turn-1",
                "error":error})
+    }
+
+    fn eligibility(record: &serde_json::Value) -> Eligibility {
+        RecoverySnapshot::from_record(record.clone())
+            .expect("recovery record")
+            .eligibility()
     }
 
     #[test]

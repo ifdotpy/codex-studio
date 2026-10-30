@@ -1,104 +1,42 @@
 {
   "$defs": {
-    "JsonValue": {},
     "PersistedTranscriptInput": {
-      "additionalProperties": {
-        "$ref": "#/$defs/JsonValue"
-      },
+      "additionalProperties": true,
       "properties": {
         "id": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "title": "Id"
+          "type": ["string", "null"]
         },
         "kind": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "title": "Kind"
+          "type": ["string", "null"]
         },
         "text": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "title": "Text"
+          "type": ["string", "null"]
         },
         "truncated": {
-          "anyOf": [
-            {
-              "type": "boolean"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "title": "Truncated"
+          "type": ["boolean", "null"]
         }
       },
-      "title": "PersistedTranscriptInput",
       "type": "object"
     }
   },
-  "additionalProperties": {
-    "$ref": "#/$defs/JsonValue"
-  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
   "description": "Legacy parent text is hydrated from fulltext before response validation.",
   "properties": {
     "id": {
-      "title": "Id",
       "type": "string"
     },
     "inputs": {
-      "anyOf": [
-        {
-          "items": {
-            "$ref": "#/$defs/PersistedTranscriptInput"
-          },
-          "type": "array"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Inputs"
+      "items": {
+        "$ref": "#/$defs/PersistedTranscriptInput"
+      },
+      "type": ["array", "null"]
     },
     "role": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Role"
+      "type": ["string", "null"]
     },
     "text": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Text"
+      "type": ["string", "null"]
     }
   },
   "required": ["id"],

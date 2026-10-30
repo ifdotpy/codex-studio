@@ -97,7 +97,7 @@ async fn store(
                 "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
                 [
                     AGENT,
-                    &json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":AGENT,"rootId":AGENT,"epoch":1,"status":"running","autoWake":true})
+                    &json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":AGENT,"rootId":AGENT,"epoch":1,"status":"running","autoWake":true})
                         .to_string(),
                 ],
             )

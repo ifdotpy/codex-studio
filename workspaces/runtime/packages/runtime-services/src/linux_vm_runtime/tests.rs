@@ -6,6 +6,28 @@ use std::os::unix::net::UnixListener;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[test]
+fn read_json_preserves_objects_and_defaults_for_invalid_files() {
+    let fixture = Fixture::new(Boot::Healthy);
+    let path = fixture.state.join("record.json");
+    assert!(fixture.runtime.read_json("record.json").is_empty());
+    fs::write(&path, r#"{"nested":{"enabled":true},"extra":[1,null]}"#).unwrap();
+    assert_eq!(
+        fixture.runtime.read_json("record.json"),
+        json!({"nested":{"enabled":true},"extra":[1,null]})
+            .as_object()
+            .unwrap()
+            .clone()
+    );
+    for input in ["{", "null", "true", "1", "\"text\"", "[]"] {
+        fs::write(&path, input).unwrap();
+        assert!(
+            fixture.runtime.read_json("record.json").is_empty(),
+            "{input}"
+        );
+    }
+}
+
 /// What the fake helper does once it is launched.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Boot {

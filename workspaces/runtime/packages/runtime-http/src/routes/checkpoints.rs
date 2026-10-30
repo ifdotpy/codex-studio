@@ -5,9 +5,14 @@ use super::manifest::{OperationStatus, RouteGroup, post};
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
+use serde::Deserialize;
 use serde_json::Value;
 use serde_json::json;
 use std::time::{Duration, Instant};
+use studio_runtime_schema::{
+    queue_command::Field,
+    workspace_operation::{OperationPhase, WorkspaceOperationRecord},
+};
 use studio_runtime_services::checkpoints::{self, CheckpointsError};
 use studio_runtime_store::StoreError;
 use studio_runtime_store::{
@@ -191,12 +196,12 @@ async fn restore_owned(
                     return Err(ApiError::new(StatusCode::CONFLICT, "Workspace activity changed before restore"));
                 }
                 if let Some(mut old) = WorkspaceOperationsRepository::operation(tx, &operation_id).map_err(ApiError::stored)? {
-                    if old.get("signature").and_then(Value::as_str) != Some(signature.as_str()) {
+                    if old.signature.value().map(String::as_str) != Some(signature.as_str()) {
                         return Err(ApiError::new(StatusCode::CONFLICT, "This restore request has different content"));
                     }
-                    let mut expected_source = old.get("source").cloned().unwrap_or(Value::Null);
-                    if old["phase"] == "completed" {
-                        expected_source["threadId"] = old["provider"]["thread"]["id"].clone();
+                    let mut expected_source = old.source.value().cloned().map(Value::Object).unwrap_or(Value::Null);
+                    if old.phase == OperationPhase::Completed {
+                        expected_source["threadId"] = old.provider.value().and_then(|provider| provider.get("thread")).and_then(|thread| thread.get("id")).cloned().unwrap_or(Value::Null);
                         if snapshot.agent.record["restoredCheckpoint"] != checkpoint.id {
                             return Err(ApiError::new(StatusCode::CONFLICT, "Restore state changed. Inspect the operation before retrying"));
                         }
@@ -204,14 +209,14 @@ async fn restore_owned(
                     if expected_source != source {
                         return Err(ApiError::new(StatusCode::CONFLICT, "Workspace operation source changed. Inspect the operation before retrying"));
                     }
-                    if old["phase"] == "completed" { return Ok(old); }
-                    let reacquire = old["phase"] == "failed";
+                    if old.phase == OperationPhase::Completed { return Ok(old); }
+                    let reacquire = old.phase == OperationPhase::Failed;
                     if reacquire && current_tree != expected_tree {
                         return Err(ApiError::new(StatusCode::CONFLICT, "Files changed after the preview. Preview again"));
                     }
-                    if !matches!(old["phase"].as_str(), Some("provider_pending" | "provider_ready" | "local_mutation" | "recovery_required")) {
-                        old["phase"] = json!("provider_pending");
-                        tx.execute("UPDATE runtime_workspace_operations SET record=?1 WHERE id=?2", rusqlite::params![old.to_string(), operation_id]).map_err(|error| ApiError::stored(error.into()))?;
+                    if !matches!(old.phase, OperationPhase::ProviderPending | OperationPhase::ProviderReady | OperationPhase::LocalMutation | OperationPhase::RecoveryRequired) {
+                        old.phase = OperationPhase::ProviderPending;
+                        WorkspaceOperationsRepository::put_operation(tx, &old).map_err(ApiError::stored)?;
                     }
                     let mut actor = AgentRepository::get(tx, &AgentId::from(agent_id.as_str())).map_err(ApiError::stored)?.ok_or_else(ApiError::internal)?.value();
                     if actor["workspaceReservationId"] != operation_id && !(reacquire && actor["workspaceReservationId"].is_null()) {
@@ -225,13 +230,13 @@ async fn restore_owned(
                 if current_tree != expected_tree {
                     return Err(ApiError::new(StatusCode::CONFLICT, "Files changed after the preview. Preview again"));
                 }
-                let operation = json!({
+                let operation = WorkspaceOperationRecord::deserialize(json!({
                     "id":operation_id,"kind":"restore","agent":agent_id,"checkpoint":checkpoint.id,
                     "expectedTree":expected_tree,"signature":signature,"source":source,
                     "phase":"provider_pending","created":now_seconds(),
                     "rootRequestId":studio_runtime_schema::persistence::RequestIdentity::issue_root()
-                });
-                tx.execute("INSERT INTO runtime_workspace_operations(id,record) VALUES(?1,?2)", rusqlite::params![operation_id, operation.to_string()]).map_err(|error| ApiError::stored(error.into()))?;
+                })).map_err(ApiError::json)?;
+                tx.execute("INSERT INTO runtime_workspace_operations(id,record) VALUES(?1,?2)", rusqlite::params![operation_id, serde_json::to_string(&operation).map_err(ApiError::json)?]).map_err(|error| ApiError::stored(error.into()))?;
                 let mut actor = AgentRepository::get(tx, &AgentRecord::from_value(snapshot.agent.record.clone()).map_err(|_| ApiError::internal())?.id).map_err(ApiError::stored)?
                     .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown managed agent"))?.value();
                 actor["workspaceOperation"] = json!("restore");
@@ -240,16 +245,18 @@ async fn restore_owned(
                 Ok(operation)
             }).await?
     };
-    if operation_state["phase"] == "completed" {
+    if operation_state.phase == OperationPhase::Completed {
         if current_tree != target_tree {
             return Err(ApiError::new(
                 StatusCode::CONFLICT,
                 "Files changed after the completed restore. Preview again",
             ));
         }
-        return Ok(Json(operation_state.get("result").cloned().unwrap_or(
-            json!({"status":"restored","checkpoint":checkpoint.id}),
-        )));
+        return Ok(Json(match &operation_state.result {
+            Field::Missing => json!({"status":"restored","checkpoint":checkpoint.id}),
+            Field::Null => Value::Null,
+            Field::Value(value) => value.clone(),
+        }));
     }
     let scope = match port.ensure_session(&account).await {
         Ok(scope) => scope,
@@ -328,8 +335,8 @@ async fn restore_owned(
         let params = params.clone();
         port.provider_request(
             studio_runtime_services::account_session_runtime::ProviderRequest {
-                root_request_id: operation_state.get("rootRequestId").and_then(Value::as_str).or_else(|| operation_state.get("providerAdmission").map(|_| "")).ok_or_else(|| ApiError::new(StatusCode::CONFLICT, "The restore request identity is unavailable; inspect workspace recovery"))?.to_owned(),
-                admitted_request: operation_state.get("providerAdmission").cloned().map(serde_json::from_value).transpose().map_err(ApiError::json)?,
+                root_request_id: operation_state.extensions().get("rootRequestId").and_then(Value::as_str).or_else(|| operation_state.extensions().get("providerAdmission").map(|_| "")).ok_or_else(|| ApiError::new(StatusCode::CONFLICT, "The restore request identity is unavailable; inspect workspace recovery"))?.to_owned(),
+                admitted_request: operation_state.extensions().get("providerAdmission").map(Deserialize::deserialize).transpose().map_err(ApiError::json)?,
                 account,
                 operation: provider_operation.clone(),
                 actor: Some(actor),
@@ -452,9 +459,17 @@ async fn restore_owned(
             let mut op = WorkspaceOperationsRepository::operation(tx, &operation_for_save)
                 .map_err(ApiError::stored)?
                 .ok_or_else(ApiError::internal)?;
-            if op["phase"] == "provider_pending" || op["phase"] == "recovery_required" {
-                op["provider"] = provider_saved;
-                op["phase"] = json!("provider_ready");
+            if matches!(
+                op.phase,
+                OperationPhase::ProviderPending | OperationPhase::RecoveryRequired
+            ) {
+                op.provider = Field::Value(
+                    provider_saved
+                        .as_object()
+                        .cloned()
+                        .ok_or_else(ApiError::internal)?,
+                );
+                op.phase = OperationPhase::ProviderReady;
                 WorkspaceOperationsRepository::put_operation(tx, &op).map_err(ApiError::stored)?;
             }
             Ok::<_, ApiError>(())
@@ -468,10 +483,10 @@ async fn restore_owned(
                 .map_err(ApiError::stored)?
                 .ok_or_else(ApiError::internal)?;
             if matches!(
-                op["phase"].as_str(),
-                Some("provider_ready" | "recovery_required")
+                op.phase,
+                OperationPhase::ProviderReady | OperationPhase::RecoveryRequired
             ) {
-                op["phase"] = json!("local_mutation");
+                op.phase = OperationPhase::LocalMutation;
                 WorkspaceOperationsRepository::put_operation(tx, &op).map_err(ApiError::stored)?;
             }
             Ok::<_, ApiError>(())
@@ -719,9 +734,10 @@ async fn restore_owned(
                 true,
             )
             .map_err(|_| ApiError::internal())?;
-            op["phase"] = json!("completed");
-            op["result"] = saved_result;
-            op["updated"] = json!(now_seconds());
+            op.phase = OperationPhase::Completed;
+            op.result = Field::Value(saved_result);
+            op.set_extension("updated", json!(now_seconds()))
+                .map_err(|_| ApiError::internal())?;
             WorkspaceOperationsRepository::put_operation(tx, &op).map_err(ApiError::stored)?;
             Ok::<_, ApiError>(())
         })
@@ -744,7 +760,7 @@ async fn settle_restore_failure(
             let mut operation = WorkspaceOperationsRepository::operation(tx, &operation_id)
                 .map_err(ApiError::stored)?
                 .ok_or_else(ApiError::internal)?;
-            if operation["phase"] == "completed" {
+            if operation.phase == OperationPhase::Completed {
                 return Ok(());
             }
             let owner = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))
@@ -755,7 +771,11 @@ async fn settle_restore_failure(
                 .get("workspaceReservationId")
                 .and_then(Value::as_str)
                 != Some(operation_id.as_str())
-                || operation.get("source")
+                || operation
+                    .source
+                    .value()
+                    .map(|source| Value::Object(source.clone()))
+                    .as_ref()
                     != Some(&CheckpointsRepository::workspace_source(&owner.value()))
             {
                 return Err(ApiError::new(
@@ -763,13 +783,17 @@ async fn settle_restore_failure(
                     "Restore reservation changed",
                 ));
             }
-            operation["phase"] = json!(if unknown {
-                "recovery_required"
+            operation.phase = if unknown {
+                OperationPhase::RecoveryRequired
             } else {
-                "failed"
-            });
-            operation["error"] = json!(message.clone());
-            operation["updated"] = json!(now_seconds());
+                OperationPhase::Failed
+            };
+            operation
+                .set_extension("error", json!(message))
+                .map_err(|_| ApiError::internal())?;
+            operation
+                .set_extension("updated", json!(now_seconds()))
+                .map_err(|_| ApiError::internal())?;
             WorkspaceOperationsRepository::put_operation(tx, &operation)
                 .map_err(ApiError::stored)?;
             if let Some(mut agent) = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))
@@ -779,9 +803,9 @@ async fn settle_restore_failure(
                     agent
                         .extra
                         .insert("workspaceOperation".into(), json!("restore_recovery"));
-                    agent.extra.insert("status".into(), json!("interrupted"));
+                    agent.set_status(studio_runtime_store::AgentStatus::Interrupted);
                     agent.auto_wake = Some(false);
-                    agent.extra.insert("error".into(), json!(message.clone()));
+                    agent.extra.insert("error".into(), json!(message));
                 } else if agent
                     .extra
                     .get("workspaceReservationId")
@@ -959,5 +983,30 @@ inventory::submit! {
         dependencies: &[
         "provider-session/thread-fork",
         ],
+    }
+}
+
+#[cfg(test)]
+mod status_tests {
+    use super::*;
+    use studio_runtime_store::RuntimeStore;
+
+    #[tokio::test]
+    async fn unknown_restore_sets_one_interrupted_status() {
+        let root = tempfile::tempdir().expect("state");
+        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        store.transaction(|tx| {
+            let agent = AgentRecord::from_value(json!({"accountKey":"default","id":"agent","rootId":"agent","epoch":0,"status":"running","workspaceReservationId":"operation","provider":"codex"}))?;
+            AgentRepository::put(tx, &agent)?;
+            let operation = json!({"id":"operation","kind":"restore","agent":"agent","phase":"provider_pending","source":CheckpointsRepository::workspace_source(&agent.value())});
+            tx.execute("INSERT INTO runtime_workspace_operations(id,record) VALUES('operation',?1)", [operation.to_string()])?;
+            Ok::<_, studio_runtime_store::StoreError>(())
+        }).await.expect("seed");
+        settle_restore_failure(&store, "operation", "agent", true, "unknown")
+            .await
+            .expect("settle");
+        let db = store.test_reader().expect("reader");
+        let (status, count): (String, i64) = db.query_row("SELECT json_extract(record,'$.status'), (SELECT count(*) FROM json_each(record) WHERE key='status') FROM runtime_agents WHERE id='agent'", [], |row| Ok((row.get(0)?, row.get(1)?))).expect("status");
+        assert_eq!((status.as_str(), count), ("interrupted", 1));
     }
 }

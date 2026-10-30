@@ -191,7 +191,7 @@ async fn run_corpus() {
         .expect("Python-written terminal row");
     assert_eq!(
         row.record.value(),
-        &serde_json::from_str::<Value>(&oracle.tables.user_terminals[0].1)
+        serde_json::from_str::<Value>(&oracle.tables.user_terminals[0].1)
             .expect("recorded terminal JSON")
     );
     assert_eq!(row.output, "alpha-Ж🙂-omega");

@@ -1158,22 +1158,19 @@ fn preserve_complaint(
     if event.kind != "complaint" {
         return Ok(false);
     }
-    let value: Value = match serde_json::from_str(&event.text) {
-        Ok(value) => value,
-        Err(_) => return Ok(true),
-    };
-    let Some(entries) = value["complaints"].as_array().filter(|v| !v.is_empty()) else {
+    let Some(entries) = studio_runtime_schema::notification_text::complaint_entries(&event.text)
+    else {
         return Ok(true);
     };
     for entry in entries {
-        let Some(id) = entry["complaint_id"].as_str().filter(|s| !s.is_empty()) else {
+        let Some(id) = entry else {
             return Ok(true);
         };
         use rusqlite::OptionalExtension;
         let raw: Option<String> = tx
             .query_row(
                 "SELECT record FROM runtime_complaints WHERE id=?1",
-                [id],
+                [&id],
                 |r| r.get(0),
             )
             .optional()?;
@@ -1493,7 +1490,15 @@ pub(super) fn submission_snapshot(
         text(record, "threadId")?,
         optional(record, "compactions")?.unwrap_or(0),
     );
-    let restore = turn::needs_team_restore(&epoch, &delivered_manifests);
+    let idle_summary_return = intent.provider == ProviderKind::Claude
+        && record["idleSummaryPrepared"]
+            .as_str()
+            .is_some_and(|request| !request.is_empty())
+        && record["idleSummaryPrepared"] == record["idleCompactionEpisode"]["id"]
+        && studio_runtime_store::OrchestrationSettingsRepository::idle_compaction_for(tx, record)?
+            .mode
+            == studio_runtime_schema::idle_compaction::Mode::CompactOnReturn;
+    let restore = idle_summary_return || turn::needs_team_restore(&epoch, &delivered_manifests);
     let team_state = if restore {
         super::team_restore::snapshot(tx, record)?
     } else {
@@ -1512,7 +1517,8 @@ pub(super) fn submission_snapshot(
         Vec::new()
     };
     for (_, raw) in team {
-        let v: Value = serde_json::from_str(&raw).map_err(|_| invalid("worker"))?;
+        let worker: AgentRecord = serde_json::from_str(&raw).map_err(|_| invalid("worker"))?;
+        let v = worker.value();
         let status = match v["status"].as_str() {
             Some("completed") => turn::WorkerStatus::Completed,
             Some("failed") => turn::WorkerStatus::Failed,
@@ -1531,7 +1537,7 @@ pub(super) fn submission_snapshot(
                 .get("deletedAt")
                 .is_some_and(|v| !v.is_null() && v != &json!(0)),
             status,
-            auto_wake: flag(&v, "autoWake")?,
+            auto_wake: worker.auto_wake.unwrap_or(false),
         });
     }
     let mut assets = Vec::new();
@@ -1601,6 +1607,7 @@ pub(super) fn submission_snapshot(
     let concurrency = root_concurrency(&root)?;
     Ok((
         turn::PreparationSnapshot {
+            idle_summary_return,
             provider: Some(intent.provider),
             actor: turn::Actor {
                 id: intent.agent_id.clone(),
@@ -1691,6 +1698,39 @@ fn can_delegate(tx: &Transaction<'_>, record: &Value, root: &Value) -> Result<bo
 
 #[cfg(test)]
 mod resource_tests {
+    #[test]
+    fn complaint_entry_decoding_keeps_database_error_order() {
+        let mut db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE runtime_complaints(id TEXT PRIMARY KEY,record TEXT); INSERT INTO runtime_complaints VALUES('bad','{'),('ok','{\"leadId\":\"lead\"}'),('foreign','{\"leadId\":\"other\"}');").unwrap();
+        let tx = db.transaction().unwrap();
+        let mut event = crate::scheduler::TurnEvent {
+            id: "e".into(),
+            kind: "complaint".into(),
+            text: String::new(),
+            created: 0.0,
+            epoch: 1,
+            error: None,
+            metadata: serde_json::json!({}),
+        };
+        event.text = r#"{"complaints":[{"complaint_id":"bad"},{}]}"#.into();
+        assert!(super::preserve_complaint(&tx, "lead", &event).is_err());
+        for (text, expected) in [
+            (r#"{"complaints":[{}, {"complaint_id":"bad"}]}"#, true),
+            (r#"{"complaints":[{"complaint_id":"ok"}]}"#, false),
+            (r#"{"complaints":[{"complaint_id":"foreign"}]}"#, true),
+            (r#"{"complaints":[]}"#, true),
+            (r#"{"complaints":[{"complaint_id":"missing"}]}"#, true),
+        ] {
+            event.text = text.into();
+            assert_eq!(
+                super::preserve_complaint(&tx, "lead", &event).unwrap(),
+                expected,
+                "{text}"
+            );
+        }
+        event.kind = "user".into();
+        assert!(!super::preserve_complaint(&tx, "lead", &event).unwrap());
+    }
     #[test]
     fn authorization_projects_exclude_destructive_removal_fences() {
         let db = rusqlite::Connection::open_in_memory().expect("database");
@@ -1844,7 +1884,7 @@ mod resource_tests {
             .expect("resources");
         store.transaction_with(move |tx| {
             for error in [json!(false), json!(42), json!([])] {
-                let record = json!({"id":"lead","rootId":"lead","epoch":1,"status":"queued",
+                let record = json!({"accountKey":"default","id":"lead","rootId":"lead","epoch":1,"status":"queued",
                     "isLead":true,"provider":"claude","cwd":"/project","threadId":"existing-thread","error":error});
                 AgentRepository::put(tx, &AgentRecord::from_value(record.clone()).expect("agent"))?;
                 assert!(matches!(thread_snapshot(tx, &resources, &record, "connection", Path::new("/state"), None),
@@ -2110,7 +2150,7 @@ mod resource_tests {
             (Value::Null, false, canonical_custom),
             (Value::Null, true, default_root.clone()),
         ] {
-            let record = json!({"id":"reviewer", "rootId":"reviewer", "epoch":1,
+            let record = json!({"accountKey":"default","id":"reviewer", "rootId":"reviewer", "epoch":1,
                 "isLead":true, "role":"reviewer", "provider":"claude", "status":"queued",
                 "cwd":"/scratch", "workspaceMode":"layr-native", "layrReady":ready,
                 "layrReadCwd":default_root.join("projects/project/lines/main"),
@@ -2708,7 +2748,7 @@ mod workspace_fence_tests {
     async fn receipt_store_and_scratch_changes_are_isolatable() {
         let state = tempfile::tempdir().expect("state");
         let store = RuntimeStore::open(Some(state.path())).await.expect("store");
-        let record = json!({"id":"reviewer", "rootId":"reviewer", "epoch":1,
+        let record = json!({"accountKey":"default","id":"reviewer", "rootId":"reviewer", "epoch":1,
             "status":"running", "isLead":true, "provider":"claude", "cwd":"/scratch",
             "workspaceMode":"layr-native", "role":"reviewer", "layrStoreRoot":"/store-a", "layrScratch":"/scratch"});
         let saved = record.clone();
@@ -2839,11 +2879,11 @@ mod workspace_fence_tests {
         let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
             .expect("resources");
         store.transaction_with(move |tx| {
-            AgentRepository::put(tx, &AgentRecord::from_value(json!({"id":"lead","rootId":"lead","epoch":1,
+            AgentRepository::put(tx, &AgentRecord::from_value(json!({"accountKey":"default","id":"lead","rootId":"lead","epoch":1,
                 "status":"running","isLead":true,"cwd":"/project","provider":studio_runtime_schema::ProviderKind::Claude})).expect("lead"))?;
             for mode in crate::claude_controls::PERMISSION_MODES {
                 for resumed in [false, true] {
-                    let mut record = json!({"id":"worker","rootId":"lead","parentId":"lead","epoch":1,
+                    let mut record = json!({"accountKey":"default","id":"worker","rootId":"lead","parentId":"lead","epoch":1,
                         "status":"queued","isLead":false,"role":"implementer","provider":"claude","cwd":"/project",
                         "workspaceMode":"shared","yoloMode":*mode == "bypassPermissions","claudeOptions":{"permissionMode": mode}});
                     if resumed {
@@ -2880,7 +2920,7 @@ mod workspace_fence_tests {
         }).collect();
         store
             .transaction_with(move |tx| {
-                let root = json!({"id":"lead","rootId":"lead","epoch":1,"status":"running",
+                let root = json!({"accountKey":"default","id":"lead","rootId":"lead","epoch":1,"status":"running",
                 "isLead":true,"cwd":"/source checkout","hostProjectPath":"/source checkout","provider":studio_runtime_schema::ProviderKind::Claude});
                 AgentRepository::put(tx, &AgentRecord::from_value(root).expect("lead"))?;
                 for (mode, provider, role, ready, fenced, expected_sandbox) in [
@@ -2942,7 +2982,7 @@ mod workspace_fence_tests {
                         "danger-full-access",
                     ),
                 ] {
-                    let record = json!({"id":"worker","rootId":"lead","parentId":"lead",
+                    let record = json!({"accountKey":"default","id":"worker","rootId":"lead","parentId":"lead",
                     "epoch":1,"status":"queued","isLead":false,"role":role,"provider":provider,
                     "cwd":"/worker copy:quoted\"path","hostProjectPath":"/parent copy",
                     "workspaceMode":mode,"worktree":mode == "worktree","worktreeReady":ready,

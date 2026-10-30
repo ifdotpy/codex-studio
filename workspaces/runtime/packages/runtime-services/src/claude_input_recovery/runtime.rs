@@ -51,10 +51,10 @@ fn reserved(
         || current.get("id").and_then(Value::as_str) != Some(attempt)
         || current.get("epoch") != rows.agent.get("epoch")
         || current.get("submitted") != Some(&json!(false))
-        || rows.attempt.get("submitted") != Some(&json!(false))
+        || rows.attempt.submitted() != Some(false)
         || super::RECEIPT_FIELDS
             .iter()
-            .any(|key| current.get(*key) != rows.attempt.get(*key))
+            .any(|key| !rows.attempt.matches_field(key, current.get(*key)))
         || transport.closed
         || rows
             .agent
@@ -138,7 +138,7 @@ fn freeze_loaded(
     resolve(agent, &rows, params)?;
     let frozen =
         capture_input(&rows.agent, &rows.events, params, text).map_err(|_| invalid(agent))?;
-    rows.attempt["claudeInputRequest"] = frozen.clone();
+    rows.attempt.set_frozen_input(frozen.clone());
     rows.agent["startAttempt"]["claudeInputRequest"] = frozen;
     if let Some(record) = rows.agent.as_object_mut() {
         record.remove("claudePreInputRetry");
@@ -178,7 +178,7 @@ pub fn bind_submitted(
         || current.get("connectionGeneration").and_then(Value::as_u64) != Some(binding.generation)
         || rows
             .attempt
-            .get("connectionGeneration")
+            .extension("connectionGeneration")
             .and_then(Value::as_u64)
             != Some(binding.generation)
         || current.get("accountKey").and_then(Value::as_str) != Some(transport.account_key.as_str())
@@ -190,7 +190,7 @@ pub fn bind_submitted(
             .is_none_or(str::is_empty)
         || super::RECEIPT_FIELDS
             .iter()
-            .any(|key| current.get(*key) != rows.attempt.get(*key))
+            .any(|key| !rows.attempt.matches_field(key, current.get(*key)))
         || current
             .get("connectionId")
             .filter(|v| !v.is_null())
@@ -202,16 +202,12 @@ pub fn bind_submitted(
     {
         return Err(invalid(agent));
     }
-    for (key, value) in [
-        ("connectionId", json!(transport.connection_id)),
-        (
-            "supervisorIdentity",
-            transport.supervisor_identity.unwrap_or(Value::Null),
-        ),
-    ] {
-        rows.attempt[key] = value.clone();
-        rows.agent["startAttempt"][key] = value;
-    }
+    let connection_id = json!(transport.connection_id);
+    let supervisor_identity = transport.supervisor_identity.unwrap_or(Value::Null);
+    rows.attempt
+        .set_transport(connection_id.clone(), supervisor_identity.clone());
+    rows.agent["startAttempt"]["connectionId"] = connection_id;
+    rows.agent["startAttempt"]["supervisorIdentity"] = supervisor_identity;
     ClaudeRetryRepository::replace_attempt(tx, agent, &rows.attempt)?;
     AgentRepository::put(tx, &AgentRecord::from_value(rows.agent)?)?;
     Ok(())

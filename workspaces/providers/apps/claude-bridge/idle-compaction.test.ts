@@ -122,7 +122,7 @@ test("the real bridge emits request-local cache telemetry and keeps it across a 
     const notification = await bridge.note(
       (note) => note.method === "thread/idleCompaction/updated",
     );
-    const report = notification.params.report;
+    const report = notification.params.report!;
     expect(report).toMatchObject({
       ttl: "1h",
       contextTokens: 210030,

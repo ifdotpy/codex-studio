@@ -4,19 +4,23 @@
     not(target_os = "macos"),
     allow(dead_code, unused_imports, unused_variables)
 )]
-use serde_json::{Value, json};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+#[cfg(test)]
+use serde_json::json;
 use std::{
     collections::VecDeque,
     sync::{Mutex, OnceLock},
 };
+use studio_client_domain::json_object::JsonObject;
 use tokio::sync::broadcast;
 
 pub const DENIED: &str = "STUDIO_NOTIFICATIONS_DENIED: Enable Allow notifications for Codex Studio in macOS System Settings > Notifications.";
 const TARGETS: usize = 200;
 
 /// Chat targets of shown notifications, oldest first. Clicks after a restart are ignored.
-fn targets() -> &'static Mutex<VecDeque<(String, Value)>> {
-    static VALUE: OnceLock<Mutex<VecDeque<(String, Value)>>> = OnceLock::new();
+fn targets() -> &'static Mutex<VecDeque<(String, NotificationTarget)>> {
+    static VALUE: OnceLock<Mutex<VecDeque<(String, NotificationTarget)>>> = OnceLock::new();
     VALUE.get_or_init(Mutex::default)
 }
 pub fn navigation() -> &'static broadcast::Sender<Value> {
@@ -24,43 +28,65 @@ pub fn navigation() -> &'static broadcast::Sender<Value> {
     VALUE.get_or_init(|| broadcast::channel(16).0)
 }
 
-fn text(value: &Value, limit: usize) -> Result<String, String> {
-    value
-        .as_str()
-        .filter(|v| !v.is_empty() && v.chars().count() <= limit && !v.contains('\0'))
-        .map(str::to_owned)
-        .ok_or("Invalid notification.".into())
-}
-/// Accepts exactly the fields of the desktop bridge notification. `sound` (a sign-in card
-/// that waits for the person) plays the default sound; other notifications are silent.
-pub fn validate(value: &Value) -> Result<(String, String, Value, bool), String> {
-    let sound = match &value["sound"] {
-        Value::Null => false,
-        Value::Bool(sound) => *sound,
-        Value::Number(_) | Value::String(_) | Value::Array(_) | Value::Object(_) => {
-            return Err("Invalid notification.".into());
+// Native notification text limits count Unicode scalar values.
+#[derive(Clone, Debug, Serialize)]
+#[serde(transparent)]
+struct Text<const LIMIT: usize>(String);
+impl<'de, const LIMIT: usize> Deserialize<'de> for Text<LIMIT> {
+    fn deserialize<D: serde::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(decoder)?;
+        if value.is_empty() || value.chars().count() > LIMIT || value.contains('\0') {
+            return Err(serde::de::Error::custom("Invalid notification."));
         }
-    };
-    let target = &value["target"];
-    let mut clean = json!({"agentId": text(&target["agentId"], 128)?, "section": "messages"});
-    if target["section"] != "messages" {
-        return Err("Invalid notification target.".into());
+        Ok(Self(value))
     }
-    if !target["serverId"].is_null() {
-        clean["serverId"] = Value::String(text(&target["serverId"], 128)?);
-    }
-    if !target["itemId"].is_null() {
-        clean["itemId"] = Value::String(text(&target["itemId"], 128)?);
-    }
-    Ok((
-        text(&value["title"], 256)?,
-        text(&value["body"], 4096)?,
-        clean,
-        sound,
-    ))
 }
 
-fn remember(id: String, target: Value) {
+#[derive(Clone, Debug, Serialize)]
+enum Section {
+    #[serde(rename = "messages")]
+    Messages,
+}
+impl<'de> Deserialize<'de> for Section {
+    fn deserialize<D: serde::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+        match String::deserialize(decoder)?.as_str() {
+            "messages" => Ok(Self::Messages),
+            _ => Err(serde::de::Error::custom("Invalid notification target.")),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NotificationTarget {
+    agent_id: Text<128>,
+    section: Section,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    server_id: Option<Text<128>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    item_id: Option<Text<128>>,
+}
+
+#[derive(Deserialize)]
+struct Notification {
+    title: Text<256>,
+    body: Text<4096>,
+    target: JsonObject<NotificationTarget>,
+    #[serde(default, deserialize_with = "sound")]
+    sound: bool,
+}
+
+fn sound<'de, D: serde::Deserializer<'de>>(decoder: D) -> Result<bool, D::Error> {
+    Ok(Option::<bool>::deserialize(decoder)?.unwrap_or(false))
+}
+
+fn validate(value: &Value) -> Result<Notification, String> {
+    JsonObject::<Notification>::deserialize(value)
+        .map(|value| value.0)
+        .map_err(|error| error.to_string())
+}
+
+fn remember(id: String, target: NotificationTarget) {
     if let Ok(mut targets) = targets().lock() {
         if targets.len() >= TARGETS {
             targets.pop_front();
@@ -73,19 +99,26 @@ fn clicked(id: &str) {
         let index = targets.iter().position(|(key, _)| key == id)?;
         targets.remove(index).map(|(_, target)| target)
     });
-    if let Some(target) = target {
-        drop(navigation().send(target));
+    if let Some(target) = target
+        && let Ok(value) = serde_json::to_value(target)
+    {
+        drop(navigation().send(value));
     }
 }
 
 pub async fn notify(value: &Value) -> Result<Value, String> {
-    let (title, body, target, sound) = validate(value)?;
+    let Notification {
+        title,
+        body,
+        target: JsonObject(target),
+        sound,
+    } = validate(value)?;
     if crate::platform::hidden_check() {
         return Ok(Value::Bool(false));
     }
     #[cfg(target_os = "macos")]
     {
-        mac::show(title, body, target, sound).await
+        mac::show(title.0, body.0, target, sound).await
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -174,10 +207,10 @@ pub mod mac {
         });
     }
 
-    pub async fn show(
+    pub(super) async fn show(
         title: String,
         body: String,
-        target: Value,
+        target: NotificationTarget,
         sound: bool,
     ) -> Result<Value, String> {
         if !bundled() {
@@ -245,24 +278,73 @@ pub mod mac {
 mod tests {
     use super::*;
     #[test]
+    fn notification_wire_matches_desktop_owner_and_rejects_sequence_shapes() {
+        // DesktopBridge owns the wire fields; native limits intentionally differ
+        // from the Electron adapter's display limits.
+        let owner = include_str!("../../../apps/desktop/api.ts");
+        let declaration = owner
+            .split("notify(value: {")
+            .nth(1)
+            .unwrap()
+            .split("}): Promise<boolean>")
+            .next()
+            .unwrap();
+        let fields: Vec<_> = declaration
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.starts_with("/**"))
+            .filter_map(|line| line.split_once(':').map(|(name, _)| name))
+            .collect();
+        assert_eq!(
+            fields,
+            [
+                "title",
+                "body",
+                "sound?",
+                "target",
+                "serverId?",
+                "agentId",
+                "section",
+                "itemId?"
+            ]
+        );
+        assert!(declaration.contains("section: \"messages\""));
+        for wire in [
+            r#"["t","b",{"agentId":"a","section":"messages"},false]"#,
+            r#"{"title":"t","body":"b","target":["a","messages"]}"#,
+            r#"{"title":"t","body":"b","target":{"agentId":"a","section":{"messages":null}}}"#,
+        ] {
+            let value: Value = serde_json::from_str(wire).unwrap();
+            assert!(validate(&value).is_err());
+        }
+        let notification = validate(&json!({"title":"t","body":"b","sound":null,
+            "target":{"agentId":"a","section":"messages","serverId":null,"itemId":null,"extension":1}})).unwrap();
+        assert!(!notification.sound);
+        assert_eq!(
+            serde_json::to_value(notification.target).unwrap(),
+            json!({"agentId":"a","section":"messages"})
+        );
+    }
+
+    #[test]
     fn notification_fields_are_bounded_and_clicks_deliver_one_target() {
-        let (title, body, target, sound) = validate(&json!({
+        let Notification { title, body, target: JsonObject(target), sound } = validate(&json!({
             "title":"Ответ 🦀","body":"Готово","target":{"agentId":"a","section":"messages","itemId":"m","serverId":"remote"},"extra":1
         }))
         .unwrap();
-        assert_eq!((title.as_str(), body.as_str()), ("Ответ 🦀", "Готово"));
+        assert_eq!((title.0.as_str(), body.0.as_str()), ("Ответ 🦀", "Готово"));
         assert!(
             !sound,
             "a notification is silent unless it asks for the sound"
         );
-        let (_, _, _, sound) = validate(&json!({
+        let Notification { sound, .. } = validate(&json!({
             "title":"Sign-in needed","body":"Sign in at id.example.com.","sound":true,
             "target":{"agentId":"a","section":"messages"}
         }))
         .unwrap();
         assert!(sound, "an open sign-in card plays the sound");
         assert_eq!(
-            target,
+            serde_json::to_value(&target).unwrap(),
             json!({"agentId":"a","section":"messages","itemId":"m","serverId":"remote"})
         );
         for bad in [
@@ -279,14 +361,19 @@ mod tests {
         clicked("unknown");
         clicked("n1");
         clicked("n1");
-        assert_eq!(events.try_recv().unwrap(), target);
+        assert_eq!(
+            events.try_recv().unwrap(),
+            serde_json::to_value(&target).unwrap()
+        );
         assert!(events.try_recv().is_err());
         for index in 0..TARGETS + 1 {
-            remember(format!("bulk{index}"), json!(index));
+            let mut item = target.clone();
+            item.agent_id = Text(index.to_string());
+            remember(format!("bulk{index}"), item);
         }
         clicked("bulk0");
         assert!(events.try_recv().is_err(), "oldest target was dropped");
         clicked(&format!("bulk{TARGETS}"));
-        assert_eq!(events.try_recv().unwrap(), json!(TARGETS));
+        assert_eq!(events.try_recv().unwrap()["agentId"], TARGETS.to_string());
     }
 }

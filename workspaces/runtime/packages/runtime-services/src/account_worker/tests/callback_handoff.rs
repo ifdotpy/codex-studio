@@ -556,6 +556,153 @@ async fn a_request_redelivered_after_commit_is_answered_once() {
     replay_worker.shutdown().await.unwrap();
 }
 
+struct WrittenStatusFactory {
+    inner: Arc<dyn ProviderTaskFactory>,
+    expected: String,
+    queries: Arc<std::sync::Mutex<Vec<String>>>,
+}
+impl ProviderTaskFactory for WrittenStatusFactory {
+    fn open(
+        &self,
+        handle: ProviderHandle,
+        options: OpenOptions,
+        shutdown: Shutdown,
+    ) -> OpenFuture<'_> {
+        self.inner.open(handle, options, shutdown)
+    }
+    fn operation_status(
+        &self,
+        _handle: ProviderHandle,
+        operation: OperationId,
+        _shutdown: Shutdown,
+    ) -> StatusFuture<'_> {
+        use studio_runtime_providers::supervisor_protocol::{
+            ProviderOperationState, ProviderOperationStatus,
+        };
+        self.queries.lock().unwrap().push(operation.0.clone());
+        let state = if operation.0 == self.expected {
+            ProviderOperationState::Written
+        } else {
+            ProviderOperationState::Unknown
+        };
+        Box::pin(async move {
+            Ok(ProviderOperationStatus {
+                state,
+                native_id: None,
+            })
+        })
+    }
+}
+
+#[tokio::test]
+async fn restart_queries_supervisor_for_saved_callback_attempt() {
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        #[derive(serde::Serialize)]
+        struct Response {
+            id: &'static str,
+            result: bool,
+        }
+        let state = State::new().await;
+        journal(
+            &state,
+            vec![entry(GENERATION, 1, &request("callback-status"))],
+        )
+        .await;
+        let journal_operation = callback_record::operation(SCOPE, GENERATION, 1);
+        let saved = saved_response(
+            &state,
+            &journal_operation,
+            studio_runtime_store::projection_value(&Response {
+                id: "callback-status",
+                result: true,
+            }),
+        )
+        .await;
+        let journal_identity = journal_operation.clone();
+        let saved_operation = state
+            .bridge
+            .store
+            .transaction_with(move |tx| {
+                store_submitted(tx, &journal_operation, saved)?;
+                let rows = Outbox::for_account::<crate::provider_callbacks::CallbackResponse>(
+                    tx,
+                    SCOPE,
+                    OutboxKind::ProviderCallback,
+                    OutboxStatus::Submitted,
+                    10,
+                )
+                .map_err(StoreError::from)?;
+                let operation = rows
+                    .first()
+                    .expect("callback row")
+                    .payload
+                    .identity
+                    .operation_id();
+                crate::provider_callbacks::record_frame_outcome(
+                    tx,
+                    &operation,
+                    crate::provider_callbacks::DeliveryOutcome::Unknown,
+                )
+                .map_err(|_| WorkerError::CallbackUnknown)?;
+                Ok::<_, WorkerError>(operation)
+            })
+            .await
+            .expect("held callback");
+        let mut peer = Peer::new();
+        let queries = Arc::new(std::sync::Mutex::new(Vec::new()));
+        peer.factory = Arc::new(WrittenStatusFactory {
+            inner: peer.factory.clone(),
+            expected: saved_operation.clone(),
+            queries: queries.clone(),
+        });
+        let mut worker = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            peer.worker(state.bridge.clone()),
+        )
+        .await
+        .expect("worker initialization");
+        let mut finished = worker.completion_signal();
+        tokio::select! {
+            _ = worker_barrier(&worker) => {},
+            wire = peer.writes.recv() => {
+                if wire.is_some() { panic!("fixture received a provider write"); }
+                let result = tokio::time::timeout(std::time::Duration::from_secs(3), worker.completion()).await;
+                panic!("worker exited after transport closed: {result:?}");
+            },
+            result = finished.changed() => {
+                let completion = tokio::time::timeout(std::time::Duration::from_secs(3), worker.completion()).await;
+                panic!("worker finished during restart: {result:?}, {completion:?}");
+            },
+            _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => panic!("restart recovery deadline"),
+        }
+        assert!(queries.lock().unwrap().contains(&saved_operation));
+        let db = state.bridge.store.test_reader().expect("reader");
+        let handoff: CallbackTask<callback_record::CallbackObligation> = tool_requests::get_callback(&db, &journal_identity).expect("handoff read").expect("handoff");
+        assert_eq!(handoff.status, ToolRequestStatus::Completed);
+        drop(db);
+        let db = state.bridge.store.test_reader().expect("reader");
+        let held = Outbox::for_account::<crate::provider_callbacks::CallbackResponse>(
+            &db,
+            SCOPE,
+            OutboxKind::ProviderCallback,
+            OutboxStatus::Unknown,
+            10,
+        )
+        .expect("callbacks");
+        assert!(held.is_empty(), "written callback must not remain unknown");
+        assert!(
+            peer.writes.try_recv().is_err(),
+            "the callback is not replayed"
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(5), worker.shutdown())
+            .await
+            .expect("shutdown deadline")
+            .expect("shutdown");
+    })
+    .await
+    .expect("callback status test deadline");
+}
+
 /// Crash after the answer was submitted, before its write outcome was known.
 #[tokio::test]
 async fn a_callback_with_missing_response_provenance_stays_held_after_restart() {

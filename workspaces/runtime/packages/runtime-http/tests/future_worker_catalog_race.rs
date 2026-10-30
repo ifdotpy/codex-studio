@@ -311,11 +311,11 @@ async fn automatic_catalog_drops_a_retired_result_and_keeps_another_ready_accoun
         .accounts;
     let retired = accounts
         .iter()
-        .filter(|row| row["id"] != TARGET)
+        .filter(|row| row.id.as_str() != Some(TARGET))
         .cloned()
         .collect::<Vec<_>>();
-    fixture.catalog.retain_accounts(&retired);
-    fixture.catalog.retain_accounts(&accounts);
+    fixture.catalog.retain_public_accounts(&retired);
+    fixture.catalog.retain_public_accounts(&accounts);
     assert!(matches!(
         fixture
             .catalog

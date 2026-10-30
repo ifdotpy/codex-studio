@@ -58,16 +58,16 @@ pub enum UsageError {
 pub fn account_cost_snapshot(
     state_dir: &Path,
     account_key: &str,
-    account: &Value,
+    account: &crate::account_policy::PublicAccount,
     now: f64,
 ) -> Result<Value, UsageError> {
-    let provider = ProviderKind::of_record(account)?;
-    if account.get("status").and_then(Value::as_str) != Some("ready") {
+    let provider = account.provider()?;
+    if account.status.as_str() != Some("ready") {
         return Err(UsageError::AccountUnavailable);
     }
     let home = account
-        .get("home")
-        .and_then(Value::as_str)
+        .home
+        .as_str()
         .filter(|home| !home.is_empty())
         .map(PathBuf::from)
         .ok_or(UsageError::MissingProfile)?;
@@ -75,7 +75,7 @@ pub fn account_cost_snapshot(
         ProviderKind::Claude => return claude_cost_snapshot(state_dir, account_key, &home, now),
         ProviderKind::Codex => {}
     }
-    let account_id = account.get("accountId").cloned().unwrap_or(Value::Null);
+    let account_id = json!(account.account_id);
     let home_text = home.to_string_lossy().into_owned();
     let account_identity =
         crate::event_write::python_json(&json!([account_key, account_id, home_text]));
@@ -152,7 +152,7 @@ pub fn claim_cost_refresh_attempt(account_key: &str) -> bool {
 pub fn refresh_account_costs_report(
     state_dir: &Path,
     account_key: &str,
-    account: &Value,
+    account: &crate::account_policy::PublicAccount,
     cancelled: &AtomicBool,
 ) -> (bool, Result<(), UsageError>) {
     let result = refresh_account_costs_with(
@@ -178,16 +178,13 @@ pub fn refresh_account_costs_report(
 pub fn reserve_account_cost_refresh(
     state_dir: &Path,
     account_key: &str,
-    account: &Value,
+    account: &crate::account_policy::PublicAccount,
 ) -> Option<CostRefreshGuard> {
-    ProviderKind::of_record(account).ok()?;
-    if account.get("status").and_then(Value::as_str) != Some("ready") {
+    account.provider().ok()?;
+    if account.status.as_str() != Some("ready") {
         return None;
     }
-    account
-        .get("home")?
-        .as_str()
-        .filter(|home| !home.is_empty())?;
+    account.home.as_str().filter(|home| !home.is_empty())?;
     let key = account_refresh_key(state_dir, account_key);
     let guard = begin_cost_refresh(key.clone())?;
     claim_cost_refresh_attempt(&key).then_some(guard)
@@ -196,7 +193,7 @@ pub fn reserve_account_cost_refresh(
 pub fn refresh_reserved_account_costs_report(
     state_dir: &Path,
     account_key: &str,
-    account: &Value,
+    account: &crate::account_policy::PublicAccount,
     cancelled: &AtomicBool,
     reservation: CostRefreshGuard,
 ) -> (bool, Result<(), UsageError>) {
@@ -222,7 +219,7 @@ pub fn refresh_reserved_account_costs_report(
 fn refresh_account_costs_with<C, S>(
     state_dir: &Path,
     account_key: &str,
-    account: &Value,
+    account: &crate::account_policy::PublicAccount,
     cancelled: &AtomicBool,
     clock: C,
     scanner: S,
@@ -245,7 +242,7 @@ where
 fn refresh_account_costs_reserved_with<C, S>(
     state_dir: &Path,
     account_key: &str,
-    account: &Value,
+    account: &crate::account_policy::PublicAccount,
     cancelled: &AtomicBool,
     clock: C,
     scanner: S,
@@ -255,13 +252,13 @@ where
     C: Fn() -> f64,
     S: FnOnce(&Path, &Path, &AtomicBool) -> Result<Value, UsageError>,
 {
-    let provider = match ProviderKind::of_record(account) {
+    let provider = match account.provider() {
         Ok(provider) => provider,
         Err(error) => return (false, Err(error.into())),
     };
     let home = match account
-        .get("home")
-        .and_then(Value::as_str)
+        .home
+        .as_str()
         .filter(|home| !home.is_empty())
         .map(PathBuf::from)
     {
@@ -290,7 +287,7 @@ where
         }
         ProviderKind::Codex => {}
     }
-    let account_id = account.get("accountId").cloned().unwrap_or(Value::Null);
+    let account_id = json!(account.account_id);
     let home_text = home.to_string_lossy().into_owned();
     let account_identity =
         crate::event_write::python_json(&json!([account_key, account_id, home_text]));
@@ -782,24 +779,21 @@ where
             else {
                 continue;
             };
-            let payload = row.get("payload");
             let at = row
                 .get("timestamp")
                 .and_then(Value::as_str)
                 .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok());
             match row.get("type").and_then(Value::as_str) {
                 Some("session_meta") => {
-                    if payload.is_some_and(|meta| meta.get("forked_from_id").is_some()) {
-                        fork_at = payload
-                            .and_then(|meta| meta.get("timestamp"))
-                            .and_then(Value::as_str)
+                    let header = crate::analytics_history::SessionHeader::from_value(&row);
+                    if header.as_ref().is_some_and(|header| header.is_fork()) {
+                        fork_at = header
+                            .as_ref()
+                            .and_then(|header| header.timestamp())
                             .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
                             .or(at);
                     }
-                    if let Some(id) = payload
-                        .and_then(|meta| meta.get("id"))
-                        .and_then(Value::as_str)
-                    {
+                    if let Some(id) = header.as_ref().and_then(|header| header.id()) {
                         let mut context = rollout.record().clone();
                         context["threadId"] = json!(id);
                         rollout = crate::analytics_rollout::RolloutContext::from_record(context)
@@ -1245,6 +1239,10 @@ fn clear_unproven_daily_costs(data: &mut serde_json::Map<String, Value>, now: f6
 #[cfg(test)]
 #[allow(clippy::disallowed_methods)]
 mod tests {
+    fn account_fixture(value: serde_json::Value) -> crate::account_policy::PublicAccount {
+        serde_json::from_value(value).expect("account fixture")
+    }
+
     use super::{account_cost_snapshot, refresh_account_costs_with, scan_claude_sessions};
     use serde_json::{Value, json};
     use std::sync::atomic::AtomicBool;
@@ -1254,7 +1252,8 @@ mod tests {
     fn provider_identity_invalid_account_never_reads_or_scans_codex() {
         let temp = tempfile::tempdir().expect("state");
         for provider in [json!("future"), json!(""), json!(7), json!({})] {
-            let account = json!({"provider":provider,"status":"ready","home":temp.path()});
+            let account =
+                account_fixture(json!({"provider":provider,"status":"ready","home":temp.path()}));
             assert!(
                 account_cost_snapshot(temp.path(), "invalid", &account, 1.).is_err(),
                 "provider {provider}"
@@ -1306,7 +1305,9 @@ mod tests {
         let directory = tempfile::tempdir().expect("fixture directory");
         let state_dir = directory.path().join("state");
         let home = directory.path().join("profile");
-        let account = json!({"provider":"codex","id":"paused-long-scan","accountId":"acct","home":home,"status":"ready"});
+        let account = account_fixture(
+            json!({"provider":"codex","id":"paused-long-scan","accountId":"acct","home":home,"status":"ready"}),
+        );
         let clock_value = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1_000));
         let clock_for_worker = std::sync::Arc::clone(&clock_value);
         let (started_sender, started_receiver) = tokio::sync::oneshot::channel();
@@ -1360,8 +1361,9 @@ mod tests {
         let state_dir = directory.path().join("state");
         let home = directory.path().join("profile");
         let key = "failed-save-backoff";
-        let account =
-            json!({"provider":"codex","id":key,"accountId":"acct","home":home,"status":"ready"});
+        let account = account_fixture(
+            json!({"provider":"codex","id":key,"accountId":"acct","home":home,"status":"ready"}),
+        );
         let account_identity =
             crate::event_write::python_json(&json!([key, "acct", home.to_string_lossy().as_ref()]));
         let cache_root = state_dir
@@ -1422,7 +1424,7 @@ mod tests {
         let response = account_cost_snapshot(
             &root.join("state"),
             key,
-            &json!({"provider":"codex","id":key,"accountId":account_id,"home":home,"status":"ready"}),
+            &account_fixture(json!({"provider":"codex","id":key,"accountId":account_id,"home":home,"status":"ready"})),
             122.0,
         )
         .expect("cache read");
@@ -1466,7 +1468,7 @@ mod tests {
         let response = account_cost_snapshot(
             &root.join("state"),
             key,
-            &json!({"provider":"codex","id":key,"accountId":account_id,"home":home,"status":"ready"}),
+            &account_fixture(json!({"provider":"codex","id":key,"accountId":account_id,"home":home,"status":"ready"})),
             101.0,
         )
         .expect("cache read");
@@ -1482,7 +1484,7 @@ mod tests {
         // No profile exists: snapshot reads must not scan logs or fetch pricing.
         let home = directory.path().join("profile");
         let key = "claude-snapshot";
-        let account = json!({"provider":"claude","home":home,"status":"ready"});
+        let account = account_fixture(json!({"provider":"claude","home":home,"status":"ready"}));
         let identity = format!("{key}{}", home.to_string_lossy());
         let cache = state
             .join("account-costs/claude")
@@ -1632,7 +1634,7 @@ mod tests {
         std::fs::write(day.join("rollout-parent.jsonl"), parent.join("\n")).expect("parent log");
         let fork = [
             json!({"timestamp":at(30),"type":"session_meta","payload":{"id":"fork",
-                "forked_from_id":"parent","timestamp":at(30)}})
+                "forked_from_id":null,"timestamp":false}})
             .to_string(),
             context(40, "gpt-test"),
             record(39, "r2", 600_000, 100_000, 60_000),
@@ -1840,8 +1842,8 @@ mod tests {
             result["sourceDay"],
             super::local_day(now.timestamp() as f64)
         );
-        let account = json!({"id":"claude-local","provider":"claude","home":home,
-            "status":"ready"});
+        let account = account_fixture(json!({"id":"claude-local","provider":"claude","home":home,
+            "status":"ready"}));
         let state = root.join("state");
         refresh_account_costs_with(
             &state,
@@ -2007,7 +2009,7 @@ mod tests {
             .expect("valid cache");
         assert_eq!(saved["checked"], midnight);
         assert_eq!(saved["data"]["sourceDay"], super::local_day(scan_started));
-        let account = json!({"provider":"claude","home":home,"status":"ready"});
+        let account = account_fixture(json!({"provider":"claude","home":home,"status":"ready"}));
         let snapshot = account_cost_snapshot(&state, "claude-local", &account, midnight)
             .expect("snapshot of scan crossing midnight");
         assert_eq!(snapshot["stale"], true);

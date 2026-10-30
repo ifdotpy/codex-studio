@@ -597,6 +597,11 @@ async fn provider_callbacks_local_message_once_and_worker_chat() {
             .unwrap(),
     );
     assert_eq!(body(&first)["success"], true);
+    let stored: i64 = store.test_reader().unwrap().query_row(
+        "SELECT count(*) FROM request_results WHERE ref_kind='message' AND result IS NULL",
+        [], |row| row.get(0),
+    ).unwrap();
+    assert_eq!(stored, 1, "private message stores an entity reference");
     assert_eq!(
         reply(
             dispatch(std::sync::Arc::clone(&store), &context, &frame, 11.0)

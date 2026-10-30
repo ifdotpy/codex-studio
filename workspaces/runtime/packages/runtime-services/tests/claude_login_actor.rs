@@ -1059,3 +1059,34 @@ async fn native_login_pins_uuid_and_reauth_refuses_another_organization() {
     assert_eq!(f.chats.0.load(Ordering::SeqCst), 0);
     s.shutdown().await.expect("login actor shuts down");
 }
+
+#[test]
+fn login_snapshot_preserves_legacy_extensions_redaction_and_replay() {
+    use serde_json::json;
+    use studio_runtime_services::claude_login::{LoginError, LoginSnapshot};
+    let legacy = json!({"requestId":ID,"accountKey":"account","status":"pending","email":"person@example.test","verificationUrl":"secret","vendor":{"nested":true}});
+    let snapshot = LoginSnapshot::from_record(legacy).expect("legacy record");
+    assert_eq!(snapshot.receipt()["vendor"], json!({"nested":true}));
+    assert!(snapshot.receipt().get("verificationUrl").is_none());
+    assert!(snapshot.replay(Some("account"), None).is_ok());
+    assert!(matches!(
+        snapshot.replay(Some("other"), None),
+        Err(LoginError::Conflict)
+    ));
+    let hash = "a".repeat(64);
+    let record = json!({"receipt":{"requestId":ID,"accountKey":"account","status":"pending"},"metadata":{"flow":"add","requestHash":hash,"configDir":"/fixture","extension":[1,2]},"extra":true});
+    let add = LoginSnapshot::from_record(record.clone()).expect("add record");
+    assert!(add.replay(None, Some(&hash)).is_ok());
+    assert!(matches!(
+        add.replay(None, Some(&"b".repeat(64))),
+        Err(LoginError::Conflict)
+    ));
+    assert_eq!(add.record()["metadata"]["extension"], json!([1, 2]));
+    assert_eq!(add.record()["extra"], true);
+    let mut invalid = record;
+    invalid["receipt"]["status"] = json!({"pending":null});
+    assert!(matches!(
+        LoginSnapshot::from_record(invalid),
+        Err(LoginError::InvalidRecord(path)) if path == "/receipt/status"
+    ));
+}

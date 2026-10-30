@@ -215,6 +215,7 @@ pub(crate) trait StatusWatchPort: Send + Sync {
         store: &'a RuntimeStore,
         actor: &'a Actor,
         args: &'a Value,
+        action: crate::managed_status_watch::WatchAction,
         request_id: &'a str,
         now: f64,
     ) -> BoxFuture<'a, Result<RulesActionResult, Error>>;
@@ -395,6 +396,7 @@ pub(super) struct DispatchRequest<'a> {
     pub(super) context: &'a crate::provider_callbacks::CallbackContext,
     pub(super) tool: &'a str,
     pub(super) args: &'a Value,
+    pub(super) watch_action: Option<crate::managed_status_watch::WatchAction>,
     pub(super) request_id: &'a str,
     pub(super) now: f64,
     pub(super) ports: &'a ManagedToolRuntimePorts,
@@ -409,6 +411,7 @@ pub(super) async fn dispatch(
         context,
         tool,
         args,
+        watch_action,
         request_id,
         now,
         ports,
@@ -520,8 +523,10 @@ pub(super) async fn dispatch(
             written(&port.status(store_ref, actor, args, now).await?, Vec::new())
         }
         "orchestration_watch" => {
-            let action = args["action"].as_str().unwrap_or("list");
-            if action != "list" && ports.monitor_cancel.is_none() {
+            let action = watch_action.ok_or(Error::Invalid("Invalid watch action"))?;
+            if action != crate::managed_status_watch::WatchAction::List
+                && ports.monitor_cancel.is_none()
+            {
                 return Ok(Some(not_sent(Error::Unavailable(
                     "monitor-runtime/rule-cancel",
                 ))));
@@ -531,7 +536,9 @@ pub(super) async fn dispatch(
                     "model-directory/status-and-dispatch-capacity",
                 ))));
             };
-            let result = port.rules(store_ref, actor, args, request_id, now).await?;
+            let result = port
+                .rules(store_ref, actor, args, action, request_id, now)
+                .await?;
             for monitor_id in result.cancel_monitor_ids {
                 let Some(monitor_port) = ports.monitor_cancel.as_ref() else {
                     return Ok(Some(not_sent(Error::Unavailable(
@@ -542,7 +549,7 @@ pub(super) async fn dispatch(
                     .cancel_monitor(&monitor_id, actor_id, now)
                     .await?;
             }
-            if action != "list" {
+            if action != crate::managed_status_watch::WatchAction::List {
                 crate::managed_status_watch::acknowledge_rule_cancellations(
                     store_ref,
                     actor_id,
@@ -1166,7 +1173,7 @@ mod tests {
                 .await
                 .expect("store"),
         );
-        let record = studio_runtime_store::AgentRecord::from_value(json!({
+        let record = studio_runtime_store::AgentRecord::from_value(json!({"accountKey":"default",
             "provider":"codex", "id":"lead", "rootId":"lead", "epoch":1, "status":"running",
             "isLead":true, "autoWake":true, "cwd":root.path(), "threadId":"thread"
         }))
@@ -1200,11 +1207,12 @@ mod tests {
         };
         let args = json!({"action":"maintenance_report"});
         let result = super::dispatch(super::DispatchRequest {
-            store,
+            store: std::sync::Arc::clone(&store),
             actor: &actor,
             context: &context,
             tool: "orchestration_agent_manage",
             args: &args,
+            watch_action: None,
             request_id: "maintenance",
             now: 1.0,
             ports: &ports,
@@ -1217,6 +1225,21 @@ mod tests {
             result.result().test_value(),
             json!({"worktrees":[],"workspaces":[],"bases":[]})
         );
+        let watch = super::dispatch(super::DispatchRequest {
+            store,
+            actor: &actor,
+            context: &context,
+            tool: "orchestration_watch",
+            args: &args,
+            watch_action: Some(crate::managed_status_watch::WatchAction::Save),
+            request_id: "watch",
+            now: 1.0,
+            ports: &ports,
+        })
+        .await
+        .expect("dispatch")
+        .expect("watch has an async owner");
+        assert!(matches!(watch, DispatchedOperation::NotSent(_)));
     }
 
     #[test]

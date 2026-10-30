@@ -540,10 +540,7 @@ fn record(
     let Some(mut agent) = AgentRepository::get(tx, &AgentId::from(turn.agent.as_str()))? else {
         return Ok(false);
     };
-    if agent.account_key.as_str()
-        != account
-        || !owner_matches(&agent, turn, generation)
-    {
+    if agent.account_key.as_str() != account || !owner_matches(&agent, turn, generation) {
         return Ok(false);
     }
     if let Owner::Stop { ticket, .. } = &turn.owner {

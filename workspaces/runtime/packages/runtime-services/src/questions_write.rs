@@ -1,12 +1,16 @@
-//! Atomic writes for durable questions and user complaints.
+//! Atomic writes for agent questions (typed approvals) and user complaints.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
+use studio_runtime_schema::approvals::{
+    Answer, Approval, ApprovalId, ApprovalState, CommandId, Deferral, Hidden, Principal, Question,
+    QuestionAnswer, Request, Timestamp,
+};
 use studio_runtime_schema::complaints::ComplaintResponseStatus;
+use studio_runtime_store::approvals::{self, ApprovalError};
 use studio_runtime_store::{
-    AgentId, AgentRecord, AgentRepository, QuestionsWriteRepository, RuntimeStore,
-    SyncDocumentsRepository, Transaction,
+    AgentId, AgentRecord, AgentRepository, QuestionsWriteRepository, RuntimeStore, Transaction,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -66,49 +70,61 @@ pub struct AsyncQuestionAnswerResult {
     pub event_inserted: bool,
 }
 
-pub struct AsyncQuestionAnswerInput<'a, V> {
+pub struct AsyncQuestionAnswerInput<'a> {
     pub id: &'a str,
     pub data: &'a Value,
     pub admission: &'a dyn MessageAdmission,
     pub prepared: &'a PreparedHost,
     pub now: f64,
-    pub validate: V,
 }
 
+fn approval(error: ApprovalError) -> QuestionsWriteError {
+    match error {
+        ApprovalError::NotFound(_) => QuestionsWriteError::InvalidRequest("Unknown question"),
+        ApprovalError::Conflict(_) => {
+            QuestionsWriteError::Conflict("This request already has a different answer")
+        }
+        ApprovalError::Closed(_) => {
+            QuestionsWriteError::InvalidRequest("Request is no longer pending")
+        }
+        ApprovalError::Mismatch(_) => {
+            QuestionsWriteError::InvalidRequest("Supply question answers")
+        }
+        other => QuestionsWriteError::Store(other.into()),
+    }
+}
+
+fn get_row(
+    transaction: &Transaction<'_>,
+    id: &str,
+) -> Result<Option<Approval>, QuestionsWriteError> {
+    approvals::get(transaction, &ApprovalId(id.to_owned())).map_err(approval)
+}
+
+/// Returns None when the id is not an agent question, so the caller can try
+/// the other answer owners.
 pub async fn answer_async_question_in_store(
     store: std::sync::Arc<RuntimeStore>,
     id: &str,
     data: &Value,
     now: f64,
-    validate: impl Fn(&Value) -> bool + Send + Sync + 'static,
 ) -> Result<Option<AsyncQuestionAnswerResult>, QuestionsWriteError> {
     let id = id.to_owned();
     let data = data.clone();
-    let validate: std::sync::Arc<dyn Fn(&Value) -> bool + Send + Sync> =
-        std::sync::Arc::new(validate);
-    let validate_for_preparation = std::sync::Arc::clone(&validate);
     let id_for_preparation = id.clone();
     let read = store
         .read_async("runtime-services/questions_write", move |transaction| {
-            let raw = QuestionsWriteRepository::request(transaction, &id_for_preparation)?
-                .ok_or(QuestionsWriteError::InvalidRequest("Unknown question"))?;
-            let record: Value = serde_json::from_str(&raw)
-                .map_err(|_| invalid_stored("runtime_requests", &id_for_preparation))?;
-            if record.get("id").and_then(Value::as_str) != Some(id_for_preparation.as_str())
-                || !validate_for_preparation(&record)
-            {
-                return Err(invalid_stored("runtime_requests", &id_for_preparation));
-            }
-            if record.get("method").and_then(Value::as_str) != Some("agent/asyncQuestion") {
+            let Some(row) = get_row(transaction, &id_for_preparation)? else {
+                return Ok(None);
+            };
+            if !matches!(row.request, Request::AgentQuestion { .. }) {
                 return Ok(None);
             }
-            let agent_id = record
-                .get("agent")
-                .and_then(Value::as_str)
-                .ok_or_else(|| invalid_stored("runtime_requests", &id_for_preparation))?;
-            let admission =
-                crate::message_admission::MessageIngressAdmission::read(transaction, agent_id)?;
-            Ok(Some(admission))
+            let admission = crate::message_admission::MessageIngressAdmission::read(
+                transaction,
+                row.agent.as_str(),
+            )?;
+            Ok::<_, QuestionsWriteError>(Some(admission))
         })
         .await?;
     let Some(admission) = read else {
@@ -116,7 +132,6 @@ pub async fn answer_async_question_in_store(
     };
     let admission = admission.prepare().await?;
     let prepared = PreparedHost::load(&store).await?;
-    let validate_for_transaction = std::sync::Arc::clone(&validate);
     let result = store
         .transaction_with_error(move |transaction| {
             answer_async_question(
@@ -127,7 +142,6 @@ pub async fn answer_async_question_in_store(
                     admission: &admission,
                     prepared: &prepared,
                     now,
-                    validate: move |record: &Value| validate_for_transaction(record),
                 },
             )
         })
@@ -136,11 +150,11 @@ pub async fn answer_async_question_in_store(
 }
 
 /// Atomically admit an async-question follow-up, mirror an active radio answer,
-/// and record the answer receipt. All filesystem and budget history preparation
+/// and record the answer. All filesystem and budget history preparation
 /// is owned by the caller and happens before this writer transaction.
-pub fn answer_async_question<V: Fn(&Value) -> bool>(
+pub fn answer_async_question(
     transaction: &Transaction<'_>,
-    input: AsyncQuestionAnswerInput<'_, V>,
+    input: AsyncQuestionAnswerInput<'_>,
 ) -> Result<AsyncQuestionAnswerResult, QuestionsWriteError> {
     let AsyncQuestionAnswerInput {
         id,
@@ -148,38 +162,52 @@ pub fn answer_async_question<V: Fn(&Value) -> bool>(
         admission,
         prepared,
         now,
-        validate,
     } = input;
-    let mut record = request(transaction, id, &validate)?;
-    if record.get("method").and_then(Value::as_str) != Some("agent/asyncQuestion") {
+    let row =
+        get_row(transaction, id)?.ok_or(QuestionsWriteError::InvalidRequest("Unknown question"))?;
+    let Request::AgentQuestion { questions } = &row.request else {
         return Err(QuestionsWriteError::InvalidRequest("Not an async question"));
-    }
-    let signature = crate::provider_callbacks::answer_signature(data);
-    if let Some(previous) = record.get("answerSignature").and_then(Value::as_str) {
-        if previous != signature {
-            return Err(QuestionsWriteError::Conflict(
-                "This request already has a different answer",
+    };
+    let given = given_answers(questions, data)?;
+    let answer = Answer::Answers {
+        answers: given
+            .iter()
+            .map(|given| QuestionAnswer {
+                id: given.question.id.clone(),
+                answer: given.stored(),
+            })
+            .collect(),
+    };
+    match &row.state {
+        ApprovalState::Pending if row.hidden.is_none() => {}
+        ApprovalState::Pending | ApprovalState::Closed { .. } => {
+            return Err(QuestionsWriteError::InvalidRequest(
+                "Request is no longer pending",
             ));
         }
-        if record.get("status").and_then(Value::as_str) == Some("answered") {
+        ApprovalState::Answered { answer: stored, .. } => {
+            if *stored != answer {
+                return Err(QuestionsWriteError::Conflict(
+                    "This request already has a different answer",
+                ));
+            }
             return Ok(AsyncQuestionAnswerResult {
                 response: json!({"status":"answered","replayed":true}),
                 event_inserted: false,
             });
         }
-        return Err(QuestionsWriteError::InvalidRequest(
-            "Answer delivery is uncertain. Do not resend; inspect the agent conversation",
-        ));
+        ApprovalState::Answering { answer: stored, .. }
+        | ApprovalState::Unknown { answer: stored, .. } => {
+            return Err(if *stored != answer {
+                QuestionsWriteError::Conflict("This request already has a different answer")
+            } else {
+                QuestionsWriteError::InvalidRequest(
+                    "Answer delivery is uncertain. Do not resend; inspect the agent conversation",
+                )
+            });
+        }
     }
-    if record.get("status").and_then(Value::as_str) != Some(PENDING) {
-        return Err(QuestionsWriteError::InvalidRequest(
-            "Request is no longer pending",
-        ));
-    }
-    let agent_id = record
-        .get("agent")
-        .and_then(Value::as_str)
-        .ok_or_else(|| invalid_stored("runtime_requests", id))?;
+    let agent_id = row.agent.as_str();
     let agent = stored_agent(transaction, agent_id)?
         .ok_or(QuestionsWriteError::InvalidRequest("Unknown agent"))?;
     if !event_write::truthy(agent.extra.get("isLead")) {
@@ -188,33 +216,26 @@ pub fn answer_async_question<V: Fn(&Value) -> bool>(
         ));
     }
     if event_write::truthy(agent.extra.get("deletedAt"))
-        || record.get("epoch").and_then(Value::as_i64) != Some(agent.epoch)
+        || row.epoch.and_then(|epoch| i64::try_from(epoch).ok()) != Some(agent.epoch)
         || agent.auto_wake != Some(true)
     {
         return Err(QuestionsWriteError::InvalidRequest(
             "This question belongs to a stopped turn",
         ));
     }
-    let answers = answered_questions(&record, data)?;
-    let text = answers
+    let text = given
         .iter()
-        .map(|question| {
-            std::iter::once(question.prompt.as_str())
-                .chain(question.answers.iter().map(String::as_str))
+        .map(|given| {
+            std::iter::once(given.question.question.as_str())
+                .chain(given.values.iter().map(String::as_str))
                 .collect::<Vec<_>>()
                 .join("\n")
         })
         .collect::<Vec<_>>()
         .join("\n");
     let text = event_write::python_strip(&text);
-    let route = crate::radio_runtime::route_question_answer(
-        transaction,
-        prepared,
-        &record,
-        text,
-        None,
-        now,
-    )?;
+    let route =
+        crate::radio_runtime::route_question_answer(transaction, prepared, &row, text, None, now)?;
     let send_followup = |radio_answer_turn_id: Option<&str>| -> Result<bool, QuestionsWriteError> {
         let accepted = coordination::send_system_followup_with_radio_answer(
             transaction,
@@ -231,7 +252,7 @@ pub fn answer_async_question<V: Fn(&Value) -> bool>(
         crate::radio_runtime::record_question_answer_followup(
             transaction,
             prepared,
-            &record,
+            &row,
             text,
             now,
         )?;
@@ -244,75 +265,62 @@ pub fn answer_async_question<V: Fn(&Value) -> bool>(
             send_followup(Some(turn_id))?
         }
     };
-
-    record["status"] = json!("answered");
-    record["answerSignature"] = json!(signature);
-    record["answeredBy"] = json!(USER);
-    record["answeredAt"] = json!(now);
-    record["decision"] = data.get("decision").cloned().unwrap_or(json!("answer"));
-    record["deferred"] = json!(false);
-    record["answerHistory"] = json!(answers.into_iter().map(|question| {
-        json!({"id":question.id,"question":question.prompt,"isSecret":question.secret,"answer":if question.secret { json!("[redacted]") } else { json!(question.answers) }})
-    }).collect::<Vec<_>>());
-    put_request(transaction, id, &record, &validate)?;
+    // The answer needs no provider delivery: the follow-up above is the delivery.
+    approvals::answer(transaction, &row.id, answer, CommandId(id.to_owned())).map_err(approval)?;
+    let mut answered =
+        approvals::confirm_delivery(transaction, &row.id, Principal::Owner, Timestamp(now))
+            .map_err(approval)?;
+    if let Some(deferral) = answered.deferral.as_mut().filter(|d| d.active) {
+        deferral.active = false;
+        approvals::put(transaction, &answered).map_err(approval)?;
+    }
+    crate::approval_sync::publish(transaction, &answered)?;
     Ok(AsyncQuestionAnswerResult {
         response: json!({"status":"answered"}),
         event_inserted,
     })
 }
 
-/// Consumed leaves of an async answer. The original request JSON still owns its signature.
-struct AnsweredQuestion {
-    id: String,
-    prompt: String,
-    secret: bool,
-    answers: Vec<String>,
+/// The user's leaves for one question. `values` are what the user typed; the
+/// stored answer hides them for a secret question. The secret itself is never
+/// stored, so a second, different secret for the same question compares equal
+/// and is reported as a replay (documented limitation).
+struct Given<'a> {
+    question: &'a Question,
+    values: Vec<String>,
 }
 
-fn answered_questions(
-    record: &Value,
+impl Given<'_> {
+    fn stored(&self) -> Vec<String> {
+        if self.question.is_secret {
+            vec![QuestionAnswer::REDACTED.to_owned()]
+        } else {
+            self.values.clone()
+        }
+    }
+}
+
+fn given_answers<'a>(
+    questions: &'a [Question],
     data: &Value,
-) -> Result<Vec<AnsweredQuestion>, QuestionsWriteError> {
-    let stored = || {
-        invalid_stored(
-            "runtime_requests",
-            record["id"].as_str().unwrap_or_default(),
-        )
-    };
-    let questions = record
-        .pointer("/params/questions")
-        .and_then(Value::as_array)
-        .ok_or_else(stored)?;
+) -> Result<Vec<Given<'a>>, QuestionsWriteError> {
     let answers = data.get("answers").and_then(Value::as_object).ok_or(
         QuestionsWriteError::InvalidRequest("Supply question answers"),
     )?;
     questions
         .iter()
         .map(|question| {
-            let id = question
-                .get("id")
-                .and_then(Value::as_str)
-                .ok_or_else(stored)?;
             // Historical missing, null and non-array leaves mean no selected answers.
             let values = answers
-                .get(id)
+                .get(&question.id)
                 .and_then(|answer| answer.get("answers"))
                 .and_then(Value::as_array);
-            let answers = values
+            let values = values
                 .map(|values| serde_json::from_value::<Vec<String>>(json!(values)))
                 .transpose()
                 .map_err(|_| QuestionsWriteError::InvalidRequest("Supply question answers"))?
                 .unwrap_or_default();
-            Ok(AnsweredQuestion {
-                id: id.to_owned(),
-                prompt: question
-                    .get("question")
-                    .and_then(Value::as_str)
-                    .unwrap_or(id)
-                    .to_owned(),
-                secret: event_write::truthy(question.get("isSecret")),
-                answers,
-            })
+            Ok(Given { question, values })
         })
         .collect()
 }
@@ -321,73 +329,98 @@ pub fn defer_question(
     transaction: &Transaction<'_>,
     id: &str,
     deferred: bool,
-    validate: impl Fn(&Value) -> bool,
 ) -> Result<Value, QuestionsWriteError> {
-    let mut record = request(transaction, id, &validate)?;
-    if !is_question(&record) {
+    let mut row =
+        get_row(transaction, id)?.ok_or(QuestionsWriteError::InvalidRequest("Unknown question"))?;
+    if !is_question(&row) {
         return Err(QuestionsWriteError::InvalidRequest(
             "Only a question can be deferred",
         ));
     }
-    if record.get("status").and_then(Value::as_str) != Some(PENDING) {
+    if !matches!(row.state, ApprovalState::Pending) || row.hidden.is_some() {
         return Err(QuestionsWriteError::InvalidRequest(
             "This question is no longer pending",
         ));
     }
-    let agent_id = record
-        .get("agent")
-        .and_then(Value::as_str)
-        .ok_or_else(|| invalid_stored("runtime_requests", id))?;
-    let agent = stored_agent(transaction, agent_id)?
+    let agent = stored_agent(transaction, row.agent.as_str())?
         .ok_or(QuestionsWriteError::InvalidRequest("Unknown agent"))?;
     if event_write::truthy(agent.extra.get("deletedAt")) {
         return Err(QuestionsWriteError::InvalidRequest(
             "This conversation was deleted",
         ));
     }
-    let previous_deferred = record
-        .get("deferred")
-        .cloned()
-        .unwrap_or(Value::Bool(false));
-    if previous_deferred != Value::Bool(deferred) {
-        record["deferred"] = json!(deferred);
-        record["deferredAt"] = json!(unix_time()?);
-        record["deferredBy"] = json!(USER);
-        put_request(transaction, id, &record, &validate)?;
+    if row.deferral.as_ref().is_some_and(|d| d.active) != deferred {
+        row.deferral = Some(Deferral {
+            active: deferred,
+            at: Timestamp(unix_time()?),
+            by: Principal::Owner,
+        });
+        approvals::put(transaction, &row).map_err(approval)?;
+        crate::approval_sync::publish(transaction, &row)?;
     }
     Ok(json!({"id":id,"status":PENDING,"deferred":deferred}))
 }
 
+/// Hides an agent question: history stays. Returns None when the id is not an
+/// agent question, so the caller can try the provider cards.
 pub fn delete_question(
     transaction: &Transaction<'_>,
     id: &str,
-    validate: impl Fn(&Value) -> bool,
-) -> Result<Value, QuestionsWriteError> {
-    let mut record = request(transaction, id, &validate)?;
-    let agent_id = record
-        .get("agent")
-        .and_then(Value::as_str)
-        .ok_or_else(|| invalid_stored("runtime_requests", id))?;
-    let agent = stored_agent(transaction, agent_id)?
-        .ok_or(QuestionsWriteError::InvalidRequest("Unknown agent"))?;
-    if !state_only_delete_allowed(
-        &record,
-        event_write::truthy(agent.extra.get("deletedAt")),
-        true,
-    )? {
-        return Ok(json!({"id":id,"status":"deleted"}));
+) -> Result<Option<Value>, QuestionsWriteError> {
+    let Some(mut row) = get_row(transaction, id)? else {
+        return Ok(None);
+    };
+    if !matches!(row.request, Request::AgentQuestion { .. }) {
+        return Ok(None);
     }
-    mark_state_only_deleted(&mut record, unix_time()?);
-    put_request(transaction, id, &record, &validate)?;
-    Ok(json!({"id":id,"status":"deleted"}))
+    let agent = stored_agent(transaction, row.agent.as_str())?
+        .ok_or(QuestionsWriteError::InvalidRequest("Unknown agent"))?;
+    if event_write::truthy(agent.extra.get("deletedAt")) {
+        return Err(QuestionsWriteError::InvalidRequest(
+            "This agent was deleted",
+        ));
+    }
+    if row.hidden.is_none() {
+        if matches!(
+            row.state,
+            ApprovalState::Answering { .. } | ApprovalState::Unknown { .. }
+        ) {
+            return Err(QuestionsWriteError::InvalidRequest(
+                "Question delivery is uncertain; wait for its receipt",
+            ));
+        }
+        row.hidden = Some(Hidden {
+            at: Timestamp(unix_time()?),
+            by: Principal::Owner,
+        });
+        if let Some(deferral) = row.deferral.as_mut() {
+            deferral.active = false;
+        }
+        approvals::put(transaction, &row).map_err(approval)?;
+        crate::approval_sync::publish(transaction, &row)?;
+    }
+    Ok(Some(json!({"id":id,"status":"deleted"})))
 }
+
+fn is_question(row: &Approval) -> bool {
+    match &row.request {
+        Request::AgentQuestion { .. } | Request::Question { .. } => true,
+        Request::Elicitation { .. } => {
+            row.detail.params.0.get("mode").and_then(Value::as_str) == Some("form")
+        }
+        _ => false,
+    }
+}
+
+// Legacy helpers of the provider-card cluster (`provider_callbacks/cards.rs`
+// still stores cards as JSON). They leave with that cluster.
 
 pub(crate) fn state_only_delete_allowed(
     record: &Value,
     agent_deleted: bool,
     reject_pending_native: bool,
 ) -> Result<bool, QuestionsWriteError> {
-    if !is_question(record) {
+    if !legacy_is_question(record) {
         return Err(QuestionsWriteError::InvalidRequest(
             "Only a question can be deleted",
         ));
@@ -514,9 +547,8 @@ pub fn submit_complaint(
     // Python's enqueue() fast-dispatches only for autoWake agents, while its
     // send eligibility excludes moveImportPending agents. Keep the event
     // durable, but do not wake the worker while either owner gate is closed.
-    let wake_event_worker = event_inserted
-        && lead.auto_wake == Some(true)
-        && !event_write::recovery_pending(&lead);
+    let wake_event_worker =
+        event_inserted && lead.auto_wake == Some(true) && !event_write::recovery_pending(&lead);
     Ok(ComplaintWriteResult {
         record,
         event_inserted,
@@ -585,8 +617,8 @@ pub fn respond_to_complaint(
                     .iter()
                     .any(|response| response.get("author").and_then(Value::as_str) == Some(lead_id))
             });
-        let stopped = event_write::truthy(lead.extra.get("deletedAt"))
-            || lead.auto_wake != Some(true);
+        let stopped =
+            event_write::truthy(lead.extra.get("deletedAt")) || lead.auto_wake != Some(true);
         let closing = match status {
             ComplaintResponseStatus::InProgress => false,
             ComplaintResponseStatus::Resolved | ComplaintResponseStatus::Declined => true,
@@ -673,45 +705,7 @@ pub fn respond_to_complaint(
     })
 }
 
-fn request(
-    transaction: &Transaction<'_>,
-    id: &str,
-    validate: &impl Fn(&Value) -> bool,
-) -> Result<Value, QuestionsWriteError> {
-    let raw = QuestionsWriteRepository::request(transaction, id)?
-        .ok_or(QuestionsWriteError::InvalidRequest("Unknown question"))?;
-    let record: Value =
-        serde_json::from_str(&raw).map_err(|_| invalid_stored("runtime_requests", id))?;
-    if record.get("id").and_then(Value::as_str) != Some(id) || !validate(&record) {
-        return Err(invalid_stored("runtime_requests", id));
-    }
-    Ok(record)
-}
-
-fn put_request(
-    transaction: &Transaction<'_>,
-    id: &str,
-    record: &Value,
-    validate: &impl Fn(&Value) -> bool,
-) -> Result<(), QuestionsWriteError> {
-    if !validate(record) {
-        return Err(invalid_stored("runtime_requests", id));
-    }
-    QuestionsWriteRepository::put_request(transaction, id, &event_write::python_json(record))?;
-    // The renderer reads requests as entities: publish the stored change with it.
-    let view = crate::sync_views::project_persisted_record("request", record)
-        .ok_or_else(|| invalid_stored("runtime_requests", id))?;
-    SyncDocumentsRepository::put_entity(
-        transaction,
-        "request",
-        id,
-        view,
-        record["status"] != PENDING,
-    )?;
-    Ok(())
-}
-
-fn is_question(record: &Value) -> bool {
+fn legacy_is_question(record: &Value) -> bool {
     match record.get("method").and_then(Value::as_str) {
         Some("agent/asyncQuestion" | "item/tool/requestUserInput") => true,
         Some("mcpServer/elicitation/request") => {
@@ -761,9 +755,13 @@ fn parse_complaint(
     id: &str,
     validate: &impl Fn(&Value) -> bool,
 ) -> Result<Value, QuestionsWriteError> {
-    let complaint: Value =
+    let complaint: studio_runtime_store::ComplaintRecord =
         serde_json::from_str(raw).map_err(|_| invalid_stored("runtime_complaints", id))?;
-    if complaint.get("id").and_then(Value::as_str) != Some(id) || !validate(&complaint) {
+    if complaint.id() != id {
+        return Err(invalid_stored("runtime_complaints", id));
+    }
+    let complaint = complaint.into_value();
+    if !validate(&complaint) {
         return Err(invalid_stored("runtime_complaints", id));
     }
     Ok(complaint)

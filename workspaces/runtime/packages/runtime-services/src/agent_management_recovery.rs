@@ -172,10 +172,14 @@ impl AuthorizedRecoveryRequest {
         };
         match authorize(tx, &self.lead, target) {
             Ok((lead, worker)) => {
-                let saved_lead = AgentRecord::from_value(stable(&self.lead)).map_err(|_| Error::Stale)?;
-                let saved_worker = AgentRecord::from_value(stable(&self.target)).map_err(|_| Error::Stale)?;
-                let current_lead = AgentRecord::from_value(stable(&lead)).map_err(|_| Error::Stale)?;
-                let current_worker = AgentRecord::from_value(stable(&worker)).map_err(|_| Error::Stale)?;
+                let saved_lead =
+                    AgentRecord::from_value(stable(&self.lead)).map_err(|_| Error::Stale)?;
+                let saved_worker =
+                    AgentRecord::from_value(stable(&self.target)).map_err(|_| Error::Stale)?;
+                let current_lead =
+                    AgentRecord::from_value(stable(&lead)).map_err(|_| Error::Stale)?;
+                let current_worker =
+                    AgentRecord::from_value(stable(&worker)).map_err(|_| Error::Stale)?;
                 Ok(current_lead == saved_lead && current_worker == saved_worker)
             }
             Err(Error::Stale | Error::Invalid(_)) => Ok(false),
@@ -1773,7 +1777,11 @@ mod tests {
                     let mut worker = AgentRepository::get(tx, &AgentId::from("worker-00000000"))?
                         .expect("worker");
                     worker.extra.insert("provider".into(), json!(provider));
-                    worker.execution_mode = Some(if mode == "vm" { studio_runtime_store::AgentExecutionMode::Vm } else { studio_runtime_store::AgentExecutionMode::Native });
+                    worker.execution_mode = Some(if mode == "vm" {
+                        studio_runtime_store::AgentExecutionMode::Vm
+                    } else {
+                        studio_runtime_store::AgentExecutionMode::Native
+                    });
                     AgentRepository::put(tx, &worker)
                 })
                 .await

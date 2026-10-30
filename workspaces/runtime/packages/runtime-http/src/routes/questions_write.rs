@@ -121,13 +121,11 @@ async fn answer(
             super::generated_json::<crate::generated::AnswerResult>(answer.response)?,
         ));
     }
-    let validators = state.validators.clone();
     if let Some(answer) = questions_write::answer_async_question_in_store(
         async_store,
         &id,
         &data,
         callback_clock().map_err(|_| ApiError::internal())?,
-        move |record| validators.validate_table_record("runtime_requests", record),
     )
     .await
     .map_err(async_question_error)?
@@ -347,11 +345,8 @@ async fn defer_question(
     let id = body.id;
     let deferred = body.deferred;
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let validators = state.validators.clone();
     let result = write(store, move |transaction| {
-        questions_write::defer_question(transaction, &id, deferred, |record| {
-            validators.validate_table_record("runtime_requests", record)
-        })
+        questions_write::defer_question(transaction, &id, deferred)
     })
     .await?;
     Ok(Json(super::generated_json::<
@@ -364,20 +359,26 @@ async fn delete_question(
     ApiJson(body): ApiJson<crate::generated::QuestionBody>,
 ) -> Result<Json<crate::generated::MutationReceipt>, ApiError> {
     let id = body.id;
-    let result = if let Some(runtime) = state.callback_runtime.clone() {
+    let agent_id = id.clone();
+    // An agent question is a typed approval; any other question is a provider card.
+    let agent_question = match state.store.clone() {
+        Some(store) => store
+            .transaction_with_error(move |transaction| {
+                questions_write::delete_question(transaction, &agent_id)
+            })
+            .await
+            .map_err(api_error)?,
+        None => None,
+    };
+    let result = if let Some(result) = agent_question {
+        result
+    } else if let Some(runtime) = state.callback_runtime.clone() {
         runtime
             .delete_question(&id, callback_clock().map_err(|_| ApiError::internal())?)
             .await
             .map_err(callback_error)?
     } else {
-        let store = state.store.clone().ok_or_else(ApiError::internal)?;
-        let validators = state.validators.clone();
-        write(store, move |transaction| {
-            questions_write::delete_question(transaction, &id, |record| {
-                validators.validate_table_record("runtime_requests", record)
-            })
-        })
-        .await?
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "Unknown question"));
     };
     if state.callback_runtime.is_some() {
         state.event_wake.notify_one();

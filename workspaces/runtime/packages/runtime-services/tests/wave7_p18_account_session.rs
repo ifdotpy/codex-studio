@@ -206,3 +206,34 @@ fn relocate(value: &mut Value, from: &Path, to: &Path) {
         Value::Null | Value::Bool(_) | Value::Number(_) => {}
     }
 }
+
+#[test]
+fn profile_options_preserve_aliases_and_reject_invalid_shapes() {
+    let home = tempfile::tempdir().expect("temporary home");
+    let normalize = |value: Value| {
+        studio_runtime_services::account_session_runtime::normalize_profile(
+            value.as_object().expect("options object").clone(),
+            home.path(),
+        )
+    };
+    let result = normalize(serde_json::json!({"customModels":["model", {"id":"other","label":null}], "autoCompactWindow":"100000"})).expect("aliases normalize");
+    assert_eq!(
+        result["customModels"],
+        serde_json::json!([{"id":"model","label":"model"},{"id":"other","label":"other"}])
+    );
+    assert_eq!(result["autoCompactWindow"], serde_json::json!(100000));
+    for value in [
+        serde_json::json!({"binaryPath":null}),
+        serde_json::json!({"configDir":null}),
+        serde_json::json!({"customModels":null}),
+        serde_json::json!({"launchArgs":null}),
+        serde_json::json!({"customModels":[["model","Model"]]}),
+        serde_json::json!({"customModels":[{"id":"model","label":"Model","extra":true}]}),
+        serde_json::json!({"autoCompactWindow":100000.0}),
+        serde_json::json!({"autoCompactWindow":"99999"}),
+        serde_json::json!({"unknown":true}),
+    ] {
+        assert!(normalize(value.clone()).is_err(), "{value}");
+    }
+    assert!(normalize(serde_json::json!({"autoCompactWindow":null})).is_ok());
+}

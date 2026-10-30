@@ -4,6 +4,7 @@ use crate::{
     protocol::{Request, Response},
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
@@ -11,6 +12,27 @@ use std::{
     sync::{Arc, Mutex},
 };
 use tokio::sync::Semaphore;
+
+#[derive(Default, Deserialize)]
+struct PreviewHandle<'a> {
+    #[serde(borrow)]
+    handle: Option<&'a str>,
+}
+#[derive(Default, Deserialize)]
+struct PreviewOffset {
+    offset: Option<u64>,
+}
+#[derive(Default, Deserialize)]
+struct PreviewPage {
+    page: Option<u64>,
+}
+fn project<'a, T: Deserialize<'a> + Default>(value: &'a Value) -> T {
+    if value.is_object() {
+        T::deserialize(value).unwrap_or_default()
+    } else {
+        T::default()
+    }
+}
 
 const FILE_LIMIT: usize = 20 * 1024 * 1024;
 const CACHE_LIMIT: usize = 256 * 1024 * 1024;
@@ -20,6 +42,13 @@ struct File {
     format: &'static str,
     bytes: Arc<Vec<u8>>,
     presentation: String,
+}
+#[derive(Deserialize)]
+#[cfg_attr(test, derive(serde::Serialize))]
+struct FileContent {
+    name: String,
+    mime: String,
+    base64: String,
 }
 #[derive(Clone)]
 pub struct Previews {
@@ -60,8 +89,9 @@ impl Previews {
         let file = files
             .get(handle(value)?)
             .ok_or("This file preview is closed.")?;
-        let offset = value["offset"]
-            .as_u64()
+        let offset: PreviewOffset = project(value);
+        let offset = offset
+            .offset
             .filter(|n| *n <= file.presentation.len() as u64)
             .ok_or("Invalid preview offset.")? as usize;
         if !file.presentation.is_char_boundary(offset) {
@@ -123,7 +153,8 @@ impl Previews {
                         }
                         file.bytes.clone()
                     };
-                    let page = request.params["page"].as_u64().ok_or("Invalid PDF page.")?;
+                    let input: PreviewPage = project(&request.params);
+                    let page = input.page.ok_or("Invalid PDF page.")?;
                     crate::pdf::page(bytes, page).await
                 }
                 "preview.release" => {
@@ -144,8 +175,9 @@ impl Previews {
     }
 }
 fn handle(value: &Value) -> Result<&str, String> {
-    value["handle"]
-        .as_str()
+    let input: PreviewHandle<'_> = project(value);
+    input
+        .handle
         .filter(|s| s.len() == 36)
         .ok_or("Invalid file preview handle.".into())
 }
@@ -208,25 +240,24 @@ fn format(name: &str, mime: &str) -> &'static str {
         "unknown"
     }
 }
-fn prepare(data: Value) -> Result<File, String> {
-    let name = data["name"]
-        .as_str()
-        .filter(|s| !s.is_empty() && s.len() <= 1024 && !s.chars().any(char::is_control))
-        .ok_or("Invalid preview file name.")?
-        .to_owned();
-    let mime = data["mime"]
-        .as_str()
-        .filter(|s| {
-            !s.is_empty()
-                && s.len() <= 256
-                && s.bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b"/-+._".contains(&b))
-        })
-        .ok_or("Invalid preview MIME type.")?;
-    let encoded = data["base64"]
-        .as_str()
-        .filter(|s| s.len() <= FILE_LIMIT.div_ceil(3) * 4)
-        .ok_or("This file exceeds the 20 MiB preview limit.")?;
+fn prepare(data: FileContent) -> Result<File, String> {
+    let name = data.name;
+    if name.is_empty() || name.len() > 1024 || name.chars().any(char::is_control) {
+        return Err("Invalid preview file name.".into());
+    }
+    let mime = &data.mime;
+    if mime.is_empty()
+        || mime.len() > 256
+        || !mime
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"/-+._".contains(&b))
+    {
+        return Err("Invalid preview MIME type.".into());
+    }
+    let encoded = &data.base64;
+    if encoded.len() > FILE_LIMIT.div_ceil(3) * 4 {
+        return Err("This file exceeds the 20 MiB preview limit.".into());
+    }
     let bytes = STANDARD
         .decode(encoded)
         .map_err(|_| "Invalid file bytes.")?;
@@ -384,8 +415,76 @@ fn delimited(source: &str, delimiter: char) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn data(name: &str, mime: &str, bytes: &[u8]) -> Value {
-        json!({"name":name,"mime":mime,"base64":STANDARD.encode(bytes)})
+    #[tokio::test]
+    async fn command_inputs_keep_preview_error_order_and_unicode_offsets() {
+        let previews = Previews::default();
+        let request = |method: &str, params: Value| Request {
+            id: "fixture".into(),
+            method: method.into(),
+            params,
+        };
+        let invalid = previews
+            .dispatch(None, request("preview.open", json!({"target":null})))
+            .await;
+        assert_ne!(
+            invalid.error.unwrap().message,
+            "The native backend is unavailable."
+        );
+        let missing = previews
+            .dispatch(
+                None,
+                request(
+                    "preview.pdfPage",
+                    json!({"handle":"x".repeat(36),"page":null}),
+                ),
+            )
+            .await;
+        assert_eq!(
+            missing.error.unwrap().message,
+            "This file preview is closed."
+        );
+        let metadata = previews
+            .insert(File {
+                name: "fixture".into(),
+                format: "text",
+                bytes: Arc::new(vec![]),
+                presentation: "Ж🦀".into(),
+            })
+            .unwrap();
+        let handle = &metadata["handle"];
+        let wrong_format = previews
+            .dispatch(
+                None,
+                request("preview.pdfPage", json!({"handle":handle,"page":null})),
+            )
+            .await;
+        assert_eq!(
+            wrong_format.error.unwrap().message,
+            "This file is not a PDF."
+        );
+        for offset in [json!(1), json!(1.0), Value::Null] {
+            let reply = previews
+                .dispatch(
+                    None,
+                    request("preview.read", json!({"handle":handle,"offset":offset})),
+                )
+                .await;
+            assert_eq!(reply.error.unwrap().message, "Invalid preview offset.");
+        }
+        let reply = previews
+            .dispatch(
+                None,
+                request("preview.read", json!({"handle":handle,"offset":2})),
+            )
+            .await;
+        assert_eq!(reply.result.unwrap()["text"], "🦀");
+    }
+    fn data(name: &str, mime: &str, bytes: &[u8]) -> FileContent {
+        FileContent {
+            name: name.into(),
+            mime: mime.into(),
+            base64: STANDARD.encode(bytes),
+        }
     }
     #[test]
     fn source_bytes_survive_display_conversion_and_table_limits() {
@@ -583,7 +682,8 @@ mod tests {
             );
             reply(
                 &mut stream,
-                &data("test.txt", "text/plain", "Привет 🦀".as_bytes()).to_string(),
+                &serde_json::to_string(&data("test.txt", "text/plain", "Привет 🦀".as_bytes()))
+                    .unwrap(),
             )
             .await;
             let (mut stream, _) = listener.accept().await.unwrap();
@@ -598,9 +698,23 @@ mod tests {
                 )
                 .await
                 .unwrap();
+            let (mut stream, _) = listener.accept().await.unwrap();
+            read_http(&mut stream).await;
+            reply(
+                &mut stream,
+                r#"{"name":"test.txt","mime":"text/plain","base64":42}"#,
+            )
+            .await;
+            let (mut stream, _) = listener.accept().await.unwrap();
+            read_http(&mut stream).await;
+            let body = r#"{"error":null}"#;
+            stream.write_all(format!("HTTP/1.1 403 Forbidden\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
         });
         let previews = Previews::default();
-        for (index, asset) in ["one&two", "denied", "large"].into_iter().enumerate() {
+        for (index, asset) in ["one&two", "denied", "large", "malformed", "fallback"]
+            .into_iter()
+            .enumerate()
+        {
             let response = previews
                 .dispatch(
                     Some(&backend),
@@ -616,10 +730,11 @@ mod tests {
                 assert_eq!(bytes.as_slice(), "Привет 🦀".as_bytes());
             } else {
                 let message = response.error.unwrap().message;
-                assert!(message.contains(if index == 1 {
-                    "Not authorized"
-                } else {
-                    "exceeds"
+                assert!(message.contains(match index {
+                    1 => "Not authorized",
+                    2 => "exceeds",
+                    3 => "invalid type",
+                    _ => "Cannot read the selected file.",
                 }));
             }
         }

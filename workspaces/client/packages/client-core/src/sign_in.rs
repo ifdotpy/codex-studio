@@ -1,4 +1,5 @@
 //! A native gesture reserves one exact sign-in while server approval completes.
+use serde::Deserialize;
 use serde_json::Value;
 use std::{
     collections::HashMap,
@@ -15,45 +16,103 @@ const IDENTITY_MAX_BYTES: usize = 200;
 const REFUSED: &str =
     "Use the sign-in button again. This approval is unavailable or does not match.";
 
+// Each scalar is projected independently so malformed fields retain access-time errors.
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SignInFields {
+    #[serde(default, deserialize_with = "text")]
+    request_id: Option<String>,
+    #[serde(default, deserialize_with = "text")]
+    url: Option<String>,
+    #[serde(default, deserialize_with = "text")]
+    preparation: Option<String>,
+}
+#[derive(Default, Deserialize)]
+struct SignInEnvelope {
+    #[serde(default, rename = "signInOwner", deserialize_with = "owner")]
+    owner: Owner,
+    #[serde(default, rename = "_nativeWindow", deserialize_with = "text")]
+    window: Option<String>,
+}
+#[derive(Default)]
+enum Owner {
+    #[default]
+    Local,
+    Named(String),
+    Invalid,
+}
+fn text<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(Value::deserialize(d)?.as_str().map(str::to_owned))
+}
+fn owner<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Owner, D::Error> {
+    Ok(match Value::deserialize(d)? {
+        Value::Null => Owner::Local,
+        Value::String(value) => Owner::Named(value),
+        Value::Bool(_) | Value::Number(_) | Value::Array(_) | Value::Object(_) => Owner::Invalid,
+    })
+}
+struct SignInRequest {
+    envelope: SignInEnvelope,
+    fields: SignInFields,
+}
+impl SignInRequest {
+    fn parse(params: &Value) -> Self {
+        let envelope = if params.is_object() {
+            SignInEnvelope::deserialize(params).unwrap_or_default()
+        } else {
+            SignInEnvelope::default()
+        };
+        let value = &params["value"];
+        let fields = if value.is_object() {
+            SignInFields::deserialize(value).unwrap_or_default()
+        } else {
+            SignInFields::default()
+        };
+        Self { envelope, fields }
+    }
+    fn context(&self) -> Result<Context, String> {
+        let owner = match &self.envelope.owner {
+            Owner::Local => "local",
+            Owner::Named(value) => identity(Some(value))?,
+            Owner::Invalid => return Err(REFUSED.into()),
+        };
+        Ok(Context {
+            request: identity(self.fields.request_id.as_deref())?.into(),
+            owner: owner.into(),
+            window: identity(self.envelope.window.as_deref())?.into(),
+        })
+    }
+    fn scope(&self) -> Result<Scope, String> {
+        let context = self.context()?;
+        let url = self
+            .fields
+            .url
+            .as_ref()
+            .map_or(Value::Null, |url| Value::String(url.clone()));
+        Ok(Scope {
+            context,
+            url: crate::desktop::external_url(&url)?,
+        })
+    }
+    fn preparation(&self) -> Result<&str, String> {
+        identity(self.fields.preparation.as_deref())
+    }
+}
 #[derive(Clone, PartialEq, Eq)]
 struct Context {
     request: String,
     owner: String,
     window: String,
 }
-impl Context {
-    fn parse(params: &Value) -> Result<Self, String> {
-        let owner = match params.get("signInOwner") {
-            None | Some(Value::Null) => "local",
-            Some(owner) => identity(owner)?,
-        };
-        Ok(Self {
-            request: identity(&params["value"]["requestId"])?.into(),
-            owner: owner.into(),
-            // Only the native host supplies this provenance.
-            window: identity(&params["_nativeWindow"])?.into(),
-        })
-    }
-}
-fn identity(value: &Value) -> Result<&str, String> {
+fn identity(value: Option<&str>) -> Result<&str, String> {
     value
-        .as_str()
         .filter(|s| !s.is_empty() && s.len() <= IDENTITY_MAX_BYTES && !s.contains('\0'))
         .ok_or_else(|| REFUSED.into())
 }
-
 #[derive(Clone, PartialEq, Eq)]
 struct Scope {
     context: Context,
     url: String,
-}
-impl Scope {
-    fn parse(params: &Value) -> Result<Self, String> {
-        Ok(Self {
-            context: Context::parse(params)?,
-            url: crate::desktop::external_url(&params["value"]["url"])?,
-        })
-    }
 }
 struct Intent {
     scope: Scope,
@@ -111,7 +170,8 @@ fn intents() -> &'static Mutex<Intents> {
 
 /// The caller consumes the native gesture before it creates an intent.
 pub(crate) fn prepare(params: &Value, now: Instant) -> Result<Value, String> {
-    let scope = Scope::parse(params)?;
+    let request = SignInRequest::parse(params);
+    let scope = request.scope()?;
     let id = crate::server_keys::random_id()?;
     intents()
         .lock()
@@ -122,8 +182,9 @@ pub(crate) fn prepare(params: &Value, now: Instant) -> Result<Value, String> {
 /// Consume before any forward request or browser action. A later action failure cannot reuse it.
 /// A scope mismatch preserves the original intent for its authorized caller.
 pub(crate) fn consume(params: &Value, now: Instant) -> Result<(), String> {
-    let scope = Scope::parse(params)?;
-    let id = identity(&params["value"]["preparation"])?;
+    let request = SignInRequest::parse(params);
+    let scope = request.scope()?;
+    let id = request.preparation()?;
     intents()
         .lock()
         .map_err(|_| REFUSED)?
@@ -131,8 +192,9 @@ pub(crate) fn consume(params: &Value, now: Instant) -> Result<(), String> {
 }
 
 pub(crate) fn cancel(params: &Value, now: Instant) -> Result<Value, String> {
-    let context = Context::parse(params)?;
-    let id = identity(&params["value"]["preparation"])?;
+    let request = SignInRequest::parse(params);
+    let context = request.context()?;
+    let id = request.preparation()?;
     Ok(Value::Bool(
         intents()
             .lock()
@@ -150,7 +212,7 @@ mod tests {
         json!({"_nativeWindow":"main", "value":{"requestId":"card-1", "url":"https://example.com/authorize?state=one"}})
     }
     fn scope() -> Scope {
-        Scope::parse(&params()).unwrap()
+        SignInRequest::parse(&params()).scope().unwrap()
     }
     #[test]
     fn intent_survives_approval_delay_and_expires_at_the_native_deadline() {
@@ -206,7 +268,11 @@ mod tests {
             target[path[path.len() - 1]] = json!(replacement);
             assert!(
                 intents
-                    .consume(&Scope::parse(&wrong).unwrap(), "intent", now)
+                    .consume(
+                        &SignInRequest::parse(&wrong).scope().unwrap(),
+                        "intent",
+                        now
+                    )
                     .is_err()
             );
         }
@@ -216,7 +282,11 @@ mod tests {
         normalized["value"]["url"] = json!("HTTPS://EXAMPLE.COM:443/authorize?state=one");
         assert!(
             intents
-                .consume(&Scope::parse(&normalized).unwrap(), "intent", now)
+                .consume(
+                    &SignInRequest::parse(&normalized).scope().unwrap(),
+                    "intent",
+                    now
+                )
                 .is_ok()
         );
     }
@@ -255,18 +325,18 @@ mod tests {
         ] {
             let mut invalid = params();
             invalid["value"][key] = bad;
-            assert!(Scope::parse(&invalid).is_err());
+            assert!(SignInRequest::parse(&invalid).scope().is_err());
         }
         for key in ["signInOwner", "_nativeWindow"] {
             let mut invalid = params();
             invalid[key] = json!("");
-            assert!(Scope::parse(&invalid).is_err());
+            assert!(SignInRequest::parse(&invalid).scope().is_err());
             invalid[key] = json!(7);
-            assert!(Scope::parse(&invalid).is_err());
+            assert!(SignInRequest::parse(&invalid).scope().is_err());
         }
         let mut invalid = params();
         invalid.as_object_mut().unwrap().remove("_nativeWindow");
-        assert!(Scope::parse(&invalid).is_err());
+        assert!(SignInRequest::parse(&invalid).scope().is_err());
     }
     #[test]
     fn native_count_limit_reclaims_expired_intents() {
@@ -282,5 +352,47 @@ mod tests {
                 .is_ok()
         );
         assert_eq!(intents.items.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn desktop_intent_preserves_mismatch_and_checks_url_before_preparation() {
+        use crate::protocol::Request;
+        let mut value = params();
+        value["value"]["requestId"] = json!("sign-in-lifecycle-fixture");
+        let preparation = prepare(&value, Instant::now()).unwrap();
+        value["value"]["preparation"] = preparation;
+        let request = |value: Value| Request {
+            id: "sign-in-lifecycle-fixture".into(),
+            method: crate::desktop::SIGN_IN_OPEN_METHOD.into(),
+            params: value,
+        };
+        let mut invalid = value.clone();
+        invalid["value"]["url"] = json!("file:///not-supported");
+        invalid["value"]["preparation"] = json!(null);
+        let response = crate::desktop::dispatch(request(invalid), None, None).await;
+        assert_eq!(
+            response.error.unwrap().message,
+            "Only HTTP and HTTPS links without credentials are supported."
+        );
+        let mut wrong = value.clone();
+        wrong["_nativeWindow"] = json!("elsewhere");
+        assert!(
+            crate::desktop::dispatch(request(wrong), None, None)
+                .await
+                .error
+                .is_some()
+        );
+        value["signInOwner"] = Value::Null;
+        let cancel = crate::desktop::dispatch(
+            Request {
+                id: "cancel-fixture".into(),
+                method: crate::desktop::SIGN_IN_CANCEL_METHOD.into(),
+                params: value,
+            },
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(cancel.result, Some(Value::Bool(true)));
     }
 }

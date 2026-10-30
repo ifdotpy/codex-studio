@@ -1,30 +1,99 @@
 //! Resolve file identities through the verified backend before any desktop action.
 use crate::{backend::Backend, protocol::Request};
-use serde::Deserialize;
+use serde::{Deserialize, de::IgnoredAny};
 use serde_json::{Value, json};
 use std::{os::unix::fs::PermissionsExt, path::PathBuf};
+use studio_client_domain::json_object::JsonObject as ObjectOnly;
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Action {
     Open,
     Reveal,
     Preview,
 }
 
+impl<'de> Deserialize<'de> for Action {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        match String::deserialize(deserializer)?.as_str() {
+            "open" => Ok(Self::Open),
+            "reveal" => Ok(Self::Reveal),
+            "preview" => Ok(Self::Preview),
+            _ => Err(serde::de::Error::custom("Invalid file action.")),
+        }
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Target {
+struct TargetWire {
     agent: Option<String>,
     path: Option<String>,
     asset: Option<String>,
+}
+
+enum Target {
+    Asset {
+        agent: Option<String>,
+        asset: String,
+    },
+    Workspace {
+        agent: String,
+        path: String,
+    },
+}
+
+impl TryFrom<TargetWire> for Target {
+    type Error = String;
+    fn try_from(wire: TargetWire) -> Result<Self, Self::Error> {
+        for part in [&wire.agent, &wire.path, &wire.asset].into_iter().flatten() {
+            if part.is_empty() || part.len() > 4096 || part.contains('\0') {
+                return Err("Invalid file identity.".into());
+            }
+        }
+        match (wire.agent, wire.path, wire.asset) {
+            (agent, None, Some(asset)) => Ok(Self::Asset { agent, asset }),
+            (Some(agent), Some(path), None) => Ok(Self::Workspace { agent, path }),
+            _ => Err("Select a workspace file or attachment.".into()),
+        }
+    }
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Selection {
     action: Action,
-    target: Target,
+    target: ObjectOnly<TargetWire>,
+}
+
+#[derive(Default)]
+enum TextField {
+    #[default]
+    Missing,
+    Text(String),
+    Other,
+}
+impl<'de> Deserialize<'de> for TextField {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum TextOrOther {
+            Text(String),
+            Other(IgnoredAny),
+        }
+        Ok(match TextOrOther::deserialize(deserializer)? {
+            TextOrOther::Text(value) => Self::Text(value),
+            TextOrOther::Other(_) => Self::Other,
+        })
+    }
+}
+
+/// The file-info boundary consumes only path and the optional error envelope.
+#[derive(Deserialize)]
+struct FileInfo {
+    #[serde(default)]
+    path: TextField,
+    #[serde(default)]
+    error: TextField,
 }
 
 #[derive(Debug)]
@@ -35,46 +104,34 @@ pub struct ResolvedFile {
 }
 
 fn selection(value: Value) -> Result<(Action, String), String> {
-    let selected: Selection = serde_json::from_value(value).map_err(|e| e.to_string())?;
+    let ObjectOnly(selected): ObjectOnly<Selection> =
+        serde_json::from_value(value).map_err(|e| e.to_string())?;
     Ok((
         selected.action,
-        target_path(selected.target, "/api/file-info")?,
+        target_path(selected.target.0.try_into()?, "/api/file-info")?,
     ))
 }
 
 pub fn content_path(value: Value) -> Result<String, String> {
-    target_path(
-        serde_json::from_value(value).map_err(|e| e.to_string())?,
-        "/api/file",
-    )
+    let ObjectOnly(target): ObjectOnly<TargetWire> =
+        serde_json::from_value(value).map_err(|e| e.to_string())?;
+    target_path(target.try_into()?, "/api/file")
 }
 
 fn target_path(target: Target, endpoint: &str) -> Result<String, String> {
-    for part in [&target.agent, &target.path, &target.asset]
-        .into_iter()
-        .flatten()
-    {
-        if part.is_empty() || part.len() > 4096 || part.contains('\0') {
-            return Err("Invalid file identity.".into());
-        }
-    }
-    if target.asset.is_some() {
-        if target.path.is_some() {
-            return Err("Select a workspace file or attachment.".into());
-        }
-    } else if target.agent.is_none() || target.path.is_none() {
-        return Err("Select a workspace file or attachment.".into());
-    }
     // Both callers pass a fixed absolute API path on this HTTP base.
     let mut query =
         reqwest::Url::parse(&format!("http://127.0.0.1{endpoint}")).expect("valid file API path");
-    for (key, value) in [
-        ("agent", target.agent),
-        ("path", target.path),
-        ("asset", target.asset),
-    ] {
-        if let Some(value) = value {
-            query.query_pairs_mut().append_pair(key, &value);
+    match target {
+        Target::Asset { agent, asset } => {
+            if let Some(agent) = agent {
+                query.query_pairs_mut().append_pair("agent", &agent);
+            }
+            query.query_pairs_mut().append_pair("asset", &asset);
+        }
+        Target::Workspace { agent, path } => {
+            query.query_pairs_mut().append_pair("agent", &agent);
+            query.query_pairs_mut().append_pair("path", &path);
         }
     }
     // Validation requires an asset or an agent/path, so a pair was appended above.
@@ -85,17 +142,18 @@ fn target_path(target: Target, endpoint: &str) -> Result<String, String> {
     ))
 }
 
-fn validate_file(action: Action, info: Value) -> Result<ResolvedFile, String> {
-    if let Some(error) = info.get("error") {
-        return Err(error
-            .as_str()
-            .unwrap_or("Cannot resolve the selected file.")
-            .into());
+fn validate_file(action: Action, info: FileInfo) -> Result<ResolvedFile, String> {
+    match info.error {
+        TextField::Missing => {}
+        TextField::Text(error) => return Err(error),
+        TextField::Other => return Err("Cannot resolve the selected file.".into()),
     }
-    let path = info["path"]
-        .as_str()
-        .filter(|s| !s.contains('\0') && s.len() <= 4096)
-        .ok_or("Invalid resolved file path.")?;
+    let TextField::Text(path) = info.path else {
+        return Err("Invalid resolved file path.".into());
+    };
+    if path.contains('\0') || path.len() > 4096 {
+        return Err("Invalid resolved file path.".into());
+    }
     let path = PathBuf::from(path);
     if !path.is_absolute() || path.canonicalize().map_err(|e| e.to_string())? != path {
         return Err("The selected file is no longer available.".into());
@@ -121,7 +179,7 @@ fn validate_file(action: Action, info: Value) -> Result<ResolvedFile, String> {
         if metadata.permissions().mode() & 0o111 != 0
             || !DOCUMENTS.split_whitespace().any(|v| v == extension)
         {
-            return Err("Use Quick Look or Show in Folder for this file type.".into());
+            return Err("Preview or reveal this file instead.".into());
         }
     }
     Ok(ResolvedFile { action, path, name })
@@ -142,6 +200,8 @@ pub async fn resolve(backend: &Backend, value: Value) -> Result<ResolvedFile, St
             .map(|e| e.message)
             .unwrap_or("Cannot resolve the selected file.".into())
     })?;
+    let ObjectOnly(info): ObjectOnly<FileInfo> =
+        serde_json::from_value(info).map_err(|_| "Invalid resolved file path.".to_owned())?;
     tokio::task::spawn_blocking(move || validate_file(action, info))
         .await
         .map_err(|e| e.to_string())?
@@ -151,15 +211,26 @@ pub async fn resolve(backend: &Backend, value: Value) -> Result<ResolvedFile, St
 mod tests {
     use super::*;
 
+    fn info(value: Value) -> FileInfo {
+        serde_json::from_value::<ObjectOnly<FileInfo>>(value)
+            .unwrap()
+            .0
+    }
+
     #[test]
     fn identities_are_unambiguous_and_query_values_are_encoded() {
         for value in [
+            json!({"action":{"open":null},"target":{"asset":"one"}}),
+            json!({"action":"open","target":["a","x"]}),
+            json!(["open",{"asset":"one"}]),
             json!({"action":"open","target":{"path":"/etc/passwd"}}),
             json!({"action":"open","target":{"asset":"one","path":"x"}}),
             json!({"action":"open","target":{"agent":"a","path":"x","extra":true}}),
             json!({"action":"execute","target":{"asset":"one"}}),
             json!({"action":"open","target":{"asset":""}}),
             json!({"action":"open","target":{"asset":"x\u{0}"}}),
+            json!({"action":"open","target":{"agent":"a","path":"x".repeat(4097)}}),
+            json!({"action":"open","target":{"asset":"one","agent":""}}),
         ] {
             assert!(selection(value).is_err());
         }
@@ -174,6 +245,10 @@ mod tests {
                 ("path".into(), "/Привет 🦀.md".into())
             ]
         );
+        assert_eq!(
+            content_path(json!({"asset":"id&x","agent":"agent","path":null})).unwrap(),
+            "/api/file?agent=agent&asset=id%26x"
+        );
     }
 
     #[test]
@@ -184,13 +259,15 @@ mod tests {
         std::fs::write(&file, "test").unwrap();
         let info = json!({"path":file});
         assert_eq!(
-            validate_file(Action::Open, info.clone()).unwrap().name,
+            validate_file(Action::Open, self::info(info.clone()))
+                .unwrap()
+                .name,
             "Отчёт.PDF"
         );
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o700)).unwrap();
-        assert!(validate_file(Action::Open, info.clone()).is_err());
-        assert!(validate_file(Action::Preview, info.clone()).is_ok());
-        assert!(validate_file(Action::Reveal, info).is_ok());
+        assert!(validate_file(Action::Open, self::info(info.clone())).is_err());
+        assert!(validate_file(Action::Preview, self::info(info.clone())).is_ok());
+        assert!(validate_file(Action::Reveal, self::info(info)).is_ok());
         let alias = root.join("alias.pdf");
         std::os::unix::fs::symlink(&file, &alias).unwrap();
         for path in [
@@ -199,18 +276,53 @@ mod tests {
             root.join("gone.pdf"),
             PathBuf::from("relative.pdf"),
         ] {
-            assert!(validate_file(Action::Reveal, json!({"path":path})).is_err());
+            assert!(validate_file(Action::Reveal, self::info(json!({"path":path}))).is_err());
         }
         let script = root.join("script.sh");
         std::fs::write(&script, "echo unsafe").unwrap();
-        assert!(validate_file(Action::Open, json!({"path":script})).is_err());
+        assert!(validate_file(Action::Open, self::info(json!({"path":script}))).is_err());
         assert!(
             validate_file(
                 Action::Preview,
-                json!({"error":"Not authorized","path":file})
+                self::info(json!({"error":"Not authorized","path":file}))
             )
             .is_err()
         );
+        for error in [
+            json!(null),
+            json!({"nested":true}),
+            json!(false),
+            json!([1]),
+        ] {
+            assert_eq!(
+                validate_file(
+                    Action::Preview,
+                    self::info(json!({"error":error,"path":{"bad":true},"unknown":17}))
+                )
+                .unwrap_err(),
+                "Cannot resolve the selected file."
+            );
+        }
+        assert_eq!(
+            validate_file(
+                Action::Preview,
+                self::info(json!({"error":"denied","path":false}))
+            )
+            .unwrap_err(),
+            "denied"
+        );
+        for path in [
+            std::env::temp_dir()
+                .join("invalid\0name")
+                .to_string_lossy()
+                .into_owned(),
+            format!("/{}", "x".repeat(4096)),
+        ] {
+            assert_eq!(
+                validate_file(Action::Reveal, self::info(json!({"path":path}))).unwrap_err(),
+                "Invalid resolved file path."
+            );
+        }
     }
 
     #[tokio::test]
@@ -245,6 +357,26 @@ mod tests {
             );
             let body = r#"{"error":"Not authorized"}"#;
             stream.write_all(format!("HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+            let (mut stream, _) = listener.accept().await.unwrap();
+            assert!(
+                read_http(&mut stream)
+                    .await
+                    .0
+                    .starts_with("GET /api/file-info?agent=a&asset=priority ")
+            );
+            reply(
+                &mut stream,
+                r#"{"error":null,"path":{"malformed":true},"future":[1]}"#,
+            )
+            .await;
+            let (mut stream, _) = listener.accept().await.unwrap();
+            assert!(
+                read_http(&mut stream)
+                    .await
+                    .0
+                    .starts_with("GET /api/file-info?agent=a&path=bad ")
+            );
+            reply(&mut stream, r#"{"path":false}"#).await;
         });
         assert_eq!(
             resolve(
@@ -264,6 +396,24 @@ mod tests {
             .await
             .unwrap_err(),
             "Not authorized"
+        );
+        assert_eq!(
+            resolve(
+                &backend,
+                json!({"action":"reveal","target":{"agent":"a","asset":"priority"}})
+            )
+            .await
+            .unwrap_err(),
+            "Cannot resolve the selected file."
+        );
+        assert_eq!(
+            resolve(
+                &backend,
+                json!({"action":"preview","target":{"agent":"a","path":"bad"}})
+            )
+            .await
+            .unwrap_err(),
+            "Invalid resolved file path."
         );
         server.await.unwrap();
     }

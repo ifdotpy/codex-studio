@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 
 use crate::records::{decode_json_record, get_json_record};
 use crate::schema::{SchemaRequirements, TableRequirement};
-use crate::{EventWriteRepository, StoreError, StoreResult};
+use crate::{CheckpointRecord, EventWriteRepository, StoreError, StoreResult, Table};
 
 const CHECKPOINTS: &[TableRequirement] = &[TableRequirement {
     name: "runtime_checkpoints",
@@ -927,6 +927,16 @@ fn read_object(
     table: &str,
     id: &str,
 ) -> StoreResult<Option<StoredCheckpointObject>> {
+    if table == "runtime_checkpoints" {
+        return Table::<CheckpointRecord>::new(connection)
+            .get(&id.to_owned())
+            .map(|record| {
+                record.map(|record| StoredCheckpointObject {
+                    id: id.to_owned(),
+                    record: record.into_value(),
+                })
+            });
+    }
     let record: Option<Value> = get_json_record(connection, table, id)?;
     record
         .map(|mut record| {
@@ -1013,6 +1023,15 @@ fn insert_object(
     if record.get("id").and_then(Value::as_str) != Some(id) {
         return Err(invalid_record(table, id));
     }
+    if table == "runtime_checkpoints" {
+        let typed =
+            CheckpointRecord::from_value(record.clone()).map_err(|_| invalid_record(table, id))?;
+        transaction.execute(
+            "INSERT INTO runtime_checkpoints(id,record) VALUES(?1,?2)",
+            params![id, serde_json::to_string(&typed)?],
+        )?;
+        return Ok(());
+    }
     if table == crate::agent_volatile::AGENT_TABLE {
         crate::agent_volatile::put(transaction, id, record, true)?;
         return Ok(());
@@ -1053,6 +1072,92 @@ mod tests {
     };
     use rusqlite::Connection;
     use serde_json::json;
+
+    #[test]
+    fn checkpoint_reads_enforce_typed_shape_and_preserve_extensions() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE runtime_checkpoints(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
+        )
+        .unwrap();
+        let record = json!({"id":"c","agent":null,"created":1.0,"future":{"keep":true}});
+        db.execute(
+            "INSERT INTO runtime_checkpoints VALUES('c',?1)",
+            [record.to_string()],
+        )
+        .unwrap();
+        assert_eq!(
+            CheckpointsRepository::checkpoint(&db, "c")
+                .unwrap()
+                .unwrap()
+                .record,
+            record
+        );
+        db.execute(
+            "UPDATE runtime_checkpoints SET record=?1",
+            [json!({"id":"c","agent":7}).to_string()],
+        )
+        .unwrap();
+        assert!(CheckpointsRepository::checkpoint(&db, "c").is_err());
+        db.execute(
+            "UPDATE runtime_checkpoints SET record=?1",
+            [r#"{"id":"other"}"#],
+        )
+        .unwrap();
+        assert!(CheckpointsRepository::checkpoint(&db, "c").is_err());
+        db.execute(
+            "UPDATE runtime_checkpoints SET record=?1",
+            [r#"{"id":"other","id":"c"}"#],
+        )
+        .unwrap();
+        assert_eq!(
+            CheckpointsRepository::checkpoint(&db, "c")
+                .unwrap()
+                .unwrap()
+                .record,
+            json!({"id":"c"})
+        );
+        db.execute(
+            "UPDATE runtime_checkpoints SET record=?1",
+            [r#"{"id":"c","id":"other"}"#],
+        )
+        .unwrap();
+        assert!(CheckpointsRepository::checkpoint(&db, "c").is_err());
+    }
+
+    #[test]
+    fn checkpoint_write_rejects_invalid_shape_before_insert() {
+        let mut db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE runtime_checkpoints(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
+        )
+        .unwrap();
+        let tx = db.transaction().unwrap();
+        assert!(
+            super::insert_object(
+                &tx,
+                "runtime_checkpoints",
+                "c",
+                &json!({"id":"c","created":"bad"})
+            )
+            .is_err()
+        );
+        assert_eq!(
+            tx.query_row("SELECT count(*) FROM runtime_checkpoints", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        let value = json!({"id":"c","created":2.0,"future":{"keep":true}});
+        super::insert_object(&tx, "runtime_checkpoints", "c", &value).unwrap();
+        assert_eq!(
+            CheckpointsRepository::checkpoint(&tx, "c")
+                .unwrap()
+                .unwrap()
+                .record,
+            value
+        );
+    }
 
     #[test]
     fn workspace_activity_ignores_unrelated_record_metadata() {

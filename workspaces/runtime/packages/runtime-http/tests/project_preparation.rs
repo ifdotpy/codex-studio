@@ -7,7 +7,12 @@ use axum::{
 use serde_json::{Value, json};
 use std::sync::Arc;
 use studio_runtime_http::{HttpState, router};
-use studio_runtime_store::{AgentRecord, AgentRepository, QuestionsWriteRepository, RuntimeStore};
+use studio_runtime_schema::approvals::{
+    AgentId, Answer, ApprovalId, ApprovalState, Detail, ProviderObject, Question, QuestionAnswer,
+    Request, Timestamp, TurnId,
+};
+use studio_runtime_store::approvals::{self, NewApproval};
+use studio_runtime_store::{AgentRecord, AgentRepository, RuntimeStore, StoreError};
 use tower::ServiceExt;
 async fn call(app: &axum::Router, path: &str, body: Value, token: &str) -> (u16, Value) {
     let request = Request::builder()
@@ -48,24 +53,45 @@ async fn async_question_answer_wakes_idle_lead_once() {
     );
     let agent_id = "lead";
     let question_id = "idle-lead-question";
-    let question = json!({
-        "id":question_id, "agent":agent_id, "epoch":0, "turnId":"completed-question-turn",
-        "method":"agent/asyncQuestion", "status":"pending", "createdAt":10.0,
-        "params":{"questions":[{"id":"scope", "question":"Which scope?"}]}
-    });
+    let question = NewApproval {
+        id: ApprovalId(question_id.to_owned()),
+        agent: AgentId(agent_id.to_owned()),
+        turn: Some(TurnId("completed-question-turn".to_owned())),
+        epoch: Some(0),
+        request: Request::AgentQuestion {
+            questions: vec![Question {
+                id: "scope".to_owned(),
+                question: "Which scope?".to_owned(),
+                header: None,
+                options: vec![],
+                is_secret: false,
+                multi_select: None,
+                is_other: None,
+            }],
+        },
+        delivery: None,
+        detail: Detail {
+            params: ProviderObject(Default::default()),
+            preview: None,
+            answer_error: None,
+            host_close_reason: None,
+        },
+        fire_at: None,
+    };
     let cwd = root.path().to_string_lossy().into_owned();
     store
         .transaction(move |tx| {
             AgentRepository::put(
                 tx,
                 &AgentRecord::from_value(
-                    json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                    json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
                         "id":agent_id,"rootId":agent_id,"epoch":0,"status":"idle",
                         "cwd":cwd,"isLead":true,"autoWake":true,
                     }),
                 )?,
             )?;
-            QuestionsWriteRepository::put_request(tx, question_id, &question.to_string())
+            approvals::create(tx, question, Timestamp(10.0)).map_err(StoreError::from)?;
+            Ok(())
         })
         .await
         .expect("test fixture");
@@ -100,13 +126,19 @@ async fn async_question_answer_wakes_idle_lead_once() {
         .expect("test fixture")
         .expect("test fixture");
     assert_eq!(agent.status.as_str(), "queued");
-    let request: String = db
-        .query_row(
-            "SELECT record FROM runtime_requests WHERE id=?1",
-            [question_id],
-            |row| row.get(0),
-        )
-        .expect("request");
-    let request: Value = serde_json::from_str(&request).expect("request JSON");
-    assert_eq!(request["status"], "answered");
+    let request = approvals::get(&db, &ApprovalId(question_id.to_owned()))
+        .expect("request")
+        .expect("request row");
+    let ApprovalState::Answered { answer, .. } = request.state else {
+        panic!("the question is answered");
+    };
+    assert_eq!(
+        answer,
+        Answer::Answers {
+            answers: vec![QuestionAnswer {
+                id: "scope".to_owned(),
+                answer: vec!["One file".to_owned()],
+            }]
+        }
+    );
 }

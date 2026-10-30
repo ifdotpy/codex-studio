@@ -213,7 +213,7 @@ pub struct ExternalizeDecision {
     pub writes: Vec<BlobWrite>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 struct BlobRef {
     sha256: String,
     size: u64,
@@ -221,24 +221,19 @@ struct BlobRef {
 
 impl BlobRef {
     fn parse(value: &Value) -> Result<Self, PayloadBlobError> {
-        let hash = value
-            .get("sha256")
-            .and_then(Value::as_str)
-            .filter(|hash| {
-                hash.len() == 64
-                    && hash
-                        .bytes()
-                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-            })
-            .ok_or(PayloadBlobError::InvalidReference)?;
-        let size = value
-            .get("size")
-            .and_then(Value::as_u64)
-            .ok_or(PayloadBlobError::InvalidReference)?;
-        Ok(Self {
-            sha256: hash.to_owned(),
-            size,
-        })
+        if !value.is_object() {
+            return Err(PayloadBlobError::InvalidReference);
+        }
+        let reference = Self::deserialize(value).map_err(|_| PayloadBlobError::InvalidReference)?;
+        if reference.sha256.len() != 64
+            || !reference
+                .sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(PayloadBlobError::InvalidReference);
+        }
+        Ok(reference)
     }
 
     fn value(&self, preview: Value) -> Value {
@@ -705,6 +700,36 @@ mod tests {
         task_preview, trim_task, write_blobs,
     };
     use serde_json::{Value, json};
+
+    #[test]
+    fn blob_reference_shapes_preserve_validation() {
+        let hash = "a".repeat(64);
+        for size in [json!(0), json!(1), json!(u64::MAX)] {
+            let value =
+                json!({"sha256": hash, "size": size, "preview": [null], "future": {"x": true}});
+            let reference = super::BlobRef::parse(&value).expect("valid reference");
+            assert_eq!(reference.size, size.as_u64().expect("unsigned"));
+        }
+        for value in [
+            json!([hash, 1]),
+            json!(null),
+            json!({}),
+            json!({"sha256": hash, "size": null}),
+            json!({"sha256": hash, "size": -1}),
+            json!({"sha256": hash, "size": 1.0}),
+            json!({"sha256": hash, "size": "1"}),
+            json!({"sha256": "A".repeat(64), "size": 1}),
+            json!({"sha256": "a".repeat(63), "size": 1}),
+        ] {
+            assert!(
+                matches!(
+                    super::BlobRef::parse(&value),
+                    Err(PayloadBlobError::InvalidReference)
+                ),
+                "{value}"
+            );
+        }
+    }
 
     #[test]
     fn oversized_checkpoint_decision_is_pure_then_round_trips_durably() {

@@ -239,8 +239,7 @@ async fn run_native_action(
             .read_async("runtime-http/routes/agent_management", move |tx| {
                 let record = AgentRepository::get(tx, &AgentId::from(read_agent.as_str()))?
                     .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Agent not found"))?;
-                let account = record.account_key.as_str()
-                    .to_owned();
+                let account = record.account_key.as_str().to_owned();
                 let epoch = record.value()["epoch"]
                     .as_i64()
                     .ok_or_else(ApiError::internal)?;
@@ -263,8 +262,8 @@ async fn run_native_action(
         let provider_home = accounts
             .accounts
             .iter()
-            .find(|row| row["id"] == account)
-            .and_then(|row| row["home"].as_str())
+            .find(|row| row.id.as_str() == Some(account.as_str()))
+            .and_then(|row| row.home.as_str())
             .ok_or_else(ApiError::internal)?;
         let mut resources = resources.as_ref().clone();
         resources.account_home = provider_home.to_owned();
@@ -325,22 +324,20 @@ async fn run_native_action(
             }
             let agent = AgentRepository::get(tx, &AgentId::from(preflight_request.agent.as_str()))?
                 .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown managed agent"))?;
-            let agent = agent.value();
-            if agent
-                .get("threadId")
-                .and_then(Value::as_str)
-                .is_none_or(str::is_empty)
-            {
+            if agent.thread_id.as_deref().is_none_or(str::is_empty) {
                 return Err(ApiError::new(
                     StatusCode::BAD_REQUEST,
                     "This agent has no active conversation",
                 ));
             }
-            if agent.get("autoWake") != Some(&Value::Bool(true))
-                || agent.get("inFlight") == Some(&Value::Bool(true))
+            if agent.auto_wake != Some(true)
+                || agent.in_flight == Some(true)
                 || matches!(
-                    agent.get("status").and_then(Value::as_str),
-                    Some("queued" | "starting" | "running" | "approval")
+                    agent.status,
+                    studio_runtime_store::AgentStatus::Queued
+                        | studio_runtime_store::AgentStatus::Starting
+                        | studio_runtime_store::AgentStatus::Running
+                        | studio_runtime_store::AgentStatus::Approval
                 )
             {
                 return Err(ApiError::new(
@@ -489,8 +486,8 @@ impl NativeActionPreparationRun {
         accounts
             .accounts
             .iter()
-            .find(|row| row["id"] == account)
-            .and_then(|row| row["home"].as_str())
+            .find(|row| row.id.as_str() == Some(account))
+            .and_then(|row| row.home.as_str())
             .map(|home| Some(std::path::PathBuf::from(home)))
             .ok_or(NativeError::Unavailable("account-driver/provider-home"))
     }
@@ -537,15 +534,15 @@ impl NativeActionPreparationRun {
         request: &native_actions::Request,
         ticket: &studio_runtime_services::workspace_operations::ProviderTicket,
     ) -> native_actions::Result<()> {
-        let agent = self.agent(request).await?.value().clone();
-        if agent.get("executionMode").and_then(Value::as_str) != Some("vm") {
+        let agent = self.agent(request).await?;
+        if agent.execution_mode != Some(studio_runtime_store::AgentExecutionMode::Vm) {
             return Ok(());
         }
         let guest = self
             .guest
             .clone()
             .ok_or(NativeError::Unavailable("workspace-state/vm-workspace"))?;
-        if agent.get("isLead").and_then(Value::as_bool) == Some(true) {
+        if agent.extra.get("isLead").and_then(Value::as_bool) == Some(true) {
             studio_runtime_services::vm_preparation::prepare_lead(
                 self.store.as_ref(),
                 guest,
@@ -1213,7 +1210,7 @@ mod native_review_preflight_tests {
             .expect("open store");
         let record = AgentRecord::from_value(json!({
             "id":"vm-local-archive-failure", "rootId":"vm-local-archive-failure",
-            "epoch":1, "status":"starting", "provider":"codex", "executionMode":"vm",
+            "epoch":1, "status":"starting", "provider":"codex", "executionMode":"vm", "accountKey":"default",
             "isLead":true, "autoWake":true, "cwd":missing_source,
             "startAttempt":{"id":"attempt-local-archive-failure"}
         }))
@@ -1396,7 +1393,7 @@ mod native_review_preflight_tests {
                 .expect("open store"),
         );
         let parent = AgentRecord::from_value(json!({
-            "id":"vm-parent", "rootId":"vm-parent", "epoch":2, "status":"idle",
+            "id":"vm-parent", "rootId":"vm-parent", "epoch":2, "status":"idle", "accountKey":"default",
             "provider":"codex", "executionMode":"vm", "isLead":true, "autoWake":true,
             "cwd":"/home/studio/project", "layrReady":true,
             "layrProjectId":"project-key", "layrLine":"main"
@@ -1404,7 +1401,7 @@ mod native_review_preflight_tests {
         .expect("valid parent");
         let reviewer = AgentRecord::from_value(json!({
             "id":"vm-reviewer", "rootId":"vm-parent", "parentId":"vm-parent",
-            "epoch":4, "status":"starting", "provider":"codex", "executionMode":"vm",
+            "epoch":4, "status":"starting", "provider":"codex", "executionMode":"vm", "accountKey":"default",
             "isLead":false, "role":"reviewer", "autoWake":true, "layrReady":false,
             "layrSubpath":"review", "layrBaseState":"base-1", "cwd":"/host/project",
             "threadId":"thread-review",
@@ -1498,7 +1495,7 @@ mod native_review_preflight_tests {
                 .expect("open store"),
         );
         let record = AgentRecord::from_value(json!({
-            "id":"vm-unknown", "rootId":"vm-unknown", "epoch":1, "status":"starting",
+            "id":"vm-unknown", "rootId":"vm-unknown", "epoch":1, "status":"starting", "accountKey":"default",
             "provider":"codex", "executionMode":"vm", "isLead":true, "autoWake":true,
             "cwd":source, "hostProjectPath":source, "threadId":"thread-unknown",
             "startAttempt":{"id":"attempt-unknown"}

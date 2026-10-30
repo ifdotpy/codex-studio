@@ -690,9 +690,7 @@ fn safety_retry_active(agent: &studio_runtime_store::AgentRecord) -> bool {
                 .is_some_and(|stage| ACTIVE.contains(&stage))
                 && retry.get("epoch").and_then(Value::as_i64) == Some(agent.epoch)
                 && retry.get("accountKey").and_then(Value::as_str)
-                    == Some(
-                        agent.account_key.as_str(),
-                    )
+                    == Some(agent.account_key.as_str())
         })
 }
 
@@ -851,7 +849,7 @@ pub fn post_message(
     let signature = crate::event_write::request_signature(
         &json!({"room":input.room,"author":"user","text":text}),
     );
-    let admitted = match crate::event_write::begin_request::<GroupMessageReply>(
+    match crate::event_write::begin_request::<GroupMessageReply>(
         transaction,
         crate::event_write::RequestKey::new("group_message", &[input.room, "user"], input.id),
         &signature,
@@ -860,10 +858,16 @@ pub fn post_message(
         crate::event_write::CallerAdmission::Replay(reply) => {
             return Ok(reply);
         }
-        crate::event_write::CallerAdmission::Fresh(admitted) => admitted,
-    };
-    if CoordinationRepository::message(transaction, input.id)?.is_some() {
-        return Err(CoordinationError::InvalidRequest("Request id expired"));
+        crate::event_write::CallerAdmission::Fresh(_) => {}
+    }
+    if let Some(message) = CoordinationRepository::message(transaction, input.id)? {
+        let message = validated_message(message)?;
+        if message.room != input.room || message.author != "user" || message.text != text {
+            return Err(CoordinationError::Conflict(
+                "This message id has different content",
+            ));
+        }
+        return Ok(message_receipt(message, true));
     }
     let deliveries = members
         .into_iter()
@@ -889,9 +893,7 @@ pub fn post_message(
     };
     CoordinationRepository::put_message(transaction, &message)?;
     CoordinationRepository::chat_projection(transaction, input.room, false)?;
-    let reply = message_receipt(validated_message(message)?, true);
-    crate::event_write::settle_request(transaction, &admitted, Some("user"), &reply)?;
-    Ok(reply)
+    Ok(message_receipt(validated_message(message)?, true))
 }
 
 struct AgentDirectory {
@@ -1240,14 +1242,13 @@ pub(crate) fn event_write_error(error: crate::event_write::EventWriteError) -> C
 
 #[cfg(test)]
 mod tests {
-    use serde_json::{Value, json};
+    use serde_json::json;
     use studio_runtime_schema::delivery::DeliveryMoment;
     use studio_runtime_store::Connection;
 
     use super::{
-        CoordinationError, GroupMessageReply, PostManagedMessage, PostMessage, connect_chat,
-        create_chat, message_text_within_limit, post_message, post_message_with_admission,
-        require_single_team,
+        CoordinationError, PostManagedMessage, PostMessage, connect_chat, create_chat,
+        message_text_within_limit, post_message, post_message_with_admission, require_single_team,
     };
 
     #[test]
@@ -1277,7 +1278,7 @@ mod tests {
             .expect("volatile agent table creates");
         studio_runtime_store::receipt_schema::create(&connection).expect("request results schema");
         for (id, root) in [("lead", "lead"), ("worker", "lead"), ("other", "other")] {
-            let record = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":root,"epoch":0,"status":"idle"}).to_string();
+            let record = json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":root,"epoch":0,"status":"idle"}).to_string();
             connection
                 .execute(
                     "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
@@ -1307,7 +1308,7 @@ mod tests {
             .expect("volatile agent table creates");
         studio_runtime_store::receipt_schema::create(&connection).expect("request results schema");
         for (id, root) in [("lead", "lead"), ("worker", "lead")] {
-            let record = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":root,"epoch":0,"status":if id == "lead" {"running"} else {"idle"},"autoWake":id == "lead","inFlight":id == "lead"}).to_string();
+            let record = json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":root,"epoch":0,"status":if id == "lead" {"running"} else {"idle"},"autoWake":id == "lead","inFlight":id == "lead"}).to_string();
             connection
                 .execute(
                     "INSERT OR IGNORE INTO runtime_agents(id,record) VALUES(?1,?2)",
@@ -1454,10 +1455,9 @@ mod tests {
         crate::queue_write::action(
             &transaction,
             "lead",
-            &studio_runtime_schema::queue_command::QueueCommand::SendNow(studio_runtime_schema::queue_command::QueueTarget {
-                agent: Default::default(), expected_text: Default::default(), expected_revision: Default::default(), id: Default::default(),
-                message_id: studio_runtime_schema::queue_command::Field::Value(id.clone()), request_id: studio_runtime_schema::queue_command::Field::Value(promote),
-            }),
+            &serde_json::from_str::<studio_runtime_schema::queue_command::QueueCommand>(
+                &format!(r#"{{"action":"send_now","id":"{id}","request_id":"{promote}"}}"#),
+            ).expect("valid queue command"),
             "promotion-fixture",
             |tx, _| {
                 let event = studio_runtime_store::QueueEventRepository::get(
@@ -1855,18 +1855,6 @@ mod tests {
             result
         };
         let first = post(&mut connection, "Hello").expect("message writes");
-        let stored: String = connection
-            .query_row("SELECT result FROM request_results", [], |row| row.get(0))
-            .expect("stored receipt");
-        let decoded: studio_runtime_store::request_results::ResultEnvelope<GroupMessageReply> =
-            serde_json::from_str(&stored).expect("typed stored receipt");
-        let rewritten: Value =
-            serde_json::from_slice(&serde_json::to_vec(&decoded).expect("typed bytes"))
-                .expect("typed JSON");
-        assert_eq!(
-            rewritten,
-            serde_json::from_str::<Value>(&stored).expect("stored envelope")
-        );
         assert_eq!(
             first.status,
             studio_runtime_schema::persistence::DeliveryStatus::Queued
@@ -1885,10 +1873,10 @@ mod tests {
             )
             .expect("later delivery update");
         let replay = post(&mut connection, "Hello").expect("exact replay returns receipt");
-        assert_eq!(replay.deliveries, first.deliveries);
         assert_eq!(
-            replay, first,
-            "retry must return the original acceptance reply"
+            replay.status,
+            studio_runtime_schema::persistence::DeliveryStatus::Delivered,
+            "retry reflects the current delivery state"
         );
         assert!(matches!(
             post(&mut connection, "Changed"),
@@ -1899,6 +1887,103 @@ mod tests {
         ));
         assert_eq!(count(&connection, "messages"), 1);
         assert_eq!(count(&connection, "sync_entities"), 3);
+    }
+
+    #[test]
+    fn group_message_create_uses_its_row_as_identity() {
+        let mut connection = database();
+        let room = "12345678-1234-1234-1234-123456789abc";
+        let tx = connection.transaction().expect("transaction");
+        create_chat(&tx, room, "Team", &["lead".to_owned(), "worker".to_owned()]).expect("chat");
+        tx.commit().expect("chat commit");
+        let id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let tx = connection.transaction().expect("transaction");
+        post_message_with_admission(
+            &tx,
+            PostManagedMessage {
+                room,
+                id: &id,
+                text: "hello",
+                delivery: DeliveryMoment::NextTurn,
+                assets: &[],
+            },
+            &AllowAdmission,
+        )
+        .expect("message");
+        tx.commit().expect("message commit");
+        assert_eq!(count(&connection, "messages"), 1);
+        assert_eq!(count(&connection, "request_results"), 0);
+        let tx = connection.transaction().expect("transaction");
+        let input = |text| PostManagedMessage {
+            room,
+            id: &id,
+            text,
+            delivery: DeliveryMoment::NextTurn,
+            assets: &[],
+        };
+        assert!(post_message_with_admission(&tx, input("hello"), &AllowAdmission).is_ok());
+        assert!(post_message_with_admission(&tx, input("changed"), &AllowAdmission).is_err());
+        tx.commit().expect("replay commit");
+        assert_eq!(count(&connection, "messages"), 1);
+    }
+
+    #[test]
+    fn group_message_legacy_receipt_replays_original_outcome() {
+        let mut connection = database();
+        let room = "12345678-1234-1234-1234-123456789abc";
+        let tx = connection.transaction().expect("transaction");
+        create_chat(&tx, room, "Team", &["lead".to_owned(), "worker".to_owned()]).expect("chat");
+        tx.commit().expect("chat commit");
+        let id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let tx = connection.transaction().expect("transaction");
+        let first = post_message(
+            &tx,
+            PostMessage {
+                room,
+                id: &id,
+                text: "hello",
+            },
+        )
+        .expect("message");
+        tx.commit().expect("message commit");
+        let signature = studio_runtime_store::sha256_hex(
+            format!(r#"{{"author": "user", "room": "{room}", "text": "hello"}}"#).as_bytes(),
+        );
+        let old = studio_runtime_store::request_results::ResultEnvelope {
+            actor: Some("user".to_owned()),
+            reply: first.clone(),
+            references: Vec::new(),
+        };
+        connection
+            .execute(
+                "INSERT INTO request_results(id,signature,result,created) VALUES(?1,?2,?3,?4)",
+                rusqlite::params![
+                    id,
+                    signature,
+                    serde_json::to_string(&old).unwrap(),
+                    chrono::Utc::now().timestamp_millis()
+                ],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE messages SET deliveries=?1 WHERE id=?2",
+                [r#"{"worker":{"status":"delivered","error":null}}"#, &id],
+            )
+            .unwrap();
+        let tx = connection.transaction().expect("transaction");
+        assert_eq!(
+            post_message(
+                &tx,
+                PostMessage {
+                    room,
+                    id: &id,
+                    text: "hello"
+                }
+            )
+            .unwrap(),
+            first
+        );
     }
 
     #[test]
@@ -2002,7 +2087,7 @@ mod tests {
         connection
             .execute(
                 "UPDATE runtime_agents SET record=?1 WHERE id='lead'",
-                [json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":0,"status":"idle","threadId":"managed-thread"}).to_string()],
+                [json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":0,"status":"idle","threadId":"managed-thread"}).to_string()],
             )
             .expect("managed thread fixture updates");
         connection
@@ -2101,7 +2186,7 @@ mod tests {
         connection
             .execute(
                 "INSERT INTO runtime_agents(id,record) VALUES('user',?1)",
-                [json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"user","rootId":"lead","epoch":0,"status":"idle"}).to_string()],
+                [json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"user","rootId":"lead","epoch":0,"status":"idle"}).to_string()],
             )
             .expect("user agent fixture inserts");
         let room = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";

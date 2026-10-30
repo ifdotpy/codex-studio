@@ -3,7 +3,7 @@
 //! reports the child identity; it does not prove termination or cap surviving children.
 use crate::{child_priority::ChildPriority, operational_log::OperationalLog, provider_seam::*, *};
 use process_wrap::tokio::{CommandWrap, ProcessGroup};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     io::{self, Write as IoWrite},
@@ -59,7 +59,7 @@ impl PendingReplies {
         let Some(id) = write
             .message()
             .get("id")
-            .and_then(|id| serde_json::from_value(id.clone()).ok())
+            .and_then(|id| RequestId::deserialize(id).ok())
         else {
             return;
         };
@@ -119,7 +119,7 @@ fn stdin_timing_diagnostic_line(
     stdin_flushed_at_ns: u128,
 ) -> Option<Vec<u8>> {
     let method = witnessed_method(write)?;
-    let request_id = serde_json::from_value(write.message().get("id")?.clone()).ok()?;
+    let request_id = RequestId::deserialize(write.message().get("id")?).ok()?;
     let diagnostic = StdinTimingDiagnostic {
         provider_handle: handle.as_str(),
         generation: generation.0,
@@ -1318,6 +1318,88 @@ mod tests {
         assert!(pending.take(&RequestId::String("r3".into())).is_none());
     }
 
+    #[tokio::test]
+    async fn prepared_diagnostic_requests_preserve_valid_and_malformed_ids() {
+        fn prepared(id: Option<serde_json::Value>) -> PreparedWrite {
+            let mut fields = serde_json::Map::new();
+            fields.insert("method".into(), serde_json::json!("turn/start"));
+            if let Some(id) = id {
+                fields.insert("id".into(), id);
+            }
+            let frame = Frame::UnknownMethod(studio_runtime_providers::UnknownMethodFrame {
+                method: "future".into(),
+                fields,
+            });
+            PreparedWrite::new(OperationId("fixture".into()), &frame).unwrap()
+        }
+        for (id, expected) in [
+            (serde_json::json!(0), RequestId::Number(0)),
+            (serde_json::json!(u64::MAX), RequestId::Number(u64::MAX)),
+            (
+                serde_json::json!("string-id"),
+                RequestId::String("string-id".into()),
+            ),
+        ] {
+            let pending = PendingReplies::default();
+            let lines = write_with(prepared(Some(id.clone())), true, &pending).await;
+            assert_eq!(lines.len(), 1);
+            let json = std::str::from_utf8(&lines[0])
+                .unwrap()
+                .strip_prefix(STDIN_TIMING_DIAGNOSTIC_PREFIX)
+                .unwrap();
+            let diagnostic: serde_json::Value = serde_json::from_str(json).unwrap();
+            assert_eq!(diagnostic["requestId"], id);
+            assert_eq!(
+                pending.take(&expected),
+                Some((OperationId("fixture".into()), Method::TurnStart))
+            );
+        }
+        for id in [
+            None,
+            Some(serde_json::Value::Null),
+            Some(serde_json::json!(false)),
+            Some(serde_json::json!(-1)),
+            Some(serde_json::json!(1.5)),
+            Some(serde_json::json!({"id":1})),
+        ] {
+            let pending = PendingReplies::default();
+            assert!(write_with(prepared(id), true, &pending).await.is_empty());
+            assert!(pending.0.lock().unwrap().is_empty());
+        }
+        let pending = PendingReplies::default();
+        let (mut writer, mut reader) = tokio::io::duplex(1024);
+        let (reply, receiver) = tokio::sync::oneshot::channel();
+        let (observation, observed) = tokio::sync::oneshot::channel();
+        observation.send(()).unwrap();
+        write_one_command(
+            &mut writer,
+            prepared(Some(serde_json::json!(7))),
+            &mut PendingStdinWrite::new(reply),
+            observed,
+            WriterTimingDiagnostics {
+                handle: &ProviderHandle::for_account("default"),
+                generation: Generation(7),
+                enabled: true,
+                pending_replies: &pending,
+                sample_timestamp: || 100,
+                emit_diagnostic: |_: &[u8]| {},
+            },
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            receiver.await.unwrap(),
+            CommandReceipt::Written { .. }
+        ));
+        let expected = b"{\"id\":7,\"method\":\"turn/start\"}\n";
+        let mut bytes = vec![0; expected.len()];
+        tokio::io::AsyncReadExt::read_exact(&mut reader, &mut bytes)
+            .await
+            .unwrap();
+        assert_eq!(&bytes, expected);
+        assert!(pending.take(&RequestId::Number(7)).is_some());
+    }
+
     #[tokio::test(start_paused = true)]
     async fn failed_reap_reports_the_unconfirmed_child() {
         let error = super::reap_with_deadline::<()>(Some(12345), std::future::pending())
@@ -1387,6 +1469,7 @@ mod tests {
         let (_observation, observed) = tokio::sync::oneshot::channel();
         let sample_count = Arc::clone(&samples);
         let emitted_count = Arc::clone(&emitted);
+        let pending = PendingReplies::default();
 
         let result = write_one_command(
             &mut stdin,
@@ -1397,7 +1480,7 @@ mod tests {
                 handle: &ProviderHandle::for_account("default"),
                 generation: Generation(7),
                 enabled: true,
-                pending_replies: &PendingReplies::default(),
+                pending_replies: &pending,
                 sample_timestamp: move || {
                     sample_count.fetch_add(1, Ordering::SeqCst);
                     123
@@ -1416,6 +1499,10 @@ mod tests {
         assert_eq!(samples.load(Ordering::SeqCst), 0);
         assert_eq!(emitted.load(Ordering::SeqCst), 0);
         assert!(!flushed.load(Ordering::SeqCst));
+        assert_eq!(
+            pending.take(&RequestId::String("request-1".into())),
+            Some((OperationId("attempt-op".into()), Method::TurnStart))
+        );
     }
 
     #[tokio::test]

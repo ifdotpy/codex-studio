@@ -599,6 +599,15 @@ impl Controls {
         operation: Option<Value>,
     ) -> Result<Value> {
         let snapshot = ControlSnapshot::from_records(agent.clone(), operation)?;
+        self.read_or_stop_snapshot(&snapshot, body).await
+    }
+
+    pub async fn read_or_stop_snapshot(
+        &self,
+        snapshot: &ControlSnapshot,
+        body: &Value,
+    ) -> Result<Value> {
+        let agent = snapshot.agent();
         let binding = self.session.binding();
         let scope = ControlScope {
             agent: snapshot.agent.id.clone(),
@@ -658,7 +667,7 @@ impl Controls {
                 if !result.is_object() {
                     return Err(ControlError::Unknown);
                 }
-                if let Some(op) = snapshot.saved {
+                if let Some(op) = &snapshot.saved {
                     result["controlOperation"] = json!({"requestId":op.get("requestId"),"turnId":op.get("turnId"),"restoreFiles":op.get("restoreFiles").and_then(Value::as_bool).unwrap_or(false),"phase":op.get("phase"),"error":op.get("error")});
                 }
                 Ok(result)
@@ -669,7 +678,7 @@ impl Controls {
                         &binding,
                         &scope,
                         ControlInvocation::Commands {
-                            cwd: snapshot.agent.cwd,
+                            cwd: snapshot.agent.cwd.clone(),
                         },
                         25,
                     )

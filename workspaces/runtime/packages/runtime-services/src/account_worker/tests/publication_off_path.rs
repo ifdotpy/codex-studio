@@ -178,20 +178,85 @@ async fn restart_replays_undelivered_publications_once() {
 /// The writer-job callback and its counter are process-wide, so a test that counts
 /// jobs runs its body alone in a child process, not beside other tests of this binary.
 fn run_counting_probe(probe: &str) {
+    run_counting_probe_with_environment(probe, &[]);
+}
+
+fn run_counting_probe_with_environment(probe: &str, environment: &[(&str, &str)]) {
     const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
     const PROBE_OUTPUT_LIMIT_BYTES: usize = 64 * 1024;
     let executable = std::env::current_exe().expect("test executable");
-    crate::bounded_child::run(crate::bounded_child::Request {
+    use crate::bounded_child::ProbeCapture;
+    crate::bounded_child::PROBE_FAILURE.with_borrow_mut(|capture| *capture = ProbeCapture::Armed);
+    let result = crate::bounded_child::run(crate::bounded_child::Request {
         program: executable.as_os_str(),
         git_directory: None,
         args: &["--ignored", "--exact", probe, "--nocapture"],
-        environment: &[],
+        environment,
         input: None,
         stdout_limit: PROBE_OUTPUT_LIMIT_BYTES,
         stderr_limit: PROBE_OUTPUT_LIMIT_BYTES,
         timeout: PROBE_TIMEOUT,
+    });
+    let failure = crate::bounded_child::PROBE_FAILURE
+        .with_borrow_mut(|capture| std::mem::replace(capture, ProbeCapture::Off));
+    if let Err(error) = result {
+        if let ProbeCapture::Failed { status, stderr } = failure {
+            let tail = &stderr.bytes[stderr.bytes.len().saturating_sub(4096)..];
+            panic!(
+                "counting probe failed ({status}, stderr truncated={}): {}",
+                stderr.truncated,
+                String::from_utf8_lossy(tail)
+            );
+        }
+        panic!("counting probe failed: {error:?}");
+    }
+}
+
+#[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "read the test-owned child invocation marker"
+)]
+fn counting_probe_failure_reports_child_panic_once() {
+    let root = tempfile::tempdir().unwrap();
+    let marker = root.path().join("invocations");
+    let result = std::panic::catch_unwind(|| {
+        run_counting_probe_with_environment(
+            "account_worker::tests::publication_off_path::probe_diagnostic_failure",
+            &[("STUDIO_PROBE_INVOCATIONS", marker.to_str().unwrap())],
+        )
     })
-    .expect("counting probe passes");
+    .expect_err("probe must fail");
+    let message = result.downcast_ref::<String>().unwrap();
+    assert_eq!(
+        message.matches("distinct-child-panic").count(),
+        1,
+        "{message}"
+    );
+    assert_eq!(std::fs::read(marker).unwrap(), b"x");
+    crate::bounded_child::PROBE_FAILURE.with_borrow(|capture| {
+        assert!(matches!(capture, crate::bounded_child::ProbeCapture::Off));
+    });
+}
+
+#[ignore = "run by its isolated diagnostic wrapper"]
+#[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "write the test-owned child invocation marker"
+)]
+fn probe_diagnostic_failure() {
+    use std::io::Write;
+    let path = std::env::var_os("STUDIO_PROBE_INVOCATIONS").unwrap();
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .unwrap()
+        .write_all(b"x")
+        .unwrap();
+    eprintln!("{}", "noise".repeat(400));
+    panic!("distinct-child-panic");
 }
 
 static WRITER_JOBS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -233,10 +298,14 @@ fn projection_log_rows(state: &State) -> i64 {
 /// frame costs one writer transaction. The projector then applies the row to
 /// analytics without a Canvas writer transaction.
 #[test]
+#[ignore = "heavy tier: just test-quarantine (flaky under load, issue #616)"]
 fn analytics_are_logged_in_the_journal_commit_and_projected_off_the_writer() {
     run_counting_probe(
         "account_worker::tests::publication_off_path::probe_analytics_are_logged_in_the_journal_commit_and_projected_off_the_writer",
     );
+    crate::bounded_child::PROBE_FAILURE.with_borrow(|capture| {
+        assert!(matches!(capture, crate::bounded_child::ProbeCapture::Off));
+    });
 }
 
 #[ignore = "run by its isolated wrapper test"]

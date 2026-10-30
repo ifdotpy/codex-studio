@@ -419,6 +419,57 @@ async fn manual_recovery_reads_new_native_history_for_a_new_request_identity() {
 }
 
 #[tokio::test]
+async fn manual_unclean_start_settles_exact_history_without_replay() {
+    let state = State::new().await;
+    retained_schema(&state).await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    worker_barrier(&worker).await;
+    let port = worker.retained_session();
+    let mut auth = manual_start_authorization(&state, port.scope(), false).await;
+    let target_id = state.agent.clone();
+    let lead = auth.lead.clone();
+    let target = state.bridge.store.transaction(move |tx| {
+        let mut target = AgentRepository::get(tx, &AgentId::from(target_id.as_str()))?.expect("worker").value();
+        target["status"] = json!("interrupted");
+        target["inFlight"] = json!(false);
+        target["autoWake"] = json!(false);
+        target["startAttempt"]["submitted"] = json!(false);
+        target["startAttempt"].as_object_mut().unwrap().remove("executionOutcome");
+        target["startOutcomeHold"] = json!({"stage":"held","reason":SchedulerRepository::UNCLEAN_START_HOLD,"attemptId":"manual-unknown-attempt"});
+        AgentRepository::put(tx, &AgentRecord::from_value(target.clone())?)?;
+            tx.execute("UPDATE runtime_events SET error=?1 WHERE id='annotation:input'", [SchedulerRepository::UNCLEAN_START_HOLD])?;
+        Ok::<_, studio_runtime_store::StoreError>(target)
+    }).await.unwrap();
+    auth = state
+        .bridge
+        .store
+        .transaction(move |tx| {
+            seed_manual_authorization(
+                tx,
+                lead,
+                target,
+                "manual-unclean",
+                "manual-unclean-signature",
+            )
+        })
+        .await
+        .unwrap();
+    let sender = port.clone();
+    let task = tokio::spawn(async move { sender.recover_managed_agent(auth).await });
+    let history = peer.write("thread/turns/list").await;
+    peer.reply(&history, json!({"data":[{"id":"manual-turn","threadId":"fake-thread-0","status":"completed","items":[{"id":"input","type":"userMessage","clientId":"annotation:input","text":"input"}]}],"nextCursor":null})).await;
+    let receipt = task.await.unwrap().unwrap();
+    assert!(
+        matches!(receipt, crate::recovery::RecoveryReceipt::Applied(_)),
+        "{receipt:?}"
+    );
+    assert_eq!(state.event_status("input").await, "delivered");
+    assert!(peer.writes.try_recv().is_err());
+    worker.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn manual_recovery_accepts_a_live_exact_start_and_tracks_its_terminal_notice() {
     manual_active_start_case(false).await;
 }
@@ -746,7 +797,10 @@ async fn reset_service_holds_lost_response_without_resending() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(saved_after, saved_before, "retry preserves the held attempt");
+    assert_eq!(
+        saved_after, saved_before,
+        "retry preserves the held attempt"
+    );
     worker_barrier(&worker).await;
     if let Ok(wire) = peer.writes.try_recv() {
         assert_eq!(wire.value["method"], "account/rateLimitResetCredit/consume");
@@ -1727,8 +1781,8 @@ async fn restart_history_case(outcome: &str) {
                         .await
                         .unwrap()
                         .expect("recovered transcript item");
-                    assert_eq!(item.record["text"], "recovered answer");
-                    assert_eq!(item.record["turnStatus"], "completed");
+                    assert_eq!(item.record.value()["text"], "recovered answer");
+                    assert_eq!(item.record.value()["turnStatus"], "completed");
                     let publications = recovered_publications(&state).await;
                     assert_eq!(publications.len(), 2);
                     assert_eq!(publications[0].1, "item/completed");
@@ -2699,7 +2753,7 @@ async fn restart_terminal_commit_before_wake_converges_on_next_worker_start() {
         .await
         .unwrap()
         .expect("terminal item is committed with the settlement");
-    assert_eq!(item.record["turnStatus"], "completed");
+    assert_eq!(item.record.value()["turnStatus"], "completed");
     let mut peer = Peer::new();
     let publications = Arc::new(RecoveredPublicationRecorder::default());
     let mut worker = peer
@@ -3478,35 +3532,102 @@ async fn deleted_voice_stop_requires_the_exact_committed_session() {
     let fixture_scope = scope.clone();
     let fixture_actor = actor.clone();
     let fixture_root = root.clone();
-    let token=state.bridge.store.transaction_with(move |tx| {
-        use studio_runtime_schema::persistence::{RequestIdentity,OutboxKind,OutboxStatus,OwnerKind};
-        use studio_runtime_store::{request_results::{RequestResults,Admission},outbox::{Outbox,OutboxRow}};
-        let identity=RequestIdentity::new("voice-delete-fixture",&[&fixture_actor],&fixture_root,&[]).unwrap();
-        let owner=match RequestResults::admit(tx,&identity,"voice-delete",chrono::Utc::now().timestamp_millis()).map_err(|error|WorkerError::PreparationRefused(error.to_string()))?{Admission::Fresh(owner)=>owner,Admission::Replay(_)=>return Err(WorkerError::Capacity)};
-        let intent=crate::account_worker::retained::ProviderCallIntent {root_request_id:fixture_root.clone(),admitted_request:None,scope:fixture_scope.clone(),operation:"voice:delete-stop:voice-session-7".into(),actor:Some(RequestActor{agent:fixture_actor.clone(),epoch}),transfer:None,deleted_actor_session:Some("voice-session-7".into()),method:Method::ThreadRealtimeStop,params:json!({"threadId":"fake-thread-0"})};
-        let token=crate::account_worker::retained::reserve_provider_call(tx,&owner,intent)?;
-        let effect = studio_runtime_store::VoiceEffect {
-            session_id: "voice-session-7".into(),
-            agent: fixture_actor.clone(),
-            epoch,
-            account: fixture_scope.account.clone(),
-            thread: "fake-thread-0".into(),
-            disposition: studio_runtime_store::VoiceEffectDisposition::Deleted { epoch },
-            authority: studio_runtime_store::VoiceEffectAuthority::Admitted {
-                scope: studio_runtime_schema::persistence::ProviderScope {
-                    connection: fixture_scope.connection.clone(),
-                    generation: fixture_scope.generation,
+    let token = state
+        .bridge
+        .store
+        .transaction_with(move |tx| {
+            use studio_runtime_schema::persistence::{
+                OutboxKind, OutboxStatus, OwnerKind, RequestIdentity,
+            };
+            use studio_runtime_store::{
+                outbox::{Outbox, OutboxRow},
+                request_results::{Admission, RequestResults},
+            };
+            let identity = RequestIdentity::new(
+                "voice-delete-fixture",
+                &[&fixture_actor],
+                &fixture_root,
+                &[],
+            )
+            .unwrap();
+            let owner = match RequestResults::admit(
+                tx,
+                &identity,
+                "voice-delete",
+                chrono::Utc::now().timestamp_millis(),
+            )
+            .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?
+            {
+                Admission::Fresh(owner) => owner,
+                Admission::Replay(_) => return Err(WorkerError::Capacity),
+            };
+            let intent = crate::account_worker::retained::ProviderCallIntent {
+                root_request_id: fixture_root.clone(),
+                admitted_request: None,
+                scope: fixture_scope.clone(),
+                operation: "voice:delete-stop:voice-session-7".into(),
+                actor: Some(RequestActor {
+                    agent: fixture_actor.clone(),
+                    epoch,
+                }),
+                transfer: None,
+                deleted_actor_session: Some("voice-session-7".into()),
+                method: Method::ThreadRealtimeStop,
+                params: json!({"threadId":"fake-thread-0"}),
+            };
+            let token = crate::account_worker::retained::reserve_provider_call(tx, &owner, intent)?;
+            let effect = studio_runtime_store::VoiceEffect {
+                session_id: "voice-session-7".into(),
+                agent: fixture_actor.clone(),
+                epoch,
+                account: fixture_scope.account.clone(),
+                thread: "fake-thread-0".into(),
+                disposition: studio_runtime_store::VoiceEffectDisposition::Deleted { epoch },
+                authority: studio_runtime_store::VoiceEffectAuthority::Admitted {
+                    scope: studio_runtime_schema::persistence::ProviderScope {
+                        connection: fixture_scope.connection.clone(),
+                        generation: fixture_scope.generation,
+                    },
+                    root_request_id: fixture_root,
+                    owner: owner.clone(),
+                    admission: token.clone(),
+                    outcome: studio_runtime_schema::persistence::VoiceStopOutcome::NotSent,
                 },
-                root_request_id: fixture_root,
-                owner: owner.clone(),
-                admission: token.clone(),
-                outcome: studio_runtime_schema::persistence::VoiceStopOutcome::NotSent,
-            },
-        };
-        Outbox::put(tx,&OutboxRow {id:Outbox::effect_id(owner.id(), OutboxKind::VoiceDelete, OwnerKind::Agent, &fixture_actor, &["voice-session-7"]),kind:OutboxKind::VoiceDelete,owner_kind:OwnerKind::Agent,owner_id:fixture_actor.clone(),request_id:Some(token.id().into()),signature:"voice-agent-delete-v1".into(),status:OutboxStatus::Pending,account:None,stream_id:None,generation:None,ordinal:None,next_at:Some(0),created:owner.created(),payload:effect}).map_err(|error|WorkerError::PreparationRefused(error.to_string()))?;
-        tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.deletedAt',1) WHERE id=?1",[&fixture_actor])?;
-        Ok::<_,WorkerError>(token)
-    }).await.unwrap();
+            };
+            Outbox::put(
+                tx,
+                &OutboxRow {
+                    id: Outbox::effect_id(
+                        owner.id(),
+                        OutboxKind::VoiceDelete,
+                        OwnerKind::Agent,
+                        &fixture_actor,
+                        &["voice-session-7"],
+                    ),
+                    kind: OutboxKind::VoiceDelete,
+                    owner_kind: OwnerKind::Agent,
+                    owner_id: fixture_actor.clone(),
+                    request_id: Some(token.id().into()),
+                    signature: "voice-agent-delete-v1".into(),
+                    status: OutboxStatus::Pending,
+                    account: None,
+                    stream_id: None,
+                    generation: None,
+                    ordinal: None,
+                    next_at: Some(0),
+                    created: owner.created(),
+                    payload: effect,
+                },
+            )
+            .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
+            tx.execute(
+                "UPDATE runtime_agents SET record=json_set(record,'$.deletedAt',1) WHERE id=?1",
+                [&fixture_actor],
+            )?;
+            Ok::<_, WorkerError>(token)
+        })
+        .await
+        .unwrap();
     let mut call = request(&state, &port, "voice:delete-stop:voice-session-7");
     call.root_request_id = root;
     call.admitted_request = Some(token);
@@ -3727,7 +3848,9 @@ async fn connection_recovery_history_is_read_again_after_worker_restart() {
     let deadline = (tokio::time::Instant::now() + std::time::Duration::from_secs(60)).into_std();
     let replay = tokio::spawn(async move {
         let mut history = second_history;
-        history.request(&second_scope, HistoryMethod::Thread, params, deadline).await
+        history
+            .request(&second_scope, HistoryMethod::Thread, params, deadline)
+            .await
     });
     let request = second_peer.write("thread/read").await;
     second_peer.reply(&request, expected).await;

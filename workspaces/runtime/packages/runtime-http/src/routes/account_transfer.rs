@@ -1,6 +1,6 @@
 //! Durable transfer requests, worker selection, and receipt replay.
 use super::{
-    extractors::{ApiJson, ApiRawJson},
+    extractors::ApiJson,
     manifest::{OperationStatus, RouteGroup, post},
 };
 use crate::{error::ApiError, generated, router::HttpState};
@@ -80,7 +80,7 @@ struct Request {
 }
 async fn transfer(
     State(state): State<HttpState>,
-    ApiRawJson(body): ApiRawJson<Request>,
+    ApiJson(body): ApiJson<Request>,
 ) -> Result<Json<generated::TransferResponse>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let result = if let Some(action) = body.action {
@@ -127,13 +127,8 @@ async fn transfer(
         }
         if state.account_policy.as_ref().is_some_and(|policy| {
             policy.accounts().accounts.iter().any(|account| {
-                account["id"].as_str() == Some(target)
-                    && (account
-                        .get("deleted")
-                        .is_some_and(|value| studio_runtime_store::truthy(Some(value)))
-                        || account
-                            .get("disconnected")
-                            .is_some_and(|value| studio_runtime_store::truthy(Some(value))))
+                account.id.as_str() == Some(target)
+                    && (account.deleted.truthy() || account.disconnected.truthy())
             })
         }) {
             return Err(error(TransferError::Refused(
@@ -150,13 +145,8 @@ async fn transfer(
                         .accounts()
                         .accounts
                         .into_iter()
-                        .find(|account| account["id"].as_str() == Some(target))
-                        .and_then(|account| {
-                            account
-                                .get("provider")
-                                .and_then(Value::as_str)
-                                .map(str::to_owned)
-                        })
+                        .find(|account| account.id.as_str() == Some(target))
+                        .and_then(|account| account.provider.as_str().map(str::to_owned))
                 })
             })
             .or_else(|| (target == "default").then(|| ProviderKind::Codex.key().to_owned()))

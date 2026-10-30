@@ -157,16 +157,12 @@ pub(crate) async fn perform(
     .map_err(|message| ApiError::new(StatusCode::BAD_REQUEST, message))?;
     if let studio_runtime_schema::task_command::TaskCommand::SetDefaultGate { gate } = command {
         let store = state.store.clone().ok_or_else(ApiError::internal)?;
-        let gate = gate.map_or(
-            Value::Null,
-            studio_runtime_schema::task_gate::GateInput::into_value,
-        );
         return store
             .transaction_with(move |tx| {
                 studio_runtime_services::task_gate::set_default(
                     tx,
                     &agent,
-                    &gate,
+                    gate,
                     request_id.as_deref(),
                     &signature,
                 )
@@ -227,7 +223,7 @@ pub(crate) async fn perform(
                         ),
                     );
                 }
-                if task.get("gate").is_none_or(Value::is_null) {
+                if task.extension("gate").is_none_or(Value::is_null) {
                     return Ok(None);
                 }
                 let owner = task.owner().unwrap_or(&actor_id);
@@ -421,7 +417,11 @@ async fn prepare_vm_submission(
                     ));
                 }
             };
-            if response.get("stateId").and_then(Value::as_str) != Some(expected_revision.as_str()) {
+            let response =
+                studio_runtime_schema::layr_evidence::EvidenceResponse::from_value(&response);
+            if response.as_ref().and_then(|r| r.state_id.0.as_deref())
+                != Some(expected_revision.as_str())
+            {
                 let task_id = input.task_id.clone();
                 let operation_id = call.request_id;
                 finish_vm_submission(&store, &task_id, &operation_id, Err(false))
@@ -433,8 +433,8 @@ async fn prepare_vm_submission(
                 ));
             }
             let evidence = match (
-                response.get("projectId").and_then(Value::as_str),
-                response.get("line").and_then(Value::as_str),
+                response.as_ref().and_then(|r| r.project_id.0.as_deref()),
+                response.as_ref().and_then(|r| r.line.0.as_deref()),
             ) {
                 (Some(project), Some(line)) => studio_runtime_store::vm_work_intent::Evidence {
                     layr_project_id: project.to_owned(),
@@ -589,7 +589,7 @@ async fn commit(
     if is_accept && result.record["status"] == "accepted" {
         let result = work_write::finalize_accepted_archive(
             store,
-            WorkItemRecord::checked(result.record).map_err(ApiError::stored)?,
+            WorkItemRecord::checked(&result.record).map_err(ApiError::stored)?,
         )
         .await
         .map_err(write_error)?;
@@ -679,9 +679,9 @@ mod managed_work_port_tests {
         store
             .transaction(|tx| {
                 for agent in [
-                    json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","parentId":null,"epoch":1,
+                    json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","parentId":null,"epoch":1,
                         "status":"running","autoWake":true,"isLead":true,"name":"lead"}),
-                    json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"lead","parentId":"lead","epoch":1,
+                    json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"lead","parentId":"lead","epoch":1,
                         "status":"running","autoWake":true,"isLead":false,"name":"worker"}),
                 ] {
                     AgentRepository::put(tx, &AgentRecord::from_value(agent)?)?;
@@ -1200,7 +1200,7 @@ mod managed_work_port_tests {
         assert_eq!(saved.value()["version"], before["version"]);
         assert_eq!(serde_json::json!(saved.status()), before["status"]);
         assert_eq!(saved.value()["results"], before["results"]);
-        assert!(saved.get("submissionRefusal").is_none());
+        assert!(saved.extension("submissionRefusal").is_none());
         let mut valid = args;
         valid["result"] = json!({"count":7});
         let submitted = written(
@@ -1490,6 +1490,76 @@ mod managed_work_port_tests {
     }
 
     #[tokio::test]
+    async fn acceptance_gate_typed_input_preserves_null_update_and_replay() {
+        let (state, _, _) = state().await;
+        let port = managed_work_port(state, None);
+        let default_args = json!({"action":"set_default_gate","gate":" check "});
+        let default = written(
+            port.act("lead", &default_args, &request_id("typed-default"))
+                .await,
+        );
+        assert_eq!(
+            default["defaultGate"],
+            json!({"command":" check ","timeout_ms":600000})
+        );
+        assert_eq!(
+            written(
+                port.act("lead", &default_args, &request_id("typed-default"))
+                    .await
+            ),
+            default
+        );
+        let created = written(
+            port.act(
+                "lead",
+                &json!({"action":"create","title":"typed"}),
+                &request_id("typed-create"),
+            )
+            .await,
+        );
+        assert_eq!(created["gate"], default["defaultGate"]);
+        let task = created["id"].as_str().expect("task id");
+        let updated = written(
+            port.act(
+                "lead",
+                &json!({"action":"update","task_id":task,"gate":null}),
+                &request_id("typed-clear"),
+            )
+            .await,
+        );
+        assert!(updated["gate"].is_null());
+        let updated = written(port.act("lead", &json!({"action":"update","task_id":task,"gate":{"command":"test","timeout_ms":1234}}), &request_id("typed-config")).await);
+        assert_eq!(updated["gate"], json!({"command":"test","timeout_ms":1234}));
+        let updated = written(
+            port.act(
+                "lead",
+                &json!({"action":"update","task_id":task,"description":"unchanged gate"}),
+                &request_id("typed-missing"),
+            )
+            .await,
+        );
+        assert_eq!(updated["gate"], json!({"command":"test","timeout_ms":1234}));
+        assert!(matches!(
+            port.act(
+                "lead",
+                &json!({"action":"set_default_gate","gate":"different"}),
+                &request_id("typed-default")
+            )
+            .await,
+            WorkActionOutcome::Refused(_)
+        ));
+        assert!(matches!(
+            port.act(
+                "lead",
+                &json!({"action":"create","title":"bad","gate":"  "}),
+                &request_id("typed-invalid")
+            )
+            .await,
+            WorkActionOutcome::Refused(_)
+        ));
+    }
+
+    #[tokio::test]
     async fn authenticated_task_caller_cannot_submit_another_owners_task() {
         let (state, store, directory) = state().await;
         let cwd = directory.path().to_string_lossy().into_owned();
@@ -1661,10 +1731,10 @@ mod managed_work_port_tests {
                     studio_runtime_store::WorkItemsRepository::work_record(tx, &creator_task)?
                         .expect("created task exists");
                 record.set("createdBy", json!("worker"))?;
-                studio_runtime_store::WorkItemsRepository::update_work(
+                studio_runtime_store::WorkItemsRepository::update_checked_work(
                     tx,
                     &creator_task,
-                    record.value(),
+                    &record,
                 )
             })
             .await

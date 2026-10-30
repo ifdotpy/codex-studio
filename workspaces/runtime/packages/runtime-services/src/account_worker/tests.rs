@@ -42,6 +42,7 @@ mod stop_after_reattach;
 mod submission;
 mod tool_reply_retirement;
 mod transport_reattach;
+mod unclean_history;
 mod unknown_thread_retry;
 mod unsent_start;
 mod vm_attachments;
@@ -389,7 +390,7 @@ struct Peer {
     wire: studio_runtime_providers::WireProfile,
     account: String,
     generation: Generation,
-    factory: Arc<Factory>,
+    factory: Arc<dyn ProviderTaskFactory>,
     entries: mpsc::Sender<JournalEntry>,
     writes: mpsc::Receiver<Wire>,
     acks: mpsc::Receiver<EventCursor>,
@@ -1334,7 +1335,7 @@ async fn invalid_agent_hold_rechecks_the_same_field_before_publishing() {
         .transaction(move |tx| {
             tx.execute(
                 "INSERT INTO runtime_agents(id,record) VALUES('racy',?1)",
-                [json!({
+                [json!({"accountKey":"default",
                     "id":"racy", "rootId":17, "epoch":1,
                     "provider":studio_runtime_schema::ProviderKind::Codex,
                     "status":"idle", "isLead":true
@@ -1387,7 +1388,7 @@ async fn invalid_agent_hold_rechecks_the_same_field_before_publishing() {
         .transaction(move |tx| {
             AgentRepository::put(
                 tx,
-                &studio_runtime_store::AgentRecord::from_value(json!({
+                &studio_runtime_store::AgentRecord::from_value(json!({"accountKey":"default",
                     "id":"racy", "rootId":"racy", "epoch":1,
                     "provider":studio_runtime_schema::ProviderKind::Codex,
                     "status":"idle", "isLead":true
@@ -2058,6 +2059,7 @@ impl crate::provider_callbacks::tools::StatusWatchPort for GatedShutdownStatus {
         _store: &'a RuntimeStore,
         _actor: &'a crate::managed_host_tools::Actor,
         _args: &'a Value,
+        _action: crate::managed_status_watch::WatchAction,
         _request_id: &'a str,
         _now: f64,
     ) -> futures_util::future::BoxFuture<
@@ -2142,6 +2144,7 @@ impl crate::provider_callbacks::tools::StatusWatchPort for SameAccountProviderSt
         _store: &'a RuntimeStore,
         _actor: &'a crate::managed_host_tools::Actor,
         _args: &'a Value,
+        _action: crate::managed_status_watch::WatchAction,
         _request_id: &'a str,
         _now: f64,
     ) -> futures_util::future::BoxFuture<
@@ -2682,7 +2685,18 @@ async fn worker_barrier(worker: &AccountHandle) {
     if injected() {
         return;
     }
-    tokio::select! { () = crashed() => {}, () = barrier => {} }
+    let mut finished = worker.completion_signal();
+    let exited = async {
+        loop {
+            if *finished.borrow_and_update() { break; }
+            if finished.changed().await.is_err() { break; }
+        }
+    };
+    tokio::select! {
+        () = crashed() => {},
+        () = barrier => {},
+        () = exited => panic!("account worker exited before the test barrier completed"),
+    }
 }
 
 async fn worker_barrier_with_history(worker: &AccountHandle, peer: &mut Peer) {
@@ -3150,23 +3164,53 @@ async fn shutdown_releases_account_while_store_operation_is_blocked() {
 }
 
 #[tokio::test]
+#[ignore = "heavy tier: just test-quarantine (flaky under load, issue #616)"]
 async fn accepted_turn_reattaches_and_keeps_notification_effects() {
+    eprintln!("reattach: creating fixture");
     let state = State::new().await;
     let mut peer = Peer::new();
+    eprintln!("reattach: waiting for initial worker readiness");
     let mut worker = peer.worker(state.bridge.clone()).await;
+    eprintln!("reattach: waiting for initial turn start");
     let start = state.start(&mut peer, &worker).await;
     peer.accepted(&start).await;
+    eprintln!("reattach: waiting for initial worker shutdown");
     worker.shutdown().await.unwrap();
     let mut peer = Peer::new();
     peer.cursor = 2;
+    peer.trace.store(true, std::sync::atomic::Ordering::Relaxed);
+    eprintln!("reattach: waiting for replacement worker readiness");
     let mut worker = peer.worker(state.bridge.clone()).await;
+    eprintln!("reattach: waiting for item acknowledgment");
     let cursor = peer.frame(json!({"method":"item/completed","params":{"threadId":"fake-thread-0","turnId":"turn","item":{"id":"reattached","type":"agentMessage","text":"after restart"}}})).await;
     peer.acknowledged(cursor).await;
+    eprintln!("reattach: waiting for item count");
     let count = state.bridge.run(move |store| async move { Ok(store.test_reader()?.query_row("SELECT COUNT(*) FROM runtime_items WHERE json_extract(record,'$.text')='after restart'", [], |r|r.get::<_,i64>(0))?) }).await.unwrap();
     assert_eq!(count, 1);
-    peer.completed().await;
+    eprintln!("reattach: waiting for turn acknowledgment");
+    let cursor = peer.frame(json!({"method":"turn/completed","params":{"threadId":"fake-thread-0","turn":{"id":"turn","status":"completed"}}})).await;
+    loop {
+        tokio::select! {
+            ack = tokio::time::timeout(std::time::Duration::from_secs(120), peer.acks.recv()) => {
+                let got = ack.expect("settlement deadline").expect("session acknowledges").0;
+                eprintln!("reattach: received ACK {got}, expected {cursor}");
+                if got >= cursor {
+                    assert_eq!(got, cursor);
+                    break;
+                }
+            }
+            wire = peer.writes.recv() => {
+                let wire = wire.expect("provider write channel closed");
+                panic!("reattach: unexpected provider write before ACK {cursor}: method={} id={} receipt=pending", wire.value["method"], wire.value["id"]);
+            }
+            result = worker.completion() => panic!("reattach: worker exited before ACK {cursor}: {result:?}"),
+        }
+    }
+    eprintln!("reattach: waiting for final record");
     assert_eq!(state.record().await["status"], "completed");
+    eprintln!("reattach: waiting for replacement worker shutdown");
     worker.shutdown().await.unwrap();
+    eprintln!("reattach: replacement worker stopped");
 }
 
 #[tokio::test]

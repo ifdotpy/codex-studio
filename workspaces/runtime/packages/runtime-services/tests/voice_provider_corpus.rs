@@ -408,6 +408,7 @@ async fn seeded_store() -> (tempfile::TempDir, RuntimeStore) {
         thread_id: None,
         turn_id: None,
         auto_wake: None,
+        usage_resume_enabled: None,
         execution_mode: None,
         turn_epoch: None,
         title_job: None,

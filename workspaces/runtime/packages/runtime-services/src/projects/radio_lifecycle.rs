@@ -1,5 +1,6 @@
 //! Scheduler, answer, notification and account-worker hooks for local radio.
 use super::*;
+use studio_runtime_schema::approvals::{Approval, Request};
 
 /// One scheduler tick. Preparation happens outside the transaction; the owner
 /// publishes changes and hands off returned interrupts only after commit.
@@ -316,6 +317,16 @@ fn reconcile(
     Ok(())
 }
 
+/// The turn of an agent question, or None for any other approval or a question without a turn.
+fn agent_question_turn(question: &Approval) -> Option<&str> {
+    match (&question.request, &question.turn) {
+        (Request::AgentQuestion { .. }, Some(turn)) if !turn.as_str().is_empty() => {
+            Some(turn.as_str())
+        }
+        _ => None,
+    }
+}
+
 /// P04 calls before native send, and with accepted=true only after acceptance.
 /// It marks the question answered in this same transaction. No provider call here.
 #[derive(Debug, PartialEq, Eq)]
@@ -328,22 +339,20 @@ pub enum QuestionAnswerRoute {
 pub fn route_question_answer(
     db: &Transaction<'_>,
     prepared: &PreparedHost,
-    question: &Value,
+    question: &Approval,
     text: &str,
     receipt: Option<&NativeAcceptanceReceipt>,
     now: f64,
 ) -> Result<QuestionAnswerRoute, ProjectsError> {
-    if question["method"] != "agent/asyncQuestion"
-        || question["turnId"].as_str().is_none_or(str::is_empty)
-    {
+    let Some(question_turn) = agent_question_turn(question) else {
         return Ok(QuestionAnswerRoute::OrdinaryFollowup);
-    }
+    };
     prepared.recheck(db)?;
     for mut room in rooms(db)? {
         let Some(active) = room.radio.active.as_ref() else {
             continue;
         };
-        if active.agent_id != question["agent"] {
+        if active.agent_id != question.agent.as_str() {
             continue;
         }
         let Some(agent) = records::get(db, "runtime_agents", &active.agent_id)? else {
@@ -351,8 +360,8 @@ pub fn route_question_answer(
         };
         let event = event(db, active)?;
         let turn = turn(&agent, active, event.as_ref());
-        if turn.as_deref() != question["turnId"].as_str()
-            || question["epoch"] != active.epoch
+        if turn.as_deref() != Some(question_turn)
+            || question.epoch != Some(active.epoch)
             || agent["epoch"] != active.epoch
             || agent["threadId"] != json!(active.thread_id)
         {
@@ -366,14 +375,11 @@ pub fn route_question_answer(
                 "The shared reply is stopped or blocked",
             ));
         }
-        let key = format!(
-            "{}:answer",
-            question["id"].as_str().ok_or_else(|| invalid(room.id()))?
-        );
+        let key = format!("{}:answer", question.id.as_str());
         if let Some(receipt) = receipt {
             if receipt.agent_id != active.agent_id
                 || receipt.epoch != active.epoch
-                || Some(receipt.turn_id.as_str()) != question["turnId"].as_str()
+                || receipt.turn_id != question_turn
                 || receipt.event_id != active.event_id
             {
                 return Ok(QuestionAnswerRoute::OrdinaryFollowup);
@@ -443,28 +449,26 @@ pub fn route_question_answer(
 pub fn record_question_answer_followup(
     db: &Transaction<'_>,
     prepared: &PreparedHost,
-    question: &Value,
+    question: &Approval,
     text: &str,
     now: f64,
 ) -> Result<(), ProjectsError> {
-    if question["method"] != "agent/asyncQuestion"
-        || question["turnId"].as_str().is_none_or(str::is_empty)
-    {
+    let Some(question_turn) = agent_question_turn(question) else {
         return Ok(());
-    }
+    };
     prepared.recheck(db)?;
     for mut room in rooms(db)? {
         let Some(active) = room.radio.active.as_ref() else {
             continue;
         };
-        if active.agent_id != question["agent"] || question["epoch"] != json!(active.epoch) {
+        if active.agent_id != question.agent.as_str() || question.epoch != Some(active.epoch) {
             continue;
         }
         let Some(agent) = records::get(db, "runtime_agents", &active.agent_id)? else {
             continue;
         };
         let active_event = event(db, active)?;
-        if turn(&agent, active, active_event.as_ref()).as_deref() != question["turnId"].as_str() {
+        if turn(&agent, active, active_event.as_ref()).as_deref() != Some(question_turn) {
             continue;
         }
         if agent["epoch"] != active.epoch || agent["threadId"] != json!(active.thread_id) {
@@ -478,10 +482,7 @@ pub fn record_question_answer_followup(
                 "The shared reply is stopped or blocked",
             ));
         }
-        let key = format!(
-            "{}:answer",
-            question["id"].as_str().ok_or_else(|| invalid(room.id()))?
-        );
+        let key = format!("{}:answer", question.id.as_str());
         let old = db
             .query_row(
                 "SELECT text FROM runtime_chat_messages WHERE id=?1",

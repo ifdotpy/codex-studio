@@ -12,6 +12,65 @@ const SOURCE_LIMIT: usize = 2 * 1024 * 1024;
 const WIDTH: usize = 960;
 const HEIGHT: usize = 600;
 const MAX_PAGES: usize = 80;
+const DIAGRAM_REPLY_LIMIT: usize = 8 * 1024 * 1024;
+// Rendered diagram height in CSS pixels, shared with the embedded producer.
+const DIAGRAM_MIN_HEIGHT: f64 = 120.0;
+const DIAGRAM_MAX_HEIGHT: f64 = 560.0;
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct DiagramReply {
+    #[serde(deserialize_with = "diagram_svg")]
+    svg: String,
+    #[serde(deserialize_with = "diagram_height")]
+    height: serde_json::Number,
+    #[serde(flatten)]
+    extra: serde_json::Map<String, Value>,
+}
+
+fn diagram_svg<'de, D: serde::Deserializer<'de>>(decoder: D) -> Result<String, D::Error> {
+    let svg = <String as serde::Deserialize>::deserialize(decoder)?;
+    if !svg.starts_with("<svg") {
+        return Err(serde::de::Error::custom(
+            "The diagram renderer returned invalid data.",
+        ));
+    }
+    Ok(svg)
+}
+
+fn diagram_height<'de, D: serde::Deserializer<'de>>(
+    decoder: D,
+) -> Result<serde_json::Number, D::Error> {
+    let height = <serde_json::Number as serde::Deserialize>::deserialize(decoder)?;
+    if !height
+        .as_f64()
+        .is_some_and(|value| (DIAGRAM_MIN_HEIGHT..=DIAGRAM_MAX_HEIGHT).contains(&value))
+    {
+        return Err(serde::de::Error::custom(
+            "The diagram renderer returned invalid data.",
+        ));
+    }
+    Ok(height)
+}
+
+fn diagram_reply(text: &str) -> Result<DiagramReply, String> {
+    if text.len() > DIAGRAM_REPLY_LIMIT {
+        return Err("The diagram exceeds 8 MiB.".into());
+    }
+    serde_json::from_str(text).map_err(|error| error.to_string())
+}
+
+fn diagram_script() -> String {
+    format!(
+        r#"
+        mermaid.initialize({{startOnLoad:false,securityLevel:'strict',suppressErrorRendering:true,
+            theme:'neutral',maxTextSize:50000,maxEdges:500}});
+        const result=await mermaid.render('studio-diagram',source);
+        const svg=new DOMParser().parseFromString(result.svg,'image/svg+xml').documentElement;
+        const height=Number(svg.getAttribute('viewBox')?.split(/\s+/)[3]);
+        return JSON.stringify({{svg:result.svg,height:Number.isFinite(height)?Math.max({DIAGRAM_MIN_HEIGHT},Math.min({DIAGRAM_MAX_HEIGHT},height+40)):310}});
+    "#
+    )
+}
 
 // This policy is parsed before all document-controlled bytes. A later policy
 // cannot relax it. Native navigation policy also denies all subsequent loads.
@@ -22,6 +81,22 @@ fn document(source: &str) -> Result<String, String> {
     }
     Ok(format!("{PREFIX}{source}</body></html>"))
 }
+#[derive(Default, serde::Deserialize)]
+struct DocumentSource<'a> {
+    #[serde(borrow)]
+    source: Option<&'a str>,
+}
+#[derive(Default, serde::Deserialize)]
+struct DocumentPage {
+    page: Option<u64>,
+}
+fn project<'a, T: serde::Deserialize<'a> + Default>(value: &'a Value) -> T {
+    if value.is_object() {
+        T::deserialize(value).unwrap_or_default()
+    } else {
+        T::default()
+    }
+}
 pub async fn dispatch(request: Request) -> Response {
     let result: Result<Value, String> = async {
         if !matches!(
@@ -30,9 +105,8 @@ pub async fn dispatch(request: Request) -> Response {
         ) {
             return Err("Unknown document command.".into());
         }
-        let source = request.params["source"]
-            .as_str()
-            .ok_or("HTML source is required.")?;
+        let input: DocumentSource<'_> = project(&request.params);
+        let source = input.source.ok_or("HTML source is required.")?;
         if request.method == "document.diagram" {
             if source.encode_utf16().count() > 50000 {
                 return Err("The diagram exceeds 50,000 characters.".into());
@@ -46,8 +120,9 @@ pub async fn dispatch(request: Request) -> Response {
                 return Err("Diagram preview requires macOS.".into());
             }
         }
-        let page = request.params["page"]
-            .as_u64()
+        let input: DocumentPage = project(&request.params);
+        let page = input
+            .page
             .filter(|p| *p < MAX_PAGES as u64)
             .ok_or("Invalid document page.")? as usize;
         let html = document(source)?;
@@ -315,14 +390,7 @@ mod mac {
                 let Some(web) = view(id) else {
                     return;
                 };
-                let script = r#"
-                mermaid.initialize({startOnLoad:false,securityLevel:'strict',suppressErrorRendering:true,
-                    theme:'neutral',maxTextSize:50000,maxEdges:500});
-                const result=await mermaid.render('studio-diagram',source);
-                const svg=new DOMParser().parseFromString(result.svg,'image/svg+xml').documentElement;
-                const height=Number(svg.getAttribute('viewBox')?.split(/\s+/)[3]);
-                return JSON.stringify({svg:result.svg,height:Number.isFinite(height)?Math.max(120,Math.min(560,height+40)):310});
-            "#;
+                let script = diagram_script();
                 let source = NSString::from_str(&source);
                 let key = NSString::from_str("source");
                 let arguments =
@@ -337,28 +405,15 @@ mod mac {
                                 .and_then(|v| v.downcast_ref::<NSString>())
                                 .ok_or("The diagram renderer returned no result.")?
                                 .to_string();
-                            if text.len() > 8 * 1024 * 1024 {
-                                return Err("The diagram exceeds 8 MiB.".into());
-                            }
-                            let result: Value =
-                                serde_json::from_str(&text).map_err(|e| e.to_string())?;
-                            if !result["svg"]
-                                .as_str()
-                                .is_some_and(|s| s.starts_with("<svg"))
-                                || !result["height"]
-                                    .as_f64()
-                                    .is_some_and(|h| (120.0..=560.0).contains(&h))
-                            {
-                                return Err("The diagram renderer returned invalid data.".into());
-                            }
-                            Ok(result)
+                            serde_json::to_value(diagram_reply(&text)?)
+                                .map_err(|error| error.to_string())
                         })();
                         finish(id, result);
                     });
                 // This callback runs on the main thread owning the WebKit view.
                 unsafe {
                     web.callAsyncJavaScript_arguments_inFrame_inContentWorld_completionHandler(
-                        &NSString::from_str(script),
+                        &NSString::from_str(&script),
                         Some(&arguments),
                         None,
                         &WKContentWorld::defaultClientWorld(
@@ -494,9 +549,53 @@ mod mac {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn diagram_reply_checks_wire_shape_and_preserves_numeric_encoding() {
+        for input in [
+            r#"{"svg":"<svg></svg>","height":120,"extension":{"value":null}}"#,
+            r#"{"svg":"<svg/>","height":560.0}"#,
+        ] {
+            let reply = diagram_reply(input).expect("valid renderer reply");
+            let original: Value = serde_json::from_str(input).unwrap();
+            assert_eq!(serde_json::to_value(reply).unwrap(), original);
+        }
+        for input in [
+            r#"["<svg/>",120]"#,
+            "null",
+            r#"{"svg":null,"height":120}"#,
+            r#"{"svg":"<svg/>","height":"120"}"#,
+            r#"{"svg":"<svg/>","height":119.9}"#,
+            r#"{"svg":"<svg/>","height":560.1}"#,
+            r#"{"svg":"<html/>","height":310}"#,
+            r#"{"svg":"<svg/>"}"#,
+            r#"{"svg":"<svg/>","height":120,"height":560}"#,
+        ] {
+            assert!(diagram_reply(input).is_err(), "{input}");
+        }
+        assert!(
+            diagram_reply(&" ".repeat(DIAGRAM_REPLY_LIMIT + 1))
+                .unwrap_err()
+                .contains("exceeds 8 MiB")
+        );
+        let script = diagram_script();
+        assert!(script.contains(&format!(
+            "Math.max({DIAGRAM_MIN_HEIGHT},Math.min({DIAGRAM_MAX_HEIGHT},"
+        )));
+    }
+
     #[tokio::test]
     async fn invalid_requests_fail_before_starting_the_native_renderer() {
         for (method, params, expected) in [
+            (
+                "document.diagram",
+                serde_json::json!({"source":null,"page":0}),
+                "HTML source is required",
+            ),
+            (
+                "document.render",
+                serde_json::json!({"source":"x".repeat(SOURCE_LIMIT+1),"page":0.0}),
+                "Invalid document page",
+            ),
             (
                 "document.unknown",
                 serde_json::json!({"source":"ok","page":0}),

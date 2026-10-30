@@ -75,6 +75,58 @@ impl From<CallbackResponse> for Reply {
 type Owner = CallbackTask<CallbackOwner>;
 type Response = OutboxRow<CallbackResponse>;
 
+pub(crate) fn held_supervisor_operations(
+    tx: &Connection,
+    account: &str,
+    generation: u64,
+) -> Result<Vec<String>, CallbackError> {
+    let mut operations = Vec::new();
+    for status in [OutboxStatus::Submitted, OutboxStatus::Unknown] {
+        for row in Outbox::for_account::<CallbackResponse>(
+            tx,
+            account,
+            OutboxKind::ProviderCallback,
+            status,
+            u32::MAX,
+        )? {
+            if row.stream_id.as_deref() == Some(account)
+                && row.generation == i64::try_from(generation).ok()
+            {
+                operations.push(row.payload.identity.operation_id());
+            }
+        }
+    }
+    Ok(operations)
+}
+
+pub(crate) fn settle_supervisor_written(
+    tx: &Transaction<'_>,
+    account: &str,
+    generation: u64,
+    operation: &str,
+) -> Result<Option<(String, String, String)>, CallbackError> {
+    let Some((key, _)) = operation.rsplit_once(':') else {
+        return Ok(None);
+    };
+    let Some(row): Option<Response> = Outbox::get(tx, key)? else {
+        return Ok(None);
+    };
+    if row.account.as_deref() != Some(account)
+        || row.stream_id.as_deref() != Some(account)
+        || row.generation != i64::try_from(generation).ok()
+        || row.payload.identity.operation_id() != operation
+        || !matches!(row.status, OutboxStatus::Submitted | OutboxStatus::Unknown)
+    {
+        return Ok(None);
+    }
+    let fingerprint = studio_runtime_store::sha256_hex(
+        &encode_line(&Reply::from(row.payload.clone()).frame())
+            .map_err(|_| CallbackError::Invalid("Invalid callback response frame"))?,
+    );
+    delivery_in(tx, &row.payload.identity, DeliveryOutcome::Written)?;
+    Ok(Some((row.owner_id, row.id, fingerprint)))
+}
+
 pub(crate) fn hold_unclean_responses(tx: &Transaction<'_>) -> Result<(), CallbackError> {
     let mut query = tx.prepare("SELECT id FROM runtime_outbox WHERE kind=?1 AND status=?2")?;
     let ids = query
@@ -935,6 +987,66 @@ mod tests {
             params: json!({}),
         };
         (ReplyIdentity::new(&context, &input.id), input)
+    }
+    #[test]
+    fn held_callback_queries_exact_attempt_then_settles_written() {
+        let mut db = database();
+        let tx = db.transaction().expect("transaction");
+        let (identity, input) = input();
+        let reply = Reply::new(
+            identity.clone(),
+            ResponseBody::Result(studio_runtime_store::projection_value(&true)),
+        )
+        .expect("reply");
+        save_reply(&tx, &input, &reply).expect("save");
+        hold_unclean_responses(&tx).expect("unclean hold");
+        assert_eq!(
+            held_supervisor_operations(&tx, "account", 4).expect("operations"),
+            vec![reply.identity.operation_id()]
+        );
+        assert!(
+            held_supervisor_operations(&tx, "account", 5)
+                .expect("other generation")
+                .is_empty()
+        );
+        settle_supervisor_written(&tx, "account", 4, &reply.identity.operation_id())
+            .expect("written proof");
+        assert_eq!(
+            owner(&tx, &identity).expect("owner").expect("saved").status,
+            ToolRequestStatus::Completed
+        );
+    }
+    #[test]
+    fn supervisor_evidence_for_old_callback_attempt_cannot_settle_retry() {
+        let mut db = database();
+        let tx = db.transaction().expect("transaction");
+        let (identity, input) = input();
+        let reply = Reply::new(
+            identity.clone(),
+            ResponseBody::Result(studio_runtime_store::projection_value(&true)),
+        )
+        .expect("reply");
+        save_reply(&tx, &input, &reply).expect("save");
+        delivery_in(&tx, &reply.identity, DeliveryOutcome::Submitted).expect("submit");
+        delivery_in(&tx, &reply.identity, DeliveryOutcome::NotSent).expect("proven not sent");
+        let retry = response(&tx, &identity)
+            .expect("read")
+            .expect("retry")
+            .payload
+            .identity;
+        assert_ne!(reply.identity.operation_id(), retry.operation_id());
+        delivery_in(&tx, &retry, DeliveryOutcome::Submitted).expect("retry submit");
+        delivery_in(&tx, &retry, DeliveryOutcome::Unknown).expect("retry unknown");
+        settle_supervisor_written(&tx, "account", 4, &reply.identity.operation_id())
+            .expect("stale proof");
+        assert_eq!(
+            held_supervisor_operations(&tx, "account", 4).expect("retry held"),
+            vec![retry.operation_id()]
+        );
+        assert_eq!(
+            owner(&tx, &identity).expect("owner").expect("saved").status,
+            ToolRequestStatus::Unknown
+        );
     }
     #[test]
     fn callback_response_retirement_keeps_origin_and_expired_body_held() {

@@ -140,8 +140,8 @@ pub async fn listing(store: &RuntimeStore) -> Result<Value, TerminalError> {
         .await?;
     let mut items = Vec::new();
     for record in records {
-        if record.get("status").and_then(Value::as_str) != Some("closed") {
-            let mut value = record.value().clone();
+        if record.status() != Some("closed") {
+            let mut value = record.value();
             hide_process_identity(&mut value);
             items.push(value);
         }
@@ -297,12 +297,9 @@ fn add_status(result: &mut Value, record: &TerminalRecord) {
     if let Some(fields) = result.as_object_mut() {
         fields.insert(
             "status".into(),
-            record.get("status").cloned().unwrap_or(Value::Null),
+            record.status().map_or(Value::Null, |value| json!(value)),
         );
-        fields.insert(
-            "exitCode".into(),
-            record.get("exitCode").cloned().unwrap_or(Value::Null),
-        );
+        fields.insert("exitCode".into(), record.exit_code_value());
         fields.insert(
             "error".into(),
             record.get("error").cloned().unwrap_or(Value::Null),
@@ -476,8 +473,10 @@ impl<S: TerminalSession> TerminalDriver<S> {
             }
             Err(TerminalError::Session(error)) => {
                 let mut failed = typed;
-                failed.set("status", Value::String("exited".into()));
-                failed.set("error", json!(error.to_string()));
+                failed.set_status("exited");
+                failed
+                    .set("error", json!(error.to_string()))
+                    .map_err(StoreError::from)?;
                 let failed_id = id.clone();
                 let failed_receipt_id = request_id.to_owned();
                 let failed_receipt = failed.value().to_string();
@@ -529,13 +528,17 @@ impl<S: TerminalSession> TerminalDriver<S> {
                         let mut current = TerminalsRepository::get(transaction, &terminal_id)?
                             .ok_or_else(|| StoreError::SchemaMismatch("unknown terminal".into()))?
                             .record;
-                        current.set("title", json!(title));
-                        current.set("updated", json!(updated_time));
+                        current
+                            .set("title", json!(title))
+                            .map_err(StoreError::from)?;
+                        current
+                            .set("updated", json!(updated_time))
+                            .map_err(StoreError::from)?;
                         TerminalsRepository::update_record(transaction, &terminal_id, &current)?;
                         Ok(current)
                     })
                     .await?;
-                let mut value = updated.value().clone();
+                let mut value = updated.value();
                 hide_process_identity(&mut value);
                 Ok(value)
             }
@@ -557,7 +560,7 @@ impl<S: TerminalSession> TerminalDriver<S> {
                             .ok_or_else(|| StoreError::SchemaMismatch("unknown terminal".into()))?;
                         let record = current.record;
                         TerminalsRepository::update_record(transaction, &terminal_id, &record)?;
-                        let mut value = record.value().clone();
+                        let mut value = record.value();
                         hide_process_identity(&mut value);
                         Ok(value)
                     })
@@ -582,17 +585,21 @@ impl<S: TerminalSession> TerminalDriver<S> {
                                     )
                                 })?
                                 .to_owned();
-                            let mut response = record.value().clone();
+                            let mut response = record.value();
                             hide_process_identity(&mut response);
                             return Ok((root, false, response));
                         }
                         let root =
                             studio_runtime_schema::persistence::RequestIdentity::issue_root();
-                        record.set("_closeRequestId", json!(root));
-                        record.set("status", json!("closed"));
-                        record.set("updated", json!(closed_at));
+                        record
+                            .set("_closeRequestId", json!(root))
+                            .map_err(StoreError::from)?;
+                        record.set_status("closed");
+                        record
+                            .set("updated", json!(closed_at))
+                            .map_err(StoreError::from)?;
                         TerminalsRepository::update_record(tx, &terminal_id, &record)?;
-                        let mut response = record.value().clone();
+                        let mut response = record.value();
                         hide_process_identity(&mut response);
                         let signature =
                             receipt_signature(&json!({"action":"close","id":terminal_id}));
@@ -696,11 +703,13 @@ impl<S: TerminalSession> TerminalDriver<S> {
                             &text,
                             OUTPUT_LIMIT,
                         )?;
-                        if record.get("status").and_then(Value::as_str) != Some("closed") {
-                            record.set("status", json!("exited"));
+                        if record.status() != Some("closed") {
+                            record.set_status("exited");
                         }
-                        record.set("exitCode", code.map_or(Value::Null, |value| json!(value)));
-                        record.set("updated", json!(updated_at));
+                        record.set_exit_code(code);
+                        record
+                            .set("updated", json!(updated_at))
+                            .map_err(StoreError::from)?;
                         record.remove("error");
                         record.remove("_processIdentity");
                         TerminalsRepository::put(
@@ -738,7 +747,9 @@ impl<S: TerminalSession> TerminalDriver<S> {
                         let mut record = TerminalsRepository::get(transaction, &transaction_id)?
                             .ok_or_else(|| StoreError::SchemaMismatch("unknown terminal".into()))?
                             .record;
-                        record.set("error", json!(message));
+                        record
+                            .set("error", json!(message))
+                            .map_err(StoreError::from)?;
                         TerminalsRepository::update_record(transaction, &transaction_id, &record)?;
                         TerminalsRepository::save_event_cursor(
                             transaction,
@@ -827,7 +838,7 @@ impl<S: TerminalSession> TerminalDriver<S> {
                         InputReservation::Conflict
                     });
                 }
-                if current.record.get("status").and_then(Value::as_str) != Some("running") {
+                if current.record.status() != Some("running") {
                     return Ok(InputReservation::NotRunning);
                 }
                 TerminalsRepository::reserve_action(
@@ -916,23 +927,23 @@ impl<S: TerminalSession> TerminalDriver<S> {
         let updated_at = self.now();
         self.store.transaction(move |transaction| {
             for mut record in rows {
-                let was_running = record.get("status").and_then(Value::as_str) == Some("running");
+                let was_running = record.status() == Some("running");
                 let had_identity = record.get("_processIdentity").is_some();
                 if had_identity && record.get("_processIdentity").is_some_and(Value::is_null) {
                     record.set(
                         "error",
                         json!("Terminal cleanup is unresolved because this platform cannot verify the saved process identity."),
-                    );
+                    ).map_err(StoreError::from)?;
                     TerminalsRepository::update_record(transaction, record.id().as_str(), &record)?;
                     continue;
                 }
                 if was_running {
-                    record.set("status", json!("exited"));
+                    record.set_status("exited");
                     record.set(
                         "error",
                         json!("The server restarted. This shell cannot be resumed."),
-                    );
-                    record.set("updated", json!(updated_at));
+                    ).map_err(StoreError::from)?;
+                    record.set("updated", json!(updated_at)).map_err(StoreError::from)?;
                 }
                 if was_running || had_identity {
                     record.remove("_processIdentity");
@@ -974,8 +985,10 @@ impl<S: TerminalSession> TerminalDriver<S> {
                     .await?;
                 let mut record = row.record;
                 if let Err(error) = outcome.result {
-                    record.set("status", json!("exited"));
-                    record.set("error", json!(error.to_string()));
+                    record.set_status("exited");
+                    record
+                        .set("error", json!(error.to_string()))
+                        .map_err(StoreError::from)?;
                     let terminal_id = id.to_owned();
                     let receipt_id = request_id.to_owned();
                     let receipt = record.value().to_string();
@@ -1009,7 +1022,7 @@ impl<S: TerminalSession> TerminalDriver<S> {
                                     "terminal close identity changed".into(),
                                 ));
                             }
-                            let mut response = record.record.value().clone();
+                            let mut response = record.record.value();
                             hide_process_identity(&mut response);
                             TerminalsRepository::settle_action(
                                 tx,
@@ -1055,12 +1068,14 @@ impl<S: TerminalSession> TerminalDriver<S> {
                 let mut record = TerminalsRepository::get(transaction, &terminal_id)?
                     .ok_or_else(|| StoreError::SchemaMismatch("unknown terminal".into()))?
                     .record;
-                if record.get("status").and_then(Value::as_str) != Some("running") {
+                if record.status() != Some("running") {
                     return Err(StoreError::SchemaMismatch(
                         "terminal stopped before process identity persistence".into(),
                     ));
                 }
-                record.set("_processIdentity", identity.unwrap_or(Value::Null));
+                record
+                    .set("_processIdentity", identity.unwrap_or(Value::Null))
+                    .map_err(StoreError::from)?;
                 TerminalsRepository::update_record(transaction, &terminal_id, &record)
             })
             .await?;
@@ -1068,7 +1083,7 @@ impl<S: TerminalSession> TerminalDriver<S> {
     }
 
     fn require_running(&self, record: &TerminalRecord) -> Result<(), TerminalError> {
-        if record.get("status").and_then(Value::as_str) == Some("running") {
+        if record.status() == Some("running") {
             Ok(())
         } else {
             Err(TerminalError::NotRunning)
@@ -1170,11 +1185,9 @@ pub fn publish_terminal(
     id: &str,
 ) -> studio_runtime_store::StoreResult<()> {
     let row = TerminalsRepository::get(transaction, id)?;
-    let (value, deleted) = match row
-        .filter(|row| row.record.get("status").and_then(Value::as_str) != Some("closed"))
-    {
+    let (value, deleted) = match row.filter(|row| row.record.status() != Some("closed")) {
         Some(row) => {
-            let mut value = row.record.value().clone();
+            let mut value = row.record.value();
             hide_process_identity(&mut value);
             (value, false)
         }
@@ -1335,12 +1348,13 @@ mod tests {
         extra.insert("cwd".to_owned(), serde_json::json!(root));
         let agent = AgentRecord {
             in_flight: None,
-        account_key: "default".into(),
-        thread_id: None,
-        turn_id: None,
-        auto_wake: None,
-        execution_mode: None,
-        turn_epoch: None,
+            account_key: "default".into(),
+            thread_id: None,
+            turn_id: None,
+            auto_wake: None,
+            usage_resume_enabled: None,
+            execution_mode: None,
+            turn_epoch: None,
             title_job: None,
             start_outcome_hold: None,
             fired_events: Default::default(),
@@ -1547,7 +1561,10 @@ mod tests {
         )
         .expect("terminal row")
         .expect("terminal exists");
-        stored.record.set("error", serde_json::json!("old error"));
+        stored
+            .record
+            .set("error", serde_json::json!("old error"))
+            .expect("valid terminal extension");
         let seed_id = id.clone();
         state
             .store
@@ -1660,10 +1677,12 @@ mod tests {
                 let mut record = TerminalsRepository::get(transaction, &transaction_id)?
                     .expect("terminal exists")
                     .record;
-                record.set(
-                    "_processIdentity",
-                    serde_json::json!({"pid":2345,"session":2345,"start_time_ticks":98765}),
-                );
+                record
+                    .set(
+                        "_processIdentity",
+                        serde_json::json!({"pid":2345,"session":2345,"start_time_ticks":98765}),
+                    )
+                    .expect("valid terminal extension");
                 TerminalsRepository::update_record(transaction, &transaction_id, &record)
             })
             .await
@@ -1684,10 +1703,7 @@ mod tests {
         let row = TerminalsRepository::get(&store.test_reader().expect("read"), id)
             .expect("terminal row")
             .expect("terminal exists");
-        assert_eq!(
-            row.record.get("status").and_then(Value::as_str),
-            Some("exited")
-        );
+        assert_eq!(row.record.status(), Some("exited"));
         assert!(row.record.get("_processIdentity").is_none());
     }
 
@@ -1956,10 +1972,7 @@ mod tests {
         )
         .expect("row")
         .expect("terminal");
-        assert_eq!(
-            row.record.get("status").and_then(Value::as_str),
-            Some("running")
-        );
+        assert_eq!(row.record.status(), Some("running"));
         assert!(row.record.get("error").is_none());
         assert!(
             TerminalsRepository::action_result(
@@ -2184,7 +2197,9 @@ mod tests {
         .expect("row")
         .expect("terminal exists")
         .record;
-        seeded.set("_processIdentity", saved_identity.clone());
+        seeded
+            .set("_processIdentity", saved_identity.clone())
+            .expect("valid terminal extension");
         let seed_id = id.clone();
         state
             .store
@@ -2253,7 +2268,7 @@ mod tests {
         .expect("row")
         .expect("exists")
         .record;
-        assert_eq!(row.get("status").and_then(Value::as_str), Some("running"));
+        assert_eq!(row.status(), Some("running"));
         assert!(row.get("_processIdentity").is_some());
         assert_eq!(
             driver
@@ -2285,7 +2300,9 @@ mod tests {
                 let mut record = TerminalsRepository::get(transaction, &transaction_id)?
                     .expect("terminal")
                     .record;
-                record.set("_processIdentity", transaction_identity);
+                record
+                    .set("_processIdentity", transaction_identity)
+                    .expect("valid terminal extension");
                 TerminalsRepository::update_record(transaction, &transaction_id, &record)
             })
             .await
@@ -2308,10 +2325,7 @@ mod tests {
         )
         .expect("row")
         .expect("terminal");
-        assert_eq!(
-            row.record.get("status").and_then(Value::as_str),
-            Some("closed")
-        );
+        assert_eq!(row.record.status(), Some("closed"));
         assert_eq!(row.record.get("_processIdentity"), Some(&recovery_identity));
         let root = row
             .record
@@ -2361,7 +2375,9 @@ mod tests {
                 let mut record = TerminalsRepository::get(transaction, &transaction_id)?
                     .expect("terminal")
                     .record;
-                record.set("_processIdentity", transaction_identity);
+                record
+                    .set("_processIdentity", transaction_identity)
+                    .expect("valid terminal extension");
                 TerminalsRepository::update_record(transaction, &transaction_id, &record)
             })
             .await
@@ -2387,10 +2403,7 @@ mod tests {
         .expect("row")
         .expect("terminal");
         assert_eq!(row.record.get("_processIdentity"), Some(&identity));
-        assert_eq!(
-            row.record.get("status").and_then(Value::as_str),
-            Some("running")
-        );
+        assert_eq!(row.record.status(), Some("running"));
         assert_eq!(
             row.record.get("error").and_then(Value::as_str),
             Some("injected signal failure")
@@ -2478,10 +2491,7 @@ mod tests {
             let row = TerminalsRepository::get(&connection, &id)
                 .expect("row")
                 .expect("terminal");
-            assert_eq!(
-                row.record.get("status").and_then(Value::as_str),
-                Some("running")
-            );
+            assert_eq!(row.record.status(), Some("running"));
             assert_eq!(row.output, "prefix");
             assert_eq!(
                 TerminalsRepository::event_cursor(&connection, &id).expect("cursor"),
@@ -2549,7 +2559,8 @@ mod tests {
                     let mut row = TerminalsRepository::get(transaction, id)?
                         .expect("terminal")
                         .record;
-                    row.set("_processIdentity", transaction_identity.clone());
+                    row.set("_processIdentity", transaction_identity.clone())
+                        .expect("valid terminal extension");
                     TerminalsRepository::update_record(transaction, id, &row)?;
                 }
                 Ok(())
@@ -2586,10 +2597,7 @@ mod tests {
             let row = TerminalsRepository::get(&connection, id)
                 .expect("row")
                 .expect("terminal");
-            assert_eq!(
-                row.record.get("status").and_then(Value::as_str),
-                Some("running")
-            );
+            assert_eq!(row.record.status(), Some("running"));
             assert_eq!(row.record.get("_processIdentity"), Some(&identity));
         }
     }
@@ -2611,7 +2619,9 @@ mod tests {
                 let mut record = TerminalsRepository::get(transaction, &transaction_id)?
                     .expect("terminal")
                     .record;
-                record.set("_processIdentity", Value::Null);
+                record
+                    .set("_processIdentity", Value::Null)
+                    .expect("valid terminal extension");
                 TerminalsRepository::update_record(transaction, &transaction_id, &record)
             })
             .await
@@ -2632,10 +2642,7 @@ mod tests {
         )
         .expect("terminal row")
         .expect("row remains available for reconciliation");
-        assert_eq!(
-            row.record.get("status").and_then(Value::as_str),
-            Some("running")
-        );
+        assert_eq!(row.record.status(), Some("running"));
         assert_eq!(row.record.get("_processIdentity"), Some(&Value::Null));
         assert!(
             row.record
@@ -2683,7 +2690,8 @@ mod tests {
                     let mut row = TerminalsRepository::get(transaction, id)?
                         .expect("terminal")
                         .record;
-                    row.set("_processIdentity", transaction_identity.clone());
+                    row.set("_processIdentity", transaction_identity.clone())
+                        .expect("valid terminal extension");
                     TerminalsRepository::update_record(transaction, id, &row)?;
                 }
                 Ok(())
@@ -2715,10 +2723,7 @@ mod tests {
             let row = TerminalsRepository::get(&connection, id)
                 .expect("row")
                 .expect("terminal");
-            assert_eq!(
-                row.record.get("status").and_then(Value::as_str),
-                Some("running")
-            );
+            assert_eq!(row.record.status(), Some("running"));
             assert_eq!(row.record.get("_processIdentity"), Some(&identity));
         }
     }
@@ -2807,7 +2812,9 @@ mod tests {
             .expect("terminal row")
             .expect("terminal exists")
             .record;
-        record.set("_processIdentity", saved_identity.clone());
+        record
+            .set("_processIdentity", saved_identity.clone())
+            .expect("valid terminal extension");
         let seed_id = id.clone();
         store
             .transaction(move |tx| TerminalsRepository::update_record(tx, &seed_id, &record))
@@ -2822,7 +2829,7 @@ mod tests {
                 .expect("updated row")
                 .expect("terminal exists");
             assert_eq!(row.record.get("_processIdentity"), Some(&saved_identity));
-            let mut expected = row.record.value().clone();
+            let mut expected = row.record.value();
             expected
                 .as_object_mut()
                 .expect("record object")
@@ -3274,8 +3281,10 @@ mod tests {
             .expect("row")
             .expect("terminal");
         let mut record = row.record;
-        record.set("status", serde_json::json!("exited"));
-        record.set("title", serde_json::json!("concurrent rename"));
+        record.set_status("exited");
+        record
+            .set("title", serde_json::json!("concurrent rename"))
+            .expect("valid terminal extension");
         let transaction_id = id.clone();
         store
             .transaction(move |transaction| {

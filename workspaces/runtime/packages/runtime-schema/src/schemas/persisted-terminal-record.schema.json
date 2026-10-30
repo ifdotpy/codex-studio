@@ -1,50 +1,34 @@
 {
   "$defs": {
-    "JsonValue": {}
+    "StoredJsonInteger": {
+      "description": "A JSON Schema integer, preserving integral decimal spellings and large values.",
+      "type": "integer"
+    }
   },
-  "additionalProperties": {
-    "$ref": "#/$defs/JsonValue"
-  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
   "properties": {
     "agent": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Agent"
+      "type": ["string", "null"]
     },
     "exitCode": {
       "anyOf": [
         {
-          "type": "integer"
+          "$ref": "#/$defs/StoredJsonInteger"
         },
         {
           "type": "null"
         }
-      ],
-      "title": "Exitcode"
+      ]
     },
     "id": {
-      "title": "Id",
       "type": "string"
     },
     "status": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Status"
+      "type": ["string", "null"]
     }
   },
   "required": ["id"],
-  "title": "PersistedTerminalRecord",
+  "title": "TerminalRecord",
   "type": "object"
 }
