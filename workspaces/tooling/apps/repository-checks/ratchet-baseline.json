@@ -1652,10 +1652,6 @@
       "fingerprint": "4bf8ba4d2d21bb908196f15eaefd3d0645dd3c0c1402a54fda399ebc3668eae8:0"
     },
     {
-      "file": "workspaces/runtime/packages/runtime-services/src/continuation.rs",
-      "fingerprint": "4bf8ba4d2d21bb908196f15eaefd3d0645dd3c0c1402a54fda399ebc3668eae8:1"
-    },
-    {
       "file": "workspaces/runtime/packages/runtime-services/src/continuation_runtime.rs",
       "fingerprint": "608c4e3b92cb3dbb44fc8af98e2425dbac0695b0be5ed22672ebf5cb8b0ee143:0"
     },

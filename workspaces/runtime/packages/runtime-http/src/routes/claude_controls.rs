@@ -58,7 +58,7 @@ async fn repair_report(
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let (agent, _) = load_agent(store, id.to_owned()).await?;
     require_claude_account(&state, &agent).await?;
-    if agent.get("deletedAt").is_some_and(|v| !v.is_null()) {
+    if agent.extra.get("deletedAt").is_some_and(|v| !v.is_null()) {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
             "This conversation was deleted",
@@ -67,11 +67,11 @@ async fn repair_report(
     let Some(thread) = state_thread(&agent) else {
         return super::generated_json(json!({"status":"none","skippedRows":0,"invalidSequence":false,"scopeConfirmed":null,"nativeHistoryConfirmed":null})).map(Json);
     };
-    let account = agent
-        .pointer("/lazyAccountTransfer/sourceAccountKey")
+    let account = agent.extra
+        .get("lazyAccountTransfer")
+        .and_then(|transfer| transfer.get("sourceAccountKey"))
         .and_then(Value::as_str)
-        .or_else(|| agent.get("accountKey").and_then(Value::as_str))
-        .unwrap_or("default");
+        .unwrap_or(&agent.account_key);
     let session = state
         .account_session
         .as_ref()
@@ -83,7 +83,7 @@ async fn repair_report(
         session.call_scoped(
             ControlScope {
                 agent: id.to_owned(),
-                epoch: agent["epoch"].as_u64().unwrap_or(0),
+                epoch: u64::try_from(agent.epoch).unwrap_or(0),
                 request_id: None,
             },
             ControlInvocation::RepairReport {
@@ -146,31 +146,20 @@ async fn session(
         | SessionRequest::ClaudeSessionStopTaskRequest(_) => operation.clone(),
     };
     let snapshot = studio_runtime_services::claude_controls::ControlSnapshot::from_stored(
-        agent.clone(),
+        agent.value(),
         snapshot_operation.as_ref(),
     )
     .map_err(control_error)?;
     let account = if is_state {
-        agent
+        agent.extra
             .get("lazyAccountTransfer")
             .and_then(|lazy| lazy.get("sourceAccountKey"))
             .and_then(Value::as_str)
-            .unwrap_or_else(|| {
-                agent
-                    .get("accountKey")
-                    .and_then(Value::as_str)
-                    .unwrap_or("default")
-            })
+            .unwrap_or(&agent.account_key)
     } else {
-        agent
-            .get("accountKey")
-            .and_then(Value::as_str)
-            .unwrap_or("default")
+        &agent.account_key
     };
-    let no_thread = agent
-        .get("threadId")
-        .and_then(Value::as_str)
-        .is_none_or(str::is_empty);
+    let no_thread = agent.thread_id.as_deref().is_none_or(str::is_empty);
     let local_only = (is_state && state_thread(&agent).is_none())
         || (matches!(&body, SessionRequest::ClaudeSessionSettingsRequest(_)) && no_thread);
     if matches!(
@@ -266,24 +255,22 @@ async fn file_backups(
                     .ok_or_else(|| studio_runtime_store::StoreError::InvalidStoredRecord {
                         object: "agent",
                         id: "missing".into(),
-                    })?
-                    .value();
-                let settled = ClaudeControlRepository::settled_file_rewinds(tx, &agent)?;
+                    })?;
+                let settled = ClaudeControlRepository::settled_file_rewinds(tx, &agent.value())?;
                 Ok::<_, studio_runtime_store::StoreError>((agent, settled))
             })
             .await
             .map_err(|_| ApiError::internal())?;
         require_claude_account(&state, &agent).await?;
         let snapshot = studio_runtime_services::claude_controls::ControlSnapshot::from_records(
-            agent.clone(),
+            agent.value(),
             None,
         )
         .map_err(control_error)?;
-        let thread = agent["threadId"]
-            .as_str()
+        let thread = agent.thread_id.as_deref()
             .filter(|s| !s.is_empty())
             .ok_or_else(|| control_error(ControlError::Request))?;
-        let account = agent["accountKey"].as_str().unwrap_or("default");
+        let account = &agent.account_key;
         let session = state
             .account_session
             .as_ref()
@@ -314,12 +301,8 @@ async fn file_backups(
     .map_err(|_| ApiError::internal())?
 }
 
-async fn require_claude_account(state: &HttpState, agent: &Value) -> Result<(), ApiError> {
-    let account_key = agent
-        .get("accountKey")
-        .and_then(Value::as_str)
-        .unwrap_or("default")
-        .to_owned();
+async fn require_claude_account(state: &HttpState, agent: &studio_runtime_store::AgentRecord) -> Result<(), ApiError> {
+    let account_key = agent.account_key.clone();
     let driver = state.account_driver.clone();
     let policy = state.account_policy.clone();
     let accounts = studio_runtime_process::blocking_pool::spawn_blocking(
@@ -347,8 +330,8 @@ async fn require_claude_account(state: &HttpState, agent: &Value) -> Result<(), 
     Ok(())
 }
 
-fn state_thread(agent: &Value) -> Option<&str> {
-    let transfer = agent
+fn state_thread(agent: &studio_runtime_store::AgentRecord) -> Option<&str> {
+    let transfer = agent.extra
         .get("lazyAccountTransfer")
         .filter(|transfer| transfer.as_object().is_some_and(|value| !value.is_empty()));
     if let Some(transfer) = transfer {
@@ -357,10 +340,7 @@ fn state_thread(agent: &Value) -> Option<&str> {
             .and_then(Value::as_str)
             .filter(|thread| !thread.is_empty())
     } else {
-        agent
-            .get("threadId")
-            .and_then(Value::as_str)
-            .filter(|thread| !thread.is_empty())
+        agent.thread_id.as_deref().filter(|thread| !thread.is_empty())
     }
 }
 
@@ -387,7 +367,7 @@ async fn load_agent(
     id: String,
 ) -> Result<
     (
-        Value,
+        studio_runtime_store::AgentRecord,
         Option<studio_runtime_store::WorkspaceOperationRecord>,
     ),
     ApiError,
@@ -405,7 +385,7 @@ async fn load_agent(
                 .map(|id| WorkspaceOperationsRepository::operation(tx, id))
                 .transpose()?
                 .flatten();
-            Ok::<_, studio_runtime_store::StoreError>(Some((value, operation)))
+            Ok::<_, studio_runtime_store::StoreError>(Some((agent, operation)))
         })
         .await
         .map_err(|_| ApiError::internal())?;

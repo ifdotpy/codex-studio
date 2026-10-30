@@ -1519,17 +1519,16 @@ pub(super) fn submission_snapshot(
     for (_, raw) in team {
         let worker: AgentRecord = serde_json::from_str(&raw).map_err(|_| invalid("worker"))?;
         let v = worker.value();
-        let status = match v["status"].as_str() {
-            Some("completed") => turn::WorkerStatus::Completed,
-            Some("failed") => turn::WorkerStatus::Failed,
-            Some("interrupted") => turn::WorkerStatus::Interrupted,
-            Some("paused") => turn::WorkerStatus::Paused,
-            Some("queued") => turn::WorkerStatus::Queued,
-            Some(_) => turn::WorkerStatus::Running,
-            None => return Err(invalid("worker/status")),
+        let status = match worker.status.as_str() {
+            "completed" => turn::WorkerStatus::Completed,
+            "failed" => turn::WorkerStatus::Failed,
+            "interrupted" => turn::WorkerStatus::Interrupted,
+            "paused" => turn::WorkerStatus::Paused,
+            "queued" => turn::WorkerStatus::Queued,
+            _ => turn::WorkerStatus::Running,
         };
         workers.push(turn::Worker {
-            id: decode(v["id"].clone(), "worker/id")?,
+            id: worker.id.0,
             root_id: root_id.into(),
             parent_id: text(&v, "parentId")?,
             worktree_ready: flag(&v, "worktreeReady")?,

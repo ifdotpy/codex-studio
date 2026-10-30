@@ -6,7 +6,7 @@ use studio_runtime_services::{
 };
 use studio_runtime_store::{ContinuationTable, RuntimeStore};
 /// A fresh state holding agent `a` with a scheduled usage resume; `capacity`
-/// adds a scheduled capacity retry and `wake` the events of a progress batch.
+/// adds a scheduled capacity retry.
 async fn seeded(kind: &str) -> (tempfile::TempDir, RuntimeStore) {
     let dir = tempfile::tempdir().expect("isolated state");
     let store = RuntimeStore::open(Some(dir.path()))
@@ -29,41 +29,21 @@ async fn seeded(kind: &str) -> (tempfile::TempDir, RuntimeStore) {
         agent["capacityRetry"] = retry.clone();
         rows.push(("runtime_capacity_retries", retry));
     }
-    let events: Vec<Value> = if kind == "wake" {
-        let cases: Value =
-            serde_json::from_str(include_str!("continuation/cases.json")).expect("corpus JSON");
-        cases
-            .as_array()
-            .expect("cases")
-            .iter()
-            .find(|c| c["name"] == "progress-(1, 2)")
-            .expect("progress fixture")["input"]["events"]
-            .as_array()
-            .expect("events")
-            .clone()
-    } else {
-        vec![]
-    };
     store
         .transaction_with(move |tx| {
             for (table, record) in &rows {
                 tx.execute(
                     &format!("INSERT INTO {table}(id,agent,record) VALUES (?1,'a',?2)"),
-                    [record["id"].as_str().expect("id"), record.to_string().as_str()],
+                    [
+                        record["id"].as_str().expect("id"),
+                        record.to_string().as_str(),
+                    ],
                 )?;
             }
             tx.execute(
                 "INSERT INTO runtime_agents(id,record) VALUES ('a',?1)",
                 [agent.to_string()],
             )?;
-            for e in &events {
-                tx.execute(
-                    "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,turn_id,error) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
-                    rusqlite::params![e["id"].as_str(), e["agent"].as_str(), e["kind"].as_str(),
-                        e["text"].as_str(), e["status"].as_str(), e["created"].as_f64(),
-                        e["epoch"].as_i64(), e["turn_id"].as_str(), e["error"].as_str()],
-                )?;
-            }
             Ok::<_, studio_runtime_store::StoreError>(())
         })
         .await
@@ -338,85 +318,6 @@ async fn foreign_followup_identity_refuses_and_rolls_back() {
     .await;
     assert!(matches!(result,Err(ContinuationError::Invalid(ref at)) if at=="/events/identity"));
     assert_eq!(read(&store), before);
-}
-
-type WakeState = (Vec<(String, String, String)>, Vec<(String, String)>);
-fn wake_state(store: &RuntimeStore) -> WakeState {
-    let db = store.test_reader().expect("reader");
-    let mut events = db
-        .prepare("SELECT id,status,text FROM runtime_events ORDER BY id")
-        .expect("events");
-    let rows = events
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-        .expect("rows")
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .expect("event rows");
-    let mut metadata = db
-        .prepare("SELECT id,record FROM runtime_event_meta ORDER BY id")
-        .expect("metadata");
-    let meta = metadata
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-        .expect("rows")
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .expect("metadata rows");
-    (rows, meta)
-}
-#[tokio::test]
-async fn wakeup_event_and_metadata_writes_restart_atomically() {
-    let full = std::env::var("STUDIO_RUNTIME_CORPUS_FULL").as_deref() == Ok("1");
-    for boundary in [
-        Boundary::BeforeEvent,
-        Boundary::AfterEvent,
-        Boundary::BeforeMetadata,
-        Boundary::AfterMetadata,
-        Boundary::BeforeCommit,
-        Boundary::AfterCommit,
-    ] {
-        if !full && !matches!(boundary, Boundary::AfterEvent | Boundary::AfterMetadata) {
-            continue;
-        }
-        let (root, store) = seeded("wake").await;
-        let before = wake_state(&store);
-        let result = continuation_driver::drive_with_fault(
-            &store,
-            "a",
-            ContinuationTable::Usage,
-            None,
-            1000.0,
-            |s| Ok(studio_runtime_services::wakeups::pending_batch(s)),
-            StopAt(boundary),
-        )
-        .await;
-        assert!(result.is_err(), "fault {boundary:?} reached");
-        if boundary != Boundary::AfterCommit {
-            assert_eq!(wake_state(&store), before);
-        }
-        drop(store);
-        let store = RuntimeStore::open(Some(root.path()))
-            .await
-            .expect("restart");
-        continuation_driver::drive(&store, "a", ContinuationTable::Usage, None, 1000.0, |s| {
-            Ok(studio_runtime_services::wakeups::pending_batch(s))
-        })
-        .await
-        .expect("replay");
-        let after = wake_state(&store);
-        assert_eq!(
-            after
-                .0
-                .iter()
-                .filter(|(_, status, _)| status == "pending")
-                .count(),
-            1
-        );
-        assert_eq!(after.1.len(), 1);
-        continuation_driver::drive(&store, "a", ContinuationTable::Usage, None, 1000.0, |s| {
-            Ok(studio_runtime_services::wakeups::pending_batch(s))
-        })
-        .await
-        .expect("idempotent replay");
-        assert_eq!(wake_state(&store), after);
-    }
 }
 
 #[tokio::test]

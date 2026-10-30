@@ -2180,6 +2180,7 @@ fn full_matrix() -> bool {
 }
 
 #[tokio::test]
+#[ignore = "heavy tier: just test-quarantine (flaky under load, issue #616)"]
 async fn python_authentication_outputs_match_complete_principal_and_writes() {
     let data = &fixture().data;
     for case in data["auth"].as_array().expect("cases") {

@@ -76,12 +76,12 @@ fn admit(
     tx: &studio_runtime_store::Transaction<'_>,
     id: &str,
 ) -> Result<(Value, Option<(Value, Value)>)> {
-    let get = |id: &str| -> Result<Value> {
-        Ok(AgentRepository::get(tx, &AgentId::from(id))?
-            .ok_or_else(|| NativeLayrError::Refused(format!("Unknown chat {id}")))?
-            .value())
+    let get = |id: &str| -> Result<AgentRecord> {
+        AgentRepository::get(tx, &AgentId::from(id))?
+            .ok_or_else(|| NativeLayrError::Refused(format!("Unknown chat {id}")))
     };
-    let record = get(id)?;
+    let agent = get(id)?;
+    let record = agent.value();
     if is_native(&record) {
         return Ok((record, None));
     }
@@ -90,7 +90,7 @@ fn admit(
     }
     let lead = record["isLead"] == true;
     if record["workspaceMode"] != "worktree"
-        || record["executionMode"] == "vm"
+        || agent.execution_mode == Some(studio_runtime_store::AgentExecutionMode::Vm)
         || !(lead || record["role"] == "implementer")
     {
         return Err(NativeLayrError::Refused(
@@ -102,13 +102,13 @@ fn admit(
     if lead {
         return Ok((record, None));
     }
-    let parent = get(record["parentId"].as_str().unwrap_or_default())?;
+    let parent = get(record["parentId"].as_str().unwrap_or_default())?.value();
     if !is_native(&parent) || parent["layrReady"] != true {
         return Err(NativeLayrError::Refused(
             "Switch the parent chat to Layr first".into(),
         ));
     }
-    let root = get(record["rootId"].as_str().unwrap_or_default())?;
+    let root = get(&agent.root_id.0)?.value();
     Ok((record, Some((parent, root))))
 }
 
