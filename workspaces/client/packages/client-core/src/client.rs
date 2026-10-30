@@ -217,6 +217,15 @@ mod tests {
         assert!(
             matches!(retired.outcome, NativeOutcome::Failure(error) if error.code == "unknown_method")
         );
+        let markdown = client
+            .request(request(
+                "markdown",
+                "markdown.parse",
+                json!({"text":"# Hello"}),
+            ))
+            .await
+            .unwrap();
+        assert!(matches!(markdown.outcome, NativeOutcome::Success(value) if value.is_array()));
         let uuid = client
             .request(request("uuid", "system.uuid", Value::Null))
             .await

@@ -103,8 +103,6 @@ impl Store {
     fn execute(&mut self, request: &Request) -> rusqlite::Result<Response> {
         let id = request.id.clone();
         match request.method.as_str() {
-            "markdown.parse" => Ok(crate::markdown::dispatch(request)),
-            "system.uuid" => Ok(crate::platform::dispatch(request)),
             method if method.starts_with("drafts.") => {
                 Ok(crate::draft_store::dispatch(&mut self.connection, request))
             }
