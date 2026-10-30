@@ -15,6 +15,7 @@ pub(super) fn preflight(db: &rusqlite::Connection) -> StoreResult<()> {
         if name != "id"
             && name != "record"
             && name != "start_attempt_capacity_retry_id"
+            && name != super::m2026_10_30_unused_start_action::COLUMN
             && !super::m2026_10_30_unused_agent_columns::RETIRED.contains(&name.as_str())
             && !crate::agent_columns::AGENT_COLUMNS
                 .iter()
