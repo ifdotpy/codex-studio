@@ -201,9 +201,10 @@ impl RouteGroup {
 }
 
 #[cfg(test)]
-pub(crate) fn operation_manifest() -> Result<Vec<Operation>, RegistrationError> {
+pub(crate) fn operation_manifest() -> Result<Vec<Operation>, Box<dyn std::error::Error>> {
     let groups = super::groups();
-    let authority = crate::schema::operations().map_err(|_| RegistrationError::InvalidAuthority)?;
+    let authority =
+        crate::schema::operations().map_err(|error| std::io::Error::other(error.to_string()))?;
     super::compose::validate(&groups, authority)?;
 
     let mut implemented = groups
