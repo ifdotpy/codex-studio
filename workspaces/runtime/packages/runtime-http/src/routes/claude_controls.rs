@@ -19,18 +19,6 @@ use studio_runtime_store::{
     AgentId, AgentRepository, RuntimeStore, workspace_operations::WorkspaceOperationsRepository,
 };
 
-// The bridge may include private diagnostic fields; deserialize only the
-// evidence that this route is allowed to expose.
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RepairEvidence {
-    status: String,
-    skipped_rows: u64,
-    invalid_sequence: bool,
-    scope_confirmed: Option<bool>,
-    native_history_confirmed: Option<bool>,
-}
-
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
         get(
@@ -103,18 +91,14 @@ async fn repair_report(
     let ControlReply::RepairReport(result) = result else {
         return Err(ApiError::internal());
     };
-    let evidence: RepairEvidence =
-        serde_json::from_value(result).map_err(|_| ApiError::internal())?;
-    if evidence.skipped_rows > studio_runtime_schema::shared_values::MAX_SAFE_INTEGER as u64 {
+    let evidence: crate::generated::ClaudeRepairReport =
+        serde::Deserialize::deserialize(result).map_err(|_| ApiError::internal())?;
+    if !(0..=studio_runtime_schema::shared_values::MAX_SAFE_INTEGER)
+        .contains(&evidence.skipped_rows)
+    {
         return Err(ApiError::internal());
     }
-    let safe = json!({
-        "status": evidence.status, "skippedRows": evidence.skipped_rows,
-        "invalidSequence": evidence.invalid_sequence,
-        "scopeConfirmed": evidence.scope_confirmed,
-        "nativeHistoryConfirmed": evidence.native_history_confirmed,
-    });
-    super::generated_json(safe).map(Json)
+    Ok(Json(evidence))
 }
 
 async fn session(
