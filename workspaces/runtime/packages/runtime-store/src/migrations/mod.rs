@@ -777,6 +777,9 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| m2026_10_30_capture_errors::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
             id: "2026-10-30-complaint-record",
             introduced: OCTOBER_30,
             target: MigrationTarget::Canvas,
