@@ -6,7 +6,7 @@ use rusqlite::Transaction;
 use serde_json::Value;
 use studio_runtime_schema::approvals::{
     AgentId, Answer, Approval, ApprovalId, ApprovalState, CloseReason, CommandId, Decision,
-    Principal, Question, QuestionAnswer, QuestionOption, Request, Timestamp, TurnId,
+    Principal, Question, QuestionAnswer, QuestionOption, Request, RequestKind, Timestamp, TurnId,
 };
 
 use crate::approvals;
@@ -188,13 +188,19 @@ fn convert(id: &str, record: &Value) -> StoreResult<Approval> {
         ("answering" | "answered" | "deleted" | "uncertain" | "blocked", _) => legacy,
         (other, _) => return Err(bad(id, &format!("unknown status {other}"))),
     };
+    // Live data: only agent-level kinds (questions, monitor starts, browser
+    // opens) have rows without a turn. A provider-turn kind without one is
+    // corrupt and fails the migration.
     let turn = text(record, "turnId")
         .or_else(|| text(record.get("params").unwrap_or(&Value::Null), "turnId"))
-        .unwrap_or_default();
+        .map(TurnId);
+    if turn.is_none() && !RequestKind::TURN_OPTIONAL.contains(&RequestKind::from(&request)) {
+        return Err(bad(id, "a provider-turn request has no turn"));
+    }
     Ok(Approval {
         id: ApprovalId(id.to_owned()),
         agent: AgentId(text(record, "agent").unwrap_or_default()),
-        turn: TurnId(turn),
+        turn,
         created: Timestamp(created),
         request,
         state,
@@ -251,10 +257,10 @@ mod tests {
                 "decision":"answer","answeredBy":"user","answeredAt":2.0,"answerHistory":[{"id":"0","answer":["x"]}]}),
             json!({"id":"q2","method":"item/tool/requestUserInput","agent":"a","status":"deleted","createdAt":1.0,"deletedAt":9.0,
                 "params":{"turnId":"t","questions":[]}}),
-            json!({"id":"x1","method":"item/commandExecution/requestApproval","agent":"a","status":"expired","createdAt":1.0,"params":{}}),
+            json!({"id":"x1","method":"item/commandExecution/requestApproval","agent":"a","status":"expired","createdAt":1.0,"params":{"turnId":"t"}}),
             json!({"id":"m1","method":"monitor/approve","agent":"a","status":"answered","params":{"monitorId":"m","command":"c"}}),
             json!({"id":"b1","method":"browser/open","agent":"a","status":"expired","closeReason":"stale","params":{"url":"https://x"}}),
-            json!({"id":"f1","method":"item/fileChange/requestApproval","agent":"a","status":"resolved","params":{"itemId":"i"},"preview":{"changes":[{"path":"/p"}]}}),
+            json!({"id":"f1","method":"item/fileChange/requestApproval","agent":"a","status":"resolved","params":{"itemId":"i","turnId":"t"},"preview":{"changes":[{"path":"/p"}]}}),
         ];
         for row in &rows {
             db.execute(
@@ -311,6 +317,25 @@ mod tests {
         assert!(
             matches!(state("f1").request, Request::Patch { ref files, .. } if files == &["/p"])
         );
+    }
+
+    #[test]
+    fn agent_level_rows_keep_no_turn_and_a_turnless_exec_fails() {
+        let mut db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE runtime_requests(id TEXT PRIMARY KEY, record TEXT NOT NULL); INSERT INTO runtime_requests VALUES('m','{\"method\":\"monitor/approve\",\"agent\":\"a\",\"status\":\"pending\",\"params\":{}}')").unwrap();
+        let tx = db.transaction().unwrap();
+        apply(&tx).unwrap();
+        assert_eq!(
+            approvals::get(&tx, &ApprovalId("m".into()))
+                .unwrap()
+                .unwrap()
+                .turn,
+            None
+        );
+        drop(tx);
+        db.execute_batch("INSERT INTO runtime_requests VALUES('e','{\"method\":\"item/commandExecution/requestApproval\",\"agent\":\"a\",\"status\":\"pending\",\"params\":{}}')").unwrap();
+        let tx = db.transaction().unwrap();
+        assert!(apply(&tx).is_err());
     }
 
     #[test]

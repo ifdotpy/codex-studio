@@ -28,6 +28,8 @@ pub enum ApprovalError {
     Closed(String),
     #[error("Approval {0} is not in a state that allows this change")]
     State(String),
+    #[error("Approval {0} needs a turn: its request kind belongs to a provider turn")]
+    MissingTurn(String),
     #[error("Approval {0} already exists with a different request")]
     Duplicate(String),
     #[error("Invalid stored approval {id}: {reason}")]
@@ -53,8 +55,9 @@ fn invalid_row(row: &str) -> String {
     let kinds = quoted(RequestKind::VARIANTS);
     let states = quoted(ApprovalStateKind::VARIANTS);
     let reasons = quoted(CloseReason::VARIANTS);
+    let no_turn_ok = quoted(&RequestKind::TURN_OPTIONAL.map(RequestKind::as_str));
     format!(
-        "NOT ({row}.kind IN ({kinds}) AND {row}.kind = json_extract({row}.request,'$.kind') \
+        "NOT ({row}.kind IN ({kinds}) AND ({row}.turn IS NOT NULL OR {row}.kind IN ({no_turn_ok})) AND {row}.kind = json_extract({row}.request,'$.kind') \
          AND {row}.state IN ({states}) \
          AND ({row}.state IN ('answering','answered','unknown')) = ({row}.answer IS NOT NULL) \
          AND ({row}.state = 'answering') = ({row}.command IS NOT NULL) \
@@ -71,7 +74,7 @@ fn invalid_row(row: &str) -> String {
 pub fn create_schema(tx: &Transaction<'_>) -> rusqlite::Result<()> {
     let mut sql = String::from(
         "CREATE TABLE IF NOT EXISTS approvals (
-            id TEXT PRIMARY KEY, agent TEXT NOT NULL, turn TEXT NOT NULL, created REAL NOT NULL,
+            id TEXT PRIMARY KEY, agent TEXT NOT NULL, turn TEXT, created REAL NOT NULL,
             kind TEXT NOT NULL, request TEXT NOT NULL, state TEXT NOT NULL,
             answer TEXT, command TEXT, answered_by TEXT, at REAL, since REAL, reason TEXT,
             fire_at REAL, hidden INTEGER NOT NULL DEFAULT 0 CHECK(hidden IN (0,1)));
@@ -97,7 +100,8 @@ pub fn create_schema(tx: &Transaction<'_>) -> rusqlite::Result<()> {
 pub struct NewApproval {
     pub id: ApprovalId,
     pub agent: AgentId,
-    pub turn: TurnId,
+    /// None only for agent-level kinds (`RequestKind::TURN_OPTIONAL`).
+    pub turn: Option<TurnId>,
     pub request: Request,
     /// Expiry of a pending approval (Claude full access mode), or none.
     pub fire_at: Option<Timestamp>,
@@ -153,7 +157,7 @@ fn decode(row: &Row<'_>) -> ApprovalResult<Approval> {
     let hidden: i64 = row.get(13)?;
     Ok(Approval {
         agent: AgentId(row.get(1)?),
-        turn: TurnId(row.get(2)?),
+        turn: row.get::<_, Option<String>>(2)?.map(TurnId),
         created: Timestamp(row.get(3)?),
         request: serde_json::from_str(&row.get::<_, String>(4)?)?,
         state,
@@ -198,7 +202,7 @@ pub(crate) fn insert(tx: &Transaction<'_>, row: &Approval) -> ApprovalResult<()>
         params![
             row.id.as_str(),
             row.agent.as_str(),
-            row.turn.as_str(),
+            row.turn.as_ref().map(TurnId::as_str),
             row.created.0,
             <&str>::from(RequestKind::from(&row.request)),
             serde_json::to_string(&row.request)?,
@@ -274,8 +278,17 @@ fn set_state(tx: &Transaction<'_>, id: &ApprovalId, state: &ApprovalState) -> Ap
     Ok(())
 }
 
+fn check_turn(new: &NewApproval) -> ApprovalResult<()> {
+    if new.turn.is_none() && !RequestKind::TURN_OPTIONAL.contains(&RequestKind::from(&new.request))
+    {
+        return Err(ApprovalError::MissingTurn(new.id.0.clone()));
+    }
+    Ok(())
+}
+
 /// Create a pending approval. The same id with the same request returns the stored row.
 pub fn create(tx: &Transaction<'_>, new: NewApproval, now: Timestamp) -> ApprovalResult<Approval> {
+    check_turn(&new)?;
     if let Some(existing) = get(tx, &new.id)? {
         return if existing.request == new.request {
             Ok(existing)
@@ -305,6 +318,7 @@ pub fn create_policy_answered(
     now: Timestamp,
 ) -> ApprovalResult<Approval> {
     new.request.accepts(&answer)?;
+    check_turn(&new)?;
     if get(tx, &new.id)?.is_some() {
         return Err(ApprovalError::Duplicate(new.id.0));
     }
@@ -558,7 +572,7 @@ mod tests {
         NewApproval {
             id: ApprovalId(id.into()),
             agent: AgentId(agent.into()),
-            turn: TurnId(turn.into()),
+            turn: Some(TurnId(turn.into())),
             request,
             fire_at: fire_at.map(Timestamp),
         }
@@ -834,6 +848,33 @@ mod tests {
             ),
             Err(ApprovalError::Mismatch(_))
         ));
+    }
+
+    #[test]
+    fn only_agent_level_kinds_may_have_no_turn() {
+        let mut db = db();
+        let tx = db.transaction().unwrap();
+        let mut no_turn = new("a", "ag", "t", exec(), None);
+        no_turn.turn = None;
+        assert!(matches!(
+            create(&tx, no_turn, Timestamp(1.0)),
+            Err(ApprovalError::MissingTurn(_))
+        ));
+        let mut monitor = new(
+            "m",
+            "ag",
+            "t",
+            Request::MonitorStart {
+                monitor: "m".into(),
+                command: "c".into(),
+            },
+            None,
+        );
+        monitor.turn = None;
+        assert_eq!(create(&tx, monitor, Timestamp(1.0)).unwrap().turn, None);
+        assert!(tx
+            .execute("UPDATE approvals SET kind='exec', request='{\"kind\":\"exec\",\"command\":\"\",\"cwd\":\"\",\"reason\":null}' WHERE id='m'", [])
+            .is_err());
     }
 
     #[test]

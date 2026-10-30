@@ -215,7 +215,9 @@ pub enum ApprovalState {
 pub struct Approval {
     pub id: ApprovalId,
     pub agent: AgentId,
-    pub turn: TurnId,
+    /// None only for kinds in `RequestKind::TURN_OPTIONAL`: requests of the
+    /// agent itself (not of a provider turn).
+    pub turn: Option<TurnId>,
     pub created: Timestamp,
     pub request: Request,
     pub state: ApprovalState,
@@ -269,6 +271,19 @@ impl Request {
             }
             _ => Err(AnswerMismatch::Kind(RequestKind::from(self).into())),
         }
+    }
+}
+
+impl RequestKind {
+    /// Kinds that may exist without a provider turn: agent questions, monitor
+    /// starts and browser opens come from the agent, not from a turn.
+    pub const TURN_OPTIONAL: [RequestKind; 3] = [
+        RequestKind::AgentQuestion,
+        RequestKind::MonitorStart,
+        RequestKind::BrowserOpen,
+    ];
+    pub fn as_str(self) -> &'static str {
+        RequestKind::VARIANTS[self as usize]
     }
 }
 

@@ -37,7 +37,9 @@ export interface components {
       id: components["schemas"]["ApprovalId"];
       request: components["schemas"]["Request"];
       state: components["schemas"]["ApprovalState"];
-      turn: components["schemas"]["TurnId"];
+      /** @description None only for kinds in `RequestKind::TURN_OPTIONAL`: requests of the
+       *     agent itself (not of a provider turn). */
+      turn: components["schemas"]["TurnId"] | null;
     };
     /** @description Identity of one approval. Equals the legacy request id after migration. */
     ApprovalId: string;
