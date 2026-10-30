@@ -108,7 +108,7 @@ impl Fixture {
         });
         let catalog = ModelCatalogService::new();
         catalog.set_account_session(Some(session.clone()));
-        catalog.retain_accounts(&driver.snapshot().expect("accounts").accounts);
+        catalog.retain_public_accounts(&driver.snapshot().expect("accounts").accounts);
         let environment =
             studio_runtime_http::routes::managed_creation_environment(driver, catalog.clone());
         Self {
