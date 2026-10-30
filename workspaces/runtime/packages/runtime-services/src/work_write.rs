@@ -2586,7 +2586,7 @@ fn decide_accept(
     if record.status() != studio_runtime_store::WorkStatus::Review {
         return Err(Error::InvalidRequest("Submit a result before review"));
     }
-    crate::task_gate::require_pass(&record.value(), override_reason)?;
+    crate::task_gate::require_pass(record, override_reason)?;
     let mut updated = record.clone();
     if crate::event_write::python_strip(reason).is_empty() {
         return Err(Error::InvalidRequest("Field must not be empty"));
