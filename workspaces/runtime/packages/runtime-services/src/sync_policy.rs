@@ -3009,7 +3009,7 @@ mod tests {
                      hash TEXT NOT NULL,payload TEXT,deleted INTEGER NOT NULL DEFAULT 0,
                      PRIMARY KEY(collection,id));
                  CREATE TABLE sync_documents(seq INTEGER PRIMARY KEY);
-                 CREATE TABLE sync_versions(seq INTEGER PRIMARY KEY);
+                 CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);
                  CREATE TABLE sync_entity_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
                  INSERT INTO runtime_agents VALUES
                      ('active','{\"id\":\"active\",\"provider\":\"codex\",\"deletedAt\":null}'),
@@ -3027,7 +3027,7 @@ mod tests {
                               created: i64| {
             connection
                     .execute(
-                        "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES(?1,?2,COALESCE(CASE WHEN json_valid(?2) THEN json_extract(?2,'$.status') END,'lost'))",
+                        "INSERT INTO runtime_monitors(id,record) VALUES(?1,?2)",
                         rusqlite::params![
                             id,
                             json!({"id":id,"agent":agent,"epoch":0,"status":status,"created":created,"requestId":format!("request-{id}"),"activityAt":created,"activityGeneration":0,"bytes":0,"command":"","cwd":std::env::temp_dir(),"interactive":false,"livenessCommand":"","log":std::env::temp_dir().join("watch.log"),"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":3600000,"wakeOn":"exit"})
@@ -3170,7 +3170,7 @@ mod tests {
                      hash TEXT NOT NULL,payload TEXT,deleted INTEGER NOT NULL DEFAULT 0,
                      PRIMARY KEY(collection,id));
                  CREATE TABLE sync_documents(seq INTEGER PRIMARY KEY);
-                 CREATE TABLE sync_versions(seq INTEGER PRIMARY KEY);
+                 CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);
                  CREATE TABLE sync_entity_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
                  INSERT INTO runtime_agents VALUES
                      ('active','{\"id\":\"active\",\"provider\":\"codex\",\"deletedAt\":null}'),
@@ -3186,7 +3186,7 @@ mod tests {
             let agent = if index == 50 { "deleted" } else { "active" };
             connection
                 .execute(
-                    "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES(?1,?2,COALESCE(CASE WHEN json_valid(?2) THEN json_extract(?2,'$.status') END,'lost'))",
+                    "INSERT INTO runtime_monitors(id,record) VALUES(?1,?2)",
                     rusqlite::params![
                         id,
                         json!({"id":id,"agent":agent,"epoch":0,"status":"completed","created":10,"requestId":format!("request-{id}"),"activityAt":10,"activityGeneration":0,"bytes":0,"command":"","cwd":std::env::temp_dir(),"interactive":false,"livenessCommand":"","log":std::env::temp_dir().join("watch.log"),"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":3600000,"wakeOn":"exit"})

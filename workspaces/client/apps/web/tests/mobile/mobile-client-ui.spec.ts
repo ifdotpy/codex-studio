@@ -81,33 +81,20 @@ test("Mobile client ui", async ({
       return settingsAction;
     };
     const openChatSettings = async () => {
-      await (await openChatActions()).click();
-      const chatSettings = page.getByRole("dialog", {
-        name: "Chat settings",
-        exact: true,
-      });
-      await chatSettings.waitFor();
-      await chatSettings
-        .getByRole("tab", { name: "Models", exact: true })
-        .click();
-      await chatSettings
+      await page.locator("#composer .execution-summary-trigger").click();
+      await page
+        .locator(".execution-dropdown")
         .getByRole("radiogroup", { name: "Agent role", exact: true })
         .getByText("Lead", { exact: true })
         .click();
     };
     const closeChatSettings = async () => {
-      const dialog = page.getByRole("dialog", {
-        name: "Chat settings",
-        exact: true,
-      });
-      await dialog.getByRole("button", { name: "Close", exact: true }).click();
-      await expect(dialog).not.toBeVisible();
+      await page.keyboard.press("Escape");
+      await expect(page.locator(".execution-dropdown")).not.toBeVisible();
     };
     const showProjectActions = async () => {
-      await page
-        .getByRole("dialog", { name: "Chat settings", exact: true })
-        .getByRole("tab", { name: /^Team/ })
-        .click();
+      await closeChatSettings();
+      await (await openChatActions()).click();
     };
     const startProjectChat = async (name: string) => {
       await page.getByRole("button", { name, exact: true }).click();
@@ -121,9 +108,7 @@ test("Mobile client ui", async ({
         .click();
     };
     const selectedAccount = () =>
-      page
-        .locator('.execution-profile-body[data-role="orchestrator"]')
-        .locator('.setup-account[data-selected="true"]');
+      page.getByRole("group", { name: "Main agent account", exact: true });
     const inspectConversationTools = async (hasUsage: boolean) => {
       const menu = page.locator(".conversation-header-tools-menu");
       const summary = page.locator(
@@ -241,16 +226,13 @@ test("Mobile client ui", async ({
       .locator(".composer-context-row")
       .getByRole("button", { name: /^Execution settings:/ });
     await mainSettingsTrigger.click();
-    const mainSettings = page.getByRole("dialog", {
-      name: "Chat settings",
-      exact: true,
-    });
+    const mainSettings = page.locator(".execution-dropdown");
     const rolePicker = mainSettings.getByRole("radiogroup", {
       name: "Agent role",
     });
     await rolePicker.getByText("Workers", { exact: true }).click();
     const subagentSettings = mainSettings;
-    const workerModel = subagentSettings.getByRole("radiogroup", {
+    const workerModel = subagentSettings.getByRole("listbox", {
       name: "Default subagent model",
       exact: true,
     });
@@ -346,7 +328,10 @@ test("Mobile client ui", async ({
     );
     await page.locator("#message").waitFor();
     await openChatSettings();
-    assert.equal(await selectedAccount().isEnabled(), true);
+    await expect(selectedAccount()).not.toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     await closeChatSettings();
     // Use the real runtime to create another chat while the previous chat is empty.
     const post = async <Path extends ApiPostPath>(
@@ -362,7 +347,7 @@ test("Mobile client ui", async ({
         body: JSON.stringify(body),
       });
       const result = await fixturePostResult<Path>(response);
-      assert.ok(response.ok, JSON.stringify(result));
+      assert.ok(response.ok, JSON.stringify({ path, body, result }));
       return result;
     };
     const profile = join(state, "fixture-account");
@@ -376,6 +361,16 @@ test("Mobile client ui", async ({
       (account) => account.label === "fixture-account",
     );
     assert.ok(alternate);
+    const alternateCatalogReads: string[] = [];
+    page.on("request", (request) => {
+      const target = new URL(request.url());
+      if (
+        request.method() === "GET" &&
+        target.pathname === "/api/models" &&
+        target.searchParams.get("account_key") === alternate.id
+      )
+        alternateCatalogReads.push(request.url());
+    });
     await post("/api/agents/account", {
       id: created.id,
       account_key: alternate.id,
@@ -395,10 +390,7 @@ test("Mobile client ui", async ({
       .click();
     await openChatSettings();
     await selectedAccount().waitFor();
-    await expect(selectedAccount()).toHaveAttribute(
-      "data-account-key",
-      alternate.id,
-    );
+    await expect(selectedAccount()).toHaveAttribute("data-value", alternate.id);
     await showProjectActions();
     const nextResponse = page.waitForResponse(
       (response) =>
@@ -434,7 +426,17 @@ test("Mobile client ui", async ({
         .count(),
       0,
     );
-    await post("/api/projects", { path: profile, account_key: alternate.id });
+    const registered = await post("/api/projects", {
+      action: "register",
+      path: profile,
+    });
+    assert.ok("accountRevision" in registered);
+    await post("/api/projects", {
+      action: "set_account",
+      path: profile,
+      account_key: alternate.id,
+      expected_revision: registered.accountRevision,
+    });
     await page.reload();
     await page
       .locator(`#sidebar .project-chats .chat-row[data-chat="${nextChat.id}"]`)
@@ -456,6 +458,11 @@ test("Mobile client ui", async ({
     assert.notEqual(otherChat.id, nextChat.id);
     assert.equal(otherChat.accountKey, alternate.id);
     assert.equal(otherChat.cwd, await realpath(profile));
+    assert.deepEqual(
+      alternateCatalogReads,
+      [],
+      "the registered account receives its model catalog over SSE",
+    );
     await page.waitForFunction(hasCachedValue, {
       key: "codex-mobile-opened",
       value: otherChat.id,

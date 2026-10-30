@@ -579,10 +579,11 @@ pub(super) async fn append_progress_frames(
 ) {
     for (resource, revision) in view.resources.iter().zip(&view.versions) {
         let value = match &resource.resource {
-            ResourceRef::AuthProgressResource(r) => match &state.claude_login {
-                Some(login) => login.progress(&r.request_id).await.unwrap_or(Value::Null),
-                _ => Value::Null,
-            },
+            ResourceRef::AuthProgressResource(r) => {
+                super::subscriptions::auth_progress(state, &r.request_id)
+                    .await
+                    .unwrap_or(Value::Null)
+            }
             ResourceRef::RenameProgressResource(_)
             | ResourceRef::VaultJobProgressResource(_)
             | ResourceRef::VaultReadinessResource(_) => {
@@ -2536,6 +2537,11 @@ mod tests {
         .expect("login service");
         state.validators = crate::validation::Registry::compile(&[]).expect("router validators");
         state.claude_login = Some(login.clone());
+        let registry = root.path().join("accounts.json");
+        tokio::fs::write(&registry, json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{"default":{"id":"default","provider":"codex","home":"/fixture","label":"Codex","source":"fixture","status":"ready"}},"logins":{}}).to_string()).await.expect("registry");
+        state.account_driver = Some(Arc::new(
+            studio_runtime_services::account_driver::AccountDriver::open(registry).expect("driver"),
+        ));
         let id = "e0166868-592a-4dca-8994-04d34a730af5";
         let url = "https://claude.com/cai/oauth/authorize?secret=transient-fixture";
         let mut changed = state.sync_changes.subscribe();
@@ -2604,6 +2610,53 @@ mod tests {
             "only subscribed progress selectors receive data"
         );
         login.shutdown().await.expect("owned child closed");
+    }
+
+    #[tokio::test]
+    async fn codex_login_progress_is_request_scoped_and_transient() {
+        let root = tempfile::tempdir().expect("isolated state");
+        let registry = root.path().join("accounts.json");
+        let id = "e0166868-592a-4dca-8994-04d34a730af5";
+        tokio::fs::write(&registry, json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{"default":{"id":"default","provider":"codex","home":"/fixture","label":"Codex","source":"fixture","status":"ready"}},"logins":{id:{"requestId":id,"accountKey":"default","status":"pending","userCode":"ABCD-1234","verificationUrl":"https://auth.openai.com/codex/device"}}}).to_string()).await.expect("registry");
+        let mut state = HttpState::new(
+            "".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            0,
+            None,
+            None,
+            None,
+        );
+        state.validators = crate::validation::Registry::compile(&[]).expect("validators");
+        state.account_driver = Some(Arc::new(
+            studio_runtime_services::account_driver::AccountDriver::open(registry).expect("driver"),
+        ));
+        let view = ResourceChanges {
+            cursor: state.sync_changes.snapshot(),
+            resources: fixture_resources(&[json!({"kind":"auth-progress","requestId":id})]),
+            versions: vec![1],
+            entity_reset: false,
+            overflow: false,
+        };
+        let mut frames = VecDeque::new();
+        append_progress_frames(&state, &view, &mut frames).await;
+        let frame = frame_bytes(frames.pop_front().expect("Codex progress")).await;
+        assert!(
+            std::str::from_utf8(&frame)
+                .expect("frame")
+                .contains("ABCD-1234")
+        );
+        let other = ResourceChanges {
+            resources: fixture_resources(&[json!({"kind":"auth-progress","requestId":"other"})]),
+            ..view
+        };
+        append_progress_frames(&state, &other, &mut frames).await;
+        let frame = frame_bytes(frames.pop_front().expect("empty progress")).await;
+        assert!(
+            !std::str::from_utf8(&frame)
+                .expect("frame")
+                .contains("ABCD-1234")
+        );
     }
 
     #[test]

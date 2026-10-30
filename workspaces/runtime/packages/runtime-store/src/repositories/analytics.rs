@@ -35,6 +35,26 @@ impl CostReader {
 }
 
 impl RuntimeStore {
+    /// Run a read on the retained analytics reader without blocking an async executor.
+    pub async fn with_cost_reader_async<
+        T: Send + 'static,
+        E: From<AnalyticsStoreError> + Send + 'static,
+    >(
+        &self,
+        operation: impl FnOnce(&mut Connection) -> Result<T, E> + Send + 'static,
+    ) -> Result<T, E> {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        self.cost_reader
+            .0
+            .send(Box::new(move |db| {
+                let _undelivered = sender.send(operation(db));
+            }))
+            .map_err(|_| AnalyticsStoreError::CostReaderClosed)?;
+        receiver
+            .await
+            .map_err(|_| AnalyticsStoreError::CostReaderClosed)?
+    }
+
     /// Run one synchronous cost computation on the store's retained reader thread.
     pub fn with_cost_reader<T: Send + 'static, E: From<AnalyticsStoreError> + Send + 'static>(
         &self,

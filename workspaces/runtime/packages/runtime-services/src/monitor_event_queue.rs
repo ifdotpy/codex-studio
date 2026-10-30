@@ -468,7 +468,7 @@ mod tests {
         store
             .transaction_with(move |tx| {
                 let mut insert =
-                    tx.prepare("INSERT INTO runtime_monitors(id,record,monitor_status) VALUES(?1,?2,COALESCE(CASE WHEN json_valid(?2) THEN json_extract(?2,'$.status') END,'lost'))")?;
+                    tx.prepare("INSERT INTO runtime_monitors(id,record) VALUES(?1,?2)")?;
                 for index in from..from + count {
                     let id = format!("history-{index:06}");
                     let mut record = json!({"id":id,"agent":format!("other-{index}"),"status":"completed","created":1,"operation":operation()});
@@ -520,11 +520,11 @@ mod tests {
         store
             .transaction_with(|tx| {
                 tx.execute(
-                    "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES('live',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
+                    "INSERT INTO runtime_monitors(id,record) VALUES('live',?1)",
                     [json!({"id":"live","agent":"worker","epoch":1,"status":"running","created":2,"requestId":"req-live","activityAt":2,"activityGeneration":0,"bytes":0,"command":"true","cwd":std::env::temp_dir(),"interactive":false,"livenessCommand":"","log":std::env::temp_dir().join("live.log"),"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":3600000,"wakeOn":"exit","operation":operation(),"streamQueue":[]}).to_string()],
                 )?;
                 tx.execute(
-                    "INSERT INTO runtime_monitors(id,record,stream_pending) VALUES('zz-finished',?1,1)",
+                    "INSERT INTO runtime_monitors(id,record) VALUES('zz-finished',?1)",
                     [json!({"id":"zz-finished","agent":"worker","epoch":1,"status":"completed","created":3,"requestId":"req-finished","activityAt":3,"activityGeneration":0,"bytes":0,"command":"true","cwd":std::env::temp_dir(),"interactive":false,"livenessCommand":"","log":std::env::temp_dir().join("finished.log"),"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":3600000,"wakeOn":"exit","operation":operation(),
                         "streamQueue":[{"kind":"exit","cursor":"result:zz-finished","code":0,"error":null,"finished":9.0,"byteLength":0,"operation":operation()}]}).to_string()],
                 )?;

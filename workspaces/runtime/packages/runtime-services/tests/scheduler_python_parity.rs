@@ -280,15 +280,8 @@ fn rust_policy_snapshot(store: &RuntimeStore, agent: &str) -> Value {
         .expect("sync-document snapshot queries")
         .collect::<Result<Vec<_>, _>>()
         .expect("sync-document snapshot reads");
-    let sync_versions = reader
-        .prepare("SELECT seq FROM sync_versions ORDER BY seq")
-        .expect("sync-version snapshot prepares")
-        .query_map([], |row| row.get::<_, i64>(0))
-        .expect("sync-version snapshot queries")
-        .collect::<Result<Vec<_>, _>>()
-        .expect("sync-version snapshot reads");
     json!({"agent":raw_agent,"events":events,"metadata":metadata,"sync":sync,
-        "completed":completed,"syncDocuments":sync_documents,"syncVersions":sync_versions})
+        "completed":completed,"syncDocuments":sync_documents})
 }
 
 #[tokio::test]

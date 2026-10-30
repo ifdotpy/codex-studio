@@ -1336,7 +1336,6 @@ async fn accepted_terminal_start_calls_canonical_messages_and_finishes_atomicall
             "runtime_completed_turns",
             "sync_entities",
             "sync_documents",
-            "sync_versions",
             "sync_generation",
             "sync_entity_meta",
         ]

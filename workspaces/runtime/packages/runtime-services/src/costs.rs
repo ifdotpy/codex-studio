@@ -1427,6 +1427,7 @@ fn read_local_claude_usage_inner(
     }
 
     let mut rows = BTreeMap::new();
+    let mut logs = Vec::new();
     for (account_key, thread_id) in sessions {
         if let Some(budget) = budget.as_deref_mut()
             && !budget.visit()
@@ -1541,6 +1542,10 @@ fn read_local_claude_usage_inner(
                     };
                     log
                 };
+                if budget.is_none() {
+                    logs.push((account_key.clone(), thread_id.clone(), log));
+                    continue;
+                }
                 for usage in log.iter() {
                     if rows.len() >= MAX_RECONCILIATION_RESPONSES && budget.is_some() {
                         if let Some(budget) = budget.as_deref_mut() {
@@ -1563,7 +1568,36 @@ fn read_local_claude_usage_inner(
             }
         }
     }
-    Ok(rows.into_values().collect())
+    if budget.is_some() {
+        return Ok(rows.into_values().collect());
+    }
+    // Borrow cached log rows while ordering and merging duplicate receipts; only
+    // the final distinct rows need owned identities and usage values.
+    let mut borrowed = logs
+        .iter()
+        .flat_map(|(account, thread, log)| {
+            log.iter()
+                .map(move |usage| (account.as_str(), thread.as_str(), usage))
+        })
+        .collect::<Vec<_>>();
+    borrowed.sort_by(|a, b| (a.0, a.1, a.2.id.as_str()).cmp(&(b.0, b.1, b.2.id.as_str())));
+    let mut result: Vec<LocalClaudeUsage> = Vec::new();
+    for (account, thread, usage) in borrowed {
+        if let Some(first) = result.last_mut().filter(|first| {
+            first.account_key == account && first.thread_id == thread && first.usage.id == usage.id
+        }) {
+            first.usage.conflicting_usage |= usage.conflicting_usage
+                || first.usage.tokens != usage.tokens
+                || first.usage.model != usage.model;
+        } else {
+            result.push(LocalClaudeUsage {
+                account_key: account.to_owned(),
+                thread_id: thread.to_owned(),
+                usage: usage.clone(),
+            });
+        }
+    }
+    Ok(result)
 }
 
 fn account_claude_config(
@@ -2878,6 +2912,54 @@ mod tests {
         assert!(
             rows[0].conflicting_usage,
             "a later different usage must remain visible"
+        );
+    }
+
+    #[test]
+    fn borrowed_local_usage_matches_bounded_dedup_with_conflicting_journals() {
+        let temp = tempdir().expect("state");
+        let state = temp.path();
+        let profile = state.join("profile");
+        let project = profile.join("projects/project");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(state.join("account-servers/claude/sessions")).unwrap();
+        fs::write(
+            state.join("account-servers/claude/sessions/thread.json"),
+            json!({"nativeId":"native"}).to_string(),
+        )
+        .unwrap();
+        let row = json!({"type":"assistant","timestamp":"2026-09-01T12:00:00Z","message":{"id":"response","model":"m","usage":{"input_tokens":10,"output_tokens":2}}});
+        let mut changed = row.clone();
+        changed["message"]["usage"]["output_tokens"] = json!(7);
+        fs::write(project.join("native.jsonl"), format!("{row}\n")).unwrap();
+        fs::write(project.join("thread.jsonl"), format!("{changed}\n")).unwrap();
+        let accounts = BTreeMap::from([(
+            "claude".into(),
+            <crate::account_policy::PublicAccount as serde::Deserialize>::deserialize(
+                json!({"provider":"claude","claudeOptions":{"configDir":profile}}),
+            )
+            .unwrap(),
+        )]);
+        let members = vec![(
+            "agent".into(),
+            member(json!({"provider":"claude","accountKey":"claude","threadId":"thread"})),
+        )];
+        let fast = super::read_local_claude_usage_inner(state, &members, &accounts, None).unwrap();
+        let mut budget = super::EvidenceBudget::default();
+        let bounded =
+            super::read_local_claude_usage_inner(state, &members, &accounts, Some(&mut budget))
+                .unwrap();
+        assert_eq!(fast.len(), 1);
+        assert_eq!(bounded.len(), 1);
+        assert!(fast[0].usage.conflicting_usage);
+        assert_eq!(fast[0].account_key, bounded[0].account_key);
+        assert_eq!(fast[0].thread_id, bounded[0].thread_id);
+        assert_eq!(fast[0].usage.id, bounded[0].usage.id);
+        assert_eq!(fast[0].usage.model, bounded[0].usage.model);
+        assert_eq!(fast[0].usage.tokens, bounded[0].usage.tokens);
+        assert_eq!(
+            fast[0].usage.conflicting_usage,
+            bounded[0].usage.conflicting_usage
         );
     }
 

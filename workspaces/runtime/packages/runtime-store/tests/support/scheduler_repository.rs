@@ -27,7 +27,7 @@ fn database() -> Connection {
                  CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,
                    PRIMARY KEY(collection,id));
                  CREATE TABLE sync_documents(seq INTEGER);
-                 CREATE TABLE sync_versions(seq INTEGER);"),
+                 CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);"),
             )
             .expect("scheduler tables create");
     connection
@@ -626,15 +626,8 @@ fn snapshot(connection: &Connection) -> serde_json::Value {
         .expect("sync-document snapshot queries")
         .collect::<Result<Vec<_>, _>>()
         .expect("sync-document snapshot reads");
-    let sync_versions = connection
-        .prepare("SELECT seq FROM sync_versions ORDER BY seq")
-        .expect("sync-version snapshot prepares")
-        .query_map([], |row| row.get::<_, i64>(0))
-        .expect("sync-version snapshot queries")
-        .collect::<Result<Vec<_>, _>>()
-        .expect("sync-version snapshot reads");
     json!({"agent":agent,"events":events,"metadata":metadata,"sync":sync,
-        "completed":completed,"syncDocuments":sync_documents,"syncVersions":sync_versions})
+        "completed":completed,"syncDocuments":sync_documents})
 }
 
 fn selected_event(id: &str, kind: &str, text: &str) -> QueueEvent {

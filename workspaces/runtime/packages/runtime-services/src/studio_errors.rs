@@ -1423,14 +1423,8 @@ mod tests {
                         fields.as_object().expect("object").clone(),
                     );
                     tx.execute(
-                        "INSERT INTO runtime_monitors(id,record,monitor_status,monitor_error_candidate,monitor_created) VALUES(?1,?2,?3,?4,?5)",
-                        rusqlite::params![
-                            id,
-                            record.to_string(),
-                            record["status"].as_str().unwrap_or("lost"),
-                            record["status"] == "lost" || (record["status"] == "failed" && record["exitCode"].as_i64().is_none()),
-                            record["created"].as_f64().unwrap_or(0.0)
-                        ],
+                        "INSERT INTO runtime_monitors(id,record) VALUES(?1,?2)",
+                        rusqlite::params![id, record.to_string()],
                     )?;
                 }
 

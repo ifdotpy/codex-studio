@@ -912,7 +912,6 @@ fn sync_seed_rows(path: &Path) -> Vec<String> {
          UNION ALL SELECT json_array('meta',key,value) FROM sync_entity_meta
          UNION ALL SELECT json_array('document',seq,scope,id,payload,deleted) FROM sync_documents
          UNION ALL SELECT json_array('entity',collection,id,seq,hash,payload,deleted) FROM sync_entities
-         UNION ALL SELECT json_array('version',seq,scope,hash,deleted,updated) FROM sync_versions
          UNION ALL SELECT json_array('event',id,agent,kind,text,status,created,epoch,turn_id,error) FROM runtime_events
          ORDER BY 1",
     ).expect("sync snapshot prepares")
@@ -1166,7 +1165,7 @@ async fn sync_bootstrap_repairs_missing_objects_in_the_committed_live_fixture() 
             [],
             |_| Ok(())
         )
-        .is_ok()
+        .is_err()
     );
     drop(db);
     drop(store);

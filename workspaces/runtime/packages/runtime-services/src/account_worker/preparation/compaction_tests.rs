@@ -71,7 +71,7 @@ async fn post_compaction_roster_uses_live_store_and_stops_after_delivery() {
             tx.execute_batch("CREATE TABLE IF NOT EXISTS runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL, stream_pending INTEGER NOT NULL DEFAULT 0, monitor_status TEXT, monitor_error_candidate INTEGER NOT NULL DEFAULT 1, monitor_created REAL NOT NULL DEFAULT 0);
                 CREATE TABLE IF NOT EXISTS runtime_tasks(id TEXT PRIMARY KEY,record TEXT NOT NULL);")?;
             for (id, owner) in [("watch-lead","lead"),("watch-worker","monitor-owner"),("watch-other","other")] {
-                tx.execute("INSERT INTO runtime_monitors(id,record,monitor_status) VALUES(?1,?2,COALESCE(CASE WHEN json_valid(?2) THEN json_extract(?2,'$.status') END,'lost'))", rusqlite::params![id,
+                tx.execute("INSERT INTO runtime_monitors(id,record) VALUES(?1,?2)", rusqlite::params![id,
                     json!({"id":id,"agent":owner,"status":"running","command":"check"}).to_string()])?;
             }
             for (id, owner, status) in [("assignment","worker-00","running"),("pending-review","nested","review"),("closed","worker-01","accepted")] {

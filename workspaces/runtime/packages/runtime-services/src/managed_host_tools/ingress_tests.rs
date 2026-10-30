@@ -97,7 +97,7 @@ async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, CallbackContext) {
                 crate::agents_create::publish_agent(tx, &record.value())?;
             }
             tx.execute(
-                "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES(?1,?2,COALESCE(CASE WHEN json_valid(?2) THEN json_extract(?2,'$.status') END,'lost'))",
+                "INSERT INTO runtime_monitors(id,record) VALUES(?1,?2)",
                 params![monitor["id"].as_str().unwrap(), monitor.to_string()],
             )?;
             Ok(())

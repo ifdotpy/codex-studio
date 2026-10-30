@@ -178,7 +178,7 @@ async fn action_receipt_replays_without_dispatch_and_rejects_identity_reuse() {
                 [owner.to_string()],
             )?;
             tx.execute(
-                "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES('watch',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
+                "INSERT INTO runtime_monitors(id,record) VALUES('watch',?1)",
                 [raw.to_string()],
             )?;
             Ok::<_, StoreError>(())

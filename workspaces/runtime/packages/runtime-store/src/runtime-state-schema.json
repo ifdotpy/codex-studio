@@ -705,13 +705,6 @@
         "type": "index"
       },
       {
-        "create_order": 24,
-        "name": "graph_agents",
-        "sql": "CREATE TABLE graph_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
-        "table": "graph_agents",
-        "type": "table"
-      },
-      {
         "create_order": 26,
         "name": "graph_edges",
         "sql": "CREATE TABLE graph_edges (\n                  id TEXT PRIMARY KEY, source TEXT NOT NULL, target TEXT NOT NULL,\n                  kind TEXT NOT NULL, UNIQUE(source, target, kind))",

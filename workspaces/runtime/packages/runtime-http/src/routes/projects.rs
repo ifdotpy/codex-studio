@@ -411,11 +411,18 @@ async fn write_project(
         ));
     }
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let account_policy = state
-        .account_policy
-        .clone()
-        .ok_or_else(ApiError::internal)?;
-    let accounts = account_policy.accounts();
+    let driver = state.account_driver.clone().ok_or_else(|| {
+        ApiError::new(
+            StatusCode::NOT_IMPLEMENTED,
+            "Not implemented: requires account-driver/runtime",
+        )
+    })?;
+    let accounts = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/projects/accounts",
+        move || driver.listing_snapshot().map_err(|_| ApiError::internal()),
+    )
+    .await
+    .map_err(|_| ApiError::internal())??;
     let known = accounts.accounts.clone();
     let default = accounts
         .default_account_key
@@ -1340,10 +1347,29 @@ mod local_registration_tests {
     };
     use studio_runtime_store::{ProjectsRepository, RuntimeStore};
 
+    fn account_driver(
+        root: &std::path::Path,
+    ) -> Arc<studio_runtime_services::account_driver::AccountDriver> {
+        let path = root.join("test-accounts.json");
+        std::fs::write(&path, json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{"default":{"provider":studio_runtime_schema::ProviderKind::Codex,"id":"default","home":"/default","label":"Default","source":"Codex CLI","status":"signedOut"}},"logins":{}}).to_string()).expect("fixture registry");
+        Arc::new(
+            studio_runtime_services::account_driver::AccountDriver::open(path)
+                .expect("account driver"),
+        )
+    }
+
     struct ProjectPeer(Arc<AtomicUsize>);
 
     async fn post_project(
         app: &axum::Router,
+        body: &serde_json::Value,
+    ) -> (axum::http::StatusCode, serde_json::Value) {
+        post(app, "/api/projects", body).await
+    }
+
+    async fn post(
+        app: &axum::Router,
+        path: &str,
         body: &serde_json::Value,
     ) -> (axum::http::StatusCode, serde_json::Value) {
         use axum::{
@@ -1355,7 +1381,7 @@ mod local_registration_tests {
 
         let request = Request::builder()
             .method("POST")
-            .uri("/api/projects")
+            .uri(path)
             .header("host", "127.0.0.1:4621")
             .header("content-type", "application/json")
             .header("x-canvas-token", "token")
@@ -1383,6 +1409,66 @@ mod local_registration_tests {
         )
         .expect("response JSON");
         (status, body)
+    }
+
+    #[tokio::test]
+    async fn project_account_write_uses_newly_registered_account() {
+        let root = tempfile::tempdir().expect("state directory");
+        let store = Arc::new(
+            RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("runtime store"),
+        );
+        store
+            .set_local_server_id(Some("fixture-server".to_owned()))
+            .expect("local server identity");
+        let registry = root.path().join("registry.json");
+        let registry_data = json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{"default":{"provider":studio_runtime_schema::ProviderKind::Codex,"id":"default","home":"/default","label":"Default","source":"Codex CLI","status":"signedOut"}},"logins":{}}).to_string();
+        std::fs::write(&registry, &registry_data).expect("registry");
+        let policy =
+            AccountPolicyState::from_startup(Some(registry_data.as_bytes()), []).expect("policy");
+        let driver = Arc::new(
+            studio_runtime_services::account_driver::AccountDriver::open(registry).expect("driver"),
+        );
+        let account_home = root.path().join("profile");
+        std::fs::create_dir(&account_home).expect("account home");
+        std::fs::write(
+            account_home.join("auth.json"),
+            r#"{"OPENAI_API_KEY":"fixture"}"#,
+        )
+        .expect("fixture auth");
+        let project = root.path().join("project");
+        std::fs::create_dir(&project).expect("project");
+        let state = crate::router::HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().to_string_lossy().into_owned(),
+            4621,
+            None,
+            Some(store),
+            Some(Arc::new(policy)),
+        )
+        .with_account_driver(driver);
+        let app = crate::router::router(state).expect("HTTP router");
+        let (status, accounts) = post(
+            &app,
+            "/api/accounts/register",
+            &json!({"home":account_home}),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{accounts}");
+        let account = accounts["accounts"]
+            .as_array()
+            .expect("accounts")
+            .iter()
+            .find(|row| row["label"] == "profile")
+            .expect("registered account");
+        let (status, registered) =
+            post_project(&app, &json!({"action":"register", "path":project})).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{registered}");
+        let (status, updated) = post_project(&app, &json!({"action":"set_account", "path":project, "account_key":account["id"], "expected_revision":registered["accountRevision"]})).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{updated}");
+        assert_eq!(updated["accountKey"], account["id"]);
     }
 
     impl PairedTransport for ProjectPeer {
@@ -1469,7 +1555,8 @@ mod local_registration_tests {
             Some(Arc::clone(&store)),
             Some(Arc::new(policy)),
         );
-        let app = crate::router::router(state).expect("projects HTTP router");
+        let app = crate::router::router(state.with_account_driver(account_driver(root.path())))
+            .expect("projects HTTP router");
         let (status, first) = post_project(&app, &body).await;
         assert_eq!(status, axum::http::StatusCode::OK);
         let (status, replay) = post_project(&app, &body).await;
@@ -1563,7 +1650,8 @@ mod local_registration_tests {
             Some(Arc::new(policy)),
         );
         state.orchestration_driver = Some(Arc::clone(&driver));
-        let app = crate::router::router(state).expect("projects HTTP router");
+        let app = crate::router::router(state.with_account_driver(account_driver(root.path())))
+            .expect("projects HTTP router");
         let (first_status, first) = post_project(&app, &body).await;
         assert_eq!(
             first_status,
@@ -1620,7 +1708,8 @@ mod local_registration_tests {
             Some(Arc::clone(&store)),
             Some(Arc::new(policy)),
         );
-        let app = crate::router::router(state).expect("projects HTTP router");
+        let app = crate::router::router(state.with_account_driver(account_driver(root.path())))
+            .expect("projects HTTP router");
         let path = project_path.to_string_lossy();
         let (status, _) = post_project(
             &app,
