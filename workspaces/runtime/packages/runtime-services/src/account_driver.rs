@@ -1058,16 +1058,22 @@ impl RegistryState {
 #[derive(Clone)]
 pub struct AccountChangeSignal {
     sender: tokio::sync::watch::Sender<u64>,
+    registry: tokio::sync::watch::Sender<u64>,
 }
 
 impl AccountChangeSignal {
     pub fn new() -> Self {
         let (sender, _) = tokio::sync::watch::channel(0);
-        Self { sender }
+        let (registry, _) = tokio::sync::watch::channel(0);
+        Self { sender, registry }
     }
 
     pub fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
         self.sender.subscribe()
+    }
+
+    pub fn subscribe_registry(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.registry.subscribe()
     }
 
     /// Publishes a retained-session change after its registry guard is released.
@@ -1088,6 +1094,9 @@ impl RegistryState {
         self.revision = self.revision.wrapping_add(1);
         self.change_signal
             .sender
+            .send_modify(|generation| *generation = generation.wrapping_add(1));
+        self.change_signal
+            .registry
             .send_modify(|generation| *generation = generation.wrapping_add(1));
     }
 }
@@ -5157,7 +5166,17 @@ exit 0
             )),
         )
         .expect("open registry");
-        let mut changes = driver.change_signal().subscribe();
+        let signal = driver.change_signal();
+        let mut changes = signal.subscribe();
+        let mut registry_changes = signal.subscribe_registry();
+        signal.publish_session_change();
+        assert!(changes.has_changed().expect("session notification"));
+        assert!(
+            !registry_changes
+                .has_changed()
+                .expect("session is not a registry change")
+        );
+        let _observed_session = *changes.borrow_and_update();
         assert_eq!(driver.revision().expect("read revision"), 0);
         driver
             .set_name("default", "Codex", "abc")
@@ -5183,6 +5202,12 @@ exit 0
                 .has_changed()
                 .expect("public profile change publishes")
         );
+        assert!(
+            registry_changes
+                .has_changed()
+                .expect("registry change publishes")
+        );
+        let _observed_registry = *registry_changes.borrow_and_update();
         let _observed_generation = *changes.borrow_and_update();
         driver
             .set_name("default", "Renamed", "def")

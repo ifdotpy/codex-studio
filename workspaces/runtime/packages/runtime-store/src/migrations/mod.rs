@@ -527,6 +527,20 @@ static CATALOG: &[&dyn Migration] = &[
         },
         apply: |c| m2026_10_28_receipts_schema::apply(c.transaction),
     },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-dismissed-incidents-index",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Receipt incidents without a dismissal index",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| {
+            Ok(crate::receipt_schema::install_dismissed_index(
+                c.transaction,
+            )?)
+        },
+    },
     &ReceiptMigration {
         family: &m2026_10_28_receipts_execution::ExecutionMigration,
         sources: m2026_10_28_receipts_execution::SOURCES,
@@ -1197,6 +1211,35 @@ pub(crate) fn prepare_canvas_fixture(transaction: &Transaction<'_>) -> StoreResu
 mod tests {
     use super::*;
     use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+
+    #[test]
+    fn dismissal_index_migration_preserves_incidents() {
+        let mut db = Connection::open_in_memory().expect("database");
+        crate::receipt_schema::create(&db).expect("schema");
+        db.execute_batch("DROP INDEX runtime_error_incidents_dismissed; INSERT INTO runtime_error_incidents(id,kind,owner_kind,owner_id,created,last_seen,dismissed_at,payload) VALUES('dismissed','http_failure','request','owner',1,1,2,'null'),('open','http_failure','request','owner',1,1,NULL,'null');").expect("old incidents");
+        let tx = db.transaction().expect("transaction");
+        let accounts = Accounts::new();
+        let step = CATALOG
+            .iter()
+            .find(|step| step.definition().id == "2026-10-30-dismissed-incidents-index")
+            .expect("registered migration");
+        let context = Context::Sql(SqlContext {
+            transaction: &tx,
+            accounts: &accounts,
+            source: SourceDatabase::Independent,
+        });
+        step.apply(&context).expect("migration");
+        step.apply(&context).expect("repeat migration");
+        let rows: i64 = tx
+            .query_row("SELECT count(*) FROM runtime_error_incidents", [], |row| {
+                row.get(0)
+            })
+            .expect("rows");
+        assert_eq!(rows, 2);
+        let plan: String = tx.query_row("EXPLAIN QUERY PLAN SELECT id,dismissed_at FROM runtime_error_incidents WHERE dismissed_at IS NOT NULL", [], |row| row.get(3)).expect("plan");
+        assert!(plan.contains("runtime_error_incidents_dismissed"), "{plan}");
+        tx.commit().expect("commit");
+    }
 
     #[test]
     fn migration_removes_unused_monitor_stall_index() {
