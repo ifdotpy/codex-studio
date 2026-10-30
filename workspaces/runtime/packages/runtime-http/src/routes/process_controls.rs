@@ -10,7 +10,7 @@ use std::sync::Arc;
 use studio_runtime_providers::ProviderKind;
 use studio_runtime_schema::process_controls::{
     ProcessActionResult, ProcessActionStatus, ProcessControlRequest, ProcessOutcome,
-    ProcessReceipt, ProcessResponse, Request, ResponseEntry, ResponseOutcome,
+    ProcessReceipt, ProcessResponse, ResponseEntry, ResponseOutcome,
 };
 use studio_runtime_schema::shared_values::{
     NATIVE_TERMINAL_ITEMS_PER_PAGE, NATIVE_TERMINAL_MAX_PAGES,
@@ -42,6 +42,10 @@ pub(crate) fn routes() -> RouteGroup {
 fn error(error: controls::Error) -> ApiError {
     match error {
         controls::Error::Expired => ApiError::new(StatusCode::GONE, error.to_string()),
+        controls::Error::Invalid("This process action ID has different content") => ApiError::new(
+            StatusCode::CONFLICT,
+            "This process action ID has different content",
+        ),
         controls::Error::Invalid(message) => ApiError::new(StatusCode::BAD_REQUEST, message),
         controls::Error::Store(error) => ApiError::stored(error),
     }
@@ -175,8 +179,26 @@ async fn receipt(
 async fn action(
     State(state): State<HttpState>,
     runtime: Option<Extension<Arc<MonitorRuntime>>>,
-    ApiJson(request): ApiJson<Request>,
+    ApiJson(request): ApiJson<ProcessControlRequest>,
 ) -> Result<Json<ProcessActionResult>, ApiError> {
+    if let ProcessControlRequest::StopResponse {
+        scope,
+        response_target,
+        ..
+    }
+    | ProcessControlRequest::BackgroundCommand {
+        scope,
+        response_target,
+        ..
+    } = &request
+        && (scope.agent != response_target.agent
+            || scope.account_key != response_target.account_key
+            || scope.epoch != response_target.epoch)
+    {
+        return Err(invalid(
+            "Response identity does not match the process owner",
+        ));
+    }
     execute(state, runtime.map(|Extension(r)| r), request)
         .await
         .map(Json)
@@ -185,24 +207,21 @@ async fn action(
 async fn execute(
     state: HttpState,
     runtime: Option<Arc<MonitorRuntime>>,
-    request: Request,
+    request: ProcessControlRequest,
 ) -> Result<ProcessActionResult, ApiError> {
     let store = store(&state)?;
     // A lost response must reuse its saved action without another native read.
     let replay_request = request.clone();
     if let Some(result) = store
         .read_async("runtime-http/routes/process_controls", move |tx| {
-            controls::replay(tx, replay_request.raw()).map_err(error)
+            controls::replay(tx, &replay_request).map_err(error)
         })
         .await?
     {
         return Ok(result);
     }
-    let proof = if matches!(
-        request.command(),
-        ProcessControlRequest::StopResponse { .. }
-    ) {
-        held_response_proof(&state, &request.command().scope().agent).await
+    let proof = if matches!(&request, ProcessControlRequest::StopResponse { .. }) {
+        held_response_proof(&state, request.scope().agent.as_str()).await
     } else {
         None
     };
@@ -213,7 +232,7 @@ async fn execute(
         studio_runtime_services::event_write::unix_time().map_err(|_| ApiError::internal())?;
     let claim = store
         .transaction_with(move |tx| {
-            let owners = controls::owners(tx, &claim_request.command().scope().agent)?;
+            let owners = controls::owners(tx, claim_request.scope().agent.as_str())?;
             let rows = controls::process_rows(tx, &owners)?;
             let mut connections = connections(&claim_state, tx, &owners, &rows)?;
             if let Some(proof) = claim_proof {
@@ -233,14 +252,14 @@ async fn execute(
     };
     let root_request_id = record.root_request_id.clone();
     let admitted = record.admitted_request.clone();
-    let scope = request.command().scope();
-    match request.command() {
+    let scope = request.scope();
+    match &request {
         ProcessControlRequest::BackgroundCommand { item_id, .. } => {
             let outcome = background_command(
                 &state,
                 &record.response_target,
-                item_id,
-                &scope.request_id,
+                item_id.as_str(),
+                scope.request_id.as_str(),
                 (&root_request_id, &admitted),
             )
             .await
@@ -252,8 +271,8 @@ async fn execute(
             });
             result.status = response_status(&outcome);
             result.response = Some(ProcessResponse::Response(ResponseEntry {
-                agent: scope.agent.clone(),
-                item_id: Some(item_id.clone()),
+                agent: scope.agent.as_str().to_owned(),
+                item_id: Some(item_id.as_str().to_owned()),
                 outcome,
             }));
         }
@@ -261,7 +280,7 @@ async fn execute(
             let outcome = stop_response(
                 &state,
                 &record.response_target,
-                &scope.request_id,
+                scope.request_id.as_str(),
                 proof.as_ref(),
                 (&root_request_id, &admitted),
             )
@@ -274,7 +293,7 @@ async fn execute(
             });
             result.status = response_status(&outcome);
             result.response = Some(ProcessResponse::Response(ResponseEntry {
-                agent: scope.agent.clone(),
+                agent: scope.agent.as_str().to_owned(),
                 item_id: None,
                 outcome,
             }));
@@ -285,7 +304,7 @@ async fn execute(
                     &state,
                     runtime.as_ref(),
                     &target,
-                    &scope.request_id,
+                    scope.request_id.as_str(),
                     (&root_request_id, &admitted),
                 )
                 .await

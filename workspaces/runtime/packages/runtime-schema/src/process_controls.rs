@@ -1,4 +1,5 @@
 //! Process action commands and durable outcomes. Native provider payloads stay opaque.
+use crate::monitor_record::MonitorText;
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
@@ -39,12 +40,9 @@ pub const BACKGROUND_ITEM_MAX_CODEPOINTS: usize = BACKGROUND_ITEM_MAX_BYTES;
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ProcessActionScope {
-    #[schemars(length(min = 1, max = ACTION_ID_MAX_CODEPOINTS))]
-    pub request_id: String,
-    #[schemars(length(min = 1, max = ACTION_ID_MAX_CODEPOINTS))]
-    pub agent: String,
-    #[schemars(length(min = 1, max = ACTION_ID_MAX_CODEPOINTS))]
-    pub account_key: String,
+    pub request_id: MonitorText<1, ACTION_ID_MAX_CODEPOINTS>,
+    pub agent: MonitorText<1, ACTION_ID_MAX_CODEPOINTS>,
+    pub account_key: MonitorText<1, ACTION_ID_MAX_CODEPOINTS>,
     #[schemars(range(min = 0, max = crate::shared_values::MAX_SAFE_INTEGER))]
     #[serde(deserialize_with = "epoch")]
     pub epoch: u64,
@@ -53,14 +51,10 @@ pub struct ProcessActionScope {
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProcessIdentity {
-    #[schemars(length(min = 1, max = PROCESS_KEY_MAX_CODEPOINTS))]
-    pub key: String,
-    #[schemars(length(min = 1, max = GENERATION_MAX_CODEPOINTS))]
-    pub generation: String,
-    #[schemars(length(min = 1, max = ACTION_ID_MAX_CODEPOINTS))]
-    pub agent: String,
-    #[schemars(length(min = 1, max = ACTION_ID_MAX_CODEPOINTS))]
-    pub account_key: String,
+    pub key: MonitorText<1, PROCESS_KEY_MAX_CODEPOINTS>,
+    pub generation: MonitorText<1, GENERATION_MAX_CODEPOINTS>,
+    pub agent: MonitorText<1, ACTION_ID_MAX_CODEPOINTS>,
+    pub account_key: MonitorText<1, ACTION_ID_MAX_CODEPOINTS>,
     #[schemars(range(min = 0, max = crate::shared_values::MAX_SAFE_INTEGER))]
     #[serde(deserialize_with = "epoch")]
     pub epoch: u64,
@@ -69,21 +63,72 @@ pub struct ProcessIdentity {
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProcessResponseTarget {
-    #[schemars(length(min = 1, max = ACTION_ID_MAX_CODEPOINTS))]
-    pub agent: String,
-    #[schemars(length(min = 1, max = ACTION_ID_MAX_CODEPOINTS))]
-    pub account_key: String,
+    pub agent: MonitorText<1, ACTION_ID_MAX_CODEPOINTS>,
+    pub account_key: MonitorText<1, ACTION_ID_MAX_CODEPOINTS>,
     #[schemars(range(min = 0, max = crate::shared_values::MAX_SAFE_INTEGER))]
     #[serde(deserialize_with = "epoch")]
     pub epoch: u64,
-    #[schemars(length(min = 1, max = ACTION_ID_MAX_CODEPOINTS))]
-    pub connection_id: String,
-    #[schemars(length(min = 1, max = ACTION_ID_MAX_CODEPOINTS))]
-    pub thread_id: String,
-    #[schemars(length(min = 1, max = ACTION_ID_MAX_CODEPOINTS))]
-    pub turn_id: String,
+    pub connection_id: MonitorText<1, ACTION_ID_MAX_CODEPOINTS>,
+    pub thread_id: MonitorText<1, ACTION_ID_MAX_CODEPOINTS>,
+    pub turn_id: MonitorText<1, ACTION_ID_MAX_CODEPOINTS>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(transparent)]
+pub struct ProcessSnapshot(Vec<ProcessIdentity>);
+impl ProcessSnapshot {
+    pub fn as_slice(&self) -> &[ProcessIdentity] {
+        &self.0
+    }
+}
+impl<'de> Deserialize<'de> for ProcessSnapshot {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let rows = Vec::<ProcessIdentity>::deserialize(d)?;
+        if (1..=MAX_PROCESS_SNAPSHOT).contains(&rows.len()) {
+            Ok(Self(rows))
+        } else {
+            Err(serde::de::Error::custom("invalid process snapshot size"))
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+#[serde(try_from = "bool", into = "bool")]
+pub struct NoDescendants;
+impl TryFrom<bool> for NoDescendants {
+    type Error = &'static str;
+    fn try_from(value: bool) -> Result<Self, Self::Error> {
+        if value {
+            Err("descendant scope applies only to process stop")
+        } else {
+            Ok(Self)
+        }
+    }
+}
+impl From<NoDescendants> for bool {
+    fn from(_: NoDescendants) -> bool {
+        false
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(transparent)]
+pub struct BackgroundItem(String);
+impl BackgroundItem {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+impl<'de> Deserialize<'de> for BackgroundItem {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let item = String::deserialize(d)?;
+        if !item.is_empty() && item.len() <= BACKGROUND_ITEM_MAX_BYTES {
+            Ok(Self(item))
+        } else {
+            Err(serde::de::Error::custom("invalid background command item"))
+        }
+    }
+}
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ProcessControlRequest {
@@ -107,8 +152,8 @@ pub enum ProcessControlRequest {
     StopOwned {
         #[serde(flatten)]
         scope: ProcessActionScope,
-        #[schemars(length(min = 1, max = MAX_PROCESS_SNAPSHOT))]
-        processes: Vec<ProcessIdentity>,
+        #[schemars(with = "Vec<ProcessIdentity>", length(min = 1, max = MAX_PROCESS_SNAPSHOT))]
+        processes: ProcessSnapshot,
         #[serde(default)]
         include_descendants: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -124,8 +169,8 @@ pub enum ProcessControlRequest {
         scope: ProcessActionScope,
         response_target: ProcessResponseTarget,
         #[serde(default)]
-        #[schemars(extend("const" = false))]
-        include_descendants: bool,
+        #[schemars(with = "bool", extend("const" = false))]
+        include_descendants: NoDescendants,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         process: Option<()>,
         #[serde(default)]
@@ -139,11 +184,11 @@ pub enum ProcessControlRequest {
         #[serde(flatten)]
         scope: ProcessActionScope,
         response_target: ProcessResponseTarget,
-        #[schemars(length(min = 1, max = BACKGROUND_ITEM_MAX_CODEPOINTS))]
-        item_id: String,
+        #[schemars(with = "String", length(min = 1, max = BACKGROUND_ITEM_MAX_CODEPOINTS))]
+        item_id: BackgroundItem,
         #[serde(default)]
-        #[schemars(extend("const" = false))]
-        include_descendants: bool,
+        #[schemars(with = "bool", extend("const" = false))]
+        include_descendants: NoDescendants,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         process: Option<()>,
         #[serde(default)]
@@ -162,71 +207,9 @@ impl ProcessControlRequest {
     }
 }
 
-/// Keep the original transport body: inactive nulls and omissions are signature data.
-#[derive(Clone, Debug)]
-pub struct Request {
-    raw: Value,
-    command: ProcessControlRequest,
-}
-impl<'de> Deserialize<'de> for Request {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let raw = Box::<serde_json::value::RawValue>::deserialize(deserializer)?;
-        Self::parse(&raw).map_err(serde::de::Error::custom)
-    }
-}
-impl Request {
-    pub fn raw(&self) -> &Value {
-        &self.raw
-    }
-    pub fn command(&self) -> &ProcessControlRequest {
-        &self.command
-    }
-    pub fn parse(raw: &serde_json::value::RawValue) -> Result<Self, String> {
-        let command: ProcessControlRequest =
-            serde_json::from_str(raw.get()).map_err(|error| error.to_string())?;
-        let raw = serde_json::from_str(raw.get()).map_err(|error| error.to_string())?;
-        match &command {
-            ProcessControlRequest::StopOwned { processes, .. } if processes.is_empty() => {
-                return Err("No owned process identities were supplied".into());
-            }
-            ProcessControlRequest::StopResponse {
-                scope,
-                response_target,
-                include_descendants,
-                ..
-            }
-            | ProcessControlRequest::BackgroundCommand {
-                scope,
-                response_target,
-                include_descendants,
-                ..
-            } => {
-                if *include_descendants {
-                    return Err("Descendant scope applies only to process stop".into());
-                }
-                if scope.agent != response_target.agent
-                    || scope.account_key != response_target.account_key
-                    || scope.epoch != response_target.epoch
-                {
-                    return Err("Response identity does not match the process owner".into());
-                }
-            }
-            ProcessControlRequest::StopSelected { .. }
-            | ProcessControlRequest::StopOwned { .. } => {}
-        }
-        if let ProcessControlRequest::BackgroundCommand { item_id, .. } = &command
-            && (item_id.is_empty() || item_id.len() > BACKGROUND_ITEM_MAX_BYTES)
-        {
-            return Err("Background move requires exactly one command item".into());
-        }
-        Ok(Self { raw, command })
-    }
-}
-
 #[cfg(test)]
-fn parse_fixture(value: &Value) -> Result<Request, String> {
-    let raw = serde_json::value::RawValue::from_string(value.to_string()).expect("fixture JSON");
-    Request::parse(&raw)
+fn parse_fixture(value: &Value) -> Result<ProcessControlRequest, serde_json::Error> {
+    serde_json::from_value(value.clone())
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -481,7 +464,7 @@ mod tests {
         assert!(generator.definitions().contains_key("Child"));
     }
     #[test]
-    fn process_command_variants_preserve_raw_legacy_fields() {
+    fn process_command_variants_accept_legacy_null_fields() {
         let identity = json!({"key":"key","generation":"generation","agent":"owner","accountKey":"account","epoch":1});
         let target = json!({"agent":"owner","accountKey":"account","epoch":1,"connectionId":"connection","threadId":"thread","turnId":"turn"});
         for (action, fields) in [
@@ -506,7 +489,7 @@ mod tests {
             raw.as_object_mut()
                 .expect("object")
                 .extend(fields.as_object().expect("fields").clone());
-            assert_eq!(parse_fixture(&raw).expect("legacy request").raw, raw);
+            assert!(parse_fixture(&raw).is_ok(), "legacy request: {raw}");
             let required = match action {
                 "stop_selected" => "process",
                 "stop_owned" => "processes",
@@ -562,6 +545,31 @@ pub(crate) fn check_schema_parity(openapi: &Value) -> Result<(), String> {
 #[cfg(test)]
 mod ingress_tests {
     use super::*;
+
+    #[test]
+    fn process_command_rejects_invalid_bounds_without_schema_validation() {
+        let valid = json!({"action":"stop_owned","requestId":"request","agent":"owner","accountKey":"account","epoch":1,"processes":[{"key":"key","generation":"generation","agent":"owner","accountKey":"account","epoch":1}]});
+        for (field, invalid) in [
+            ("requestId", json!("")),
+            ("agent", json!("x".repeat(201))),
+            ("processes", json!([])),
+            ("processes", json!(vec![valid["processes"][0].clone(); 501])),
+            ("epoch", json!(9007199254740992u64)),
+            ("unexpected", json!(true)),
+        ] {
+            let mut input = valid.clone();
+            input[field] = invalid;
+            assert!(
+                serde_json::from_value::<ProcessControlRequest>(input.clone()).is_err(),
+                "accepted {input}"
+            );
+        }
+        let mut response = json!({"action":"background_command","requestId":"r","agent":"a","accountKey":"a","epoch":1,"responseTarget":{"agent":"a","accountKey":"a","epoch":1,"connectionId":"c","threadId":"t","turnId":"t"},"itemId":"i","includeDescendants":true});
+        assert!(parse_fixture(&response).is_err());
+        response["includeDescendants"] = json!(false);
+        response["itemId"] = json!("é".repeat(101));
+        assert!(parse_fixture(&response).is_err());
+    }
 
     #[test]
     fn process_command_schema_and_serde_reject_cross_action_fields() {

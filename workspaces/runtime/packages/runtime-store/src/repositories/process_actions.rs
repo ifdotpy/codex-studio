@@ -34,7 +34,7 @@ pub struct ProcessActionRecord {
     pub scope_account_key: String,
     pub scope_epoch: Number,
     pub action: ProcessActionKind,
-    /// Retain the wire identity's numeric spelling for exact owner comparison.
+    /// Retain the response identity, including numeric spellings in older records.
     pub response_target: Value,
     pub processes: Vec<ProcessEntry>,
     pub created: f64,

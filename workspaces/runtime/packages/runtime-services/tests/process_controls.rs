@@ -7,9 +7,10 @@ use studio_runtime_store::{RuntimeStore, StoreError};
 fn corpus() -> Value {
     serde_json::from_str(include_str!("fixtures/process-controls.json")).unwrap()
 }
-fn parse_request_fixture(value: &Value) -> studio_runtime_schema::process_controls::Request {
-    let raw = serde_json::value::RawValue::from_string(value.to_string()).unwrap();
-    studio_runtime_schema::process_controls::Request::parse(&raw).unwrap()
+fn parse_request_fixture(
+    value: &Value,
+) -> studio_runtime_schema::process_controls::ProcessControlRequest {
+    serde_json::from_value(value.clone()).unwrap()
 }
 #[tokio::test]
 async fn leaf_listing_does_not_decode_unrelated_agents() {
@@ -202,6 +203,12 @@ async fn action_receipt_replays_without_dispatch_and_rejects_identity_reuse() {
     let query = json!({"requestId":"request","agent":"owner","accountKey":"acct","epoch":3});
     assert!(matches!(
         process_controls::receipt(&connection, &query).unwrap(),
+        studio_runtime_schema::process_controls::ProcessReceipt::Found(_)
+    ));
+    let mut decimal_epoch = query.clone();
+    decimal_epoch["epoch"] = json!(3.0);
+    assert!(matches!(
+        process_controls::receipt(&connection, &decimal_epoch).unwrap(),
         studio_runtime_schema::process_controls::ProcessReceipt::Found(_)
     ));
     let mut foreign = query;

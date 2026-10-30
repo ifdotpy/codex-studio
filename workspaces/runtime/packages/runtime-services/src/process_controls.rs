@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, HashSet};
 use studio_runtime_providers::ProviderKind;
 use studio_runtime_schema::process_controls::{
     ProcessActionResult, ProcessActionStatus, ProcessControlRequest, ProcessEntry, ProcessOutcome,
-    ProcessReceipt, Request,
+    ProcessReceipt,
 };
 use studio_runtime_store::{
     ProcessActionKind, ProcessActionPhase, ProcessActionRecord, StoreError, Transaction,
@@ -302,28 +302,12 @@ fn text<'a>(value: &'a Value, key: &str, default: &'a str) -> &'a str {
 fn string(value: &Value, key: &str) -> Value {
     value[key].as_str().map_or(Value::Null, |v| json!(v))
 }
-fn canonical(value: &Value) -> String {
-    match value {
-        Value::Object(map) => {
-            let ordered: BTreeMap<_, _> = map.iter().collect();
-            format!(
-                "{{{}}}",
-                ordered
-                    .iter()
-                    .map(|(key, value)| format!("{}:{}", json!(key), canonical(value)))
-                    .collect::<Vec<_>>()
-                    .join(",")
-            )
-        }
-        Value::Array(items) => format!(
-            "[{}]",
-            items.iter().map(canonical).collect::<Vec<_>>().join(",")
-        ),
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => value.to_string(),
-    }
-}
 pub fn digest(value: &Value) -> String {
-    studio_runtime_store::sha256_hex(canonical(value).as_bytes())
+    studio_runtime_store::sha256_hex(value.to_string().as_bytes())
+}
+fn request_digest(request: &ProcessControlRequest) -> Result<String, Error> {
+    let bytes = serde_json::to_vec(request).map_err(StoreError::from)?;
+    Ok(studio_runtime_store::sha256_hex(&bytes))
 }
 pub fn project(source: &str, raw: &Value, owner: &Value, connection: Option<&str>) -> Value {
     project_bound(source, raw, owner, connection, None)
@@ -443,7 +427,7 @@ fn project_bound(
     } else {
         text(raw, "command", text(raw, "name", default_name))
     };
-    let mut result = json!({"id":text(raw,"id",&opaque),"key":URL_SAFE_NO_PAD.encode(canonical(&json!([source,agent,opaque]))),
+    let mut result = json!({"id":text(raw,"id",&opaque),"key":URL_SAFE_NO_PAD.encode(json!([source,agent,opaque]).to_string()),
         "generation":digest(&json!([source,agent,native])),"agent":agent,"accountKey":account,"epoch":owner["epoch"],
         "source":source,"status":text(raw,"status","unknown"),"cancelRequested":raw["cancelRequested"]==true,
         "created":raw["created"].as_f64().unwrap_or(0.0),"name":name,"command":string(raw,"command"),"cwd":string(raw,"cwd"),"log":string(raw,"log"),
@@ -595,24 +579,24 @@ pub enum Claim {
 
 pub fn claim(
     tx: &Transaction<'_>,
-    request: &Request,
+    request: &ProcessControlRequest,
     connections: &Connections,
     now: f64,
 ) -> Result<Claim, Error> {
-    if let Some(result) = replay(tx, request.raw())? {
+    if let Some(result) = replay(tx, request)? {
         return Ok(Claim::Replay(result));
     }
-    let command = request.command();
-    let request = request.raw();
-    let id = text(request, "requestId", "");
-    let signature = digest(request);
-    let scope = text(request, "agent", "");
+    let command = request;
+    let command_scope = command.scope();
+    let id = command_scope.request_id.as_str();
+    let signature = request_digest(request)?;
+    let scope = command_scope.agent.as_str();
     let owners = owners(tx, scope)?;
     let rows = process_rows(tx, &owners)?;
     let processes = processes(tx, &rows, connections)?;
     let owner = &owners[0];
-    if text(owner, "accountKey", "default") != request["accountKey"]
-        || owner["epoch"] != request["epoch"]
+    if text(owner, "accountKey", "default") != command_scope.account_key.as_str()
+        || owner["epoch"].as_u64() != Some(command_scope.epoch)
     {
         return Err(Error::Invalid(
             "The process owner changed. Refresh the process list",
@@ -620,27 +604,25 @@ pub fn claim(
     }
     let mut targets = Vec::new();
     let mut entries = Vec::new();
-    let response = if matches!(
-        command,
-        ProcessControlRequest::StopResponse { .. }
-            | ProcessControlRequest::BackgroundCommand { .. }
-    ) {
+    let response = if let ProcessControlRequest::StopResponse {
+        response_target, ..
+    }
+    | ProcessControlRequest::BackgroundCommand {
+        response_target, ..
+    } = command
+    {
+        let target = serde_json::to_value(response_target).map_err(StoreError::from)?;
         let valid = if matches!(command, ProcessControlRequest::StopResponse { .. }) {
-            !request["responseTarget"].is_null()
-                && stop_target(owner, connections) == request["responseTarget"]
+            stop_target(owner, connections) == target
         } else {
-            validate_response(
-                owner,
-                &request["responseTarget"],
-                connections.get(scope).map(String::as_str),
-            )
+            validate_response(owner, &target, connections.get(scope).map(String::as_str))
         };
         if !valid {
             return Err(Error::Invalid(
                 "The response changed. Refresh the process list",
             ));
         }
-        request["responseTarget"].clone()
+        target
     } else {
         let (selected, include_descendants) = match command {
             ProcessControlRequest::StopSelected {
@@ -659,17 +641,17 @@ pub fn claim(
             }
         };
         let mut seen = HashSet::new();
-        for (index, identity) in selected.iter().enumerate() {
-            // Keep numeric spellings in identity comparisons as well as the signature.
-            let raw_identity = if matches!(command, ProcessControlRequest::StopSelected { .. }) {
-                &request["process"]
-            } else {
-                &request["processes"][index]
-            };
-            let found = processes.iter().find(|p| matches(p, raw_identity));
-            let error = if !seen.insert(&identity.key) {
+        for identity in selected {
+            let found = processes.iter().find(|p| {
+                text(p, "key", "") == identity.key.as_str()
+                    && text(p, "generation", "") == identity.generation.as_str()
+                    && text(p, "agent", "") == identity.agent.as_str()
+                    && text(p, "accountKey", "") == identity.account_key.as_str()
+                    && p["epoch"].as_u64() == Some(identity.epoch)
+            });
+            let error = if !seen.insert(identity.key.as_str()) {
                 Some("A process identity was repeated")
-            } else if !include_descendants && identity.agent != scope {
+            } else if !include_descendants && identity.agent.as_str() != scope {
                 Some("Worker processes are outside this stop scope")
             } else if found.is_none() {
                 Some("This process changed or finished. Refresh the process list")
@@ -680,8 +662,8 @@ pub fn claim(
             };
             if let Some(error) = error {
                 entries.push(ProcessEntry {
-                    key: identity.key.clone(),
-                    agent: identity.agent.clone(),
+                    key: identity.key.as_str().to_owned(),
+                    agent: identity.agent.as_str().to_owned(),
                     source: None,
                     generation: None,
                     outcome: ProcessOutcome::Stale {
@@ -717,8 +699,8 @@ pub fn claim(
             "process-action",
             &[
                 scope,
-                text(request, "accountKey", ""),
-                &request["epoch"].to_string(),
+                command_scope.account_key.as_str(),
+                &command_scope.epoch.to_string(),
             ],
             &root_request_id,
         )
@@ -746,11 +728,8 @@ pub fn claim(
         signature: signature.clone(),
         phase: ProcessActionPhase::Dispatching,
         scope_agent: scope.into(),
-        scope_account_key: text(request, "accountKey", "").into(),
-        scope_epoch: request["epoch"]
-            .as_number()
-            .cloned()
-            .ok_or(Error::Invalid("Invalid process epoch"))?,
+        scope_account_key: command_scope.account_key.as_str().to_owned(),
+        scope_epoch: command_scope.epoch.into(),
         action: match command {
             ProcessControlRequest::StopSelected { .. } => ProcessActionKind::StopSelected,
             ProcessControlRequest::StopOwned { .. } => ProcessActionKind::StopOwned,
@@ -779,11 +758,14 @@ pub fn claim(
 }
 /// Reuse a durable action before any fresh native observation. Changed content
 /// under the same request ID remains an error, including after a lost response.
-pub fn replay(tx: &Transaction<'_>, request: &Value) -> Result<Option<ProcessActionResult>, Error> {
+pub fn replay(
+    tx: &Transaction<'_>,
+    request: &ProcessControlRequest,
+) -> Result<Option<ProcessActionResult>, Error> {
     let prior: Option<(String, String)> = tx
         .query_row(
             "SELECT signature,record FROM runtime_process_actions WHERE id=?",
-            [text(request, "requestId", "")],
+            [request.scope().request_id.as_str()],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()
@@ -791,7 +773,7 @@ pub fn replay(tx: &Transaction<'_>, request: &Value) -> Result<Option<ProcessAct
     let Some((signature, raw)) = prior else {
         return Ok(None);
     };
-    if signature != digest(request) {
+    if signature != request_digest(request)? {
         return Err(Error::Invalid(
             "This process action ID has different content",
         ));
@@ -831,7 +813,7 @@ pub fn receipt(connection: &Connection, query: &Value) -> Result<ProcessReceipt,
     if let Some(record) = record
         && record.scope_agent == query["agent"]
         && record.scope_account_key == query["accountKey"]
-        && query["epoch"].as_number() == Some(&record.scope_epoch)
+        && query["epoch"].as_f64() == record.scope_epoch.as_f64()
     {
         return Ok(ProcessReceipt::found(record.result));
     }
@@ -867,13 +849,43 @@ mod claim_identity_tests {
     use studio_runtime_store::request_results::RequestResults;
 
     #[test]
-    fn raw_request_keeps_the_existing_canonical_signature() {
-        let raw = serde_json::value::RawValue::from_string(r#"{"action":"stop_owned","requestId":"request","agent":"owner","accountKey":"acct","epoch":1.0,"processes":[{"key":"key","generation":"gen","agent":"owner","accountKey":"acct","epoch":1.0}],"responseTarget":null}"#.into()).expect("fixture JSON");
-        let request = Request::parse(&raw).expect("request");
+    fn process_generation_digest_keeps_canonical_nested_keys() {
+        let value = json!({"z":[{"b":2,"a":1}],"a":{"y":3,"b":2}});
         assert_eq!(
-            digest(request.raw()),
-            "b16654521805af453f0fc6e0b9f42fb54887c3b20eb1fb103b50e05a645497f8"
+            digest(&value),
+            "72ddf54a7a1042b66ae85c35ecc5c9b2d5fea1cce275577cf0502e1f1965da22"
         );
+    }
+
+    #[test]
+    fn normalized_signature_replays_and_refuses_preupgrade_receipt() {
+        let raw = r#"{"action":"stop_owned","requestId":"request","agent":"owner","accountKey":"acct","epoch":1.0,"processes":[{"key":"key","generation":"gen","agent":"owner","accountKey":"acct","epoch":1.0}],"responseTarget":null}"#;
+        let request: ProcessControlRequest = serde_json::from_str(raw).expect("request");
+        let normalized = raw
+            .replace("1.0", "1")
+            .replace(",\"responseTarget\":null", "");
+        let retry: ProcessControlRequest = serde_json::from_str(&normalized).expect("retry");
+        let signature = request_digest(&request).expect("signature");
+        assert_eq!(signature, request_digest(&retry).expect("retry signature"));
+        let old = "b16654521805af453f0fc6e0b9f42fb54887c3b20eb1fb103b50e05a645497f8";
+        assert_ne!(signature, old);
+        let mut db = Connection::open_in_memory().expect("database");
+        db.execute_batch(
+            "CREATE TABLE runtime_process_actions(id TEXT PRIMARY KEY,signature TEXT,record TEXT);",
+        )
+        .expect("table");
+        db.execute(
+            "INSERT INTO runtime_process_actions VALUES('request',?1,'{}')",
+            [old],
+        )
+        .expect("old receipt");
+        let tx = db.transaction().expect("transaction");
+        assert!(matches!(
+            replay(&tx, &retry),
+            Err(Error::Invalid(
+                "This process action ID has different content"
+            ))
+        ));
     }
 
     #[test]
@@ -905,7 +917,7 @@ mod claim_identity_tests {
             .to_string(),
         )
         .expect("fixture JSON");
-        let request = Request::parse(&raw).expect("request");
+        let request: ProcessControlRequest = serde_json::from_str(raw.get()).expect("request");
         let connections = Connections::from([("owner".into(), "connection".into())]);
         let tx = db.transaction().expect("transaction");
         let Claim::New { record, .. } =
