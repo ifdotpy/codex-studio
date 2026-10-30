@@ -610,7 +610,6 @@ static CATALOG: &[&dyn Migration] = &[
     },
     &SqlMigration {
         definition: MigrationDefinition {
-<<<<<<< head
             id: "2026-10-30-durable-seq",
             introduced: OCTOBER_30,
             target: MigrationTarget::Canvas,
@@ -618,8 +617,9 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| crate::durable_seq::install(c.transaction),
-||||||| base
-=======
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
             id: "2026-10-30-rule-monitor-records",
             introduced: OCTOBER_30,
             target: MigrationTarget::Canvas,
@@ -627,7 +627,6 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| m2026_10_30_rule_monitor_records::apply(c.transaction),
->>>>>>> origin/main
     },
     &RegistryMigration,
 ];
