@@ -1278,16 +1278,6 @@
       "title": "Claims",
       "type": "array"
     },
-    "limits": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/ContinuationLimitsObservation"
-        },
-        {
-          "type": "null"
-        }
-      ]
-    },
     "record": {
       "anyOf": [
         {

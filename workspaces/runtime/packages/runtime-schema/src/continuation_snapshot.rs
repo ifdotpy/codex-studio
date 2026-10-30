@@ -2,7 +2,7 @@
 use crate::queue_command::Field;
 use crate::{
     json_object::JsonObject, provider_kind::ProviderKind, recovery_record::SafeInteger,
-    shared_values::MAX_SAFE_INTEGER, stored_record::StoredJsonInteger,
+    shared_values::MAX_SAFE_INTEGER,
 };
 use serde::{Deserialize, Deserializer, Serialize, de::Error};
 use serde_json::{Number, Value};
@@ -43,23 +43,6 @@ impl<'de, T: Deserialize<'de>, const MAX: usize> Deserialize<'de> for BoundedVec
             Ok(Self(v))
         } else {
             Err(D::Error::custom("too many items"))
-        }
-    }
-}
-/// A finite JSON number without schema bounds.
-pub struct FiniteNumber(f64);
-impl FiniteNumber {
-    pub fn get(&self) -> f64 {
-        self.0
-    }
-}
-impl<'de> Deserialize<'de> for FiniteNumber {
-    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let value = f64::deserialize(d)?;
-        if value.is_finite() {
-            Ok(Self(value))
-        } else {
-            Err(D::Error::custom("expected finite number"))
         }
     }
 }
@@ -153,7 +136,6 @@ pub struct ContinuationSnapshot {
     pub ancestors: Option<BoundedVec<ContinuationAgent, 64>>,
     #[serde(default, deserialize_with = "optional_nonnull")]
     pub claims: Option<BoundedVec<BoundedString<1, 4096>, 4096>>,
-    pub limits: Option<JsonObject<ContinuationLimitsObservation>>,
     pub record: Option<ContinuationRecord>,
 }
 
@@ -292,84 +274,6 @@ pub struct ContinuationAttempt {
     pub extra: BTreeMap<String, Value>,
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ContinuationLimitsObservation {
-    #[serde(rename = "_syncEntities")]
-    pub sync_entities: Option<Vec<JsonObject<SyncEntity>>>,
-    #[serde(rename = "_syncEntitiesAfter")]
-    sync_entities_after: Option<StoredJsonInteger>,
-    pub account_key: String,
-    pub at: Option<FiniteNumber>,
-    pub checked_at: Option<FiniteNumber>,
-    pub data: Option<UsageLimitsData>,
-    pub error: Option<String>,
-    pub processed_at: Option<FiniteNumber>,
-    pub read_at: Option<FiniteNumber>,
-    #[serde(default, deserialize_with = "optional_nonnull")]
-    pub stale: Option<bool>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RateLimitBucket {
-    pub individual_limit: Option<JsonObject<RateLimitIndividualLimit>>,
-    pub limit_id: Option<String>,
-    pub limit_name: Option<String>,
-    pub primary: Option<JsonObject<RateLimitWindow>>,
-    pub rate_limit_reached_type: Option<String>,
-    pub secondary: Option<JsonObject<RateLimitWindow>>,
-    pub spend_control_reached: Option<bool>,
-    #[serde(flatten)]
-    pub extra: BTreeMap<String, Value>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RateLimitIndividualLimit {
-    pub remaining_percent: Option<FiniteNumber>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RateLimitResetCredit {
-    pub expires_at: Option<FiniteNumber>,
-    pub granted_at: Option<FiniteNumber>,
-    pub id: String,
-    pub reset_type: String,
-    pub status: String,
-    #[serde(flatten)]
-    pub extra: BTreeMap<String, Value>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RateLimitResetCredits {
-    available_count: Option<StoredJsonInteger>,
-    #[serde(default, deserialize_with = "optional_nonnull")]
-    pub credits: Option<Vec<RateLimitResetCredit>>,
-    #[serde(flatten)]
-    pub extra: BTreeMap<String, Value>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RateLimitWindow {
-    pub resets_at: Option<FiniteNumber>,
-    pub used_percent: Option<FiniteNumber>,
-    pub window_duration_mins: Option<FiniteNumber>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SyncEntity {
-    #[serde(rename = "_deleted")]
-    pub deleted: bool,
-    pub id: String,
-    pub payload: String,
-    seq: StoredJsonInteger,
-}
-
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageContinuation {
@@ -411,21 +315,6 @@ pub struct UsageContinuation {
     pub task_claims: Option<BoundedVec<BoundedString<1, 4096>, 4096>>,
     pub thread_id: BoundedString<1, 4096>,
     pub turn_id: BoundedString<1, 4096>,
-    #[serde(flatten)]
-    pub extra: BTreeMap<String, Value>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UsageLimitsData {
-    pub account_id: Option<String>,
-    pub ordinary_usage_allowed: Option<bool>,
-    pub rate_limit_reset_credits: Option<RateLimitResetCredits>,
-    pub rate_limits: Option<RateLimitBucket>,
-    pub rate_limits_by_limit_id: Option<BTreeMap<String, RateLimitBucket>>,
-    pub signed_in: Option<bool>,
-    pub source: Option<String>,
-    pub status: Option<String>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
@@ -510,24 +399,6 @@ pub enum UsageContinuationStatus {
     Unknown,
 }
 
-impl ContinuationLimitsObservation {
-    pub fn sync_entities_after(&self) -> Option<&serde_json::Number> {
-        self.sync_entities_after
-            .as_ref()
-            .map(StoredJsonInteger::number)
-    }
-}
-impl RateLimitResetCredits {
-    pub fn available_count(&self) -> Option<&serde_json::Number> {
-        self.available_count.as_ref().map(StoredJsonInteger::number)
-    }
-}
-impl SyncEntity {
-    pub fn seq(&self) -> &serde_json::Number {
-        self.seq.number()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -552,7 +423,7 @@ mod tests {
         let text = include_str!("schemas/persisted-continuation-snapshot.schema.json");
         assert_eq!(
             data_encoding::HEXLOWER.encode(&Sha256::digest(text.as_bytes())),
-            "a7017d756fa23351e3bc19f9a411158bee12d199f538e0a717860ab4d5e93923",
+            "4d1d0741289425c28684d543f7c20a70f61da8dd4f6324eb49f17267b0b6863c",
             "schema changed: review continuation_snapshot typed owner"
         );
         let schema: Value = serde_json::from_str(text).expect("schema");
@@ -603,40 +474,10 @@ mod tests {
                 |v| serde_json::from_value::<ContinuationAttempt>(v).is_ok(),
             ),
             (
-                "ContinuationLimitsObservation",
-                json!({"accountKey":""}),
-                |v| serde_json::from_value::<JsonObject<ContinuationLimitsObservation>>(v).is_ok(),
-            ),
-            ("RateLimitBucket", json!({}), |v| {
-                serde_json::from_value::<RateLimitBucket>(v).is_ok()
-            }),
-            ("RateLimitIndividualLimit", json!({}), |v| {
-                serde_json::from_value::<JsonObject<RateLimitIndividualLimit>>(v).is_ok()
-            }),
-            (
-                "RateLimitResetCredit",
-                json!({"id":"","status":"","resetType":""}),
-                |v| serde_json::from_value::<RateLimitResetCredit>(v).is_ok(),
-            ),
-            ("RateLimitResetCredits", json!({}), |v| {
-                serde_json::from_value::<RateLimitResetCredits>(v).is_ok()
-            }),
-            ("RateLimitWindow", json!({}), |v| {
-                serde_json::from_value::<JsonObject<RateLimitWindow>>(v).is_ok()
-            }),
-            (
-                "SyncEntity",
-                json!({"id":"","seq":0,"payload":"","_deleted":false}),
-                |v| serde_json::from_value::<JsonObject<SyncEntity>>(v).is_ok(),
-            ),
-            (
                 "UsageContinuation",
                 json!({"id":"x","accountKey":"x","threadId":"x","epoch":0,"turnId":"x","status":"scheduled","failedAt":0}),
                 |v| serde_json::from_value::<UsageContinuation>(v).is_ok(),
             ),
-            ("UsageLimitsData", json!({}), |v| {
-                serde_json::from_value::<UsageLimitsData>(v).is_ok()
-            }),
         ];
         let mut enum_objects_accepted = Vec::new();
         for (name, base, parse) in cases {

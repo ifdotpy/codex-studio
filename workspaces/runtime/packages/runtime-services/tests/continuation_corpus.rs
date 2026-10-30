@@ -30,7 +30,6 @@ fn typed_continuation_snapshot_matches_schema_shapes() {
         ("agent", json!(["a", "a", 1, "running", "codex"])),
         ("record", json!([])),
         ("record", json!(null)),
-        ("limits", json!({"accountKey":"a","unknown":true})),
     ] {
         let mut input = base.clone();
         input[key] = value;
@@ -38,6 +37,15 @@ fn typed_continuation_snapshot_matches_schema_shapes() {
         .is_ok();
         assert_eq!(typed, validator.is_valid(&input), "{input}");
     }
+}
+
+#[test]
+fn limits_observation_keeps_its_own_validation() {
+    use studio_runtime_services::usage_resume::LimitsObservation;
+    assert!(LimitsObservation::from_record(json!({"accountKey":"a"}), None).is_ok());
+    assert!(
+        LimitsObservation::from_record(json!({"accountKey":"a","unknown":true}), None).is_err()
+    );
 }
 
 #[test]
