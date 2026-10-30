@@ -3164,6 +3164,7 @@ async fn shutdown_releases_account_while_store_operation_is_blocked() {
 }
 
 #[tokio::test]
+#[ignore = "heavy tier: just test-quarantine (flaky under load, issue #616)"]
 async fn accepted_turn_reattaches_and_keeps_notification_effects() {
     eprintln!("reattach: creating fixture");
     let state = State::new().await;
