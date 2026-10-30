@@ -2125,6 +2125,7 @@ mod bounded_reconcile_tests {
                         status: AgentStatus::Queued,
                         account_key: "account-a".into(),
                         auto_wake: Some(true),
+                        usage_resume_enabled: None,
                         in_flight: Some(false),
                         execution_mode: None,
                         turn_epoch: None,
@@ -2310,6 +2311,7 @@ mod bounded_reconcile_tests {
                         status: AgentStatus::Queued,
                         account_key: "default".into(),
                         auto_wake: Some(true),
+                        usage_resume_enabled: None,
                         in_flight: Some(false),
                         execution_mode: None, turn_epoch: None, thread_id: None, turn_id: None,
                         extra: BTreeMap::from([
@@ -2377,6 +2379,7 @@ mod bounded_reconcile_tests {
                             status,
                             account_key: "default".into(),
                             auto_wake: None,
+                            usage_resume_enabled: None,
                             in_flight: None,
                             execution_mode: None,
                             turn_epoch: None,

@@ -2568,6 +2568,7 @@ mod voice_composition_tests {
                         account_key: "voice-account".into(),
                         thread_id: Some("voice-thread".into()),
                         auto_wake: None,
+                        usage_resume_enabled: None,
                         in_flight: None,
                         execution_mode: None,
                         turn_epoch: None,

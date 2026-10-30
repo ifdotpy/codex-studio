@@ -1693,7 +1693,7 @@ mod request_tests {
         run_async(store.transaction_with_error(move |tx| {
             let mut lead = AgentRepository::get(tx, &AgentId::from("lead"))?.expect("lead exists");
             lead.extra.insert("usageResume".into(), resume.clone());
-            lead.extra.insert("usageResumeEnabled".into(), json!(true));
+            lead.usage_resume_enabled = Some(true);
             AgentRepository::put(tx, &lead)?;
             tx.execute(
                 "INSERT INTO runtime_usage_resumes(id,agent,record) VALUES(?1,?2,?3)",

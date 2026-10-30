@@ -479,7 +479,7 @@ fn tick_before_observation(s: &Snapshot, now: f64) -> Result<Option<Decision>> {
         .as_ref()
         .is_some_and(|v| v.get() != 0.0)
         || !s.agent_view().auto_wake.unwrap_or(false)
-        || s.agent_view().usage_resume_enabled == Some(false)
+        || s.agent_record().usage_resume_enabled == Some(false)
         || s.agent_account() != key
         || !s.parents_running(false)
     {
@@ -582,8 +582,8 @@ pub fn failure_identity(s: &Snapshot, turn_id: &str) -> String {
     crate::event_write::request_signature(&json!([
         s.agent_id(),
         s.agent_account(),
-        s.agent["threadId"],
-        s.agent["epoch"],
+        s.agent_record().thread_id,
+        s.agent_record().epoch,
         turn_id
     ]))
 }
@@ -596,14 +596,14 @@ pub struct FailureObservation<'a> {
 }
 pub fn failure_eligible(s: &Snapshot) -> bool {
     !crate::continuation::native_thread_blocked(&s.agent)
-        && s.agent_view().auto_wake.unwrap_or(false)
+        && s.agent_record().auto_wake.unwrap_or(false)
         && !s
             .agent_view()
             .deleted_at
             .as_ref()
             .is_some_and(|v| v.get() != 0.0)
-        && s.agent_view().usage_resume_enabled != Some(false)
-        && s.agent_view().thread_id.is_some()
+        && s.agent_record().usage_resume_enabled != Some(false)
+        && s.agent_record().thread_id.is_some()
         && !s
             .agent
             .get("turnEpoch")
@@ -654,8 +654,8 @@ pub fn record_failure(s: &Snapshot, failure: FailureObservation<'_>, now: f64) -
         id: id.clone(),
         status: if excluded { "cancelled" } else { "scheduled" },
         account_key: s.agent_account().into(),
-        thread_id: s.agent["threadId"].clone(),
-        epoch: s.agent["epoch"].clone(),
+        thread_id: s.agent_record().thread_id.clone(),
+        epoch: s.agent_record().epoch,
         turn_id: failure.turn_id.into(),
         cause: failure.cause,
         failed_at: now,

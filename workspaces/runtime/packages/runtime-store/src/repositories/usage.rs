@@ -231,12 +231,10 @@ pub fn disable_usage_resume(
         if decode_resume(embedded.clone(), resume_id).is_none() {
             return Err(invalid("runtime_agents", agent_id));
         }
-        if agent.extra.get("usageResumeEnabled") == Some(&Value::Bool(false)) {
+        if agent.usage_resume_enabled == Some(false) {
             return Ok(embedded.clone());
         }
-        agent
-            .extra
-            .insert("usageResumeEnabled".to_owned(), Value::Bool(false));
+        agent.usage_resume_enabled = Some(false);
         if resume.status == UsageContinuationStatus::Scheduled {
             resume.cancel("Automatic resume is off for this chat.", now);
             transaction.execute(
@@ -514,6 +512,19 @@ mod tests {
         assert_eq!(read(&tx, "runtime_agents", AGENT), before_agent);
         assert_eq!(read(&tx, "runtime_usage_resumes", "resume"), before_resume);
         tx.rollback().expect("rollback");
+    }
+
+    #[test]
+    fn disabling_resume_updates_the_typed_agent_field() {
+        let saved = resume("resume", "scheduled");
+        let connection = database(json!({"usageResumeEnabled":true,"usageResume":saved}));
+        insert(&connection, "runtime_usage_resumes", "resume", &saved);
+        let tx = connection.unchecked_transaction().expect("transaction");
+        disable_usage_resume(&tx, AGENT, "resume", 200.0).expect("disable result");
+        let agent: serde_json::Value =
+            serde_json::from_str(&read(&tx, "runtime_agents", AGENT)).unwrap();
+        assert_eq!(agent["usageResumeEnabled"], false);
+        assert_eq!(agent["usageResume"]["status"], "cancelled");
     }
 
     #[test]
