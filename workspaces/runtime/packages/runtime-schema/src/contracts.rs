@@ -341,9 +341,10 @@ fn shared_values_ts() -> String {
 
 fn multi_server_protocol_ts() -> String {
     format!(
-        "// {HEADER}\nexport const ACCESS_PROTOCOL_VERSION = {} as const;\nexport const MULTI_SERVER_SIGNING_DOMAIN = {} as const;\n",
+        "// {HEADER}\nexport const ACCESS_PROTOCOL_VERSION = {} as const;\nexport const MULTI_SERVER_SIGNING_DOMAIN = {} as const;\nexport const IDENTITY_PROOF_NONCE_BYTES = {} as const;\n",
         multi_server_protocol::ACCESS_PROTOCOL_VERSION,
         json_string(multi_server_protocol::MULTI_SERVER_SIGNING_DOMAIN),
+        multi_server_protocol::IDENTITY_PROOF_NONCE_BYTES,
     )
 }
 

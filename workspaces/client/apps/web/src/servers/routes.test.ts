@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { identityProofInput, publicKeyPem } from "./pairing";
 import {
   ROUTE_FAILURE_COOLDOWN_MS,
   RouteIdentityError,
@@ -10,16 +11,52 @@ import {
 const PAIRED = "https://mac.tail.ts.net";
 const LAN = "https://192.168.1.5:8443";
 
-/** A fake network: each origin answers with a server id, or fails. */
-function network(answers: Record<string, string | "down">) {
-  const calls: Array<{ url: string; init?: RequestInit }> = [];
+const keys = await crypto.subtle.generateKey({ name: "Ed25519" }, false, [
+  "sign",
+  "verify",
+]);
+const otherKeys = await crypto.subtle.generateKey({ name: "Ed25519" }, false, [
+  "sign",
+  "verify",
+]);
+const serverKey = publicKeyPem(
+  await crypto.subtle.exportKey("spki", keys.publicKey),
+);
+
+type Answer =
+  | "down"
+  /** Right server id, signs with the server key. */
+  | "server"
+  /** Right server id, but cannot sign. */
+  | "no-proof"
+  /** Right server id, signs with another key. */
+  | "wrong-key"
+  /** Another server. */
+  | "other";
+
+/** A fake network: each origin answers a nonce challenge, or fails. */
+function network(answers: Record<string, Answer>) {
+  const calls: Array<{ url: string; nonce: string; init?: RequestInit }> = [];
   const request = vi.fn(
     async (url: string | URL | Request, init?: RequestInit) => {
-      const href = String(url);
-      calls.push({ url: href, ...(init ? { init } : {}) });
-      const answer = answers[new URL(href).origin];
+      const href = new URL(String(url));
+      const nonce = href.searchParams.get("nonce") ?? "";
+      calls.push({ url: href.href, nonce, ...(init ? { init } : {}) });
+      const answer = answers[href.origin];
       if (!answer || answer === "down") throw new TypeError("network down");
-      return Response.json({ serverId: answer });
+      if (answer === "other") return Response.json({ serverId: "other" });
+      if (answer === "no-proof") return Response.json({ serverId: "srv" });
+      const signer =
+        answer === "server" ? keys.privateKey : otherKeys.privateKey;
+      const signature = await crypto.subtle.sign(
+        "Ed25519",
+        signer,
+        new TextEncoder().encode(identityProofInput("srv", nonce)),
+      );
+      return Response.json({
+        serverId: "srv",
+        proof: btoa(String.fromCharCode(...new Uint8Array(signature))),
+      });
     },
   );
   return { answers, calls, request: request as unknown as typeof fetch };
@@ -33,6 +70,7 @@ function routesWith(net: ReturnType<typeof network>, learned: string[] = []) {
     { read: () => learned, write: (value) => saved.push(value) },
     net.request,
   );
+  routes.pin(serverKey);
   return { routes, saved };
 }
 
@@ -48,8 +86,15 @@ describe("route list (rule 1)", () => {
     expect(routes.routes()).toEqual([PAIRED, LAN]);
   });
 
+  it("uses the paired route without a check when it is the only route", async () => {
+    const net = network({});
+    const { routes } = routesWith(net);
+    expect(await routes.resolve()).toBe(PAIRED);
+    expect(net.calls).toHaveLength(0);
+  });
+
   it("uses the first route that answers", async () => {
-    const net = network({ [PAIRED]: "down", [LAN]: "srv" });
+    const net = network({ [PAIRED]: "down", [LAN]: "server" });
     const { routes } = routesWith(net, [LAN]);
     expect(await routes.resolve()).toBe(LAN);
     expect(net.calls.map((call) => new URL(call.url).origin)).toEqual([
@@ -59,7 +104,7 @@ describe("route list (rule 1)", () => {
   });
 
   it("stays on the first route and asks once", async () => {
-    const net = network({ [PAIRED]: "srv", [LAN]: "srv" });
+    const net = network({ [PAIRED]: "server", [LAN]: "server" });
     const { routes } = routesWith(net, [LAN]);
     await routes.resolve();
     await routes.resolve();
@@ -67,21 +112,60 @@ describe("route list (rule 1)", () => {
   });
 });
 
-describe("identity before credentials (rule 2)", () => {
-  it("asks without credentials and rejects another server", async () => {
-    const net = network({ [PAIRED]: "other" });
-    const { routes } = routesWith(net);
-    await expect(routes.resolve()).rejects.toBeInstanceOf(RouteIdentityError);
-    expect(net.calls[0]!.url).toBe(`${PAIRED}/api/multi-server/v1/identity`);
-    expect(net.calls[0]!.init?.credentials).toBe("omit");
-    expect(net.calls[0]!.init?.headers).toBeUndefined();
+describe("identity proof before credentials (rule 2)", () => {
+  it("asks without credentials, with a fresh nonce for each check", async () => {
+    const net = network({ [PAIRED]: "down", [LAN]: "server" });
+    const { routes } = routesWith(net, [LAN]);
+    await routes.resolve();
+    routes.fail(LAN);
+    vi.advanceTimersByTime(ROUTE_FAILURE_COOLDOWN_MS);
+    await routes.resolve();
+    const lan = net.calls.filter((call) => call.url.startsWith(LAN));
+    expect(lan).toHaveLength(2);
+    expect(lan[0]!.nonce).not.toBe(lan[1]!.nonce);
+    expect(lan[0]!.nonce).toHaveLength(32);
+    expect(lan[0]!.url).toContain("/api/multi-server/v1/identity?nonce=");
+    expect(lan[0]!.init?.credentials).toBe("omit");
+    expect(lan[0]!.init?.headers).toBeUndefined();
   });
 
-  it("skips a route that now belongs to another machine", async () => {
-    const net = network({ [PAIRED]: "down", [LAN]: "other" });
+  it.each(["no-proof", "wrong-key", "other"] as const)(
+    "gives no credential to a route that answers %s",
+    async (answer) => {
+      const net = network({ [PAIRED]: "down", [LAN]: answer });
+      const { routes } = routesWith(net, [LAN]);
+      await expect(routes.resolve()).rejects.toBeInstanceOf(RouteIdentityError);
+      expect(routes.current()).toBeUndefined();
+    },
+  );
+
+  it("gives no credential to a learned route when no key was pinned", async () => {
+    const net = network({ [PAIRED]: "down", [LAN]: "server" });
+    const routes = new ServerRoutes(
+      PAIRED,
+      "srv",
+      { read: () => [LAN], write: () => {} },
+      net.request,
+    );
+    await expect(routes.resolve()).rejects.toBeInstanceOf(RouteIdentityError);
+  });
+
+  it("does not accept the proof of an older nonce", async () => {
+    const net = network({ [PAIRED]: "down", [LAN]: "server" });
+    const stale = await crypto.subtle.sign(
+      "Ed25519",
+      keys.privateKey,
+      new TextEncoder().encode(identityProofInput("srv", "A".repeat(32))),
+    );
+    net.request = (async (url: string) => {
+      if (String(url).startsWith(PAIRED)) throw new TypeError("network down");
+      return Response.json({
+        serverId: "srv",
+        proof: btoa(String.fromCharCode(...new Uint8Array(stale))),
+      });
+    }) as unknown as typeof fetch;
     const { routes } = routesWith(net, [LAN]);
     await expect(routes.resolve()).rejects.toBeInstanceOf(RouteIdentityError);
-    expect(routes.current()).toBeUndefined();
   });
 });
 
@@ -102,18 +186,21 @@ describe("learned routes (rule 3)", () => {
   });
 
   it("never sends a key paired over HTTPS over plain HTTP", async () => {
-    const net = network({ [PAIRED]: "down", "http://192.168.1.5:8080": "srv" });
+    const net = network({
+      [PAIRED]: "down",
+      "http://192.168.1.5:8080": "server",
+    });
     const { routes } = routesWith(net);
     routes.learn(["http://192.168.1.5:8080"]);
     expect(routes.routes()).toEqual([PAIRED]);
-    await expect(routes.resolve()).rejects.toBeInstanceOf(TypeError);
-    expect(net.calls.every((call) => call.url.startsWith(PAIRED))).toBe(true);
+    expect(await routes.resolve()).toBe(PAIRED);
+    expect(net.calls).toHaveLength(0);
   });
 });
 
 describe("return to the faster route (rule 4)", () => {
   async function onLan() {
-    const net = network({ [PAIRED]: "down", [LAN]: "srv" });
+    const net = network({ [PAIRED]: "down", [LAN]: "server" });
     const { routes } = routesWith(net, [LAN]);
     expect(await routes.resolve()).toBe(LAN);
     const changed = vi.fn();
@@ -123,7 +210,7 @@ describe("return to the faster route (rule 4)", () => {
 
   it("moves back when an earlier route works and tells the stream", async () => {
     const { net, routes, changed } = await onLan();
-    net.answers[PAIRED] = "srv";
+    net.answers[PAIRED] = "server";
     vi.advanceTimersByTime(ROUTE_FAILURE_COOLDOWN_MS);
     await routes.returnToFaster();
     expect(routes.current()).toBe(PAIRED);
@@ -141,7 +228,7 @@ describe("return to the faster route (rule 4)", () => {
   it("waits a cooldown before it tries a failed route again", async () => {
     const { net, routes } = await onLan();
     const before = net.calls.length;
-    net.answers[PAIRED] = "srv";
+    net.answers[PAIRED] = "server";
     await routes.returnToFaster();
     expect(net.calls).toHaveLength(before);
     expect(routes.current()).toBe(LAN);
@@ -151,18 +238,18 @@ describe("return to the faster route (rule 4)", () => {
   });
 
   it("does not check anything while the first route is in use", async () => {
-    const net = network({ [PAIRED]: "srv" });
+    const net = network({ [PAIRED]: "server" });
     const { routes } = routesWith(net, [LAN]);
     await routes.resolve();
     await routes.returnToFaster();
     expect(net.calls).toHaveLength(1);
   });
 
-  it("tries every route again when all wait, so a single route can recover", async () => {
-    const net = network({ [PAIRED]: "down" });
-    const { routes } = routesWith(net);
+  it("tries every route again when all wait, so the retry loop can recover", async () => {
+    const net = network({ [PAIRED]: "down", [LAN]: "down" });
+    const { routes } = routesWith(net, [LAN]);
     await expect(routes.resolve()).rejects.toBeInstanceOf(TypeError);
-    net.answers[PAIRED] = "srv";
+    net.answers[PAIRED] = "server";
     expect(await routes.resolve()).toBe(PAIRED);
   });
 });
@@ -181,7 +268,7 @@ describe("requests on a route", () => {
   });
 
   it("puts a route that fails at the network level in cooldown", async () => {
-    const net = network({ [PAIRED]: "srv", [LAN]: "srv" });
+    const net = network({ [PAIRED]: "server", [LAN]: "server" });
     const { routes } = routesWith(net, [LAN]);
     await routes.resolve();
     const send = vi.fn(async () => {
@@ -195,7 +282,7 @@ describe("requests on a route", () => {
   });
 
   it("does not blame a route for an abort", async () => {
-    const net = network({ [PAIRED]: "srv" });
+    const net = network({ [PAIRED]: "server" });
     const { routes } = routesWith(net);
     await routes.resolve();
     const send = vi.fn(async () => {

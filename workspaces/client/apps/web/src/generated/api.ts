@@ -12398,6 +12398,11 @@ export interface components {
       /** Origin */
       origin: null | string;
       /**
+       * Proof
+       * @description Signature over the requested nonce with the server identity key; present only when a nonce was sent.
+       */
+      proof?: string | undefined;
+      /**
        * Protocol
        * @constant
        */
@@ -33444,7 +33449,11 @@ export interface operations {
   };
   discovery_identity_api_multi_server_v1_identity_get: {
     parameters: {
-      query?: never | undefined;
+      query?:
+        | {
+            nonce?: string | undefined;
+          }
+        | undefined;
       header?: never | undefined;
       path?: never | undefined;
       cookie?: never | undefined;

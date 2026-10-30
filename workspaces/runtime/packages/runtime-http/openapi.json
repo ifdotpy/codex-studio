@@ -24728,6 +24728,11 @@
             ],
             "title": "Origin"
           },
+          "proof": {
+            "description": "Signature over the requested nonce with the server identity key; present only when a nonce was sent.",
+            "title": "Proof",
+            "type": "string"
+          },
           "protocol": {
             "const": 1,
             "maximum": 1,
@@ -73847,6 +73852,16 @@
     "/api/multi-server/v1/identity": {
       "get": {
         "operationId": "discovery_identity_api_multi_server_v1_identity_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "nonce",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {

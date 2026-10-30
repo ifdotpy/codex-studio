@@ -1,9 +1,13 @@
 /**
  * Ordered routes of one paired server. The paired origin is first; origins the
- * server reports are learned and follow it. A route gets requests only after
- * its public identity matches the server. Identity and return checks are
- * connection checks. They never read server data (docs/sync-protocol.md).
+ * server reports are learned and follow it. A learned route gets requests only
+ * after it signs a fresh nonce with the server key stored at pairing. The HTTPS
+ * paired origin is bound to its host name by TLS and needs no proof. Identity
+ * and return checks are connection checks. They never read server data
+ * (docs/sync-protocol.md).
  */
+
+import { newIdentityNonce, verifyIdentityProof } from "./pairing";
 
 /** Longest wait for one identity answer, in milliseconds. */
 export const ROUTE_IDENTITY_TIMEOUT_MS = 5_000;
@@ -55,6 +59,7 @@ export class ServerRoutes {
   private readonly serverId: string;
   private readonly store: RouteStore;
   private readonly request: typeof fetch;
+  private publicKey: string | undefined;
 
   constructor(
     paired: string,
@@ -79,6 +84,11 @@ export class ServerRoutes {
           origin !== this.paired && (!secure || origin.startsWith("https:")),
       ),
     ];
+  }
+
+  /** The server key (PEM) stored at pairing. Without it no learned route can prove itself. */
+  pin(publicKey: string) {
+    this.publicKey = publicKey;
   }
 
   current(): string | undefined {
@@ -147,6 +157,10 @@ export class ServerRoutes {
     let mismatch = false;
     // When every route waits, the retry loop still needs an answer: try them all.
     const all = this.routes();
+    if (all.length === 1) {
+      this.setActive(all[0]!);
+      return all[0]!;
+    }
     const open = all.filter((origin) => this.ready(origin));
     for (const origin of open.length ? open : all) {
       const result = await this.check(origin);
@@ -167,22 +181,38 @@ export class ServerRoutes {
     if (changed) for (const listener of this.listeners) listener(origin);
   }
 
-  /** Asks a route for the public identity before any key or session reaches it. */
+  /** Asks a route to prove the server identity before any key or session reaches it. */
   private async check(origin: string): Promise<"ok" | "mismatch" | "down"> {
+    const nonce = newIdentityNonce();
     try {
-      const response = await this.request(origin + IDENTITY_PATH, {
-        cache: "no-store",
-        credentials: "omit",
-        redirect: "error",
-        signal: AbortSignal.timeout(ROUTE_IDENTITY_TIMEOUT_MS),
-      });
+      const response = await this.request(
+        `${origin}${IDENTITY_PATH}?nonce=${nonce}`,
+        {
+          cache: "no-store",
+          credentials: "omit",
+          redirect: "error",
+          signal: AbortSignal.timeout(ROUTE_IDENTITY_TIMEOUT_MS),
+        },
+      );
       const body: unknown = response.ok ? await response.json() : undefined;
-      const id =
-        body && typeof body === "object" && "serverId" in body
-          ? body.serverId
+      const field = (name: string) =>
+        body && typeof body === "object" && name in body
+          ? (body as Record<string, unknown>)[name]
           : undefined;
-      if (typeof id !== "string" || !id) throw new TypeError("No identity.");
-      if (id === this.serverId) return "ok";
+      if (typeof field("serverId") !== "string")
+        throw new TypeError("No identity.");
+      const proved =
+        origin === this.paired && origin.startsWith("https:")
+          ? true
+          : typeof field("proof") === "string" &&
+            this.publicKey !== undefined &&
+            (await verifyIdentityProof(
+              this.publicKey,
+              this.serverId,
+              nonce,
+              field("proof") as string,
+            ));
+      if (field("serverId") === this.serverId && proved) return "ok";
       this.fail(origin);
       return "mismatch";
     } catch {

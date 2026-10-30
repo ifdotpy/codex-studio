@@ -5,10 +5,22 @@
 pub const ACCESS_PROTOCOL_VERSION: u64 = 1;
 /// Domain separator prefixed to every signed multi-server message.
 pub const MULTI_SERVER_SIGNING_DOMAIN: &str = "studio-multi-server-v1";
+/// Size of the random nonce that a client sends to prove a route's identity, in bytes.
+pub const IDENTITY_PROOF_NONCE_BYTES: usize = 24;
 /// File name of the remote access record in the state directory.
 pub const REMOTE_ACCESS_FILE: &str = "remote-access.json";
 /// Environment variable that overrides the public origin of this server.
 pub const PUBLIC_ORIGIN_ENVIRONMENT: &str = "CODEX_CANVAS_PUBLIC_ORIGIN";
+
+/// The message a server signs to prove its identity for `nonce`. The nonce is
+/// unpadded base64url of `IDENTITY_PROOF_NONCE_BYTES` bytes; any other value gives `None`.
+pub fn identity_proof_message(server_id: &str, nonce: &str) -> Option<String> {
+    let valid = nonce.len() == (IDENTITY_PROOF_NONCE_BYTES * 4).div_ceil(3)
+        && nonce
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_');
+    valid.then(|| format!("{MULTI_SERVER_SIGNING_DOMAIN}\nidentity\n{server_id}\n{nonce}"))
+}
 
 /// Fields of a schema-validated discovery response. Validate the complete
 /// DiscoveryIdentity schema before deserializing this view.
@@ -131,6 +143,18 @@ mod tests {
     }
 
     #[test]
+    fn identity_proof_message_is_fixed_and_checks_the_nonce() {
+        // The web copy (pairing.test.ts) asserts the same vector.
+        let nonce = "A".repeat(32);
+        assert_eq!(
+            super::identity_proof_message("srv", &nonce).as_deref(),
+            Some("studio-multi-server-v1\nidentity\nsrv\nAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+        );
+        assert_eq!(super::identity_proof_message("srv", "short"), None);
+        assert_eq!(super::identity_proof_message("srv", &"+".repeat(32)), None);
+    }
+
+    #[test]
     fn discovery_view_tracks_schema_fields_and_valid_formats() {
         let document: Value = serde_json::from_slice(crate::OPENAPI).unwrap();
         let schema = &document["components"]["schemas"]["DiscoveryIdentity"];
@@ -138,6 +162,7 @@ mod tests {
             "autoPair",
             "label",
             "origin",
+            "proof",
             "protocol",
             "publicKey",
             "serverId",

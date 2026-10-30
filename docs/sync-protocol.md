@@ -58,9 +58,13 @@ origin is first. The `session` event of every stream lists the origins the serve
 answers on (`routes`). The client learns them and drops the ones that are no
 longer listed. A key paired over HTTPS never goes over plain HTTP.
 
-- **Identity first.** Before a route gets a signed request, the client reads
-  `/api/multi-server/v1/identity` without a key and compares `serverId`. Another
-  server gets nothing.
+- **Identity first.** Before a learned route gets a signed request, the client
+  sends a fresh nonce to `/api/multi-server/v1/identity?nonce=...` without a key.
+  The server signs the nonce with its multi-server identity key. The client
+  verifies the signature with the server key stored at pairing. A route with the
+  right `serverId` that cannot sign gets nothing. The HTTPS paired origin needs no
+  proof (TLS binds it to its host name). The nonce size owner is
+  `IDENTITY_PROOF_NONCE_BYTES` in `multi_server_protocol.rs`.
 - **Faster route.** While a later route is in use, the client checks the earlier
   routes on network change, on foreground, and every minute. A failed route waits
   for a cooldown. A move replaces the stream.
