@@ -1,25 +1,19 @@
 //! Monitor transaction primitives; reuse typed tables and existing projections.
 
-use crate::{MonitorRecord, QueueEvent, RequestRecord, StoreResult, Table};
+use crate::{MonitorRecord, QueueEvent, StoreResult, Table};
 use rusqlite::{Connection, OptionalExtension, Transaction};
+use studio_runtime_schema::approvals::{Approval, ApprovalStateKind, Request, RequestKind};
 
-pub fn pending_approvals(
-    connection: &Connection,
-    monitor_id: &str,
-) -> StoreResult<Vec<RequestRecord>> {
-    // The unsettled-request partial index keeps this lookup off the request history.
-    let mut query = connection.prepare_cached(&format!(
-        "SELECT id FROM runtime_requests WHERE {} AND json_extract(record,'$.status')='pending' \
-         AND json_extract(record,'$.method')='monitor/approve' \
-         AND json_extract(record,'$.params.monitorId')=?1",
-        crate::startup_recovery::unsettled_request_predicate()
-    ))?;
-    let ids = query
-        .query_map([monitor_id], |row| row.get::<_, String>(0))?
-        .collect::<Result<Vec<_>, _>>()?;
-    ids.into_iter()
-        .filter_map(|id| Table::<RequestRecord>::new(connection).get(&id).transpose())
-        .collect()
+/// Pending approvals to start the monitor `monitor_id`.
+pub fn pending_approvals(connection: &Connection, monitor_id: &str) -> StoreResult<Vec<Approval>> {
+    Ok(crate::approvals::of_kind(
+        connection,
+        RequestKind::MonitorStart,
+        ApprovalStateKind::Pending,
+    )?
+    .into_iter()
+    .filter(|row| matches!(&row.request, Request::MonitorStart { monitor, .. } if monitor == monitor_id))
+    .collect())
 }
 
 pub fn put(transaction: &Transaction<'_>, value: serde_json::Value) -> StoreResult<()> {

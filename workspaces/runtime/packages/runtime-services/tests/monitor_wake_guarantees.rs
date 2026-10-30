@@ -7,6 +7,37 @@ use studio_runtime_services::{
 };
 use studio_runtime_store::{AgentRepository, AgentStatus, MonitorsRepository, RuntimeStore};
 
+/// A pending approval to start the monitor `monitor`, as the monitor owner creates it.
+fn pending_approval(
+    tx: &rusqlite::Transaction<'_>,
+    monitor: &str,
+) -> studio_runtime_schema::approvals::Approval {
+    use studio_runtime_schema::approvals as typed;
+    studio_runtime_store::approvals::create(
+        tx,
+        studio_runtime_store::approvals::NewApproval {
+            id: typed::ApprovalId("approval".into()),
+            agent: typed::AgentId("agent".into()),
+            turn: None,
+            epoch: None,
+            request: typed::Request::MonitorStart {
+                monitor: monitor.into(),
+                command: "printf fixture".into(),
+            },
+            delivery: None,
+            detail: typed::Detail {
+                params: typed::ProviderObject(Default::default()),
+                preview: None,
+                answer_error: None,
+                host_close_reason: None,
+            },
+            fire_at: None,
+        },
+        typed::Timestamp(2000.0),
+    )
+    .expect("approval row")
+}
+
 async fn fixture() -> (tempfile::TempDir, RuntimeStore, String, Operation) {
     let root = fixtures::tempdir();
     let mut case = fixtures::corpus(root.path()).remove(0);
@@ -300,10 +331,8 @@ async fn answered_approval_retires_card_and_replays_without_another_start() {
         let selected = id.clone();
         store.transaction(move |tx| {
             tx.execute("UPDATE runtime_monitors SET record=json_remove(json_set(record,'$.status','approval'),'$.operation') WHERE id=?1", [&selected])?;
-            let request = studio_runtime_store::RequestRecord::from_value(json!({"id":"approval","agent":"agent","method":"monitor/approve","status":"pending","params":{"monitorId":selected},"createdAt":2000.0}))?;
-            studio_runtime_store::Table::new(tx).put(&request)?;
-            let view = studio_runtime_services::sync_views::project_persisted_record("request", &request.value()).expect("pending view");
-            studio_runtime_store::SyncDocumentsRepository::put_entity(tx, "request", "approval", view, false)?;
+            let request = pending_approval(tx, &selected);
+            studio_runtime_store::SyncDocumentsRepository::put_entity(tx, "request", "approval", serde_json::to_value(&request)?, false)?;
             Ok(())
         }).await.expect("pending approval");
         let pending_seq: i64 = store.test_reader().expect("reader").query_row("SELECT seq FROM sync_entities WHERE collection='request' AND id='approval' AND deleted=0", [], |row| row.get(0)).expect("pending card");
@@ -375,7 +404,7 @@ async fn restart_preserves_unsubmitted_start_and_pending_approval() {
         store.transaction(move |tx| {
             tx.execute("UPDATE runtime_monitors SET record=json_remove(json_set(record,'$.status',?1),'$.operation') WHERE id=?2", (status, &selected))?;
             if status == "approval" {
-                studio_runtime_store::Table::new(tx).put(&studio_runtime_store::RequestRecord::from_value(json!({"id":"approval","agent":"agent","method":"monitor/approve","status":"pending","params":{"monitorId":selected},"createdAt":2000.0}))?)?;
+                pending_approval(tx, &selected);
             }
             Ok(())
         }).await.expect("persist unsubmitted intent");
@@ -405,14 +434,16 @@ async fn restart_preserves_unsubmitted_start_and_pending_approval() {
             assert_eq!(record.value()["status"], status);
             assert!(record.value().get("reattachRecovery").is_none());
             if status == "approval" {
-                let request =
-                    studio_runtime_store::Table::<studio_runtime_store::RequestRecord>::new(
-                        &store.test_reader().expect("reader"),
-                    )
-                    .get(&"approval".to_owned())
-                    .expect("request read")
-                    .expect("approval");
-                assert_eq!(request.value()["status"], "pending");
+                let request = studio_runtime_store::approvals::get(
+                    &store.test_reader().expect("reader"),
+                    &studio_runtime_schema::approvals::ApprovalId("approval".into()),
+                )
+                .expect("request read")
+                .expect("approval");
+                assert_eq!(
+                    request.state,
+                    studio_runtime_schema::approvals::ApprovalState::Pending
+                );
             }
         }
         if status == "approval" {
