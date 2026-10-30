@@ -421,7 +421,8 @@ pub(crate) fn ensure_project(
         "accountRevision":1,
         "homeServerId":server,
         "locations":[{"serverId":server,"path":path,"projectId":path}],
-        "locationsRevision":0
+        "locationsRevision":0,
+        "peerTeams":[]
     });
     transaction
         .execute(
@@ -936,6 +937,7 @@ mod tests {
             json!([{"serverId":"server-a","path":"/project","projectId":"/project"}])
         );
         assert_eq!(project["locationsRevision"], 0);
+        assert_eq!(project["peerTeams"], json!([]));
 
         let tx = connection.transaction().expect("replay transaction starts");
         super::replay_agent(&tx, "agent-a", &record["creationIntent"], |_, _| true)

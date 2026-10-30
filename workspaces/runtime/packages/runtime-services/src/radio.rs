@@ -234,6 +234,20 @@ struct PeerTeam {
     members: BTreeSet<String>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredProject {
+    path: String,
+    peer_teams: Vec<StoredPeerTeam>,
+}
+
+#[derive(Deserialize)]
+struct StoredPeerTeam {
+    id: String,
+    name: String,
+    members: Vec<String>,
+}
+
 #[derive(Clone, Debug)]
 struct Project {
     path: LexicalPath,
@@ -370,9 +384,17 @@ impl RadioAuthorizationSnapshot {
         let mut projects = Vec::new();
         for (key, raw) in &records.projects {
             let location = format!("projects/{key}");
-            let row = parse_object(raw, &location)?;
+            let mut decoder = serde_json::Deserializer::from_str(raw);
+            let row: StoredProject =
+                serde_path_to_error::deserialize(&mut decoder).map_err(|error| {
+                    invalid(format!(
+                        "{location}/{}",
+                        error.path().to_string().replace('.', "/")
+                    ))
+                })?;
+            decoder.end().map_err(|_| invalid(&location))?;
             let path = resolved_path(
-                optional_string(&row, "path", &location)?,
+                Some(row.path),
                 &records.resolved_paths,
                 &format!("{location}/path"),
             )?
@@ -381,31 +403,28 @@ impl RadioAuthorizationSnapshot {
                 continue;
             }
             let mut teams = Vec::new();
-            match row.get("peerTeams") {
-                None => {}
-                Some(Value::Array(values)) => {
-                    for (index, value) in values.iter().enumerate() {
-                        let at = format!("{location}/peerTeams/{index}");
-                        if !value.is_object() {
-                            return Err(invalid(&at));
-                        }
-                        let id = required_string(value, "id", &at)?;
-                        let _name = required_string(value, "name", &at)?;
-                        let members = string_list(value, "members", &at)?;
-                        let members = members
-                            .into_iter()
-                            .filter(|member| {
-                                agents.get(member).is_some_and(|agent| {
-                                    path.to_str().is_some_and(|path| agent.is_lead_for(path))
-                                })
-                            })
-                            .collect::<BTreeSet<_>>();
-                        if members.len() >= 2 {
-                            teams.push(PeerTeam { id, members });
-                        }
-                    }
+            for (index, team) in row.peer_teams.into_iter().enumerate() {
+                if team.id.is_empty()
+                    || team.name.is_empty()
+                    || team.members.iter().any(String::is_empty)
+                {
+                    return Err(invalid(format!("{location}/peerTeams/{index}")));
                 }
-                _ => return Err(invalid(format!("{location}/peerTeams"))),
+                let members = team
+                    .members
+                    .into_iter()
+                    .filter(|member| {
+                        agents.get(member).is_some_and(|agent| {
+                            path.to_str().is_some_and(|path| agent.is_lead_for(path))
+                        })
+                    })
+                    .collect::<BTreeSet<_>>();
+                if members.len() >= 2 {
+                    teams.push(PeerTeam {
+                        id: team.id,
+                        members,
+                    });
+                }
             }
             projects.push(Project { path, teams });
         }
@@ -579,4 +598,29 @@ pub struct RadioThreadBinding {
 pub enum RadioTurnDecision {
     Allow { binding: Option<RadioThreadBinding> },
     Deny(RadioDenial),
+}
+
+#[cfg(test)]
+mod project_contract_tests {
+    use super::*;
+
+    #[test]
+    fn project_team_projection_matches_stored_schema() {
+        for (raw, valid) in [
+            (r#"{"id":"p","path":"/p","peerTeams":[]}"#, true),
+            (r#"{"id":"p","path":"/p"}"#, false),
+            (
+                r#"{"id":"p","path":"/p","peerTeams":[{"id":"t","name":"T","members":[1]}]}"#,
+                false,
+            ),
+        ] {
+            let value: Value = serde_json::from_str(raw).expect("fixture JSON");
+            assert_eq!(
+                studio_runtime_schema::validate("PersistedProjectRecord", &value)
+                    .expect("project schema"),
+                valid
+            );
+            assert_eq!(serde_json::from_str::<StoredProject>(raw).is_ok(), valid);
+        }
+    }
 }

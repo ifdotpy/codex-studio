@@ -74,7 +74,7 @@ impl Fixture {
             .expect("publisher");
         store.transaction(move |tx| {
             for path in ["/p","/prefix"] {
-                ProjectsRepository::put_project(tx,&json!({"id":path,"path":path,"name":path,"created":1,"homeServerId":"owner","locations":[{"serverId":"owner","path":path,"projectId":path}]}))?;
+                ProjectsRepository::put_project(tx,&json!({"id":path,"path":path,"name":path,"created":1,"homeServerId":"owner","peerTeams":[],"locations":[{"serverId":"owner","path":path,"projectId":path}]}))?;
             }
             for agent in agents { AgentRepository::put(tx,&AgentRecord::from_value(agent)?)?; }
             for room in rooms {
@@ -236,7 +236,7 @@ async fn project_deletion_receipt_replay_changed_body_and_new_lifetime() {
     let first = f.call(f.body.clone()).await;
     assert_eq!(first.0, 200, "{}", first.1);
     let epoch = f.agent("lead")["epoch"].clone();
-    f.store.transaction(|tx|ProjectsRepository::put_project(tx,&json!({"id":"/p","path":"/p","name":"Recreated","created":3,"homeServerId":"owner","locations":[{"serverId":"owner","path":"/p","projectId":"/p"}]}))).await.expect("re-register");
+    f.store.transaction(|tx|ProjectsRepository::put_project(tx,&json!({"id":"/p","path":"/p","name":"Recreated","created":3,"homeServerId":"owner","peerTeams":[],"locations":[{"serverId":"owner","path":"/p","projectId":"/p"}]}))).await.expect("re-register");
     assert_eq!(f.call(f.body.clone()).await, first);
     assert_eq!(f.agent("lead")["epoch"], epoch);
     assert_eq!(f.ports.wakes.load(Ordering::SeqCst), 1);
@@ -655,7 +655,7 @@ async fn project_deletion_local_aliases_belong_to_one_scope() {
     f.store.transaction(|tx|{
         let mut physical=ProjectsRepository::get(tx,"/p")?.expect("physical").1;
         physical["projectAliases"]=json!([{"serverId":"owner","projectId":"logical-id"}]);ProjectsRepository::put_project(tx,&physical)?;
-        ProjectsRepository::put_project(tx,&json!({"id":"logical-id","path":"/p","name":"Logical","created":1,"homeServerId":"owner","locations":[{"serverId":"owner","path":"/p","projectId":"/p"}]}))
+        ProjectsRepository::put_project(tx,&json!({"id":"logical-id","path":"/p","name":"Logical","created":1,"homeServerId":"owner","peerTeams":[],"locations":[{"serverId":"owner","path":"/p","projectId":"/p"}]}))
     }).await.expect("logical alias");
     let mut body = f.body.clone();
     body["expected_project_seq"] = json!(

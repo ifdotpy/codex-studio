@@ -576,7 +576,7 @@ async fn local_project_registration(
         if matches!(admission, LocationAdmission::Replay(_)) { return Ok(admission); }
         if studio_runtime_store::ProjectsRepository::get(tx, &first_project_id)?.is_none() {
             let project = json!({"id":first_project_id,"path":first_project_id,"name":first_name,"created":now,
-                "homeServerId":first_local_server,"locations":[],"locationsRevision":0,
+                "homeServerId":first_local_server,"locations":[],"locationsRevision":0,"peerTeams":[],
                 "accountKey":first_default_account,"accountRevision":1,
                 "registration":{"server":registration["server"],"path":registration["path"],"name":registration["name"],"signature":registration_signature,"requestId":first_operation_id,"status":WorkEffectStatus::Unknown}});
             studio_runtime_store::ProjectsRepository::put_project(tx, &project)?;
@@ -954,7 +954,7 @@ async fn remote_project_write(
             if studio_runtime_store::ProjectsRepository::get(tx, &project_for_registration)?.is_none() {
                 let name = registration_for_write["name"].as_str().unwrap_or("Project");
                 let project = json!({"id":project_for_registration,"path":project_for_registration,"name":name,"created":now,
-                    "homeServerId":local_for_registration,"locations":[],"locationsRevision":0,"accountKey":account_for_registration,
+                    "homeServerId":local_for_registration,"locations":[],"locationsRevision":0,"accountKey":account_for_registration,"peerTeams":[],
                     "accountRevision":1,"registration":{"server":registration_for_write["server"],"path":registration_for_write["path"],"name":registration_for_write["name"],"signature":creation_signature,"requestId":registration_operation,"status":WorkEffectStatus::Unknown}});
                 studio_runtime_store::ProjectsRepository::put_project(tx, &project)?;
             }

@@ -24,7 +24,7 @@ async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>) {
             ProjectsRepository::put_project(
                 tx,
                 &json!({
-                    "id":"project", "path":cwd, "name":"Before", "created":0,
+                    "id":"project", "path":cwd, "name":"Before", "created":0, "peerTeams":[],
                 }),
             )
         })
