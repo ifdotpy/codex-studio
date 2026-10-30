@@ -207,6 +207,25 @@ mod tests {
         .unwrap()
     }
     #[tokio::test]
+    async fn retired_file_link_commands_do_not_affect_native_computations() {
+        let directory = tempfile::tempdir().unwrap();
+        let client = open(directory.path());
+        let retired = client
+            .request(request("old", "file_link.local", json!({"value":"a.md"})))
+            .await
+            .unwrap();
+        assert!(
+            matches!(retired.outcome, NativeOutcome::Failure(error) if error.code == "unknown_method")
+        );
+        let uuid = client
+            .request(request("uuid", "system.uuid", Value::Null))
+            .await
+            .unwrap();
+        assert!(
+            matches!(uuid.outcome, NativeOutcome::Success(Value::String(value)) if value.len() == 36)
+        );
+    }
+    #[tokio::test]
     async fn reader_prioritizes_event_and_rejects_unknown_response_identity() {
         let (socket, mut peer) = tokio::net::UnixStream::pair().unwrap();
         let (events, mut seen) = tokio::sync::mpsc::unbounded_channel();

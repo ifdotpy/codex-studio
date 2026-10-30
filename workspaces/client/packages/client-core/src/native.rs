@@ -390,7 +390,6 @@ fn pure(method: &str) -> bool {
         method,
         "markdown.parse" | "system.uuid" | "text.sentences" | "locale.language_name"
     ) || method.starts_with("url.")
-        || method.starts_with("file_link.")
 }
 fn compute(request: &Request) -> Response {
     if request.id.is_empty() || request.id.len() > 128 {
@@ -402,7 +401,6 @@ fn compute(request: &Request) -> Response {
     }
     match request.method.as_str() {
         "markdown.parse" => crate::markdown::dispatch(request),
-        method if method.starts_with("file_link.") => crate::file_links::dispatch(request),
         _ => crate::platform::dispatch(request),
     }
 }
