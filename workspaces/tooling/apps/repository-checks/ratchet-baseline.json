@@ -254,10 +254,6 @@
     },
     {
       "file": "workspaces/runtime/packages/runtime-services/src/disk_space.rs",
-      "fingerprint": "13b5cb06e017943b1fe119b52552377679c473c24d5cb3349aee3100f78469f8:0"
-    },
-    {
-      "file": "workspaces/runtime/packages/runtime-services/src/disk_space.rs",
       "fingerprint": "147ec2437e156db89169bc48d3481a10abda6f913f3da8d5011fda630b3f6236:0"
     },
     {
@@ -2613,14 +2609,6 @@
       "fingerprint": "c561134022751e5032b017f28ce8ce13cf637826a234d7119c8baab02fb0a488:0"
     },
     {
-      "file": "workspaces/runtime/packages/runtime-schema/src/agent_progress.rs",
-      "fingerprint": "4c871f573b738f817ade56bd8115d910a159b9cabc8249342270fe5cc1f1be2f:0"
-    },
-    {
-      "file": "workspaces/runtime/packages/runtime-schema/src/agent_progress.rs",
-      "fingerprint": "64f0d0bfb24bac180230fa8d9427646c83e00bdf79e544f85044f96fe05db91c:0"
-    },
-    {
       "file": "workspaces/runtime/packages/runtime-schema/src/complaints.rs",
       "fingerprint": "0f89f9483053f6b324fcaf680ef12f2dcf5eb4b0280839063cdd7f3e290207b4:0"
     },
@@ -2832,10 +2820,6 @@
   "switch-default": [],
   "to_value": [
     {
-      "file": "workspaces/runtime/packages/runtime-services/src/account_start_gate.rs",
-      "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:0"
-    },
-    {
       "file": "workspaces/runtime/packages/runtime-services/src/account_transfer.rs",
       "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:0"
     },
@@ -2898,10 +2882,6 @@
     {
       "file": "workspaces/runtime/packages/runtime-services/src/account_worker/store.rs",
       "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:0"
-    },
-    {
-      "file": "workspaces/runtime/packages/runtime-services/src/account_worker/store.rs",
-      "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:1"
     },
     {
       "file": "workspaces/runtime/packages/runtime-services/src/account_worker/tests/journal_publication.rs",
@@ -2998,10 +2978,6 @@
     {
       "file": "workspaces/runtime/packages/runtime-services/src/disk_space.rs",
       "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:0"
-    },
-    {
-      "file": "workspaces/runtime/packages/runtime-services/src/disk_space.rs",
-      "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:1"
     },
     {
       "file": "workspaces/runtime/packages/runtime-services/src/event_write.rs",

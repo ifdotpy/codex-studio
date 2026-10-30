@@ -22118,29 +22118,96 @@ export interface components {
       | "paused"
       | "native_failure"
       | "account_transfer";
-    /** @description Older persisted and status waits may omit details and carry extensions. */
-    StartWaitRecordResponse: {
-      /** Format: int64 */
-      epoch: number;
-      maxRunningTurns?: (number | null) | null | undefined;
-      /** @enum {string} */
-      reason:
-        | "slot"
-        | "pause"
-        | "start_queue"
-        | "disk"
-        | "model_catalog"
-        | "provider_session"
-        | "dependency"
-        | "dispatch_pending"
-        | "paused"
-        | "native_failure"
-        | "account_transfer";
-      runningTurns?: (number | null) | null | undefined;
-      until?: (number | null) | null | undefined;
-    } & {
-      [key: string]: components["schemas"]["JsonValue"] | undefined;
-    };
+    /**
+     * @description One epoch-scoped wait. `until` is a retry deadline in Unix seconds.
+     *
+     *     ```compile_fail
+     *     use studio_runtime_schema::agent_progress::AgentStartWait;
+     *     let _ = AgentStartWait::Slot { epoch: 1 };
+     *     ```
+     *     ```compile_fail
+     *     use studio_runtime_schema::agent_progress::AgentStartWait;
+     *     let _ = AgentStartWait::Pause { epoch: 1 };
+     *     ```
+     */
+    StartWaitRecordResponse:
+      | {
+          /** Format: int64 */
+          epoch: number;
+          /** Format: uint64 */
+          maxRunningTurns: number;
+          /** @constant */
+          reason: "slot";
+          /** Format: uint64 */
+          runningTurns: number;
+        }
+      | {
+          /** Format: int64 */
+          epoch: number;
+          /** @constant */
+          reason: "pause";
+          /** Format: double */
+          until: number;
+        }
+      | {
+          /** Format: int64 */
+          epoch: number;
+          /** @constant */
+          reason: "start_queue";
+        }
+      | {
+          /** Format: int64 */
+          epoch: number;
+          /** @constant */
+          reason: "disk";
+        }
+      | {
+          /** Format: int64 */
+          epoch: number;
+          /** @constant */
+          reason: "model_catalog";
+        }
+      | {
+          /** Format: int64 */
+          epoch: number;
+          /** @constant */
+          reason: "provider_session";
+          /**
+           * Format: double
+           * @description The registry knows a deadline during retry backoff, but not initial startup.
+           */
+          until?: number | null | undefined;
+        }
+      | {
+          /** Format: int64 */
+          epoch: number;
+          /** @constant */
+          reason: "dependency";
+        }
+      | {
+          /** Format: int64 */
+          epoch: number;
+          /** @constant */
+          reason: "dispatch_pending";
+        }
+      | {
+          /** Format: int64 */
+          epoch: number;
+          /** @constant */
+          reason: "paused";
+        }
+      | {
+          /** Format: int64 */
+          epoch: number;
+          /** @constant */
+          reason: "native_failure";
+        }
+      | {
+          /** Format: int64 */
+          epoch: number;
+          /** @constant */
+          reason: "account_transfer";
+        };
     /** StateResource */
     StateResource: {
       /**

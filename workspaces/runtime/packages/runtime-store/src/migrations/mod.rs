@@ -41,6 +41,7 @@ mod m2026_10_30_agent_volatile;
 pub(crate) mod m2026_10_30_monitor_queue;
 pub(crate) mod m2026_10_30_monitor_status;
 mod m2026_10_30_rule_monitor_records;
+mod m2026_10_30_start_wait;
 mod m2026_10_30_unused_agent_columns;
 mod m2026_10_30_unused_start_action;
 
@@ -267,6 +268,16 @@ static CATALOG: &[&dyn Migration] = &[
             crate::schema::ensure_analytics_limits_index(c.transaction)?;
             crate::repositories::cost_aggregate::install(c.transaction)
         },
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-start-wait",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Agent records with legacy start waits",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_start_wait::apply(c.transaction),
     },
     &SqlMigration {
         definition: MigrationDefinition {

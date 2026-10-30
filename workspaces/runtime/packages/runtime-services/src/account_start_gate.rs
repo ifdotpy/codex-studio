@@ -561,9 +561,8 @@ pub async fn show_blocked(
             {
                 continue;
             }
-            let value = serde_json::to_value(wait)?;
-            if record.extra.get(WAIT_FIELD) != Some(&value) {
-                record.extra.insert(WAIT_FIELD.into(), value);
+            if record.start_wait.as_ref() != Some(&wait) {
+                record.start_wait = Some(wait);
                 AgentRepository::put(tx, &record)?;
             }
         }

@@ -319,6 +319,7 @@ impl SchedulerRepository {
             || agent.start_outcome_hold.is_some()
             || agent.turn_id.is_some()
             || agent.native_safety_buffering.is_some()
+            || agent.start_wait.is_some()
             || [
                 "capacityRetry",
                 "usageResume",
@@ -327,7 +328,6 @@ impl SchedulerRepository {
                 "disconnectRecovery",
                 "remoteWorker",
                 "remoteAnchor",
-                studio_runtime_schema::agent_progress::START_WAIT_FIELD,
             ]
             .iter()
             .any(|key| agent.extra.get(*key).is_some_and(truthy))
@@ -1090,9 +1090,7 @@ impl SchedulerRepository {
         )?;
         agent.status = AgentStatus::Starting;
         // The start gate's wait record (`startWait`) ends with the claim.
-        agent
-            .extra
-            .remove(studio_runtime_schema::agent_progress::START_WAIT_FIELD);
+        agent.start_wait = None;
         agent.in_flight = Some(true);
         agent.turn_id = None;
         agent.turn_epoch = Some(epoch);
