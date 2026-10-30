@@ -17,7 +17,7 @@ the data. The client does not poll.
 
 "On the same machine" is decided by `frontendIsLocal` in
 [`localFrontend.ts`](../../workspaces/client/apps/web/src/sync/localFrontend.ts):
-the `local` owner, in the desktop shell or on a loopback or `.localhost` host.
+the `local` owner, in the desktop shell or on a loopback or isolated view host.
 
 ## Cache records
 

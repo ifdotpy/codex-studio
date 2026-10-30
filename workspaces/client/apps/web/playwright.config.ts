@@ -51,14 +51,7 @@ const browserUse = {
   headless: true,
   trace: "retain-on-failure" as const,
   ...(browserName === "chromium"
-    ? {
-        launchOptions: {
-          executablePath: browserExecutablePath,
-          // A page on this host is remote from its server, so it keeps the
-          // thin cache. Loopback pages keep none (see tests/playwright.ts).
-          args: ["--host-resolver-rules=MAP studio-remote.test 127.0.0.1"],
-        },
-      }
+    ? { launchOptions: { executablePath: browserExecutablePath } }
     : {}),
 };
 

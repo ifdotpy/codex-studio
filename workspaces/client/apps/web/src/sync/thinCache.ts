@@ -221,7 +221,11 @@ export type UnsentStore = ReturnType<typeof createUnsentStore>;
 /** An outbox row whose message the server confirmed, or that was cancelled, holds no unsent input. */
 export function outboxSettled(payload: string) {
   try {
-    const status = (JSON.parse(payload) as { status?: unknown }).status;
+    const value: unknown = JSON.parse(payload);
+    const status =
+      value && typeof value === "object" && "status" in value
+        ? value.status
+        : undefined;
     return status === "accepted" || status === "cancelled";
   } catch {
     return false;

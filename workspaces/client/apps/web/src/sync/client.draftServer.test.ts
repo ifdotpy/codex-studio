@@ -454,7 +454,7 @@ it.each([false, true])(
     stop = await client.startDraftReplication(() => {});
     mocks.invalidate?.({ epoch: "witness", reason: "initial", revision: 0 });
     assert.ok(mocks.replications[0] != null);
-    await mocks.replications[0].awaitInitialReplication();
+    await mocks.replications[0].awaitInSync();
     const { db } = await client.syncDatabase();
     const before = (
       await request("/api/sync/pull?scope=drafts")

@@ -2756,9 +2756,12 @@ export const rustUiFixture = fileURLToPath(
   new URL("./fixtures/rust-ui-fixture.ts", import.meta.url),
 );
 
-/** Host alias of the loopback fixture. Chromium maps it (playwright.config.ts).
- * A page served from it is remote from its server, so it keeps the cache. */
-export const REMOTE_FIXTURE_HOST = "studio-remote.test";
+/** Host alias of the loopback fixture. Chromium resolves any `*.localhost`
+ * name to loopback and treats it as a secure context, so the fixture needs no
+ * resolver rule. The name is not a loopback host or an isolated view host
+ * (`studio-<id>.localhost`), so a page served from it is remote from its
+ * server and keeps the cache. */
+export const REMOTE_FIXTURE_HOST = "remote-fixture.localhost";
 
 export function remoteOrigin(origin: string) {
   const url = new URL(origin);

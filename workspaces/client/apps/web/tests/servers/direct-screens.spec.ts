@@ -76,7 +76,7 @@ test("direct screens keep overlapping chat drafts and sends with their owner", a
           this: IDBObjectStore,
           ...args: Parameters<IDBObjectStore[typeof method]>
         ) {
-          if (this.transaction.db.name.endsWith("--drafts"))
+          if (this.name === "unsent")
             throw new DOMException(
               "Full fixture storage",
               "QuotaExceededError",
