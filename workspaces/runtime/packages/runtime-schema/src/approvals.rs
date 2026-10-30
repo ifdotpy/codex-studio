@@ -296,6 +296,38 @@ pub struct Approval {
     pub hidden: Option<Hidden>,
 }
 
+/// Definitions of `Approval` and every type it names, for the OpenAPI document.
+/// The sync entities `request` and `questionHistory` carry this shape.
+pub fn schemas() -> Vec<(String, serde_json::Value)> {
+    let mut generator = schemars::generate::SchemaSettings::draft2020_12()
+        .for_serialize()
+        .with(|settings| settings.definitions_path = "/components/schemas".into())
+        .into_generator();
+    generator.subschema_for::<Approval>();
+    generator.take_definitions(true).into_iter().collect()
+}
+
+/// The committed OpenAPI document holds the Rust definitions, not a copy by hand.
+pub(crate) fn check_schema_parity(openapi: &serde_json::Value) -> Result<(), String> {
+    for (name, schema) in schemas() {
+        if openapi.pointer(&format!("/components/schemas/{name}")) != Some(&schema) {
+            return Err(format!("{name} must match runtime-schema/src/approvals.rs"));
+        }
+    }
+    for payload in [
+        "SyncRequestEntityPayload",
+        "SyncQuestionHistoryEntityPayload",
+    ] {
+        let value = openapi.pointer(&format!(
+            "/components/schemas/{payload}/properties/value/$ref"
+        ));
+        if value != Some(&serde_json::json!("#/components/schemas/Approval")) {
+            return Err(format!("{payload} must carry the Approval schema"));
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum AnswerMismatch {
     #[error("The answer does not fit the {0} request")]

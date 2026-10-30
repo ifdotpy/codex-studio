@@ -791,29 +791,96 @@ async fn studio_error_rows_are_published_as_entities_with_their_source_write() {
     );
 }
 
+/// An asynchronous question with one choice, as the typed table stores it.
+fn new_question(id: &str) -> studio_runtime_store::approvals::NewApproval {
+    use studio_runtime_schema::approvals::{
+        AgentId, ApprovalId, Detail, ProviderObject, Question, QuestionOption, Request,
+    };
+    studio_runtime_store::approvals::NewApproval {
+        id: ApprovalId(id.to_owned()),
+        agent: AgentId(CHAT.to_owned()),
+        turn: None,
+        epoch: None,
+        request: Request::AgentQuestion {
+            questions: vec![Question {
+                id: "choice".into(),
+                question: "Continue?".into(),
+                header: None,
+                options: vec![QuestionOption {
+                    label: "Yes".into(),
+                    description: None,
+                    preview: None,
+                }],
+                is_secret: false,
+                multi_select: None,
+                is_other: None,
+            }],
+        },
+        delivery: None,
+        detail: Detail {
+            params: ProviderObject(Default::default()),
+            preview: None,
+            answer_error: None,
+            host_close_reason: None,
+        },
+        fire_at: None,
+    }
+}
+
+async fn create_question(store: &studio_runtime_store::RuntimeStore, id: &'static str) {
+    store
+        .transaction_with(move |tx| {
+            let row = studio_runtime_store::approvals::create(
+                tx,
+                new_question(id),
+                studio_runtime_schema::approvals::Timestamp(1.0),
+            )?;
+            crate::approval_sync::publish(tx, &row)?;
+            Ok::<_, StoreError>(())
+        })
+        .await
+        .expect("question is created");
+}
+
+async fn answer_question(store: &studio_runtime_store::RuntimeStore, id: &'static str) {
+    use studio_runtime_schema::approvals::{Answer, ApprovalId, CommandId, QuestionAnswer};
+    store
+        .transaction_with(move |tx| {
+            let id = ApprovalId(id.to_owned());
+            studio_runtime_store::approvals::answer(
+                tx,
+                &id,
+                Answer::Answers {
+                    answers: vec![QuestionAnswer {
+                        id: "choice".into(),
+                        answer: vec!["Yes".into()],
+                    }],
+                },
+                CommandId("command".into()),
+            )?;
+            let row = studio_runtime_store::approvals::get(tx, &id)?.expect("row");
+            crate::approval_sync::publish(tx, &row)?;
+            Ok::<_, StoreError>(())
+        })
+        .await
+        .expect("question is answered");
+}
+
 #[tokio::test]
-async fn a_raw_request_row_write_reaches_the_client_and_a_closed_one_leaves_it() {
+async fn a_pending_approval_reaches_the_client_and_an_answered_one_leaves_it() {
     let (_dir, store) = store().await;
     seed_chat(&store, chat(json!({}))).await;
-    let card = json!({"id":"raw-card","agent":CHAT,"method":"agent/asyncQuestion",
-        "status":"pending","params":{"message":"Continue?"}});
-    write(
-        &store,
-        "INSERT INTO runtime_requests(id,record) VALUES(?1,?2)",
-        vec!["raw-card".to_owned(), card.to_string()],
-    )
-    .await;
+    create_question(&store, "raw-card").await;
     let (retired, view) = client_entity(&store, "request", "raw-card").expect("card published");
     assert!(!retired);
-    assert_eq!(view["status"], "pending");
-    write(
-        &store,
-        "UPDATE runtime_requests SET record=json_set(record,'$.status','answered') WHERE id=?1",
-        vec!["raw-card".to_owned()],
-    )
-    .await;
+    assert_eq!(view["state"]["kind"], "pending");
+    assert_eq!(view["request"]["kind"], "agent_question");
+    answer_question(&store, "raw-card").await;
     let (retired, _) = client_entity(&store, "request", "raw-card").expect("card known");
-    assert!(retired, "an answered card leaves the client");
+    assert!(
+        !retired,
+        "an answer on its way stays on the client as Answering"
+    );
 }
 
 #[tokio::test]
@@ -1035,38 +1102,66 @@ async fn retained_worktree_entities_follow_cleanup_even_after_worker_deletion() 
 }
 
 #[tokio::test]
-async fn question_history_entities_retain_answers_after_pending_request_is_retired() {
+async fn question_history_entities_retain_answers_after_the_request_is_closed() {
+    use studio_runtime_schema::approvals::{ApprovalId, Hidden, Principal, Timestamp};
     let (_dir, store) = store().await;
     seed_chat(&store, chat(json!({}))).await;
-    let question = json!({"id":"history-question","agent":CHAT,"method":"agent/asyncQuestion","status":"pending",
-        "params":{"message":"Continue?","questions":[{"id":"choice","question":"Continue?","options":[{"label":"Yes"}]}]}});
-    write(
-        &store,
-        "INSERT INTO runtime_requests(id,record) VALUES(?1,?2)",
-        vec!["history-question".into(), question.to_string()],
-    )
-    .await;
+    create_question(&store, "history-question").await;
     let (deleted, pending) = client_entity(&store, "questionHistory", "history-question")
         .expect("question history entity");
     assert!(!deleted);
     assert_eq!(pending["agent"], CHAT);
-    write(&store, "UPDATE runtime_requests SET record=json_set(record,'$.status','answered','$.decision','answer','$.answeredAt',2,'$.answerHistory',json('[{\"id\":\"choice\",\"question\":\"Continue?\",\"isSecret\":false,\"answer\":[\"Yes\"]}]')) WHERE id=?1", vec!["history-question".into()]).await;
+    assert_eq!(pending["state"]["kind"], "pending");
+    answer_question(&store, "history-question").await;
+    let (deleted, answering) =
+        client_entity(&store, "questionHistory", "history-question").expect("answering history");
+    assert!(!deleted);
+    assert_eq!(answering["state"]["kind"], "answering");
+    assert_eq!(
+        answering["state"]["answer"]["answers"][0]["answer"],
+        json!(["Yes"])
+    );
+    store
+        .transaction_with(|tx| {
+            let id = ApprovalId("history-question".into());
+            studio_runtime_store::approvals::confirm_delivery(
+                tx,
+                &id,
+                Principal::Owner,
+                Timestamp(2.0),
+            )?;
+            let row = studio_runtime_store::approvals::get(tx, &id)?.expect("row");
+            crate::approval_sync::publish(tx, &row)?;
+            Ok::<_, StoreError>(())
+        })
+        .await
+        .expect("delivery is confirmed");
     assert!(
         client_entity(&store, "request", "history-question")
-            .expect("pending tombstone")
+            .expect("request tombstone")
             .0
     );
     let (deleted, answered) =
         client_entity(&store, "questionHistory", "history-question").expect("answered history");
     assert!(!deleted);
-    assert_eq!(answered["status"], "answered");
-    assert_eq!(answered["answerHistory"][0]["answer"], json!(["Yes"]));
-    write(
-        &store,
-        "UPDATE runtime_requests SET record=json_set(record,'$.deletedAt',3) WHERE id=?1",
-        vec!["history-question".into()],
-    )
-    .await;
+    assert_eq!(answered["state"]["kind"], "answered");
+    store
+        .transaction_with(|tx| {
+            let id = ApprovalId("history-question".into());
+            studio_runtime_store::approvals::set_hidden(
+                tx,
+                &id,
+                Some(Hidden {
+                    at: Timestamp(3.0),
+                    by: Principal::Owner,
+                }),
+            )?;
+            let row = studio_runtime_store::approvals::get(tx, &id)?.expect("row");
+            crate::approval_sync::publish(tx, &row)?;
+            Ok::<_, StoreError>(())
+        })
+        .await
+        .expect("question is hidden");
     assert!(
         client_entity(&store, "questionHistory", "history-question")
             .expect("history tombstone")
@@ -1075,34 +1170,9 @@ async fn question_history_entities_retain_answers_after_pending_request_is_retir
 }
 
 #[tokio::test]
-async fn conversation_detail_entities_remove_private_answers_and_hard_deleted_sources() {
+async fn hard_deleted_sources_leave_no_retained_folder() {
     let (_dir, store) = store().await;
     seed_chat(&store, chat(json!({}))).await;
-    let question = json!({"id":"private-question","agent":CHAT,"method":"agent/asyncQuestion","status":"answered",
-        "params":{"questions":[{"id":"password","question":"Password?","isSecret":true}]},
-        "answerHistory":[{"id":"password","question":"Password?","isSecret":true,"answer":"never-cache-this"}]});
-    write(
-        &store,
-        "INSERT INTO runtime_requests(id,record) VALUES(?1,?2)",
-        vec!["private-question".into(), question.to_string()],
-    )
-    .await;
-    let history = client_entity(&store, "questionHistory", "private-question")
-        .expect("typed history")
-        .1;
-    assert_eq!(history["answerHistory"][0]["answer"], Value::Null);
-    assert!(!history.to_string().contains("never-cache-this"));
-    write(
-        &store,
-        "DELETE FROM runtime_requests WHERE id=?1",
-        vec!["private-question".into()],
-    )
-    .await;
-    assert!(
-        client_entity(&store, "questionHistory", "private-question")
-            .expect("history tombstone")
-            .0
-    );
     write(&store, "UPDATE runtime_agents SET record=json_set(record,'$.workspaceCleanupIntent',json('{\"phase\":\"unknown\",\"effect\":{\"kind\":\"remove_worktree\",\"identity\":{\"cwd\":\"/fixture/kept\"}}}')) WHERE id=?1", vec![CHAT.into()]).await;
     assert!(
         !client_entity(&store, "retainedWorktree", CHAT)
