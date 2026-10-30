@@ -5,7 +5,9 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use serde::Deserialize;
 use serde_json::{Map, Value, json};
+use studio_runtime_schema::queue_command::Field;
 
 use super::protocol::{self, Failure, HostExecError, INVALID, Outcome, require};
 use super::{FEATURES, GENERATION_COUNTER, HostService, LIST_LIMIT, Op, now, string_list, text};
@@ -38,6 +40,180 @@ fn leased(slot: &Path) -> bool {
     slot.join("lease.json").exists()
 }
 
+// The identity fields remain opaque because lease receipts copy their exact JSON.
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SlotMetadata {
+    #[serde(default)]
+    generation: Field<Value>,
+    #[serde(default)]
+    generation_number: Field<Value>,
+    #[serde(default)]
+    used_at: SlotUsage,
+}
+
+#[derive(Default)]
+enum SlotUsage {
+    #[default]
+    Missing,
+    Number(f64),
+    Invalid,
+}
+
+impl<'de> Deserialize<'de> for SlotUsage {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(match Value::deserialize(deserializer)? {
+            Value::Bool(value) => Self::Number(f64::from(u8::from(value))),
+            Value::Number(value) => value.as_f64().map_or(Self::Invalid, Self::Number),
+            Value::Null | Value::String(_) | Value::Array(_) | Value::Object(_) => Self::Invalid,
+        })
+    }
+}
+
+#[derive(Default, Deserialize)]
+struct GenerationCounter {
+    #[serde(default)]
+    last: Field<Value>,
+}
+
+// The original JSON parser owns duplicate-key and numeric admission. Project
+// non-object documents as empty objects, as Value::get did for these readers.
+fn projection<T: Default + for<'de> Deserialize<'de>>(value: Value) -> T {
+    if value.is_object() {
+        T::deserialize(value).unwrap_or_default()
+    } else {
+        T::default()
+    }
+}
+
+fn field_value(field: Field<Value>) -> Option<Value> {
+    match field {
+        Field::Missing => None,
+        Field::Null => Some(Value::Null),
+        Field::Value(value) => Some(value),
+    }
+}
+
+#[cfg(test)]
+mod metadata_tests {
+    use super::*;
+
+    #[test]
+    fn slot_metadata_baseline_reads_usage_and_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("slot.json");
+        for (body, expected) in [
+            (r#"{"generation":""}"#, 0.0),
+            (
+                r#"{"generation":"g","generationNumber":null,"usedAt":true}"#,
+                1.0,
+            ),
+            (
+                r#"{"generation":"g","generationNumber":1,"usedAt":2.5}"#,
+                2.5,
+            ),
+        ] {
+            fs::write(&path, body).unwrap();
+            assert_eq!(HostService::used_at(dir.path()).unwrap(), expected);
+        }
+        fs::write(
+            &path,
+            r#"{"generation":3,"generationNumber":0,"usedAt":null}"#,
+        )
+        .unwrap();
+        assert!(
+            HostService::used_at(dir.path())
+                .unwrap_err()
+                .message
+                .contains("metadata is invalid")
+        );
+    }
+
+    #[test]
+    fn slot_generation_baseline_reads_counter_and_slot_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let slot = dir.path().join("slot");
+        fs::create_dir(&slot).unwrap();
+        fs::write(slot.join("slot.json"), r#"{"generationNumber":4}"#).unwrap();
+        let generation = HostService::new_generation(dir.path()).unwrap();
+        assert_eq!(generation["generationNumber"], 5);
+        assert!(generation["generation"].is_string());
+        let generation = HostService::new_generation(dir.path()).unwrap();
+        assert_eq!(generation["generationNumber"], 6);
+    }
+
+    #[test]
+    fn slot_metadata_preserves_partial_and_duplicate_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("slot.json");
+        for (body, expected) in [
+            (
+                r#"{"generation":9,"generation":"g","usedAt":false}"#,
+                Ok(0.0),
+            ),
+            (
+                r#"{"generation":"g","generationNumber":1.0,"usedAt":null}"#,
+                Err("generation number is invalid"),
+            ),
+            (
+                r#"{"generation":"g","usedAt":null}"#,
+                Err("metadata needs recovery"),
+            ),
+            (
+                r#"{"generation":"g","generationNumber":0}"#,
+                Err("generation number is invalid"),
+            ),
+            (r#"[]"#, Err("metadata is invalid")),
+            (
+                r#"{"generation":"g","usedAt":true,"usedAt":7,"extra":{"x":1}}"#,
+                Ok(7.0),
+            ),
+        ] {
+            fs::write(&path, body).unwrap();
+            match expected {
+                Ok(value) => assert_eq!(HostService::used_at(dir.path()).unwrap(), value, "{body}"),
+                Err(message) => assert!(
+                    HostService::used_at(dir.path())
+                        .unwrap_err()
+                        .message
+                        .contains(message),
+                    "{body}"
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn slot_counter_preserves_missing_invalid_and_lenient_scans() {
+        let dir = tempfile::tempdir().unwrap();
+        let counter = dir.path().join(GENERATION_COUNTER);
+        let slot = dir.path().join("slot");
+        fs::create_dir(&slot).unwrap();
+        fs::write(
+            slot.join("slot.json"),
+            r#"{"generationNumber":12,"generationNumber":3}"#,
+        )
+        .unwrap();
+        fs::write(&counter, r#"{"last":8,"last":1}"#).unwrap();
+        assert_eq!(
+            HostService::new_generation(dir.path()).unwrap()["generationNumber"],
+            4
+        );
+        for (body, expected) in [
+            ("{}", "needs recovery"),
+            ("null", "needs recovery"),
+            (r#"{"last":null}"#, "is invalid"),
+            (r#"{"last":1.0}"#, "is invalid"),
+            (r#"{"last":-1}"#, "is invalid"),
+            ("{", "needs recovery"),
+        ] {
+            fs::write(&counter, body).unwrap();
+            let error = HostService::new_generation(dir.path()).unwrap_err();
+            assert!(format!("{error:?}").contains(expected), "{body}: {error:?}");
+        }
+    }
+}
+
 #[cfg(test)]
 thread_local! {
     pub(super) static REMOVE_SLOT_FAILURE: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
@@ -52,27 +228,26 @@ impl HostService {
             )
         };
         let text = fs::read_to_string(slot.join("slot.json")).map_err(|_| recovery())?;
-        let metadata: Value = serde_json::from_str(&text).map_err(|_| recovery())?;
+        let metadata: SlotMetadata =
+            projection(serde_json::from_str(&text).map_err(|_| recovery())?);
         require(
-            metadata.get("generation").is_some_and(Value::is_string),
+            metadata.generation.value().is_some_and(Value::is_string),
             &format!("The host slot metadata is invalid: {}", slot.display()),
             "slot_invalid",
         )?;
-        let number = metadata.get("generationNumber");
+        let number = metadata.generation_number.value();
         require(
-            number.is_none_or(Value::is_null)
-                || super::integer(number).is_some_and(|number| number >= 1),
+            number.is_none() || super::integer(number).is_some_and(|number| number >= 1),
             &format!(
                 "The host slot generation number is invalid: {}",
                 slot.display()
             ),
             "slot_invalid",
         )?;
-        match metadata.get("usedAt") {
-            None => Ok(0.0),
-            Some(Value::Number(used)) => used.as_f64().ok_or_else(recovery),
-            Some(Value::Bool(used)) => Ok(f64::from(u8::from(*used))),
-            Some(_) => Err(recovery()),
+        match metadata.used_at {
+            SlotUsage::Missing => Ok(0.0),
+            SlotUsage::Number(used) => Ok(used),
+            SlotUsage::Invalid => Err(recovery()),
         }
     }
 
@@ -91,9 +266,12 @@ impl HostService {
         };
         let mut last = match fs::read_to_string(&counter) {
             Ok(text) => {
-                let value: Value = serde_json::from_str(&text).map_err(|_| recovery())?;
-                let last = value.get("last").ok_or_else(recovery)?;
-                super::integer(Some(last))
+                let value: GenerationCounter =
+                    projection(serde_json::from_str(&text).map_err(|_| recovery())?);
+                if value.last.is_missing() {
+                    return Err(recovery().into());
+                }
+                super::integer(value.last.value())
                     .filter(|last| *last >= 0)
                     .ok_or_else(|| {
                         HostExecError::new(
@@ -112,7 +290,10 @@ impl HostService {
             let number = fs::read_to_string(entry.path().join("slot.json"))
                 .ok()
                 .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-                .and_then(|value| super::integer(value.get("generationNumber")));
+                .and_then(|value| {
+                    let metadata: SlotMetadata = projection(value);
+                    super::integer(metadata.generation_number.value())
+                });
             if let Some(number) = number {
                 last = last.max(number);
             }
@@ -376,7 +557,7 @@ impl HostService {
         let artifact_dir = slot.join("artifacts").join(protocol::key(&identity));
         super::private_dirs(&artifact_dir)?;
         std::os::unix::fs::symlink(&artifact_dir, directory.join("artifacts"))?;
-        let meta = protocol::read_json(&slot.join("slot.json"))?;
+        let meta: SlotMetadata = projection(protocol::read_json(&slot.join("slot.json"))?);
         let slot_name = slot
             .file_name()
             .and_then(|name| name.to_str())
@@ -393,10 +574,10 @@ impl HostService {
         op.insert("slotId".into(), json!(slot_name));
         op.insert(
             "generation".into(),
-            meta.get("generation").cloned().unwrap_or(Value::Null),
+            field_value(meta.generation).unwrap_or(Value::Null),
         );
-        if let Some(number) = meta.get("generationNumber") {
-            op.insert("generationNumber".into(), number.clone());
+        if let Some(number) = field_value(meta.generation_number) {
+            op.insert("generationNumber".into(), number);
         }
         op.insert("state".into(), json!("leased"));
         op.insert("createdAt".into(), json!(now()));

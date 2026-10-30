@@ -169,3 +169,74 @@ async fn the_production_options_open_links_on_a_mac_only() {
     );
     assert!(!HostBridgeOptions::default().local_open);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn launcher_request_admission_keeps_order_and_json_number_rules() {
+    let host = host(false);
+    let bridge = &host.service.bridge;
+    for (line, message) in [
+        (b"{}".as_slice(), "Send one JSON line of at most 16 KB"),
+        (b"{\n".as_slice(), "The request is not valid JSON"),
+        (b"[]\n".as_slice(), "Use protocol version 1"),
+        (b"{\"v\":1.0}\n".as_slice(), "Use protocol version 1"),
+        (b"{\"v\":null}\n".as_slice(), "Use protocol version 1"),
+    ] {
+        assert_eq!(
+            bridge.handle_line(current_uid(), line).await["message"],
+            message
+        );
+    }
+    for document in [
+        "{\"v\":1,\"extra\":1e999}\n".to_owned(),
+        format!(
+            "{{\"v\":1,\"extra\":{}0{}}}\n",
+            "[".repeat(130),
+            "]".repeat(130)
+        ),
+    ] {
+        assert_eq!(
+            bridge.handle_line(current_uid(), document.as_bytes()).await["message"],
+            "The request is not valid JSON"
+        );
+    }
+    for document in [
+        "{\"v\":true}\n",
+        "{\"v\":\"1\"}\n",
+        "{\"v\":1,\"v\":null}\n",
+    ] {
+        assert_eq!(
+            bridge.handle_line(current_uid(), document.as_bytes()).await["message"],
+            "Use protocol version 1"
+        );
+    }
+    assert_eq!(
+        bridge.handle_line(current_uid(), b"{\"v\":1}\n").await["code"],
+        "unknown_agent"
+    );
+    let too_long = vec![b' '; LINE_LIMIT + 1];
+    assert_eq!(
+        bridge.handle_line(current_uid(), &too_long).await["message"],
+        "Send one JSON line of at most 16 KB"
+    );
+    let malformed = format!("{{\"v\":1,\"url\":false,\"session\":\"{SESSION}\"}}\n");
+    let wrong_uid = current_uid().wrapping_add(1);
+    assert_eq!(
+        bridge.handle_line(wrong_uid, malformed.as_bytes()).await["code"],
+        "unknown_agent"
+    );
+    let invalid_session = b"{\"v\":1,\"url\":false,\"session\":false}\n";
+    assert_eq!(
+        bridge.handle_line(current_uid(), invalid_session).await["code"],
+        "unknown_agent"
+    );
+    let duplicated = format!(
+        "{{\"v\":0,\"v\":1,\"url\":false,\"session\":\"wrong\",\"session\":\"{SESSION}\"}}\n"
+    );
+    assert_ne!(
+        bridge
+            .handle_line(current_uid(), duplicated.as_bytes())
+            .await["code"],
+        "unknown_agent"
+    );
+    host.service.stop().await;
+}

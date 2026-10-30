@@ -5,17 +5,134 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use rusqlite::params;
+use serde::Deserialize;
+use serde::de::IgnoredAny;
 use serde_json::{Value, json};
+use studio_runtime_schema::queue_command::Field as PresentField;
 use studio_runtime_store::RuntimeStore;
 
 use crate::multi_server_auth::{
-    AccessError, MAX_OBSERVATION_BYTES, origin_host, refused, schema, stored, text,
+    AccessError, MAX_OBSERVATION_BYTES, discovery_identity, origin_host, refused, stored, text,
 };
 use crate::multi_server_pairing::read_record;
 
 pub const MAX_CANDIDATES: usize = 64;
 pub const DISCOVERY_PORTS: [Option<u16>; 2] = [None, Some(8443)];
 const MAX_DISCOVERED: i64 = 256;
+
+/// Partial stored peer evidence used by readers that historically tolerate
+/// missing and malformed fields. Other properties survive status updates.
+#[derive(Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredPeer {
+    #[serde(default, skip_serializing_if = "PresentField::is_missing")]
+    origin: PresentField<Value>,
+    #[serde(default, skip_serializing_if = "PresentField::is_missing")]
+    public_key: PresentField<Value>,
+    #[serde(default, skip_serializing_if = "PresentField::is_missing")]
+    status: PresentField<Value>,
+    #[serde(flatten)]
+    extra: serde_json::Map<String, Value>,
+}
+
+impl StoredPeer {
+    /// Scalars have no fields, as in the historical JSON readers.
+    pub fn from_value(value: Value) -> Option<Self> {
+        studio_runtime_schema::json_object::JsonObject::<Self>::deserialize(value)
+            .ok()
+            .map(|object| object.0)
+    }
+
+    pub fn origin(&self) -> &str {
+        self.origin
+            .value()
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+    }
+
+    pub fn public_key(&self) -> &str {
+        self.public_key
+            .value()
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+    }
+
+    pub fn is_paired(&self) -> bool {
+        self.status.value().and_then(Value::as_str) == Some("paired")
+    }
+
+    pub fn is_revoked(&self) -> bool {
+        self.status.value().and_then(Value::as_str) == Some("revoked")
+    }
+
+    /// Retains explicit null and arbitrary historical creation evidence.
+    pub fn created(&self) -> Option<&Value> {
+        self.extra.get("created")
+    }
+
+    pub fn mark_unreachable(&mut self) {
+        self.status = PresentField::Value(Value::String("unreachable".into()));
+    }
+
+    pub fn set_label(&mut self, label: String) {
+        self.extra.insert("label".into(), Value::String(label));
+    }
+}
+
+// Tailscale observations can contain malformed individual peer fields. Those
+// fields have always been treated as absent, while malformed tags fail closed.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Field<T> {
+    Valid(T),
+    Other(IgnoredAny),
+}
+impl<T> Field<T> {
+    fn value(&self) -> Option<&T> {
+        match self {
+            Self::Valid(value) => Some(value),
+            Self::Other(_) => None,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Tags {
+    Null(()),
+    List(Vec<IgnoredAny>),
+    Other(IgnoredAny),
+}
+impl Tags {
+    fn tagged(&self) -> bool {
+        match self {
+            Self::Null(()) => false,
+            Self::List(tags) => !tags.is_empty(),
+            Self::Other(_) => true,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct DiscoveryNode {
+    #[serde(rename = "UserID")]
+    user: Option<Field<u64>>,
+    #[serde(rename = "DNSName")]
+    dns: Option<Field<String>>,
+    #[serde(rename = "Online")]
+    online: Option<Field<bool>>,
+    #[serde(rename = "Tags")]
+    tags: Option<Tags>,
+}
+impl DiscoveryNode {
+    fn from_object(value: &Value) -> Option<Self> {
+        value.as_object()?;
+        Self::deserialize(value).ok()
+    }
+    fn tagged(&self) -> bool {
+        self.tags.as_ref().is_some_and(Tags::tagged)
+    }
+}
 
 /// Host-owned discovery adapter. The HTTP and service layers pass the
 /// persisted server identity and public Serve origin; tests inject a fake
@@ -56,18 +173,20 @@ impl DiscoverySnapshot {
         }
         let node = status
             .get("Self")
-            .filter(|v| v.is_object())
+            .and_then(DiscoveryNode::from_object)
             .ok_or_else(invalid)?;
         let peers = status
             .get("Peer")
             .and_then(Value::as_object)
             .ok_or_else(invalid)?;
         let user = node
-            .get("UserID")
-            .and_then(Value::as_u64)
+            .user
+            .as_ref()
+            .and_then(Field::value)
+            .copied()
             .filter(|v| *v > 0)
             .ok_or_else(invalid)?;
-        if text(status, "BackendState") != "Running" || tagged(node) {
+        if text(status, "BackendState") != "Running" || node.tagged() {
             return Err(invalid());
         }
         let owner = status
@@ -79,16 +198,25 @@ impl DiscoverySnapshot {
             .trim()
             .to_lowercase();
         let mut candidates = BTreeSet::new();
-        for (is_local, peer) in
-            std::iter::once((true, node)).chain(peers.values().map(|v| (false, v)))
-        {
-            if (!is_local && peer.get("Online") != Some(&Value::Bool(true)))
-                || tagged(peer)
-                || peer.get("UserID").and_then(Value::as_u64) != Some(user)
+        for (is_local, peer) in std::iter::once((true, Some(node))).chain(
+            peers
+                .values()
+                .map(|v| (false, DiscoveryNode::from_object(v))),
+        ) {
+            let Some(peer) = peer else { continue };
+            if (!is_local && peer.online.as_ref().and_then(Field::value) != Some(&true))
+                || peer.tagged()
+                || peer.user.as_ref().and_then(Field::value) != Some(&user)
             {
                 continue;
             }
-            let hostname = text(peer, "DNSName").trim_end_matches('.').to_lowercase();
+            let hostname = peer
+                .dns
+                .as_ref()
+                .and_then(Field::value)
+                .map_or("", String::as_str)
+                .trim_end_matches('.')
+                .to_lowercase();
             for port in DISCOVERY_PORTS {
                 let authority =
                     port.map_or_else(|| hostname.clone(), |port| format!("{hostname}:{port}"));
@@ -118,11 +246,6 @@ impl DiscoverySnapshot {
         &self.owner
     }
 }
-fn tagged(node: &Value) -> bool {
-    node.get("Tags")
-        .is_some_and(|v| !v.is_null() && v.as_array().is_none_or(|a| !a.is_empty()))
-}
-
 pub struct DiscoveryDecision {
     record: Option<Value>,
     auto_pair: bool,
@@ -147,15 +270,17 @@ pub fn decide_probe(
     auto_pair: bool,
     now: i64,
 ) -> Result<DiscoveryDecision, AccessError> {
-    schema("DiscoveryIdentity", peer)?;
-    if !snapshot.candidates.contains(origin) || text(peer, "origin") != origin {
+    let identity = discovery_identity(peer)?;
+    if !snapshot.candidates.contains(origin)
+        || identity.origin.as_deref().unwrap_or_default() != origin
+    {
         return Err(refused(
             403,
             "identity_mismatch",
             "The peer identity is invalid",
         ));
     }
-    let id = text(peer, "serverId");
+    let id = identity.server_id.as_str();
     let previous = previous
         .map(|r| stored("PersistedAccessClient", "runtime_access_discovered", id, r))
         .transpose()?;
@@ -163,9 +288,15 @@ pub fn decide_probe(
         .map(|r| stored("PersistedAccessClient", "runtime_access_clients", id, r))
         .transpose()?;
     if id == snapshot.local_id
-        || text(peer, "tailscaleUser").trim().to_lowercase() != snapshot.owner
+        || identity
+            .tailscale_user
+            .as_deref()
+            .unwrap_or_default()
+            .trim()
+            .to_lowercase()
+            != snapshot.owner
         || client.as_ref().is_some_and(|v| {
-            text(v, "publicKey") != text(peer, "publicKey") || text(v, "origin") != origin
+            text(v, "publicKey") != identity.public_key || text(v, "origin") != origin
         })
     {
         return Ok(DiscoveryDecision {
@@ -178,18 +309,16 @@ pub fn decide_probe(
         .filter(|v| text(v, "status") == "paired")
         .and_then(|v| v.get("label"))
         .cloned()
-        .unwrap_or_else(|| peer["label"].clone());
+        .unwrap_or_else(|| json!(identity.label));
     let created = previous
         .as_ref()
         .and_then(|v| v.get("created"))
         .cloned()
         .unwrap_or(json!(now));
-    let record = json!({"id":id,"clientId":id,"serverId":id,"kind":"server","label":label,"origin":origin,"publicKey":peer["publicKey"],"tailscaleUser":snapshot.owner,"status":"discovered","created":created,"lastAccess":null,"revoked":null,"lastSeen":now,"autoPair":peer["autoPair"]});
+    let record = json!({"id":id,"clientId":id,"serverId":id,"kind":"server","label":label,"origin":origin,"publicKey":identity.public_key,"tailscaleUser":snapshot.owner,"status":"discovered","created":created,"lastAccess":null,"revoked":null,"lastSeen":now,"autoPair":identity.auto_pair});
     Ok(DiscoveryDecision {
         record: Some(record),
-        auto_pair: client.is_none()
-            && auto_pair
-            && peer.get("autoPair") == Some(&Value::Bool(true)),
+        auto_pair: client.is_none() && auto_pair && identity.auto_pair,
     })
 }
 
@@ -217,4 +346,61 @@ pub async fn record_probe(
         }
         Ok(decision)
     }).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stored_peer_projection_preserves_partial_and_opaque_fields() {
+        for raw in ["null", "[]", "7", r#""text""#] {
+            assert!(StoredPeer::from_value(serde_json::from_str(raw).unwrap()).is_none());
+        }
+        let malformed =
+            StoredPeer::from_value(serde_json::from_str(r#"{"status":{"paired":null}}"#).unwrap())
+                .unwrap();
+        assert!(!malformed.is_paired());
+        let raw = r#"{"origin":false,"publicKey":["opaque"],"status":{"paired":null},"unknown":{"v":3},"status":"paired"}"#;
+        let mut peer = StoredPeer::from_value(serde_json::from_str(raw).unwrap()).unwrap();
+        assert_eq!(peer.origin(), "");
+        assert_eq!(peer.public_key(), "");
+        assert!(peer.is_paired());
+        peer.mark_unreachable();
+        let saved = serde_json::to_string(&peer).unwrap();
+        let saved: Value = serde_json::from_str(&saved).unwrap();
+        assert_eq!(saved["status"], "unreachable");
+        assert_eq!(saved["publicKey"], json!(["opaque"]));
+        assert_eq!(saved["unknown"]["v"], 3);
+    }
+
+    #[test]
+    fn discovery_tolerates_bad_peer_fields_and_rejects_tags() {
+        let status = json!({
+            "BackendState": "Running",
+            "Self": {"UserID": 1, "DNSName": "local.test.ts.net."},
+            "User": {"1": {"LoginName": "owner@example.test"}},
+            "Peer": {
+                "valid": {"UserID": 1, "DNSName": "peer.test.ts.net.", "Online": true, "Tags": []},
+                "bad-online": {"UserID": 1, "DNSName": "bad.test.ts.net", "Online": "true"},
+                "bad-tags": {"UserID": 1, "DNSName": "tagged.test.ts.net", "Online": true, "Tags": {}},
+                "array": [1, "array.test.ts.net", true]
+            }
+        });
+        let snapshot =
+            DiscoverySnapshot::from_status(&status, "local", "https://local.test.ts.net").unwrap();
+        assert_eq!(
+            snapshot.candidates(),
+            vec![
+                "https://local.test.ts.net:8443",
+                "https://peer.test.ts.net",
+                "https://peer.test.ts.net:8443"
+            ]
+        );
+        let mut invalid = status;
+        invalid["Self"] = json!([1, "local.test.ts.net"]);
+        assert!(
+            DiscoverySnapshot::from_status(&invalid, "local", "https://local.test.ts.net").is_err()
+        );
+    }
 }

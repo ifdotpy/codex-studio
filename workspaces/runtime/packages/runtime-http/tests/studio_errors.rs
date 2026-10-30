@@ -515,6 +515,7 @@ async fn liveness_rows_name_each_stuck_state() {
                 AgentRepository::put(tx, &record)?;
             }
             seed_rows(tx, now)?;
+            tx.execute("UPDATE runtime_usage_resumes SET record=?1 WHERE id='resume-1'", [format!(r#"{{"id":"first","id":"payload-resume","status":"scheduled","dueAt":{},"reason":false,"reason":"legacy reason"}}"#, now - 1200.0)])?;
             studio_runtime_services::liveness::record_session_start_failure(
                 tx,
                 "second",
@@ -583,6 +584,16 @@ async fn liveness_rows_name_each_stuck_state() {
             .as_str()
             .is_some_and(|subject| subject.contains("Usage resume")),
         "{resume}"
+    );
+    assert_eq!(
+        resume["id"],
+        "liveness:schedule_stalled:usage:payload-resume"
+    );
+    assert!(
+        resume["detail"]
+            .as_str()
+            .unwrap()
+            .contains("Last reason: legacy reason")
     );
     let transfer = row("schedule_stalled", "lead");
     assert!(
@@ -909,7 +920,7 @@ async fn malformed_receipts_agents_and_owners_do_not_poison_startup_or_following
     let (_root, store, app) = batch_fixture().await;
     store.transaction(|tx| {
         for (id,status) in [("bad-agent","failed"),("bad-owner","waiting")] {
-            tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",rusqlite::params![id,json!({"id":id,"rootId":id,"epoch":"epoch-private-canary","status":status,"provider":"codex","name":"private-name-canary","error":"private-error-canary"}).to_string()])?;
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",rusqlite::params![id,json!({"accountKey":"default","id":id,"rootId":id,"epoch":"epoch-private-canary","status":status,"provider":"codex","name":"private-name-canary","error":"private-error-canary"}).to_string()])?;
         }
         tx.execute("UPDATE runtime_monitors SET record=json_set(record,'$.agent','bad-owner') WHERE id='one'",[])?;
         for (id,encoded) in [("http:bad-json","{"),("http:bad-shape","{\"private\":\"receipt-private-canary\"}"),("http:bad-identity","{\"id\":\"wrong-id\",\"kind\":\"http_failure\",\"reason\":\"private\",\"action\":\"details\",\"detail\":\"\",\"subject\":\"\",\"at\":1,\"diagnostics\":{\"context\":{\"source\":\"http\",\"route\":\"GET /api/example\",\"requestId\":null,\"status\":500,\"class\":\"store_data\"},\"certainty\":\"unknown\",\"causes\":[]}}") ] {

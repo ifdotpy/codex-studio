@@ -52,7 +52,7 @@ pub(crate) fn question_history_entity(raw: &str) -> Result<Option<Value>, Questi
 
 pub fn complaint_detail(stored: Option<ComplaintRecord>) -> Result<Value, QuestionsReadsError> {
     let record = stored.ok_or(QuestionsReadsError::UnknownComplaint)?;
-    Ok(record.value().clone())
+    Ok(record.into_value())
 }
 
 pub fn checkpoint_list(
@@ -79,15 +79,12 @@ pub fn checkpoint_list(
     let ids = ids.into_iter().collect::<BTreeSet<_>>();
     let mut items = Vec::new();
     for checkpoint in checkpoints {
-        let mut record = checkpoint
-            .value()
-            .as_object()
-            .expect("validated checkpoint record")
-            .clone();
-        let checkpoint_agent = string_member(&record, "agent").unwrap_or_default();
-        if !ids.contains(checkpoint_agent) {
+        if !ids.contains(checkpoint.agent().unwrap_or_default()) {
             continue;
         }
+        let Value::Object(mut record) = checkpoint.into_value() else {
+            unreachable!("typed checkpoint serializes as an object");
+        };
         record.remove("items");
         record.remove("historyDelta");
         record.remove("_payloadBlobs");
@@ -384,7 +381,7 @@ mod tests {
     use studio_runtime_store::{AgentRecord, CheckpointRecord};
 
     fn agent(id: &str, root: &str, deleted_at: Option<f64>) -> AgentRecord {
-        let mut record = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":root,"epoch":0,"status":"idle"});
+        let mut record = json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":root,"epoch":0,"status":"idle"});
         if let Some(deleted_at) = deleted_at {
             record["deletedAt"] = json!(deleted_at);
         }

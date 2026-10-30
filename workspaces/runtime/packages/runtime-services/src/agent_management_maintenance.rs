@@ -252,9 +252,9 @@ mod tests {
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         store.transaction(|tx| {
             for record in [
-                json!({"provider":"codex","id":"lead","rootId":"lead","epoch":1,"status":"running","autoWake":true,"isLead":true}),
-                json!({"provider":"codex","id":"worker","rootId":"lead","parentId":"lead","epoch":1,"status":"completed","autoWake":true,"isLead":false}),
-                json!({"provider":"codex","id":"other-lead","rootId":"other-lead","epoch":1,"status":"running","autoWake":true,"isLead":true,"imageWorkspaceBaseRepo":"/private"}),
+                json!({"accountKey":"default","provider":"codex","id":"lead","rootId":"lead","epoch":1,"status":"running","autoWake":true,"isLead":true}),
+                json!({"accountKey":"default","provider":"codex","id":"worker","rootId":"lead","parentId":"lead","epoch":1,"status":"completed","autoWake":true,"isLead":false}),
+                json!({"accountKey":"default","provider":"codex","id":"other-lead","rootId":"other-lead","epoch":1,"status":"running","autoWake":true,"isLead":true,"imageWorkspaceBaseRepo":"/private"}),
             ] {
                 AgentRepository::put(tx, &studio_runtime_store::AgentRecord::from_value(record)?)?;
             }

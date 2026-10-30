@@ -495,15 +495,7 @@ impl VmRuntime {
     fn read_json(&self, name: &str) -> Map<String, Value> {
         fs::read_to_string(self.state_dir.join(name))
             .ok()
-            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-            .and_then(|value| match value {
-                Value::Object(map) => Some(map),
-                Value::Null
-                | Value::Bool(_)
-                | Value::Number(_)
-                | Value::String(_)
-                | Value::Array(_) => None,
-            })
+            .and_then(|text| serde_json::from_str::<Map<String, Value>>(&text).ok())
             .unwrap_or_default()
     }
 

@@ -5,8 +5,13 @@ use crate::{
     projections::Document,
     protocol::{CommandError, Request, Response},
 };
+use serde::{Deserialize, Deserializer};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, time::Duration};
+use studio_client_domain::{
+    json_object::JsonObject,
+    sync_entity::{EntityChange, SYNC_ENTITY_PAGE_LIMIT},
+};
 
 pub fn error(code: &str, message: impl ToString) -> CommandError {
     CommandError {
@@ -77,62 +82,120 @@ pub async fn open(backend: &Backend, sender: &StoreSender) -> Result<Value, Comm
     }
 }
 
-fn merge_transcript_delta(previous: &Value, incoming: &Value) -> Result<String, CommandError> {
-    let base: Value = serde_json::from_str(previous["payload"].as_str().unwrap_or(""))
-        .map_err(|e| error("invalid_projection", e))?;
-    let base_items = base["items"].as_array().ok_or_else(|| {
-        error(
+// Historical transcript payloads may contain non-object items and non-string IDs.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum TranscriptField<T> {
+    Value(T),
+    Other(serde::de::IgnoredAny),
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum TranscriptPayload {
+    Object(JsonObject<TranscriptObject>),
+    Other(serde::de::IgnoredAny),
+}
+
+#[derive(Deserialize)]
+struct TranscriptObject {
+    #[serde(default)]
+    delta: Option<TranscriptField<bool>>,
+    #[serde(default)]
+    items: Option<TranscriptField<Vec<TranscriptField<JsonObject<TranscriptItem>>>>>,
+    #[serde(default)]
+    removed: Option<TranscriptField<Vec<TranscriptField<String>>>>,
+    #[serde(default)]
+    order: Option<TranscriptField<Vec<TranscriptField<String>>>>,
+    #[serde(flatten)]
+    fields: serde_json::Map<String, Value>,
+}
+#[derive(Deserialize)]
+struct TranscriptItem {
+    // Missing and null identities both leave the item unidentified.
+    id: Option<TranscriptField<String>>,
+    #[serde(flatten)]
+    fields: serde_json::Map<String, Value>,
+}
+impl TranscriptItem {
+    fn identified(mut self) -> Option<(String, Value)> {
+        let Some(TranscriptField::Value(id)) = self.id else {
+            return None;
+        };
+        self.fields.insert("id".into(), Value::String(id.clone()));
+        Some((id, Value::Object(self.fields)))
+    }
+}
+impl TranscriptObject {
+    fn is_delta(&self) -> bool {
+        matches!(self.delta, Some(TranscriptField::Value(true)))
+    }
+}
+fn merge_transcript_delta(
+    previous: &str,
+    incoming: TranscriptObject,
+) -> Result<String, CommandError> {
+    let base: TranscriptPayload =
+        serde_json::from_str(previous).map_err(|e| error("invalid_projection", e))?;
+    let TranscriptPayload::Object(JsonObject(base)) = base else {
+        return Err(error(
             "invalid_projection",
             "Transcript projection base has no items.",
-        )
-    })?;
-    let mut items: BTreeMap<String, Value> = base_items
-        .iter()
-        .filter_map(|v| v["id"].as_str().map(|id| (id.into(), v.clone())))
-        .collect();
-    if let Some(removed) = incoming["removed"].as_array() {
-        for id in removed.iter().filter_map(Value::as_str) {
-            items.remove(id);
+        ));
+    };
+    let Some(TranscriptField::Value(base_items)) = base.items else {
+        return Err(error(
+            "invalid_projection",
+            "Transcript projection base has no items.",
+        ));
+    };
+    let mut items = BTreeMap::new();
+    let mut base_order = Vec::new();
+    for entry in base_items {
+        if let TranscriptField::Value(JsonObject(item)) = entry
+            && let Some((id, item)) = item.identified()
+        {
+            base_order.push(id.clone());
+            items.insert(id, item);
         }
     }
-    if let Some(changed) = incoming["items"].as_array() {
+    if let Some(TranscriptField::Value(removed)) = incoming.removed {
+        for id in removed {
+            if let TranscriptField::Value(id) = id {
+                items.remove(&id);
+            }
+        }
+    }
+    if let Some(TranscriptField::Value(changed)) = incoming.items {
         for item in changed {
-            let id = item["id"].as_str().ok_or_else(|| {
+            let TranscriptField::Value(JsonObject(item)) = item else {
+                return Err(error(
+                    "invalid_projection",
+                    "Transcript delta item has no identity.",
+                ));
+            };
+            let (id, item) = item.identified().ok_or_else(|| {
                 error(
                     "invalid_projection",
                     "Transcript delta item has no identity.",
                 )
             })?;
-            items.insert(id.into(), item.clone());
+            items.insert(id, item);
         }
     }
-    let order: Vec<String> = incoming["order"]
-        .as_array()
-        .map(|a| {
-            a.iter()
-                .filter_map(Value::as_str)
-                .map(str::to_owned)
-                .collect()
-        })
-        .unwrap_or_else(|| {
-            base_items
-                .iter()
-                .filter_map(|v| v["id"].as_str().map(str::to_owned))
-                .collect()
-        });
-    let mut merged = base.as_object().cloned().ok_or_else(|| {
-        error(
-            "invalid_projection",
-            "Transcript projection base is invalid.",
-        )
-    })?;
-    if let Some(fields) = incoming.as_object() {
-        merged.extend(fields.clone());
-    }
-    // Legacy persisted snapshots may still carry the retired wire map.
-    for key in ["delta", "removed", "order", "itemRevisions"] {
-        merged.remove(key);
-    }
+    let order = match incoming.order {
+        Some(TranscriptField::Value(order)) => order
+            .into_iter()
+            .filter_map(|id| match id {
+                TranscriptField::Value(id) => Some(id),
+                TranscriptField::Other(_) => None,
+            })
+            .collect(),
+        _ => base_order,
+    };
+    let mut merged = base.fields;
+    merged.extend(incoming.fields);
+    merged.remove("itemRevisions");
     merged.insert(
         "items".into(),
         Value::Array(
@@ -142,7 +205,7 @@ fn merge_transcript_delta(previous: &Value, incoming: &Value) -> Result<String, 
                 .collect(),
         ),
     );
-    serde_json::to_string(&Value::Object(merged)).map_err(|e| error("invalid_projection", e))
+    serde_json::to_string(&merged).map_err(|e| error("invalid_projection", e))
 }
 
 pub async fn pull(
@@ -162,6 +225,27 @@ pub async fn pull(
         return pull_entities(backend, sender, workspace).await;
     }
     pull_document(backend, sender, workspace, scope).await
+}
+
+#[derive(Deserialize)]
+struct DocumentPull {
+    documents: Vec<DocumentEntry>,
+}
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum DocumentEntry {
+    Valid(Document),
+    Invalid(Value),
+}
+impl DocumentEntry {
+    fn checked(self) -> Result<Document, CommandError> {
+        match self {
+            Self::Valid(document) => Ok(document),
+            Self::Invalid(value) => {
+                Document::deserialize(value).map_err(|e| error("invalid_projection", e))
+            }
+        }
+    }
 }
 
 async fn pull_document(
@@ -203,18 +287,23 @@ async fn pull_document(
         ),
     )
     .await?;
-    if result["workspaceId"] != workspace {
+    let JsonObject(server) = JsonObject::<EntityWorkspace>::deserialize(&result).map_err(|_| {
+        error(
+            "workspace_changed",
+            "The server workspace changed during synchronization.",
+        )
+    })?;
+    if server.workspace_id != workspace {
         return Err(error(
             "workspace_changed",
             "The server workspace changed during synchronization.",
         ));
     }
-    let docs = result["documents"]
-        .as_array()
-        .ok_or_else(|| error("invalid_projection", "Missing projection documents."))?;
-    for raw in docs {
-        let mut doc: Document =
-            serde_json::from_value(raw.clone()).map_err(|e| error("invalid_projection", e))?;
+    let pull: DocumentPull =
+        serde_json::from_value(result).map_err(|e| error("invalid_projection", e))?;
+    let mut documents = Vec::with_capacity(pull.documents.len());
+    for entry in pull.documents {
+        let mut doc = entry.checked()?;
         if doc.id != scope {
             return Err(error(
                 "invalid_projection",
@@ -222,9 +311,11 @@ async fn pull_document(
             ));
         }
         if scope.starts_with("transcript:") && !doc.deleted {
-            let incoming: Value =
+            let incoming: TranscriptPayload =
                 serde_json::from_str(&doc.payload).map_err(|e| error("invalid_projection", e))?;
-            if incoming["delta"] == true {
+            if let TranscriptPayload::Object(JsonObject(incoming)) = incoming
+                && incoming.is_delta()
+            {
                 if previous.is_null() || previous["_deleted"] == true {
                     return Err(error(
                         "invalid_projection",
@@ -234,17 +325,18 @@ async fn pull_document(
                 if doc.seq <= previous["seq"].as_u64().unwrap_or(0) {
                     continue;
                 }
-                doc.payload = merge_transcript_delta(&previous, &incoming)?;
+                doc.payload =
+                    merge_transcript_delta(previous["payload"].as_str().unwrap_or(""), incoming)?;
             }
         }
-        state(
-            sender,
-            "projection.put",
-            json!({"workspace":workspace,"scope":scope,"document":doc}),
-        )
+        documents.push(
+            crate::projections::check_document(scope, doc)
+                .map_err(|e| error("storage_error", e))?,
+        );
+    }
+    crate::delivery::put_documents(sender, workspace, scope, documents)
         .await
         .map_err(|e| error("storage_error", e))?;
-    }
     state(
         sender,
         "projection.get",
@@ -252,6 +344,64 @@ async fn pull_document(
     )
     .await
     .map_err(|e| error("storage_error", e))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EntityWorkspace {
+    workspace_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum EntityPull {
+    Reset {
+        #[serde(rename = "reset")]
+        _reset: TrueFlag,
+    },
+    Page {
+        documents: Vec<EntityChange>,
+        checkpoint: JsonObject<EntityCheckpoint>,
+        #[serde(rename = "maxSeq", default, deserialize_with = "optional_cursor")]
+        max_seq: Option<u64>,
+        #[serde(rename = "initialHigh", default, deserialize_with = "optional_cursor")]
+        initial_high: Option<u64>,
+    },
+}
+#[derive(Deserialize)]
+struct EntityCheckpoint {
+    seq: u64,
+}
+struct TrueFlag;
+impl<'de> Deserialize<'de> for TrueFlag {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        if bool::deserialize(deserializer)? {
+            Ok(Self)
+        } else {
+            Err(serde::de::Error::custom("not reset"))
+        }
+    }
+}
+fn optional_cursor<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<u64>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Cursor {
+        Number(u64),
+        Other(serde::de::IgnoredAny),
+    }
+    Ok(match Option::<Cursor>::deserialize(deserializer)? {
+        Some(Cursor::Number(value)) => Some(value),
+        _ => None,
+    })
+}
+
+fn entity_ready(marker: &Value) -> bool {
+    marker["payload"]
+        .as_str()
+        .and_then(|payload| serde_json::from_str::<String>(payload).ok())
+        .as_deref()
+        == Some("ready")
+        && marker["_deleted"] != true
 }
 
 async fn pull_entities(
@@ -282,11 +432,7 @@ async fn pull_entities(
     )
     .await
     .map_err(|e| error("storage_error", e))?;
-    let ready = ready_marker["payload"]
-        .as_str()
-        .and_then(|payload| serde_json::from_str::<Value>(payload).ok())
-        == Some(Value::String("ready".into()))
-        && ready_marker["_deleted"] != true;
+    let ready = entity_ready(&ready_marker);
     let mut replace = !ready;
     let mut after = if ready {
         cached["seq"].as_u64().unwrap_or(0)
@@ -299,7 +445,7 @@ async fn pull_entities(
         let mut query = vec![
             ("scope", "state:entities:v1".to_owned()),
             ("after", after.to_string()),
-            ("limit", "500".to_owned()),
+            ("limit", SYNC_ENTITY_PAGE_LIMIT.to_string()),
             ("reset", "1".to_owned()),
         ];
         if let Some(high) = initial_high {
@@ -317,50 +463,57 @@ async fn pull_entities(
             ),
         )
         .await?;
-        if result["workspaceId"] != workspace {
+        let JsonObject(server) =
+            JsonObject::<EntityWorkspace>::deserialize(&result).map_err(|_| {
+                error(
+                    "workspace_changed",
+                    "The server workspace changed during synchronization.",
+                )
+            })?;
+        if server.workspace_id != workspace {
             return Err(error(
                 "workspace_changed",
                 "The server workspace changed during synchronization.",
             ));
         }
-        if result["reset"] == true {
-            if initial_high.is_some() {
-                return Err(error(
-                    "invalid_projection",
-                    "The server reset a fresh entity pull.",
-                ));
+        let pull: EntityPull =
+            serde_json::from_value(result).map_err(|e| error("invalid_projection", e))?;
+        let (rows, checkpoint, max, bound) = match pull {
+            EntityPull::Reset { _reset: _ } => {
+                if initial_high.is_some() {
+                    return Err(error(
+                        "invalid_projection",
+                        "The server reset a fresh entity pull.",
+                    ));
+                }
+                replace = true;
+                after = 0;
+                initial_high = Some(0);
+                changes.clear();
+                continue;
             }
-            // Keep the old cache intact until every replacement page is fetched.
-            // Cancellation or a failed page leaves both entities and cursor intact.
-            replace = true;
-            after = 0;
-            initial_high = Some(0);
-            changes.clear();
-            continue;
-        }
-        let rows = result["documents"]
-            .as_array()
-            .ok_or_else(|| error("invalid_projection", "Missing entity projection documents."))?;
-        if rows.len() > 500 {
+            EntityPull::Page {
+                documents,
+                checkpoint,
+                max_seq,
+                initial_high,
+            } => (documents, checkpoint.0.seq, max_seq, initial_high),
+        };
+        if rows.len() > SYNC_ENTITY_PAGE_LIMIT as usize {
             return Err(error(
                 "invalid_projection",
                 "The server returned too many entity documents.",
             ));
         }
         if initial_high.is_some() {
-            initial_high = Some(result["initialHigh"].as_u64().ok_or_else(|| {
+            initial_high = Some(bound.ok_or_else(|| {
                 error(
                     "invalid_projection",
                     "The server returned no initial entity bound.",
                 )
             })?);
         }
-        let next = result["checkpoint"]["seq"].as_u64().ok_or_else(|| {
-            error(
-                "invalid_projection",
-                "The server returned an invalid entity checkpoint.",
-            )
-        })?;
+        let next = checkpoint;
         if next < after || (!rows.is_empty() && next == after) {
             return Err(error(
                 "invalid_projection",
@@ -368,19 +521,28 @@ async fn pull_entities(
             ));
         }
         after = next;
-        let max = result["maxSeq"].as_u64().ok_or_else(|| {
+        let max = max.ok_or_else(|| {
             error(
                 "invalid_projection",
                 "The server returned no entity sequence bound.",
             )
         })?;
-        changes.extend(rows.iter().cloned());
-        if rows.len() < 500 || after >= max {
+        let count = rows.len();
+        changes.extend(rows);
+        if count < SYNC_ENTITY_PAGE_LIMIT as usize || after >= max {
             break;
         }
     }
-    state(sender, "projection.applyEntities", json!({"workspace":workspace,"changes":changes,"replace":replace,"checkpoint":after,"expectedRevision":previous["seq"].as_u64().unwrap_or(0)}))
-        .await.map_err(|e| error("storage_error", e))
+    crate::delivery::apply_entities(
+        sender,
+        workspace,
+        changes,
+        replace,
+        Some(after),
+        Some(previous["seq"].as_u64().unwrap_or(0)),
+    )
+    .await
+    .map_err(|e| error("storage_error", e))
 }
 
 /// The UI receives a projection payload as an escaped JSON string in one
@@ -426,13 +588,11 @@ async fn apply_entities(
     if !crate::projections::valid_workspace(workspace) {
         return Err(error("invalid_workspace", "Invalid workspace identity."));
     }
-    state(
-        sender,
-        "projection.applyEntities",
-        json!({"workspace":workspace,"changes":values}),
-    )
-    .await
-    .map_err(|e| error("storage_error", e))
+    let changes = Vec::<EntityChange>::deserialize(Value::Array(values.to_vec()))
+        .map_err(|e| error("storage_error", e))?;
+    crate::delivery::apply_entities(sender, workspace, changes, false, None, None)
+        .await
+        .map_err(|e| error("storage_error", e))
 }
 
 pub async fn dispatch(backend: &Backend, sender: &StoreSender, request: Request) -> Response {
@@ -479,11 +639,108 @@ mod tests {
     };
     use tokio::{io::AsyncWriteExt, net::TcpListener, sync::mpsc};
     #[test]
+    fn entity_pull_consumed_fields_track_openapi_owner() {
+        let openapi: Value = serde_json::from_str(include_str!(
+            "../../../../runtime/packages/runtime-http/openapi.json"
+        ))
+        .unwrap();
+        let schemas = &openapi["components"]["schemas"];
+        let page = &schemas["SyncPullResponse"];
+        assert_eq!(page["properties"]["workspaceId"]["type"], "string");
+        assert_eq!(page["properties"]["documents"]["type"], "array");
+        assert!(
+            page["properties"]["documents"]["items"]["oneOf"]
+                .as_array()
+                .unwrap()
+                .contains(&json!({"$ref":"#/components/schemas/SyncEntity"}))
+        );
+        assert_eq!(
+            page["properties"]["checkpoint"]["$ref"],
+            "#/components/schemas/SyncCheckpoint"
+        );
+        assert_eq!(schemas["SyncCheckpoint"]["required"], json!(["seq"]));
+        assert_eq!(
+            schemas["SyncCheckpoint"]["properties"]["seq"]["type"],
+            "integer"
+        );
+        for field in ["maxSeq", "initialHigh"] {
+            assert_eq!(page["properties"][field]["anyOf"][0]["type"], "integer");
+            assert_eq!(
+                page["properties"][field]["anyOf"][0]["maximum"],
+                studio_client_domain::MAX_SAFE_INTEGER
+            );
+            assert_eq!(page["properties"][field]["anyOf"][1]["type"], "null");
+        }
+        assert_eq!(
+            schemas["SyncPullResetResponse"]["properties"]["workspaceId"]["type"],
+            "string"
+        );
+        assert_eq!(
+            schemas["SyncPullResetResponse"]["properties"]["reset"]["const"],
+            true
+        );
+    }
+
+    #[test]
+    fn transcript_identity_treats_absent_null_and_non_strings_as_unidentified() {
+        for input in [r#"{}"#, r#"{"id":null}"#, r#"{"id":false}"#] {
+            let JsonObject(item): JsonObject<TranscriptItem> = serde_json::from_str(input).unwrap();
+            assert!(item.identified().is_none(), "{input}");
+        }
+        let JsonObject(item): JsonObject<TranscriptItem> =
+            serde_json::from_str(r#"{"id":"ok"}"#).unwrap();
+        assert_eq!(item.identified().unwrap().0, "ok");
+    }
+
+    #[test]
+    fn entity_pull_requires_object_workspace_and_checkpoint() {
+        assert!(JsonObject::<EntityWorkspace>::deserialize(json!(["workspace"])).is_err());
+        assert!(
+            serde_json::from_value::<EntityPull>(
+                json!({"documents":[],"checkpoint":[1],"maxSeq":1})
+            )
+            .is_err()
+        );
+        assert!(serde_json::from_value::<EntityPull>(json!({"reset":true})).is_ok());
+        let page: EntityPull = serde_json::from_str(r#"{"reset":"ignored","documents":[],"checkpoint":{"seq":0},"maxSeq":1,"initialHigh":[]}"#).unwrap();
+        assert!(matches!(
+            page,
+            EntityPull::Page {
+                max_seq: Some(1),
+                initial_high: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn ready_marker_requires_a_live_json_string() {
+        assert!(entity_ready(&json!({"payload":"\"ready\""})));
+        for marker in [
+            json!(null),
+            json!({}),
+            json!({"payload":true}),
+            json!({"payload":"true"}),
+            json!({"payload":"[\"ready\"]"}),
+            json!({"payload":"ready"}),
+            json!({"payload":"\"ready\"", "_deleted":true}),
+        ] {
+            assert!(!entity_ready(&marker), "{marker}");
+        }
+    }
+
+    #[test]
     fn transcript_delta_merges_legacy_cache_without_retaining_item_revisions() {
         let base = json!({"payload":json!({"items":[{"id":"a","v":1},{"id":"b","v":2}],"itemRevisions":{"a":1,"b":1},"title":"old"}).to_string()});
         let delta = json!({"items":[{"id":"a","v":3},{"id":"c","v":4}],"removed":["b"],"order":["c","a"],"delta":true,"title":"new"});
-        let actual: Value =
-            serde_json::from_str(&merge_transcript_delta(&base, &delta).unwrap()).unwrap();
+        let TranscriptPayload::Object(JsonObject(delta)) = serde_json::from_value(delta).unwrap()
+        else {
+            panic!("delta object")
+        };
+        let actual: Value = serde_json::from_str(
+            &merge_transcript_delta(base["payload"].as_str().unwrap(), delta).unwrap(),
+        )
+        .unwrap();
         assert_eq!(
             actual,
             json!({"items":[{"id":"c","v":4},{"id":"a","v":3}],"title":"new"})
@@ -532,8 +789,8 @@ mod tests {
         let worker_path = path.clone();
         let worker = tokio::spawn(async move {
             let mut store = crate::store::Store::open(&worker_path).unwrap();
-            while let Some((request, reply)) = receive.recv().await {
-                drop(reply.send(store.dispatch(request)));
+            while let Some(command) = receive.recv().await {
+                command.execute(&mut store);
             }
         });
         let mut previous = 0;
@@ -568,6 +825,147 @@ mod tests {
         assert_eq!(doc["seq"], previous);
         let snapshot: Value = serde_json::from_str(doc["payload"].as_str().unwrap()).unwrap();
         assert_eq!(snapshot["runtime"]["tasks"], json!([{"id":"A"},{"id":"B"}]));
+    }
+
+    #[test]
+    fn transcript_and_document_consumed_fields_track_openapi() {
+        let openapi: Value = serde_json::from_str(include_str!(
+            "../../../../runtime/packages/runtime-http/openapi.json"
+        ))
+        .unwrap();
+        let schemas = &openapi["components"]["schemas"];
+        let document = &schemas["SyncDocument"];
+        assert_eq!(
+            document["required"],
+            json!(["id", "payload", "seq", "_deleted"])
+        );
+        assert_eq!(document["properties"]["id"]["type"], "string");
+        assert_eq!(document["properties"]["payload"]["type"], "string");
+        assert_eq!(document["properties"]["seq"]["type"], "integer");
+        assert_eq!(
+            document["properties"]["seq"]["maximum"],
+            studio_client_domain::MAX_SAFE_INTEGER
+        );
+        assert_eq!(document["properties"]["_deleted"]["type"], "boolean");
+        let delta = &schemas["TranscriptStreamDelta"];
+        let keys = delta["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        let expected = "agent delta historyVersion items nextAfterCursor nextCursor order removed tail truncated unavailable".split_whitespace().collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(keys, expected);
+        assert_eq!(delta["properties"]["delta"]["const"], true);
+        for field in ["items", "order", "removed"] {
+            assert_eq!(delta["properties"][field]["type"], "array");
+        }
+    }
+
+    #[tokio::test]
+    async fn transcript_pull_merges_order_and_removals_and_keeps_old_value_on_error() {
+        let workspace = "b".repeat(32);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let backend = Backend::new(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
+        let server_workspace = workspace.clone();
+        let server = tokio::spawn(async move {
+            for index in 0..6 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                crate::backend::tests::read_http(&mut stream).await;
+                let body = if index == 2 {
+                    let delta = json!({"delta":true,"items":[{"id":"a","text":"new","opaque":[null,1]},{"id":"c","text":"third"}],"removed":["b",false],"order":["c",7,"a","a"],"title":"after","vendor":{"keep":true}});
+                    json!({"workspaceId":server_workspace,"documents":[{"id":"transcript:a","seq":2,"payload":delta.to_string()}]})
+                } else if index == 5 {
+                    let delta = json!({"delta":true,"items":[{"text":"missing id"}],"removed":[],"order":[]});
+                    json!({"workspaceId":server_workspace,"documents":[{"id":"transcript:a","seq":3,"payload":delta.to_string()}]})
+                } else { json!({"workspaceId":server_workspace,"chatState":true}) }.to_string();
+                stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).as_bytes()).await.unwrap();
+            }
+        });
+        let directory = tempfile::tempdir().unwrap();
+        let mut store =
+            crate::store::Store::open(&directory.path().join("client.sqlite3")).unwrap();
+        let base = json!({"items":[{"id":"a","text":"old"},false,{"id":5},{"id":"b","text":"removed"}],"title":"before","itemRevisions":{"a":1},"legacy":null});
+        let response = store.dispatch(Request { id:"seed".into(), method:"projection.put".into(), params:json!({"workspace":workspace,"scope":"transcript:a","document":{"id":"transcript:a","seq":1,"payload":base.to_string()}}) });
+        assert!(response.error.is_none());
+        let (sender, mut receive) = mpsc::channel::<crate::delivery::StoreCommand>(32);
+        let worker = tokio::spawn(async move {
+            while let Some(command) = receive.recv().await {
+                command.execute(&mut store);
+            }
+        });
+        let updated = pull(&backend, &sender, &workspace, "transcript:a")
+            .await
+            .unwrap();
+        assert_eq!(updated["seq"], 2);
+        let payload: Value = serde_json::from_str(updated["payload"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            payload,
+            json!({"items":[{"id":"c","text":"third"},{"id":"a","text":"new","opaque":[null,1]},{"id":"a","text":"new","opaque":[null,1]}],"title":"after","legacy":null,"vendor":{"keep":true}})
+        );
+        assert!(
+            pull(&backend, &sender, &workspace, "transcript:a")
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            state(
+                &sender,
+                "projection.get",
+                json!({"workspace":workspace,"scope":"transcript:a"})
+            )
+            .await
+            .unwrap(),
+            updated
+        );
+        drop(sender);
+        worker.await.unwrap();
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn transcript_pull_rejects_later_bad_document_without_partial_write() {
+        let workspace = "a".repeat(32);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let backend = Backend::new(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
+        let server_workspace = workspace.clone();
+        let server = tokio::spawn(async move {
+            for index in 0..3 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                crate::backend::tests::read_http(&mut stream).await;
+                let body = if index < 2 { json!({"workspaceId":server_workspace,"chatState":true}) } else {
+                    json!({"workspaceId":server_workspace,"documents":[{"id":"transcript:a","seq":1,"payload":"{\"items\":[]}"},{"id":"transcript:other","seq":2,"payload":"{}"}]})
+                }.to_string();
+                stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).as_bytes()).await.unwrap();
+            }
+        });
+        let directory = tempfile::tempdir().unwrap();
+        let store = crate::store::Store::open(&directory.path().join("client.sqlite3")).unwrap();
+        let (sender, mut receive) = mpsc::channel::<crate::delivery::StoreCommand>(32);
+        let worker = tokio::spawn(async move {
+            let mut store = store;
+            while let Some(command) = receive.recv().await {
+                command.execute(&mut store);
+            }
+        });
+        assert!(
+            pull(&backend, &sender, &workspace, "transcript:a")
+                .await
+                .is_err()
+        );
+        assert!(
+            state(
+                &sender,
+                "projection.get",
+                json!({"workspace":workspace,"scope":"transcript:a"})
+            )
+            .await
+            .unwrap()
+            .is_null()
+        );
+        drop(sender);
+        worker.await.unwrap();
+        server.await.unwrap();
     }
 
     #[tokio::test]
@@ -626,8 +1024,8 @@ mod tests {
         }
         let (sender, mut receive) = mpsc::channel::<crate::delivery::StoreCommand>(32);
         let worker = tokio::spawn(async move {
-            while let Some((request, reply)) = receive.recv().await {
-                drop(reply.send(store.dispatch(request)));
+            while let Some(command) = receive.recv().await {
+                command.execute(&mut store);
             }
         });
         let failure = pull(&backend, &sender, &workspace, "state")
@@ -687,6 +1085,84 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancelled_fresh_replacement_keeps_old_entities_and_cursor() {
+        let workspace = "a".repeat(32);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let backend = Backend::new(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
+        let server_workspace = workspace.clone();
+        let (started, waiting) = tokio::sync::oneshot::channel();
+        let (release, released) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            for index in 0..3 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                crate::backend::tests::read_http(&mut stream).await;
+                if index == 2 {
+                    started.send(()).unwrap();
+                    drop(released.await);
+                    break;
+                }
+                let body = if index == 0 {
+                    json!({"workspaceId":server_workspace,"chatState":true})
+                } else {
+                    json!({"workspaceId":server_workspace,"reset":true,"floor":8,"maxSeq":12})
+                }
+                .to_string();
+                stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).as_bytes()).await.unwrap();
+            }
+        });
+        let directory = tempfile::tempdir().unwrap();
+        let mut store =
+            crate::store::Store::open(&directory.path().join("client.sqlite3")).unwrap();
+        assert!(store.dispatch(Request { id:"seed".into(), method:"projection.putEntity".into(), params:json!({"workspace":workspace,"change":{"op":"upsert","collection":"task","id":"old","seq":5,"value":{"id":"old"}}}) }).error.is_none());
+        for (scope, payload) in [
+            ("state:entities:checkpoint", "{}"),
+            ("state:entities:ready", "\"ready\""),
+            ("state", "{}"),
+        ] {
+            assert!(store.dispatch(Request { id:"seed".into(), method:"projection.put".into(), params:json!({"workspace":workspace,"scope":scope,"document":{"id":scope,"seq":5,"payload":payload}}) }).error.is_none());
+        }
+        let (sender, mut receive) = mpsc::channel::<crate::delivery::StoreCommand>(32);
+        let worker = tokio::spawn(async move {
+            while let Some(command) = receive.recv().await {
+                command.execute(&mut store);
+            }
+        });
+        let pull_sender = sender.clone();
+        let pull_workspace = workspace.clone();
+        let pending =
+            tokio::spawn(
+                async move { pull(&backend, &pull_sender, &pull_workspace, "state").await },
+            );
+        waiting.await.unwrap();
+        pending.abort();
+        assert!(pending.await.unwrap_err().is_cancelled());
+        release.send(()).unwrap();
+        assert_eq!(
+            state(
+                &sender,
+                "projection.get",
+                json!({"workspace":workspace,"scope":"entity:task:old"})
+            )
+            .await
+            .unwrap()["seq"],
+            5
+        );
+        assert_eq!(
+            state(
+                &sender,
+                "projection.get",
+                json!({"workspace":workspace,"scope":"state:entities:checkpoint"})
+            )
+            .await
+            .unwrap()["seq"],
+            5
+        );
+        drop(sender);
+        worker.await.unwrap();
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn entity_pull_rejects_interval_racing_a_newer_application() {
         let workspace = "a".repeat(32);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -711,8 +1187,8 @@ mod tests {
         let (sender, mut receive) = mpsc::channel::<crate::delivery::StoreCommand>(32);
         let worker = tokio::spawn(async move {
             let mut store = crate::store::Store::open(&path).unwrap();
-            while let Some((request, reply)) = receive.recv().await {
-                drop(reply.send(store.dispatch(request)));
+            while let Some(command) = receive.recv().await {
+                command.execute(&mut store);
             }
             drop(directory);
         });
@@ -786,19 +1262,24 @@ mod tests {
         let observed_commands = Arc::clone(&commands);
         let worker = tokio::spawn(async move {
             let mut store = crate::store::Store::open(&path).unwrap();
-            while let Some((request, reply)) = receive.recv().await {
+            while let Some(command) = receive.recv().await {
                 observed_commands.fetch_add(1, Ordering::SeqCst);
-                let batch = request.method == "projection.applyEntities";
-                let response = store.dispatch(request);
+                let batch = matches!(
+                    &command,
+                    crate::delivery::StoreCommand::ApplyEntities { .. }
+                );
+                command.execute(&mut store);
                 if batch {
-                    let revision = response
-                        .result
-                        .as_ref()
-                        .and_then(|v| v["seq"].as_u64())
+                    let revision = store
+                        .connection
+                        .query_row(
+                            "SELECT seq FROM client_projections WHERE scope='state' LIMIT 1",
+                            [],
+                            |row| row.get::<_, i64>(0),
+                        )
                         .unwrap_or(0) as usize;
                     observed.store(revision, Ordering::SeqCst);
                 }
-                drop(reply.send(response));
             }
             drop(directory);
         });
@@ -943,18 +1424,23 @@ mod tests {
         let observed_state_puts = Arc::clone(&state_puts);
         tokio::spawn(async move {
             let mut store = crate::store::Store::open(&path).unwrap();
-            while let Some((request, reply)) = receive.recv().await {
-                let batch = request.method == "projection.applyEntities";
-                let response = store.dispatch(request);
+            while let Some(command) = receive.recv().await {
+                let batch = matches!(
+                    &command,
+                    crate::delivery::StoreCommand::ApplyEntities { .. }
+                );
+                command.execute(&mut store);
                 if batch {
-                    let revision = response
-                        .result
-                        .as_ref()
-                        .and_then(|v| v["seq"].as_u64())
+                    let revision = store
+                        .connection
+                        .query_row(
+                            "SELECT seq FROM client_projections WHERE scope='state' LIMIT 1",
+                            [],
+                            |row| row.get::<_, i64>(0),
+                        )
                         .unwrap_or(0) as usize;
                     observed_state_puts.store(revision, Ordering::SeqCst);
                 }
-                drop(reply.send(response));
             }
             drop(directory);
         });

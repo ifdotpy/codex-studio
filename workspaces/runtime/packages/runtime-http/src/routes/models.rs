@@ -60,7 +60,7 @@ async fn models(
     )
     .await
     .map_err(|_| ApiError::internal())??;
-    catalog.retain_accounts(&snapshot.accounts);
+    catalog.retain_public_accounts(&snapshot.accounts);
     let session = state.account_session.clone();
     let result = if workers {
         worker_catalog(&catalog, &snapshot, &account_key, retry, fresh, session).await
@@ -114,7 +114,7 @@ async fn account_catalog_read(
         && !snapshot
             .accounts
             .iter()
-            .any(|row| row.get("id").and_then(Value::as_str) == Some("default"))
+            .any(|row| row.id.as_str() == Some("default"))
     {
         // Startup can ask for models before any default account exists. The
         // catalog is not ready yet; expose the established pending response.
@@ -220,31 +220,24 @@ fn account_context(
     let Some(account) = snapshot
         .accounts
         .iter()
-        .find(|row| row.get("id").and_then(Value::as_str) == Some(account_key))
+        .find(|row| row.id.as_str() == Some(account_key))
     else {
         return Err((
             StatusCode::BAD_REQUEST,
             json!({"error": "Unknown Codex account"}),
         ));
     };
-    if matches!(
-        account.get("status").and_then(Value::as_str),
-        Some("changed" | "error")
-    ) {
+    if matches!(account.status.as_str(), Some("changed" | "error")) {
         let message = account
-            .get("error")
-            .and_then(Value::as_str)
+            .error
+            .as_str()
             .unwrap_or(ACCOUNT_UNAVAILABLE_MESSAGE);
         return Err((StatusCode::BAD_REQUEST, json!({"error": message})));
     }
     Ok(AccountContext {
         key: account_key.to_owned(),
-        home: account
-            .get("home")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned(),
-        provider: studio_runtime_providers::ProviderKind::of_record(account).map_err(|_| {
+        home: account.home.as_str().unwrap_or_default().to_owned(),
+        provider: account.provider_kind().ok_or_else(|| {
             (
                 StatusCode::BAD_REQUEST,
                 json!({"error": ACCOUNT_UNAVAILABLE_MESSAGE}),
@@ -268,12 +261,10 @@ async fn worker_catalog(
         return Err(catalog_pending());
     }
     let mut order = Vec::new();
-    for key in [parent_account, default_account].into_iter().chain(
-        snapshot
-            .accounts
-            .iter()
-            .filter_map(|row| row.get("id").and_then(Value::as_str)),
-    ) {
+    for key in [parent_account, default_account]
+        .into_iter()
+        .chain(snapshot.accounts.iter().filter_map(|row| row.id.as_str()))
+    {
         if !order.iter().any(|existing| existing == key) {
             order.push(key.to_owned());
         }
@@ -288,18 +279,16 @@ async fn worker_catalog(
         let Some(source) = snapshot
             .accounts
             .iter()
-            .find(|row| row.get("id").and_then(Value::as_str) == Some(key.as_str()))
+            .find(|row| row.id.as_str() == Some(key.as_str()))
         else {
             continue;
         };
-        if source.get("disconnected") == Some(&Value::Bool(true))
-            || source.get("deleted") == Some(&Value::Bool(true))
-            || source
-                .get("duplicateOf")
-                .is_some_and(|value| !value.is_null())
+        if source.disconnected.as_bool() == Some(true)
+            || source.deleted.as_bool() == Some(true)
+            || source.duplicate_of.is_present_non_null()
             || (key != parent_account
-                && source.get("status").and_then(Value::as_str) != Some("ready")
-                && source.get("canAttemptNativeProof") != Some(&Value::Bool(true)))
+                && source.status.as_str() != Some("ready")
+                && source.can_attempt_native_proof.as_bool() != Some(true))
         {
             continue;
         }
@@ -561,7 +550,7 @@ mod tests {
 
     fn snapshot(account: Value) -> AccountsSnapshot {
         AccountsSnapshot {
-            accounts: vec![account],
+            accounts: vec![serde_json::from_value(account).expect("public account fixture")],
             archived_accounts: Vec::new(),
             default_account_key: json!("default"),
             default_account_groups: Vec::new(),

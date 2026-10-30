@@ -239,7 +239,7 @@ fn check_system_tables(connection: &Connection) -> StoreResult<Vec<StateCheckTab
                     &pointer,
                     &keyword,
                 );
-            } else if system_reads::validate(table, &id, value).is_err() {
+            } else if system_reads::validate_row_key(table, &id, &value).is_err() {
                 record_failure(&mut failures, &mut report.rejected_count, "/id", "rowKey");
             }
         }
@@ -364,6 +364,128 @@ mod tests {
     use serde_json::json;
 
     use super::check_sync_entities;
+
+    #[test]
+    fn system_state_check_checks_schema_once_and_preserves_diagnostics() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch("CREATE TABLE runtime_rooms(id, record);")
+            .unwrap();
+        for (id, raw) in [
+            ("ok", r#"{"id":"old","id":"ok","kind":"room"}"#),
+            ("mismatch", r#"{"id":"other","kind":"room"}"#),
+            ("bad", r#"{"id":"other","kind":false}"#),
+            ("json", "{"),
+        ] {
+            connection
+                .execute("INSERT INTO runtime_rooms VALUES(?1,?2)", (id, raw))
+                .unwrap();
+        }
+        connection
+            .execute("INSERT INTO runtime_rooms VALUES(1, 7)", [])
+            .unwrap();
+        crate::system_reads::VALIDATE_CALLS.with(|count| count.set(0));
+        let reports = super::check_system_tables(&connection).unwrap();
+        assert_eq!(
+            crate::system_reads::VALIDATE_CALLS.with(|count| count.get()),
+            0
+        );
+        let report = reports
+            .iter()
+            .find(|report| report.table == "runtime_rooms")
+            .unwrap();
+        assert_eq!(report.row_count, 5);
+        assert_eq!(report.rejected_count, 4);
+        for (pointer, keyword) in [
+            ("/id", "rowKey"),
+            ("/kind", "type"),
+            ("", "json"),
+            ("", "storageType"),
+        ] {
+            assert!(
+                report
+                    .failures
+                    .iter()
+                    .any(|failure| failure.pointer == pointer && failure.keyword == keyword),
+                "{pointer} {keyword}"
+            );
+        }
+    }
+
+    #[test]
+    fn system_row_key_uses_nested_sync_id_and_exempts_event_metadata() {
+        use crate::system_reads::{validate, validate_row_key};
+        assert!(
+            validate_row_key(
+                "sync_entities",
+                "one",
+                &json!({"id":"other", "value":{"id":"one"}})
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_row_key(
+                "sync_entities",
+                "one",
+                &json!({"id":"one", "value":{"id":"other"}})
+            )
+            .is_err()
+        );
+        assert!(validate_row_key("runtime_event_meta", "one", &json!({"id":"other"})).is_ok());
+        assert!(validate("runtime_rooms", "one", json!({"id":"one", "kind":false})).is_err());
+    }
+
+    #[test]
+    fn system_state_check_readonly_reports_valid_and_invalid_rooms() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("canvas.sqlite3");
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch("CREATE TABLE runtime_rooms(id TEXT, record TEXT); INSERT INTO runtime_rooms VALUES ('one', '{\"id\":\"one\",\"kind\":\"room\"}'), ('two', '{\"id\":\"other\",\"kind\":\"room\"}');").unwrap();
+        drop(connection);
+        let before = std::fs::read(&path).unwrap();
+        let report = super::check_state_readonly(directory.path()).unwrap();
+        let rooms = report
+            .tables
+            .iter()
+            .find(|table| table.table == "runtime_rooms")
+            .unwrap();
+        assert_eq!(rooms.row_count, 2);
+        assert_eq!(rooms.rejected_count, 1);
+        assert_eq!(
+            (
+                rooms.failures[0].pointer.as_str(),
+                rooms.failures[0].keyword.as_str()
+            ),
+            ("/id", "rowKey")
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn graph_agent_state_check_preserves_duplicate_and_row_identity_rules() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch("CREATE TABLE graph_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL);")
+            .unwrap();
+        for (id, raw) in [
+            ("", r#"{"id":"old","id":"","opaque":[1]}"#),
+            ("wrong", r#"{"id":"other"}"#),
+            ("null", r#"{"id":null}"#),
+        ] {
+            connection
+                .execute("INSERT INTO graph_agents VALUES(?1,?2)", [id, raw])
+                .unwrap();
+        }
+        let report = super::check_table::<crate::GraphAgentRecord>(&connection).unwrap();
+        assert_eq!(report.row_count, 3);
+        assert_eq!(report.rejected_count, 2);
+        assert!(
+            report
+                .failures
+                .iter()
+                .any(|f| f.pointer == "/id" && f.keyword == "rowKey")
+        );
+    }
 
     #[test]
     fn sync_state_check_validates_unfiltered_rows_and_tombstones() {

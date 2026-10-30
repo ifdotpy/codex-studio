@@ -331,7 +331,7 @@ impl PostCommitPort for PortBundle {
         &'a self,
         _: Arc<RuntimeStore>,
         _: &Actor,
-        tool: &'a str,
+        tool: crate::managed_host_tools::ManagedTool<'a>,
         _: &Value,
         _: &str,
         _: f64,
@@ -344,7 +344,7 @@ impl PostCommitPort for PortBundle {
         >,
     > {
         Box::pin(async move {
-            if tool != "orchestration_status" || !self.dispatch_status.load(Ordering::SeqCst) {
+            if tool.name != "orchestration_status" || !self.dispatch_status.load(Ordering::SeqCst) {
                 return Ok(None);
             }
             self.dispatched.fetch_add(1, Ordering::SeqCst);
@@ -2735,6 +2735,10 @@ async fn task_result_schema_spawn_assignment_contains_contract() {
         .unwrap();
     assert!(text.contains(&contract.to_string()), "{text}");
     assert!(text.contains("[Task result contract]"));
+    assert!(
+        text.contains("[Studio task schema-task] Schema task"),
+        "{text}"
+    );
     assert_eq!(
         studio_runtime_store::WorkItemsRepository::work_record(&read, "schema-task")
             .unwrap()

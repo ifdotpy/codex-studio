@@ -3,7 +3,7 @@ use crate::protocol::{Request, Response};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::path::Path;
+use std::{collections::BTreeMap, path::Path};
 
 // Shared contract owns UTF-8 key bytes, including the browser-owner prefix.
 fn max_preference_key_bytes() -> usize {
@@ -36,6 +36,36 @@ struct DraftCommand {
     base_revision: u64,
 }
 
+#[derive(Default, Deserialize)]
+struct DraftLookup<'a> {
+    #[serde(borrow)]
+    workspace: Option<&'a str>,
+    #[serde(borrow)]
+    room: Option<&'a str>,
+}
+#[derive(Default, Deserialize)]
+struct RawKey<'a> {
+    #[serde(borrow)]
+    key: Option<&'a str>,
+}
+#[derive(Default, Deserialize)]
+struct RawText<'a> {
+    #[serde(borrow)]
+    raw: Option<&'a str>,
+}
+#[derive(Default, Deserialize)]
+struct SnapshotVersion {
+    #[serde(default)]
+    version: Value,
+}
+fn project<'a, T: Deserialize<'a> + Default>(value: &'a Value) -> T {
+    if value.is_object() {
+        T::deserialize(value).unwrap_or_default()
+    } else {
+        T::default()
+    }
+}
+
 impl Store {
     pub fn open(path: &Path) -> rusqlite::Result<Self> {
         let connection = Connection::open(path)?;
@@ -57,8 +87,6 @@ impl Store {
         crate::outbox::initialize(&connection)?;
         crate::projections::initialize(&connection)?;
         crate::draft_store::initialize(&connection)?;
-        crate::uploads::initialize(&connection)?;
-        crate::dictation::initialize(&connection)?;
         Ok(Self { connection })
     }
 
@@ -75,13 +103,6 @@ impl Store {
     fn execute(&mut self, request: &Request) -> rusqlite::Result<Response> {
         let id = request.id.clone();
         match request.method.as_str() {
-            method if method.starts_with("uploads.") || method.starts_with("files.") => {
-                Ok(crate::uploads::stored(&mut self.connection, request))
-            }
-            method if method.starts_with("dictation.") => {
-                Ok(crate::dictation::stored(&mut self.connection, request))
-            }
-            method if method.starts_with("file_link.") => Ok(crate::file_links::dispatch(request)),
             "markdown.parse" => Ok(crate::markdown::dispatch(request)),
             method
                 if method == "system.uuid"
@@ -111,10 +132,8 @@ impl Store {
                 }),
             )),
             "draft.get" => {
-                let (Some(workspace), Some(room)) = (
-                    request.params.get("workspace").and_then(Value::as_str),
-                    request.params.get("room").and_then(Value::as_str),
-                ) else {
+                let lookup: DraftLookup<'_> = project(&request.params);
+                let (Some(workspace), Some(room)) = (lookup.workspace, lookup.room) else {
                     return Ok(Response::failure(
                         id,
                         "invalid_params",
@@ -187,19 +206,37 @@ impl Store {
                 "A storage snapshot is required.",
             ));
         };
-        if request.params["version"] != 1
+        let version: SnapshotVersion = project(&request.params);
+        if version.version != 1
             || request
                 .params
                 .as_object()
                 .is_none_or(|params| params.len() != 2)
             || entries.len() > 10_000
-            || entries.iter().any(|(key, value)| {
-                key.is_empty()
-                    || key.len() > max_preference_key_bytes()
-                    || value.as_str().is_none_or(|raw| raw.len() > 8 * 1024 * 1024)
-            })
-            // serde_json::Value contains only JSON-serializable values.
-            || serde_json::to_vec(&request.params).expect("JSON value serializes").len() > 16 * 1024 * 1024
+        {
+            return Ok(Response::failure(
+                request.id.clone(),
+                "invalid_params",
+                "Invalid or oversized storage snapshot.",
+            ));
+        }
+        let entries: BTreeMap<&str, &str> = match BTreeMap::deserialize(&request.params["entries"])
+        {
+            Ok(entries) => entries,
+            Err(_) => {
+                return Ok(Response::failure(
+                    request.id.clone(),
+                    "invalid_params",
+                    "Invalid or oversized storage snapshot.",
+                ));
+            }
+        };
+        if entries.iter().any(|(key, raw)| {
+            key.is_empty() || key.len() > max_preference_key_bytes() || raw.len() > 8 * 1024 * 1024
+        }) || serde_json::to_vec(&request.params)
+            .expect("JSON value serializes")
+            .len()
+            > 16 * 1024 * 1024
         {
             return Ok(Response::failure(
                 request.id.clone(),
@@ -214,7 +251,7 @@ impl Store {
             return Ok(response);
         }
         // Check every key before writing. A conflict rejects the entire snapshot.
-        for (key, value) in entries {
+        for (key, value) in &entries {
             let existing: Option<String> = transaction
                 .query_row(
                     "SELECT value FROM client_preferences WHERE key=?1",
@@ -222,10 +259,7 @@ impl Store {
                     |row| row.get(0),
                 )
                 .optional()?;
-            if existing
-                .as_deref()
-                .is_some_and(|raw| Some(raw) != value.as_str())
-            {
+            if existing.as_deref().is_some_and(|raw| raw != *value) {
                 let response = Response::failure(
                     request.id.clone(),
                     "migration_conflict",
@@ -237,11 +271,10 @@ impl Store {
             }
         }
         let mut imported = 0;
-        // Validation above requires every entry value to be a string.
-        for (key, value) in entries {
+        for (key, value) in &entries {
             imported += transaction.execute(
                 "INSERT OR IGNORE INTO client_preferences(key,value) VALUES(?1,?2)",
-                params![key, value.as_str().expect("validated preference string")],
+                params![key, value],
             )?;
         }
         let response = Response::success(
@@ -254,12 +287,12 @@ impl Store {
     }
 
     fn set_raw_preference(&mut self, request: &Request) -> rusqlite::Result<Response> {
-        let key = request.params["key"]
-            .as_str()
+        let key: RawKey<'_> = project(&request.params);
+        let raw: RawText<'_> = project(&request.params);
+        let key = key
+            .key
             .filter(|v| !v.is_empty() && v.len() <= max_preference_key_bytes());
-        let raw = request.params["raw"]
-            .as_str()
-            .filter(|v| v.len() <= 8 * 1024 * 1024);
+        let raw = raw.raw.filter(|v| v.len() <= 8 * 1024 * 1024);
         if key.is_none() || (request.method == "preferences.raw_set" && raw.is_none()) {
             return Ok(Response::failure(
                 request.id.clone(),
@@ -451,6 +484,157 @@ pub(crate) fn unsigned(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retired_upload_commands_leave_existing_files_intact() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("client.sqlite3");
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch("CREATE TABLE client_file_sources(id TEXT PRIMARY KEY,name TEXT NOT NULL,mime TEXT NOT NULL,bytes BLOB NOT NULL); INSERT INTO client_file_sources VALUES('old','file','text/plain',X'0102'); CREATE TABLE client_uploads(id TEXT PRIMARY KEY,workspace TEXT NOT NULL,state_dir TEXT NOT NULL,agent TEXT NOT NULL,document TEXT NOT NULL,bytes BLOB NOT NULL); INSERT INTO client_uploads VALUES('old','workspace','directory','agent','saved',X'0304'); CREATE TABLE client_upload_tombstones(id TEXT PRIMARY KEY,cancelled INTEGER NOT NULL); INSERT INTO client_upload_tombstones VALUES('old',1);").unwrap();
+        drop(connection);
+        let mut store = Store::open(&path).unwrap();
+        for method in ["uploads.list", "files.stage"] {
+            let response = store.dispatch(Request {
+                id: method.into(),
+                method: method.into(),
+                params: json!({}),
+            });
+            assert_eq!(response.error.unwrap().code, "unknown_method");
+        }
+        let source: Vec<u8> = store
+            .connection
+            .query_row(
+                "SELECT bytes FROM client_file_sources WHERE id='old'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let upload: (String, Vec<u8>) = store
+            .connection
+            .query_row(
+                "SELECT document, bytes FROM client_uploads WHERE id='old'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let cancelled: bool = store
+            .connection
+            .query_row(
+                "SELECT cancelled FROM client_upload_tombstones WHERE id='old'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(source, [1, 2]);
+        assert_eq!(upload, ("saved".into(), vec![3, 4]));
+        assert!(cancelled);
+    }
+
+    #[test]
+    fn retired_dictation_commands_leave_existing_recordings_intact() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("client.sqlite3");
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch("CREATE TABLE client_dictation_recordings(id TEXT PRIMARY KEY, document TEXT NOT NULL); INSERT INTO client_dictation_recordings VALUES('old', 'saved'); CREATE TABLE client_dictation_chunks(id TEXT NOT NULL, position INTEGER NOT NULL, pcm BLOB NOT NULL, PRIMARY KEY(id, position)); INSERT INTO client_dictation_chunks VALUES('old', 0, X'0102');").unwrap();
+        drop(connection);
+        let mut store = Store::open(&path).unwrap();
+        let response = store.dispatch(Request {
+            id: "retired".into(),
+            method: "dictation.list".into(),
+            params: json!({"chatId":"chat"}),
+        });
+        assert_eq!(response.error.unwrap().code, "unknown_method");
+        let saved: String = store
+            .connection
+            .query_row(
+                "SELECT document FROM client_dictation_recordings WHERE id='old'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let pcm: Vec<u8> = store
+            .connection
+            .query_row(
+                "SELECT pcm FROM client_dictation_chunks WHERE id='old'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(saved, "saved");
+        assert_eq!(pcm, [1, 2]);
+    }
+
+    #[test]
+    fn preference_inputs_preserve_shape_order_and_raw_remove_defaults() {
+        let mut store = Store::open(Path::new(":memory:")).unwrap();
+        let request = |id: &str, method: &str, params: Value| Request {
+            id: id.into(),
+            method: method.into(),
+            params,
+        };
+        for (params, expected) in [
+            (
+                json!({"version":2,"entries":null}),
+                "A storage snapshot is required.",
+            ),
+            (
+                json!({"version":1.0,"entries":{"a":"value"}}),
+                "Invalid or oversized storage snapshot.",
+            ),
+            (
+                json!({"version":1,"entries":{"a":"value"},"extra":true}),
+                "Invalid or oversized storage snapshot.",
+            ),
+            (
+                json!({"version":1,"entries":{"a":null}}),
+                "Invalid or oversized storage snapshot.",
+            ),
+        ] {
+            let reply = store.dispatch(request("bad", "preferences.import", params));
+            assert_eq!(reply.error.unwrap().message, expected);
+            assert_eq!(raw(&mut store), json!({}));
+        }
+        let entries: serde_json::Map<String, Value> = (0..10_001)
+            .map(|index| (format!("key-{index}"), json!("value")))
+            .collect();
+        let reply = store.dispatch(request(
+            "too-many",
+            "preferences.import",
+            json!({"version":1,"entries":entries}),
+        ));
+        assert_eq!(
+            reply.error.unwrap().message,
+            "Invalid or oversized storage snapshot."
+        );
+        assert_eq!(raw(&mut store), json!({}));
+        assert!(
+            store
+                .dispatch(request(
+                    "set",
+                    "preferences.raw_set",
+                    json!({"key":"a","raw":"saved"})
+                ))
+                .error
+                .is_none()
+        );
+        assert!(
+            store
+                .dispatch(request(
+                    "remove",
+                    "preferences.raw_remove",
+                    json!({"key":"a","raw":{"ignored":true}})
+                ))
+                .error
+                .is_none()
+        );
+        assert_eq!(raw(&mut store), json!({}));
+        let draft = store.dispatch(request(
+            "draft",
+            "draft.get",
+            json!({"workspace":"","room":""}),
+        ));
+        assert_eq!(draft.result, Some(json!({"text":"","revision":0})));
+    }
     fn import(id: &str, entries: Value) -> Request {
         Request {
             id: id.into(),

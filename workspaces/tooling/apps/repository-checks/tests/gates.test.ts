@@ -384,6 +384,21 @@ test("Cargo compilation is confined to the fixed Rust lane and both tiers use on
   );
 });
 
+test("profile contract parity runs in the short tier", () => {
+  const step = gateSteps(process.cwd(), "test-fast").find(
+    (item) => item.id === "profile-contract",
+  );
+  assert.deepEqual(step?.commands, [
+    [
+      "node",
+      [
+        "--test",
+        "workspaces/client/apps/native/src-tauri/src/profile-contract.test.ts",
+      ],
+    ],
+  ]);
+});
+
 test("compiler policy witnesses run after dependency preparation outside the JS lane", () => {
   for (const name of ["test-fast", "test-comprehensive", "test-fast-rest"]) {
     const steps = gateSteps(process.cwd(), name);

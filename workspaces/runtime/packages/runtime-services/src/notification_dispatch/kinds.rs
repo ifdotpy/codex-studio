@@ -36,6 +36,15 @@ pub(super) fn apply(
         return Ok(Some(DispatchOutcome::Written));
     }
     if method == "thread/idleCompaction/updated" {
+        if let Some(request) = p["preparedSummary"]["requestId"].as_str() {
+            if agent["idleCompactionEpisode"]["id"] == request
+                && crate::idle_compaction::settled(tx, request)?
+            {
+                agent["idleSummaryPrepared"] = json!(request);
+                persist_agent(tx, &id, agent)?;
+            }
+            return Ok(Some(DispatchOutcome::Written));
+        }
         #[derive(serde::Deserialize)]
         #[serde(rename_all = "camelCase")]
         struct StoredEpisode {
@@ -174,9 +183,7 @@ pub(super) fn apply(
         method,
         "item/started" | "item/completed" | "item/commandExecution/outputDelta"
     ) {
-        Table::<TaskRecord>::new(tx)
-            .get(&TaskId::from(task_key.as_str()))?
-            .map(|r| r.value().clone())
+        Table::<TaskRecord>::new(tx).get(&TaskId::from(task_key.as_str()))?
     } else {
         None
     };
@@ -238,7 +245,7 @@ pub(super) fn apply(
             if stale {
                 if snapshot
                     .task()
-                    .is_none_or(|task| task["status"] == "running")
+                    .is_none_or(|task| task.status() == Some("running"))
                     && let Some(task) = items::task_transition(
                         snapshot.agent(),
                         method,
@@ -287,9 +294,14 @@ pub(super) fn apply(
                 put_task(tx, &task)?;
             }
             if decision.compacted {
-                if let Some(request_id) = agent["startAttempt"]["actionRequestId"]
-                    .as_str()
-                    .map(str::to_owned)
+                let deferred = p["item"]["idleCompactionOnReturn"] == true
+                    && p["item"]["idleCompactionRequestId"] == agent["idleCompactionEpisode"]["id"];
+                if let Some(request_id) = if deferred {
+                    p["item"]["idleCompactionRequestId"].as_str()
+                } else {
+                    agent["startAttempt"]["actionRequestId"].as_str()
+                }
+                .map(str::to_owned)
                     && agent["idleCompactionEpisode"]["id"].as_str() == Some(request_id.as_str())
                 {
                     agent["idleCompactionEpisode"]["outcome"] =
@@ -300,7 +312,11 @@ pub(super) fn apply(
                         &id,
                         &format!("{request_id}:notice"),
                         ("system", "Idle compaction"),
-                        crate::idle_compaction::NOTICE,
+                        if deferred {
+                            crate::idle_compaction::ON_RETURN_NOTICE
+                        } else {
+                            crate::idle_compaction::NOTICE
+                        },
                         json!({"idleCompaction":true}),
                         at,
                     )?;
@@ -359,14 +375,10 @@ pub(super) fn apply(
                 let key = AgentId::from(id.as_str());
                 let mut plan = Table::<PlanRecord>::new(tx)
                     .get(&key)?
-                    .map(|r| r.value().clone())
-                    .unwrap_or_else(
-                        || json!({"id":id,"rootId":agent["rootId"],"text":"","version":0}),
-                    );
-                plan["native"] = p.clone();
-                plan["steps"] = p.get("plan").cloned().unwrap_or(json!([]));
-                plan["updated"] = json!(at);
-                Table::<PlanRecord>::new(tx).put_at(&key, &PlanRecord::from_value(plan)?)?;
+                    .map(Ok)
+                    .unwrap_or_else(|| PlanRecord::from_value(json!({"id":id,"rootId":agent["rootId"],"text":"","version":0,"updated":null})))?;
+                plan.update_native(p.clone(), at)?;
+                Table::<PlanRecord>::new(tx).put_at(&key, &plan)?;
             }
             let turn = turn(agent, p);
             let key = format!(
@@ -410,8 +422,15 @@ pub(super) fn put_task(
     tx: &Transaction<'_>,
     task: &Value,
 ) -> Result<(), NotificationDispatchError> {
-    checked("runtime_tasks", task)?;
-    let task_record = TaskRecord::from_value(task.clone())?;
+    let task_record = TaskRecord::from_value(task.clone())
+        .map_err(|_| super::stored("runtime_tasks", task["id"].as_str().unwrap_or("<missing>")))?;
+    put_checked_task(tx, &task_record, task)
+}
+pub(super) fn put_checked_task(
+    tx: &Transaction<'_>,
+    task_record: &TaskRecord,
+    task: &Value,
+) -> Result<(), NotificationDispatchError> {
     let migrated: bool = tx
         .query_row_cached(
             "SELECT EXISTS(SELECT 1 FROM sync_entity_meta WHERE key='task_window_migrated')",
@@ -420,11 +439,7 @@ pub(super) fn put_task(
         )
         .map_err(StoreError::from)?;
     let previous = if migrated {
-        let task_id = task_record
-            .value()
-            .get("id")
-            .and_then(Value::as_str)
-            .ok_or(NotificationDispatchError::invalid())?;
+        let task_id = task_record.id().as_ref();
         let previous_raw: Option<String> = tx
             .query_row_cached(
                 "SELECT record FROM runtime_tasks WHERE id=?1",
@@ -439,7 +454,7 @@ pub(super) fn put_task(
     } else {
         None
     };
-    Table::<TaskRecord>::new(tx).put(&task_record)?;
+    Table::<TaskRecord>::new(tx).put(task_record)?;
     if migrated {
         crate::sync_policy::maintain_task_window_after_write(
             tx,
@@ -493,18 +508,16 @@ pub(super) fn flush_command(
         }
         return Ok(());
     };
-    let mut task = Table::<TaskRecord>::new(tx)
-        .get(&TaskId::from(id.as_str()))?
-        .map(|r| r.value().clone());
+    let mut task = Table::<TaskRecord>::new(tx).get(&TaskId::from(id.as_str()))?;
     let stale = key
         .turn
         .as_deref()
         .is_some_and(|turn| agent["turnId"] != turn);
     streams.flush_analytics(key, agent);
     if stale
-        && !task
-            .as_ref()
-            .is_some_and(|task| task["kind"] == "command" && task["turnId"] == json!(key.turn))
+        && !task.as_ref().is_some_and(|task| {
+            task.kind() == Some("command") && task.turn_id().map(str::to_owned) == key.turn
+        })
     {
         streams.discard(key);
         if close {
@@ -524,7 +537,9 @@ pub(super) fn flush_command(
     let mut item = saved.unwrap_or_else(|| json!({"type":"commandExecution","id":key.item}));
     if let Some((text, count, params)) = streams.flush(key, &previous) {
         let truncated = item["outputTruncated"] == true
-            || task.as_ref().is_some_and(|t| t["outputTruncated"] == true)
+            || task
+                .as_ref()
+                .is_some_and(|t| t.output_truncated() == Some(true))
             || previous.chars().count() as u64
                 + params["_streamCharacters"].as_u64().unwrap_or_default()
                 > items::TOOL_OUTPUT_CHARS as u64;
@@ -542,9 +557,14 @@ pub(super) fn flush_command(
             tx, &id, agent_id, &record, at, &text, false,
         )?;
         if let Some(task) = &mut task {
-            task["tail"] = item["aggregatedOutput"].clone();
-            task["outputTruncated"] = json!(truncated);
-            put_task(tx, task)?;
+            task.set_tail(
+                item["aggregatedOutput"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+            );
+            task.set_output_truncated(truncated);
+            put_checked_task(tx, task, &task.value())?;
         }
         if !stale {
             agent["events"] = json!(
@@ -579,17 +599,16 @@ pub(super) fn preserve_command_base(
     } else {
         None
     };
-    let previous = command_base(saved.as_ref(), task.as_ref().map(|task| task.value()));
+    let previous = command_base(saved.as_ref(), task.as_ref());
     streams.preserve_base(key, previous);
     Ok(())
 }
 
-fn command_base(saved: Option<&Value>, task: Option<&Value>) -> String {
+fn command_base(saved: Option<&Value>, task: Option<&TaskRecord>) -> String {
     let text = if let Some(item) = saved {
         item["aggregatedOutput"].as_str().unwrap_or_default()
     } else {
-        task.and_then(|task| task["tail"].as_str())
-            .unwrap_or_default()
+        task.and_then(TaskRecord::tail).unwrap_or_default()
     };
     super::suffix(text, items::TOOL_OUTPUT_CHARS)
 }

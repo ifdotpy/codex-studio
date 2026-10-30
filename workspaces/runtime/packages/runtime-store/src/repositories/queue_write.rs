@@ -101,9 +101,22 @@ impl QueueWriteRepository {
     }
 
     pub fn metadata(transaction: &Transaction<'_>, id: &str) -> StoreResult<Option<Value>> {
-        Ok(Table::<EventMetadataRecord>::new(transaction)
-            .get(&QueueEventId::from(id))?
-            .map(|record| record.value().clone()))
+        Ok(Self::typed_metadata(transaction, id)?.map(EventMetadataRecord::into_value))
+    }
+
+    pub fn typed_metadata(
+        transaction: &Transaction<'_>,
+        id: &str,
+    ) -> StoreResult<Option<EventMetadataRecord>> {
+        Table::<EventMetadataRecord>::new(transaction).get(&QueueEventId::from(id))
+    }
+
+    pub fn put_typed_metadata(
+        transaction: &Transaction<'_>,
+        id: &str,
+        metadata: &EventMetadataRecord,
+    ) -> StoreResult<()> {
+        Table::<EventMetadataRecord>::new(transaction).put_at(&QueueEventId::from(id), metadata)
     }
 
     pub fn put_metadata(
@@ -112,7 +125,12 @@ impl QueueWriteRepository {
         metadata: &Value,
     ) -> StoreResult<()> {
         let key = QueueEventId::from(id);
-        let record = EventMetadataRecord::from_value(metadata.clone())?;
+        let record = EventMetadataRecord::from_value(metadata.clone()).map_err(|_| {
+            crate::StoreError::InvalidStoredObject {
+                table: "runtime_event_meta",
+                id: id.to_owned(),
+            }
+        })?;
         Table::<EventMetadataRecord>::new(transaction).put_at(&key, &record)
     }
 }

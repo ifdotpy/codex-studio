@@ -4,6 +4,9 @@ use crate::{StoreError, StoreResult};
 use rusqlite::{Connection, OptionalExtension};
 use serde_json::Value;
 
+#[cfg(test)]
+std::thread_local! { pub(crate) static VALIDATE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
 pub fn invalid(table: &str, id: &str) -> StoreError {
     StoreError::InvalidSyncObject {
         scope: table.to_owned(),
@@ -12,9 +15,17 @@ pub fn invalid(table: &str, id: &str) -> StoreError {
 }
 
 pub fn validate(table: &str, id: &str, value: Value) -> StoreResult<Value> {
+    #[cfg(test)]
+    VALIDATE_CALLS.with(|count| count.set(count.get() + 1));
     let schema = studio_runtime_schema::table_schema(table)
         .ok_or_else(|| StoreError::SchemaValidation(format!("no storage schema for {table}")))?;
     let value = crate::records::validate_value(schema, value, || invalid(table, id))?;
+    validate_row_key(table, id, &value)?;
+    Ok(value)
+}
+
+/// Check only row identity after the caller has validated the table schema.
+pub(crate) fn validate_row_key(table: &str, id: &str, value: &Value) -> StoreResult<()> {
     let key = if table == "sync_entities" {
         value.pointer("/value/id")
     } else {
@@ -23,7 +34,7 @@ pub fn validate(table: &str, id: &str, value: Value) -> StoreResult<Value> {
     if !matches!(table, "runtime_event_meta") && key.and_then(Value::as_str) != Some(id) {
         return Err(invalid(table, id));
     }
-    Ok(value)
+    Ok(())
 }
 
 pub fn decode(table: &str, id: &str, raw: &str) -> StoreResult<Value> {

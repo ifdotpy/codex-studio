@@ -97,7 +97,7 @@ async fn main() {
                 let id = format!("older-{index}");
                 SyncDocumentsRepository::put_entity(tx, "agentSummary", &id, serde_json::json!({"id":id,"status":"idle","source":"managed"}), false)?;
             }
-            AgentRepository::put(tx, &AgentRecord::from_value(serde_json::json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":1,"status":"idle","name":"Lead"}))?)?;
+            AgentRepository::put(tx, &AgentRecord::from_value(serde_json::json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":1,"status":"idle","accountKey":"default","name":"Lead"}))?)?;
             Ok::<_, StoreError>(())
         }).await.expect("entity baseline");
     }

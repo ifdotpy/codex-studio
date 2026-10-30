@@ -5,7 +5,62 @@ use crate::{
     protocol::{Request, Response},
 };
 use rusqlite::{Connection, OptionalExtension, params};
-use serde_json::{Value, json};
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value, json};
+
+const INVALID_SAVED: &str =
+    "The saved action request is invalid. Check its receipt before another action.";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum Action {
+    Review,
+    Compact,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ActionContext {
+    #[serde(rename = "accountKey")]
+    account_key: String,
+    #[serde(flatten)]
+    extensions: Map<String, Value>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SavedAction {
+    id: String,
+    action: Action,
+    request_id: String,
+    context: ActionContext,
+    #[serde(flatten)]
+    extensions: Map<String, Value>,
+}
+
+#[derive(Deserialize)]
+struct ActionReply {
+    receipt: Option<ActionReceipt>,
+}
+
+#[derive(Deserialize)]
+struct ActionReceipt {
+    #[serde(rename = "requestId")]
+    request_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ErrorOutcome {
+    outcome: Option<String>,
+}
+
+impl SavedAction {
+    fn checked(value: Value, agent: &str) -> Result<Self, String> {
+        let action: Self = serde_json::from_value(value).map_err(|_| INVALID_SAVED)?;
+        if action.id != agent || action.request_id.is_empty() || action.request_id.len() > 128 {
+            return Err(INVALID_SAVED.into());
+        }
+        Ok(action)
+    }
+}
 
 fn text<'a>(value: &'a Value, key: &str) -> Result<&'a str, String> {
     value[key]
@@ -20,7 +75,7 @@ fn key(params: &Value) -> Result<String, String> {
         text(params, "agentId")?
     ))
 }
-fn read(db: &Connection, key: &str, agent: &str) -> Result<Value, String> {
+fn read(db: &Connection, key: &str, agent: &str) -> Result<Option<SavedAction>, String> {
     let raw: Option<String> = db
         .query_row(
             "SELECT value FROM client_preferences WHERE key=?1",
@@ -30,23 +85,10 @@ fn read(db: &Connection, key: &str, agent: &str) -> Result<Value, String> {
         .optional()
         .map_err(|e| e.to_string())?;
     let Some(raw) = raw else {
-        return Ok(Value::Null);
+        return Ok(None);
     };
-    let value: Value = serde_json::from_str(&raw).map_err(
-        |_| "The saved action request is invalid. Check its receipt before another action.",
-    )?;
-    if value["id"].as_str() != Some(agent)
-        || !matches!(value["action"].as_str(), Some("review" | "compact"))
-        || value["request_id"]
-            .as_str()
-            .is_none_or(|s| s.is_empty() || s.len() > 128)
-        || value["context"]["accountKey"].as_str().is_none()
-    {
-        return Err(
-            "The saved action request is invalid. Check its receipt before another action.".into(),
-        );
-    }
-    Ok(value)
+    let value = serde_json::from_str(&raw).map_err(|_| INVALID_SAVED)?;
+    SavedAction::checked(value, agent).map(Some)
 }
 fn apply(db: &Connection, request: &Request) -> Result<Value, String> {
     let p = &request.params;
@@ -54,10 +96,13 @@ fn apply(db: &Connection, request: &Request) -> Result<Value, String> {
     let agent = text(p, "agentId")?;
     let existing = read(db, &key, agent)?;
     match request.method.as_str() {
-        "actions.pending" => Ok(existing),
+        "actions.pending" => serde_json::to_value(existing).map_err(|e| e.to_string()),
         "actions.acknowledge" => {
             let id = text(p, "requestId")?;
-            if existing["request_id"].as_str() == Some(id) {
+            if existing
+                .as_ref()
+                .is_some_and(|action| action.request_id == id)
+            {
                 db.execute(
                     "DELETE FROM client_preferences WHERE key=?1 OR key=?2",
                     params![key, format!("{key}:workspace")],
@@ -67,10 +112,11 @@ fn apply(db: &Connection, request: &Request) -> Result<Value, String> {
             Ok(Value::Null)
         }
         "actions.prepare" => {
-            let action = text(p, "action")?;
-            if !matches!(action, "review" | "compact") {
-                return Err("Unknown native action.".into());
-            }
+            let action = match text(p, "action")? {
+                "review" => Action::Review,
+                "compact" => Action::Compact,
+                _ => return Err("Unknown native action.".into()),
+            };
             let workspace = text(p, "workspaceId")?;
             if workspace.len() != 32
                 || !workspace
@@ -79,7 +125,7 @@ fn apply(db: &Connection, request: &Request) -> Result<Value, String> {
             {
                 return Err("Invalid workspace identity.".into());
             }
-            if !existing.is_null() {
+            if let Some(existing) = existing {
                 let previous: Option<String> = db
                     .query_row(
                         "SELECT value FROM client_preferences WHERE key=?1",
@@ -91,10 +137,10 @@ fn apply(db: &Connection, request: &Request) -> Result<Value, String> {
                 if previous.as_deref() != Some(workspace) {
                     return Err("The saved action belongs to another or an unknown workspace. Check its receipt before another action.".into());
                 }
-                if existing["action"].as_str() != Some(action) {
+                if existing.action != action {
                     return Err("Check the saved action request before another action.".into());
                 }
-                return Ok(existing);
+                return serde_json::to_value(existing).map_err(|e| e.to_string());
             }
             let uuid = crate::platform::dispatch(&Request {
                 id: "action-identity".into(),
@@ -104,14 +150,33 @@ fn apply(db: &Connection, request: &Request) -> Result<Value, String> {
             let id = uuid
                 .result
                 .ok_or("The request identity could not be created.")?;
-            let mut context = json!({"accountKey":p["accountKey"].as_str().filter(|s|!s.is_empty()).unwrap_or("default")});
+            let id = id
+                .as_str()
+                .filter(|s| !s.is_empty() && s.len() <= 128)
+                .ok_or("The request identity could not be created.")?
+                .to_owned();
+            let mut extensions = Map::new();
             if let Some(thread) = p["threadId"].as_str().filter(|s| !s.is_empty()) {
-                context["threadId"] = json!(thread);
+                extensions.insert("threadId".into(), json!(thread));
             }
             if let Some(epoch) = p["epoch"].as_u64() {
-                context["epoch"] = json!(epoch);
+                extensions.insert("epoch".into(), json!(epoch));
             }
-            let value = json!({"id":agent,"action":action,"request_id":id,"context":context});
+            let action = SavedAction {
+                id: agent.into(),
+                action,
+                request_id: id,
+                context: ActionContext {
+                    account_key: p["accountKey"]
+                        .as_str()
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or("default")
+                        .into(),
+                    extensions,
+                },
+                extensions: Map::new(),
+            };
+            let value = serde_json::to_value(action).map_err(|e| e.to_string())?;
             db.execute(
                 "INSERT INTO client_preferences VALUES(?1,?2)",
                 params![key, value.to_string()],
@@ -147,7 +212,11 @@ pub fn stored(db: &mut Connection, request: &Request) -> Response {
 async fn stored_request(sender: &StoreSender, request: Request) -> Response {
     let id = request.id.clone();
     let (reply, receive) = tokio::sync::oneshot::channel();
-    if sender.send((request, reply)).await.is_err() {
+    if sender
+        .send(crate::delivery::StoreCommand::Request(request, reply))
+        .await
+        .is_err()
+    {
         return Response::failure(id, "core_failed", "The state worker stopped.");
     }
     receive
@@ -228,18 +297,33 @@ pub async fn submit(backend: &Backend, sender: &StoreSender, request: Request) -
             error: prepared.error,
         };
     };
-    let response=backend.dispatch(Request {id:request.id.clone(),method:"api.request".into(),params:json!({"path":"/api/action","body":body,"workspaceId":workspace,"timeoutMs":15000})}).await;
+    let agent = match text(&request.params, "agentId") {
+        Ok(agent) => agent,
+        Err(error) => return Response::failure(request.id, "action_state", error),
+    };
+    let action = match SavedAction::checked(body, agent) {
+        Ok(action) => action,
+        Err(error) => return Response::failure(request.id, "action_state", error),
+    };
+    let response=backend.dispatch(Request {id:request.id.clone(),method:"api.request".into(),params:json!({"path":"/api/action","body":action,"workspaceId":workspace,"timeoutMs":15000})}).await;
     let acknowledged = response
         .result
         .as_ref()
-        .is_some_and(|value| value["receipt"]["requestId"] == body["request_id"]);
+        .and_then(|value| serde_json::from_value::<ActionReply>(value.clone()).ok())
+        .and_then(|reply| reply.receipt)
+        .and_then(|receipt| receipt.request_id)
+        .as_deref()
+        == Some(action.request_id.as_str());
     let not_applied = response
         .error
         .as_ref()
         .and_then(|e| e.details.as_ref())
-        .is_some_and(|d| d["outcome"] == "not_applied");
+        .and_then(|value| serde_json::from_value::<ErrorOutcome>(value.clone()).ok())
+        .and_then(|details| details.outcome)
+        .as_deref()
+        == Some("not_applied");
     if acknowledged || not_applied {
-        let cleared=crate::delivery::state(sender,"actions.acknowledge",json!({"stateDir":request.params["stateDir"],"agentId":request.params["agentId"],"requestId":body["request_id"]})).await;
+        let cleared=crate::delivery::state(sender,"actions.acknowledge",json!({"stateDir":request.params["stateDir"],"agentId":request.params["agentId"],"requestId":action.request_id})).await;
         if let Err(error) = cleared {
             return Response::failure(request.id, "action_state", error);
         }
@@ -363,6 +447,64 @@ mod tests {
                 .is_some()
         );
     }
+    #[test]
+    fn saved_extensions_survive_replay_and_malformed_records_are_refused() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&temp.path().join("client.sqlite3")).unwrap();
+        let key = "studio-native-action:/private/state:lead";
+        let saved = json!({"id":"lead","action":"review","request_id":"identity", "context":{"accountKey":"", "futureContext":{"n":1}, "epoch":"legacy"}, "futureAction":[1,2]});
+        store
+            .connection
+            .execute(
+                "INSERT INTO client_preferences VALUES(?1,?2)",
+                params![key, saved.to_string()],
+            )
+            .unwrap();
+        store
+            .connection
+            .execute(
+                "INSERT INTO client_preferences VALUES(?1,?2)",
+                params![format!("{key}:workspace"), "a".repeat(32)],
+            )
+            .unwrap();
+        let mut request = inputs();
+        request["action"] = json!("review");
+        assert_eq!(
+            store
+                .dispatch(command("pending", "actions.pending", inputs()))
+                .result,
+            Some(saved.clone())
+        );
+        assert_eq!(
+            store
+                .dispatch(command("prepare", "actions.prepare", request))
+                .result,
+            Some(saved)
+        );
+        for invalid in [
+            json!({"id":"lead","action":"review","request_id":"", "context":{"accountKey":"x"}}),
+            json!({"id":"lead","action":"unknown","request_id":"x", "context":{"accountKey":"x"}}),
+            json!({"id":"lead","action":"review","request_id":"x", "context":{}}),
+        ] {
+            store
+                .connection
+                .execute(
+                    "UPDATE client_preferences SET value=?1 WHERE key=?2",
+                    params![invalid.to_string(), key],
+                )
+                .unwrap();
+            for method in ["actions.pending", "actions.prepare", "actions.acknowledge"] {
+                let mut input = inputs();
+                input["requestId"] = json!("x");
+                assert!(
+                    store
+                        .dispatch(command(method, method, input))
+                        .error
+                        .is_some()
+                );
+            }
+        }
+    }
     #[tokio::test]
     async fn lost_http_reply_and_unmatched_receipt_keep_the_same_request_after_restart() {
         use crate::backend::tests::{read_http, reply};
@@ -417,8 +559,8 @@ mod tests {
                 tokio::sync::mpsc::channel::<crate::delivery::StoreCommand>(64);
             let thread = std::thread::spawn(move || {
                 let mut store = Store::open(&path).unwrap();
-                while let Some((request, reply)) = receive.blocking_recv() {
-                    drop(reply.send(store.dispatch(request)));
+                while let Some(command) = receive.blocking_recv() {
+                    command.execute(&mut store);
                 }
             });
             (sender, thread)

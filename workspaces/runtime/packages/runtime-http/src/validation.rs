@@ -67,7 +67,14 @@ pub(crate) struct Registry {
 pub(crate) struct MatchedOperation {
     pub key: String,
     pub has_body_schema: bool,
+    pub typed_body: bool,
 }
+
+// Temporary migration marker; remove when every body uses a typed extractor.
+const TYPED_BODIES: &[(&str, &str)] = &[
+    ("POST", "/api/queue"),
+    ("POST", "/api/orchestration/settings"),
+];
 
 #[derive(Debug, Clone)]
 pub(crate) struct CompileError {
@@ -392,8 +399,9 @@ impl Registry {
         let key = format!("{method} {template}");
         let operation = self.operations.get(&key)?;
         Some(MatchedOperation {
+            typed_body: TYPED_BODIES.contains(&(method, template)),
             key,
-            has_body_schema: operation.body.is_some(),
+            has_body_schema: operation.body.is_some() || TYPED_BODIES.contains(&(method, template)),
         })
     }
 
@@ -590,7 +598,9 @@ fn compile_operation(
             )?);
         }
     }
-    if let Some(request_body) = operation.get("requestBody") {
+    if !TYPED_BODIES.contains(&(method, path))
+        && let Some(request_body) = operation.get("requestBody")
+    {
         output.body_required = request_body.get("required").and_then(Value::as_bool) == Some(true);
         if let Some(schema) = request_body.pointer("/content/application~1json/schema") {
             output.body = Some(compile_part(
@@ -1987,8 +1997,9 @@ mod tests {
             );
         }
 
-        let safe_raw_body =
-            format!(r#"{{"requestId":"r","action":"event","operation":[],"payload":{{"key":{MAX_SAFE_INTEGER}}}}}"#);
+        let safe_raw_body = format!(
+            r#"{{"requestId":"r","action":"event","operation":[],"payload":{{"key":{MAX_SAFE_INTEGER}}}}}"#
+        );
         let safe_body = serde_json::from_str(&safe_raw_body).expect("safe integer parses");
         assert!(
             registry
@@ -2003,8 +2014,7 @@ mod tests {
                 )
                 .is_ok()
         );
-        let large_fraction =
-            r#"{"requestId":"r","action":"event","operation":[],"payload":{"key":18446744073709551616.5}}"#;
+        let large_fraction = r#"{"requestId":"r","action":"event","operation":[],"payload":{"key":18446744073709551616.5}}"#;
         let fractional_body =
             serde_json::from_str(large_fraction).expect("large fractional JSON number parses");
         assert!(

@@ -251,7 +251,7 @@ async fn confirmed_restart_is_atomic_replay_safe_and_waits_for_exit() {
     let store = RuntimeStore::open(Some(root.path())).await.unwrap();
     let cwd = root.path().to_string_lossy().into_owned();
     let first = store.transaction_with(move |tx| {
-        let owner = AgentRecord::from_value(json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"owner","rootId":"owner","epoch":2,"cwd":cwd,"autoWake":true,"yoloMode":true,"status":"idle"}))
+        let owner = AgentRecord::from_value(json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"owner","rootId":"owner","epoch":2,"cwd":cwd,"autoWake":true,"yoloMode":true,"status":"idle"}))
             .map_err(studio_runtime_store::StoreError::from)?;
         AgentRepository::put(tx, &owner)?;
         monitor_runtime::create_in_transaction(tx, &monitor_runtime::MonitorAdmission {
@@ -265,13 +265,17 @@ async fn confirmed_restart_is_atomic_replay_safe_and_waits_for_exit() {
         Ok(())
     }).await.unwrap();
     let body = json!({"id":original,"agent":"owner","epoch":2,"requestId":"confirmed","accountKey":"default","outputPatterns":["test complete"]});
-    let request = body.clone();
+    let request = serde::Deserialize::deserialize(&body).unwrap();
     let new = store
         .transaction_with(move |tx| {
             monitor_runtime::restart_in_transaction(tx, &request, &Workspace, "/logs", 2.0)
         })
         .await
         .unwrap();
+    assert_eq!(
+        new["restartSignature"],
+        studio_runtime_services::process_controls::digest(&body)
+    );
     assert_eq!(new["command"], "printf test");
     assert_eq!(new["outputPatterns"], json!(["test complete"]));
     let db = store.test_reader().unwrap();
@@ -282,7 +286,7 @@ async fn confirmed_restart_is_atomic_replay_safe_and_waits_for_exit() {
             .unwrap()
             .is_empty()
     );
-    let request = body.clone();
+    let request = serde::Deserialize::deserialize(&body).unwrap();
     let replay = store
         .transaction_with(move |tx| {
             monitor_runtime::restart_in_transaction(tx, &request, &Workspace, "/logs", 3.0)
@@ -290,8 +294,27 @@ async fn confirmed_restart_is_atomic_replay_safe_and_waits_for_exit() {
         .await
         .unwrap();
     assert_eq!(new, replay);
+    for (field, value) in [
+        ("accountKey", json!("other")),
+        ("epoch", json!(3)),
+        ("extraEvidence", json!(null)),
+    ] {
+        let mut changed = body.clone();
+        changed[field] = value;
+        let changed = serde::Deserialize::deserialize(changed).unwrap();
+        assert!(
+            store
+                .transaction_with(move |tx| monitor_runtime::restart_in_transaction(
+                    tx, &changed, &Workspace, "/logs", 3.0
+                ))
+                .await
+                .is_err(),
+            "changed {field} must not replay"
+        );
+    }
     let mut changed = body;
     changed["outputPatterns"] = json!(["different"]);
+    let changed = serde::Deserialize::deserialize(changed).unwrap();
     assert!(
         store
             .transaction_with(move |tx| monitor_runtime::restart_in_transaction(

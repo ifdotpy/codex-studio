@@ -15,8 +15,8 @@ pub use codec::{
     CodecError, DecodedJournalEntry, DecodedJournalPayload, Frame, MAX_FRAME_BYTES,
     MAX_FRAME_DELIMITER_BYTES, Method, NotificationFrame, RequestFrame, RequestId, ResponseBody,
     UnknownMethodFrame, decode_journal_entry, decode_journal_entry_borrowed, decode_journal_value,
-    encode_line, encode_line_into, frame_payload_bytes, frame_prefix_payload_bytes,
-    validate_initialize_params,
+    decode_probe_response, encode_line, encode_line_into, frame_payload_bytes,
+    frame_prefix_payload_bytes, validate_initialize_params,
 };
 pub use connection::{
     Action, Inbound, InitializationStatus, Lifecycle, RequestOutcome, RequestTicket, SessionError,

@@ -1,7 +1,7 @@
 //! Durable usage/authentication continuation decisions; observations never invoke a provider.
 use crate::continuation::{
-    ContinuationError, Decision, Effect, POLL_SECONDS, Result, Snapshot, account, flag,
-    now_checked, number, patch, present, remove, text,
+    ContinuationError, ContinuationUpdate as U, Decision, Effect, POLL_SECONDS, ProposedRecord,
+    Result, Snapshot, UsageDraft, WaitStatus, account, flag, now_checked, number, present, text,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -126,12 +126,8 @@ pub fn next_check(reset: Option<f64>, now: f64) -> f64 {
         .filter(|r| *r > now)
         .map_or(now + POLL_SECONDS, |r| r + RESET_GRACE)
 }
-fn auth_backoff(record: &Value) -> f64 {
-    AUTH_BACKOFF[(record
-        .get("authAttempt")
-        .and_then(Value::as_u64)
-        .unwrap_or(0)
-        .min(2)) as usize]
+fn auth_backoff(attempt: u64) -> f64 {
+    AUTH_BACKOFF[attempt.min(2) as usize]
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -302,18 +298,19 @@ fn allowed(data: &Value, agent: &Value, now: f64) -> bool {
 /// the turn failed is no evidence that the limit ends. The follow-up id is
 /// fixed and the resumed wait is `started`, so it resumes once; a new limit
 /// failure of the resumed turn starts a new wait.
-fn reset_passed(r: &Value, now: f64) -> bool {
-    let failed = number(r, "failedAt").unwrap_or(0.0);
+fn reset_passed(s: &Snapshot, now: f64) -> bool {
+    let failed = s.record_failed_at().unwrap_or(0.0);
     now >= failed + RESUME_MIN
-        && number(r, "resetAt").is_some_and(|reset| reset > failed && now >= reset + RESET_GRACE)
+        && s.record_reset_at()
+            .is_some_and(|reset| reset > failed && now >= reset + RESET_GRACE)
 }
 /// Start the wait's continuation: one follow-up with the wait's fixed id.
-fn resume(s: &Snapshot, mut r: Value, auth: bool, now: f64) -> Decision {
-    let id = format!("usage-resume:{}", text(&r, "id"));
-    patch(
-        &mut r,
-        json!({"status":"started","dueAt":null,"startedAt":now,"reason":null}),
-    );
+fn resume(s: &Snapshot, mut r: ProposedRecord, auth: bool, now: f64) -> Decision {
+    let id = format!("usage-resume:{}", s.record_id().unwrap_or(""));
+    r.update(U::Status("started"));
+    r.update(U::DueAt(None));
+    r.update(U::StartedAt(now));
+    r.update(U::Reason(None));
     let mut d = Decision::save(s, r, "usageResume", now);
     d.effects.push(Effect::Followup {
         id,
@@ -325,79 +322,96 @@ fn resume(s: &Snapshot, mut r: Value, auth: bool, now: f64) -> Decision {
         .into(),
     });
     if let Some(a) = &mut d.agent {
-        remove(a, "nativeFailureHold");
-        patch(a, json!({"status":"queued","error":null}));
+        a.clear_hold();
+        a.queued();
     }
     d
 }
-fn cancel(s: &Snapshot, r: &Value, reason: &str, now: f64) -> Decision {
-    let mut r = r.clone();
-    patch(
-        &mut r,
-        json!({"status":"cancelled","dueAt":null,"reason":reason}),
-    );
+fn cancel(s: &Snapshot, _r: &Value, reason: &str, now: f64) -> Decision {
+    let mut r = ProposedRecord::existing(s).expect("validated record");
+    r.update(U::Status("cancelled"));
+    r.update(U::DueAt(None));
+    r.update(U::Reason(Some(reason.to_owned())));
     Decision::save(s, r, "usageResume", now)
 }
 fn excluded(s: &Snapshot, key: &str) -> bool {
-    let root = if text(&s.agent, "id") == text(&s.agent, "rootId") {
-        Some(&s.agent)
+    let agent = s.agent_view();
+    let root = if agent.id.as_str() == agent.root_id.as_str() {
+        Some(agent)
     } else {
-        s.ancestors
+        s.ancestors_view()
             .iter()
-            .find(|a| text(a, "id") == text(&s.agent, "rootId"))
+            .find(|a| a.id.as_str() == agent.root_id.as_str())
     };
-    root.and_then(|r| r.get("excludedAccountKeys"))
-        .and_then(Value::as_array)
-        .is_some_and(|keys| keys.iter().any(|k| k.as_str() == Some(key)))
+    root.and_then(|root| root.excluded_account_keys.as_ref())
+        .is_some_and(|keys| keys.as_slice().iter().any(|id| id.as_str() == key))
 }
 /// Called after an account observation; current identity and task ownership are checked anew.
 pub fn tick(s: &Snapshot, limits: &LimitsObservation, now: f64) -> Result<Decision> {
     if let Some(decision) = tick_before_observation(s, now)? {
         return Ok(decision);
     }
-    let r = s
+    let _r = s
         .record
         .as_ref()
         .ok_or(ContinuationError::Invalid("/record".into()))?;
-    let key = account(r);
+    let key = s.record_account().unwrap_or("default");
     if limits.account_key() != key {
         return Err(ContinuationError::Unavailable(
             "usage-policy/limits-account-mismatch",
         ));
     }
-    let auth = text(r, "cause") == "auth";
-    let failed = number(r, "failedAt").unwrap_or(0.0);
+    let auth = s.record_is_auth();
+    let failed = s.record_failed_at().unwrap_or(0.0);
     let fresh = limits.fresh_for(key, now - FRESH_SECONDS, false);
     let recovered = if auth {
-        number(r, "proofAt").is_some_and(|t| t > failed)
+        s.usage_record()
+            .and_then(|r| r.proof_at.as_ref())
+            .is_some_and(|t| t.get() > failed)
             || limits.fresh_for(key, failed, true)
             || (account(&limits.raw) == key
                 && limits.marker.as_ref().is_some_and(|marker| {
-                    r.get("authRefreshMarker")
-                        .and_then(Value::as_str)
-                        .is_some_and(|old| old != marker)
+                    s.usage_record()
+                        .and_then(|r| r.auth_refresh_marker.as_ref())
+                        .is_some_and(|old| old.as_str() != marker)
                 }))
     } else if fresh {
         limits.allowed(&s.agent, now)
     } else {
-        reset_passed(r, now)
+        reset_passed(s, now)
     };
-    let mut r = r.clone();
+    let mut r = ProposedRecord::existing(s).expect("validated record");
     if !recovered {
         // Only a current read replaces the reset that the wait holds.
         let reset = fresh
             .then(|| limits.reset_at(&s.agent))
             .flatten()
-            .or_else(|| number(&r, "resetAt"));
+            .or_else(|| s.record_reset_at());
         let due = if auth {
-            now + auth_backoff(&r)
+            now + auth_backoff(
+                s.usage_record()
+                    .and_then(|r| r.auth_attempt.as_ref())
+                    .and_then(|n| n.as_u64())
+                    .unwrap_or(0),
+            )
         } else {
             next_check(reset, now)
         };
-        patch(
-            &mut r,
-            json!({"dueAt":due,"plannedAt":reset.filter(|t|*t>now),"resetAt":reset,"lastCheckedAt":limits.raw.get("at"),"waitingForAuth":auth,"reason":if auth {Some("Waiting for the account sign-in.")} else if fresh {None} else {Some("Waiting for a current account limits result.")}}),
-        );
+        r.update(U::DueAt(Some(due)));
+        r.update(U::PlannedAt(reset.filter(|t| *t > now)));
+        r.update(U::ResetAt(reset));
+        r.update(U::LastCheckedAt(limits.raw.get("at").cloned()));
+        r.update(U::WaitingForAuth(auth));
+        r.update(U::Reason(
+            if auth {
+                Some("Waiting for the account sign-in.")
+            } else if fresh {
+                None
+            } else {
+                Some("Waiting for a current account limits result.")
+            }
+            .map(str::to_owned),
+        ));
         return Ok(Decision::save(s, r, "usageResume", now));
     }
     Ok(resume(s, r, auth, now))
@@ -408,27 +422,27 @@ pub fn tick_without_observation(s: &Snapshot, now: f64) -> Result<Decision> {
     if let Some(decision) = tick_before_observation(s, now)? {
         return Ok(decision);
     }
-    let mut record = s
-        .record
-        .clone()
-        .ok_or_else(|| ContinuationError::Invalid("/record".into()))?;
-    let auth = text(&record, "cause") == "auth";
-    if !auth && reset_passed(&record, now) {
+    let mut record =
+        ProposedRecord::existing(s).ok_or_else(|| ContinuationError::Invalid("/record".into()))?;
+    let auth = s.record_is_auth();
+    if !auth && reset_passed(s, now) {
         return Ok(resume(s, record, auth, now));
     }
     let due = if auth {
-        now + auth_backoff(&record)
+        now + auth_backoff(
+            s.usage_record()
+                .and_then(|r| r.auth_attempt.as_ref())
+                .and_then(|n| n.as_u64())
+                .unwrap_or(0),
+        )
     } else {
-        next_check(number(&record, "resetAt"), now)
+        next_check(s.record_reset_at(), now)
     };
-    patch(
-        &mut record,
-        json!({
-            "dueAt":due,
-            "waitingForAuth":auth,
-            "reason":"Waiting for a current account limits result."
-        }),
-    );
+    record.update(U::DueAt(Some(due)));
+    record.update(U::WaitingForAuth(auth));
+    record.update(U::Reason(Some(
+        "Waiting for a current account limits result.".into(),
+    )));
     Ok(Decision::save(s, record, "usageResume", now))
 }
 
@@ -438,45 +452,45 @@ fn tick_before_observation(s: &Snapshot, now: f64) -> Result<Option<Decision>> {
         return Ok(Some(Decision::default()));
     };
     if !s.current("usageResume")
-        || text(&s.agent["usageResume"], "status") != "scheduled"
+        || !s.agent_view().usage_resume.as_ref().is_some_and(|r| {
+            matches!(
+                r.status,
+                studio_runtime_schema::continuation_snapshot::UsageContinuationStatus::Scheduled
+            )
+        })
         || s.status() != Some(crate::continuation::WaitStatus::Scheduled)
-        || number(r, "dueAt").is_none_or(|t| t > now)
+        || s.record_due_at().is_none_or(|t| t > now)
     {
         return Ok(Some(Decision::default()));
     }
-    let key = account(r);
+    let key = s.record_account().unwrap_or("default");
     if excluded(s, key) {
         let reason =
             format!("Automatic resume stopped because account {key} is disabled for this chat.");
         let mut d = cancel(s, r, &reason, now);
         if let Some(a) = &mut d.agent {
-            patch(
-                a,
-                json!({"status":"failed","inFlight":false,"error":reason}),
-            );
+            a.failed(&reason);
         }
-        d.hold(text(r, "id"), "account-excluded", &reason);
+        d.hold(s.record_id().unwrap_or(""), "account-excluded", &reason);
         return Ok(Some(d));
     }
-    if present(&s.agent, "deletedAt")
-        || !flag(&s.agent, "autoWake")
-        || s.agent.get("usageResumeEnabled") == Some(&Value::Bool(false))
-        || account(&s.agent) != key
+    if s.agent_view()
+        .deleted_at
+        .as_ref()
+        .is_some_and(|v| v.get() != 0.0)
+        || !s.agent_view().auto_wake.unwrap_or(false)
+        || s.agent_record().usage_resume_enabled == Some(false)
+        || s.agent_account() != key
         || !s.parents_running(false)
     {
         return Ok(Some(cancel(s, r, STOPPED, now)));
     }
-    if ["threadId", "epoch"]
-        .iter()
-        .any(|k| s.agent.get(*k) != r.get(*k))
-        || s.agent.get("lastCompletedTurn") != r.get("turnId")
-        || !flag(&s.agent, "nativeFailureHold")
-    {
+    if !s.record_matches_agent_identity() || !s.agent_view().native_failure_hold.unwrap_or(false) {
         return Ok(Some(cancel(s, r, CHANGED, now)));
     }
-    if !s.claims_valid(r) {
+    if !s.claims_valid() {
         let mut d = cancel(s, r, TASK_CHANGED, now);
-        d.hold(text(r, "id"), "task-changed", TASK_CHANGED);
+        d.hold(s.record_id().unwrap_or(""), "task-changed", TASK_CHANGED);
         return Ok(Some(d));
     }
     Ok(None)
@@ -484,32 +498,33 @@ fn tick_before_observation(s: &Snapshot, now: f64) -> Result<Option<Decision>> {
 /// Limit telemetry may advance a wait, but never earlier than the anti-loop floor.
 pub fn limits_changed(s: &Snapshot, limits: &LimitsObservation, now: f64) -> Result<Decision> {
     now_checked(now)?;
-    let Some(r) = &s.record else {
+    let Some(_r) = &s.record else {
         return Ok(Decision::default());
     };
-    if text(r, "status") != "scheduled"
-        || text(r, "cause") == "auth"
+    if s.status() != Some(WaitStatus::Scheduled)
+        || s.record_is_auth()
         || present(&limits.raw, "error")
         || !present(&limits.raw, "data")
     {
         return Ok(Decision::default());
     }
-    if limits.account_key() != account(&s.agent) || limits.account_key() != account(r) {
+    if limits.account_key() != s.agent_account() || Some(limits.account_key()) != s.record_account()
+    {
         return Err(ContinuationError::Unavailable(
             "usage-policy/limits-account-mismatch",
         ));
     }
     // Telemetry without a blocked window keeps the reset that the wait holds.
-    let reset = limits.reset_at(&s.agent).or_else(|| number(r, "resetAt"));
-    let mut r = r.clone();
-    patch(
-        &mut r,
-        json!({"resetAt":reset,"plannedAt":reset.filter(|t|*t>now)}),
-    );
+    let reset = limits.reset_at(&s.agent).or_else(|| s.record_reset_at());
+    let mut r = ProposedRecord::existing(s).expect("validated record");
+    r.update(U::ResetAt(reset));
+    r.update(U::PlannedAt(reset.filter(|t| *t > now)));
     if limits.allowed(&s.agent, now) {
-        r["dueAt"] = json!(now.max(number(&r, "failedAt").unwrap_or(now) + RESUME_MIN));
+        r.update(U::DueAt(Some(
+            now.max(s.record_failed_at().unwrap_or(now) + RESUME_MIN),
+        )));
     } else if reset.is_some_and(|t| t > now) {
-        r["dueAt"] = json!(next_check(reset, now));
+        r.update(U::DueAt(Some(next_check(reset, now))));
     }
     let mut d = Decision::save(s, r, "usageResume", now);
     if !s.current("usageResume") {
@@ -520,43 +535,43 @@ pub fn limits_changed(s: &Snapshot, limits: &LimitsObservation, now: f64) -> Res
 /// Existing exact cancelled rows can be re-enabled; a changed failed turn needs turn capture.
 pub fn set_enabled(s: &Snapshot, enabled: bool, now: f64) -> Result<Decision> {
     now_checked(now)?;
-    let Some(r) = &s.record else {
+    let Some(_r) = &s.record else {
         return Err(ContinuationError::Invalid("/record".into()));
     };
     if !s.current("usageResume") {
         return Ok(Decision::default());
     }
-    let mut r = r.clone();
-    if !enabled && text(&r, "status") == "scheduled" {
-        patch(
-            &mut r,
-            json!({"status":"cancelled","dueAt":null,"reason":OFF}),
-        );
+    let mut r = ProposedRecord::existing(s).expect("validated record");
+    if !enabled && s.status() == Some(WaitStatus::Scheduled) {
+        r.update(U::Status("cancelled"));
+        r.update(U::DueAt(None));
+        r.update(U::Reason(Some(OFF.into())));
     } else if enabled
-        && text(&r, "status") == "cancelled"
-        && text(&r, "reason") == OFF
-        && flag(&s.agent, "nativeFailureHold")
-        && text(&s.agent, "lastCompletedTurnStatus") == "failed"
-        && recoverable_error(&s.agent["error"], text(&s.agent, "provider"))?
+        && s.status() == Some(WaitStatus::Cancelled)
+        && s.record_reason() == Some(OFF)
+        && s.agent_view().native_failure_hold.unwrap_or(false)
+        && s.agent_view().last_completed_turn_status.as_deref() == Some("failed")
+        && recoverable_error(&s.agent["error"], s.agent_view().provider.key())?
     {
-        if s.agent.get("lastCompletedTurn") != r.get("turnId") {
+        if s.agent.get("lastCompletedTurn")
+            != s.record.as_ref().and_then(|record| record.get("turnId"))
+        {
             return Err(ContinuationError::Unavailable(
                 "turn-driver/failed-turn-capture",
             ));
         }
-        let due = if text(&r, "cause") == "auth" {
+        let due = if s.record_is_auth() {
             now + POLL_SECONDS
         } else {
-            next_check(number(&r, "resetAt"), now)
+            next_check(s.record_reset_at(), now)
         };
-        patch(
-            &mut r,
-            json!({"status":"scheduled","reason":null,"dueAt":due}),
-        );
+        r.update(U::Status("scheduled"));
+        r.update(U::Reason(None));
+        r.update(U::DueAt(Some(due)));
     }
     let mut d = Decision::save(s, r, "usageResume", now);
     if let Some(a) = &mut d.agent {
-        a["usageResumeEnabled"] = json!(enabled);
+        a.usage_enabled(enabled);
     }
     Ok(d)
 }
@@ -566,9 +581,9 @@ pub fn set_enabled(s: &Snapshot, enabled: bool, now: f64) -> Result<Decision> {
 pub fn failure_identity(s: &Snapshot, turn_id: &str) -> String {
     crate::event_write::request_signature(&json!([
         s.agent_id(),
-        account(&s.agent),
-        s.agent["threadId"],
-        s.agent["epoch"],
+        s.agent_account(),
+        s.agent_record().thread_id,
+        s.agent_record().epoch,
         turn_id
     ]))
 }
@@ -581,10 +596,14 @@ pub struct FailureObservation<'a> {
 }
 pub fn failure_eligible(s: &Snapshot) -> bool {
     !crate::continuation::native_thread_blocked(&s.agent)
-        && flag(&s.agent, "autoWake")
-        && !present(&s.agent, "deletedAt")
-        && s.agent.get("usageResumeEnabled") != Some(&Value::Bool(false))
-        && present(&s.agent, "threadId")
+        && s.agent_record().auto_wake.unwrap_or(false)
+        && !s
+            .agent_view()
+            .deleted_at
+            .as_ref()
+            .is_some_and(|v| v.get() != 0.0)
+        && s.agent_record().usage_resume_enabled != Some(false)
+        && s.agent_record().thread_id.is_some()
         && !s
             .agent
             .get("turnEpoch")
@@ -595,13 +614,13 @@ pub fn record_failure(s: &Snapshot, failure: FailureObservation<'_>, now: f64) -
     if !failure_eligible(s) {
         return Ok(Decision::default());
     }
-    if failure.limits.account_key() != account(&s.agent) {
+    if failure.limits.account_key() != s.agent_account() {
         return Err(ContinuationError::Unavailable(
             "usage-policy/limits-account-mismatch",
         ));
     }
     let id = failure_identity(s, failure.turn_id);
-    if s.record.as_ref().is_some_and(|r| text(r, "id") == id) {
+    if s.record_id() == Some(id.as_str()) {
         return Ok(Decision::default());
     }
     let is_auth = failure.cause == Cause::Auth;
@@ -615,31 +634,55 @@ pub fn record_failure(s: &Snapshot, failure: FailureObservation<'_>, now: f64) -
             .chain(failure.error_reset)
             .reduce(f64::max)
     };
-    let excluded = excluded(s, account(&s.agent));
+    let excluded = excluded(s, s.agent_account());
     let reason = excluded.then(|| {
         format!(
             "Automatic resume stopped because account {} is disabled for this chat.",
-            account(&s.agent)
+            s.agent_account()
         )
     });
-    let mut r = json!({"id":id,"status":if excluded{"cancelled"}else{"scheduled"},"accountKey":account(&s.agent),"threadId":s.agent["threadId"],"epoch":s.agent["epoch"],"turnId":failure.turn_id,"cause":failure.cause,"failedAt":now,"authAttempt":if is_auth {failure.auth_attempt}else{0},"authRefreshMarker":if is_auth&&!excluded {failure.limits.marker.as_ref()}else{None},"dueAt":null,"plannedAt":if excluded{None}else{reset.filter(|t|*t>now)},"resetAt":if excluded{None}else{reset},"reason":reason,"taskClaims":s.claims});
-    if !excluded {
-        r["dueAt"] = json!(if is_auth {
-            now + auth_backoff(&r)
+    let due_at = if excluded {
+        None
+    } else {
+        Some(if is_auth {
+            now + auth_backoff(failure.auth_attempt)
         } else {
             next_check(reset, now)
-        });
-    }
+        })
+    };
+    let r = ProposedRecord::usage(UsageDraft {
+        id: id.clone(),
+        status: if excluded { "cancelled" } else { "scheduled" },
+        account_key: s.agent_account().into(),
+        thread_id: s.agent_record().thread_id.clone(),
+        epoch: s.agent_record().epoch,
+        turn_id: failure.turn_id.into(),
+        cause: failure.cause,
+        failed_at: now,
+        auth_attempt: if is_auth { failure.auth_attempt } else { 0 },
+        auth_refresh_marker: if is_auth && !excluded {
+            failure.limits.marker.clone()
+        } else {
+            None
+        },
+        due_at,
+        planned_at: if excluded {
+            None
+        } else {
+            reset.filter(|t| *t > now)
+        },
+        reset_at: if excluded { None } else { reset },
+        reason: reason.clone(),
+        task_claims: s.claims.clone(),
+        updated_at: now,
+    });
     let mut d = Decision::save(s, r, "usageResume", now);
     if let Some(a) = &mut d.agent {
         if is_auth {
-            a["authResumeAttempt"] = json!(failure.auth_attempt.saturating_add(1));
+            a.auth_attempt(failure.auth_attempt.saturating_add(1));
         }
         if let Some(reason) = &reason {
-            patch(
-                a,
-                json!({"status":"failed","inFlight":false,"error":reason}),
-            );
+            a.failed(reason);
         }
     }
     if let Some(reason) = reason {
@@ -650,33 +693,45 @@ pub fn record_failure(s: &Snapshot, failure: FailureObservation<'_>, now: f64) -
 /// One successful turn is proof only for older auth waits on the same account.
 pub fn completed_proof(s: &Snapshot, account_key: &str, now: f64) -> Result<Decision> {
     now_checked(now)?;
-    let proof = s.record.as_ref().filter(|r| {
-        account(r) == account_key
-            && text(r, "cause") == "auth"
-            && text(r, "status") == "scheduled"
-            && !present(r, "proofAt")
-            && number(r, "failedAt").is_some_and(|t| t < now)
+    let proof = s.record.as_ref().filter(|_| {
+        s.record_account() == Some(account_key)
+            && s.record_is_auth()
+            && s.status() == Some(WaitStatus::Scheduled)
+            && s.usage_record()
+                .and_then(|r| r.proof_at.as_ref())
+                .is_none_or(|t| t.get() == 0.0)
+            && s.record_failed_at().is_some_and(|t| t < now)
     });
     let reset_attempt = s.current("usageResume")
-        && text(&s.agent["usageResume"], "cause") == "auth"
-        && text(&s.agent["usageResume"], "status") == "started";
+        && s.agent_view().usage_resume.as_ref().is_some_and(|r| {
+            matches!(
+                r.cause,
+                Some(studio_runtime_schema::continuation_snapshot::UsageContinuationCause::Auth)
+            ) && matches!(
+                r.status,
+                studio_runtime_schema::continuation_snapshot::UsageContinuationStatus::Started
+            )
+        });
     if proof.is_none() && !reset_attempt {
         return Ok(Decision::default());
     }
     let mut decision = Decision::default();
-    if let Some(record) = proof {
-        let mut record = record.clone();
-        patch(&mut record, json!({"proofAt":now,"dueAt":now}));
+    if proof.is_some() {
+        let mut record = ProposedRecord::existing(s).expect("validated record");
+        record.update(U::ProofAt(now));
+        record.update(U::DueAt(Some(now)));
         if s.current("usageResume") {
-            let mut agent = s.agent.clone();
-            agent["usageResume"] = record.clone();
+            let mut agent = crate::continuation::ProposedAgent::new(s);
+            agent.continuation("usageResume", record.value());
             decision.agent = Some(agent);
         }
         decision.record = Some(record);
     }
     if reset_attempt {
-        let agent = decision.agent.get_or_insert_with(|| s.agent.clone());
-        agent["authResumeAttempt"] = json!(0);
+        let agent = decision
+            .agent
+            .get_or_insert_with(|| crate::continuation::ProposedAgent::new(s));
+        agent.auth_attempt(0);
     }
     Ok(decision)
 }

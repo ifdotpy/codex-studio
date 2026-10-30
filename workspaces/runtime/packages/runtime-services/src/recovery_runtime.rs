@@ -505,6 +505,9 @@ fn due(job: &RecoveryJob, at: f64) -> bool {
             if !e.unconfirmed_start && (a["inFlight"] != true || a["deletedAt"].is_string()) {
                 return false;
             }
+            if e.unconfirmed_start && job.agent().is_unclean_start() {
+                return true;
+            }
             if e.unconfirmed_start
                 && a["restartRecovery"]["stage"] == "held"
                 && a.get("contextRepairWait").is_some_and(|v| !v.is_null())

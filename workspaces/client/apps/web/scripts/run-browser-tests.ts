@@ -55,6 +55,7 @@ environment.HOME = isolatedHome;
 environment.CODEX_HOME = join(isolatedHome, ".codex");
 environment.CLAUDE_CONFIG_DIR = join(isolatedHome, ".claude");
 
+let failed = true;
 try {
   mkdirSync(outputDirectory);
   mkdirSync(isolatedHome);
@@ -65,8 +66,14 @@ try {
   });
   if (result.error) throw result.error;
   process.exitCode = result.status ?? 1;
+  failed = result.status !== 0;
 } finally {
   if (process.env.KEEP_TEST_ARTIFACTS)
     console.log(`Playwright output: ${outputDirectory}`);
-  else rmSync(stateRoot, { recursive: true, force: true });
+  else if (failed) {
+    rmSync(isolatedHome, { recursive: true, force: true });
+    for (const directory of Object.values(xdgDirectories))
+      rmSync(directory, { recursive: true, force: true });
+    console.log(`Playwright failure output: ${outputDirectory}`);
+  } else rmSync(stateRoot, { recursive: true, force: true });
 }

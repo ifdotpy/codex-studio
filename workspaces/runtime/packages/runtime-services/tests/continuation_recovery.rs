@@ -110,6 +110,88 @@ impl Fault for StopAt {
 fn observation() -> usage_resume::LimitsObservation {
     usage_resume::LimitsObservation::from_record(json!({"accountKey":"default","at":1000.0,"data":{"rateLimits":{"primary":{"usedPercent":10.0,"resetsAt":2000.0}}}}),None).expect("observation")
 }
+
+#[tokio::test]
+async fn oversized_proposed_reason_is_rejected_only_during_apply_without_writes() {
+    let (_dir, store) = seeded("capacity").await;
+    let before = {
+        let db = store.test_reader().unwrap();
+        db.query_row(
+            "SELECT record FROM runtime_capacity_retries WHERE id='retry'",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .unwrap()
+    };
+    let result = continuation_driver::drive(
+        &store,
+        "a",
+        ContinuationTable::Capacity,
+        Some("retry"),
+        1000.0,
+        |snapshot| {
+            let reason = "x".repeat(1_048_577);
+            let decision = studio_runtime_services::capacity_retry::transition(
+                snapshot,
+                studio_runtime_services::capacity_retry::Action::Wait(&reason),
+                1000.0,
+            )?;
+            assert!(
+                decision.record.is_some(),
+                "standalone decision admits proposal"
+            );
+            Ok(decision)
+        },
+    )
+    .await;
+    assert!(matches!(result, Err(ContinuationError::Invalid(_))));
+    let db = store.test_reader().unwrap();
+    let after: String = db
+        .query_row(
+            "SELECT record FROM runtime_capacity_retries WHERE id='retry'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(before, after);
+}
+
+#[tokio::test]
+async fn checked_decision_write_preserves_opaque_evidence_and_number_kinds() {
+    let (_dir, store) = seeded("capacity").await;
+    store.transaction_with(|tx| {
+        tx.execute("UPDATE runtime_capacity_retries SET record=json_set(record,'$.attempt',json('1.0'),'$.claimedAt',null,'$.future',json('{\"v\":[1,null]}')) WHERE id='retry'", [])?;
+        Ok::<_, studio_runtime_store::StoreError>(())
+    }).await.unwrap();
+    continuation_driver::drive(
+        &store,
+        "a",
+        ContinuationTable::Capacity,
+        Some("retry"),
+        1000.0,
+        |snapshot| {
+            studio_runtime_services::capacity_retry::transition(
+                snapshot,
+                studio_runtime_services::capacity_retry::Action::Wait("wait"),
+                1000.0,
+            )
+        },
+    )
+    .await
+    .unwrap();
+    let db = store.test_reader().unwrap();
+    let raw: String = db
+        .query_row(
+            "SELECT record FROM runtime_capacity_retries WHERE id='retry'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let row: Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(row["attempt"], json!(1.0));
+    assert!(row.get("claimedAt").is_none());
+    assert_eq!(row["future"], json!({"v":[1,null]}));
+}
 #[test]
 fn stored_limits_observation_accepts_legacy_mutation_envelope_keys() {
     let legacy = json!({
@@ -212,7 +294,7 @@ async fn changed_task_cancels_resume_and_notifies_parent_atomically() {
         let mut a:Value=serde_json::from_str(&tx.query_row("SELECT record FROM runtime_agents WHERE id='a'",[],|r|r.get::<_,String>(0))?)?;
         a["isLead"]=json!(false);a["parentId"]=json!("parent");a["rootId"]=json!("parent");
         tx.execute("UPDATE runtime_agents SET record=?1 WHERE id='a'",[a.to_string()])?;
-        let parent=json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"parent","rootId":"parent","epoch":1,"status":"waiting","autoWake":true});
+        let parent=json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"parent","rootId":"parent","epoch":1,"status":"waiting","autoWake":true});
         tx.execute("INSERT INTO runtime_agents(id,record) VALUES('parent',?1)",[parent.to_string()])?;
         let work=json!({"id":"new","rootId":"parent","owner":"a","status":"running"});tx.execute("INSERT INTO runtime_work VALUES('new',?1)",[work.to_string()])?;Ok(())
     }).await.expect("changed ownership fixture");
@@ -357,8 +439,11 @@ async fn corrupt_continuation_rows_name_the_table_and_identity() {
         db.execute_batch(&studio_runtime_store::agent_columns::fixture_sql("CREATE TABLE runtime_agents(id TEXT,record TEXT); CREATE TABLE runtime_usage_resumes(id TEXT,agent TEXT,record TEXT); CREATE TABLE runtime_capacity_retries(id TEXT,agent TEXT,record TEXT);")).expect("tables");
         db.execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
             .expect("volatile agent table creates");
-        db.execute("INSERT INTO runtime_agents(id,record) VALUES('a',?1)", [&agent])
-            .expect("agent");
+        db.execute(
+            "INSERT INTO runtime_agents(id,record) VALUES('a',?1)",
+            [&agent],
+        )
+        .expect("agent");
         db.execute(
             &format!("INSERT INTO {} VALUES(?1,'a',?2)", table.name()),
             [id, "private malformed bytes {"],
@@ -392,6 +477,37 @@ fn capacity_state(store: &RuntimeStore) -> Value {
         .query_row("SELECT count(*) FROM runtime_events", [], |r| r.get(0))
         .expect("events");
     json!({"record":serde_json::from_str::<Value>(&record).expect("record JSON"),"agent":serde_json::from_str::<Value>(&agent).expect("agent JSON"),"events":events})
+}
+
+#[tokio::test]
+async fn pending_settings_cannot_claim_a_replaced_capacity_retry() {
+    let (_root, store) = seeded("capacity").await;
+    store
+        .transaction_with(|tx| {
+            let raw: String =
+                tx.query_row("SELECT record FROM runtime_agents WHERE id='a'", [], |r| {
+                    r.get(0)
+                })?;
+            let mut agent: Value = serde_json::from_str(&raw).expect("agent");
+            let mut replacement = agent["capacityRetry"].clone();
+            replacement["id"] = json!("replacement");
+            agent["pendingSettings"] = json!({"capacityRetry":replacement});
+            studio_runtime_store::ContinuationRepository::put_agent(tx, &agent)?;
+            Ok::<_, studio_runtime_store::StoreError>(())
+        })
+        .await
+        .expect("pending settings");
+    let before = capacity_state(&store);
+    let staged = store
+        .transaction_with(|tx| {
+            studio_runtime_services::continuation_runtime::stage_capacity_retry_observed(
+                tx, "a", "retry", 1000.0, true, None,
+            )
+        })
+        .await
+        .expect("retry stage");
+    assert!(!staged.changed());
+    assert_eq!(capacity_state(&store), before);
 }
 /// A claim queues the retry's follow-up input with its record and agent in one
 /// transaction: every boundary before commit leaves the state untouched, and a

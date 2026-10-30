@@ -1,58 +1,21 @@
 {
-  "$defs": {
-    "JsonValue": {}
-  },
-  "additionalProperties": {
-    "$ref": "#/$defs/JsonValue"
-  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
   "properties": {
     "agent": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Agent"
+      "type": ["string", "null"]
     },
     "connectionId": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Connectionid"
+      "type": ["string", "null"]
     },
     "id": {
-      "title": "Id",
       "type": "string"
     },
     "method": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Method"
+      "type": ["string", "null"]
     },
     "status": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Status"
+      "type": ["string", "null"]
     }
   },
   "required": ["id"],

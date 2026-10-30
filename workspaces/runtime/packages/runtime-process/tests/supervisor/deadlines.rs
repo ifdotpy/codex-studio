@@ -16,7 +16,7 @@ pub(super) fn fixture() -> (tempfile::TempDir, Arc<Supervisor>) {
         children: Mutex::new(BTreeMap::new()),
         active_children: AtomicUsize::new(0),
         ownership: Mutex::new(Ownership::default()),
-        recovery: Mutex::new(json!({"blocked":null})),
+        recovery: Mutex::new(serde_json::from_str(r#"{"blocked":null}"#).unwrap()),
         connections: AtomicUsize::new(1),
     });
     (root, supervisor)
@@ -180,6 +180,26 @@ fn health_skips_a_child_while_open_is_installing_it() {
         .handle(Command::Health, &backend_capabilities(&supervisor))
         .unwrap();
     assert!(health["handles"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn handshake_rejects_duplicate_fields_before_admission() {
+    let (_root, supervisor) = fixture();
+    let (mut peer, server) = UnixStream::pair().unwrap();
+    peer.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let root = serde_json::to_string(&supervisor.root).unwrap();
+    writeln!(
+        peer,
+        "{{\"protocol\":{SUPERVISOR_PROTOCOL_VERSION},\"protocol\":{SUPERVISOR_PROTOCOL_VERSION},\"stateDir\":{root},\"backendId\":\"fixture\"}}"
+    )
+    .unwrap();
+    let worker = thread::spawn(move || connection_with_budget(supervisor, server, FRAME_BUDGET));
+    let mut line = String::new();
+    BufReader::new(&mut peer).read_line(&mut line).unwrap();
+    drop(peer);
+    worker.join().unwrap();
+    let response: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(response["error"], "Invalid supervisor request");
 }
 
 #[test]

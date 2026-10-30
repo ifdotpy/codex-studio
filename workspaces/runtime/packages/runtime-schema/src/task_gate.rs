@@ -26,11 +26,22 @@ pub enum GateInput {
 }
 
 impl GateInput {
-    pub fn into_value(self) -> Value {
-        match self {
-            Self::Command(command) => json!(command),
-            Self::Config(config) => json!(config),
+    pub fn normalize(self) -> Result<Gate, &'static str> {
+        let gate = match self {
+            Self::Command(command) => Gate {
+                command,
+                timeout_ms: DEFAULT_TIMEOUT_MS,
+            },
+            Self::Config(gate) => gate,
+        };
+        if gate.command.trim().is_empty()
+            || gate.command.chars().count() > MAX_TEXT_CODEPOINTS
+            || gate.timeout_ms == 0
+            || gate.timeout_ms > MAX_TIMEOUT_MS
+        {
+            return Err("Invalid acceptance gate command or timeout_ms");
         }
+        Ok(gate)
     }
 }
 fn default_timeout() -> u64 {
@@ -38,26 +49,9 @@ fn default_timeout() -> u64 {
 }
 
 pub fn parse(value: &Value) -> Result<Option<Gate>, &'static str> {
-    if value.is_null() {
-        return Ok(None);
-    }
-    let input: GateInput =
+    let input: Option<GateInput> =
         serde_json::from_value(value.clone()).map_err(|_| "Invalid acceptance gate")?;
-    let gate = match input {
-        GateInput::Command(command) => Gate {
-            command,
-            timeout_ms: DEFAULT_TIMEOUT_MS,
-        },
-        GateInput::Config(gate) => gate,
-    };
-    if gate.command.trim().is_empty()
-        || gate.command.chars().count() > MAX_TEXT_CODEPOINTS
-        || gate.timeout_ms == 0
-        || gate.timeout_ms > MAX_TIMEOUT_MS
-    {
-        return Err("Invalid acceptance gate command or timeout_ms");
-    }
-    Ok(Some(gate))
+    input.map(GateInput::normalize).transpose()
 }
 
 pub fn input_schema() -> Value {
@@ -166,5 +160,28 @@ mod tests {
             assert!(parse(&value).is_err());
         }
         assert!(parse(&json!("  ")).is_err());
+    }
+
+    #[test]
+    fn typed_gate_normalization_preserves_formats_and_bounds() {
+        for value in [json!(" echo ok "), json!({"command":" echo ok "})] {
+            let input: GateInput = serde_json::from_value(value).expect("gate decodes");
+            assert_eq!(
+                input.normalize().expect("gate normalizes"),
+                Gate {
+                    command: " echo ok ".into(),
+                    timeout_ms: DEFAULT_TIMEOUT_MS,
+                }
+            );
+        }
+        for value in [
+            json!("  "),
+            json!({"command":"true","timeout_ms":0}),
+            json!({"command":"true","timeout_ms":MAX_TIMEOUT_MS + 1}),
+            json!("x".repeat(MAX_TEXT_CODEPOINTS + 1)),
+        ] {
+            let input: GateInput = serde_json::from_value(value).expect("gate decodes");
+            assert!(input.normalize().is_err());
+        }
     }
 }

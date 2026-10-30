@@ -30,10 +30,7 @@ async fn recover(
             )
             .map_err(|_| ApiError::internal())?
             .ok_or_else(|| ApiError::new(axum::http::StatusCode::BAD_REQUEST, "Unknown agent"))?;
-            Ok::<_, ApiError>(
-                agent.account_key.as_str()
-                    .to_owned(),
-            )
+            Ok::<_, ApiError>(agent.account_key.as_str().to_owned())
         })
         .await?;
     let port = state

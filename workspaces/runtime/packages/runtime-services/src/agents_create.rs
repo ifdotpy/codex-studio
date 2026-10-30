@@ -768,7 +768,7 @@ mod tests {
         connection.execute_batch("CREATE TABLE runtime_orchestration_settings(id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE sync_entity_meta(key TEXT PRIMARY KEY, value INTEGER NOT NULL);").expect("settings and sync metadata");
         let tx = connection.transaction().expect("transaction");
-        let record = json!({"provider":"codex","id":"agent","rootId":"agent","epoch":0,"status":"idle","name":"Before","isLead":true,"autoWake":true,"cwd":"/project","serverId":"server"});
+        let record = json!({"accountKey":"default","provider":"codex","id":"agent","rootId":"agent","epoch":0,"status":"idle","name":"Before","isLead":true,"autoWake":true,"cwd":"/project","serverId":"server"});
         super::save_agent(&tx, &record, &|_, _| true).expect("agent");
         let request = studio_runtime_schema::persistence::RequestIdentity::issue_root();
         let first = super::rename(

@@ -1,42 +1,18 @@
 {
-  "$defs": {
-    "JsonValue": {}
-  },
-  "additionalProperties": {
-    "$ref": "#/$defs/JsonValue"
-  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
   "properties": {
     "agent": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Agent"
+      "type": ["string", "null"]
     },
     "created": {
-      "anyOf": [
-        {
-          "type": "number"
-        },
-        {
-          "type": "integer"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Created"
+      "type": ["number", "null"]
     },
     "id": {
-      "title": "Id",
       "type": "string"
     }
   },
   "required": ["id"],
-  "title": "PersistedCheckpointRecord",
+  "title": "CheckpointRecord",
   "type": "object"
 }

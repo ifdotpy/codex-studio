@@ -1,46 +1,16 @@
 {
-  "$defs": {
-    "JsonValue": {}
-  },
-  "additionalProperties": {
-    "$ref": "#/$defs/JsonValue"
-  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
   "properties": {
+    "accountKey": true,
     "cause": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Cause"
+      "type": ["string", "null"]
     },
     "failedAt": {
-      "anyOf": [
-        {
-          "type": "number"
-        },
-        {
-          "type": "integer"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Failedat"
+      "type": ["number", "null"]
     },
     "status": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Status"
+      "type": ["string", "null"]
     }
   },
   "title": "PersistedUsageResumeRecord",

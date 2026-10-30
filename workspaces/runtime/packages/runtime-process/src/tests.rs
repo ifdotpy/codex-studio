@@ -8,6 +8,29 @@ use std::collections::BTreeMap;
 use std::io::Cursor;
 
 #[test]
+fn journal_v2_protocol_embeds_raw_json_without_numeric_conversion() {
+    let root = tempfile::tempdir().unwrap();
+    let journal =
+        studio_runtime_store::supervisor_journal::SupervisorJournal::open(root.path()).unwrap();
+    journal.reserve("raw", "signature", 1.0).unwrap();
+    let generation = journal
+        .opened("raw", "signature", 41, "start", None)
+        .unwrap();
+    let raw = "{ \"huge\" : 1e400, \"text\" : \"\\u0061\" }";
+    let db =
+        studio_runtime_store::Connection::open(root.path().join("supervisor.sqlite3")).unwrap();
+    db.execute("UPDATE handles SET sequence=1 WHERE id='raw'", [])
+        .unwrap();
+    db.execute("INSERT INTO events(handle,sequence,kind,payload,size,generation) VALUES('raw',1,'stdout',?1,?2,?3)", (raw, raw.len() as i64, generation as i64)).unwrap();
+    drop(db);
+    let events = journal.events_v2("raw", 0, generation, 1, 4096).unwrap();
+    let event = SupervisorEventV2::from(events.into_iter().next().unwrap());
+    assert_eq!(event.payload.get(), raw);
+    let frame = serde_json::to_string(&event).unwrap();
+    assert!(frame.contains(raw));
+}
+
+#[test]
 fn supervisor_action_display_preserves_wire_names() {
     use SupervisorAction::*;
     let cases = [

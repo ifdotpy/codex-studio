@@ -339,9 +339,9 @@ async fn capture_before_restore_inner(
         let Some(mut operation) = studio_runtime_store::workspace_operations::WorkspaceOperationsRepository::operation(tx, &transaction_operation_id)? else {
             return Err(CheckpointsError::ActivityChanged);
         };
-        if operation.get("kind").and_then(Value::as_str) != Some("restore")
-            || operation.get("phase").and_then(Value::as_str) != Some("local_mutation")
-            || operation.get("beforeCheckpoint").is_some_and(|value| !value.is_null())
+        if operation.kind != crate::workspace_operations::OperationKind::Restore
+            || operation.phase != crate::workspace_operations::OperationPhase::LocalMutation
+            || operation.extensions().get("beforeCheckpoint").is_some_and(|value| !value.is_null())
             || !studio_runtime_store::CheckpointsRepository::workspace_unchanged(tx, &snapshot)?
         {
             return Err(CheckpointsError::ActivityChanged);
@@ -363,7 +363,7 @@ async fn capture_before_restore_inner(
         let agent = studio_runtime_store::AgentRecord::from_value(agent.record)
             .map_err(StoreError::from)?;
         studio_runtime_store::AgentRepository::put(tx, &agent)?;
-        operation["beforeCheckpoint"] = json!(transaction_checkpoint_id);
+        operation.set_extension("beforeCheckpoint", json!(transaction_checkpoint_id)).expect("known extension");
         studio_runtime_store::workspace_operations::WorkspaceOperationsRepository::put_operation(tx, &operation)?;
         Ok::<_, CheckpointsError>(record)
     }).await

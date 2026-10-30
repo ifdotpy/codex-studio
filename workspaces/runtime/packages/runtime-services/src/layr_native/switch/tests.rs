@@ -26,7 +26,7 @@ async fn stored(store: &RuntimeStore, id: &str) -> Value {
 }
 
 fn wt_lead() -> Value {
-    json!({"provider":"claude","id":"wt-lead","rootId":"wt-lead","epoch":0,"status":"idle",
+    json!({"accountKey":"default","provider":"claude","id":"wt-lead","rootId":"wt-lead","epoch":0,"status":"idle",
         "autoWake":true,"isLead":true,"workspaceMode":"worktree","cwd":"/fixture/project",
         "threadId":"thread-kept"})
 }
@@ -216,7 +216,7 @@ async fn a_switched_lead_records_layr_fields_keeps_its_thread_and_workers_inheri
 
 #[tokio::test]
 async fn a_worker_switches_only_after_its_parent() {
-    let worker = json!({"provider":"codex","id":"wt-worker","rootId":"wt-lead","parentId":"wt-lead",
+    let worker = json!({"accountKey":"default","provider":"codex","id":"wt-worker","rootId":"wt-lead","parentId":"wt-lead",
         "epoch":0,"status":"idle","autoWake":true,"isLead":false,"role":"implementer",
         "workspaceMode":"worktree","worktree":true,"worktreeReady":true,
         "cwd":"/fixture/project-worktrees/wt-worker","threadId":"worker-thread"});
@@ -337,7 +337,7 @@ async fn real_host_switch_moves_a_lead_to_main_and_a_worker_branch_to_its_line()
     git(&tree, &["push", "-q", "origin", "codex-agent/wt-worker"]);
     let mut lead = wt_lead();
     lead["cwd"] = json!(project);
-    let worker = json!({"provider":"codex","id":"wt-worker","rootId":"wt-lead","parentId":"wt-lead",
+    let worker = json!({"accountKey":"default","provider":"codex","id":"wt-worker","rootId":"wt-lead","parentId":"wt-lead",
         "epoch":0,"status":"idle","autoWake":true,"isLead":false,"role":"implementer",
         "workspaceMode":"worktree","worktree":true,"worktreeReady":true,"cwd":tree});
     let (directory, store) = store_with(&[lead, worker]).await;

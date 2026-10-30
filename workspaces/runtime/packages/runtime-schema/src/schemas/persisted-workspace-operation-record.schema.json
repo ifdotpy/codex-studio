@@ -1,17 +1,11 @@
 {
-  "$defs": {
-    "JsonValue": {}
-  },
-  "additionalProperties": {
-    "$ref": "#/$defs/JsonValue"
-  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
   "properties": {
     "agent": {
-      "title": "Agent",
       "type": "string"
     },
     "id": {
-      "title": "Id",
       "type": "string"
     },
     "kind": {
@@ -24,7 +18,6 @@
         "claude_settings",
         "claude_rollback"
       ],
-      "title": "Kind",
       "type": "string"
     },
     "phase": {
@@ -38,61 +31,22 @@
         "completed",
         "failed"
       ],
-      "title": "Phase",
       "type": "string"
     },
     "provider": {
-      "anyOf": [
-        {
-          "additionalProperties": {
-            "$ref": "#/$defs/JsonValue"
-          },
-          "type": "object"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Provider"
+      "additionalProperties": true,
+      "type": ["object", "null"]
     },
     "restartHold": {
-      "anyOf": [
-        {
-          "type": "boolean"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Restarthold"
+      "type": ["boolean", "null"]
     },
-    "result": {
-      "$ref": "#/$defs/JsonValue"
-    },
+    "result": true,
     "signature": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Signature"
+      "type": ["string", "null"]
     },
     "source": {
-      "anyOf": [
-        {
-          "additionalProperties": {
-            "$ref": "#/$defs/JsonValue"
-          },
-          "type": "object"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Source"
+      "additionalProperties": true,
+      "type": ["object", "null"]
     }
   },
   "required": ["id", "kind", "agent", "phase"],

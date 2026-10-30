@@ -580,7 +580,7 @@ impl crate::managed_host_tools::PostCommitPort for ProductionPorts {
         &'a self,
         store: std::sync::Arc<studio_runtime_store::RuntimeStore>,
         actor: &'a crate::managed_host_tools::Actor,
-        tool: &'a str,
+        tool: crate::managed_host_tools::ManagedTool<'a>,
         args: &'a Value,
         request_id: &'a str,
         now: f64,
@@ -596,8 +596,9 @@ impl crate::managed_host_tools::PostCommitPort for ProductionPorts {
                 store,
                 actor,
                 context: &self.context,
-                tool,
+                tool: tool.name,
                 args,
+                watch_action: tool.watch_action,
                 request_id,
                 now,
                 ports: &self.runtime_ports,
@@ -735,7 +736,14 @@ impl From<crate::coordination::CoordinationError> for CallbackError {
         }
     }
 }
-pub(super) fn read_only(name: &str, args: &str) -> bool {
+pub(super) fn read_only(
+    name: &str,
+    args: &str,
+    watch_action: Option<crate::managed_status_watch::WatchAction>,
+) -> bool {
+    if name == "orchestration_watch" {
+        return watch_action == Some(crate::managed_status_watch::WatchAction::List);
+    }
     #[derive(serde::Deserialize)]
     struct Arguments {
         action: Option<String>,
@@ -766,7 +774,6 @@ pub(super) fn read_only(name: &str, args: &str) -> bool {
         && action != "cancel"
         || name == "orchestration_task" && matches!(action, "list" | "get" | "read" | "history")
         || name == "orchestration_request" && matches!(action, "list" | "get")
-        || name == "orchestration_watch" && action == "list"
         || name == "orchestration_complaint" && action == "read"
         || name == "orchestration_agent_manage"
             && matches!(
@@ -1164,6 +1171,12 @@ fn page(rows: Vec<Value>, args: &Value, scope: Value) -> Result<Value, CallbackE
 /// Model text bytes of one list page (Python `model_text_bytes` limit).
 const MODEL_PAGE_BYTES: usize = 13000;
 
+#[derive(serde::Deserialize)]
+struct PageCursor {
+    offset: u64,
+    revision: String,
+}
+
 /// Python `model_page(rows, args, scope, byte_limit)`.
 fn model_page(
     rows: Vec<Value>,
@@ -1203,9 +1216,11 @@ fn paginate(
         let raw = base64::engine::general_purpose::URL_SAFE
             .decode(cursor)
             .map_err(|_| invalid())?;
-        let cursor: Value = serde_json::from_slice(&raw).map_err(|_| invalid())?;
-        let offset = cursor["offset"].as_u64().ok_or_else(invalid)? as usize;
-        if offset > rows.len() || cursor["revision"] != revision {
+        let studio_runtime_schema::json_object::JsonObject(cursor):
+            studio_runtime_schema::json_object::JsonObject<PageCursor> =
+            serde_json::from_slice(&raw).map_err(|_| invalid())?;
+        let offset = cursor.offset as usize;
+        if offset > rows.len() || cursor.revision != revision {
             return Err(invalid());
         }
         offset
@@ -1295,6 +1310,55 @@ fn request_action(args: &Value) -> Result<tool_requests::Action<'_>, CallbackErr
 }
 
 #[cfg(test)]
+mod pagination_tests {
+    use super::*;
+    use base64::Engine;
+
+    #[test]
+    fn cursor_preserves_object_offsets_extras_and_scope() {
+        let rows = vec![json!("one"), json!("two"), json!("three")];
+        let first = paginate(
+            rows.clone(),
+            &rows,
+            &json!({"limit":1}),
+            json!("scope"),
+            None,
+        )
+        .expect("first page");
+        let revision = first["revision"].as_str().expect("revision");
+        let cursor = |text: String| base64::engine::general_purpose::URL_SAFE.encode(text);
+        let page = |text: String, scope: Value| {
+            paginate(
+                rows.clone(),
+                &rows,
+                &json!({"limit":1,"cursor":cursor(text)}),
+                scope,
+                None,
+            )
+        };
+        let extra = format!(r#"{{"offset":1,"revision":"{revision}","extra":true}}"#);
+        let result = page(extra, json!("scope")).expect("extra fields are accepted");
+        assert_eq!(result["items"], json!(["two"]));
+        for value in [
+            format!(r#"[1,"{revision}"]"#),
+            format!(r#"{{"offset":1.0,"revision":"{revision}"}}"#),
+            format!(r#"{{"offset":-1,"revision":"{revision}"}}"#),
+            format!(r#"{{"offset":4,"revision":"{revision}"}}"#),
+            format!(r#"{{"offset":1,"revision":"{revision}","offset":null}}"#),
+        ] {
+            assert!(page(value, json!("scope")).is_err());
+        }
+        assert!(
+            page(
+                format!(r#"{{"offset":1,"revision":"{revision}"}}"#),
+                json!("other")
+            )
+            .is_err()
+        );
+    }
+}
+
+#[cfg(test)]
 mod read_only_tests {
     #[test]
     fn distinguishes_reads_from_mutations() {
@@ -1317,6 +1381,7 @@ mod read_only_tests {
             ("orchestration_request", r#"{"action":"cancel"}"#, false),
             ("orchestration_watch", r#"{"action":"list"}"#, true),
             ("orchestration_watch", r#"{"action":"save"}"#, false),
+            ("orchestration_watch", r#"{"kind":"interval"}"#, false),
             ("orchestration_complaint", r#"{"action":"read"}"#, true),
             ("orchestration_complaint", r#"{"action":"respond"}"#, false),
             (
@@ -1328,7 +1393,26 @@ mod read_only_tests {
             ("orchestration_servers", r#"{"action":"list"}"#, true),
             ("orchestration_servers", r#"{"action":"fetch"}"#, false),
         ] {
-            assert_eq!(super::read_only(name, args), expected, "{name} {args}");
+            let watch_action = if name == "orchestration_watch" {
+                Some(
+                    serde_json::from_str::<crate::managed_status_watch::WatchActionInput>(args)
+                        .unwrap()
+                        .action,
+                )
+            } else {
+                None
+            };
+            assert_eq!(
+                super::read_only(name, args, watch_action),
+                expected,
+                "{name} {args}"
+            );
         }
+        assert!(
+            serde_json::from_str::<crate::managed_status_watch::WatchActionInput>(
+                r#"{"action":"unexpected"}"#
+            )
+            .is_err()
+        );
     }
 }

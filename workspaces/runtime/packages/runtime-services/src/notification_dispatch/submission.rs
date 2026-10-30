@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use studio_runtime_store::request_results::{AdmittedRequest, RequestResults, ResultEnvelope};
+use studio_runtime_store::request_results::AdmittedRequest;
 use studio_runtime_store::{
     ExecutionHistoryRepository, NotificationDispatchRepository, SchedulerRepository, Transaction,
 };
@@ -15,7 +15,7 @@ use super::{
 
 /// The input owner keeps the publication fence independently of response expiry.
 #[derive(Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ProviderSubmission {
     attempt_id: Option<String>,
     first_event_id: String,
@@ -76,7 +76,7 @@ pub(super) fn record_submission(
                 {
                     return Err(NotificationDispatchError::ConflictingInput);
                 }
-                return replay_submission(tx, agent, &item, &owner.admission);
+                return replay_submission(tx, agent, &item, &owner);
             }
         }
         validate_submission(tx, agent, submission, authorization)?;
@@ -153,15 +153,6 @@ pub(super) fn record_submission(
                 .collect::<Vec<_>>(),
             &owner,
         )?;
-        RequestResults::settle(
-            tx,
-            &owner.admission,
-            &ResultEnvelope {
-                actor: Some(agent.to_owned()),
-                reply: &owner.publication_outcome,
-                references: vec![item],
-            },
-        )?;
         Ok(owner.publication_outcome)
     })
 }
@@ -170,33 +161,31 @@ fn replay_submission(
     tx: &Transaction<'_>,
     agent: &str,
     item: &str,
-    admission: &AdmittedRequest,
+    owner: &ProviderSubmission,
 ) -> Result<DispatchOutcome, NotificationDispatchError> {
+    let admission = &owner.admission;
     let now = chrono::Utc::now().timestamp_millis();
     let envelope = crate::event_write::replay_request::<DispatchOutcome>(
         tx,
         admission.id(),
         admission.signature(),
         now,
-    )?
-    .ok_or_else(|| {
-        let floor = now.saturating_sub(studio_runtime_schema::persistence::REQUEST_RESULT_TTL_MS);
-        if admission.created() <= floor {
-            studio_runtime_store::request_results::RequestResultError::Identity(
-                studio_runtime_schema::persistence::RequestIdentityError::Expired {
-                    issued_ms: admission.created(),
-                    expired_before_ms: floor,
-                },
-            )
-            .into()
-        } else {
-            stored("request_results", admission.id())
+    )?;
+    if let Some(envelope) = envelope {
+        if envelope.actor.as_deref() != Some(agent) || envelope.references != [item] {
+            return Err(stored("request_results", admission.id()));
         }
-    })?;
-    if envelope.actor.as_deref() != Some(agent) || envelope.references != [item] {
-        return Err(stored("request_results", admission.id()));
+        return checked_outcome(envelope.reply);
     }
-    checked_outcome(envelope.reply)
+    let floor = now.saturating_sub(studio_runtime_schema::persistence::REQUEST_RESULT_TTL_MS);
+    if admission.created() <= floor {
+        return Err(studio_runtime_store::request_results::RequestResultError::Identity(
+            studio_runtime_schema::persistence::RequestIdentityError::Expired {
+                issued_ms: admission.created(), expired_before_ms: floor,
+            },
+        ).into());
+    }
+    checked_outcome(owner.publication_outcome.clone())
 }
 
 pub(super) fn validate_submission(
@@ -583,4 +572,29 @@ pub(super) fn submission_record(id: &str, submission: &PreparedSubmission) -> Va
         "assets": submission.assets,
         "inputs": inputs,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn legacy_submission_receipt_keeps_its_exact_outcome() {
+        use super::{DispatchOutcome, ProviderSubmission, replay_submission};
+        use studio_runtime_store::request_results::{AdmittedRequest, RequestResults, ResultEnvelope};
+        let mut db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE request_results(id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL,created INTEGER NOT NULL)").unwrap();
+        let now = chrono::Utc::now().timestamp_millis();
+        let owner = ProviderSubmission {
+            attempt_id: None,
+            first_event_id: "event".into(),
+            admission: AdmittedRequest::from_persisted_fields("legacy".into(), "sig".into(), now),
+            publication_outcome: DispatchOutcome::Written,
+        };
+        let legacy = DispatchOutcome::Ignored { reason: "legacy".into() };
+        let tx = db.transaction().unwrap();
+        RequestResults::settle(&tx, &owner.admission, &ResultEnvelope {
+            actor: Some("agent".into()), reply: legacy.clone(), references: vec!["agent:event".into()],
+        }).unwrap();
+        assert_eq!(replay_submission(&tx, "agent", "agent:event", &owner).unwrap(), legacy);
+        assert!(replay_submission(&tx, "other", "agent:event", &owner).is_err());
+    }
 }

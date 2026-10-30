@@ -2,8 +2,11 @@
 pub mod service;
 pub mod store;
 use crate::event_write::{request_signature, truthy};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use studio_runtime_schema::workspace_operation::{
+    OperationKind, OperationPhase, WorkspaceOperationRecord,
+};
 /// Seconds for a dry-run, a history fork, and the SDK file restore.
 pub(crate) const FILE_RESTORE_TIMEOUT_SECONDS: u64 = 90;
 pub use studio_runtime_schema::claude_controls::{ControlError, ControlOutcome};
@@ -23,19 +26,46 @@ struct Agent {
 fn default_account() -> String {
     "default".into()
 }
+fn checked_agent(agent: &Value) -> Result<Agent> {
+    validate("PersistedAgentRecord", agent)?;
+    let typed = Agent::deserialize(agent).map_err(|_| ControlError::Invalid("agent".into()))?;
+    if truthy(agent.get("deletedAt")) {
+        return Err(ControlError::Request);
+    }
+    Ok(typed)
+}
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Operation {
     id: String,
-    request_id: String,
-    kind: String,
+    kind: OperationKind,
     agent: String,
     signature: String,
     source: Value,
-    phase: String,
+    phase: OperationPhase,
+    #[serde(flatten)]
+    extensions: OperationExtensions,
+    result: Option<Box<serde_json::value::RawValue>>,
+}
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OperationExtensions {
+    request_id: String,
     submitted: Option<bool>,
     final_response: Option<ControlOutcome>,
-    result: Option<Box<serde_json::value::RawValue>>,
+}
+fn operation_kind(request: &ControlRequest) -> OperationKind {
+    match request {
+        ControlRequest::Settings { .. } => OperationKind::ClaudeSettings,
+        ControlRequest::Rollback { .. } => OperationKind::ClaudeRollback,
+    }
+}
+// Claude admission validates a stricter schema and replay compares the complete
+// saved semantic JSON, including opaque extensions and missing versus null.
+fn control_evidence(record: &WorkspaceOperationRecord) -> Result<Value> {
+    record
+        .serialize(serde_json::value::Serializer)
+        .map_err(|_| ControlError::Invalid("operation".into()))
 }
 #[derive(Clone)]
 pub struct ControlSnapshot {
@@ -69,14 +99,14 @@ impl ControlSnapshot {
             return Ok(None);
         };
         if op.id != request.operation_id()
-            || op.request_id != request.request_id()
+            || op.extensions.request_id != request.request_id()
             || op.agent != request.id()
-            || op.kind != format!("claude_{}", request.action_name())
+            || op.kind != operation_kind(request)
             || op.signature != signature(request)
         {
             return Err(ControlError::Conflict);
         }
-        Ok(match &op.final_response {
+        Ok(match &op.extensions.final_response {
             Some(ControlOutcome::Ok) => Some(Ok(serde_json::from_str(
                 op.result.as_ref().ok_or(ControlError::Unknown)?.get(),
             )
@@ -86,12 +116,7 @@ impl ControlSnapshot {
         })
     }
     pub fn from_records(agent: Value, operation: Option<Value>) -> Result<Self> {
-        validate("PersistedAgentRecord", &agent)?;
-        let typed: Agent = serde_json::from_value(agent.clone())
-            .map_err(|_| ControlError::Invalid("agent".into()))?;
-        if truthy(agent.get("deletedAt")) {
-            return Err(ControlError::Request);
-        }
+        let typed = checked_agent(&agent)?;
         let saved = operation;
         let operation = saved
             .as_ref()
@@ -105,6 +130,58 @@ impl ControlSnapshot {
             agent: typed,
             raw: agent,
             operation,
+            saved,
+        })
+    }
+    pub fn from_stored(agent: Value, operation: Option<&WorkspaceOperationRecord>) -> Result<Self> {
+        let typed = checked_agent(&agent)?;
+        let saved = operation.map(control_evidence).transpose()?;
+        if let Some(saved) = &saved {
+            validate("PersistedClaudeControlRecord", saved)?;
+        }
+        let parsed = operation
+            .map(|op| {
+                let extensions =
+                    OperationExtensions::deserialize(serde::de::value::MapDeserializer::<
+                        _,
+                        serde_json::Error,
+                    >::new(
+                        op.extensions()
+                            .iter()
+                            .map(|(key, value)| (key.as_str(), value)),
+                    ))
+                    .map_err(|_| ControlError::Invalid("operation".into()))?;
+                Ok::<_, ControlError>(Operation {
+                    id: op.id.clone(),
+                    kind: op.kind,
+                    agent: op.agent.clone(),
+                    signature: op
+                        .signature
+                        .value()
+                        .cloned()
+                        .ok_or_else(|| ControlError::Invalid("operation".into()))?,
+                    source: Value::Object(
+                        op.source
+                            .value()
+                            .cloned()
+                            .ok_or_else(|| ControlError::Invalid("operation".into()))?,
+                    ),
+                    phase: op.phase,
+                    extensions,
+                    result: op
+                        .result
+                        .value()
+                        .filter(|v| !v.is_null())
+                        .map(serde_json::value::to_raw_value)
+                        .transpose()
+                        .map_err(|_| ControlError::Invalid("operation".into()))?,
+                })
+            })
+            .transpose()?;
+        Ok(Self {
+            agent: typed,
+            raw: agent,
+            operation: parsed,
             saved,
         })
     }
@@ -142,9 +219,9 @@ impl ControlSnapshot {
         }
         if let Some(op) = &self.operation {
             if op.id != request.operation_id()
-                || op.request_id != request.request_id()
+                || op.extensions.request_id != request.request_id()
                 || op.agent != request.id()
-                || op.kind != format!("claude_{}", request.action_name())
+                || op.kind != operation_kind(request)
                 || op.signature != signature(request)
             {
                 return Err(ControlError::Conflict);
@@ -153,7 +230,7 @@ impl ControlSnapshot {
                 return Err(ControlError::Changed);
             }
             let saved = self.saved.clone().ok_or(ControlError::Unknown)?;
-            if op.phase == "completed" {
+            if op.phase == OperationPhase::Completed {
                 return Ok(Writes {
                     agent: self.raw.clone(),
                     result: saved.get("result").cloned().unwrap_or(Value::Null),
@@ -161,8 +238,10 @@ impl ControlSnapshot {
                     removed: vec![],
                 });
             }
-            if op.phase != "failed" {
-                if saved.get("provider").is_none_or(Value::is_null) && op.submitted == Some(true) {
+            if op.phase != OperationPhase::Failed {
+                if saved.get("provider").is_none_or(Value::is_null)
+                    && op.extensions.submitted == Some(true)
+                {
                     return Err(ControlError::Unknown);
                 }
                 return Ok(Writes {
@@ -172,7 +251,7 @@ impl ControlSnapshot {
                     result: Value::Null,
                 });
             }
-            if op.submitted == Some(true) || truthy(saved.get("provider")) {
+            if op.extensions.submitted == Some(true) || truthy(saved.get("provider")) {
                 return Err(ControlError::Unknown);
             }
             // A definite no-send result can reserve again after fresh idle proof.
@@ -284,7 +363,7 @@ impl ControlSnapshot {
         if self
             .operation
             .as_ref()
-            .is_none_or(|operation| operation.kind != format!("claude_{}", request.action_name()))
+            .is_none_or(|operation| operation.kind != operation_kind(request))
         {
             return Err(ControlError::Unknown);
         }
@@ -400,6 +479,46 @@ fn validate(schema: &str, value: &Value) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stored_snapshot_preserves_control_validation_and_replay_evidence() {
+        let agent = json!({"id":"agent","rootId":"agent","epoch":2,"cwd":"/fixture",
+            "provider":"claude","accountKey":"account","threadId":"thread","status":"paused"});
+        let base = json!({"id":"op","requestId":"request","kind":"claude_settings","agent":"agent",
+            "signature":"a".repeat(64),"source":{},"phase":"completed","created":1,
+            "finalResponse":{"status":"ok"},"result":{"value":[1,null]},"future":{"opaque":true}});
+        for result in [Some(json!({"value":[1,null]})), Some(Value::Null), None] {
+            let mut raw = base.clone();
+            match result {
+                Some(value) => raw["result"] = value,
+                None => {
+                    raw.as_object_mut().unwrap().remove("result");
+                }
+            }
+            let record = WorkspaceOperationRecord::deserialize(&raw).unwrap();
+            let typed = ControlSnapshot::from_stored(agent.clone(), Some(&record)).unwrap();
+            let legacy = ControlSnapshot::from_records(agent.clone(), Some(raw.clone())).unwrap();
+            assert_eq!(typed.saved, Some(raw));
+            assert_eq!(
+                typed
+                    .operation
+                    .unwrap()
+                    .result
+                    .as_deref()
+                    .map(|v| v.get().to_owned()),
+                legacy
+                    .operation
+                    .unwrap()
+                    .result
+                    .as_deref()
+                    .map(|v| v.get().to_owned())
+            );
+        }
+        let mut invalid = base;
+        invalid["requestId"] = json!("");
+        let record = WorkspaceOperationRecord::deserialize(&invalid).unwrap();
+        assert!(ControlSnapshot::from_stored(agent, Some(&record)).is_err());
+    }
 
     #[test]
     fn claude_control_signatures_preserve_existing_receipts() {

@@ -150,15 +150,11 @@ async fn native_review_attempt_without_a_turn(shape: Shape) {
     edit(&state, move |row| {
         row.in_flight = Some(false);
         row.auto_wake = Some(false);
-row.turn_epoch = Some(epoch);
-row.thread_id = Some("review-thread".to_string());
-row.turn_id = Some("review-turn".to_string());
-for (key, value) in [
-
-
+        row.turn_epoch = Some(epoch);
+        row.thread_id = Some("review-thread".to_string());
+        row.turn_id = Some("review-turn".to_string());
+        for (key, value) in [
             ("status", json!("interrupted")),
-
-
             (
                 "error",
                 json!(studio_runtime_store::PROVIDER_DISCONNECTED_TURN_ERROR),
@@ -175,7 +171,9 @@ for (key, value) in [
                     "requestId":"lead:review:r1","actorId":"lead","args":{},
                     "status":"started","response":{}}),
             ),
-        ] { row.extra.insert(key.into(), value); }
+        ] {
+            row.extra.insert(key.into(), value);
+        }
     })
     .await;
     // The replayed review completion settles the cut-off review.

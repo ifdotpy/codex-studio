@@ -134,7 +134,7 @@ async fn forward(
     State(state): State<HttpState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-    ApiJson(body): ApiJson<Value>,
+    ApiJson(input): ApiJson<ForwardInput>,
 ) -> Result<Json<Value>, ApiError> {
     if !local_window(&headers, peer) {
         return Err(ApiError::new(
@@ -142,26 +142,6 @@ async fn forward(
             "Only a window on this computer can hold a sign-in port here.",
         ));
     }
-    let input = ForwardInput {
-        server: string(&body, "server")?,
-        bridge_id: string(&body, "bridgeId")?,
-        token: string(&body, "token")?,
-        host: string(&body, "host")?,
-        port: body
-            .get("port")
-            .and_then(Value::as_u64)
-            .and_then(|v| u16::try_from(v).ok())
-            .ok_or_else(|| {
-                ApiError::new(StatusCode::BAD_REQUEST, "The sign-in forward is invalid")
-            })?,
-        path: string(&body, "path")?,
-        expires_at: body
-            .get("expiresAt")
-            .and_then(Value::as_f64)
-            .ok_or_else(|| {
-                ApiError::new(StatusCode::BAD_REQUEST, "The sign-in forward is invalid")
-            })?,
-    };
     let forwarder = state.browser_forwarder.ok_or_else(|| {
         dependency_unavailable("POST", "/api/browser/forward", &FORWARD_DEPENDENCIES)
             .unwrap_or_else(|_| ApiError::internal())
@@ -175,13 +155,6 @@ async fn forward(
         .await
         .map_err(map_browser_error)?;
     Ok(Json(json!({"status":"forwarding"})))
-}
-
-fn string(body: &Value, key: &str) -> Result<String, ApiError> {
-    body.get(key)
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "The sign-in forward is invalid"))
 }
 
 pub(crate) fn local_window(headers: &HeaderMap, peer: SocketAddr) -> bool {
@@ -298,7 +271,15 @@ mod tests {
             State(state.clone()),
             ConnectInfo(SocketAddr::from(([192, 0, 2, 1], 54321))),
             HeaderMap::new(),
-            ApiJson(json!({})),
+            ApiJson(ForwardInput {
+                server: "peer".into(),
+                bridge_id: "0123456789abcdef0123456789abcdef".into(),
+                host: "127.0.0.1".into(),
+                port: callback_port,
+                path: "/callback".into(),
+                expires_at,
+                token: "abcdefghijklmnop".into(),
+            }),
         )
         .await
         .expect_err("nonlocal windows cannot hold a sign-in port");
@@ -343,6 +324,55 @@ mod tests {
             ))));
         let generation = store.committed_change_generation();
 
+        for invalid in [
+            json!([
+                "peer",
+                "0123456789abcdef0123456789abcdef",
+                "abcdefghijklmnop",
+                "127.0.0.1",
+                callback_port,
+                "/callback",
+                expires_at
+            ]),
+            {
+                let mut value = body.clone();
+                value.as_object_mut().unwrap().remove("server");
+                value
+            },
+            {
+                let mut value = body.clone();
+                value["expiresAt"] = Value::Null;
+                value
+            },
+            {
+                let mut value = body.clone();
+                value["port"] = json!(65536);
+                value
+            },
+            {
+                let mut value = body.clone();
+                value["port"] = json!(1024.0);
+                value
+            },
+        ] {
+            let mut invalid_request = axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/browser/forward")
+                .header("host", "127.0.0.1:12345")
+                .header("content-type", "application/json")
+                .header("x-canvas-token", "token")
+                .body(axum::body::Body::from(invalid.to_string()))
+                .expect("HTTP request builds");
+            invalid_request
+                .extensions_mut()
+                .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 54321))));
+            let response = app
+                .clone()
+                .oneshot(invalid_request)
+                .await
+                .expect("HTTP response");
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{invalid}");
+        }
         let response = app.oneshot(request).await.expect("HTTP response");
         assert_eq!(response.status(), axum::http::StatusCode::OK);
         let bytes = axum::body::to_bytes(response.into_body(), 4096)

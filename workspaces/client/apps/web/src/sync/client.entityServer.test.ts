@@ -627,6 +627,7 @@ it("preserves an existing oversized Work result and >512 history rows, then stre
         id: "work-child",
         provider: "codex",
         rootId: "lead",
+        accountKey: "default",
         epoch: 1,
         status: "idle",
         name: "New child",
@@ -810,6 +811,7 @@ it("applies source commits beyond a full entity page through real SSE and RxDB w
       id: "worker",
       provider: "codex",
       rootId: "lead",
+      accountKey: "default",
       parentId: "lead",
       epoch: 1,
       status: "idle",
@@ -888,6 +890,7 @@ it("applies source commits beyond a full entity page through real SSE and RxDB w
       agent: {
         id: "lead",
         rootId: "lead",
+        accountKey: "default",
         provider: "codex",
         epoch: 1,
         status: "running",

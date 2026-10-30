@@ -492,8 +492,12 @@ fn execute_decision(
             ))?;
             let expected = studio_runtime_store::AgentRecord::from_value(write.record.clone())
                 .map_err(studio_runtime_store::StoreError::from)?;
-            if current.thread_id != expected.thread_id || current.account_key != expected.account_key {
-                return Err(ManagementError::Invalid("Lifecycle adapter changed stop identity"));
+            if current.thread_id != expected.thread_id
+                || current.account_key != expected.account_key
+            {
+                return Err(ManagementError::Invalid(
+                    "Lifecycle adapter changed stop identity",
+                ));
             }
             let current =
                 serde_json::to_value(current).map_err(studio_runtime_store::StoreError::from)?;
@@ -728,7 +732,7 @@ mod archive_finished_tests {
         );
         seed_failed_start_team(
             &store,
-            vec![json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"lead",
+            vec![json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"lead",
             "parentId":"lead","epoch":EPOCH,"status":"completed","autoWake":true})],
             vec![],
             vec![],
@@ -806,12 +810,12 @@ mod archive_finished_tests {
                 .await
                 .expect("store"),
         );
-        let unrelated = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"unrelated","rootId":"lead","parentId":"lead",
+        let unrelated = json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"unrelated","rootId":"lead","parentId":"lead",
             "epoch":1,"status":"completed","autoWake":true});
         seed_failed_start_team(
             &store,
             vec![
-                json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"lead",
+                json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"lead",
             "parentId":"lead","epoch":1,"status":"completed","autoWake":true}),
                 unrelated,
             ],
@@ -934,11 +938,11 @@ mod archive_finished_tests {
         let dirty_cwd = dirty.clone();
         store.transaction_with_error(move |tx| {
             for row in [
-                json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead", "rootId":"lead", "epoch":1, "status":"running", "isLead":true, "autoWake":true}),
-                json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"clean", "rootId":"lead", "parentId":"lead", "epoch":1, "status":"completed", "role":"implementer", "autoWake":true, "cwd":clean_cwd, "worktreeReady":true}),
-                json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"dirty", "rootId":"lead", "parentId":"lead", "epoch":1, "status":"completed", "autoWake":true, "cwd":dirty_cwd, "worktreeReady":true}),
-                json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"active", "rootId":"lead", "parentId":"lead", "epoch":1, "status":"running", "autoWake":true}),
-                json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"assigned", "rootId":"lead", "parentId":"lead", "epoch":1, "status":"completed", "autoWake":true}),
+                json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead", "rootId":"lead", "epoch":1, "status":"running", "isLead":true, "autoWake":true}),
+                json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"clean", "rootId":"lead", "parentId":"lead", "epoch":1, "status":"completed", "role":"implementer", "autoWake":true, "cwd":clean_cwd, "worktreeReady":true}),
+                json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"dirty", "rootId":"lead", "parentId":"lead", "epoch":1, "status":"completed", "autoWake":true, "cwd":dirty_cwd, "worktreeReady":true}),
+                json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"active", "rootId":"lead", "parentId":"lead", "epoch":1, "status":"running", "autoWake":true}),
+                json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"assigned", "rootId":"lead", "parentId":"lead", "epoch":1, "status":"completed", "autoWake":true}),
             ] { AgentRepository::put(tx, &AgentRecord::from_value(row)?)?; }
             for row in [
                 json!({"id":"accepted", "rootId":"lead", "owner":"clean", "status":"accepted", "version":1}),
@@ -1038,7 +1042,7 @@ mod archive_finished_tests {
     ) {
         store
             .transaction_with_error(move |tx| {
-                let lead = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":1,"status":"running",
+                let lead = json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":1,"status":"running",
                     "isLead":true,"autoWake":true});
                 for row in std::iter::once(lead).chain(workers) {
                     AgentRepository::put(tx, &AgentRecord::from_value(row)?)?;
@@ -1127,7 +1131,7 @@ mod archive_finished_tests {
                 .expect("store"),
         );
         let worker = |id: &str| {
-            json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":"lead","parentId":"lead","epoch":0,"status":"failed",
+            json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":"lead","parentId":"lead","epoch":0,"status":"failed",
                 "autoWake":true,"isLead":false,"role":"implementer","threadId":null,
                 "turnId":null,"inFlight":false,"worktree":true,"worktreeReady":false,
                 "cwd":project,"error":"workspace-readiness/token-stale"})
@@ -1258,7 +1262,7 @@ mod archive_finished_tests {
                 .expect("store"),
         );
         let worker = |id: &str, status: &str| {
-            json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":"lead","parentId":"lead","epoch":0,"status":status,
+            json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":"lead","parentId":"lead","epoch":0,"status":status,
                 "autoWake":true,"isLead":false,"threadId":null,"turnId":null,"inFlight":false})
         };
         let mut retrying = worker("retrying", "failed");
@@ -1356,9 +1360,9 @@ mod archive_finished_tests {
         );
         store.transaction_with_error(|tx| {
             for row in [
-                json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead", "rootId":"lead", "epoch":1, "status":"running", "isLead":true, "autoWake":true}),
-                json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"parent", "rootId":"lead", "parentId":"lead", "epoch":1, "status":"completed"}),
-                json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"child", "rootId":"lead", "parentId":"parent", "epoch":1, "status":"completed"}),
+                json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead", "rootId":"lead", "epoch":1, "status":"running", "isLead":true, "autoWake":true}),
+                json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"parent", "rootId":"lead", "parentId":"lead", "epoch":1, "status":"completed"}),
+                json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"child", "rootId":"lead", "parentId":"parent", "epoch":1, "status":"completed"}),
             ] { AgentRepository::put(tx, &AgentRecord::from_value(row)?)?; }
             Ok::<_, studio_runtime_store::StoreError>(())
         }).await.expect("team");

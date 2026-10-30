@@ -456,14 +456,18 @@ impl StatusWatchPort for ManagedStatusWatchAdapter {
         store: &'a RuntimeStore,
         actor: &'a Actor,
         args: &'a Value,
+        action: crate::managed_status_watch::WatchAction,
         request_id: &'a str,
         now: f64,
     ) -> BoxFuture<'a, Result<RulesActionResult, Error>> {
         Box::pin(async move {
             let result = crate::managed_status_watch::rules(
                 store,
-                actor.record().id.0.as_str(),
-                actor.record().epoch.try_into().map_err(|_| Error::Stale)?,
+                (
+                    actor.record().id.0.as_str(),
+                    actor.record().epoch.try_into().map_err(|_| Error::Stale)?,
+                ),
+                action,
                 Some(args),
                 request_id,
                 now,

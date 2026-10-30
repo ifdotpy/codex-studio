@@ -15,6 +15,39 @@ struct ChatSendReply {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     refused: Option<BTreeMap<String, String>>,
 }
+
+fn saved_private_message(
+    tx: &Transaction<'_>, id: &str, who: &str, room: &str, signature: &str, now_ms: i64,
+) -> Result<Option<ChatSendReply>, CallbackError> {
+    use studio_runtime_schema::persistence::{RequestIdentity, RequestReferenceKind};
+    use studio_runtime_store::request_results::{RequestResultError, RequestResults};
+
+    let raw = RequestResults::replay_reference(tx, id, signature, now_ms)?;
+    if raw.is_none() && let Some(saved) = event_write::replay_request::<ChatSendReply>(tx, id, signature, now_ms)? {
+        return Ok(Some(saved.reply));
+    }
+    let reference = match raw {
+        Some(reference) => Some(reference),
+        None => {
+            let identity = RequestIdentity::new("agent_message", &[who], id, &[]).map_err(RequestResultError::from)?;
+            RequestResults::replay_reference(tx, identity.id(), signature, now_ms)?
+        }
+    };
+    let Some(reference) = reference else { return Ok(None) };
+    if reference.kind != RequestReferenceKind::Message || reference.id != id {
+        return Err(CallbackError::Stored("request_results/message".into()));
+    }
+    let (stored_room, sender, deliveries): (String, String, String) = tx.query_row(
+        "SELECT room,sender,deliveries FROM runtime_chat_messages WHERE id=?1",
+        [id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    if stored_room != room || sender != who {
+        return Err(CallbackError::Stored("runtime_chat_messages/identity".into()));
+    }
+    let deliveries = serde_json::from_str(&deliveries)
+        .map_err(|_| CallbackError::Stored("runtime_chat_messages/deliveries".into()))?;
+    Ok(Some(ChatSendReply { id: id.to_owned(), room: stored_room, deliveries, refused: None }))
+}
 #[derive(serde::Serialize, serde::Deserialize)]
 enum UserRecipient {
     #[serde(rename = "user")]
@@ -29,6 +62,7 @@ struct UserSendReply {
 }
 
 use studio_runtime_store::{AgentId, AgentRepository, SyncDocumentsRepository};
+
 
 fn message_agents(
     tx: &Transaction<'_>,
@@ -542,11 +576,15 @@ fn send_as_actor(
     let recipients = admitted;
     let room_id = text(&room, "id")?.to_owned();
     let signature = event_write::request_signature(args);
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    if !broadcast && let Some(reply) = saved_private_message(tx, id, who, &room_id, &signature, now_ms)? {
+        return serde_json::value::to_raw_value(&reply).map_err(Into::into);
+    }
     let admitted = match event_write::begin_request::<ChatSendReply>(
         tx,
         event_write::RequestKey::new("agent_message", &[who], id),
         &signature,
-        chrono::Utc::now().timestamp_millis(),
+        now_ms,
     )? {
         event_write::CallerAdmission::Replay(reply) => {
             return serde_json::value::to_raw_value(&reply).map_err(Into::into);
@@ -648,7 +686,17 @@ fn send_as_actor(
     };
     // A broadcast member that was not checked is named with its refusal.
     // The receipt keeps it, so a replay of this request reports it again.
-    event_write::settle_request(tx, &admitted, Some(who), &result)?;
+    if broadcast {
+        event_write::settle_request(tx, &admitted, Some(who), &result)?;
+    } else {
+        let revision: i64 = tx.query_row("SELECT rev FROM runtime_chat_messages WHERE id=?1", [id], |row| row.get(0))?;
+        studio_runtime_store::request_results::RequestResults::settle_reference(
+            tx, &admitted, &studio_runtime_store::request_results::RequestReference {
+                kind: studio_runtime_schema::persistence::RequestReferenceKind::Message,
+                id: id.to_owned(), revision,
+            },
+        )?;
+    }
     serde_json::value::to_raw_value(&result).map_err(Into::into)
 }
 
@@ -1019,5 +1067,29 @@ mod prefix_tests {
                 "Ambiguous agent ID; use a full ID from orchestration_peers"
             ))
         ));
+    }
+}
+
+#[cfg(test)]
+mod receipt_tests {
+    #[test]
+    fn private_message_reference_replays_current_deliveries_and_rejects_conflict() {
+        use studio_runtime_schema::persistence::{DeliveryStatus, RequestIdentity, RequestReferenceKind};
+        use studio_runtime_store::request_results::{Admission, RequestReference, RequestResults};
+        let mut db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE request_results(id TEXT PRIMARY KEY,signature TEXT NOT NULL,status TEXT,ref_kind TEXT,ref_id TEXT,ref_rev INTEGER,result TEXT,created INTEGER NOT NULL); CREATE TABLE runtime_orchestration_settings(id TEXT PRIMARY KEY,record TEXT); CREATE TABLE runtime_chat_messages(id TEXT PRIMARY KEY,room TEXT,sender TEXT,deliveries TEXT,rev INTEGER); ").unwrap();
+        let id = RequestIdentity::issue_root();
+        let identity = RequestIdentity::new("agent_message", &["sender"], &id, &[]).unwrap();
+        let now = chrono::Utc::now().timestamp_millis();
+        let tx = db.transaction().unwrap();
+        tx.execute("INSERT INTO runtime_chat_messages VALUES(?1,'room','sender',?2,1)", rusqlite::params![id, r#"{"recipient":{"status":"queued","error":null}}"#]).unwrap();
+        let Admission::Fresh(admitted) = RequestResults::admit(&tx, &identity, "sig", now).unwrap() else { panic!("fresh") };
+        RequestResults::settle_reference(&tx, &admitted, &RequestReference { kind: RequestReferenceKind::Message, id: id.clone(), revision: 1 }).unwrap();
+        tx.execute("UPDATE runtime_chat_messages SET deliveries=?1,rev=2 WHERE id=?2", rusqlite::params![r#"{"recipient":{"status":"delivered","error":null}}"#, id]).unwrap();
+        let reply = super::saved_private_message(&tx, &id, "sender", "room", "sig", now).unwrap().unwrap();
+        assert_eq!(reply.deliveries.get("recipient").unwrap().status, DeliveryStatus::Delivered);
+        assert!(super::saved_private_message(&tx, &id, "sender", "room", "different", now).is_err());
+        let reference = RequestResults::replay_reference(&tx, identity.id(), "sig", now).unwrap().unwrap();
+        assert_eq!(reference.revision, 1);
     }
 }

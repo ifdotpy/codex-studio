@@ -155,7 +155,11 @@ fn command_installation_migrates_only_owned_links_and_preflights_conflicts() {
         }
         fs::copy(source, &relocated).expect("cross-device copy");
     }
-    for name in ["codex-process-supervisor", "codex-diagnostics", "layr-studio"] {
+    for name in [
+        "codex-process-supervisor",
+        "codex-diagnostics",
+        "layr-studio",
+    ] {
         fs::write(binaries.join(name), "#!/bin/sh\nexit 0\n").unwrap();
         fs::set_permissions(binaries.join(name), fs::Permissions::from_mode(0o755)).unwrap();
     }

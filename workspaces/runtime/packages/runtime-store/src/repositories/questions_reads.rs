@@ -39,7 +39,6 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
 mod tests {
     use super::{QuestionsReadsRepository, REQUIREMENTS};
     use rusqlite::Connection;
-    use serde_json::json;
 
     #[test]
     fn bootstrapped_record_families_are_required() {
@@ -63,7 +62,7 @@ mod tests {
              CREATE TABLE runtime_requests(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              CREATE TABLE runtime_complaints(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              CREATE TABLE runtime_checkpoints(id TEXT PRIMARY KEY,record TEXT NOT NULL);
-             INSERT INTO runtime_agents(id,record) VALUES('a','{\"id\":\"a\",\"provider\":\"codex\",\"rootId\":\"a\",\"epoch\":0,\"status\":\"idle\"}');
+             INSERT INTO runtime_agents(id,record) VALUES('a','{\"id\":\"a\",\"provider\":\"codex\",\"accountKey\":\"default\",\"rootId\":\"a\",\"epoch\":0,\"status\":\"idle\"}');
              INSERT INTO runtime_requests VALUES('q','{\"id\":\"q\",\"agent\":\"a\",\"method\":\"mcpServer/elicitation/request\",\"status\":\"pending\",\"params\":{\"mode\":\"form\",\"requestedSchema\":{\"properties\":{\"password\":{},\"color\":{}}}}}');
              INSERT INTO runtime_complaints VALUES('c','{\"id\":\"c\",\"leadId\":\"a\",\"author\":\"user\",\"text\":\"Review\",\"status\":\"open\",\"created\":1}');
              INSERT INTO runtime_checkpoints VALUES('p','{\"id\":\"p\",\"agent\":\"a\",\"created\":1,\"items\":[\"hidden\"]}');"),
@@ -82,8 +81,8 @@ mod tests {
             QuestionsReadsRepository::complaint(&db, "c")
                 .expect("complaint read")
                 .expect("complaint exists")
-                .value()["text"],
-            json!("Review")
+                .text(),
+            Some("Review")
         );
         assert_eq!(
             QuestionsReadsRepository::checkpoints(&db).expect("checkpoint read")[0].id(),
@@ -100,8 +99,8 @@ impl QuestionsReadsRepository {
         Table::<AgentRecord>::new(connection).list()
     }
 
-    pub fn questions(connection: &Connection) -> StoreResult<Vec<(RequestRecord, String)>> {
-        Table::<RequestRecord>::new(connection).list_with_raw()
+    pub fn questions(connection: &Connection) -> StoreResult<Vec<RequestRecord>> {
+        Table::<RequestRecord>::new(connection).list()
     }
 
     pub fn complaint(connection: &Connection, id: &str) -> StoreResult<Option<ComplaintRecord>> {

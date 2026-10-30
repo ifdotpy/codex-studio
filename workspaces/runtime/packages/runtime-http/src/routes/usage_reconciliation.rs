@@ -34,7 +34,7 @@ async fn reconcile(
         .accounts
         .into_iter()
         .chain(accounts.archived_accounts)
-        .filter_map(|account| Some((account.get("id")?.as_str()?.to_owned(), account)))
+        .filter_map(|account| Some((account.id.as_str()?.to_owned(), account)))
         .collect();
     let result = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/routes/usage-reconciliation",

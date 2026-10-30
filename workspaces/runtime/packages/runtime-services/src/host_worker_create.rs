@@ -453,10 +453,16 @@ pub fn recheck_worker(
 /// Remove P02's transient account observation before storing the checked record.
 /// Call only after `recheck` or `recheck_worker` succeeds inside the writer transaction.
 pub fn persisted_record(draft: &AgentRecord) -> Result<AgentRecord, CreateError> {
-    let mut value = draft.value();
-    let fields = value.as_object_mut().ok_or(CreateError::Internal)?;
-    fields.retain(|key, _| !key.starts_with("_p02"));
-    checked_agent(value, &draft.id)
+    let mut record = draft.clone();
+    record.extra.retain(|key, _| !key.starts_with("_p02"));
+    if record.status != AgentStatus::Idle && record.status != AgentStatus::Queued {
+        return Err(CreateError::InvalidStoredObject {
+            table: "runtime_agents",
+            id: record.id.0.clone(),
+        });
+    }
+    validate_agent(&record)?;
+    Ok(record)
 }
 
 fn recheck_parent_epoch(

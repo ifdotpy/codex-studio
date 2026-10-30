@@ -705,53 +705,11 @@ async fn run(
                 "runtime-server/tailscale-whoami",
                 || {
                     let raw = multi_server_owner::tailscale_json(&["whoami", "--json"]).ok();
-                    let user = raw.as_ref().and_then(|value| {
-                        value
-                            .get("UserProfile")
-                            .or_else(|| value.get("User"))
-                            .and_then(|profile| {
-                                profile.get("LoginName").or_else(|| profile.get("Name"))
-                            })
-                            .and_then(serde_json::Value::as_str)
-                            .filter(|login| !login.trim().is_empty())
-                            .map(|login| login.trim().to_ascii_lowercase())
-                    });
-                    let node = raw.as_ref().and_then(|value| {
-                        value
-                            .get("Self")
-                            .or_else(|| value.get("Machine"))
-                            .and_then(|self_node| self_node.get("ID"))
-                            .cloned()
-                    });
-                    let owner_login = multi_server_owner::tailscale_json(&["status", "--json"])
-                        .ok()
-                        .and_then(|status| {
-                            let local = status.get("Self")?;
-                            let users = status.get("User")?.as_object()?;
-                            let profile = users.get(&local.get("UserID")?.to_string())?;
-                            if status
-                                .get("BackendState")
-                                .and_then(serde_json::Value::as_str)
-                                != Some("Running")
-                                || local
-                                    .get("Tags")
-                                    .and_then(serde_json::Value::as_array)
-                                    .is_some_and(|tags| !tags.is_empty())
-                            {
-                                return None;
-                            }
-                            profile
-                                .get("LoginName")
-                                .and_then(serde_json::Value::as_str)
-                                .filter(|login| !login.trim().is_empty() && login.len() <= 254)
-                                .map(|login| login.trim().to_ascii_lowercase())
-                        });
-                    Some(serde_json::json!({
-                        "status": if user.is_some() { "verified" } else { "unavailable" },
-                        "user": user,
-                        "node": node,
-                        "ownerLogin": owner_login,
-                    }))
+                    let status = multi_server_owner::tailscale_json(&["status", "--json"]).ok();
+                    Some(multi_server_owner::whoami_projection(
+                        raw.as_ref(),
+                        status.as_ref(),
+                    ))
                 },
             )
             .await
@@ -2380,7 +2338,7 @@ mod exit_logging_tests {
                     ("a-broken", serde_json::json!({"afterId":""})),
                     ("b-valid", serde_json::json!({"afterId":"","proofAt":1.0})),
                 ] {
-                    let record = serde_json::json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                    let record = serde_json::json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
                         "id":id, "rootId":id, "role":"main", "status":"idle", "epoch":1,
                         "authResumeProofPending":{"default":pending},
                     });
@@ -2441,7 +2399,7 @@ mod exit_logging_tests {
                     } else {
                         serde_json::json!({"afterId":"", "proofAt":1.0})
                     };
-                    let record = serde_json::json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                    let record = serde_json::json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
                         "id":id, "rootId":id, "role":"main", "status":"idle", "epoch":1,
                         "authResumeProofPending":{"default":pending},
                     });
@@ -3003,12 +2961,9 @@ mod startup_registry_tests {
         let accounts = policy.accounts();
         assert_eq!(accounts.default_account_key, "default");
         assert_eq!(accounts.accounts.len(), 1);
-        assert_eq!(accounts.accounts[0]["status"], "ready");
-        assert_eq!(accounts.accounts[0]["plan"], "API key");
-        assert_eq!(
-            accounts.accounts[0]["home"],
-            codex_home.to_str().expect("UTF-8 fixture path")
-        );
+        assert_eq!(accounts.accounts[0].status.as_str(), Some("ready"));
+        assert_eq!(accounts.accounts[0].plan.as_str(), Some("API key"));
+        assert_eq!(accounts.accounts[0].home.as_str(), codex_home.to_str());
         let driver = AccountDriver::open(&path).expect("the account driver opens it");
         assert_eq!(driver.get("default"), Ok(AccountStatus::Ready));
 
@@ -3041,7 +2996,10 @@ mod startup_registry_tests {
         let bytes = registry.bytes.expect("migrated bytes");
         let policy =
             AccountPolicyState::from_startup(Some(&bytes), []).expect("strict startup policy");
-        assert_eq!(policy.accounts().accounts[0]["provider"], "codex");
+        assert_eq!(
+            policy.accounts().accounts[0].provider.as_str(),
+            Some("codex")
+        );
         assert_eq!(fs::read(path).expect("durable registry"), bytes);
         drop(store);
     }

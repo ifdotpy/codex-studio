@@ -224,8 +224,8 @@ async fn committed_delete_route_succeeds_with_unrelated_failing_cleanup() {
     let cwd = root.path().to_path_buf();
     store.transaction(move |tx| {
         for record in [
-            json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent", "rootId":"agent", "epoch":1, "status":"idle", "isLead":true, "autoWake":false}),
-            json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"a-unrelated", "rootId":"a-unrelated", "epoch":1, "status":"paused", "deletedAt":1,
+            json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent", "rootId":"agent", "epoch":1, "status":"idle", "isLead":true, "autoWake":false}),
+            json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"a-unrelated", "rootId":"a-unrelated", "epoch":1, "status":"paused", "deletedAt":1,
                 "cwd":cwd, "worktreeReady":true, "agentArchive":{"at":1,"epoch":1,"cleanupPending":true},
                 "workspaceCleanupIntent":studio_runtime_services::workspace_cleanup_runtime::queued_cleanup_intent("a-unrelated", 1, studio_runtime_services::workspace_cleanup_runtime::CleanupAction::Archive)})
         ] {

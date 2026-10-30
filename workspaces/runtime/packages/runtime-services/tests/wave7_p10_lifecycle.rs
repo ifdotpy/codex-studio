@@ -556,7 +556,7 @@ async fn committed_delete_drains_its_intent_despite_unrelated_cleanup_failure() 
         .expect("delete case");
     let mut records: Records = serde_json::from_value(case["records"].clone()).expect("records");
     let root = tempfile::tempdir().expect("root");
-    records.tables.get_mut("runtime_agents").expect("agents").push(json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+    records.tables.get_mut("runtime_agents").expect("agents").push(json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
         "id":"a-broken-cleanup", "rootId":"a-broken-cleanup", "epoch":1, "status":"paused", "deletedAt":1,
         "cwd":root.path(), "worktreeReady":true, "agentArchive":{"at":1,"epoch":1,"cleanupPending":true},
         "workspaceCleanupIntent":studio_runtime_services::workspace_cleanup_runtime::queued_cleanup_intent("a-broken-cleanup", 1, studio_runtime_services::workspace_cleanup_runtime::CleanupAction::Archive)
@@ -754,16 +754,18 @@ impl InterruptFixture {
                         }
                         let attempt = agent.extra.get("startAttempt").unwrap_or(&Value::Null);
                         let needs_settlement = agent.in_flight == Some(true)
-                            || agent.turn_id.as_deref().is_some_and(|turn| !turn.is_empty())
+                            || agent
+                                .turn_id
+                                .as_deref()
+                                .is_some_and(|turn| !turn.is_empty())
                             || attempt.get("activeAtReservation").and_then(Value::as_bool)
                                 == Some(true)
-                            || agent
-                                .extra
-                                .get("status")
-                                .and_then(Value::as_str)
-                                .is_some_and(|status| {
-                                    ["running", "starting", "approval"].contains(&status)
-                                });
+                            || matches!(
+                                agent.status,
+                                studio_runtime_store::AgentStatus::Running
+                                    | studio_runtime_store::AgentStatus::Starting
+                                    | studio_runtime_store::AgentStatus::Approval
+                            );
                         if !needs_settlement {
                             continue;
                         }
