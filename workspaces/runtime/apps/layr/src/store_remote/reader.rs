@@ -340,10 +340,9 @@ pub(super) fn required_states(repo: &Repo, lines: &[String], opts: &Options) -> 
 }
 
 pub(super) fn wanted(state: &crate::model::StateRec, opts: &Options) -> bool {
-    let kind = serde_json::to_value(state.kind).unwrap_or_default();
-    match kind.as_str() {
-        Some("auto") => opts.auto,
-        Some("cache") => opts.caches,
+    match state.kind {
+        crate::model::StateKind::Auto => opts.auto,
+        crate::model::StateKind::Cache => opts.caches,
         _ => true,
     }
 }
@@ -611,6 +610,27 @@ mod tests {
     const MACHINE: &str = "01a12290-0000-7000-8000-000000000001";
     const PROJECT: &str = "01a12290-0000-7000-8000-000000000002";
     const STATE: &str = "01a12290-0000-7000-8000-000000000003";
+
+    #[test]
+    fn state_selection_respects_auto_and_cache_options() {
+        use crate::model::StateKind;
+        let mut state: crate::model::StateRec = serde_json::from_str(
+            r#"{"id":"state","kind":"commit","subvol":"subvol","author":{"name":"n","email":"e"},"time":0}"#,
+        ).unwrap();
+        for (kind, auto, caches, expected) in [
+            (StateKind::Auto, false, false, false),
+            (StateKind::Auto, true, false, true),
+            (StateKind::Cache, false, false, false),
+            (StateKind::Cache, false, true, true),
+            (StateKind::Commit, false, false, true),
+            (StateKind::Stash, false, false, true),
+            (StateKind::Import, false, false, true),
+            (StateKind::Derived, false, false, true),
+        ] {
+            state.kind = kind;
+            assert_eq!(wanted(&state, &Options { auto, caches, ..Options::default() }), expected);
+        }
+    }
 
     fn fixture() -> (Backend, String, ed25519_dalek::SigningKey, std::path::PathBuf) {
         let root = std::env::temp_dir().join(crate::ids::new_id());
