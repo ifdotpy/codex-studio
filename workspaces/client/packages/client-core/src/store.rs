@@ -117,13 +117,6 @@ impl Store {
             method if method.starts_with("outbox.") => {
                 Ok(crate::outbox::dispatch(&mut self.connection, request))
             }
-            "system.info" => Ok(Response::success(
-                id,
-                json!({
-                    "name": "Codex Studio", "core": "rust", "protocol": 2,
-                    "migration": "in_progress"
-                }),
-            )),
             "draft.get" => {
                 let lookup: DraftLookup<'_> = project(&request.params);
                 let (Some(workspace), Some(room)) = (lookup.workspace, lookup.room) else {

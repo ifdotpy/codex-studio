@@ -311,16 +311,18 @@ mod tests {
         );
     }
     #[tokio::test]
-    async fn retired_startup_command_is_rejected() {
+    async fn retired_system_commands_are_rejected() {
         let directory = tempfile::tempdir().unwrap();
         let client = open(directory.path());
-        let response = client
-            .request(request("startup", "system.start", Value::Null))
-            .await
-            .unwrap();
-        assert!(
-            matches!(response.outcome, NativeOutcome::Failure(error) if error.code == "unknown_method")
-        );
+        for method in ["system.start", "system.info"] {
+            let response = client
+                .request(request("retired", method, Value::Null))
+                .await
+                .unwrap();
+            assert!(
+                matches!(response.outcome, NativeOutcome::Failure(error) if error.code == "unknown_method")
+            );
+        }
     }
     #[tokio::test]
     async fn reader_prioritizes_event_and_rejects_unknown_response_identity() {
