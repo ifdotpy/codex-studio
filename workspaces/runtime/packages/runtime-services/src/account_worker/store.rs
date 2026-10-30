@@ -3876,6 +3876,9 @@ pub(super) struct AccountStreams {
     metadata: NotificationStreamBuffer,
 }
 
+const VM_STREAM_OWNERS_SQL: &str = "SELECT id FROM runtime_agents WHERE account_key=?1 AND execution_mode='vm' AND hold_status='clear'";
+const VM_STREAM_LANES_SQL: &str = "SELECT id,json_extract(record,'$.providerStream.streams') FROM runtime_agents WHERE account_key=?1 AND execution_mode='vm' AND json_type(record,'$.providerStream.streams')='object' AND hold_status='clear'";
+
 fn persist_stream_lane(
     tx: &studio_runtime_store::Transaction<'_>,
     account: &str,
@@ -3939,7 +3942,7 @@ pub(crate) fn persist_streams(
 ) -> Result<(), WorkerError> {
     let revision = uuid::Uuid::new_v4().to_string();
     let mut host = streams.clone();
-    let mut query=tx.prepare_cached("SELECT id FROM runtime_agents WHERE account_key=?1 AND json_extract(record,'$.executionMode')='vm' AND hold_status='clear'")?;
+    let mut query = tx.prepare_cached(VM_STREAM_OWNERS_SQL)?;
     let actors = query
         .query_map([account], |row| row.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?;
@@ -4011,7 +4014,7 @@ pub(super) fn load_streams(
             metadata: NotificationStreamBuffer::default(),
         }
     };
-    let mut query=tx.prepare_cached("SELECT id,json_extract(record,'$.providerStream.streams') FROM runtime_agents WHERE account_key=?1 AND json_extract(record,'$.executionMode')='vm' AND json_type(record,'$.providerStream.streams')='object' AND hold_status='clear'")?;
+    let mut query = tx.prepare_cached(VM_STREAM_LANES_SQL)?;
     let lanes = query
         .query_map([account], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -4100,6 +4103,55 @@ pub(super) fn pending_preparations(
             Ok((id, row.epoch))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod stream_owner_query_tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    #[test]
+    fn vm_stream_queries_skip_json_for_host_agents() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch(studio_runtime_store::agent_columns::agent_table_sql())
+            .unwrap();
+        for n in 0..20 {
+            let id = format!("host-{n}");
+            let raw = serde_json::json!({"id":id,"rootId":id,"provider":"codex","epoch":1,"status":"idle","accountKey":"default","executionMode":"host"});
+            db.execute(
+                "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
+                rusqlite::params![id, raw.to_string()],
+            )
+            .unwrap();
+        }
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&calls);
+        db.create_scalar_function(
+            "json_extract",
+            2,
+            rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC
+                | rusqlite::functions::FunctionFlags::SQLITE_INNOCUOUS,
+            move |_| {
+                counted.fetch_add(1, Ordering::Relaxed);
+                Ok(None::<i64>)
+            },
+        )
+        .unwrap();
+        for sql in [super::VM_STREAM_OWNERS_SQL, super::VM_STREAM_LANES_SQL] {
+            assert!(
+                db.prepare(sql)
+                    .unwrap()
+                    .query(["default"])
+                    .unwrap()
+                    .next()
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+    }
 }
 
 #[cfg(test)]
