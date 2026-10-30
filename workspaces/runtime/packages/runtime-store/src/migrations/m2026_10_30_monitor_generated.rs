@@ -27,7 +27,7 @@ pub(super) fn apply(tx: &Transaction<'_>) -> StoreResult<()> {
         monitor_error_candidate INTEGER GENERATED ALWAYS AS ({candidate}) STORED NOT NULL CHECK(monitor_error_candidate IN (0,1)),
         monitor_created REAL GENERATED ALWAYS AS ({created}) STORED NOT NULL CHECK(monitor_created >= 0 AND monitor_created <= 1.7976931348623157e308)
     );
-    INSERT INTO runtime_monitors_generated(id,record) SELECT id,record FROM runtime_monitors;
+    INSERT INTO runtime_monitors_generated(rowid,id,record) SELECT rowid,id,record FROM runtime_monitors;
     DROP TABLE runtime_monitors;
     ALTER TABLE runtime_monitors_generated RENAME TO runtime_monitors;"))?;
     for definition in definitions {
@@ -41,13 +41,19 @@ mod tests {
     #[test]
     fn rebuild_preserves_record_and_indexed_values() {
         let mut db = rusqlite::Connection::open_in_memory().unwrap();
-        db.execute_batch("CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY, record TEXT NOT NULL); INSERT INTO runtime_monitors VALUES('m','{\"status\":\"lost\",\"created\":2,\"streamQueue\":[1]}');").unwrap();
+        db.execute_batch("CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY, record TEXT NOT NULL); INSERT INTO runtime_monitors(rowid,id,record) VALUES(42,'m','{\"status\":\"lost\",\"created\":2,\"streamQueue\":[1]}');").unwrap();
         let tx = db.transaction().unwrap();
         super::super::m2026_10_30_monitor_queue::apply(&tx).unwrap();
         super::super::m2026_10_30_monitor_status::apply(&tx).unwrap();
         super::super::m2026_10_30_monitor_errors::apply(&tx).unwrap();
         tx.execute_batch("CREATE INDEX runtime_monitor_queued_stream ON runtime_monitors(id) WHERE stream_pending=1; CREATE INDEX runtime_monitor_studio_error_v2 ON runtime_monitors(monitor_created) WHERE monitor_error_candidate=1;").unwrap();
         super::apply(&tx).unwrap();
+        let rowid: i64 = tx
+            .query_row("SELECT rowid FROM runtime_monitors WHERE id='m'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(rowid, 42);
         let hidden: i64 = tx.query_row("SELECT count(*) FROM pragma_table_xinfo('runtime_monitors') WHERE name IN ('stream_pending','monitor_status','monitor_error_candidate','monitor_created') AND hidden=3", [], |r| r.get(0)).unwrap();
         assert_eq!(hidden, 4);
         super::apply(&tx).unwrap();
