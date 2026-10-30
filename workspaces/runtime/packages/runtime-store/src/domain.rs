@@ -288,32 +288,8 @@ fn ensure_triggers(transaction: &Transaction<'_>, sql: &str) -> StoreResult<()> 
         if stored.as_deref().map(words) != Some(words(create)) {
             transaction.execute_batch(&format!("DROP TRIGGER IF EXISTS {name}; {create};"))?;
         }
-<<<<<<< head
     }
     Ok(())
-}
-
-/// Everything the migration installs. It runs at every start, so it writes only
-/// what is missing or changed. Returns whether the tables were new.
-pub(crate) fn install(transaction: &Transaction<'_>) -> StoreResult<bool> {
-    let fresh = !crate::schema::table_exists(transaction, CHAT_TABLE)?;
-    transaction.execute_batch(&tables_sql())?;
-    ensure_triggers(transaction, &check_triggers_sql())?;
-    ensure_triggers(transaction, &owner_delete_trigger_sql())?;
-    if crate::schema::table_exists(transaction, "runtime_completed_turns")? {
-        ensure_triggers(transaction, &completed_turns_trigger_sql())?;
-||||||| base
-/// Everything the migration installs. Safe to run again.
-pub(crate) fn install(transaction: &Transaction<'_>) -> StoreResult<()> {
-    transaction.execute_batch(&tables_sql())?;
-    transaction.execute_batch(&check_triggers_sql())?;
-    transaction.execute_batch(&owner_delete_trigger_sql())?;
-    if crate::schema::table_exists(transaction, "runtime_completed_turns")? {
-        transaction.execute_batch(&completed_turns_trigger_sql())?;
-=======
->>>>>>> 07d797d
-    }
-    Ok(fresh)
 }
 
 /// Everything the migration installs. It runs at every start, so it writes only
