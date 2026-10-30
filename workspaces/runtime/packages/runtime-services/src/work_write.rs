@@ -1756,15 +1756,13 @@ fn work_receipt_in(
     let Some(saved) = saved else {
         return Ok(None);
     };
-    let value = saved.reply.into_value();
-    let Some(id) = value.get("id").and_then(Value::as_str) else {
-        return Err(invalid("runtime_work", request_id).into());
-    };
-    if value.get("rootId").and_then(Value::as_str) != Some(agent.root_id.0.as_str()) {
+    let reply = saved.reply;
+    if reply.get("rootId").and_then(Value::as_str) != Some(agent.root_id.0.as_str()) {
         return Err(Error::InvalidRequest("Invalid request").into());
     }
-    WorkItemsRepository::validate_work(connection, id, &value).map_err(WorkWriteError::Store)?;
-    Ok(Some(value))
+    WorkItemsRepository::validate_work(connection, reply.id().as_ref(), reply.value())
+        .map_err(WorkWriteError::Store)?;
+    Ok(Some(reply.into_value()))
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -2586,7 +2584,7 @@ fn decide_accept(
     if record.status() != studio_runtime_store::WorkStatus::Review {
         return Err(Error::InvalidRequest("Submit a result before review"));
     }
-    crate::task_gate::require_pass(&record.value(), override_reason)?;
+    crate::task_gate::require_pass(record, override_reason)?;
     let mut updated = record.clone();
     if crate::event_write::python_strip(reason).is_empty() {
         return Err(Error::InvalidRequest("Field must not be empty"));

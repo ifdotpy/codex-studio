@@ -150,7 +150,7 @@ fn reset_error(error: studio_runtime_services::limit_reset::ResetError) -> ApiEr
 async fn capacity_retry(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<crate::generated::CapacityRetryRequest>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::RetryResponse>, ApiError> {
     if body.action == crate::generated::RetryAction::Retry {
         let agent_id = body.id;
         let retry_id = body.retry_id;
@@ -171,23 +171,19 @@ async fn capacity_retry(
                             |row| row.get(0),
                         )
                         .map_err(studio_runtime_store::StoreError::from)?;
-                    let value: Value = serde_json::from_str(&raw).map_err(|_| {
-                        studio_runtime_services::continuation::ContinuationError::Invalid(
-                            "/capacity/record".to_owned(),
-                        )
-                    })?;
-                    let response = serde_json::from_value::<crate::generated::RetryResponse>(value)
-                        .map_err(|_| {
+                    let response = serde_json::from_str::<crate::generated::RetryResponse>(&raw)
+                        .map_err(|error| {
                             studio_runtime_services::continuation::ContinuationError::Invalid(
-                                "/capacity/response".to_owned(),
+                                if error.is_syntax() || error.is_eof() {
+                                    "/capacity/record"
+                                } else {
+                                    "/capacity/response"
+                                }
+                                .to_owned(),
                             )
                         })?;
                     Ok::<_, studio_runtime_services::continuation::ContinuationError>((
-                        serde_json::to_value(response).map_err(|_| {
-                            studio_runtime_services::continuation::ContinuationError::Invalid(
-                                "/capacity/response".to_owned(),
-                            )
-                        })?,
+                        response,
                         staged.changed(),
                     ))
                 },
@@ -213,14 +209,7 @@ async fn capacity_retry(
             })
             .await
             .map_err(continuation_error)?;
-        let response = serde_json::from_value::<crate::generated::RetryResponse>(value)
-            .map_err(|_| {
-                studio_runtime_services::continuation::ContinuationError::Invalid(
-                    "/capacity/response".to_owned(),
-                )
-            })
-            .map_err(continuation_error)?;
-        serde_json::to_value(response)
+        serde_json::from_value::<crate::generated::RetryResponse>(value)
             .map_err(|_| {
                 studio_runtime_services::continuation::ContinuationError::Invalid(
                     "/capacity/response".to_owned(),
@@ -236,7 +225,7 @@ async fn capacity_retry(
 async fn usage_resume(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<crate::generated::UsageResumeRequest>,
-) -> Result<Json<Option<Value>>, ApiError> {
+) -> Result<Json<Option<crate::generated::UsageResumeResponse>>, ApiError> {
     let agent_id = body.id;
     let resume_id = body.resume_id;
     let enabled = body.enabled;
@@ -264,24 +253,19 @@ async fn usage_resume(
         let response =
             serde_json::from_value::<crate::generated::UsageResumeResponse>(value.value())
                 .map_err(|_| ApiError::internal())?;
-        return Ok(Json(Some(
-            serde_json::to_value(response).map_err(|_| ApiError::internal())?,
-        )));
+        return Ok(Json(Some(response)));
     }
     let result = store
         .transaction_with(
-            move |transaction| -> Result<Option<Value>, UsageRepositoryError> {
+            move |transaction| -> Result<
+                Option<crate::generated::UsageResumeResponse>,
+                UsageRepositoryError,
+            > {
                 let value = disable_usage_resume(transaction, &agent_id, &resume_id, now)?;
                 if value.is_null() {
                     return Ok(None);
                 }
-                let response =
-                    serde_json::from_value::<crate::generated::UsageResumeResponse>(value)
-                        .map_err(|_| UsageRepositoryError::InvalidStoredObject {
-                            table: "runtime_usage_resumes",
-                            id: resume_id.clone(),
-                        })?;
-                serde_json::to_value(response).map(Some).map_err(|_| {
+                serde_json::from_value(value).map(Some).map_err(|_| {
                     UsageRepositoryError::InvalidStoredObject {
                         table: "runtime_usage_resumes",
                         id: resume_id.clone(),
@@ -462,6 +446,98 @@ mod tests {
     fn runtime_clock_is_a_finite_epoch_timestamp() {
         let now = current_time().expect("system epoch clock");
         assert!(now.is_finite() && now > 0.0);
+    }
+
+    #[tokio::test]
+    async fn capacity_retry_http_returns_retry_and_cancel_receipts() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            studio_runtime_store::RuntimeStore::open(Some(root.path()))
+                .await
+                .unwrap(),
+        );
+        store.transaction_with(|tx| {
+            for id in ["retry-agent", "cancel-agent"] {
+                let retry = json!({"id":id,"accountKey":"default","threadId":"thread","epoch":1,
+                    "turnId":"turn","cause":"serverOverloaded","status":"scheduled","dueAt":990.0,
+                    "attempt":1,"maxAttempts":4,"cwd":"/fixture","settings":{},"taskClaims":[],"updatedAt":800.0});
+                let agent = json!({"provider":"codex","id":id,"rootId":id,"epoch":1,"status":"running",
+                    "accountKey":"default","threadId":"thread","turnId":"turn","capacityRetry":retry});
+                tx.execute("INSERT INTO runtime_agents(id,record) VALUES (?1,?2)", rusqlite::params![id, agent.to_string()])?;
+                tx.execute("INSERT INTO runtime_capacity_retries(id,agent,record) VALUES (?1,?1,?2)", rusqlite::params![id, retry.to_string()])?;
+            }
+            Ok::<_, studio_runtime_store::StoreError>(())
+        }).await.unwrap();
+        let state = crate::router::HttpState::new(
+            "reset-test-token".into(),
+            "fixture".into(),
+            root.path().to_string_lossy().into_owned(),
+            49_172,
+            None,
+            Some(store),
+            None,
+        );
+        let app = crate::router::router(state).unwrap();
+        for (id, action, expected) in [
+            ("retry-agent", "retry", "scheduled"),
+            ("cancel-agent", "cancel", "cancelled"),
+        ] {
+            let mut request = reset_request(json!({"id":id,"retry_id":id,"action":action}));
+            *request.uri_mut() = "/api/capacity-retry".parse().unwrap();
+            let response = app.clone().oneshot(request).await.unwrap();
+            let status = response.status();
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(body["id"], id);
+            assert_eq!(body["status"], expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn usage_resume_http_returns_enable_and_disable_receipts() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            studio_runtime_store::RuntimeStore::open(Some(root.path()))
+                .await
+                .unwrap(),
+        );
+        store.transaction_with(|tx| {
+            let resume = json!({"id":"resume","accountKey":"default","threadId":"thread","epoch":1,
+                "turnId":"turn","cause":"usage_limit","status":"scheduled","failedAt":900.0,"authAttempt":0,
+                "dueAt":990.0,"taskClaims":[],"updatedAt":800.0});
+            let agent = json!({"provider":"codex","id":"a","rootId":"a","epoch":1,"status":"failed",
+                "accountKey":"default","threadId":"thread","usageResume":resume});
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES ('a',?1)", [agent.to_string()])?;
+            tx.execute("INSERT INTO runtime_usage_resumes(id,agent,record) VALUES ('resume','a',?1)", [resume.to_string()])?;
+            Ok::<_, studio_runtime_store::StoreError>(())
+        }).await.unwrap();
+        let state = crate::router::HttpState::new(
+            "reset-test-token".into(),
+            "fixture".into(),
+            root.path().to_string_lossy().into_owned(),
+            49_172,
+            None,
+            Some(store),
+            None,
+        );
+        let app = crate::router::router(state).unwrap();
+        for (enabled, expected) in [(true, "scheduled"), (false, "cancelled")] {
+            let mut request =
+                reset_request(json!({"id":"a","resume_id":"resume","enabled":enabled}));
+            *request.uri_mut() = "/api/usage-resume".parse().unwrap();
+            let response = app.clone().oneshot(request).await.unwrap();
+            let status = response.status();
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(body["id"], "resume");
+            assert_eq!(body["status"], expected);
+        }
     }
 
     #[tokio::test]

@@ -7,6 +7,7 @@ use crate::monitor_runtime::{MonitorAdmission, WorkspaceAdmission};
 use serde_json::{Value, json};
 use std::path::Path;
 use studio_runtime_schema::persistence::RequestIdentity;
+use studio_runtime_store::WorkItemRecord;
 use studio_runtime_store::{AgentRecord, AgentRepository, Transaction, WorkItemsRepository};
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -154,8 +155,8 @@ pub fn admit(
     Ok(true)
 }
 
-pub fn require_pass(task: &Value, override_reason: Option<&str>) -> Result<(), EventWriteError> {
-    if let Some(reason) = override_reason {
+pub fn require_pass(task: &WorkItemRecord, reason: Option<&str>) -> Result<(), EventWriteError> {
+    if let Some(reason) = reason {
         if reason.trim().is_empty()
             || reason.chars().count() > studio_runtime_schema::task_gate::MAX_TEXT_CODEPOINTS
         {
@@ -165,13 +166,10 @@ pub fn require_pass(task: &Value, override_reason: Option<&str>) -> Result<(), E
         }
         return Ok(());
     }
-    let Some(config) = task.get("gate").filter(|v| !v.is_null()) else {
+    let Some(config) = task.extension("gate").filter(|v| !v.is_null()) else {
         return Ok(());
     };
-    let gate = task["results"]
-        .as_array()
-        .and_then(|v| v.last())
-        .and_then(|v| v.get("gate"));
+    let gate = task.results().and_then(|v| v.last()?.get("gate"));
     if gate.is_some_and(|gate| {
         gate["status"] == "passed"
             && gate["exitCode"] == 0

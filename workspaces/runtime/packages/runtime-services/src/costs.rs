@@ -13,7 +13,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use studio_runtime_store::cost_aggregate::{
     CostGroup, CostMember, CostReceipt, CostTokens, DEFAULT_ACCOUNT, JournalReceiptCache,
-    cost_groups,
+    cost_group_adjustments,
 };
 use studio_runtime_store::{AnalyticsStoreError, RuntimeStore, StoreError, analytics};
 use thiserror::Error;
@@ -58,6 +58,18 @@ struct GroupPriceCache {
 }
 
 impl GroupPriceCache {
+    fn snapshot(&self) -> Self {
+        Self {
+            total: self.total,
+            priced_count: self.priced_count,
+            tiers: self.tiers,
+            models: self.models.clone(),
+            provider_totals: self.provider_totals.clone(),
+            unknown: self.unknown.clone(),
+            ..Self::default()
+        }
+    }
+
     fn apply(&mut self, price: &GroupPrice, add: bool) {
         let Some(amount) = price.amount else {
             let count = self.unknown.entry(price.model.clone()).or_default();
@@ -199,7 +211,7 @@ fn group_prices_incremental(
     root: &str,
     loaded: &std::sync::Arc<crate::pricing::LoadedPricing>,
     providers: &BTreeMap<&str, &'static str>,
-) -> Result<GroupPriceSummary, CostsError> {
+) -> Result<GroupPriceCache, CostsError> {
     PRICE_CACHES.with_borrow_mut(|caches| {
         if !caches.contains_key(root)
             && caches
@@ -282,7 +294,7 @@ fn group_prices_incremental(
             *cache = GroupPriceCache::default();
             return Err(CostsError::Computation);
         }
-        Ok(cache.summary())
+        Ok(cache.snapshot())
     })
 }
 
@@ -399,31 +411,35 @@ fn session_cost_on_reader(
         .ok_or(CostsError::Dependency("costs/pricing-refresh"))?;
     let catalog = loaded.catalog.as_ref().ok_or(CostsError::InvalidPricing)?;
 
-    let summary = if partition.accepted.is_empty() {
-        group_prices_incremental(&tx, &root, &loaded, &providers_by_account)?
-    } else {
-        let mut totals = GroupPriceCache::default();
-        for group in cost_groups(&tx, &root, &partition)? {
-            if let Some(price) = price_group(&group, catalog, &providers_by_account, None) {
-                totals.apply(&price, true);
-            }
+    let mut totals = group_prices_incremental(&tx, &root, &loaded, &providers_by_account)?;
+    for (before, after) in cost_group_adjustments(&tx, &root, &partition)? {
+        if let Some(price) = before
+            .as_ref()
+            .and_then(|group| price_group(group, catalog, &providers_by_account, None))
+        {
+            totals.apply(&price, false);
         }
-        for row in local_claude {
-            let group = CostGroup {
-                model: Some(row.usage.model),
-                account_key: String::new(),
-                tokens: row.usage.tokens,
-                input_uncached: row.usage.tokens.input_tokens.is_some(),
-                count: 1,
-            };
-            if let Some(price) =
-                price_group(&group, catalog, &providers_by_account, Some("anthropic"))
-            {
-                totals.apply(&price, true);
-            }
+        if let Some(price) = after
+            .as_ref()
+            .and_then(|group| price_group(group, catalog, &providers_by_account, None))
+        {
+            totals.apply(&price, true);
         }
-        totals.summary()
-    };
+    }
+    for row in local_claude {
+        let group = CostGroup {
+            model: Some(row.usage.model),
+            account_key: String::new(),
+            tokens: row.usage.tokens,
+            input_uncached: row.usage.tokens.input_tokens.is_some(),
+            count: 1,
+        };
+        if let Some(price) = price_group(&group, catalog, &providers_by_account, Some("anthropic"))
+        {
+            totals.apply(&price, true);
+        }
+    }
+    let summary = totals.summary();
     tx.commit()?;
     if !summary.total.is_finite() {
         return Err(CostsError::Computation);
@@ -3174,6 +3190,7 @@ mod tests {
 
     #[tokio::test]
     async fn usage_reconciliation_session_cost_preserves_final_rows_and_fills_legacy_history() {
+        thread_local! { static FULL_GROUP_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
         let temp = tempdir().expect("temporary fixture directory");
         let store = RuntimeStore::open(Some(temp.path()))
             .await
@@ -3283,6 +3300,39 @@ mod tests {
         assert_eq!(result["totalUSD"], json!(0.000135));
         assert_eq!(result["claudeHistoryIncomplete"], true);
         assert_eq!(result["unknownModels"], json!(["claude-sonnet-4-5"]));
+        store
+            .with_cost_reader(
+                |db| -> Result<(), studio_runtime_store::analytics::AnalyticsStoreError> {
+                    FULL_GROUP_READS.set(0);
+                    db.trace_v2(
+                        rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+                        Some(|event| {
+                            if let rusqlite::trace::TraceEvent::Stmt(_, sql) = event
+                        && sql.contains("SELECT model,account,input,cached,cache_write,output,uncached,count,cache_write_1h")
+                            {
+                                FULL_GROUP_READS.set(FULL_GROUP_READS.get() + 1);
+                            }
+                        }),
+                    );
+                    Ok(())
+                },
+            )
+            .expect("trace cost reads");
+        let repeated =
+            session_cost_with_account_profiles(&store, "agent", &accounts).expect("repeated cost");
+        assert_eq!(repeated, result);
+        let full_reads = store
+            .with_cost_reader(
+                |db| -> Result<usize, studio_runtime_store::analytics::AnalyticsStoreError> {
+                    db.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+                    Ok(FULL_GROUP_READS.get())
+                },
+            )
+            .expect("read trace");
+        assert_eq!(
+            full_reads, 0,
+            "unchanged journal receipts must not scan all cost groups"
+        );
 
         // Cached log parses and the cached catalog follow the files: a second answer
         // in the log is priced, and new rates replace the old ones.

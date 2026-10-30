@@ -137,13 +137,9 @@ async fn native_action(
     repair: Option<Extension<Arc<dyn NativeContextRepairPort>>>,
     ApiJson(body): ApiJson<generated::NativeActionRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    let value = serde_json::to_value(&body).map_err(|_| ApiError::internal())?;
-    if let Some(root) = value["request_id"].as_str() {
-        let root = root.to_owned();
-        let agent_id = value["id"]
-            .as_str()
-            .ok_or_else(ApiError::internal)?
-            .to_owned();
+    if let Some(root) = body.request_id.as_ref().and_then(Option::as_ref) {
+        let root = root.clone();
+        let agent_id = body.id.clone();
         let reserved = state
             .store
             .as_ref()
@@ -837,6 +833,48 @@ mod native_review_preflight_tests {
                 calls.fetch_add(1, Ordering::SeqCst);
                 Ok(Value::Null)
             })
+        }
+    }
+
+    #[tokio::test]
+    async fn native_action_rejects_reserved_idle_request_and_missing_id() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
+        let agent = AgentRecord::from_value(json!({
+            "id":"agent", "rootId":"agent", "epoch":1, "status":"idle", "provider":"codex", "accountKey":"default",
+            "idleCompactionEpisode": {"id":"reserved", "cache":{"requestId":"cache", "ttl":"1h", "warm":true,
+                "lastActivityAt":1.0, "contextTokens":1, "prefix":"prefix"}, "fireAt":2.0, "expiresAt":3.0,
+                "identity":{}, "prefixInputs":[], "attempt":{}}
+        })).unwrap();
+        store
+            .transaction(move |tx| AgentRepository::put(tx, &agent))
+            .await
+            .unwrap();
+        let state = HttpState::new(
+            "token".into(),
+            "fixture".into(),
+            directory.path().display().to_string(),
+            49172,
+            None,
+            Some(store),
+            None,
+        );
+        for (request_id, expected) in [
+            (Some("reserved".to_owned()), "reserved for idle compaction"),
+            (None, "no durable action request ID"),
+        ] {
+            let body = generated::NativeActionRequest {
+                action: generated::NativeActionRequestAction::NativeAction(
+                    generated::NativeAction::Compact,
+                ),
+                id: "agent".into(),
+                context: None,
+                request_id: Some(request_id),
+            };
+            let error = native_action(State(state.clone()), None, None, None, ApiJson(body))
+                .await
+                .unwrap_err();
+            assert!(error.message().contains(expected), "{}", error.message());
         }
     }
 
