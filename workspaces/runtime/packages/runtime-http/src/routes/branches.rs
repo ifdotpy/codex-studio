@@ -941,11 +941,10 @@ async fn branch_needs_catalog(
 }
 
 // Historical copy rows have a looser shape than selected transcript records.
-#[derive(Default, Deserialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BranchTurn {
-    #[serde(default)]
-    turn_id: Value,
+    turn_id: Option<String>,
 }
 #[derive(Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1057,7 +1056,7 @@ async fn copy_branch_history(
         let rows=stmt.query_map([source.as_str()],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,f64>(2)?)))?.collect::<Result<Vec<_>,_>>()?;
         drop(stmt);
         let cutoff=match fork_turn {
-            Some(fork_turn) => rows.iter().filter_map(|(_,raw,created)|serde_json::from_str::<Value>(raw).ok().map(copy_object::<BranchTurn>).filter(|r|r.turn_id.as_str()==Some(fork_turn.as_str())).map(|_|*created)).reduce(f64::max).unwrap_or(f64::NEG_INFINITY),
+            Some(fork_turn) => rows.iter().filter_map(|(_,raw,created)|serde_json::from_str::<studio_runtime_schema::json_object::JsonObject<BranchTurn>>(raw).ok().map(|r| r.0).filter(|r|r.turn_id.as_deref()==Some(fork_turn.as_str())).map(|_|*created)).reduce(f64::max).unwrap_or(f64::NEG_INFINITY),
             None => f64::NEG_INFINITY,
         };
         let mut assets=BTreeMap::<String,Value>::new();
