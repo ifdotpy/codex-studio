@@ -202,7 +202,7 @@ fn once() -> (Value, Value) {
 #[test]
 fn overdue_once_rule_emits_missed_event_without_command_and_stays_pending() {
     let (rule, owner) = once();
-    let snapshot = crate::rule_snapshot(rule, owner.clone()).expect("rule");
+    let snapshot = crate::rule_snapshot(&rule, owner.clone()).expect("rule");
     let decision = snapshot
         .tick(2061.0, TickObservation::default())
         .expect("tick");
@@ -236,7 +236,7 @@ fn overdue_once_rule_emits_missed_event_without_command_and_stays_pending() {
 #[test]
 fn once_rule_at_grace_boundary_still_runs() {
     let (rule, owner) = once();
-    let snapshot = crate::rule_snapshot(rule, owner).expect("rule");
+    let snapshot = crate::rule_snapshot(&rule, owner).expect("rule");
     assert!(
         snapshot
             .tick(2060.0, TickObservation::default())

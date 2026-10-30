@@ -152,7 +152,6 @@ mod tests {
     fn rule_mutations_keep_the_renderer_entity_in_the_same_transaction() {
         use crate::records::RuleRecord;
         use rusqlite::TransactionBehavior;
-        use serde_json::json;
 
         let mut db = Connection::open_in_memory().expect("in-memory database opens");
         db.execute_batch(
@@ -169,9 +168,7 @@ mod tests {
                 .expect("writer transaction opens");
             RulesRepository::put(
                 &transaction,
-                &serde_json::from_value::<RuleRecord>(
-                    json!({"id":"r1","agent":"a1","epoch":0,"name":"Check","kind":"interval","status":"active","intervalSeconds":60,"nextAt":1,"created":1,"command":"","text":"","checks":0,"wakes":0,"inFlight":false,"fileGeneration":0,"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"livenessCommand":"","event":""}),
-                )
+                &serde_json::from_str::<RuleRecord>(r#"{"id":"r1","agent":"a1","epoch":0,"name":"Check","kind":"interval","status":"active","intervalSeconds":60,"nextAt":1,"created":1,"command":"","text":"","checks":0,"wakes":0,"inFlight":false,"fileGeneration":0,"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"livenessCommand":"","event":""}"#)
                 .expect("rule has an id"),
             )
             .expect("rule is persisted");
@@ -215,7 +212,6 @@ mod tests {
     fn failed_rule_write_rolls_back_its_sync_entity_in_the_same_transaction() {
         use crate::records::RuleRecord;
         use rusqlite::OptionalExtension;
-        use serde_json::json;
 
         let mut db = Connection::open_in_memory().expect("in-memory database opens");
         db.execute_batch(
@@ -232,9 +228,7 @@ mod tests {
         let transaction = db.transaction().expect("writer transaction opens");
         let error = RulesRepository::put(
             &transaction,
-            &serde_json::from_value::<RuleRecord>(
-                json!({"id":"rollback-rule","agent":"a1","epoch":0,"name":"Rollback","kind":"interval","status":"active","intervalSeconds":60,"nextAt":1,"created":1,"command":"","text":"","checks":0,"wakes":0,"inFlight":false,"fileGeneration":0,"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"livenessCommand":"","event":""}),
-            )
+            &serde_json::from_str::<RuleRecord>(r#"{"id":"rollback-rule","agent":"a1","epoch":0,"name":"Rollback","kind":"interval","status":"active","intervalSeconds":60,"nextAt":1,"created":1,"command":"","text":"","checks":0,"wakes":0,"inFlight":false,"fileGeneration":0,"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"livenessCommand":"","event":""}"#)
             .expect("rule has a valid ID"),
         )
         .expect_err("injected rule storage failure is returned");

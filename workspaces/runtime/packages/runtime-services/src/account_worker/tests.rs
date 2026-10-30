@@ -4820,7 +4820,7 @@ async fn vm_actor_turn_with_host_mcp(child: bool) {
                         parent.auto_wake = Some(false);
                         AgentRepository::put(tx, &parent)?;
                         record.root_id = parent.id.clone();
-                        record.parent_id = Some((parent.id.0).to_string());
+                        record.parent_id = Some(parent.id.0);
                         record.is_lead = Some(false);
                         record.extra.insert("role".into(), json!("implementer"));
                     }
@@ -6621,7 +6621,7 @@ async fn adopt_parent(state: &State) -> String {
                     lead.is_lead = Some(true);
                     lead.thread_id = Some("fake-parent-thread".to_string());
                     AgentRepository::put(tx, &lead)?;
-                    row.parent_id = Some((parent_id).to_string());
+                    row.parent_id = Some(parent_id);
                     row.is_lead = Some(false);
                     AgentRepository::put(tx, &row)
                 })

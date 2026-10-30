@@ -435,7 +435,7 @@ async fn transient_rule_submit_failure_reconciles_the_saved_launch_identity() {
         .extend([true, false]);
 
     assert!(runtime.tick(now + 1.0).await.is_err());
-    assert_eq!(rule_record(&store, &rule_id).in_flight, true);
+    assert!(rule_record(&store, &rule_id).in_flight);
     let reserved_json: String = store
         .test_reader()
         .expect("read")
@@ -525,7 +525,7 @@ async fn event_submission_failure_recovers_the_committed_launch_intent() {
             .await
             .is_err()
     );
-    assert_eq!(rule_record(&store, &check.rule_id).in_flight, true);
+    assert!(rule_record(&store, &check.rule_id).in_flight);
     assert!(port.rule_checks.lock().expect("rule checks").is_empty());
 
     *port.rule_available.lock().expect("rule availability") = true;

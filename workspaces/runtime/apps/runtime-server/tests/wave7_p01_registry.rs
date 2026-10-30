@@ -56,14 +56,14 @@ fn codex_launch(
 }
 
 fn claude_launch(
-    profile: serde_json::Value,
+    profile: &serde_json::Value,
     bridge_dir: &Path,
     state_root: &Path,
     account: &str,
     environment: BTreeMap<String, String>,
 ) -> Result<ProviderLaunchSpec, WorkerError> {
     let profile =
-        studio_runtime_services::claude_bridge::ClaudeLaunchProfile::from_record(&profile)
+        studio_runtime_services::claude_bridge::ClaudeLaunchProfile::from_record(profile)
             .map_err(|_| {
                 WorkerError::PreparationRefused(
                     studio_runtime_services::provider_adapter::CLAUDE_ACCOUNT_IDENTITY_REFUSAL
@@ -3050,7 +3050,7 @@ fn claude_launch_uses_resolved_node_bridge_and_profile_cli_without_invoking_it()
         "claudeOptions":{"customModels":[], "launchArgs":"--chrome"}
     });
     let launch = claude_launch(
-        profile,
+        &profile,
         &bridge_dir,
         &root,
         "claude-fixture-account",

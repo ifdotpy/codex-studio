@@ -177,8 +177,8 @@ mod tests {
         db.execute_batch("CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY, record TEXT NOT NULL)").unwrap();
         let raw = r#"{"id":"m","agent":"a","epoch":1,"requestId":"r","turnId":null,"status":"running","activityAt":1,"activityGeneration":0,"bytes":0,"command":"","created":1,"cwd":"/","interactive":false,"livenessCommand":"","log":"/log","stallTimeoutSeconds":0,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":1000,"wakeOn":"exit","future":true}"#;
         db.execute("INSERT INTO runtime_monitors VALUES ('m',?1)", [raw]).unwrap();
-        let saved = serde_json::to_value(MonitorsRepository::get(&db, "m").unwrap().unwrap()).unwrap();
-        assert!(saved.get("future").is_none());
+        let saved = MonitorsRepository::get(&db, "m").unwrap().unwrap();
+        assert!(!serde_json::to_string(&saved).unwrap().contains("\"future\""));
         for invalid in [raw.replace("\"id\":\"m\"", "\"id\":\"wrong\""), raw.replace("\"status\":\"running\"", "\"status\":\"unknown\""), raw.replace("\"id\":\"m\"", "\"id\":\"m\",\"id\":\"wrong\"")] {
             db.execute("UPDATE runtime_monitors SET record=?1", [&invalid]).unwrap();
             assert!(MonitorsRepository::get(&db, "m").is_err());
