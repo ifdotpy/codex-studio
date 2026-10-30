@@ -216,16 +216,12 @@ fn workspace_view(
     let all_work =
         studio_runtime_store::WorkItemsRepository::work(connection).map_err(ApiError::stored)?;
     let statuses = work_policy::work_statuses(&all_work);
-    let root_view = root.as_deref().unwrap_or("");
     let scoped_work = all_work
         .into_iter()
         .filter(|item| {
-            ids.contains(
-                &item.value()["rootId"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_owned(),
-            ) && (root.is_none() || item.value()["rootId"] == root_view)
+            let item_root = item.root_id();
+            ids.iter().any(|id| id == item_root.unwrap_or_default())
+                && root.as_deref().is_none_or(|root| item_root == Some(root))
         })
         .collect::<Vec<_>>();
     let work = scoped_work

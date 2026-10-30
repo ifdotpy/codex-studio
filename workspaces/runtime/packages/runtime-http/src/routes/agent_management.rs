@@ -236,10 +236,7 @@ async fn run_native_action(
                 let record = AgentRepository::get(tx, &AgentId::from(read_agent.as_str()))?
                     .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Agent not found"))?;
                 let account = record.account_key.as_str().to_owned();
-                let epoch = record.value()["epoch"]
-                    .as_i64()
-                    .ok_or_else(ApiError::internal)?;
-                Ok::<_, ApiError>((account, epoch))
+                Ok::<_, ApiError>((account, record.epoch))
             })
             .await?;
         let actor = studio_runtime_services::account_worker::retained::RequestActor {

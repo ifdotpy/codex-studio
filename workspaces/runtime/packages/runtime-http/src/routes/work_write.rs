@@ -216,7 +216,7 @@ pub(crate) async fn perform(
                             "Unknown work item",
                         ),
                     )?;
-                if task.value()["rootId"] != actor.root_id.0 {
+                if task.root_id() != Some(actor.root_id.0.as_str()) {
                     return Err(
                         studio_runtime_services::event_write::EventWriteError::InvalidRequest(
                             "Unknown task in this team",

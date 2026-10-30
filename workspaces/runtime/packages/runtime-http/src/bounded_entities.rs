@@ -20,6 +20,7 @@ enum Publication {
     Costs,
     SessionCosts(Option<String>),
     AgentRows(Vec<i64>),
+    AgentRowsFull,
     Desktop,
 }
 
@@ -89,6 +90,31 @@ where
     }
 }
 
+fn watch_account_changes(
+    signal: &studio_runtime_services::account_driver::AccountChangeSignal,
+    sender: mpsc::UnboundedSender<Publication>,
+) {
+    let mut changes = signal.subscribe();
+    let mut registry = signal.subscribe_registry();
+    let session_sender = sender.clone();
+    tokio::spawn(async move {
+        while changes.changed().await.is_ok() {
+            for publication in [Publication::Accounts, Publication::Costs] {
+                if session_sender.send(publication).is_err() {
+                    return;
+                }
+            }
+        }
+    });
+    tokio::spawn(async move {
+        while registry.changed().await.is_ok() {
+            if sender.send(Publication::SessionCosts(None)).is_err() {
+                return;
+            }
+        }
+    });
+}
+
 /// One ordered writer owns the durable summaries for this HTTP workspace.
 /// Source observers only enqueue; filesystem reads remain outside SQL callbacks.
 pub(crate) async fn start(state: &HttpState) -> Result<(), StoreError> {
@@ -120,7 +146,7 @@ where
     store.add_table_row_change_observer(ObservedTable::Agents, move |change| {
         let _queued = agents.send(match change {
             studio_runtime_store::TableChange::Rows(rows) => Publication::AgentRows(rows.to_vec()),
-            studio_runtime_store::TableChange::Full => Publication::SessionCosts(None),
+            studio_runtime_store::TableChange::Full => Publication::AgentRowsFull,
         });
     });
     let analytics = sender.clone();
@@ -135,21 +161,7 @@ where
         }
     });
     if let Some(driver) = &state.account_driver {
-        let mut changes = driver.change_signal().subscribe();
-        let sender = sender.clone();
-        runtime.spawn(async move {
-            while changes.changed().await.is_ok() {
-                for publication in [
-                    Publication::Accounts,
-                    Publication::Costs,
-                    Publication::SessionCosts(None),
-                ] {
-                    if sender.send(publication).is_err() {
-                        return;
-                    }
-                }
-            }
-        });
+        watch_account_changes(&driver.change_signal(), sender.clone());
     }
     let mut auth = studio_runtime_services::account_driver::auth_status_changes();
     let auth_sender = sender.clone();
@@ -175,6 +187,7 @@ where
                         Publication::Desktop,
                         Publication::Costs,
                         Publication::SessionCosts(None),
+                        Publication::AgentRowsFull,
                     ] {
                         let _queued = source_sender.send(publication);
                     }
@@ -209,6 +222,7 @@ where
             }
             let mut roots = BTreeSet::new();
             let mut full = pending.contains(&Publication::SessionCosts(None));
+            let mut rescan_agents = false;
             for publication in pending {
                 let result = match publication {
                     Publication::Accounts => publish_accounts(&state).await,
@@ -218,6 +232,11 @@ where
                         Ok(())
                     }
                     Publication::SessionCosts(None) => Ok(()),
+                    Publication::AgentRowsFull => {
+                        full = true;
+                        rescan_agents = true;
+                        Ok(())
+                    }
                     Publication::AgentRows(rows) => {
                         match changed_agent_roots(&store, &mut agent_roots, rows).await {
                             Ok(changed) => {
@@ -225,6 +244,7 @@ where
                             }
                             Err(error) => {
                                 full = true;
+                                rescan_agents = true;
                                 eprintln!("Could not resolve changed cost roots: {error}");
                             }
                         }
@@ -239,11 +259,13 @@ where
             if full || !roots.is_empty() {
                 let _refresh = pricing.request();
             }
-            let result = if full {
+            if rescan_agents {
                 match read_agent_roots(&store).await {
                     Ok(current) => agent_roots = current,
                     Err(error) => eprintln!("Could not rebuild cost root identities: {error}"),
                 }
+            }
+            let result = if full {
                 publish_session_roots(&state, None, pricing.readiness()).await
             } else if !roots.is_empty() {
                 publish_session_roots(&state, Some(roots), pricing.readiness()).await
@@ -398,6 +420,8 @@ const AGENT_ROOTS_SQL: &str =
 async fn read_agent_roots(
     store: &Arc<RuntimeStore>,
 ) -> Result<BTreeMap<i64, AgentCostSource>, StoreError> {
+    #[cfg(test)]
+    tests::record_agent_root_read(store.root());
     store
         .read_async("bounded-entities/agent-roots", |tx| {
             let mut statement = tx.prepare(AGENT_ROOTS_SQL)?;
@@ -836,6 +860,32 @@ mod tests {
         );
     }
 
+    static AGENT_ROOT_READS: std::sync::LazyLock<
+        std::sync::Mutex<BTreeMap<std::path::PathBuf, usize>>,
+    > = std::sync::LazyLock::new(Default::default);
+
+    pub(super) fn record_agent_root_read(root: &std::path::Path) {
+        *AGENT_ROOT_READS
+            .lock()
+            .expect("agent reads")
+            .entry(root.into())
+            .or_default() += 1;
+    }
+
+    #[tokio::test]
+    async fn retained_session_changes_do_not_request_session_costs() {
+        let signal = studio_runtime_services::account_driver::AccountChangeSignal::new();
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        watch_account_changes(&signal, sender);
+        signal.publish_session_change();
+        assert_eq!(receiver.recv().await, Some(Publication::Accounts));
+        assert_eq!(receiver.recv().await, Some(Publication::Costs));
+        assert!(
+            matches!(receiver.try_recv(), Err(mpsc::error::TryRecvError::Empty)),
+            "retained session must not request session costs"
+        );
+    }
+
     static COST_READ_WITNESSES: std::sync::LazyLock<
         std::sync::Mutex<
             BTreeMap<std::path::PathBuf, studio_runtime_store::analytics::CostReadWitness>,
@@ -1131,6 +1181,14 @@ mod tests {
             "ready"
         );
         assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert_eq!(
+            AGENT_ROOT_READS
+                .lock()
+                .expect("agent reads")
+                .remove(root.path()),
+            Some(1),
+            "pricing-only full publication must not rescan agent records"
+        );
         assert!(
             !tokio::fs::try_exists(root.path().join("account-costs"))
                 .await

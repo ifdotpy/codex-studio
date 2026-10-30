@@ -121,12 +121,8 @@ async fn skills(
 ) -> Result<Json<crate::generated::SkillsResponse>, ApiError> {
     let agent_id = required_agent(&params)?;
     let record = read_agent(&state, agent_id).await?;
-    let agent = record.value();
-    ensure_live_agent(&agent)?;
-    let cwd = agent
-        .get("cwd")
-        .and_then(Value::as_str)
-        .ok_or_else(invalid_stored_agent)?;
+    ensure_live_agent(&record)?;
+    let cwd = record.cwd.as_deref().ok_or_else(invalid_stored_agent)?;
     let account = account_context(&state, &record.account_key)?;
     let responses = account_provider_exchange(
         state.account_session.clone(),
@@ -159,8 +155,8 @@ async fn capabilities(
 ) -> Result<Json<crate::generated::CapabilitiesResponse>, ApiError> {
     let agent_id = required_agent(&params)?;
     let record = read_agent(&state, agent_id).await?;
+    ensure_live_agent(&record)?;
     let agent = record.value();
-    ensure_live_agent(&agent)?;
     let catalog = match state.tool_catalog.as_ref() {
         Some(catalog) => catalog,
         None => return Err(ApiError::internal()),
@@ -771,11 +767,8 @@ async fn read_agent(
         .await
 }
 
-fn ensure_live_agent(agent: &Value) -> Result<(), ApiError> {
-    if agent
-        .get("deletedAt")
-        .is_some_and(|value| !value.is_null() && value != "")
-    {
+fn ensure_live_agent(agent: &studio_runtime_store::AgentRecord) -> Result<(), ApiError> {
+    if agent.deleted_at.is_some() {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
             "This agent was deleted",
