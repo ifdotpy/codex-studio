@@ -8533,7 +8533,10 @@ export interface components {
       resource: components["schemas"]["AuthProgressResource"];
       /** Revision */
       revision: number;
-      value: components["schemas"]["ClaudeLoginResponse"] | null;
+      value:
+        | components["schemas"]["ClaudeLoginResponse"]
+        | components["schemas"]["CodexLoginReceipt"]
+        | null;
       /** Workspaceid */
       workspaceId: string;
     };
@@ -22569,7 +22572,10 @@ export interface components {
     SubscriptionDataMap: {
       accounts: components["schemas"]["AccountsResponse"];
       agentDetail: components["schemas"]["AgentDetailEntityDto"];
-      "auth-progress": components["schemas"]["ClaudeLoginResponse"] | null;
+      "auth-progress":
+        | components["schemas"]["ClaudeLoginResponse"]
+        | components["schemas"]["CodexLoginReceipt"]
+        | null;
       complaint: components["schemas"]["ComplaintDetailResponse"];
       costs: components["schemas"]["AccountCostResponse"][];
       desktop: components["schemas"]["DesktopResponse"];

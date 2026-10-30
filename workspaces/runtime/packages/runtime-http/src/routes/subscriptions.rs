@@ -10,6 +10,33 @@ use crate::router::HttpState;
 use serde_json::Value;
 use studio_runtime_schema::shared_values::SYNC_STREAM_EVENT_MAX_BYTES;
 
+pub(super) async fn auth_progress(state: &HttpState, request_id: &str) -> Option<Value> {
+    if let Some(driver) = state.account_driver.clone() {
+        let id = request_id.to_owned();
+        let receipt = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/auth-progress",
+            move || {
+                driver.snapshot().map(|snapshot| {
+                    snapshot
+                        .logins
+                        .into_iter()
+                        .find(|value| value.get("requestId").and_then(Value::as_str) == Some(&id))
+                })
+            },
+        )
+        .await
+        .ok()?
+        .ok()?;
+        if let Some(receipt) = receipt {
+            return Some(receipt);
+        }
+    }
+    match &state.claude_login {
+        Some(login) => Some(login.progress(request_id).await.unwrap_or(Value::Null)),
+        None => Some(Value::Null),
+    }
+}
+
 /// Each generated resource kind has exactly one registered handler. A handler
 /// reads its records and durable cursor in one database snapshot. The byte bound
 /// includes its encoded payload; oversized data uses scoped recovery.
@@ -520,14 +547,9 @@ async fn content_fingerprint(state: HttpState, resource: ResourceRef) -> Option<
             })
             .await
             .ok(),
-        ResourceRef::AuthProgressResource(resource) => serde_json::to_vec(
-            &state
-                .claude_login?
-                .progress(&resource.request_id)
-                .await
-                .ok()?,
-        )
-        .ok(),
+        ResourceRef::AuthProgressResource(resource) => {
+            serde_json::to_vec(&auth_progress(&state, &resource.request_id).await?).ok()
+        }
         ResourceRef::VaultJobProgressResource(resource) => serde_json::to_vec(
             &super::host_secrets::job_progress(&state, resource.job, &resource.request_id).await,
         )

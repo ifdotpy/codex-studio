@@ -302,11 +302,13 @@ export default function ClaudeAddSignIn({
       (progress) => {
         if (
           progress.resource.kind === "auth-progress" &&
+          progress.value?.status !== "duplicate" &&
+          progress.value?.status !== "uncertain" &&
           progress.value &&
           typeof progress.value === "object"
         ) {
           statusReadGeneration.current += 1;
-          applyProgress(progress.value);
+          applyProgress({ ...progress.value, status: progress.value.status });
         }
       },
       readStatus,

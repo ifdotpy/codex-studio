@@ -216,6 +216,9 @@ async function runAccountsUi(
       },
     };
   };
+  snapshotLimits = Object.fromEntries(
+    accounts.map((account) => [account.id, limits(account.id)]),
+  );
   const syncWorkspaceId = syncIdentityFixture().workspaceId;
   const stateForEntities = fixtureSnapshot({
     stateDir: evidence,
@@ -230,6 +233,14 @@ async function runAccountsUi(
       tasks: [],
       work: [],
       rateLimitsByAccount: snapshotLimits,
+      accountsSummary: {
+        accounts,
+        archivedAccounts,
+        defaultAccountKey,
+        defaultAccountGroups: [],
+        supportsDelete: true,
+        supportsDisconnect: true,
+      },
     },
   });
   const server = createServer(async (req, res) => {
@@ -249,7 +260,19 @@ async function runAccountsUi(
       handleEntitySyncFixtureRequest(req, res, {
         snapshot: stateForEntities,
         workspaceId: syncWorkspaceId,
-        versionedResources: mode === "benchmark",
+        subscriptionUpdate: fixtureRequest("/api/sync/subscriptions", rawBody)
+          .body,
+        progress: (resource) =>
+          resource.kind === "auth-progress"
+            ? {
+                resource,
+                value:
+                  logins.find(
+                    (login) => login.requestId === resource.requestId,
+                  ) ?? null,
+              }
+            : undefined,
+        versionedResources: true,
         epoch: mode === "benchmark" ? "accounts-ui-smoke" : undefined,
         onStreamReady(notify) {
           notifyEntityResources = notify;
@@ -647,6 +670,17 @@ async function runAccountsUi(
           .login_id,
         id,
       );
+      let accountReadsAfterReload = 0;
+      const countAccountReads = (
+        request: import("@playwright/test").Request,
+      ) => {
+        if (
+          request.method() === "GET" &&
+          new URL(request.url()).pathname === "/api/accounts"
+        )
+          accountReadsAfterReload++;
+      };
+      page.on("request", countAccountReads);
       await page.reload();
       await page
         .getByRole("button", { name: "Sign in to Codex", exact: true })
@@ -655,6 +689,12 @@ async function runAccountsUi(
         name: /Sign in to Codex.*personal@example\.com/,
       });
       await login.getByText("ABCD-1234", { exact: true }).waitFor();
+      page.off("request", countAccountReads);
+      assert.equal(
+        accountReadsAfterReload,
+        0,
+        "Reload restores the code from the request-scoped stream",
+      );
       assert.equal(logins.length, 1);
       assert.equal(
         await login
@@ -695,15 +735,11 @@ async function runAccountsUi(
       );
       await login.getByRole("button", { name: "Close", exact: true }).click();
       await login.waitFor({ state: "hidden" });
-      const mainAgentSettings = page
-        .getByRole("button", { name: "Main agent settings", exact: true })
-        .first();
-      if ((await mainAgentSettings.getAttribute("aria-expanded")) !== "true")
-        await mainAgentSettings.click();
+      await page.locator("#composer .execution-summary-trigger").click();
       await page
         .getByRole("group", { name: "Main agent account", exact: true })
         .waitFor();
-      await mainAgentSettings.click();
+      await page.keyboard.press("Escape");
       await page.getByRole("button", { name: "Studio settings" }).click();
       const studio = page.getByRole("dialog", {
         name: "Studio settings",
@@ -711,10 +747,14 @@ async function runAccountsUi(
       });
       await studio.getByRole("tab", { name: "Accounts", exact: true }).click();
       await studio
-        .locator(".server-account-row")
-        .filter({ hasText: "personal@example.com" })
         .getByRole("button", {
-          name: "✓ This computer",
+          name: "Actions for personal@example.com",
+          exact: true,
+        })
+        .click();
+      await page
+        .getByRole("menuitem", {
+          name: "Sign in again on This computer",
           exact: true,
         })
         .click();

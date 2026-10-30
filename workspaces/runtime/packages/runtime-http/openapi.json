@@ -16040,6 +16040,9 @@
                 "$ref": "#/components/schemas/ClaudeLoginResponse"
               },
               {
+                "$ref": "#/components/schemas/CodexLoginReceipt"
+              },
+              {
                 "type": "null"
               }
             ]
@@ -50036,6 +50039,9 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/ClaudeLoginResponse"
+              },
+              {
+                "$ref": "#/components/schemas/CodexLoginReceipt"
               },
               {
                 "type": "null"
