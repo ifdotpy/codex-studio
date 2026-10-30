@@ -598,16 +598,6 @@ async fn apply_entities(
 pub async fn dispatch(backend: &Backend, sender: &StoreSender, request: Request) -> Response {
     let result = match request.method.as_str() {
         "sync.open" => open(backend, sender).await,
-        "sync.pull" => match (
-            request.params["workspace"].as_str(),
-            request.params["scope"].as_str(),
-        ) {
-            (Some(w), Some(s)) => pull(backend, sender, w, s).await,
-            _ => Err(error(
-                "invalid_params",
-                "Workspace and projection scope are required.",
-            )),
-        },
         "sync.applyEntities" => match (
             request.params["workspace"].as_str().unwrap_or(""),
             request.params["documents"].as_array(),
@@ -638,6 +628,22 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
     use tokio::{io::AsyncWriteExt, net::TcpListener, sync::mpsc};
+    #[tokio::test]
+    async fn retired_pull_command_is_rejected_without_network() {
+        let backend = Backend::new("http://127.0.0.1:1").unwrap();
+        let (sender, _receiver) = mpsc::channel(1);
+        let response = dispatch(
+            &backend,
+            &sender,
+            Request {
+                id: "retired".into(),
+                method: "sync.pull".into(),
+                params: Value::Null,
+            },
+        )
+        .await;
+        assert_eq!(response.error.unwrap().code, "unknown_method");
+    }
     #[test]
     fn entity_pull_consumed_fields_track_openapi_owner() {
         let openapi: Value = serde_json::from_str(include_str!(
