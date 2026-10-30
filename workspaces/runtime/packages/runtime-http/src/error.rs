@@ -188,6 +188,12 @@ impl ApiError {
             | StoreError::InvalidStoredRecord { object: table, id } => {
                 Self::invalid_stored(table, &id)
             }
+            StoreError::TranscriptFullTextUnavailable { id } => {
+                Self::invalid_stored("runtime_item_fulltext", &id)
+            }
+            StoreError::TranscriptInputsIncomplete { id } => {
+                Self::invalid_stored("runtime_items", &id)
+            }
             StoreError::InvalidSyncObjectField { scope, id, .. } => {
                 Self::invalid_stored(&scope, &id)
             }

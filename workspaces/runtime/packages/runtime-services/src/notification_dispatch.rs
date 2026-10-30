@@ -273,6 +273,8 @@ impl From<StoreError> for NotificationDispatchError {
             | error @ StoreError::SchemaMismatch(_)
             | error @ StoreError::InvalidSyncObjectField { .. }
             | error @ StoreError::InvalidStoredRecord { .. }
+            | error @ StoreError::TranscriptFullTextUnavailable { .. }
+            | error @ StoreError::TranscriptInputsIncomplete { .. }
             | error @ StoreError::SchemaObjectMismatch { .. }
             | error @ StoreError::Sqlite(_)
             | error @ StoreError::CommitOutcomeUnknown(_)
@@ -2612,7 +2614,7 @@ mod tests {
                 "INSERT INTO runtime_agents(id,record) VALUES('agent',?1)",
                 [
                     json!({"id":"agent","provider":studio_runtime_schema::ProviderKind::Codex,
-                    "rootId":"agent","epoch":1,"status":"running","threadId":"thread",
+                    "rootId":"agent","epoch":1,"status":"running","threadId":"thread","compactions":0,
                     "accountKey":"default","turnId":"turn","inFlight":true,"events":0,
                     "activeTools":[],"autoWake":false,"activeExecution":{"attemptId":"attempt"}})
                     .to_string(),

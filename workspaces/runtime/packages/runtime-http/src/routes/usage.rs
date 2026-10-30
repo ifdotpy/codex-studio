@@ -105,6 +105,8 @@ async fn cost_interest(
             | error @ studio_runtime_store::StoreError::CommitOutcomeUnknown(_)
             | error @ studio_runtime_store::StoreError::Json(_)
             | error @ studio_runtime_store::StoreError::InvalidStoredObject { .. }
+            | error @ studio_runtime_store::StoreError::TranscriptFullTextUnavailable { .. }
+            | error @ studio_runtime_store::StoreError::TranscriptInputsIncomplete { .. }
             | error @ studio_runtime_store::StoreError::SchemaValidation(_)
             | error @ studio_runtime_store::StoreError::RecordContract(_)
             | error @ studio_runtime_store::StoreError::WriterPoisoned

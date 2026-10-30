@@ -1609,6 +1609,41 @@ impl JsonRecord for TranscriptItemRecord {
     fn record_key(&self) -> Option<&Self::Id> {
         Some(self.id())
     }
+    fn encode_stored(&self, connection: &Connection, row_id: &str) -> StoreResult<String> {
+        if self.id().as_ref() != row_id {
+            return Err(crate::StoreError::InvalidStoredObject {
+                table: Self::TABLE,
+                id: row_id.to_owned(),
+            });
+        }
+        if !self.has_complete_inputs() {
+            return Err(crate::StoreError::TranscriptInputsIncomplete {
+                id: row_id.to_owned(),
+            });
+        }
+        if matches!(
+            self.text(),
+            studio_runtime_schema::transcript_record::TranscriptText::Inline(_)
+        ) {
+            return Ok(serde_json::to_string(self)?);
+        }
+        let text = connection
+            .query_row(
+                "SELECT body FROM runtime_item_fulltext WHERE id=?1",
+                [row_id],
+                |row| row.get::<_, Option<crate::stored_text::StoredText>>(0),
+            )
+            .optional()?
+            .flatten()
+            .map(crate::stored_text::StoredText::into_string)
+            .filter(|text| !text.is_empty())
+            .ok_or_else(|| crate::StoreError::TranscriptFullTextUnavailable {
+                id: row_id.to_owned(),
+            })?;
+        let mut hydrated = self.clone();
+        hydrated.set_inline_text(text);
+        Ok(serde_json::to_string(&hydrated)?)
+    }
 }
 impl JsonRecord for TranscriptAssetRecord {
     type Id = TranscriptAssetId;
@@ -1789,6 +1824,13 @@ pub trait JsonRecord: Serialize + DeserializeOwned {
     const TYPED_SHAPE: bool = false;
 
     fn record_key(&self) -> Option<&Self::Id>;
+
+    fn encode_stored(&self, _connection: &Connection, row_id: &str) -> StoreResult<String>
+    where
+        Self: Sized,
+    {
+        Ok(serde_json::to_string(&checked_value(self, row_id)?)?)
+    }
 
     fn decode_stored(connection: &Connection, row_id: &str, encoded: &str) -> StoreResult<Self> {
         decode_record::<Self>(connection, row_id, encoded)
@@ -1999,7 +2041,7 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
             .ok_or(crate::StoreError::RecordContract(
                 "payload-id record has no cached id",
             ))?;
-        let encoded = encode_record(record, key.as_ref())?;
+        let encoded = encode_record(self.connection, record, key.as_ref())?;
         let mut names = vec!["id".to_owned(), "record".to_owned()];
         let mut placeholders = vec!["?1".to_owned(), "?2".to_owned()];
         let mut updates = vec!["record=excluded.record".to_owned()];
@@ -2100,7 +2142,7 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
             let value = checked_value(record, id)?;
             return crate::agent_volatile::update(self.connection, id, &value);
         }
-        let encoded = encode_record(record, id)?;
+        let encoded = encode_record(self.connection, record, id)?;
         let changed = self.connection.execute(
             &format!("UPDATE {} SET record=?1 WHERE id=?2", quoted_table::<R>()),
             params![encoded, id],
@@ -2113,7 +2155,7 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
             let value = checked_value(record, id)?;
             return crate::agent_volatile::put(self.connection, id, &value, !update);
         }
-        let encoded = encode_record(record, id)?;
+        let encoded = encode_record(self.connection, record, id)?;
         let conflict = if update {
             "DO UPDATE SET record=excluded.record"
         } else {
@@ -2350,10 +2392,14 @@ pub(crate) fn invalid_agent_field(
     }
 }
 
-fn encode_record<R: JsonRecord>(record: &R, row_id: &str) -> StoreResult<String> {
+fn encode_record<R: JsonRecord>(
+    connection: &Connection,
+    record: &R,
+    row_id: &str,
+) -> StoreResult<String> {
     #[cfg(test)]
     validation_counts::ENCODINGS.with(|count| count.set(count.get() + 1));
-    Ok(serde_json::to_string(&checked_value(record, row_id)?)?)
+    record.encode_stored(connection, row_id)
 }
 
 /// The record as JSON, checked against its schema and row key.
@@ -2661,41 +2707,12 @@ mod tests {
     }
 
     #[test]
-    fn consuming_json_record_projection_moves_value_tree() {
-        let record = TranscriptItemRecord::from_value(json!({
-            "id":"item-1", "agent":"agent-1", "nested":[{"retained":true}],
-            "inputs":[{"text":"allocated input content", "blob":[{"v":1}]}]
-        }))
-        .expect("transcript item has an id");
-        let source_ptr = record
-            .extra("nested")
-            .unwrap()
-            .as_array()
-            .expect("nested value is an array")
-            .as_ptr();
-
-        let input = &record.inputs().value().unwrap()[0];
-        let text_ptr = input.text().unwrap().as_ptr();
-        let input_blob_ptr = input.extra("blob").unwrap().as_array().unwrap().as_ptr();
-        let projected = record.into_value();
-
-        assert_eq!(
-            projected["inputs"][0]["text"].as_str().unwrap().as_ptr(),
-            text_ptr
-        );
-        assert_eq!(
-            projected["inputs"][0]["blob"].as_array().unwrap().as_ptr(),
-            input_blob_ptr
-        );
-        assert_eq!(projected["nested"][0]["retained"], Value::Bool(true));
-        assert_eq!(
-            projected["nested"]
-                .as_array()
-                .expect("projected nested value is an array")
-                .as_ptr(),
-            source_ptr,
-            "the consuming projection must move, not clone, the record tree"
-        );
+    fn transcript_record_preserves_opaque_extension_bytes() {
+        let raw = r#"{"id":"item-1","role":"user","text":"body","nested":[ { "retained":true } ],"inputs":[{"text":"input","blob":[ {"v":1} ]}]}"#;
+        let record: TranscriptItemRecord = serde_json::from_str(raw).expect("record");
+        let encoded = serde_json::to_string(&record).expect("serialize");
+        assert!(encoded.contains(r#"[ { "retained":true } ]"#));
+        assert!(encoded.contains(r#"[ {"v":1} ]"#));
     }
 
     fn task(value: &Value) -> TaskRecord {

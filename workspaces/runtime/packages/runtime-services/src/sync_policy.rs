@@ -2711,6 +2711,8 @@ pub async fn push_preferences(
             | other @ StoreError::Outbox(_)
             | other @ StoreError::Json(_)
             | other @ StoreError::InvalidStoredObject { .. }
+            | other @ StoreError::TranscriptFullTextUnavailable { .. }
+            | other @ StoreError::TranscriptInputsIncomplete { .. }
             | other @ StoreError::SchemaValidation(_)
             | other @ StoreError::RecordContract(_)
             | other @ StoreError::WriterPoisoned

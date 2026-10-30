@@ -1,28 +1,103 @@
 {
   "$defs": {
+    "EventKind": {
+      "enum": [
+        "user",
+        "followup",
+        "agent_message",
+        "child_result",
+        "child_stopped",
+        "complaint",
+        "complaint_response",
+        "chat_review",
+        "work_review",
+        "work_decision",
+        "work_ready",
+        "monitor_exit",
+        "monitor_stall",
+        "rule",
+        "rule_missed",
+        "rule_stall",
+        "radio_turn",
+        "browser_declined",
+        "browser_joined",
+        "browser_outcome",
+        "browser_unanswered",
+        "event_wake",
+        "monitor_cancelled",
+        "monitor_output",
+        "plan_update",
+        "shell_policy",
+        "work_released",
+        "work_result_invalid",
+        "context_repair_wait",
+        "monitor_correction",
+        "rule_hold"
+      ],
+      "type": "string"
+    },
     "PersistedTranscriptInput": {
       "additionalProperties": true,
       "properties": {
+        "assets": {
+          "items": true,
+          "type": ["array", "null"]
+        },
+        "at": {
+          "format": "double",
+          "type": ["number", "null"]
+        },
+        "clientMessageId": {
+          "type": ["string", "null"]
+        },
         "id": {
           "type": ["string", "null"]
         },
         "kind": {
-          "type": ["string", "null"]
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EventKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "text": {
           "type": ["string", "null"]
         },
         "truncated": {
           "type": ["boolean", "null"]
+        },
+        "turnId": {
+          "type": ["string", "null"]
         }
       },
       "type": "object"
+    },
+    "TranscriptRole": {
+      "description": "The stored transcript item roles.",
+      "enum": ["assistant", "user", "system", "output"],
+      "type": "string"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": true,
   "description": "Legacy parent text is hydrated from fulltext before response validation.",
   "properties": {
+    "afterRestore": {
+      "type": ["string", "null"]
+    },
+    "assets": {
+      "items": true,
+      "type": ["array", "null"]
+    },
+    "at": {
+      "type": ["number", "null"]
+    },
+    "clientMessageId": {
+      "type": ["string", "null"]
+    },
     "id": {
       "type": "string"
     },
@@ -33,13 +108,25 @@
       "type": ["array", "null"]
     },
     "role": {
-      "type": ["string", "null"]
+      "$ref": "#/$defs/TranscriptRole"
+    },
+    "streaming": {
+      "type": ["boolean", "null"]
     },
     "text": {
       "type": ["string", "null"]
+    },
+    "title": {
+      "type": ["string", "null"]
+    },
+    "truncated": {
+      "type": ["boolean", "null"]
+    },
+    "turnId": {
+      "type": ["string", "null"]
     }
   },
-  "required": ["id"],
+  "required": ["id", "role"],
   "title": "PersistedTranscriptRecord",
   "type": "object"
 }

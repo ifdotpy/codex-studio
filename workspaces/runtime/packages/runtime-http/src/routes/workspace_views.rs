@@ -131,11 +131,15 @@ fn reported_changes(connection: &Connection, agent: &str) -> Result<Value, ApiEr
     }) else {
         return Ok(empty_reported_changes());
     };
-    if studio_runtime_services::event_write::truthy(item.record.extra("afterRestore")) {
+    if item
+        .record
+        .after_restore()
+        .is_some_and(|value| !value.is_empty())
+    {
         return Ok(empty_reported_changes());
     }
     let text = TranscriptRepository::full_text(connection, &item).map_err(map_transcript_error)?;
-    if item.record.extra("truncated").and_then(Value::as_bool) == Some(true) && text.is_none() {
+    if item.record.truncated() == Some(true) && text.is_none() {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
             "The complete reported changes are unavailable",
@@ -151,7 +155,7 @@ fn reported_changes(connection: &Connection, agent: &str) -> Result<Value, ApiEr
     let diff = payload.diff.chars().take(300_000).collect::<String>();
     Ok(json!({
         "scope":"chat", "git":true, "files":files, "diff":diff, "patch":diff,
-        "truncated":truncated, "turnId":payload.turn_id, "reportedAt":item.record.extra("at"),
+        "truncated":truncated, "turnId":payload.turn_id, "reportedAt":item.record.at().value(),
     }))
 }
 

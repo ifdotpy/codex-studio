@@ -823,6 +823,10 @@ pub enum StoreError {
     Json(#[from] serde_json::Error),
     #[error("invalid stored object {table}/{id}")]
     InvalidStoredObject { table: &'static str, id: String },
+    #[error("full transcript text is unavailable for {id}")]
+    TranscriptFullTextUnavailable { id: String },
+    #[error("transcript inputs are incomplete for {id}")]
+    TranscriptInputsIncomplete { id: String },
     #[error("persisted JSON schema validation failed: {0}")]
     SchemaValidation(String),
     #[error("invalid JSON-record table contract: {0}")]

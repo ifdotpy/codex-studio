@@ -112,6 +112,10 @@ pub(super) fn data_fault(error: &WorkerError) -> Option<(String, String)> {
             | StoreError::InvalidSyncObjectField { scope, id, .. } => (scope.clone(), id.clone()),
             StoreError::InvalidStoredRecord { object, id } => ((*object).to_owned(), id.clone()),
             StoreError::InvalidStoredObject { table, id } => ((*table).to_owned(), id.clone()),
+            StoreError::TranscriptFullTextUnavailable { id } => {
+                ("runtime_item_fulltext".into(), id.clone())
+            }
+            StoreError::TranscriptInputsIncomplete { id } => ("runtime_items".into(), id.clone()),
             StoreError::StateDirectory(_)
             | StoreError::AlreadyOwned
             | StoreError::MissingDatabase(_)

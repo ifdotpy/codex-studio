@@ -207,6 +207,8 @@ fn map_store_error(error: StoreError) -> ApiError {
         StoreError::InvalidStoredObject { table, id } => invalid_stored(table, &id),
         StoreError::RequestResult(error) => error.into(),
         StoreError::Outbox(error) => error.into(),
+        error @ (StoreError::TranscriptFullTextUnavailable { .. }
+        | StoreError::TranscriptInputsIncomplete { .. }) => ApiError::stored(error),
         StoreError::StateDirectory(_)
         | StoreError::AlreadyOwned
         | StoreError::MissingDatabase(_)

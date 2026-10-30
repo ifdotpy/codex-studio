@@ -292,7 +292,7 @@ fn reconcile(
         let text = studio_runtime_store::TranscriptRepository::full_text(db, &stored)
             .map_err(|_| invalid(&id))?
             .unwrap_or_default();
-        if truthy(stored.record.extra("truncated")) && text.is_empty() {
+        if stored.record.truncated() == Some(true) && text.is_empty() {
             return Err(ProjectsError::Invalid(
                 "The full shared reply is unavailable. No truncated reply was forwarded.",
             ));
