@@ -57,7 +57,9 @@ mod tests {
     use axum::http::Request;
     use serde_json::{Value, json};
     use std::sync::Arc;
-    use studio_runtime_store::{AgentRecord, AgentRepository, RuntimeStore};
+    use studio_runtime_store::{
+        AgentRecord, AgentRepository, RuntimeStore, SyncDocumentsRepository,
+    };
     use tower::ServiceExt;
 
     async fn call(app: &axum::Router, body: Value) -> (u16, Value) {
@@ -317,6 +319,88 @@ mod tests {
         ] {
             assert_eq!(call(&app, invalid.clone()).await.0, 400, "{invalid}");
         }
+    }
+
+    async fn seeded_store(directory: &std::path::Path) -> Arc<RuntimeStore> {
+        let store = Arc::new(RuntimeStore::open(Some(directory)).await.expect("store"));
+        store.transaction(|tx| {
+            AgentRepository::put(tx, &AgentRecord::from_value(json!({"accountKey":"default","id":"workspace","rootId":"workspace","epoch":0,"status":"idle","provider":studio_runtime_schema::ProviderKind::Codex}))?)?;
+            tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES('late','workspace','user','Late','pending',3,0),('early','workspace','user','Early','pending',1,0),('note','workspace','followup','Note','pending',2,0)", [])?;
+            Ok(())
+        }).await.expect("seed queue");
+        store
+    }
+
+    fn queued_ids(store: &RuntimeStore) -> Vec<String> {
+        let reader = store.test_reader().expect("reader");
+        let agent = AgentRepository::get(&reader, &"workspace".into())
+            .expect("agent read")
+            .expect("agent");
+        queue_write::queue_snapshot(&reader, &agent)
+            .expect("queue")
+            .items
+            .iter()
+            .map(|item| item["id"].as_str().expect("id").to_owned())
+            .collect()
+    }
+
+    // The queue is server state: a bridge that restarts, or is gone, changes nothing.
+    #[tokio::test]
+    async fn queue_order_is_server_state_and_survives_a_restart() {
+        let directory = tempfile::tempdir().expect("isolated state");
+        let before = queued_ids(&seeded_store(directory.path()).await);
+        assert_eq!(before, ["early", "note", "late"]);
+        let reopened = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("reopened store");
+        assert_eq!(queued_ids(&reopened), before);
+    }
+
+    #[tokio::test]
+    async fn withdrawing_a_queued_user_message_returns_its_text_as_a_server_draft() {
+        let directory = tempfile::tempdir().expect("isolated state");
+        let store = seeded_store(directory.path()).await;
+        let state = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            directory.path().to_string_lossy().into_owned(),
+            4620,
+            None,
+            Some(store.clone()),
+            None,
+        );
+        let app = crate::router(state).expect("router");
+        let withdraw = |id: &'static str| json!({"action":"cancel","id":id,"request_id":studio_runtime_schema::persistence::RequestIdentity::issue_root()});
+        let draft = || {
+            let store = store.clone();
+            async move {
+                store
+                    .transaction(|tx| SyncDocumentsRepository::draft(tx, "server:workspace"))
+                    .await
+                    .expect("draft read")
+                    .map(|document| {
+                        serde_json::from_str::<Value>(&document.payload).expect("draft JSON")
+                            ["text"]
+                            .as_str()
+                            .expect("draft text")
+                            .to_owned()
+                    })
+            }
+        };
+        assert_eq!(call(&app, withdraw("note")).await.0, 200);
+        assert_eq!(
+            draft().await,
+            None,
+            "only user messages return to the composer"
+        );
+        assert_eq!(call(&app, withdraw("early")).await.0, 200);
+        assert_eq!(draft().await.as_deref(), Some("Early"));
+        assert_eq!(call(&app, withdraw("late")).await.0, 200);
+        assert_eq!(draft().await.as_deref(), Some("Early\n\nLate"));
+        assert!(
+            queued_ids(&store).is_empty(),
+            "the withdrawn messages left the queue"
+        );
     }
 }
 inventory::submit! {

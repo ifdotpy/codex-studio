@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use studio_runtime_schema::queue_command::QueueCommand;
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, AgentStatus, Connection, QueueWriteRepository,
-    SchedulerRepository, StoreError, Transaction, WorkItemsRepository,
+    SchedulerRepository, StoreError, SyncDocumentsRepository, Transaction, WorkItemsRepository,
 };
 use thiserror::Error;
 
@@ -134,8 +134,19 @@ pub fn action(
             reorder(transaction, &agent, &reorder_body.ordered_ids, rows)?
         }
         QueueCommand::Cancel(_) => {
-            let (target_id, _) = target_row(body, rows)?;
+            // Withdraw: a user message leaves the queue and its text returns to the
+            // composer of the chat as a server draft.
+            let (target_id, row) = target_row(body, rows)?;
             QueueWriteRepository::update_status(transaction, target_id, "cancelled")?;
+            let text = row.get("text").and_then(Value::as_str).unwrap_or_default();
+            if row.get("kind").and_then(Value::as_str) == Some("user") && !text.is_empty() {
+                SyncDocumentsRepository::append_server_draft(
+                    transaction,
+                    agent_id,
+                    text,
+                    now_ms as u64,
+                )?;
+            }
         }
         QueueCommand::Edit(edit) => {
             let (target_id, row) = target_row(body, rows)?;
