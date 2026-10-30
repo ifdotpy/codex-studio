@@ -25,24 +25,20 @@ impl<'a> TextField<'a> {
     }
 }
 #[derive(Deserialize)]
-struct Identity<'a> {
+#[serde(rename_all = "camelCase")]
+struct ViewInput<'a> {
     #[serde(borrow)]
     subscription: Option<TextField<'a>>,
-}
-#[derive(Deserialize)]
-struct Reason<'a> {
     #[serde(borrow)]
     reason: Option<TextField<'a>>,
-}
-#[derive(Deserialize)]
-struct Credit<'a> {
     #[serde(borrow)]
     credit: Option<TextField<'a>>,
-}
-#[derive(Deserialize)]
-struct Resume<'a> {
     #[serde(borrow)]
     path: Option<TextField<'a>>,
+    #[serde(borrow)]
+    topic: Option<TextField<'a>>,
+    #[serde(default)]
+    flow_control: FlowControl,
 }
 #[derive(Default, Deserialize)]
 #[serde(untagged)]
@@ -51,22 +47,6 @@ enum FlowControl {
     Other(serde::de::IgnoredAny),
     #[default]
     Missing,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Subscribe<'a> {
-    #[serde(borrow)]
-    topic: Option<TextField<'a>>,
-    #[serde(default)]
-    flow_control: FlowControl,
-}
-enum ViewCommand<'a> {
-    Unsubscribe(Reason<'a>),
-    Next(Credit<'a>),
-    Resume(Resume<'a>),
-    Restart(Reason<'a>),
-    Subscribe(Subscribe<'a>),
-    Unknown,
 }
 fn decode<'a, T: Deserialize<'a>>(value: &'a Value) -> Option<T> {
     JsonObject::<T>::deserialize(value).ok().map(|v| v.0)
@@ -92,35 +72,26 @@ impl Views {
         }
     }
     pub fn command(&mut self, request: &Request) -> Response {
-        let identity = decode::<Identity>(&request.params);
-        let Some(id) = identity
-            .as_ref()
-            .and_then(|v| v.subscription.as_ref())
-            .and_then(TextField::text)
-            .filter(|id| !id.is_empty() && id.len() <= 128)
-        else {
+        let Some((input, id)) = decode::<ViewInput>(&request.params).and_then(|input| {
+            let id = input
+                .subscription
+                .as_ref()
+                .and_then(TextField::text)
+                .filter(|id| !id.is_empty() && id.len() <= 128)?;
+            Some((input, id))
+        }) else {
             return Response::failure(
                 request.id.clone(),
                 "invalid_subscription",
                 "A subscription identity is required.",
             );
         };
-        let command = match request.method.as_str() {
-            "view.unsubscribe" => {
-                ViewCommand::Unsubscribe(decode(&request.params).expect("object"))
-            }
-            "view.next" => ViewCommand::Next(decode(&request.params).expect("object")),
-            "view.resume" => ViewCommand::Resume(decode(&request.params).expect("object")),
-            "view.restart" => ViewCommand::Restart(decode(&request.params).expect("object")),
-            "view.subscribe" => ViewCommand::Subscribe(decode(&request.params).expect("object")),
-            _ => ViewCommand::Unknown,
-        };
-        if let ViewCommand::Unsubscribe(reason) = &command {
+        if request.method == "view.unsubscribe" {
             crate::stream_log::line(&format!(
                 "unsubscribe {id} known={} views={} reason={}",
                 self.tasks.contains_key(id),
                 self.tasks.len(),
-                text(&reason.reason)
+                text(&input.reason)
             ));
             self.flows.remove(id);
             if let Some(task) = self.tasks.remove(id) {
@@ -128,9 +99,9 @@ impl Views {
             }
             return Response::success(request.id.clone(), json!({"closed":true}));
         }
-        if let ViewCommand::Next(credit) = &command {
+        if request.method == "view.next" {
             return if self.flows.get(id).is_some_and(|flow| {
-                credit
+                input
                     .credit
                     .as_ref()
                     .and_then(TextField::text)
@@ -146,23 +117,20 @@ impl Views {
                 )
             };
         }
-        if matches!(command, ViewCommand::Resume(_) | ViewCommand::Restart(_)) {
-            let accepted = self.flows.get(id).is_some_and(|flow| match &command {
-                ViewCommand::Restart(reason) => {
-                    let reason = text(&reason.reason);
+        if matches!(request.method.as_str(), "view.resume" | "view.restart") {
+            let accepted = self.flows.get(id).is_some_and(|flow| {
+                if request.method == "view.restart" {
+                    let reason = text(&input.reason);
                     crate::stream_log::line(&format!("restart {id} reason={reason}"));
                     flow.restart(reason);
                     true
+                } else {
+                    input
+                        .path
+                        .as_ref()
+                        .and_then(TextField::text)
+                        .is_some_and(|path| flow.resume(path))
                 }
-                ViewCommand::Resume(resume) => resume
-                    .path
-                    .as_ref()
-                    .and_then(TextField::text)
-                    .is_some_and(|path| flow.resume(path)),
-                ViewCommand::Unsubscribe(_)
-                | ViewCommand::Next(_)
-                | ViewCommand::Subscribe(_)
-                | ViewCommand::Unknown => false,
             });
             return if accepted {
                 Response::success(request.id.clone(), json!({"accepted":true}))
@@ -174,7 +142,7 @@ impl Views {
                 )
             };
         }
-        if !matches!(command, ViewCommand::Subscribe(_))
+        if request.method != "view.subscribe"
             || self.tasks.contains_key(id)
             || self.tasks.len() >= 64
         {
@@ -189,10 +157,7 @@ impl Views {
                 "The subscription already exists or the view limit was reached.",
             );
         }
-        let ViewCommand::Subscribe(subscription) = command else {
-            unreachable!()
-        };
-        let topic = text(&subscription.topic);
+        let topic = text(&input.topic);
         if !matches!(topic, "sse" | "microphone" | "voice" | "transcription") {
             return Response::failure(
                 request.id.clone(),
@@ -202,7 +167,7 @@ impl Views {
         }
         let log_id = id.to_owned();
         let (id, topic, params) = (id.to_owned(), topic.to_owned(), request.params.clone());
-        let flow = match subscription.flow_control {
+        let flow = match input.flow_control {
             FlowControl::Missing | FlowControl::Enabled(false) => None,
             FlowControl::Enabled(true) if topic == "sse" => match crate::events::EventFlow::new() {
                 Ok(flow) => Some(Arc::new(flow)),
