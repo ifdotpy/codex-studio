@@ -1506,6 +1506,14 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             text: api_schema_ts(&api_schema::schema_hash(&openapi)),
         },
         Rendered {
+            path: PREVIOUS_HASH_PATH.into(),
+            text: previous_hash_text(
+                &std::fs::read_to_string(root.join(web("apiSchema.ts"))).unwrap_or_default(),
+                &std::fs::read_to_string(root.join(PREVIOUS_HASH_PATH)).unwrap_or_default(),
+                &api_schema::schema_hash(&openapi),
+            ),
+        },
+        Rendered {
             path: "workspaces/runtime/apps/vm-guest/shared_values_generated.py".into(),
             text: vm_guest_py(),
         },
@@ -2227,5 +2235,65 @@ process.stdout.write(JSON.stringify(JSON.parse(input).map(([method, params]) => 
                 "{error}"
             );
         }
+    }
+}
+
+const PREVIOUS_HASH_PATH: &str =
+    "workspaces/runtime/packages/runtime-schema/previous-api-schema-hashes.txt";
+
+/// The list of earlier contract hashes, newest first. When the generated hash changes, the hash
+/// that was current until now is added in front; the list keeps `PEER_HASH_HISTORY_LEN` hashes.
+fn previous_hash_text(old_api_schema_ts: &str, existing: &str, new_hash: &str) -> String {
+    let old_hash = old_api_schema_ts.split('"').nth(1).unwrap_or_default();
+    let mut hashes = existing
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if old_hash.len() == 64 && old_hash != new_hash {
+        hashes.retain(|hash| hash != old_hash);
+        hashes.insert(0, old_hash.to_owned());
+    }
+    hashes.truncate(api_schema::PEER_HASH_HISTORY_LEN);
+    hashes.iter().map(|hash| format!("{hash}\n")).collect()
+}
+
+#[cfg(test)]
+mod previous_hash_tests {
+    use super::previous_hash_text;
+    use crate::api_schema::PEER_HASH_HISTORY_LEN;
+
+    const OLD: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const NEW: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const KEPT: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\n";
+
+    fn ts(hash: &str) -> String {
+        format!("export const API_SCHEMA_HASH =\n  \"{hash}\";\n")
+    }
+
+    #[test]
+    fn a_changed_hash_adds_the_old_current_hash_in_front() {
+        assert_eq!(
+            previous_hash_text(&ts(OLD), KEPT, NEW),
+            format!("{OLD}\n{KEPT}")
+        );
+    }
+
+    #[test]
+    fn an_unchanged_hash_keeps_the_committed_list() {
+        assert_eq!(previous_hash_text(&ts(NEW), KEPT, NEW), KEPT);
+        assert_eq!(previous_hash_text("", KEPT, NEW), KEPT);
+    }
+
+    #[test]
+    fn the_list_keeps_only_the_newest_hashes() {
+        let full = (0..PEER_HASH_HISTORY_LEN)
+            .map(|n| format!("{n:064x}\n"))
+            .collect::<String>();
+        let next = previous_hash_text(&ts(OLD), &full, NEW);
+        assert_eq!(next.lines().count(), PEER_HASH_HISTORY_LEN);
+        assert!(next.starts_with(OLD));
+        assert!(!next.contains(&format!("{:064x}", PEER_HASH_HISTORY_LEN - 1)));
     }
 }

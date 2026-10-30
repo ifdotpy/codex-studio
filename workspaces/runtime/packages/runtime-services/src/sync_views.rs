@@ -40,6 +40,12 @@ pub fn openapi_document() -> &'static Value {
     })
 }
 
+/// Hash of the committed API schema, the current contract version.
+pub fn api_schema_hash() -> &'static str {
+    static HASH: OnceLock<String> = OnceLock::new();
+    HASH.get_or_init(|| studio_runtime_schema::api_schema::schema_hash(openapi_document()))
+}
+
 fn schema_definition<'a>(schema: &'a Value, document: &'a Value) -> &'a Value {
     schema
         .get("$ref")

@@ -55,6 +55,29 @@ pairing key:
 The receiving backend then checks each request as a Serve request (below), including the
 request signature and the Tailscale whois of the source address.
 
+## Contract version
+
+A paired server states its contract version (the `api-schema` hash of
+`runtime-http/openapi.json`) on every signed request, in the header `X-Studio-API-Schema`. The
+sender is `remote_transport.rs`; the check is in `incoming_multi_server.rs`, after the signature
+check and for a paired server only (a paired window must match the current hash, as before).
+
+- A server accepts the current hash and the earlier hashes in its history. Any other hash gets
+  `426` with `X-Studio-API-Schema-Mismatch: 1`. A request with no hash comes from a build from
+  before this check; it is accepted as an earlier version. This case is removed one release
+  later (the missing hash is then refused like an unknown hash). So a rolling update keeps the
+  peers working, and a peer too far behind is refused.
+- The history has one owner: `runtime-schema/previous-api-schema-hashes.txt` (newest first),
+  read by `api_schema::previous_api_schema_hashes`. `pnpm run contracts:generate` writes it:
+  when the generated hash changes, the hash that was current until then is added in front.
+  The list keeps `api_schema::PEER_HASH_HISTORY_LEN` (20) hashes, because installs are less
+  frequent than contract changes: a peer one install behind is often several contract changes
+  behind. `contracts:check` fails when the file is not that value.
+- A field leaves the contract only one release after its last reader is gone, so a server
+  can decode a request of the previous version. A server decodes no other version.
+- The stream of a frontend uses the first frame instead: `/api/sync/stream` sends one
+  `api-schema` frame with `mismatch: true` and ends when the hash of the frontend differs.
+
 ## Streams
 
 Each request is one bidirectional stream: a 4-byte length and a JSON head

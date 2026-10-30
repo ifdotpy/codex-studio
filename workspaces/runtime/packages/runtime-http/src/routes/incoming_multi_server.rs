@@ -649,6 +649,33 @@ async fn dispatch(
         Ok(principal) => principal,
         Err(e) => return failure(e),
     };
+    if principal.kind == "server" {
+        // A peer server states its contract version: the current or the previous one.
+        let offered = parts
+            .headers
+            .get(crate::schema::API_SCHEMA_HASH_HEADER)
+            .and_then(|value| value.to_str().ok());
+        // A build from before this check sends no hash. Treat it as the previous version.
+        // Remove this case one release later.
+        if !offered.is_none_or(|hash| {
+            studio_runtime_schema::api_schema::peer_hash_accepted(
+                crate::schema::api_schema_hash(),
+                hash,
+            )
+        }) {
+            let mut response = error_response(
+                StatusCode::UPGRADE_REQUIRED,
+                "The peer server runs an unsupported API version",
+            );
+            response.headers_mut().insert(
+                crate::schema::API_SCHEMA_MISMATCH_HEADER,
+                HeaderValue::from_static("1"),
+            );
+            return response;
+        }
+        // The ordinary boundary accepts only the exact current hash. This peer is accepted.
+        parts.headers.remove(crate::schema::API_SCHEMA_HASH_HEADER);
+    }
     for name in SIGNATURE_HEADERS.into_iter().chain([
         "origin",
         "sec-fetch-site",

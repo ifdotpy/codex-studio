@@ -1323,3 +1323,64 @@ async fn a_paired_window_reaches_the_ordinary_api_with_signed_requests() {
         revoked.status()
     );
 }
+
+/// Send one signed read of the paired caller server with the given contract hash header.
+async fn peer_read_status(offered: Option<&str>, nonce: &str) -> (StatusCode, Option<String>) {
+    let receiver = paired_receiver().await;
+    let mut request = signed_api_request(
+        &receiver.caller_signing,
+        &receiver.receiver_identity,
+        receiver.origin,
+        "GET",
+        "/api/ui-summary",
+        b"",
+        nonce,
+    );
+    if let Some(hash) = offered {
+        request.headers_mut().insert(
+            studio_runtime_http::API_SCHEMA_HASH_HEADER,
+            hash.parse().expect("header value"),
+        );
+    }
+    let response = receiver.app.oneshot(request).await.expect("answers");
+    let mismatch = response
+        .headers()
+        .get(studio_runtime_http::API_SCHEMA_MISMATCH_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    (response.status(), mismatch)
+}
+
+#[tokio::test]
+async fn a_peer_with_the_current_contract_hash_is_accepted() {
+    let (status, _) = peer_read_status(
+        Some(studio_runtime_http::api_schema_hash()),
+        "peercurrentnonce000000000000001",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_peer_with_an_earlier_contract_hash_is_accepted() {
+    let previous = studio_runtime_schema::api_schema::previous_api_schema_hashes()
+        .next()
+        .expect("an earlier hash");
+    assert_ne!(previous, studio_runtime_http::api_schema_hash());
+    let (status, _) = peer_read_status(Some(previous), "peerpreviousnonce00000000000001").await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_peer_without_a_contract_hash_is_accepted_as_the_previous_version() {
+    let (status, _) = peer_read_status(None, "peernohashnonce00000000000000001").await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_peer_with_an_unknown_contract_hash_is_refused() {
+    let older = "9aa282663c082a75fc10906d145769eec177755035b36b8611d96c949b56fa11";
+    let (status, mismatch) = peer_read_status(Some(older), "peerolderhashnonce000000000001").await;
+    assert_eq!(status, StatusCode::UPGRADE_REQUIRED);
+    assert_eq!(mismatch.as_deref(), Some("1"));
+}
